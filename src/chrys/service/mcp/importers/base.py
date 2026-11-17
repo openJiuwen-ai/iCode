@@ -611,7 +611,7 @@ def convert(server: SourceServer) -> McpImportCandidate:
                 return refuse(Problem.VALUE_NOT_REPRESENTABLE, f"{server.headers_path}.{key}", reason, use)
             headers[key] = text
     config = MCPServerConfig(
-        name=server.name,
+        name=server.name.strip(),
         transport=server.transport,
         # Only the settings of the server's own transport.
         command=server.command if stdio else "",

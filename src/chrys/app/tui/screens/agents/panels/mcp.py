@@ -35,8 +35,6 @@ from chrys.app.tui.screens.agents.panels.markdown_report import (
     inline_text,
     md_table,
 )
-from chrys.app.tui.screens.agents.panels.mcp_fields import MCPInput as Input
-from chrys.app.tui.screens.agents.panels.mcp_fields import MCPTextArea as EnhancedTextArea
 from chrys.app.tui.screens.agents.validation_messages import (
     CONTEXT_ERROR,
     DUPLICATE_KEY_ROW,
@@ -79,7 +77,8 @@ from chrys.app.tui.screens.agents.validation_messages import (
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
 from chrys.app.tui.util.liveness import composed_live
-from chrys.app.tui.widgets import Checkbox, ConfigAddButton, HatchedEmptyState, Select
+from chrys.app.tui.widgets import Checkbox, ConfigAddButton, EnhancedTextArea, HatchedEmptyState, Select
+from chrys.app.tui.widgets import EnhancedInput as Input
 from chrys.app.tui.widgets.config_card import CardListChanged, CollapsibleConfigCard
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
@@ -1032,9 +1031,7 @@ class MCPConnectionCard(CollapsibleConfigCard):
 
     def _header_title(self, name: str) -> str:
         # An unnamed server is told apart by position, with the label its Save errors use.
-        return sanitize_legacy_scalar(name.strip()) or render_str(
-            widget_localizer(self), MCP_SERVER_CONTEXT.bind(index=self._index + 1)
-        )
+        return name.strip() or render_str(widget_localizer(self), MCP_SERVER_CONTEXT.bind(index=self._index + 1))
 
     @on(Input.Changed)
     def _on_name_changed(self, event: Input.Changed) -> None:

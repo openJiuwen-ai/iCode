@@ -59,6 +59,12 @@ ImportMcpServersDialog {
     margin: 0 1 0 0;
 }
 
+/* Keep the tick's column when its checkbox is hidden so every card stays aligned. */
+#mcp-import-servers .mcp-import-tick-column {
+    width: 4;
+    height: auto;
+}
+
 /* The tick sits level with the card's title line, inside its top border. */
 #mcp-import-servers .mcp-import-tick {
     width: 3;
@@ -89,11 +95,6 @@ ImportMcpServersDialog {
 
 #mcp-import-servers .mcp-import-item > CollapsibleConfigCard {
     width: 1fr;
-}
-
-/* An unavailable tick keeps its column so server names stay aligned. */
-#mcp-import-servers .mcp-import-item.-unavailable > .mcp-import-tick {
-    visibility: hidden;
 }
 
 /* The agent config window strips the frame of its cards' checkboxes (#ac-tabs Checkbox); this window must too,

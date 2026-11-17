@@ -95,8 +95,6 @@ The "ChatGPT" import entry reads the local MCP configuration shared by the ChatG
 
 Cards you have expanded stay open when you switch applications or change the interface language, so you can continue checking them.
 
-Some special characters appear as `�` when you preview or edit a configuration. Copying or saving keeps the original characters.
-
 The mark after a server's name shows its status and tells you what to check. Servers you cannot select have no checkbox; you can still click their names to expand the cards and read the details.
 
 | Mark | Meaning and action |
@@ -112,6 +110,7 @@ The same HTTP URL, or the same STDIO command and arguments, can trigger "Connect
 
 ### Check before use
 
+- **Server names**: Import removes leading and trailing whitespace from server names before generating the tool name prefix. For example, `" github "` becomes `github` with the prefix `github`. Preview, confirmation and saving use the same name and prefix.
 - **HTTP URLs**: Import removes leading and trailing whitespace from the URL. Spaces within the URL and encoded characters such as `%20` are preserved.
 - **Warnings (⚠)**: Read the warnings in the card's "Description" first. They may ask you to add authentication details or choose tools again. Warnings about specific settings list the original configuration fields before the explanation and instructions, so you can find those settings in the other application's file. Warnings are separated by blank lines; when a warning covers several fields, each field is listed on its own line. Configuration fields not recognized during import are not copied, so check that the features you need are still available. You can delete warnings from "Description" once you have addressed them.
 - **Enabled**: Servers disabled in the other application still have "Enabled" unchecked after import. The same applies to Claude Code project servers you rejected or have not approved yet. To use one, check its settings and select "Enabled".

@@ -283,17 +283,30 @@ def test_warnings_merge_one_per_kind_with_each_item_once() -> None:
     ("name", "prefix"),
     [
         ("github", r"github"),
+        (" github ", r"github"),
+        ("\tgithub\t", r"github"),
+        ("\u00a0github\u00a0", r"github"),
         ("my server.v2", r"my_server_v2-[0-9a-f]{6}"),
         ("github-", r"github-[0-9a-f]{6}"),
         ("--", r"mcp_[0-9a-f]{6}"),
         ("a" * 40, r"a{17}-[0-9a-f]{6}"),
     ],
-    ids=["plain", "unsafe-characters", "trimmed", "nothing-left", "too-long"],
+    ids=[
+        "plain",
+        "surrounding-spaces",
+        "surrounding-tabs",
+        "surrounding-nonbreaking-spaces",
+        "unsafe-characters",
+        "trimmed",
+        "nothing-left",
+        "too-long",
+    ],
 )
 def test_prefix_is_made_from_the_server_name(name: str, prefix: str) -> None:
     config = convert(SourceServer(name, "/cfg.json", "stdio", command="run")).config
 
     assert config is not None
+    assert config.name == name.strip()
     assert re.fullmatch(prefix, config.tool_name_prefix)
 
 

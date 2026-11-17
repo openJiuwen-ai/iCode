@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 
 import pytest
@@ -31,6 +32,7 @@ from chrys.foundation.i18n import Localizer
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
 from chrys.service.mcp.importers import (
     FieldUse,
+    ImportContext,
     ImportWarning,
     McpImportCandidate,
     McpImportResult,
@@ -230,8 +232,30 @@ async def test_an_unopened_preview_keeps_cwd_on_import(monkeypatch) -> None:
         assert app.panel._snapshot_rows()[0].config.cwd == "."
 
 
+async def test_imported_name_is_trimmed_before_preview_confirmation_and_save() -> None:
+    imported = convert(SourceServer(" github ", "/cfg.json", "stdio", command="run"))
+    source = FakeSource("fake", "Fake", McpImportResult((imported,)))
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(120, 50)) as pilot:
+        dialog = await open_dialog(app, pilot, [source])
+        (item,) = await wait_for_items(dialog, pilot, 1)
+        assert item.imported is not None
+        assert item.imported.name == "github"
+        assert item.card.get_config().name == item.imported.name
+        assert str(item.card.query_one(CollapsibleTitle).label) == "github"
+        prefix = item.imported.tool_name_prefix
+        assert prefix == "github"
+        item.tick.value = True
+        confirmation = await ask_to_import(dialog, pilot)
+        assert str(confirmation.query_one("#confirm-message", Static).render()).splitlines()[-1] == "  github"
+        confirmation.query_one("#confirm-yes", Button).press()
+        await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 1, pilot=pilot, description="card added")
+        saved = app.panel.query_one(MCPConnectionCard).get_config()
+        assert (saved.name, saved.tool_name_prefix) == ("github", prefix)
+
+
 @pytest.mark.parametrize("transport", ["stdio", "http"])
-async def test_preview_and_imported_fields_sanitize_rendering_but_keep_raw_values(monkeypatch, transport) -> None:
+async def test_preview_and_imported_fields_keep_raw_values_through_copy_edit_and_save(monkeypatch, transport) -> None:
     payload = "\x1b]52;c;VEVTVA==\x1b\\\u202e\u200b"
     raw = "value" + payload
     config = replace(
@@ -255,33 +279,27 @@ async def test_preview_and_imported_fields_sanitize_rendering_but_keep_raw_value
         source = FakeSource("fake", "Fake", McpImportResult((candidate(config),)))
         dialog = await open_dialog(app, pilot, [source])
         (item,) = await wait_for_items(dialog, pilot, 1)
-        title = str(item.card.query_one(CollapsibleTitle).content)
-        assert "\x1b" not in title
-        assert "\u202e" in title and "\u200b" in title
         item.card.set_collapsed(False, scroll_visible=False)
         await wait_for(
             lambda: bool(item.card.query(".mcp-item-value-input")), pilot=pilot, description="fields mounted"
         )
         await pilot.pause()
-        for field in item.card.query(Input):
-            assert "\x1b" not in field.render_line(0).text
         value_input = item.card.query_one(".mcp-item-value-input", Input)
         assert value_input.value == raw
-        assert sanitize_legacy_scalar(raw) in value_input.render_line(0).text
         value_input.select_all()
         value_input.action_copy()
         assert copied[-1] == raw
+        preview_description = item.card.query_one("#mcp-desc-0", TextArea)
+        assert raw in preview_description.text
+        preview_description.action_select_all()
+        preview_description.action_copy()
+        assert copied[-1] == preview_description.text
         assert item.imported is not None and item.imported.enabled is False
         item.tick.value = True
         await import_ticked(dialog, pilot)
         await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 1, pilot=pilot, description="card added")
         card = app.panel.query_one(MCPConnectionCard)
         await pilot.pause()
-        for field in card.query(Input):
-            assert "\x1b" not in field.render_line(0).text
-        for field in card.query(TextArea):
-            assert "\x1b" not in field.render_line(0).text
-            assert "\x1b" not in field.get_line(0).plain
         description = card.query_one("#mcp-desc-0", TextArea)
         assert raw in description.text
         description.action_select_all()
@@ -299,6 +317,27 @@ async def test_preview_and_imported_fields_sanitize_rendering_but_keep_raw_value
         else:
             assert saved.url == config.url
             assert saved.headers == config.headers
+
+        value_input = card.query_one(".mcp-item-value-input", Input)
+        assert value_input.value == raw
+        value_input.selection = (len(raw), len(raw))
+        value_input.insert_text_at_cursor(" edited")
+        value_input.select_all()
+        value_input.action_copy()
+        assert copied[-1] == raw + " edited"
+        original_description = description.text
+        description.insert("\nedited " + raw, description.document.end)
+        description.action_select_all()
+        description.action_copy()
+        assert copied[-1] == original_description + "\nedited " + raw
+        edited = card.get_config()
+        assert edited.description == original_description + "\nedited " + raw
+        if transport == "stdio":
+            assert edited.env == {"KEY" + payload: raw + " edited"}
+            assert edited.args == config.args
+        else:
+            assert edited.headers == {"X-Test" + payload: raw + " edited"}
+            assert edited.url == config.url
 
 
 async def test_localization_and_source_switch_keep_current_folds() -> None:
@@ -434,6 +473,46 @@ async def test_pressing_import_twice_opens_one_dialog_and_one_confirmation(monke
         assert [row.config.name for row in app.panel._snapshot_rows()] == ["github"]
 
 
+async def test_cancel_queued_after_import_keeps_confirmation_and_import_result() -> None:
+    source = FakeSource("fake", "Fake", McpImportResult((candidate(stdio("github")),)))
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(120, 50)) as pilot:
+        dialog = await open_dialog(app, pilot, [source])
+        (item,) = await wait_for_items(dialog, pilot, 1)
+        item.tick.value = True
+        confirm = dialog.query_one("#mcp-import-confirm", Button)
+        await wait_for(lambda: not confirm.disabled, pilot=pilot, description="Import is enabled")
+        confirm.press()
+        dialog.query_one("#mcp-import-cancel", Button).press()
+        await pilot.pause()
+
+        assert isinstance(app.screen, ConfirmDialog)
+        assert not dialog.dismiss_requested
+        app.screen.query_one("#confirm-yes", Button).press()
+        await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 1, pilot=pilot, description="card added")
+        assert [row.config.name for row in app.panel._snapshot_rows()] == ["github"]
+
+
+async def test_cancel_action_only_closes_the_topmost_import_dialog() -> None:
+    source = FakeSource("fake", "Fake", McpImportResult((candidate(stdio("github")),)))
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(120, 50)) as pilot:
+        dialog = await open_dialog(app, pilot, [source])
+        (item,) = await wait_for_items(dialog, pilot, 1)
+        item.tick.value = True
+        confirmation = await ask_to_import(dialog, pilot)
+        await dialog.run_action("cancel")
+        await pilot.pause()
+
+        assert app.screen is confirmation
+        assert not dialog.dismiss_requested
+        await pilot.press("escape")
+        assert app.screen is dialog
+        await pilot.press("escape")
+        assert app.screen is not dialog
+        assert not app.panel._snapshot_rows()
+
+
 async def test_servers_that_can_not_be_added_are_locked_as_the_add_picker_locks_them() -> None:
     present, taken = candidate(stdio("present", "node")), candidate(stdio("taken", "node"))
     legacy = _unsupported("legacy", Problem.VALUE_NOT_REPRESENTABLE, "s.url")
@@ -464,13 +543,14 @@ async def test_servers_that_can_not_be_added_are_locked_as_the_add_picker_locks_
             None,
         ]
         # A server that can't be ticked shows no tick.
-        assert [(item.tick.disabled, item.tick.value, item.tick.visible) for item in items] == [
+        assert [(item.tick.disabled, item.tick.value, item.tick.display) for item in items] == [
             (False, False, True),
             (False, False, True),
             (True, False, False),
             (True, False, False),
             (True, False, False),
         ]
+        assert len({item.card.region.x for item in items}) == 1
         assert notes_text(items[4]).splitlines() == [
             "Original configuration field: s.url",
             (
@@ -504,18 +584,20 @@ async def test_a_server_imported_in_another_language_or_redescribed_is_still_alr
 
         # The description the import writes changes with the language and the user's edits; settings don't.
         assert [badge_text(item) for item in items] == ["已添加", "已添加"]
-        assert [(item.tick.disabled, item.tick.visible) for item in items] == [(True, False), (True, False)]
+        assert [(item.tick.disabled, item.tick.display) for item in items] == [(True, False), (True, False)]
 
 
 async def test_ticking_a_server_locks_a_conflicting_one_in_other_applications() -> None:
-    # A bracket in the name must not be read as markup.
-    first = FakeSource("a", "Alpha", McpImportResult((candidate(stdio("gh[/b]", "npx", "a")),)))
-    beta = (candidate(stdio("gh[/b]", "npx", "b")), candidate(stdio("zz", "zz")), candidate(stdio("added", "added")))
+    name = "gh[/b]\x1b\u202e\u200b"
+    first = FakeSource("a", "Alpha", McpImportResult((candidate(stdio(name, "npx", "a")),)))
+    beta = (candidate(stdio(name, "npx", "b")), candidate(stdio("zz", "zz")), candidate(stdio("added", "added")))
     second = FakeSource("b", "Beta", McpImportResult(beta))
     app = PanelApp(MCPConfigPanel([stdio("added", "added")]))
     async with app.run_test(size=(120, 50)) as pilot:
         dialog = await open_dialog(app, pilot, [first, second])
         (one,) = await wait_for_items(dialog, pilot, 1)
+        # Titles and conflict details remain plain display text; field values keep the source text.
+        assert str(one.card.query_one(CollapsibleTitle).label) == sanitize_legacy_scalar(name)
         one.tick.value = True
         await wait_for(lambda: 0 in dialog._ticked["a"], pilot=pilot, description="tick recorded")
 
@@ -526,11 +608,14 @@ async def test_ticking_a_server_locks_a_conflicting_one_in_other_applications() 
         # A duplicate follows the importable servers, before those the agent already has.
         assert [item.index for item in (free, two, added)] == [1, 0, 2]
         assert badge_text(added) == "Already added"
-        assert two.tick.disabled and two.has_class("-unavailable")
+        assert two.tick.disabled and not two.tick.display
         assert badge_text(two) == "Duplicate"
         tooltip = two.card.badge.tooltip
         assert isinstance(tooltip, Text)
-        assert tooltip.plain == "Conflicts with the selected gh[/b] (Alpha); only one of them can be imported."
+        assert tooltip.plain == (
+            f"Conflicts with the selected {sanitize_legacy_scalar(name)} (Alpha); only one of them can be imported."
+        )
+        assert str(two.card.query_one(CollapsibleTitle).label) == sanitize_legacy_scalar(name)
 
 
 async def test_import_lists_the_ticked_servers_by_application_before_adding_them() -> None:
@@ -602,6 +687,38 @@ async def test_a_long_name_is_cut_short_and_another_application_starts_at_its_to
         )
         await wait_for_items(dialog, pilot, 21)
         assert pane.scroll_y == 0
+
+
+async def test_refused_source_paths_escape_surrogates_and_use_the_import_home(tmp_path) -> None:
+    home = tmp_path / "home\udcfe"
+    paths = [str(home / "bad\udcff\x1b.json"), str(tmp_path / "home\udcfe-other" / "bad\udcff.json")]
+    source = FakeSource(
+        "fake",
+        "Fake",
+        McpImportResult(
+            tuple(
+                replace(_unsupported(str(index), Problem.VALUE_NOT_REPRESENTABLE), source_path=path)
+                for index, path in enumerate(paths)
+            )
+        ),
+    )
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(120, 50)) as pilot:
+        dialog = ImportMcpServersDialog(
+            workspace_cwd=None,
+            existing=[],
+            locale_controller=app.locale_controller,
+            sources=[source],
+            context=ImportContext(None, home),
+        )
+        app.push_screen(dialog)
+        items = await wait_for_items(dialog, pilot, 2)
+        inside = f"~{os.sep}bad\\udcff�.json"
+        assert dialog._display_path(paths[0]) == inside
+        assert notes_text(items[0]).splitlines()[-1] == f"Configuration source: {inside}"
+        outside = f"{tmp_path}{os.sep}home\\udcfe-other{os.sep}bad\\udcff.json"
+        assert dialog._display_path(paths[1]) == outside
+        assert notes_text(items[1]).splitlines()[-1] == f"Configuration source: {outside}"
 
 
 async def test_file_errors_and_empty_sources_are_shown_in_the_pane() -> None:

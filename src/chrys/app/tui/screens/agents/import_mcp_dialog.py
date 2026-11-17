@@ -51,6 +51,7 @@ from chrys.app.tui.widgets.config_card import CollapsibleConfigCard
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar, sanitize_terminal_block
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.service.mcp.importers import IMPORT_SOURCES, ImportContext, detected_sources
 from chrys.service.profiles.agents.schema import MCPServerConfig
 
@@ -172,9 +173,7 @@ class _RefusedCard(CollapsibleConfigCard):
         super().__init__(index, collapsed=collapsed, read_only=True)
 
     def compose(self) -> ComposeResult:
-        yield from self.compose_header(
-            sanitize_legacy_scalar(self._title), row_class="mcp-header-row", title_class="mcp-title"
-        )
+        yield from self.compose_header(self._title, row_class="mcp-header-row", title_class="mcp-title")
         with self.card_body(), Vertical(classes="mcp-import-notes") as notes:
             notes.border_title = self._notes_title
             yield from self._notes
@@ -210,7 +209,8 @@ class _ImportItem(Horizontal):
         self.card = card
 
     def compose(self) -> ComposeResult:
-        yield self.tick
+        with Vertical(classes="mcp-import-tick-column"):
+            yield self.tick
         yield self.card
 
 
@@ -437,7 +437,7 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
                 problem_text(candidate, source.display_name, self._render_message), "mcp-import-problem"
             )
             field = [self._note(original_setting(candidate.problem_field), "mcp-import-problem")]
-            path = sanitize_legacy_scalar(self._display_path(candidate.source_path))
+            path = self._display_path(candidate.source_path)
             where = self._note(_SOURCE.bind(path=path), "mcp-import-source")
             notes: list[Widget] = [*(field if names_field(candidate) else []), reason, where]
             card = _RefusedCard(
@@ -459,7 +459,8 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
 
     def _display_path(self, path: str) -> str:
         home = str(self._import_context.home)
-        return "~" + path[len(home) :] if path == home or path.startswith(home + os.sep) else path
+        text = "~" + path[len(home) :] if path == home or path.startswith(home + os.sep) else path
+        return sanitize_legacy_scalar(surrogate_safe_text(text))
 
     def _order(self, item: _ImportItem) -> tuple[int, str, str]:
         """Each group by name: importable, clashing with a ticked server, clashing with the agent's, can't import.
@@ -482,7 +483,7 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
         badge = item.card.badge
         item.tick.disabled = state != "importable" or ticked_conflict is not None
         # A server that can't be ticked shows no tick; its badge says why.
-        item.set_class(item.tick.disabled, "-unavailable")
+        item.tick.display = not item.tick.disabled
         warnings = self._candidate(item).warnings
         detail = ticked_conflict
         if state == "unsupported":
@@ -522,7 +523,7 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
                 continue
             for other_index in sorted(self._ticked.get(source.source_id, set())):
                 other = result.candidates[other_index]
-                other_config = self._imported(source, other)
+                other_config = other.config
                 if other_config is not None and mcp_choice_conflict(item.imported, [other_config]) is not None:
                     name = sanitize_legacy_scalar(other.name)
                     return self._render_message(_TICKED_CONFLICT.bind(name=name, agent=source.display_name))
@@ -567,7 +568,9 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
             result = self._results.get(source.source_id)
             ticked = self._ticked.get(source.source_id, set())
             for index, candidate in enumerate(result.candidates if result else ()):
-                config = self._imported(source, candidate) if index in ticked else None
+                if index not in ticked:
+                    continue
+                config = self._imported(source, candidate)
                 taken = [*self._existing, *(chosen for _source, chosen in selected)]
                 # Ticks lock conflicting servers; this still keeps the first of two ticked at once.
                 if config is not None and mcp_choice_conflict(config, taken) is None:
@@ -615,10 +618,11 @@ class ImportMcpServersDialog(BaseDialog[list[MCPServerConfig] | None]):
     @on(Button.Pressed, "#mcp-import-cancel")
     def _on_cancel(self, event: Button.Pressed) -> None:
         event.stop()
-        self.dismiss(None)
+        self.action_cancel()
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        if self is self.app.screen:
+            self.dismiss(None)
 
     def _default_dismiss_result(self) -> list[MCPServerConfig] | None:  # type: ignore[override]
         return None

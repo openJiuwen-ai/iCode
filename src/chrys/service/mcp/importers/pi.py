@@ -60,7 +60,6 @@ from chrys.service.mcp.importers.base import (
     ValueReason,
     Var,
     WarningKind,
-    by_name,
     convert,
     folders_down_to,
     is_str_list,
@@ -156,7 +155,7 @@ class PiSource:
                 entries.pop(name, None)
                 entries[name] = (entry, str(path))
         found = [_server(name, entry, path, ctx.home) for name, (entry, path) in entries.items()]
-        candidates = tuple(convert(server) for server in by_name(server for server in found if server is not None))
+        candidates = tuple(convert(server) for server in found if server is not None)
         return McpImportResult(candidates, tuple(errors))
 
 
