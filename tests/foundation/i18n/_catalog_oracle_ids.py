@@ -439,6 +439,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.commands.unavailable_while_running",
     "tui.commands.unknown_agents_target",
     "tui.commands.unknown_command",
+    "tui.clipboard.copy_failed",
     "tui.compaction.copy.summary",
     "tui.compaction.copy.summary_unavailable",
     "tui.config.agent.loading",

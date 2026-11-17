@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from textual.css.query import NoMatches
 
 from chrys.app.tui.buddy_messages import BUDDY_TITLE
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.notifications import NotificationEvent
 from chrys.app.tui.screens.main.dialog_controllers import (
     AgentLoadDialogHandle,
@@ -616,8 +616,16 @@ class MainScreenViewAdapter:
             return list(panel.get_user_messages())
         return list(panel.get_agent_responses())
 
-    def copy_text(self, text: str) -> None:
-        copy_text_to_clipboards(self._screen.app, text)
+    def copy_text(self, text: str, *, message: StatusMessage, title: StatusMessage) -> None:
+        dispatched = copy_text_to_clipboards(self._screen.app, text)
+        notify_after_copy(
+            self._screen,
+            self._render_status_message(message),
+            dispatched=dispatched,
+            title=self._render_status_message(title),
+            timeout=2,
+            markup=False,
+        )
 
     def toggle_chat_fold_all(self) -> bool:
         return self._screen.query_one(ChatPanel).toggle_fold_all()

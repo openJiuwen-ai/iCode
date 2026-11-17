@@ -10,7 +10,7 @@ from textual.actions import SkipAction
 from textual.widgets import Input
 
 from chrys.app.tui.binding_display import COPY_BINDING, PASTE_BINDING, localized_binding
-from chrys.app.tui.clipboard import copy_text_to_clipboards, paste_text_from_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, paste_text_from_clipboards, uses_native_windows_clipboard
 
 if TYPE_CHECKING:
     from textual import events
@@ -47,11 +47,12 @@ class EnhancedInput(Input):
         copy_text_to_clipboards(self.app, selected)
 
     def action_cut(self) -> None:
-        """Cut the selection after synchronizing both clipboards."""
+        """Cut only after the copy request has been accepted."""
         selected = self.selected_text
         if not selected:
             return
-        copy_text_to_clipboards(self.app, selected)
+        if not copy_text_to_clipboards(self.app, selected) and uses_native_windows_clipboard():
+            return
         self.delete_selection()
 
     def action_paste(self) -> None:

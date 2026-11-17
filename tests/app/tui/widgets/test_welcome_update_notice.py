@@ -16,6 +16,7 @@ from textual.color import Color
 from chrys.app.install_flavor import InstallFlavor
 from chrys.app.tui import clipboard as tui_clipboard
 from chrys.app.tui import i18n as tui_i18n
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.util.logo import CHAT_LOGO
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.welcome import WelcomeWidget, copy_on_click
@@ -151,6 +152,7 @@ async def test_clicking_the_command_copies_it_and_says_so(monkeypatch: pytest.Mo
         await click_when_settled(pilot, welcome, offset=(rows[y].index(_COMMAND) + 3, y))
 
         assert pilot.app.clipboard == _COMMAND
+        await wait_for_clipboard(pilot.app)
         assert host_copies == [_COMMAND]
         assert notices == [(_COMMAND, "Copied")]
 

@@ -26,7 +26,7 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Button, Static
 
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.support.gc_freeze import (
@@ -544,10 +544,12 @@ class UserMessage(Widget):
         """Copy the message as the user wrote it to the available clipboards."""
         if not self._text.strip():
             return
-        copy_text_to_clipboards(self.app, self._text)
+        dispatched = copy_text_to_clipboards(self.app, self._text)
         localizer = widget_localizer(self)
-        self.notify(
+        notify_after_copy(
+            self,
             render_str(localizer, _USER_MESSAGE_COPIED.bind()),
+            dispatched=dispatched,
             title=render_str(localizer, COPIED_TITLE.bind()),
             timeout=2,
             markup=False,
@@ -1312,10 +1314,12 @@ class AgentMessage(StreamedMarkdownMessage):
         payload = self.format_agent_response_copy()
         if not payload.strip():
             return
-        copy_text_to_clipboards(self.app, payload)
+        dispatched = copy_text_to_clipboards(self.app, payload)
         localizer = widget_localizer(self)
-        self.notify(
+        notify_after_copy(
+            self,
             render_str(localizer, _AGENT_RESPONSE_COPIED.bind()),
+            dispatched=dispatched,
             title=render_str(localizer, COPIED_TITLE.bind()),
             timeout=2,
             markup=False,

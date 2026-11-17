@@ -19,6 +19,13 @@ from tests.support.toasts import record_shown_toasts
 
 
 @pytest.fixture(autouse=True)
+def _isolate_tui_frontend_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default to a local terminal regardless of how the test runner was started."""
+    for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "WSL_DISTRO_NAME", "WSL_INTEROP", "TEXTUAL_DRIVER"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def record_toasts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep every toast readable through ``shown_toasts`` after it times out."""
     record_shown_toasts(monkeypatch)

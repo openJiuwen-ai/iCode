@@ -14,7 +14,8 @@ import ntpath
 import os
 import platform
 import shutil
-from contextlib import ExitStack
+from collections.abc import Generator
+from contextlib import ExitStack, contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -228,6 +229,24 @@ def _win32_clipboard_api() -> _Win32ClipboardAPI:
             "IsClipboardFormatAvailable": (wintypes.BOOL, [wintypes.UINT]),
             "GetClipboardData": (wintypes.HANDLE, [wintypes.UINT]),
             "SetClipboardData": (wintypes.HANDLE, [wintypes.UINT, wintypes.HANDLE]),
+            "CreateWindowExW": (
+                wintypes.HWND,
+                [
+                    wintypes.DWORD,
+                    wintypes.LPCWSTR,
+                    wintypes.LPCWSTR,
+                    wintypes.DWORD,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    wintypes.HWND,
+                    wintypes.HMENU,
+                    wintypes.HINSTANCE,
+                    wintypes.LPVOID,
+                ],
+            ),
+            "DestroyWindow": (wintypes.BOOL, [wintypes.HWND]),
         },
     )
     declare_functions(
@@ -248,16 +267,35 @@ def _win32_error() -> OSError:
     return windows_ctypes.WinError(windows_ctypes.get_last_error())
 
 
-def _open_clipboard_with_retry(api: _Win32ClipboardAPI, attempts: int = 5, delay: float = 0.01) -> None:
+def _open_clipboard_with_retry(
+    api: _Win32ClipboardAPI, attempts: int = 5, delay: float = 0.01, *, owner: int | None = None
+) -> None:
     """Acquire the clipboard. Retries on transient ERROR_ACCESS_DENIED."""
     import time
 
     for i in range(attempts):
-        if api.user32.OpenClipboard(None):
+        if api.user32.OpenClipboard(owner):
             return
         if i == attempts - 1:
             raise _win32_error()
         time.sleep(delay)
+
+
+@contextmanager
+def _clipboard_owner(api: _Win32ClipboardAPI) -> Generator[int]:
+    """Give writes a real HWND owned by the calling thread, without a visible window.
+
+    EmptyClipboard with an OpenClipboard(NULL) owner does not meet the
+    SetClipboardData contract. A message-only STATIC window needs no custom
+    window procedure; eager text survives its destruction after CloseClipboard.
+    """
+    window = api.user32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, -3, None, None, None)
+    if not window:
+        raise _win32_error()
+    try:
+        yield window
+    finally:
+        api.user32.DestroyWindow(window)
 
 
 def _clipboard_copy_windows(text: str) -> None:
@@ -279,27 +317,29 @@ def _clipboard_copy_windows(text: str) -> None:
         ctypes.memmove(ptr, data, len(data))
         kernel32.GlobalUnlock(h)
 
-        _open_clipboard_with_retry(api)
-        try:
-            user32.EmptyClipboard()
-            if not user32.SetClipboardData(CF_UNICODETEXT, h):
-                raise _win32_error()
-            allocation.pop_all()  # ownership transferred to the clipboard
-        finally:
-            user32.CloseClipboard()
+        with _clipboard_owner(api) as owner:
+            _open_clipboard_with_retry(api, owner=owner)
+            try:
+                if not user32.EmptyClipboard():
+                    raise _win32_error()
+                if not user32.SetClipboardData(CF_UNICODETEXT, h):
+                    raise _win32_error()
+                allocation.pop_all()  # ownership transferred to the clipboard
+            finally:
+                user32.CloseClipboard()
 
 
 def clipboard_copy(text: str) -> None:
-    """Copy text to system clipboard (cross-platform)."""
+    """Copy text to the system clipboard, ignoring unavailable clipboard backends."""
     import contextlib
     import subprocess
 
+    info = get_platform()
     with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError, OSError):
-        info = get_platform()
-        if info.is_macos:
-            subprocess.run(["pbcopy"], input=text.encode(), check=True, timeout=2)
-        elif info.is_windows:
+        if info.is_windows:
             _clipboard_copy_windows(text)
+        elif info.is_macos:
+            subprocess.run(["pbcopy"], input=text.encode(), check=True, timeout=2)
         else:
             for cmd in (["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
                 try:

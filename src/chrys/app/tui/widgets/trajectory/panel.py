@@ -25,7 +25,7 @@ from textual.message import Message
 from textual.widgets import Tab, Tabs
 
 from chrys.app.tui.binding_display import localized_binding
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.support.file_manager import can_open_in_file_manager, open_in_file_manager
 from chrys.app.tui.support.gc_freeze import (
@@ -917,9 +917,11 @@ class TrajectoryDashboard(Container):
         folder = self._session_folder
         if folder is None:
             return
-        copy_text_to_clipboards(self.app, str(folder))
-        self.notify(
+        dispatched = copy_text_to_clipboards(self.app, str(folder))
+        notify_after_copy(
+            self,
             self._render_message(_SESSION_INFO_PATH_COPIED.bind()),
+            dispatched=dispatched,
             title=self._render_message(COPIED_TITLE.bind()),
             timeout=1,
             markup=False,
