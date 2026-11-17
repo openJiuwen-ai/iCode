@@ -113,10 +113,26 @@ def _is_regional_indicator(char: str) -> bool:
     return _REGIONAL_INDICATOR_LOW <= ord(char) <= _REGIONAL_INDICATOR_HIGH
 
 
-def _is_lone_regional_indicator(text: str, cluster: tuple[int, int, int]) -> bool:
-    """Return whether *cluster* of *text* is a single, unpaired regional indicator."""
-    start, end, _cells = cluster
-    return end - start == 1 and _is_regional_indicator(text[start])
+def _regional_indicator_run_at_end(text: str) -> int:
+    """How many regional indicators *text* ends with, a variation selector not breaking the run."""
+    count = 0
+    for char in reversed(text):
+        if _is_regional_indicator(char):
+            count += 1
+        elif char not in "\ufe0e\ufe0f":
+            break
+    return count
+
+
+def _regional_indicator_run_at_start(text: str) -> int:
+    """How many regional indicators *text* starts with, a variation selector not breaking the run."""
+    count = 0
+    for char in text:
+        if _is_regional_indicator(char):
+            count += 1
+        elif char not in "\ufe0e\ufe0f":
+            break
+    return count
 
 
 def _display_clusters(text: str) -> list[tuple[int, int, int]]:
@@ -127,20 +143,26 @@ def _display_clusters(text: str) -> list[tuple[int, int, int]]:
     indicators of a flag as two clusters, which would let a width budget cut a
     flag into two lettered boxes. A contiguous pair of regional indicators is
     therefore joined here; an odd leftover stays on its own.
+
+    The width is measured on the substring rather than taken from the span:
+    a span built by gluing a code point onto a zero-width one is reported as
+    zero cells wide while the terminal really spends the code point's width.
     """
     spans, _total_width = split_graphemes(text)
     clusters: list[tuple[int, int, int]] = []
     total = len(spans)
     index = 0
     while index < total:
-        start, end, cell_width = spans[index]
+        start, end, _reported_width = spans[index]
         index += 1
         if end - start == 1 and _is_regional_indicator(text[start]) and index < total:
-            next_start, next_end, next_width = spans[index]
-            if next_start == end and next_end - next_start == 1 and _is_regional_indicator(text[next_start]):
+            next_start, next_end, _next_width = spans[index]
+            # The second half may carry a variation selector, so it is only
+            # required to *begin* with a regional indicator.
+            if next_start == end and _is_regional_indicator(text[next_start]):
                 index += 1
-                end, cell_width = next_end, cell_width + next_width
-        clusters.append((start, end, cell_width))
+                end = next_end
+        clusters.append((start, end, cell_len(text[start:end])))
     return clusters
 
 
@@ -152,6 +174,10 @@ def elide_middle(text: str, max_width: int) -> str:
     overflow the cap. Cutting happens on display clusters rather than code
     points, so an emoji, a flag or a letter carrying a combining mark is kept
     whole or dropped whole, never sliced in half.
+
+    The result is never wider than *max_width*: cluster widths are measured on
+    the text itself, because ``split_graphemes`` reports a span it built around
+    a zero-width character as zero cells wide.
     """
     if cell_len(text) <= max_width:
         return text
@@ -170,9 +196,11 @@ def elide_middle(text: str, max_width: int) -> str:
             break
         head_used += cluster[2]
         head_end += 1
-    # A regional indicator with no partner renders as a lettered box, so drop one
-    # left stranded at the cut instead of spending cells on it.
-    while head_end and _is_lone_regional_indicator(text, clusters[head_end - 1]):
+    # A regional indicator with no partner renders as a lettered box, so drop any
+    # left stranded at the cut instead of spending cells on it.  Parity is read
+    # from the head text, not from a cluster: a half flag can be glued to its
+    # neighbour by a ZWJ, which no single cluster reports on its own.
+    while head_end and _regional_indicator_run_at_end(text[: clusters[head_end - 1][1]]) % 2:
         head_end -= 1
 
     tail_start = len(clusters)
@@ -180,10 +208,13 @@ def elide_middle(text: str, max_width: int) -> str:
     # Stop at head_end so the two ends can never cover the same cluster.
     for index in range(len(clusters) - 1, head_end - 1, -1):
         cluster = clusters[index]
-        if tail_used + cluster[2] > tail_budget or _is_lone_regional_indicator(text, cluster):
+        if tail_used + cluster[2] > tail_budget:
             break
         tail_used += cluster[2]
         tail_start = index
+    # Same rule at the other end: a tail that starts inside a flag shows half of it.
+    while tail_start < len(clusters) and _regional_indicator_run_at_start(text[clusters[tail_start][0] :]) % 2:
+        tail_start += 1
 
     head_text = text[: clusters[head_end - 1][1]] if head_end else ""
     tail_text = text[clusters[tail_start][0] :] if tail_start < len(clusters) else ""
