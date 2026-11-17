@@ -488,8 +488,13 @@ def _parse_shell_filter(raw: object) -> ShellFilterConfig | None:
         # Shorthand: shell_filter: read_only
         return ShellFilterConfig(preset=_shell_filter_preset(raw))
     raw_map = _mapping_section(raw, "tools.shell_filter")
+    preset = _shell_filter_preset(raw_map.get("preset", ""))
+    if preset:
+        # A recognized preset takes precedence over every custom field, so none of them
+        # can change the filter. Rejecting the file over one would drop the profile
+        # altogether and leave the agent on the builtin's unfiltered shell.
+        return ShellFilterConfig(preset=preset)
     return ShellFilterConfig(
-        preset=_shell_filter_preset(raw_map.get("preset", "")),
         mode=_shell_filter_mode(raw_map.get("mode")),
         commands=_string_list_field(raw_map.get("commands"), "tools.shell_filter.commands"),
         allow_redirections=coerce_bool(raw_map.get("allow_redirections"), default=True),

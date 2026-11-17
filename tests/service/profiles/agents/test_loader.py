@@ -572,12 +572,24 @@ def test_shell_filter_accepts_recognized_preset(tmp_path: Path, shell_filter: ob
     assert profile.tools.shell_filter.preset == "read_only"
 
 
-def test_shell_filter_validates_mode_even_when_a_preset_wins(tmp_path: Path) -> None:
-    """A recognized preset hides the custom fields, but a misspelled mode is still a broken profile."""
-    p = _write_shell_filter_profile(tmp_path, {"preset": "read_only", "mode": "Whitelist", "commands": ["rg"]})
-    with pytest.raises(AgentProfileLoadError) as excinfo:
-        load_profile_from_yaml(p)
-    assert excinfo.value.field == "tools.shell_filter.mode"
+@pytest.mark.parametrize(
+    "shell_filter",
+    [
+        {"preset": "read_only", "mode": "Whitelist", "commands": ["rg"]},
+        {"preset": "read_only", "mode": "white_list"},
+        {"preset": "read_only", "commands": "rg"},
+    ],
+)
+def test_shell_filter_preset_wins_over_an_invalid_custom_field(tmp_path: Path, shell_filter: dict[str, object]) -> None:
+    """A recognized preset makes the custom fields inert.
+
+    Rejecting the file over one of them would drop the profile, and the builtin that
+    stays active has no filter at all — a worse outcome than the ignored typo.
+    """
+    p = _write_shell_filter_profile(tmp_path, shell_filter)
+    profile = load_profile_from_yaml(p)
+    assert profile.tools.shell_filter is not None
+    assert profile.tools.shell_filter.preset == "read_only"
 
 
 _MISSING = object()

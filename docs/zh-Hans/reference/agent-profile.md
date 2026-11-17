@@ -239,7 +239,7 @@ tools:
 | `allow_redirections` | 布尔值 | `true` | 是否允许未被引号包围的 `>`、`>>` 和 `<`。 |
 | `allow_subshells` | 布尔值 | `true` | 是否允许未被引号包围的 `$()` 和反引号命令替换。 |
 
-`mode` 只接受上表中的两个名称，拼写必须与之一致；留空则使用默认值 `whitelist`。写成其他值（例如 `Whitelist`）时，iCode 会把整个 profile 文件当作无效配置跳过，而不是在关闭过滤的情况下加载；`/reload` 会报出需要修改的字段。
+`mode` 只接受上表中的两个名称，拼写必须与之一致；留空则使用默认值 `whitelist`。写成其他值（例如 `Whitelist`）时，iCode 会把整个 profile 文件当作无效配置跳过，而不是在关闭过滤的情况下加载；`/reload` 会报出需要修改的字段。设置了可用的 `preset` 时，自定义字段本来就不起作用，也不再校验：此时 `mode` 或 `commands` 写错会被忽略，不会让整个文件失效。
 
 `allow_redirections` 和 `allow_subshells` 表示命令中是否允许对应的语法：`true` 允许，`false` 禁止。`allow_redirections: false` 时 `echo hi > out` 会被拒绝并提示 `Redirection (>) not allowed`；`allow_subshells: false` 时 `echo $(date)` 同样会被拒绝。取值按通用的布尔写法读取：`false`、`no`、`off`、`0` 表示假（不区分大小写，带不带引号都可以），空白值、空列表、空映射、`0.0` 也表示假；其他值都表示真。省略该字段或写 `null` 时取默认值 `true`。
 
