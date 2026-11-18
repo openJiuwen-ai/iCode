@@ -382,10 +382,8 @@ def _with_result_text(result: Any, text: str) -> Any:
     if isinstance(result, str) or result is None:
         return text
     if inspect.isawaitable(result):
-        # The kernel assigns the tool's own coroutine to ``context.result`` before
-        # awaiting it, so a tool that raised leaves that coroutine there. It is not
-        # a result and never resolves: close it, and write the text in its place —
-        # leaving it would also drop the replacement the hook just made.
+        # A middleware can leave its own awaitable in the context when it fails.
+        # Only the replacement text belongs in the result.
         close = getattr(result, "close", None)
         if close is not None:
             close()

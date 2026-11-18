@@ -1139,10 +1139,17 @@ async def test_post_execution_middleware_cancel_keeps_raw_result_and_marks_proce
             client_kwargs={"loop_recorder": recorder},
         )
     )
-    await tool_returned.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        await wait_for(lambda: tool_returned.is_set() or task.done())
+        if task.done():
+            await task
+            pytest.fail("tool call finished before the cancellation point")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     projected = recorder.loop_messages
     assert projected is not None
@@ -1201,10 +1208,17 @@ async def test_cancel_while_result_hooks_run_restores_a_tombstone_not_the_raw_ou
             client_kwargs={"loop_recorder": recorder},
         )
     )
-    await tool_returned.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        await wait_for(lambda: tool_returned.is_set() or task.done())
+        if task.done():
+            await task
+            pytest.fail("tool call finished before the cancellation point")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     projected = recorder.loop_messages
     assert projected is not None
@@ -1299,10 +1313,17 @@ async def test_post_execution_middleware_cancel_uses_processed_result_when_conte
             client_kwargs={"loop_recorder": recorder},
         )
     )
-    await tool_returned.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        await wait_for(lambda: tool_returned.is_set() or task.done())
+        if task.done():
+            await task
+            pytest.fail("tool call finished before the cancellation point")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     projected = recorder.loop_messages
     assert projected is not None

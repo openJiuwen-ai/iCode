@@ -53,6 +53,7 @@ from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY, re
 from chrys.foundation.tool_kinds import TOOL_CALL_KIND_METADATA_KEY, get_tool_kind
 from chrys.foundation.tool_result_metadata import (
     COMMITTED_ERROR_TEXT_KEY,
+    HOOK_RESULT_APPLIED_KEY,
     HOOK_RESULT_PENDING_KEY,
     INTERRUPTED_TOOL_RESULT_TEXT,
     TOOL_ERROR_KIND_METADATA_KEY,
@@ -141,7 +142,12 @@ class ToolResultCommit(Protocol):
     already holds, even after the exchange was sealed.
     """
 
+    @property
+    def has_raw_result(self) -> bool: ...
+
     def commit_raw(self, result: Content) -> None: ...
+
+    def replace_raw_with_error(self, text: str) -> None: ...
 
     def commit_final(self, result: Content) -> None: ...
 
@@ -1014,10 +1020,23 @@ async def _invoke_function_call(
             )
         return result
 
+    def checkpoint_error(exc: Exception) -> None:
+        # A raw slot records completed work. Once a middleware supersedes it
+        # with an error, checkpoint the public result before an outer hook can
+        # suspend. A pending result hook already has a safe placeholder.
+        if result_commit is None or not result_commit.has_raw_result:
+            return
+        context.metadata.pop(HOOK_RESULT_APPLIED_KEY, None)
+        if not context.metadata.get(HOOK_RESULT_PENDING_KEY):
+            committed = context.metadata.get(COMMITTED_ERROR_TEXT_KEY)
+            text = committed if isinstance(committed, str) else tool_error_result_text(exc)
+            result_commit.replace_raw_with_error(apply_result_ceiling(text, tool_result_ceiling_tokens))
+
     try:
         function_result = await pipeline.execute(
             context=context,
             final_handler=final_function_handler,
+            on_error=checkpoint_error if result_commit is not None else None,
         )
         return Content.from_function_result(
             call_id=call_id,
@@ -1030,14 +1049,8 @@ async def _invoke_function_call(
         # the invocation context. Commit with that context before the outer
         # batch-level cancellation fallback loses it.
         #
-        # Sanitise context.result before passing it to commit_interrupted:
-        # - ``SyncToolCancelledAfterCompletion`` raised inside final_wrapper
-        #   before its ``await`` could resolve, leaving ``context.result``
-        #   holding an un-awaited coroutine object.  Discard it; the raw slot
-        #   already carries the completed sync result.
-        # - Hooks may have expanded the text beyond the caller-imposed ceiling.
-        #   Apply the same ceiling the normal commit path uses so resumed
-        #   history preserves the normal output bound.
+        # Only resolved values belong in history. Apply the normal token ceiling
+        # here too, since a hook can expand the result before cancellation.
         if asyncio.iscoroutine(context.result):
             context.result = None
         elif context.result is not None and tool_result_ceiling_tokens is not None:
@@ -1048,7 +1061,7 @@ async def _invoke_function_call(
     except MiddlewareTermination as term_exc:
         # Re-raise to signal loop termination, capturing any middleware-set
         # result first.
-        if context.result is not None:
+        if context.result is not None and not term_exc.prebuilt_result_exposed:
             term_exc.result = Content.from_function_result(
                 call_id=call_id,
                 result=context.result,
@@ -1061,6 +1074,12 @@ async def _invoke_function_call(
             # external objects that are deliberately unsafe to deep-copy.
             owned_result = copy(term_exc.result)
             owned_result.call_id = call_id
+            if term_exc.prebuilt_result_exposed:
+                body = owned_result.items if owned_result.items is not None else owned_result.result
+                if context.result is not body:
+                    reviewed = Content.from_function_result(call_id=call_id, result=context.result)
+                    owned_result.items = reviewed.items
+                    owned_result.result = reviewed.result
             prebuilt_properties = term_exc.result.additional_properties
             # This call's properties go on top of whatever the prebuilt result
             # carried, the same fold every other result path uses: a result

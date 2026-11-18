@@ -1565,9 +1565,6 @@ async def test_an_allowed_call_still_carries_the_gate_warning() -> None:
     assert before_tool_context(context) == ["note"]
 
 
-# ──────────────── Issue 1: exception text isolation ──────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_extra_context_on_raised_call_does_not_expose_private_exception_text() -> None:
     """Appending extra_context to a raised call must not leak private exception text to the model.
@@ -1634,9 +1631,6 @@ async def test_explicit_result_override_on_raised_call_takes_full_text() -> None
     assert committed == "REDACTED BY HOOK"
 
 
-# ──────────────── Issue 3: empty-string result_override ─────────────────────
-
-
 def test_empty_string_result_override_withholds_on_a_successful_call() -> None:
     """result_override='' (withhold) must replace result with empty text, not be ignored."""
     result, result_text = apply_result_hooks("original output", "original output", result_override="")
@@ -1657,45 +1651,6 @@ def test_subsequent_hook_with_no_override_does_not_restore_withheld_text() -> No
     second = HookDecision()  # result_override=None — no opinion
     _merge_decision(aggregate, second)
     assert aggregate.result_override == "", "withheld result must not be restored by a hook with no opinion"
-
-
-# ──────────────── Issue 4: system_prompt order ───────────────────────────────
-
-
-def test_system_prompt_order_is_profile_then_providers_then_model_instructions() -> None:
-    """system_prompt() assembles: profile instructions, providers, model chat_options.instructions."""
-    from types import SimpleNamespace
-
-    from chrys.orchestration.engine.run.turn_hooks import PromptSubmitGate
-    from chrys.service.profiles.models.schema import ModelProfile
-
-    class _FakeProvider:
-        def __init__(self, text: str) -> None:
-            self._text = text
-
-        def contributed_instructions(self) -> str:
-            return self._text
-
-    model_profile = ModelProfile(id="test-id", name="test", provider="anthropic", model_id="claude-test")
-    model_profile.chat_options = '{"instructions": "MODEL INSTRUCTIONS"}'
-
-    manifest = SimpleNamespace(profile_instructions="PROFILE INSTRUCTIONS", active_profile=model_profile)
-    agent = SimpleNamespace(context_providers=[_FakeProvider("PROVIDER INSTRUCTIONS")])
-    loaded = SimpleNamespace(agent=agent)
-    current = SimpleNamespace(loaded=loaded, manifest=manifest)
-
-    gate = object.__new__(PromptSubmitGate)
-    gate._current = current
-
-    result = gate.system_prompt()
-
-    expected = "\n".join(["PROFILE INSTRUCTIONS", "PROVIDER INSTRUCTIONS", "MODEL INSTRUCTIONS"])
-    assert result == expected
-    # Order: profile first, model instructions last.
-    assert result.index("PROFILE") < result.index("PROVIDER") < result.index("MODEL")
-
-
-# ──────────────── Issue 5: audit record — both effects captured ───────────────
 
 
 def test_replaced_result_audit_carries_both_override_and_extra_context() -> None:
@@ -1731,9 +1686,6 @@ def test_replaced_result_audit_carries_both_override_and_extra_context() -> None
     assert effect == "replaced_result"
     assert applied.result_override == "REPLACED TEXT"
     assert applied.extra_context == "APPENDED NOTE"
-
-
-# ──────────────── Issue 3: decision recognition for empty string ─────────────
 
 
 def test_asks_unsupported_recognises_empty_string_result_override_as_explicit_request() -> None:

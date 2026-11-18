@@ -27,6 +27,7 @@ from chrys.foundation.tool_invocation_order import read_tool_invocation_order
 from chrys.foundation.tool_result_metadata import (
     HOOK_RESULT_APPLIED_KEY,
     INTERRUPTED_TOOL_RESULT_TEXT,
+    TOOL_ERRORED_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
     TOOL_INTERRUPTED_METADATA_KEY,
     TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY,
@@ -38,6 +39,7 @@ from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
 from ._content import Content
 from ._tool_execution import _is_actionable_function_call, _result_additional_properties, _tool_trajectory_timing
 from ._types import ChatResponse, Message
+from .exceptions import GENERIC_TOOL_ERROR_TEXT
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
@@ -116,6 +118,20 @@ class _ResultCommit:
 
     def commit_raw(self, result: Content) -> None:
         self._recorder._fill_slot(self._exchange, self._slot, result, fill_kind="raw")
+
+    def replace_raw_with_error(self, text: str) -> None:
+        previous = self._slot.result
+        if previous is None or not self.has_raw_result:
+            return
+        properties = dict(previous.additional_properties)
+        properties[TOOL_RESULT_METADATA_KEY] = {
+            **properties.get(TOOL_RESULT_METADATA_KEY, {}),
+            TOOL_ERRORED_METADATA_KEY: True,
+        }
+        result = Content.from_function_result(
+            call_id=previous.call_id, result=text, exception=GENERIC_TOOL_ERROR_TEXT, additional_properties=properties
+        )
+        self._recorder._fill_slot(self._exchange, self._slot, result, fill_kind="raw", upgrade_raw=True)
 
     def commit_final(self, result: Content) -> None:
         self._recorder._fill_slot(self._exchange, self._slot, result, fill_kind="final", upgrade_raw=True)
@@ -501,6 +517,10 @@ class LoopRecorder:
             carried = current.get(TOOL_RESULT_METADATA_KEY, {})
             additional.update(current)
             applied = invocation_context is not None and invocation_context.metadata.get(HOOK_RESULT_APPLIED_KEY)
+            if applied and previous.exception is not None:
+                # An outer middleware can recover from a provisional error.
+                # Its processed result carries the final error state.
+                recorded.pop(TOOL_ERRORED_METADATA_KEY, None)
             if recorded.get(TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY):
                 # Failure describes the provisional placeholder. The applied result gets
                 # its actual failure state from the middleware's result metadata.
@@ -513,6 +533,7 @@ class LoopRecorder:
                 result = Content.from_function_result(
                     call_id=function_call.call_id,
                     result=invocation_context.result,
+                    exception=GENERIC_TOOL_ERROR_TEXT if carried.get(TOOL_ERRORED_METADATA_KEY) else None,
                     additional_properties=additional,
                 )
             else:

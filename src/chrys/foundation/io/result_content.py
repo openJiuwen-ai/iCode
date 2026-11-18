@@ -128,10 +128,8 @@ def extract_result_text(result: Any) -> str:
     """
     if result is None:
         return ""
-    # Guard against dangling coroutines left by cancelled tool invocations.
-    # FunctionMiddlewarePipeline can leave context.result holding the handler
-    # coroutine if cancellation interrupts its await. Close it rather than
-    # rendering a coroutine object as the tool's result.
+    # Middleware can leave an unfinished awaitable in the context while unwinding.
+    # It has no displayable result.
     import inspect
 
     if inspect.isawaitable(result):

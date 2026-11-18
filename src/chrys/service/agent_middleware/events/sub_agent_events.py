@@ -29,6 +29,7 @@ from chrys.foundation.tool_result_metadata import (
     HOOK_RESULT_PENDING_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERRORED_METADATA_KEY,
+    TOOL_INTERRUPTED_METADATA_KEY,
     tool_payload_observation,
     tool_result_metadata_failure_state,
 )
@@ -45,7 +46,7 @@ from chrys.foundation.util.sub_agent_context import (
 )
 from chrys.kernel._result_ceiling import preview_result_ceiling
 from chrys.kernel.exceptions import tool_error_result_text
-from chrys.kernel.middleware import FunctionMiddleware
+from chrys.kernel.middleware import FunctionMiddleware, MiddlewareTermination
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_REJECTED_KEY,
     _SHORT_ID_LEN,
@@ -647,6 +648,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         errored = False
         raised_text: str | None = None
         raised_error_kind: str | None = None
+        terminated = False
         cancelled = False
         shell_metadata_token = None
         shell_metadata: dict[str, object] | None = None
@@ -690,11 +692,15 @@ class SubAgentEventMiddleware(FunctionMiddleware):
             if isinstance(context.metadata, dict) and result_hooks_installed(self._hook_manager, self._extension_hooks):
                 context.metadata[HOOK_RESULT_PENDING_KEY] = True
             await call_next()
+        except MiddlewareTermination as stop:
+            terminated = True
+            stop.expose_tool_result(context)
+            raise
         except Exception as exc:
             errored = True
             raised_error_kind = type(exc).__name__
-            error_text = tool_card_error_text(exc)
             raised_text = tool_error_result_text(exc)
+            error_text = tool_card_error_text(exc)
             raise
         except BaseException:
             cancelled = True
@@ -756,7 +762,8 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     # arguments the tool actually ran with, same as the main
                     # ToolEventMiddleware.
                     args = final_tool_args(context, args)
-                    if rejected and mut_ctx is not None:
+                    skipped = rejected or (terminated and not tool_may_have_run(context))
+                    if skipped and mut_ctx is not None:
                         # Rejected at approval, post-prepare: finalize is
                         # deliberately skipped (the tool never executed), so
                         # release the trace wrapper and close the observation
@@ -771,7 +778,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     metadata.update(generic_metadata)
                     if shell_metadata:
                         metadata.update(shell_metadata)
-                    if not rejected and mut_ctx is not None:
+                    if not skipped and mut_ctx is not None:
                         # Authorship gate for coordination claims: structured
                         # "Error: ..." results (tool_error / record_tool_failure)
                         # mean the write may not have happened — the observed
@@ -832,6 +839,8 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                             progress := sub_agent_metadata.progress.to_metadata()
                         ):
                             metadata[SUB_AGENT_PROGRESS_METADATA_KEY] = progress
+                    if terminated:
+                        metadata[TOOL_INTERRUPTED_METADATA_KEY] = True
                     if errored:
                         metadata[TOOL_ERRORED_METADATA_KEY] = True
                     structured_failed = tool_result_metadata_failure_state(metadata) is True
@@ -878,15 +887,16 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     structured_error_kind = metadata.get(TOOL_ERROR_KIND_METADATA_KEY)
                     if not isinstance(context.metadata, dict):
                         context.metadata = {}
-                    write_execution_stamp(
-                        context.metadata,
-                        context.arguments,
-                        outcome="error" if errored or structured_failed else "ok",
-                        error_kind=(
-                            raised_error_kind
-                            or (structured_error_kind if isinstance(structured_error_kind, str) else None)
-                        ),
-                    )
+                    if not terminated:
+                        write_execution_stamp(
+                            context.metadata,
+                            context.arguments,
+                            outcome="error" if errored or structured_failed else "ok",
+                            error_kind=(
+                                raised_error_kind
+                                or (structured_error_kind if isinstance(structured_error_kind, str) else None)
+                            ),
+                        )
                     result_images = extract_result_images(context.result)
                     await self._bus.publish(
                         InvocationToolCallResult(
@@ -915,7 +925,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         )
                         await trajectory.finished(
                             outcome=tool_outcome(
-                                cancelled=False, rejected=rejected, errored=errored, result_metadata=metadata
+                                cancelled=terminated, rejected=rejected, errored=errored, result_metadata=metadata
                             ),
                             duration_ms=elapsed_ms,
                             result_metadata=metadata,
