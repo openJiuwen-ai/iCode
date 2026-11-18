@@ -339,10 +339,12 @@ class HookDecision:
     because the consumers are different.
     """
 
-    result_override: str = ""
+    result_override: str | None = None
     """Replaces the text of a textual tool result (``after_tool_call``,
-    ``tool_error``) before the model reads it.  The last hook that sets it
-    wins; a result with images keeps them, a non-text result is left as it is.
+    ``tool_error``) before the model reads it.  ``None`` means no hook set an
+    override; ``""`` (empty string) means a hook explicitly withheld the result.
+    The last hook that sets it wins; a result with images keeps them, a
+    non-text result is left as it is.
     """
 
     confirmation: HookConfirmationOutcome | None = None

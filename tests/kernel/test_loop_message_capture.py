@@ -25,6 +25,8 @@ from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.foundation.retry import HistorySnapshot, StreamRetryLoop
 from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY
 from chrys.foundation.tool_result_metadata import (
+    HOOK_RESULT_APPLIED_KEY,
+    HOOK_RESULT_PENDING_KEY,
     TOOL_INTERRUPTED_METADATA_KEY,
     TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY,
     TOOL_RESULT_METADATA_KEY,
@@ -1147,12 +1149,169 @@ async def test_post_execution_middleware_cancel_keeps_raw_result_and_marks_proce
     result = projected[-1].contents[0]
     call = projected[0].contents[0]
     metadata = result.additional_properties[TOOL_RESULT_METADATA_KEY]
+    # No result hooks were declared (HOOK_RESULT_PENDING_KEY unset), so nothing
+    # would have changed the output: the raw result is final and is kept.
     assert result.result == "raw-result"
     assert metadata[TOOL_INTERRUPTED_METADATA_KEY] is True
     assert metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] is True
     assert call.additional_properties[TRAJECTORY_TIMING_KEY] == measured_timing
     assert result.additional_properties[TRAJECTORY_TIMING_KEY] == measured_timing
     assert tool_runs == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hook_a_returned", [False, True], ids=["first-hook-running", "second-hook-running"])
+async def test_cancel_while_result_hooks_run_restores_a_tombstone_not_the_raw_output(hook_a_returned: bool) -> None:
+    """Result hooks declared but unfinished: the raw output must not reach resumed history.
+
+    Covers the two cancel points the review reproduced: the first redaction hook
+    still running, and hook A having returned a replacement while hook B runs (the
+    aggregate is written to context.result only after the whole chain returns).
+    """
+    tool_returned = asyncio.Event()
+    hold_hooks = asyncio.Event()
+    hook_chain_state: list[str] = []
+
+    @tool(name="secret_tool")
+    async def secret_tool() -> str:
+        return "PRIVATE_CREDENTIAL_123"
+
+    class _PendingHooks(FunctionMiddleware):
+        async def process(
+            self,
+            context: FunctionInvocationContext,
+            call_next: Callable[[], Awaitable[None]],
+        ) -> None:
+            context.metadata[HOOK_RESULT_PENDING_KEY] = True
+            await call_next()
+            if hook_a_returned:
+                # Hook A's replacement exists only in the hook chain's own state;
+                # context.result is written after the whole chain returns.
+                hook_chain_state.append("REDACTED")
+            tool_returned.set()
+            await hold_hooks.wait()
+
+    recorder = LoopRecorder()
+    layer, _wire = _stack([_call_response(("c1", "secret_tool", {}))])
+    task = asyncio.create_task(
+        layer.get_response(
+            [_user()],
+            options={"tools": [secret_tool]},
+            middleware=[_PendingHooks()],
+            client_kwargs={"loop_recorder": recorder},
+        )
+    )
+    await tool_returned.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    projected = recorder.loop_messages
+    assert projected is not None
+    result = projected[-1].contents[0]
+    metadata = result.additional_properties[TOOL_RESULT_METADATA_KEY]
+    assert "PRIVATE_CREDENTIAL_123" not in str(result.result)
+    assert result.result.startswith("Error: Tool execution was interrupted.")
+    assert metadata[TOOL_INTERRUPTED_METADATA_KEY] is True
+    assert metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] is True
+
+
+@pytest.mark.asyncio
+async def test_sync_completion_cancel_with_result_hooks_declared_restores_a_tombstone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sync worker finishing as the cancel lands must not bypass declared redaction hooks."""
+
+    @tool(name="threaded_tool")
+    def threaded_tool() -> str:
+        return "unused"
+
+    async def _cancelled_after_completion(self: FunctionTool, call_kwargs: Any) -> Any:
+        raise SyncToolCancelledAfterCompletion("PRIVATE_CREDENTIAL_123")
+
+    class _DeclareResultHooks(FunctionMiddleware):
+        async def process(
+            self,
+            context: FunctionInvocationContext,
+            call_next: Callable[[], Awaitable[None]],
+        ) -> None:
+            context.metadata[HOOK_RESULT_PENDING_KEY] = True
+            await call_next()
+
+    monkeypatch.setattr(FunctionTool, "_invoke_function", _cancelled_after_completion)
+    recorder = LoopRecorder()
+    layer, _wire = _stack([_call_response(("fast", "threaded_tool", {}))])
+    with pytest.raises(asyncio.CancelledError):
+        await layer.get_response(
+            [_user()],
+            options={"tools": [threaded_tool]},
+            middleware=[_DeclareResultHooks()],
+            client_kwargs={"loop_recorder": recorder},
+        )
+
+    projected = recorder.loop_messages
+    assert projected is not None
+    result = projected[-1].contents[0]
+    assert "PRIVATE_CREDENTIAL_123" not in str(result.result)
+    assert result.result.startswith("Error: Tool execution was interrupted.")
+    assert recorder.committed_count == 1
+
+
+@pytest.mark.asyncio
+async def test_post_execution_middleware_cancel_uses_processed_result_when_context_result_set() -> None:
+    """When middleware modifies context.result before cancellation, the slot keeps the processed value.
+
+    Scenario: tool returns "raw-result"; a middleware replaces context.result with
+    "processed-result" (simulating what hooks/redaction middleware does), then
+    awaits a gate. Cancellation arrives while the gate holds. The slot must end up
+    with "processed-result", not "raw-result", because middleware already finished
+    its work and the processed value is what the model should see.
+    """
+    tool_returned = asyncio.Event()
+    hold_after_modify = asyncio.Event()
+
+    @tool(name="modifying_tool")
+    async def modifying_tool() -> str:
+        return "raw-result"
+
+    class _ModifyThenHold(FunctionMiddleware):
+        async def process(
+            self,
+            context: FunctionInvocationContext,
+            call_next: Callable[[], Awaitable[None]],
+        ) -> None:
+            await call_next()
+            # Simulate what hook/redaction middleware does: replace the result
+            # and set the processing-complete marker.
+            context.result = "processed-result"
+            if isinstance(context.metadata, dict):
+                context.metadata[HOOK_RESULT_APPLIED_KEY] = True
+            tool_returned.set()
+            await hold_after_modify.wait()
+
+    recorder = LoopRecorder()
+    layer, _wire = _stack([_call_response(("c1", "modifying_tool", {}))])
+    task = asyncio.create_task(
+        layer.get_response(
+            [_user()],
+            options={"tools": [modifying_tool]},
+            middleware=[_ModifyThenHold()],
+            client_kwargs={"loop_recorder": recorder},
+        )
+    )
+    await tool_returned.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    projected = recorder.loop_messages
+    assert projected is not None
+    result = projected[-1].contents[0]
+    metadata = result.additional_properties[TOOL_RESULT_METADATA_KEY]
+    # The middleware-processed value must survive; raw-result must not reach the model.
+    assert result.result == "processed-result"
+    assert metadata[TOOL_INTERRUPTED_METADATA_KEY] is True
+    assert metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] is True
 
 
 @pytest.mark.asyncio

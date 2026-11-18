@@ -1925,6 +1925,7 @@ def test_system_prompt_matches_what_the_running_agent_will_send() -> None:
 
     manifest = SimpleNamespace(
         profile_instructions="You are Code.",
+        active_profile=None,
     )
     agent = SimpleNamespace(
         context_providers=[memory_provider, skills_provider, doc_provider],

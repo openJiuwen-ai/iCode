@@ -25,6 +25,8 @@ from chrys.foundation.tool_execution_stamp import write_execution_stamp
 from chrys.foundation.tool_kinds import KIND_SHELL, KIND_SUB_AGENT, KIND_WEB_FETCH, KIND_WEB_SEARCH, get_tool_kind
 from chrys.foundation.tool_result_metadata import (
     COMMITTED_ERROR_TEXT_KEY,
+    HOOK_RESULT_APPLIED_KEY,
+    HOOK_RESULT_PENDING_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERRORED_METADATA_KEY,
     tool_payload_observation,
@@ -54,6 +56,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
     get_provider_call_id,
     get_tool_invocation_order,
     is_mutable_tool_args,
+    result_hooks_installed,
     set_call_id,
     set_tool_invocation_order,
     tool_may_have_run,
@@ -514,6 +517,10 @@ class ToolEventMiddleware(FunctionMiddleware):
                         preamble.operation_id if preamble is not None and preamble.start_committed else None
                     ),
                 )
+            # Declared before the tool runs: if cancellation lands before the result
+            # hooks finish, the kernel must not treat the raw output as final.
+            if isinstance(context.metadata, dict) and result_hooks_installed(self._hook_manager, self._extension_hooks):
+                context.metadata[HOOK_RESULT_PENDING_KEY] = True
             await call_next()
         except Exception as exc:
             errored = True
@@ -725,15 +732,34 @@ class ToolEventMiddleware(FunctionMiddleware):
                         result_override=hook_decision.result_override,
                         extra_context=[*before_tool_context(context), *hook_decision.extra_context],
                     )
-                    if (
-                        isinstance(context.metadata, dict)
-                        and raised_text is not None
-                        and result_text != original_result_text
-                    ):
+                    # Mark that hook result processing has completed. The kernel's cancel
+                    # handler checks this to distinguish a hooks-processed result from
+                    # the tool's own raw output (which context.result holds from the
+                    # moment the tool returns, before hooks run).
+                    if isinstance(context.metadata, dict):
+                        context.metadata[HOOK_RESULT_APPLIED_KEY] = True
+                    if isinstance(context.metadata, dict) and raised_text is not None:
                         # A raised call: the kernel answers it after this middleware, so any change
-                        # to the result text (replacement or extra_context appended) must be marked
-                        # or the kernel rebuilds the result from the exception, discarding it.
-                        context.metadata[COMMITTED_ERROR_TEXT_KEY] = result_text
+                        # to the result text must be marked or the kernel rebuilds the result from
+                        # the exception, discarding it.
+                        #
+                        # Security boundary: ``result_text`` at this point is built from
+                        # ``error_text`` (``tool_card_error_text(exc)``), which may contain the
+                        # raw exception message.  When a hook only appends ``extra_context`` the
+                        # text changes (``result_text != original_result_text``), and writing
+                        # ``result_text`` would expose private exception text to the model.
+                        #
+                        # Rule: when there is no explicit ``result_override``, base the committed
+                        # text on ``raised_text`` (the kernel's safe "Error: Function failed."
+                        # equivalent) and append only the extra_context suffix.  An explicit
+                        # override replaces the whole result regardless.
+                        if hook_decision.result_override is not None:
+                            # Explicit replacement: the hook chose what the model reads.
+                            context.metadata[COMMITTED_ERROR_TEXT_KEY] = result_text
+                        elif result_text != original_result_text:
+                            # Only context was appended: anchor on the safe raised_text.
+                            suffix = result_text[len(original_result_text) :]
+                            context.metadata[COMMITTED_ERROR_TEXT_KEY] = raised_text + suffix
                     structured_error_kind = metadata.get(TOOL_ERROR_KIND_METADATA_KEY)
                     if not isinstance(context.metadata, dict):
                         context.metadata = {}

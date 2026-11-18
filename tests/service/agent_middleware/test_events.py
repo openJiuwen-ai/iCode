@@ -1568,3 +1568,189 @@ async def test_a_rejected_call_does_not_carry_the_gate_warning() -> None:
 async def test_an_allowed_call_still_carries_the_gate_warning() -> None:
     context = SimpleNamespace(metadata={_BEFORE_TOOL_CONTEXT_KEY: ["note"], _APPROVAL_REJECTED_KEY: False})
     assert before_tool_context(context) == ["note"]
+
+
+# ──────────────── Issue 1: exception text isolation ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_extra_context_on_raised_call_does_not_expose_private_exception_text() -> None:
+    """Appending extra_context to a raised call must not leak private exception text to the model.
+
+    A tool that raises RuntimeError("PRIVATE_CREDENTIAL") normally produces
+    ``Error: Function failed.`` for the model.  If a hook only appends
+    ``extra_context`` the middleware must base the committed text on the safe
+    ``raised_text`` (``Error: Function failed.``), not on ``error_text``
+    (which carries the raw exception message).  The correct model result is
+    ``Error: Function failed.\n\nNOTE``.
+    """
+    bus = EventBus()
+    manager = PayloadRecordingHookManager(
+        {HookEvent.AFTER_TOOL_CALL: HookDecision(extra_context=["NOTE"])},
+    )
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="test",
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+        hook_manager=manager,
+    )
+    context = FunctionInvocationContext(FunctionTool(name="test_tool"), {})
+
+    async def call_next_private_error() -> None:
+        raise RuntimeError("PRIVATE_CREDENTIAL_123")
+
+    with pytest.raises(RuntimeError):
+        await mw.process(context, call_next_private_error)
+
+    committed = context.metadata.get(COMMITTED_ERROR_TEXT_KEY)
+    assert committed is not None, "middleware must commit text when extra_context was appended to a raised call"
+    assert "PRIVATE_CREDENTIAL_123" not in committed, "private exception text must not reach the model"
+    assert "NOTE" in committed, "extra_context note must still appear"
+    assert committed.startswith("Error: Function failed.")
+
+
+@pytest.mark.asyncio
+async def test_explicit_result_override_on_raised_call_takes_full_text() -> None:
+    """An explicit result_override replaces the whole result regardless of raised_text.
+
+    A hook that returns result_override="REDACTED" on a raised call decides what
+    the model reads. That text may contain whatever the hook chooses; the
+    private-exception-isolation rule applies only when no explicit override is set.
+    """
+    bus = EventBus()
+    manager = PayloadRecordingHookManager(
+        {HookEvent.TOOL_ERROR: HookDecision(result_override="REDACTED BY HOOK")},
+    )
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="test",
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+        hook_manager=manager,
+    )
+    context = FunctionInvocationContext(FunctionTool(name="test_tool"), {})
+
+    async def call_next_error() -> None:
+        raise RuntimeError("PRIVATE_STUFF")
+
+    with pytest.raises(RuntimeError):
+        await mw.process(context, call_next_error)
+
+    committed = context.metadata.get(COMMITTED_ERROR_TEXT_KEY)
+    assert committed == "REDACTED BY HOOK"
+
+
+# ──────────────── Issue 3: empty-string result_override ─────────────────────
+
+
+def test_empty_string_result_override_withholds_on_a_successful_call() -> None:
+    """result_override='' (withhold) must replace result with empty text, not be ignored."""
+    result, result_text = apply_result_hooks("original output", "original output", result_override="")
+    assert result == ""
+    assert result_text == ""
+
+
+def test_subsequent_hook_with_no_override_does_not_restore_withheld_text() -> None:
+    """Once a hook withholds the result (''), a later hook without an override must not restore it.
+
+    _merge_decision copies result_override when it is not None; a later HookDecision
+    with result_override=None (the default) must not reset the already-withheld value.
+    """
+    from chrys.service.agent_middleware.events.hook_dispatch import _merge_decision
+
+    aggregate = HookDecision(result_override="")
+    second = HookDecision()  # result_override=None — no opinion
+    _merge_decision(aggregate, second)
+    assert aggregate.result_override == "", "withheld result must not be restored by a hook with no opinion"
+
+
+# ──────────────── Issue 4: system_prompt order ───────────────────────────────
+
+
+def test_system_prompt_order_is_profile_then_providers_then_model_instructions() -> None:
+    """system_prompt() assembles: profile instructions, providers, model chat_options.instructions."""
+    from types import SimpleNamespace
+
+    from chrys.orchestration.engine.run.turn_hooks import PromptSubmitGate
+    from chrys.service.profiles.models.schema import ModelProfile
+
+    class _FakeProvider:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def contributed_instructions(self) -> str:
+            return self._text
+
+    model_profile = ModelProfile(id="test-id", name="test", provider="anthropic", model_id="claude-test")
+    model_profile.chat_options = '{"instructions": "MODEL INSTRUCTIONS"}'
+
+    manifest = SimpleNamespace(profile_instructions="PROFILE INSTRUCTIONS", active_profile=model_profile)
+    agent = SimpleNamespace(context_providers=[_FakeProvider("PROVIDER INSTRUCTIONS")])
+    loaded = SimpleNamespace(agent=agent)
+    current = SimpleNamespace(loaded=loaded, manifest=manifest)
+
+    gate = object.__new__(PromptSubmitGate)
+    gate._current = current
+
+    result = gate.system_prompt()
+
+    expected = "\n".join(["PROFILE INSTRUCTIONS", "PROVIDER INSTRUCTIONS", "MODEL INSTRUCTIONS"])
+    assert result == expected
+    # Order: profile first, model instructions last.
+    assert result.index("PROFILE") < result.index("PROVIDER") < result.index("MODEL")
+
+
+# ──────────────── Issue 5: audit record — both effects captured ───────────────
+
+
+def test_replaced_result_audit_carries_both_override_and_extra_context() -> None:
+    """When a hook sets both result_override and extra_context, HookRunApplied keeps both.
+
+    The headline effect is replaced_result; the audit must also capture extra_context
+    so the TUI's 'actual applied' section can show both the replacement text and the
+    appended note.
+    """
+    from chrys.service.hooks.manager import _blocking_effect
+    from chrys.service.hooks.runner import HookResult
+
+    decision = HookDecision(
+        result_override="REPLACED TEXT",
+        extra_context=["APPENDED NOTE"],
+    )
+    result = HookResult(
+        hook_id="test-hook",
+        exit_code=0,
+        decision={"result_override": "REPLACED TEXT", "extra_context": "APPENDED NOTE"},
+    )
+    effect, applied = _blocking_effect(
+        HookEvent.AFTER_TOOL_CALL,
+        result,
+        decision,
+        blocked=False,
+        asked=False,
+        args_changed=False,
+        args_after={},
+        reminders_before=0,
+        contexts_before=0,
+        override_before=None,
+    )
+    assert effect == "replaced_result"
+    assert applied.result_override == "REPLACED TEXT"
+    assert applied.extra_context == "APPENDED NOTE"
+
+
+# ──────────────── Issue 3: decision recognition for empty string ─────────────
+
+
+def test_asks_unsupported_recognises_empty_string_result_override_as_explicit_request() -> None:
+    """result_override='' on a non-override event must be treated as an explicit (unsupported) request."""
+    from chrys.service.hooks.manager import _asks_unsupported
+
+    # USER_PROMPT_SUBMIT does not support result_override.
+    assert _asks_unsupported(HookEvent.USER_PROMPT_SUBMIT, {"result_override": ""}, unusable="")
+
+
+def test_asks_anything_recognises_empty_string_result_override() -> None:
+    """_asks_anything must return True when result_override is '' (hook explicitly withholds)."""
+    from chrys.service.hooks.manager import _asks_anything
+
+    assert _asks_anything({"result_override": ""})

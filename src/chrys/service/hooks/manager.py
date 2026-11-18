@@ -1506,14 +1506,14 @@ def _asks_unsupported(event: HookEvent, decision: dict[str, Any], *, unusable: s
         or (action == "modify" and event not in _ARGS_OVERRIDE_EVENTS)
         or (bool(decision.get("system_reminder")) and event not in _SYSTEM_REMINDER_EVENTS)
         or (bool(decision.get("extra_context")) and event not in _EXTRA_CONTEXT_EVENTS)
-        or (bool(decision.get("result_override")) and event not in _RESULT_OVERRIDE_EVENTS)
+        or (decision.get("result_override") is not None and event not in _RESULT_OVERRIDE_EVENTS)
     )
 
 
 def _asks_anything(decision: dict[str, Any]) -> bool:
     action = _decision_action(decision)
     return action in ("block", "modify", "ask") or bool(
-        decision.get("system_reminder") or decision.get("extra_context") or decision.get("result_override"),
+        decision.get("system_reminder") or decision.get("extra_context") or decision.get("result_override") is not None,
     )
 
 
@@ -1528,7 +1528,7 @@ def _blocking_effect(
     args_after: Any,
     reminders_before: int,
     contexts_before: int,
-    override_before: str,
+    override_before: str | None,
 ) -> tuple[HookRunEffect | None, HookRunApplied]:
     """What iCode took from one blocking run, folded into *decision*; at most one effect.
 
@@ -1551,8 +1551,9 @@ def _blocking_effect(
         return "modified_args", HookRunApplied(args=indented_json(args_after))
     if len(decision.system_reminders) > reminders_before:
         return "added_reminder", HookRunApplied(reminder=decision.system_reminders[-1])
-    if decision.result_override and decision.result_override != override_before:
-        return "replaced_result", HookRunApplied(result_override=decision.result_override)
+    if decision.result_override is not None and decision.result_override != override_before:
+        extra = decision.extra_context[-1] if len(decision.extra_context) > contexts_before else ""
+        return "replaced_result", HookRunApplied(result_override=decision.result_override, extra_context=extra)
     if len(decision.extra_context) > contexts_before:
         return "added_context", HookRunApplied(extra_context=decision.extra_context[-1])
     if _asks_unsupported(event, result.decision, unusable=result.unusable):
@@ -1662,7 +1663,7 @@ def _merge_blocking_result(
     if event in _EXTRA_CONTEXT_EVENTS and isinstance(extra, str) and extra:
         decision.extra_context.append(extra)
     override = result.decision.get("result_override")
-    if event in _RESULT_OVERRIDE_EVENTS and isinstance(override, str) and override:
+    if event in _RESULT_OVERRIDE_EVENTS and isinstance(override, str):
         decision.result_override = override
         # Write it back so the next hook reads the text this one produced, as an
         # argument override already does for ``tool.args``. Without this each hook

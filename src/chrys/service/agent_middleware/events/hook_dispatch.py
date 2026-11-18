@@ -182,6 +182,18 @@ def reject_tool_call(context: FunctionInvocationContext, message: str, *, confir
     context.result = f"Error: {message}"
 
 
+def result_hooks_installed(
+    manager: HookManager | None,
+    extension_hooks: ExtensionToolHooks | None,
+) -> bool:
+    """Whether anything may replace or redact this call's result after the tool returns."""
+    if extension_hooks is not None and extension_hooks.after:
+        return True
+    if manager is None:
+        return False
+    return manager.has_hooks_for(HookEvent.AFTER_TOOL_CALL) or manager.has_hooks_for(HookEvent.TOOL_ERROR)
+
+
 async def fire_after_tool_hooks(
     *,
     manager: HookManager | None,
@@ -243,7 +255,7 @@ async def fire_after_tool_hooks(
             ),
         )
         replaced = decision.result_override
-        if replaced:
+        if replaced is not None:
             # One call, two events about it. ``tool_error`` runs second and sees the
             # result as this one left it, as a chain of hooks on one event already
             # does; otherwise its replacement is computed from text the first hook
@@ -306,17 +318,18 @@ def apply_result_hooks(
     result: Any,
     result_text: str,
     *,
-    result_override: str = "",
+    result_override: str | None = None,
     extra_context: list[str] | tuple[str, ...] = (),
 ) -> tuple[Any, str]:
     """Write a hook-provided replacement and context onto a tool result.
 
-    *result_override* replaces the text the model reads; *extra_context* is appended to
-    it. A result that holds images keeps them, since a hook returns text only and
-    dropping them would lose what the model was shown. One that is not text at all keeps
+    *result_override* replaces the text the model reads; ``None`` means no override,
+    ``""`` means withhold the result. *extra_context* is appended to it. A result
+    that holds images keeps them, since a hook returns text only and dropping them
+    would lose what the model was shown. One that is not text at all keeps
     its value; only the rendered text changes, as it does for appended context.
     """
-    overridden = bool(result_override)
+    overridden = result_override is not None
     if overridden:
         result_text = result_override
     clean = [text for text in extra_context if text]
@@ -446,7 +459,7 @@ def _merge_decision(target: HookDecision, source: HookDecision) -> None:
         target.args_override = {**(target.args_override or {}), **source.args_override}
     target.system_reminders.extend(source.system_reminders)
     target.extra_context.extend(source.extra_context)
-    if source.result_override:
+    if source.result_override is not None:
         target.result_override = source.result_override
 
 

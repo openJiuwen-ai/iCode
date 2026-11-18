@@ -16,6 +16,7 @@ from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import check_operation
 from chrys.service.hooks.operation import HookOperation
 from chrys.service.hooks.schema import HookDecision
+from chrys.service.profiles.models.options import effective_chat_options
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
@@ -223,7 +224,8 @@ class PromptSubmitGate:
         A prompt-injection guard checks what the model will read as its own instructions.
         The order matches the model's actual call: the profile's own instructions, then
         every context provider on the live agent (memory files, skills, context management,
-        documentation) in the order they run.
+        documentation) in the order they run, then any ``instructions`` set in the active
+        model profile's ``chat_options`` (merged in by the kernel before every request).
 
         Using ``manifest.instructions`` as the base would duplicate memory and skills because
         that string is already assembled from them; using ``profile.instructions`` alone would
@@ -234,7 +236,13 @@ class PromptSubmitGate:
             return ""
         profile_instructions = self._current.manifest.profile_instructions
         appended = [text for p in loaded.agent.context_providers for text in [p.contributed_instructions()] if text]
-        return "\n".join([text for text in (profile_instructions, *appended) if text])
+        active_profile = self._current.manifest.active_profile
+        chat_opts = effective_chat_options(active_profile) if active_profile is not None else None
+        model_instructions = (chat_opts or {}).get("instructions") if chat_opts is not None else None
+        parts = [text for text in (profile_instructions, *appended) if text]
+        if isinstance(model_instructions, str) and model_instructions:
+            parts.append(model_instructions)
+        return "\n".join(parts)
 
     async def handle_decision(
         self,
@@ -295,7 +303,7 @@ def usage_payload(session: ActiveSession) -> dict[str, Any]:
     totals what a spend hook needs. Both are the engine's own accounting, so a hook does not
     have to re-tokenize text it was handed or keep its own running total.
     """
-    meta = getattr(session, "runtime_meta", None)
+    meta = session.runtime_meta
     if meta is None:
         # A session that has not started accounting yet: zeros, not a crash in the hook path.
         return {
