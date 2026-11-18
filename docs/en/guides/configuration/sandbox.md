@@ -79,7 +79,7 @@ With `host`, this is not a read-isolated sandbox. The sandbox does not mount the
 
 When this computer lets the sandbox create a cgroup, a command is limited to 4 GiB of memory and 1024 processes. Reaching either limit stops that command. If it cannot create that cgroup, the command still runs, and those limits are not applied.
 
-One file the command creates cannot grow past 4 GiB. If the filesystem that holds the workspace has less than 1 GiB free, the sandbox stops commands and does not start another until space is free. A write that is already in flight can still cross that line.
+One file the command creates cannot grow past 4 GiB. If the filesystem that holds the workspace has less than 1 GiB free, the sandbox stops commands and does not start another until space is free. Without a cgroup it stops the whole sandbox, background commands included; the first command after you free space starts it again. A write that is already in flight can still cross that line.
 
 Commands also cannot call system calls that only change the kernel, mount filesystems, or trace other processes.
 

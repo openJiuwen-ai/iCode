@@ -45,6 +45,10 @@ SANDBOX_LAUNCHER_PATH = f"{SANDBOX_RESERVED_DIR}/landlock-launcher.py"
 # is not exposed either).
 LISTENER_FD_ENV = "JIUWENBOX_CONTROL_LISTENER_FD"
 SANDBOX_IP_ENV = "SANDBOX_IP"
+# "1" tells the daemon it runs in a pid namespace bubblewrap created for
+# this sandbox (``--unshare-pid``), where it may kill processes outside its
+# own tree. Only ``BwrapConfig.to_args`` sets it; it unsets it otherwise.
+PRIVATE_PID_NAMESPACE_ENV = "JIUWENBOX_PRIVATE_PID_NAMESPACE"
 
 
 def apply_sandbox_ip_env(

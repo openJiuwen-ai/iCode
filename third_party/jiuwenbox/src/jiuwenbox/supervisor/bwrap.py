@@ -27,6 +27,7 @@ from jiuwenbox.models.policy import (
     ProcessPolicy,
     SecurityPolicy,
 )
+from jiuwenbox.supervisor.daemon_ipc import PRIVATE_PID_NAMESPACE_ENV
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -505,6 +506,12 @@ class BwrapConfig:
         # environment variables
         for key, value in self.env.items():
             args.extend(["--setenv", key, value])
+        # After the policy and host values, so neither can claim a private
+        # pid namespace: the daemon kills processes outside its tree there.
+        if self.unshare_pid:
+            args.extend(["--setenv", PRIVATE_PID_NAMESPACE_ENV, "1"])
+        else:
+            args.extend(["--unsetenv", PRIVATE_PID_NAMESPACE_ENV])
 
         # the command to run inside the sandbox
         args.extend(self.command)

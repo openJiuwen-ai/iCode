@@ -94,10 +94,12 @@ Cancelling the task that is awaiting an exec does not POST ``/stop``.
 Stopping the sandbox would kill every other command in it. ``CancelledError``
 is reraised. The writable cache entry is kept, so the next command reuses
 that workspace's sandbox instead of adopting a new cwd as the writable root.
-A read-only id for the cancelled command is forgotten. That forget is
-shielded, so a second cancellation does not skip it. The command's
-in-flight use ends as on any other exit; when its sandbox was already
-replaced and this was the last use, the delete is shielded the same way.
+A read-only id for the cancelled command is forgotten and retired like a
+replaced one. That forget is shielded, so a second cancellation does not
+skip it. The command's in-flight use ends as on any other exit; when its
+sandbox was forgotten or already replaced and this was the last use, the
+sandbox is deleted, and that delete is shielded the same way. Another exec
+still running in that read-only sandbox keeps it until that exec ends.
 A cancel before this call has started an exec, a ``SandboxError``, and a
 completed exec do not change the cache.
 """
@@ -144,8 +146,9 @@ _LOCK_WAIT_EXPIRED = "Sandbox command timed out waiting for the sandbox."
 # writable entry.
 # ``_readonly_id`` mounts ``_readonly_root`` read-only and never replaces a
 # writable entry.
-# ``_in_flight`` counts the execs using each id. A replaced id still in use
-# waits in ``_retiring`` until its count reaches zero, then is deleted.
+# ``_in_flight`` counts the execs using each id. A replaced id, or a
+# read-only id forgotten on cancel, waits in ``_retiring`` until its count
+# reaches zero, then is deleted.
 _sandbox_id: str | None = None
 _writable_root: str | None = None
 _writable_by_root: dict[str, str] = {}
@@ -216,7 +219,8 @@ async def run_shell(
     is sent. The bundled server runs with ``sandbox_network`` and is leased
     until the command is done. Waiting for the cache lock consumes ``timeout_seconds``.
     Cancellation during exec does not stop the sandbox, and then propagates.
-    The writable cache is kept across that cancellation.
+    The writable cache is kept across that cancellation; a read-only
+    sandbox it ran in is deleted once no other exec is using it.
 
     When ``workspace_root`` is provided, the read-write mount is that
     session workspace (plus ``workspace_dirs`` outside it), not ``cwd``.
@@ -490,7 +494,7 @@ async def _delete_sandbox(client: httpx.AsyncClient, sandbox_id: str) -> None:
     """DELETE a retired sandbox. A cancelled caller still waits for the delete.
 
     This is not cancellation. Cancellation does not POST ``/stop`` and does
-    not delete the sandbox it ran in. This function DELETEs
+    not delete a writable sandbox it ran in. This function DELETEs
     ``/api/v1/sandboxes/{id}`` and runs only for an id no cache entry holds
     and no exec is using. A failed delete does not fail the command.
     """
@@ -598,7 +602,7 @@ async def _stop_on_cancel(sandbox_id: str) -> None:
     ``finish_close`` keeps the cache update running when the caller is
     cancelled again. This does not POST ``/stop``: that would kill every
     command in the sandbox. The writable root stays cached. A read-only id
-    is forgotten.
+    is forgotten and retired.
     """
     task = asyncio.create_task(_stop_and_forget(sandbox_id))
     try:
@@ -610,7 +614,7 @@ async def _stop_on_cancel(sandbox_id: str) -> None:
 
 
 async def _stop_and_forget(sandbox_id: str) -> None:
-    """Forget a cancelled read-only id. The writable cache stays.
+    """Forget and retire a cancelled read-only id. The writable cache stays.
 
     Dropping the writable root would make the next command's cwd the new
     writable root. This function does not POST ``/stop``.
@@ -619,7 +623,7 @@ async def _stop_and_forget(sandbox_id: str) -> None:
 
 
 async def _forget_cached_id(sandbox_id: str) -> None:
-    """Drop a cancelled read-only id. The writable cache is not touched."""
+    """Drop and retire a cancelled read-only id. The writable cache is not touched."""
     lock = _gate()
     await lock.acquire()
     try:
@@ -629,13 +633,20 @@ async def _forget_cached_id(sandbox_id: str) -> None:
 
 
 def _clear_cached_id(sandbox_id: str) -> None:
-    """Forget a cancelled read-only sandbox id.
+    """Forget a cancelled read-only sandbox id and mark it for deletion.
 
     Writable entries are left in place. Clearing the writable root would
-    make the next command's cwd the new writable root.
+    make the next command's cwd the new writable root. The forgotten id is
+    retired like a replaced one: the cancelled command still holds an
+    in-flight use, so the last exec using the id deletes it
+    (``_release_in_flight``). An id another cache entry still holds is not
+    marked.
     """
-    if _readonly_id == sandbox_id:
-        _drop_readonly()
+    if _readonly_id != sandbox_id:
+        return
+    _drop_readonly()
+    if not _is_cached(sandbox_id):
+        _retiring.add(sandbox_id)
 
 
 def _not_ready(payload: dict[str, Any]) -> SandboxError:

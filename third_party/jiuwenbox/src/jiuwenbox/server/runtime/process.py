@@ -1115,6 +1115,70 @@ def _summarize_command(command: list[str], max_length: int = 180) -> str:
     return f"{text[:max_length]}... ({len(text)} chars)"
 
 
+# A stopped process cannot fork, so freeze scans converge within a few
+# rounds; the cap only bounds a tree that keeps changing anyway.
+_TREE_FREEZE_ROUNDS = 20
+
+
+def _process_tree(root_pid: int) -> list[int]:
+    """Return ``root_pid`` and its live descendants, as host ``/proc`` shows them."""
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return [root_pid]
+    children: dict[int, list[int]] = {}
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                stat = fh.read()
+        except OSError:
+            continue
+        # ``comm`` may hold spaces and parentheses; state and ppid follow its last ")".
+        fields = stat[stat.rfind(b")") + 2 :].split()
+        if len(fields) < 2 or fields[0] in (b"Z", b"X"):
+            continue
+        try:
+            ppid = int(fields[1])
+        except ValueError:
+            continue
+        children.setdefault(ppid, []).append(int(name))
+    found = [root_pid]
+    pending = [root_pid]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            found.append(child)
+            pending.append(child)
+    return found
+
+
+def _kill_sandbox_tree(root_pid: int) -> None:
+    """SIGKILL a sandbox's bwrap process and every process under it.
+
+    With a PID namespace, killing bwrap is enough: the kernel kills the
+    whole namespace. Without one, a command the daemon started survives
+    bwrap, so the tree is SIGSTOPped first, scan by scan until no new
+    member shows up. A stopped process cannot fork and keeps its children,
+    so none escapes to init between scans. The group kill covers
+    ``root_pid`` when ``/proc`` cannot be read.
+    """
+    frozen: set[int] = set()
+    for _ in range(_TREE_FREEZE_ROUNDS):
+        new = [pid for pid in _process_tree(root_pid) if pid not in frozen]
+        if not new:
+            break
+        for pid in new:
+            frozen.add(pid)
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGSTOP)
+    for pid in frozen:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        os.killpg(root_pid, signal.SIGKILL)
+
+
 class ProcessRuntime(RuntimeAdapter):
     """Runtime that spawns supervisor as a local process.
 
@@ -4175,11 +4239,40 @@ class ProcessRuntime(RuntimeAdapter):
 
     def _watch_disk_floor(self) -> None:
         while not self._disk_stop.wait(0.2):
-            for sandbox_id in list(self._policy_binds):
-                if self._writable_binds_are_low(sandbox_id):
-                    handle = self._cgroup_handles.get(sandbox_id)
-                    if handle is not None:
-                        cgroup_module.kill_live_commands(handle)
+            self._enforce_disk_floor()
+
+    def _enforce_disk_floor(self) -> None:
+        """Stop the writers of every sandbox whose writable binds are low.
+
+        With a cgroup only the running commands are killed. Without one
+        the whole sandbox is killed once its daemon is ready, and only once:
+        the kill clears that readiness, which only a new create sets again.
+        The manager then sees the sandbox stopped, and an exec made once
+        space is back restarts it. Until then the pre-exec check refuses
+        commands.
+        """
+        for sandbox_id in list(self._policy_binds):
+            if not self._writable_binds_are_low(sandbox_id):
+                continue
+            handle = self._cgroup_handles.get(sandbox_id)
+            if handle is not None:
+                cgroup_module.kill_live_commands(handle)
+            else:
+                self._kill_sandbox_for_low_disk(sandbox_id)
+
+    def _kill_sandbox_for_low_disk(self, sandbox_id: str) -> None:
+        if not self._daemon_socket_ready.get(sandbox_id, False):
+            return
+        proc = self._processes.get(sandbox_id)
+        if proc is None or proc.poll() is not None:
+            return
+        logger.warning(
+            "Killing sandbox %s: less than 1 GiB is free on its writable binds "
+            "and it has no cgroup to stop single commands",
+            sandbox_id,
+        )
+        self._daemon_socket_ready[sandbox_id] = False
+        _kill_sandbox_tree(proc.pid)
 
     def _start_guarded_proxy(self, sandbox_id: str) -> None:
         control_dir = self._control_dirs.get(sandbox_id)

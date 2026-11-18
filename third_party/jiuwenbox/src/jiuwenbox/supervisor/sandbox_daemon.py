@@ -21,7 +21,8 @@ Landlock is locked in, which is what allows the ``/jiuwenbox`` directory
 to be omitted from the Landlock allowlist: nothing in the sandbox needs
 to read the daemon script from disk after Landlock applies. From the
 kernel's point of view the daemon and the launcher are the same Linux
-process (PID 1 of the sandbox PID namespace). The directory is reserved
+process (PID 2 of the sandbox PID namespace, under bubblewrap's init at
+PID 1). The directory is reserved
 by ``PolicyEngine`` so user policies cannot reference it; see
 ``_RESERVED_SANDBOX_PATHS`` in ``jiuwenbox/server/policy_engine.py``.
 
@@ -59,6 +60,10 @@ Important security notes:
   (``_COMMAND_SHIM_SOURCE``). Its descendants, including ones that call
   ``setsid`` or daemonize, stay under the shim, so ending the command
   kills all of them without a cgroup and leaves other commands alone.
+  A command can SIGKILL its own shim (or fastpath worker); its processes
+  then reparent to bubblewrap's init, and the daemon kills every process
+  outside its own tree and ancestry (``_sweep_orphans``). That sweep runs
+  only in the sandbox's own pid namespace.
 
 The module deliberately stays standard-library-only so it can be
 launched with ``python3 -S`` (no ``import site``) for fastest cold
@@ -98,6 +103,7 @@ SANDBOX_LAUNCHER_PATH = f"{SANDBOX_RESERVED_DIR}/landlock-launcher.py"
 SANDBOX_DAEMON_COMMAND = ["python3", "-S", SANDBOX_DAEMON_SANDBOX_PATH]
 LISTENER_FD_ENV = "JIUWENBOX_CONTROL_LISTENER_FD"
 SANDBOX_IP_ENV = "SANDBOX_IP"
+PRIVATE_PID_NAMESPACE_ENV = "JIUWENBOX_PRIVATE_PID_NAMESPACE"
 
 REQUEST_TYPE_EXEC = "exec"
 REQUEST_TYPE_SHUTDOWN = "shutdown"
@@ -319,13 +325,13 @@ _TREE_KILL_SECONDS = 2.0
 _TREE_KILL_ROUND_SECONDS = 0.01
 
 
-def _live_children() -> dict[int, list[int]] | None:
-    """Map each parent pid to its live (non-zombie) children; None without /proc."""
+def _live_parents() -> dict[int, int] | None:
+    """Map each live (non-zombie) pid to its parent pid; None without /proc."""
     try:
         names = os.listdir("/proc")
     except OSError:
         return None
-    children: dict[int, list[int]] = {}
+    parents: dict[int, int] = {}
     for name in names:
         if not name.isdigit():
             continue
@@ -339,17 +345,20 @@ def _live_children() -> dict[int, list[int]] | None:
         if len(fields) < 2 or fields[0] in (b"Z", b"X"):
             continue
         try:
-            ppid = int(fields[1])
+            parents[int(name)] = int(fields[1])
         except ValueError:
             continue
-        children.setdefault(ppid, []).append(int(name))
+    return parents
+
+
+def _children_by_parent(parents: dict[int, int]) -> dict[int, list[int]]:
+    children: dict[int, list[int]] = {}
+    for pid, ppid in parents.items():
+        children.setdefault(ppid, []).append(pid)
     return children
 
 
-def _descendant_pids(root_pid: int) -> list[int] | None:
-    children = _live_children()
-    if children is None:
-        return None
+def _descendants_in(children: dict[int, list[int]], root_pid: int) -> list[int]:
     found: list[int] = []
     pending = [root_pid]
     while pending:
@@ -357,6 +366,13 @@ def _descendant_pids(root_pid: int) -> list[int] | None:
             found.append(child)
             pending.append(child)
     return found
+
+
+def _descendant_pids(root_pid: int) -> list[int] | None:
+    parents = _live_parents()
+    if parents is None:
+        return None
+    return _descendants_in(_children_by_parent(parents), root_pid)
 
 
 def _kill_process_tree(root_pid: int) -> bool:
@@ -385,6 +401,84 @@ def _kill_process_tree(root_pid: int) -> bool:
             logger.warning("process tree under %s still running after SIGKILL", root_pid)
             return False
         time.sleep(_TREE_KILL_ROUND_SECONDS)
+
+
+def _in_private_pid_namespace() -> bool:
+    """True only when the runtime started this daemon in its own pid namespace.
+
+    ``BwrapConfig.to_args`` sets ``PRIVATE_PID_NAMESPACE_ENV`` exactly when
+    bubblewrap runs with ``--unshare-pid`` and unsets it otherwise. ``/proc``
+    must also be that namespace's mount, where ``/proc/self`` is this pid.
+    """
+    if os.environ.get(PRIVATE_PID_NAMESPACE_ENV) != "1":
+        return False
+    try:
+        return os.readlink("/proc/self") == str(os.getpid())
+    except OSError:
+        return False
+
+
+def _sweep_namespace_orphans(
+    read_parents: Callable[[], dict[int, int] | None],
+    kill: Callable[[int, int], None],
+    self_pid: int,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    """SIGKILL every process that reparented to one of the daemon's ancestors.
+
+    In the sandbox's own pid namespace the daemon's ancestors are
+    bubblewrap's init (pid 1) and nothing else runs beside the daemon:
+    every legitimate process is the daemon's descendant, and a live
+    command shim or fastpath worker is a subreaper that keeps its own
+    orphans. A process whose parent is an ancestor of the daemon, other
+    than the daemon and its ancestors, was orphaned by a shim or worker
+    that died; it is killed with its whole subtree. Their orphans
+    reparent to pid 1 too, so this runs in rounds until a round finds
+    none (True) or the tree-kill budget runs out (False). Returns False
+    without ``/proc`` or when ``self_pid`` is not listed.
+    """
+    sigkill = getattr(signal, "SIGKILL", 9)
+    deadline = clock() + _TREE_KILL_SECONDS
+    while True:
+        parents = read_parents()
+        if parents is None or self_pid not in parents:
+            return False
+        protected = {self_pid}
+        ancestor = parents[self_pid]
+        while ancestor in parents and ancestor not in protected:
+            protected.add(ancestor)
+            ancestor = parents[ancestor]
+        children = _children_by_parent(parents)
+        targets: list[int] = []
+        for pid in sorted(protected - {self_pid}):
+            for child in children.get(pid, ()):
+                if child not in protected:
+                    targets.append(child)
+                    targets.extend(_descendants_in(children, child))
+        if not targets:
+            return True
+        for pid in targets:
+            try:
+                kill(pid, sigkill)
+            except OSError:
+                pass
+        if clock() >= deadline:
+            logger.warning("orphaned processes still running after SIGKILL")
+            return False
+        sleep(_TREE_KILL_ROUND_SECONDS)
+
+
+def _sweep_orphans() -> bool:
+    """Kill what a dead shim or worker left behind; a no-op outside the sandbox's pid namespace.
+
+    On a host (tests, ``namespace.pid: false``) the daemon's ancestors
+    have unrelated children, so nothing is swept there.
+    """
+    if not _in_private_pid_namespace():
+        return False
+    return _sweep_namespace_orphans(_live_parents, os.kill, os.getpid())
 
 
 def _parse_cgroup_procs(header: dict[str, Any]) -> list[str]:
@@ -820,10 +914,16 @@ class _CommandShim:
             raise ProcessLookupError(errno.ESRCH, "command has exited")
         os.kill(self.pid, signum)
 
-    def kill_tree(self) -> None:
-        """SIGKILL every process the command started; the shim stays to catch orphans."""
-        if self._shim.poll() is None:
-            _kill_process_tree(self._shim.pid)
+    def kill_tree(self) -> bool:
+        """SIGKILL every process the command started; True once none is left.
+
+        A live shim stays to catch orphans. The command can SIGKILL its own
+        shim: its processes then reparent out of the daemon's tree, and
+        only the namespace sweep (``_sweep_orphans``) still reaches them.
+        """
+        if self._shim.poll() is None and _kill_process_tree(self._shim.pid) and self._shim.poll() is None:
+            return True
+        return _sweep_orphans()
 
     def finish(self) -> None:
         """Kill what the command left running, then release and reap the shim."""
@@ -831,7 +931,7 @@ class _CommandShim:
             spec_fd = self._spec_fd
             if spec_fd is None:
                 return
-            self.kill_tree()
+            cleared = self.kill_tree()
             self._spec_fd = None
             os.close(spec_fd)
             try:
@@ -839,6 +939,9 @@ class _CommandShim:
             except subprocess.TimeoutExpired:
                 self._shim.kill()
                 self._shim.wait()
+            if not cleared:
+                # What the tree kill missed left with the exited shim.
+                _sweep_orphans()
             # The shim has exited, so the status pipe ends; its last line
             # can be the command's exit.
             while not self._status_closed:
@@ -908,7 +1011,8 @@ def _start_command(
 def _stop_command(proc: _CommandShim, procs_paths: list[str]) -> None:
     """SIGKILL everything this command started, and nothing else.
 
-    The tree kill goes first, while the shim is alive to catch orphans.
+    The tree kill goes first, while the shim is alive to catch orphans
+    (or, once the command killed its shim, the namespace sweep).
     The group kill runs even when the leader has exited, for members that
     still hold the pipes; the cgroup kill covers hosts without ``/proc``.
     """
@@ -2795,6 +2899,11 @@ class ForkServerPool:
                 proc.kill()
             except OSError:
                 pass
+            # A request can SIGKILL its own worker: what it left running has
+            # reparented out of the daemon's tree once the worker is reaped.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=_SHIM_EXIT_SECONDS)
+            _sweep_orphans()
             with self._lock:
                 self._drop(proc)
                 # A worker that dies mid-request is replaced on the next
