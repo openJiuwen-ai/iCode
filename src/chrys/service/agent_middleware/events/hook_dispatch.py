@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 from chrys.extensions import ToolResult
 from chrys.foundation.io.result_content import extract_result_attachments, extract_result_text
 from chrys.foundation.tool_invocation_order import read_tool_invocation_order
+from chrys.foundation.tool_result_metadata import COMMITTED_ERROR_TEXT_KEY, HOOK_RESULT_APPLIED_KEY
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_MODIFIED_ARGS_KEY,
     _APPROVAL_REJECTED_KEY,
@@ -191,7 +192,9 @@ def result_hooks_installed(
         return True
     if manager is None:
         return False
-    return manager.has_hooks_for(HookEvent.AFTER_TOOL_CALL) or manager.has_hooks_for(HookEvent.TOOL_ERROR)
+    return manager.has_hooks_for(HookEvent.AFTER_TOOL_CALL, blocking_only=True) or manager.has_hooks_for(
+        HookEvent.TOOL_ERROR, blocking_only=True
+    )
 
 
 async def fire_after_tool_hooks(
@@ -351,6 +354,27 @@ def apply_result_hooks(
         type(result).__name__,
     )
     return result, updated_text
+
+
+def finish_result_hooks(
+    context: FunctionInvocationContext, card_text: str, raised_text: str | None, decision: HookDecision
+) -> tuple[str, str]:
+    """Commit the result and return the card text and the model-visible text."""
+    extra = [*before_tool_context(context), *decision.extra_context]
+    context.result, card_text = apply_result_hooks(
+        context.result, card_text, result_override=decision.result_override, extra_context=extra
+    )
+    public_text = card_text
+    if raised_text is not None:
+        # The card may show private exception details. Build the model's error
+        # from its public text, including when cancellation replaces the re-raise.
+        if decision.result_override is None:
+            public_text = "\n\n".join(text for text in (raised_text, *extra) if text)
+        context.result = public_text
+        if decision.result_override is not None or any(extra):
+            context.metadata[COMMITTED_ERROR_TEXT_KEY] = public_text
+    context.metadata[HOOK_RESULT_APPLIED_KEY] = True
+    return card_text, public_text
 
 
 def _with_result_text(result: Any, text: str) -> Any:

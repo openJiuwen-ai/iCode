@@ -103,7 +103,7 @@ class HookRunApplied:
     reminder: str = ""
     extra_context: str = ""
     result_override: str = ""
-    """The tool result text the run replaced; empty when it replaced nothing."""
+    """Replacement text. A replaced_result effect with empty text withholds the result."""
     not_applied: HookNotApplied | None = None
 
 

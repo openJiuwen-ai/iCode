@@ -26,7 +26,7 @@ from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.foundation.tool_invocation_order import read_tool_invocation_order
 from chrys.foundation.tool_result_metadata import (
     HOOK_RESULT_APPLIED_KEY,
-    HOOK_RESULT_PENDING_KEY,
+    INTERRUPTED_TOOL_RESULT_TEXT,
     TOOL_FAILED_METADATA_KEY,
     TOOL_INTERRUPTED_METADATA_KEY,
     TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY,
@@ -228,7 +228,9 @@ class LoopRecorder:
         # The retried attempt sends its request again.
         self._landed_response = None
         pending = self._pending_exchange
-        if pending is not None and not any(slot.fill_kind in ("raw", "final") for slot in pending.slots):
+        if pending is not None and not any(
+            slot.result is not None and slot.fill_kind != "interrupted" for slot in pending.slots
+        ):
             self._pending_exchange = None
 
     @property
@@ -466,7 +468,7 @@ class LoopRecorder:
     ) -> None:
         result_metadata = dict(metadata or {})
         result_metadata[TOOL_INTERRUPTED_METADATA_KEY] = True
-        if slot.fill_kind == "interrupted" and slot.result is not None:
+        if slot.fill_kind in ("interrupted", "interrupted_after_raw") and slot.result is not None:
             # Terminal audit persistence can finish after the early
             # interruption fill, including after the exchange was sealed.
             # The slot retains the canonical result object, so merge the late
@@ -486,64 +488,37 @@ class LoopRecorder:
             return
         if slot.fill_kind == "raw" and slot.result is not None:
             result_metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] = True
-            context_metadata = (
-                invocation_context.metadata
-                if invocation_context is not None and isinstance(invocation_context.metadata, dict)
-                else None
+            # The raw slot already holds a checkpoint-safe body. Only a completed
+            # hook decision may replace it when the invocation unwinds.
+            previous = slot.result
+            additional = dict(previous.additional_properties)
+            recorded = dict(additional.get(TOOL_RESULT_METADATA_KEY, {}))
+            current = (
+                _result_additional_properties(function_call, invocation_context)
+                if invocation_context is not None
+                else {}
             )
-            hook_applied = context_metadata is not None and bool(context_metadata.get(HOOK_RESULT_APPLIED_KEY))
-            hook_pending = context_metadata is not None and bool(context_metadata.get(HOOK_RESULT_PENDING_KEY))
-            if hook_applied and invocation_context is not None:
-                # Hooks completed and wrote the final result into context.result.
-                # Replace the raw slot with that processed result so resumed
-                # history does not contain text the hooks had already redacted
-                # or replaced.
-                existing = slot.result.additional_properties.get(TOOL_RESULT_METADATA_KEY)
-                if isinstance(existing, Mapping):
-                    result_metadata = {**existing, **result_metadata}
-                additional = _result_additional_properties(function_call, invocation_context)
-                additional[TOOL_RESULT_METADATA_KEY] = result_metadata
-                processed = Content.from_function_result(
-                    call_id=function_call.call_id,  # type: ignore[arg-type]
+            carried = current.get(TOOL_RESULT_METADATA_KEY, {})
+            additional.update(current)
+            applied = invocation_context is not None and invocation_context.metadata.get(HOOK_RESULT_APPLIED_KEY)
+            if recorded.get(TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY):
+                # Failure describes the provisional placeholder. The applied result gets
+                # its actual failure state from the middleware's result metadata.
+                if applied:
+                    recorded.pop(TOOL_FAILED_METADATA_KEY, None)
+                else:
+                    result_metadata[TOOL_FAILED_METADATA_KEY] = True
+            additional[TOOL_RESULT_METADATA_KEY] = {**recorded, **carried, **result_metadata}
+            if applied and invocation_context is not None:
+                result = Content.from_function_result(
+                    call_id=function_call.call_id,
                     result=invocation_context.result,
                     additional_properties=additional,
                 )
-                self._fill_slot(exchange, slot, processed, fill_kind="interrupted", upgrade_raw=True)
-            elif not hook_pending:
-                # No result hooks were installed for this call, so nothing would
-                # have replaced or redacted the tool's output: the raw result is
-                # the final one. Keep it and only update its metadata.
-                #
-                # ``invocation_context is None`` (the outer batch-level handler)
-                # lands here too, but only for a slot the inner handler in
-                # ``_invoke_function_call`` already chose to keep: raw is written
-                # inside the pipeline, so that handler always sees it first.
-                existing = slot.result.additional_properties.get(TOOL_RESULT_METADATA_KEY)
-                if isinstance(existing, Mapping):
-                    result_metadata = {**existing, **result_metadata}
-                slot.result.additional_properties[TOOL_RESULT_METADATA_KEY] = result_metadata
-                timing = _tool_trajectory_timing(function_call, invocation_context)
-                slot.result.additional_properties[TRAJECTORY_TIMING_KEY] = timing
-                self._kick_result_checkpoint()
             else:
-                # Result hooks were installed but had not finished when cancellation
-                # arrived: still running, one of a chain returned and the next not yet,
-                # or never started because a sync worker completed as the cancel
-                # landed. The raw slot may hold text they would have redacted, so
-                # replace it with a safe tombstone. The tool's execution is still
-                # recorded through the interrupted / post-processing metadata.
-                result_metadata[TOOL_FAILED_METADATA_KEY] = True
-                additional = _result_additional_properties(function_call, invocation_context)
-                additional[TOOL_RESULT_METADATA_KEY] = result_metadata
-                tombstone = Content.from_function_result(
-                    call_id=function_call.call_id,  # type: ignore[arg-type]
-                    result=(
-                        "Error: Tool execution was interrupted. The operation may have completed; "
-                        "inspect current state before retrying."
-                    ),
-                    additional_properties=additional,
-                )
-                self._fill_slot(exchange, slot, tombstone, fill_kind="interrupted", upgrade_raw=True)
+                result = copy(previous)
+                result.additional_properties = additional
+            self._fill_slot(exchange, slot, result, fill_kind="interrupted_after_raw", upgrade_raw=True)
             return
         if slot.result is not None:
             # Final results are immutable; raw and interrupted fills took
@@ -551,13 +526,10 @@ class LoopRecorder:
             return
         result_metadata[TOOL_FAILED_METADATA_KEY] = True
         additional = _result_additional_properties(function_call, invocation_context)
-        additional[TOOL_RESULT_METADATA_KEY] = result_metadata
+        additional[TOOL_RESULT_METADATA_KEY] = {**additional.get(TOOL_RESULT_METADATA_KEY, {}), **result_metadata}
         result = Content.from_function_result(
             call_id=function_call.call_id,  # type: ignore[arg-type]
-            result=(
-                "Error: Tool execution was interrupted. The operation may have completed; "
-                "inspect current state before retrying."
-            ),
+            result=INTERRUPTED_TOOL_RESULT_TEXT,
             additional_properties=additional,
         )
         self._fill_slot(exchange, slot, result, fill_kind="interrupted")

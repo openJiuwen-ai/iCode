@@ -41,7 +41,7 @@ class _TableHookManager:
     def __init__(self, decisions: Mapping[HookEvent, HookDecision]) -> None:
         self._decisions = dict(decisions)
 
-    def has_hooks_for(self, event: HookEvent) -> bool:
+    def has_hooks_for(self, event: HookEvent, *, blocking_only: bool = False) -> bool:
         return event in self._decisions
 
     async def fire(self, event: HookEvent, payload: dict[str, Any], **_kwargs: object) -> HookDecision:

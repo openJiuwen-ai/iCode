@@ -24,8 +24,6 @@ from chrys.foundation.tool_call_context import resolve_tool_call_context
 from chrys.foundation.tool_execution_stamp import write_execution_stamp
 from chrys.foundation.tool_kinds import KIND_SHELL, KIND_SUB_AGENT, KIND_WEB_FETCH, KIND_WEB_SEARCH, get_tool_kind
 from chrys.foundation.tool_result_metadata import (
-    COMMITTED_ERROR_TEXT_KEY,
-    HOOK_RESULT_APPLIED_KEY,
     HOOK_RESULT_PENDING_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERRORED_METADATA_KEY,
@@ -48,9 +46,8 @@ from chrys.service.agent_middleware._metadata_keys import (
 from chrys.service.agent_middleware.events.hook_dispatch import (
     apply_after_tool_extensions,
     apply_before_tool_hooks,
-    apply_result_hooks,
-    before_tool_context,
     final_tool_args,
+    finish_result_hooks,
     fire_after_tool_hooks,
     get_call_id,
     get_provider_call_id,
@@ -725,41 +722,7 @@ class ToolEventMiddleware(FunctionMiddleware):
                         target_operation_id=trajectory.operation_id if trajectory is not None else None,
                         origin=origin,
                     )
-                    original_result_text = result_text
-                    context.result, result_text = apply_result_hooks(
-                        context.result,
-                        result_text,
-                        result_override=hook_decision.result_override,
-                        extra_context=[*before_tool_context(context), *hook_decision.extra_context],
-                    )
-                    # Mark that hook result processing has completed. The kernel's cancel
-                    # handler checks this to distinguish a hooks-processed result from
-                    # the tool's own raw output (which context.result holds from the
-                    # moment the tool returns, before hooks run).
-                    if isinstance(context.metadata, dict):
-                        context.metadata[HOOK_RESULT_APPLIED_KEY] = True
-                    if isinstance(context.metadata, dict) and raised_text is not None:
-                        # A raised call: the kernel answers it after this middleware, so any change
-                        # to the result text must be marked or the kernel rebuilds the result from
-                        # the exception, discarding it.
-                        #
-                        # Security boundary: ``result_text`` at this point is built from
-                        # ``error_text`` (``tool_card_error_text(exc)``), which may contain the
-                        # raw exception message.  When a hook only appends ``extra_context`` the
-                        # text changes (``result_text != original_result_text``), and writing
-                        # ``result_text`` would expose private exception text to the model.
-                        #
-                        # Rule: when there is no explicit ``result_override``, base the committed
-                        # text on ``raised_text`` (the kernel's safe "Error: Function failed."
-                        # equivalent) and append only the extra_context suffix.  An explicit
-                        # override replaces the whole result regardless.
-                        if hook_decision.result_override is not None:
-                            # Explicit replacement: the hook chose what the model reads.
-                            context.metadata[COMMITTED_ERROR_TEXT_KEY] = result_text
-                        elif result_text != original_result_text:
-                            # Only context was appended: anchor on the safe raised_text.
-                            suffix = result_text[len(original_result_text) :]
-                            context.metadata[COMMITTED_ERROR_TEXT_KEY] = raised_text + suffix
+                    card_text, model_text = finish_result_hooks(context, result_text, raised_text, hook_decision)
                     structured_error_kind = metadata.get(TOOL_ERROR_KIND_METADATA_KEY)
                     if not isinstance(context.metadata, dict):
                         context.metadata = {}
@@ -778,7 +741,7 @@ class ToolEventMiddleware(FunctionMiddleware):
                             origin=origin,
                             tool_name=tool_name,
                             call_id=call_id,
-                            result=result_text,
+                            result=card_text,
                             image_contents=result_images,
                             duration_ms=duration_ms,
                             session_id=self._session_id,
@@ -793,7 +756,7 @@ class ToolEventMiddleware(FunctionMiddleware):
                         # same call is what tells the observation it was cut.
                         await trajectory.payload_observed(
                             result_text=preview_result_ceiling(
-                                result_text,
+                                model_text,
                                 self._tool_result_ceiling_tokens,
                                 observation=payload_observation,
                             ),

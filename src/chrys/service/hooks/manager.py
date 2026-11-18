@@ -275,7 +275,7 @@ class HookManager:
         """
         return list(self._file.sources)
 
-    def has_hooks_for(self, event: HookEvent) -> bool:
+    def has_hooks_for(self, event: HookEvent, *, blocking_only: bool = False) -> bool:
         """Cheap fast-path check.
 
         Wire-up sites guard with this so we don't even build payloads
@@ -283,7 +283,10 @@ class HookManager:
         call when hooks are unused — and "no hooks at all" is the
         common case.
         """
-        return any(h.enabled and h.event == event for h in self._file.hooks)
+        return any(
+            h.enabled and h.event == event and (not blocking_only or h.execution.mode == "blocking")
+            for h in self._file.hooks
+        )
 
     def executions(self) -> tuple[HookExecutionView, ...]:
         """The runs in flight now (queued or running, waited on or not), oldest first."""
@@ -626,7 +629,6 @@ class HookManager:
         override_before = decision.args_override
         reminders_before = len(decision.system_reminders)
         contexts_before = len(decision.extra_context)
-        override_text_before = decision.result_override
         try:
             ask = _merge_blocking_result(
                 decision,
@@ -661,7 +663,6 @@ class HookManager:
                 args_after=_tool_args(envelope),
                 reminders_before=reminders_before,
                 contexts_before=contexts_before,
-                override_before=override_text_before,
             )
         except Exception:
             # The hook's result, written by the hook, could not be taken: its run ended all
@@ -1528,7 +1529,6 @@ def _blocking_effect(
     args_after: Any,
     reminders_before: int,
     contexts_before: int,
-    override_before: str | None,
 ) -> tuple[HookRunEffect | None, HookRunApplied]:
     """What iCode took from one blocking run, folded into *decision*; at most one effect.
 
@@ -1551,9 +1551,12 @@ def _blocking_effect(
         return "modified_args", HookRunApplied(args=indented_json(args_after))
     if len(decision.system_reminders) > reminders_before:
         return "added_reminder", HookRunApplied(reminder=decision.system_reminders[-1])
-    if decision.result_override is not None and decision.result_override != override_before:
+    # Attribute an explicit replacement to the run that wrote it, even if two
+    # consecutive hooks chose the same text (including the empty string).
+    override = result.decision.get("result_override")
+    if event in _RESULT_OVERRIDE_EVENTS and isinstance(override, str):
         extra = decision.extra_context[-1] if len(decision.extra_context) > contexts_before else ""
-        return "replaced_result", HookRunApplied(result_override=decision.result_override, extra_context=extra)
+        return "replaced_result", HookRunApplied(result_override=override, extra_context=extra)
     if len(decision.extra_context) > contexts_before:
         return "added_context", HookRunApplied(extra_context=decision.extra_context[-1])
     if _asks_unsupported(event, result.decision, unusable=result.unusable):

@@ -746,12 +746,7 @@ async def test_result_override_on_after_tool_call_also_reaches_context_result() 
 
 
 async def test_without_an_override_a_raise_leaves_no_committed_result() -> None:
-    """No hook replacement commits nothing, so the kernel falls back to the exception text.
-
-    ``apply_result_hooks`` leaves ``context.result`` untouched when no hook replaced
-    anything; the kernel's fallback is what keeps the model reading a real error
-    instead of an empty string.
-    """
+    """A hook with no decision leaves error construction to the kernel."""
     bus = EventBus()
     manager = PayloadRecordingHookManager({HookEvent.TOOL_ERROR: HookDecision()})
     mw = ToolEventMiddleware(
@@ -768,8 +763,8 @@ async def test_without_an_override_a_raise_leaves_no_committed_result() -> None:
     with pytest.raises(ModelVisibleToolError):
         await mw.process(context, call_next_error)
 
-    # Nothing was committed: the kernel's fallback supplies the error text.
-    assert extract_result_text(context.result) == ""
+    assert COMMITTED_ERROR_TEXT_KEY not in context.metadata
+    assert context.result == "Error: SECRET ORIGINAL"
 
 
 async def test_tool_event_middleware_hooks_modify_args_before_start_event(tmp_path) -> None:
@@ -1657,7 +1652,8 @@ def test_subsequent_hook_with_no_override_does_not_restore_withheld_text() -> No
     """
     from chrys.service.agent_middleware.events.hook_dispatch import _merge_decision
 
-    aggregate = HookDecision(result_override="")
+    aggregate = HookDecision()
+    _merge_decision(aggregate, HookDecision(result_override=""))
     second = HookDecision()  # result_override=None — no opinion
     _merge_decision(aggregate, second)
     assert aggregate.result_override == "", "withheld result must not be restored by a hook with no opinion"
@@ -1731,7 +1727,6 @@ def test_replaced_result_audit_carries_both_override_and_extra_context() -> None
         args_after={},
         reminders_before=0,
         contexts_before=0,
-        override_before=None,
     )
     assert effect == "replaced_result"
     assert applied.result_override == "REPLACED TEXT"

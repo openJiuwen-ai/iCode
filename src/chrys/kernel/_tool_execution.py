@@ -53,9 +53,13 @@ from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY, re
 from chrys.foundation.tool_kinds import TOOL_CALL_KIND_METADATA_KEY, get_tool_kind
 from chrys.foundation.tool_result_metadata import (
     COMMITTED_ERROR_TEXT_KEY,
+    HOOK_RESULT_PENDING_KEY,
+    INTERRUPTED_TOOL_RESULT_TEXT,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERROR_MESSAGE_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
+    TOOL_INTERRUPTED_METADATA_KEY,
+    TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY,
     TOOL_RESULT_METADATA_KEY,
 )
 from chrys.foundation.trajectory.context import current_trajectory
@@ -949,17 +953,24 @@ async def _invoke_function_call(
             # crash checkpoint complete; terminal construction overwrites it
             # from ``context.metadata`` after middleware unwinds.
             additional = _result_additional_properties(function_call, context)
+            carried = dict(additional.get(TOOL_RESULT_METADATA_KEY, {}))
             parent_metadata = sub_agent_parent_result_metadata.get()
             if parent_metadata is not None:
-                carried: dict[str, Any] = {}
                 if parent_metadata.sub_agent_invocation_id:
                     carried["sub_agent_invocation_id"] = parent_metadata.sub_agent_invocation_id
                 if parent_metadata.sub_agent_log_file:
                     carried["sub_agent_log_file"] = parent_metadata.sub_agent_log_file
                 if parent_metadata.sub_agent_audit_complete:
                     carried["sub_agent_audit_complete"] = True
-                if carried:
-                    additional[TOOL_RESULT_METADATA_KEY] = carried
+            if context.metadata.get(HOOK_RESULT_PENDING_KEY):
+                # A crash checkpoint can be written as soon as this slot is filled.
+                # Keep the original value in the pipeline only, until its hooks finish.
+                value = INTERRUPTED_TOOL_RESULT_TEXT
+                carried[TOOL_FAILED_METADATA_KEY] = True
+                carried[TOOL_INTERRUPTED_METADATA_KEY] = True
+                carried[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] = True
+            if carried:
+                additional[TOOL_RESULT_METADATA_KEY] = carried
             result_commit.commit_raw(
                 Content.from_function_result(
                     call_id=call_id,

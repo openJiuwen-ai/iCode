@@ -91,14 +91,18 @@ TOOL_INTERRUPTED_METADATA_KEY = "interrupted"
 TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY = "interrupted_post_processing"
 """True when the tool returned but cancellation interrupted result processing."""
 
+INTERRUPTED_TOOL_RESULT_TEXT = (
+    "Error: Tool execution was interrupted. The operation may have completed; inspect current state before retrying."
+)
+
 HOOK_RESULT_PENDING_KEY = "_chrys_hook_result_pending"
 """Set on ``FunctionInvocationContext.metadata`` before the tool runs when result hooks
-(``after_tool_call`` / ``tool_error`` external hooks, or extension after-tool hooks) are
+(blocking ``after_tool_call`` / ``tool_error`` hooks, or extension after-tool hooks) are
 installed for the call, so they may replace or redact what the tool returns.
 
 Without it, the tool's own output is the final result and survives a cancellation as is.
-With it and without :data:`HOOK_RESULT_APPLIED_KEY`, the hooks never finished: the raw
-output may hold text they would have removed, so a cancellation must not hand it to the model."""
+With it, the journal initially records a placeholder. A crash or cancellation before the
+hooks finish must not restore text they might have removed."""
 
 HOOK_RESULT_APPLIED_KEY = "_chrys_hook_result_applied"
 """Set on ``FunctionInvocationContext.metadata`` after ``apply_result_hooks`` has
