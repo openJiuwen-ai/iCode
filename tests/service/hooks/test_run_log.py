@@ -410,6 +410,24 @@ async def test_added_context_is_recorded(hooks_dir: Path, event: HookEvent) -> N
     assert applied is not None and applied.extra_context == "ruff found 2 issues"
 
 
+async def test_consecutive_hooks_that_withhold_the_result_each_get_an_audit_entry(hooks_dir: Path) -> None:
+    event = HookEvent.AFTER_TOOL_CALL
+    logged = _logged(
+        hooks_dir,
+        _hook("first", event, script=_result({"result_override": ""})),
+        _hook("second", event, script=_result({"result_override": "", "extra_context": "checked"})),
+        _hook("third", event),
+    )
+    decision = await logged.manager.fire(event, _tool())
+    assert decision.result_override == ""
+    assert [logged.only(name).effect for name in ("first", "second", "third")] == [
+        "replaced_result",
+        "replaced_result",
+        None,
+    ]
+    assert logged.detail("second").applied == HookRunApplied(result_override="", extra_context="checked")
+
+
 async def test_a_block_on_an_event_that_cannot_block_is_not_recorded_as_blocked(hooks_dir: Path) -> None:
     logged = _logged(
         hooks_dir, _hook("late-block", HookEvent.AFTER_TURN, script=_result({"action": "block", "reason": "x"}))
@@ -434,6 +452,8 @@ async def test_a_nonblocking_runs_decision_is_never_applied(
     hooks_dir: Path, mode: str, event: HookEvent, decision: dict[str, object]
 ) -> None:
     logged = _logged(hooks_dir, _hook("observer", event, mode=mode, script=_result(decision)))
+    assert logged.manager.has_hooks_for(event)
+    assert not logged.manager.has_hooks_for(event, blocking_only=True)
     result = await logged.manager.fire(event, _tool())
     assert result.blocked is False
     await wait_for(

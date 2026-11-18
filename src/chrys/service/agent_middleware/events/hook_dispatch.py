@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 from chrys.extensions import ToolResult
 from chrys.foundation.io.result_content import extract_result_attachments, extract_result_text
 from chrys.foundation.tool_invocation_order import read_tool_invocation_order
+from chrys.foundation.tool_result_metadata import COMMITTED_ERROR_TEXT_KEY, HOOK_RESULT_APPLIED_KEY
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_MODIFIED_ARGS_KEY,
     _APPROVAL_REJECTED_KEY,
@@ -182,6 +183,20 @@ def reject_tool_call(context: FunctionInvocationContext, message: str, *, confir
     context.result = f"Error: {message}"
 
 
+def result_hooks_installed(
+    manager: HookManager | None,
+    extension_hooks: ExtensionToolHooks | None,
+) -> bool:
+    """Whether anything may replace or redact this call's result after the tool returns."""
+    if extension_hooks is not None and extension_hooks.after:
+        return True
+    if manager is None:
+        return False
+    return manager.has_hooks_for(HookEvent.AFTER_TOOL_CALL, blocking_only=True) or manager.has_hooks_for(
+        HookEvent.TOOL_ERROR, blocking_only=True
+    )
+
+
 async def fire_after_tool_hooks(
     *,
     manager: HookManager | None,
@@ -243,7 +258,7 @@ async def fire_after_tool_hooks(
             ),
         )
         replaced = decision.result_override
-        if replaced:
+        if replaced is not None:
             # One call, two events about it. ``tool_error`` runs second and sees the
             # result as this one left it, as a chain of hooks on one event already
             # does; otherwise its replacement is computed from text the first hook
@@ -306,17 +321,18 @@ def apply_result_hooks(
     result: Any,
     result_text: str,
     *,
-    result_override: str = "",
+    result_override: str | None = None,
     extra_context: list[str] | tuple[str, ...] = (),
 ) -> tuple[Any, str]:
     """Write a hook-provided replacement and context onto a tool result.
 
-    *result_override* replaces the text the model reads; *extra_context* is appended to
-    it. A result that holds images keeps them, since a hook returns text only and
-    dropping them would lose what the model was shown. One that is not text at all keeps
+    *result_override* replaces the text the model reads; ``None`` means no override,
+    ``""`` means withhold the result. *extra_context* is appended to it. A result
+    that holds images keeps them, since a hook returns text only and dropping them
+    would lose what the model was shown. One that is not text at all keeps
     its value; only the rendered text changes, as it does for appended context.
     """
-    overridden = bool(result_override)
+    overridden = result_override is not None
     if overridden:
         result_text = result_override
     clean = [text for text in extra_context if text]
@@ -340,15 +356,34 @@ def apply_result_hooks(
     return result, updated_text
 
 
+def finish_result_hooks(
+    context: FunctionInvocationContext, card_text: str, raised_text: str | None, decision: HookDecision
+) -> tuple[str, str]:
+    """Commit the result and return the card text and the model-visible text."""
+    extra = [*before_tool_context(context), *decision.extra_context]
+    context.result, card_text = apply_result_hooks(
+        context.result, card_text, result_override=decision.result_override, extra_context=extra
+    )
+    public_text = card_text
+    if raised_text is not None:
+        # The card may show private exception details. Build the model's error
+        # from its public text, including when cancellation replaces the re-raise.
+        if decision.result_override is None:
+            public_text = "\n\n".join(text for text in (raised_text, *extra) if text)
+        context.result = public_text
+        if decision.result_override is not None or any(extra):
+            context.metadata[COMMITTED_ERROR_TEXT_KEY] = public_text
+    context.metadata[HOOK_RESULT_APPLIED_KEY] = True
+    return card_text, public_text
+
+
 def _with_result_text(result: Any, text: str) -> Any:
     """*result* with its text replaced by *text*, keeping its attachments; a non-text result as it is."""
     if isinstance(result, str) or result is None:
         return text
     if inspect.isawaitable(result):
-        # The kernel assigns the tool's own coroutine to ``context.result`` before
-        # awaiting it, so a tool that raised leaves that coroutine there. It is not
-        # a result and never resolves: close it, and write the text in its place —
-        # leaving it would also drop the replacement the hook just made.
+        # A middleware can leave its own awaitable in the context when it fails.
+        # Only the replacement text belongs in the result.
         close = getattr(result, "close", None)
         if close is not None:
             close()
@@ -446,7 +481,7 @@ def _merge_decision(target: HookDecision, source: HookDecision) -> None:
         target.args_override = {**(target.args_override or {}), **source.args_override}
     target.system_reminders.extend(source.system_reminders)
     target.extra_context.extend(source.extra_context)
-    if source.result_override:
+    if source.result_override is not None:
         target.result_override = source.result_override
 
 

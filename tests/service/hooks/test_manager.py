@@ -332,7 +332,7 @@ async def test_result_override_is_ignored_on_an_event_that_takes_none(hooks_dir:
 
     decision = await mgr.fire(HookEvent.AFTER_TURN, {})
 
-    assert decision.result_override == ""
+    assert decision.result_override is None
 
 
 async def test_gating_hook_payload_names_the_operation_and_counts_its_checks(hooks_dir: Path) -> None:

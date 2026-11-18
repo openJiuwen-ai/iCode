@@ -604,7 +604,9 @@ The result file supports the following JSON fields:
 | `args_override` | Object | `before_tool_call` with `action: modify` | Adds its top-level fields to the existing `tool.args`. Fields with the same name replace the original values; if a value is an object, that entire object is also replaced. |
 | `system_reminder` | String | `user_prompt_submit` | Added as a system reminder to every model call in the current turn. |
 | `extra_context` | String | `before_tool_call`, `after_tool_call`, `tool_error` | Appended to the tool result text; cannot undo a call that has already occurred. From `before_tool_call` it doesn't change whether the call runs: once the call has run, the text comes before any `after_tool_call` context, so a hook can let a call go ahead and still warn the model about it. A rejected call doesn't get it; if the call's arguments are checked again (see [Asking you to confirm](#asking-you-to-confirm)), only the last check's text is kept. |
-| `result_override` | String | `after_tool_call`, `tool_error` | Replaces the tool result text the model reads; cannot undo a call that has already occurred. The last hook to set it wins. A result with images keeps them and only its text is replaced; a non-text result is left as it is. `extra_context` follows the replacement. |
+| `result_override` | String | `after_tool_call`, `tool_error` | Replaces the tool result text the model reads; cannot undo a call that has already occurred. The last hook to set it wins. An empty string withholds the text. Omitting the field preserves the previous text. A result with images keeps them and only its text is replaced; a non-text result is left as it is. `extra_context` follows the replacement. |
+
+If recovery starts after a tool returned but before its result hooks finished, the history shows an interruption message. It still records that the tool ran, so a retry does not repeat the call. A sub-agent’s own transcript and final-answer preview are saved separately and can still show what it produced before the parent call’s hook ran.
 
 Result files are read according to these rules:
 

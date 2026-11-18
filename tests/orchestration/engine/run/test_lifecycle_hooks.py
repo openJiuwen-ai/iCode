@@ -1900,7 +1900,8 @@ async def test_user_retry_rechecks_working_dir_after_waiting_for_the_previous_ru
     sink.assert_operations_settled()
 
 
-def test_system_prompt_matches_what_the_running_agent_will_send() -> None:
+@pytest.mark.parametrize("model_instructions", [None, "Model instructions"])
+def test_system_prompt_matches_what_the_running_agent_will_send(model_instructions: str | None) -> None:
     """The gate hands the guard exactly the instructions the agent will assemble.
 
     ``manifest.instructions`` already includes profile + memory + skills; using it
@@ -1908,9 +1909,10 @@ def test_system_prompt_matches_what_the_running_agent_will_send() -> None:
     profile's own instructions and appends each live provider's contribution, which
     is the same assembly the agent uses.
     """
-    from types import SimpleNamespace
+    import json
 
     from chrys.orchestration.engine.run.turn_hooks import PromptSubmitGate
+    from chrys.service.profiles.models.schema import ModelProfile
 
     class _FakeProvider:
         def __init__(self, text: str) -> None:
@@ -1923,9 +1925,16 @@ def test_system_prompt_matches_what_the_running_agent_will_send() -> None:
     skills_provider = _FakeProvider("## Skills")
     doc_provider = _FakeProvider("## Docs")
 
-    manifest = SimpleNamespace(
-        profile_instructions="You are Code.",
-    )
+    profile = None
+    if model_instructions is not None:
+        profile = ModelProfile(
+            id="test",
+            name="test",
+            provider="anthropic",
+            model_id="claude-test",
+            chat_options=json.dumps({"instructions": model_instructions}),
+        )
+    manifest = SimpleNamespace(profile_instructions="You are Code.", active_profile=profile)
     agent = SimpleNamespace(
         context_providers=[memory_provider, skills_provider, doc_provider],
     )
@@ -1938,7 +1947,9 @@ def test_system_prompt_matches_what_the_running_agent_will_send() -> None:
     result = gate.system_prompt()
 
     expected = "\n".join(["You are Code.", "## Project rules", "## Skills", "## Docs"])
-    assert result == expected, f"got: {result!r}"
+    if model_instructions is not None:
+        expected += "\n" + model_instructions
+    assert result == expected
     # Must NOT contain manifest.instructions; that string already has memory + skills baked in.
     # The separate profile instructions appear exactly once.
     assert result.count("You are Code.") == 1

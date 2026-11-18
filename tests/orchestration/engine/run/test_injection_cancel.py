@@ -212,6 +212,7 @@ class _Host:
         self.permits.agent_loading = False
         self._bus = EventBus()
         self.session.session_id = "s1"
+        self.session.runtime_meta = None
         install_loaded_agent(self, bindings=_Executor(running=executor_running))
         self._fsm = _Fsm(state=EngineState.RUNNING if executor_running else EngineState.IDLE)
         self._turn_state = make_turn_state()

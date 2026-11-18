@@ -11,7 +11,7 @@ from chrys.foundation.models.hook_confirmations import HookConfirmationOutcome
 
 HookRunState = Literal["queued", "running", "ended"]
 
-HookRunEffect = Literal["blocked", "modified_args", "added_reminder", "added_context", "replaced_result", "asked"]
+HookRunEffect = Literal["blocked", "asked", "modified_args", "added_reminder", "replaced_result", "added_context"]
 """What iCode took from a run; the row names one, the first that applies in that order.
 ``asked``: the run asked the user to confirm; what the user chose is the run's ``confirmation``.
 
@@ -103,7 +103,7 @@ class HookRunApplied:
     reminder: str = ""
     extra_context: str = ""
     result_override: str = ""
-    """The tool result text the run replaced; empty when it replaced nothing."""
+    """Replacement text. A replaced_result effect with empty text withholds the result."""
     not_applied: HookNotApplied | None = None
 
 

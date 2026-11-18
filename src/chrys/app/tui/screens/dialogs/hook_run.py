@@ -652,6 +652,9 @@ class HookRunModal(BaseDialog[None]):
                         }[effect],
                     ),
                 )
+                if effect == "replaced_result" and applied.extra_context:
+                    widgets.append(self._note(_APPLIED_CONTEXT.bind()))
+                    widgets.append(_Code("text", applied.extra_context))
         if detail.record.call_rejected:
             widgets.append(self._note(_APPLIED_CALL_REJECTED.bind()))
         reason = {
