@@ -2233,7 +2233,7 @@ class SubAgentTools:
                     try:
                         self._agent_active[tool_name] -= 1
                     except KeyError:
-                        logger.error(
+                        logger.exception(
                             "sub-agent counter underflow: tool %r not in _agent_active (invocation %s)",
                             tool_name,
                             invocation_id,
