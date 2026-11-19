@@ -25,6 +25,8 @@ from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_cancel_preserves_draft_submit_preserves_text_and_chat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

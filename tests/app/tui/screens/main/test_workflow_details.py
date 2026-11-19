@@ -55,6 +55,8 @@ from ._workflow_support import (
     value_texts,
 )
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_node_record_completion_during_shutdown_does_not_update_widgets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

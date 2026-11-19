@@ -13,6 +13,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import RichLog, Static, TabbedContent
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.logs.screen import (
     MAX_BUFFER_LINE_CHARS,
@@ -812,4 +813,5 @@ async def test_copy_logs_uses_full_lines_when_display_is_truncated(monkeypatch: 
         screen.action_copy_logs()
 
         assert pilot.app.clipboard == full_line
+        await wait_for_clipboard(pilot.app)
         assert copied == [full_line]

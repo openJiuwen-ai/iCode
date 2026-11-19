@@ -20,7 +20,7 @@ from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str
 from chrys.app.tui.support.gc_freeze import DetachedLruCache, GcFreezeBlockReason, detach_lru_cache, renew_lru_cache
@@ -240,9 +240,11 @@ class SessionJsonPanel(ScrollView):
     def on_click(self, event: Click) -> None:
         """Copy session path when the border is clicked (not the content area)."""
         if self._session_path and not self.scrollable_content_region.contains(event.screen_x, event.screen_y):
-            copy_text_to_clipboards(self.app, self._session_path)
-            self.notify(
+            dispatched = copy_text_to_clipboards(self.app, self._session_path)
+            notify_after_copy(
+                self,
                 self._render_message(_SESSION_PATH_COPIED.bind()),
+                dispatched=dispatched,
                 title=self._render_message(COPIED_TITLE.bind()),
                 timeout=1,
                 markup=False,

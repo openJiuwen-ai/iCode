@@ -23,6 +23,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, open_workflow
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_elapsed_clock_updates_units_and_resets_for_a_new_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

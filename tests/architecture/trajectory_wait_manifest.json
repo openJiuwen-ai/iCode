@@ -272,7 +272,7 @@
         ["wrapper", "await _record_unexecuted_tool_operation(function_call, outcome=ToolOutcome.UNKNOWN_TOOL, result_carrier_item_id=result_carrier_item_id, result=result)", "unresolved", "chrys.kernel._tool_execution._record_unexecuted_tool_operation"],
         ["wrapper", "await _record_unexecuted_tool_operation(function_call, outcome=ToolOutcome.INVALID_ARGUMENTS, result_carrier_item_id=result_carrier_item_id, result=result)", "unresolved", "chrys.kernel._tool_execution._record_unexecuted_tool_operation"],
         ["wrapper", "await _record_unexecuted_tool_operation(function_call, outcome=ToolOutcome.FILTERED)", "unresolved", "chrys.kernel._tool_execution._record_unexecuted_tool_operation"],
-        ["awaitable", "await pipeline.execute(context=context, final_handler=final_function_handler)", "unresolved"]
+        ["awaitable", "await pipeline.execute(context=context, final_handler=final_function_handler, on_error=checkpoint_error if result_commit is not None else None)", "unresolved"]
       ],
       "_invoke_function_call.final_function_handler": [
         ["wrapper", "await _invoke_with_function_span(tool, context_obj, call_id, arguments=invocation_arguments, arguments_in_callable_keyspace=arguments_in_callable_keyspace, tool_result_ceiling_tokens=tool_result_ceiling_tokens)", "unresolved", "chrys.kernel._tool_execution._invoke_with_function_span"],
@@ -571,10 +571,8 @@
         ["awaitable", "await create_next_handler(0)()", "unresolved"]
       ],
       "FunctionMiddlewarePipeline.execute.create_next_handler.current_handler": [
+        ["awaitable", "await raw", "unresolved"],
         ["awaitable", "await self._middleware[index].process(context, create_next_handler(index + 1))", "unresolved"]
-      ],
-      "FunctionMiddlewarePipeline.execute.create_next_handler.final_wrapper": [
-        ["awaitable", "await context.result", "unresolved"]
       ]
     },
     "chrys.kernel.sessions": {
@@ -3921,9 +3919,9 @@
         ["wrapper", "await finalize_mutation_tracking(self._mutation_tracker, mut_ctx, call_id, coordinator=self._mutation_coordinator, tool_errored=tool_failed)", "unresolved", "chrys.service.mutations.pipeline.finalize_mutation_tracking"],
         ["wrapper", "await apply_after_tool_extensions(self._extension_hooks, context, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=args, result_text=result_text, raised_text=raised_text, failed=errored or structured_failed or rejected, rejected=rejected, duration_ms=duration_ms)", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.apply_after_tool_extensions"],
         ["wrapper", "await fire_after_tool_hooks(manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=args, result_text=result_text, duration_ms=duration_ms, errored=errored, failed=structured_failed, approval_rejected=rejected, rejection_source=source, hook_confirmation=hook_confirmation(_meta), workspace_cwd=self._workspace_cwd, target_operation_id=trajectory.operation_id if trajectory is not None else None, origin=origin)", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.fire_after_tool_hooks"],
-        ["awaitable", "await self._bus.publish(InvocationToolCallResult(origin=origin, agent_name=self._agent_name, tool_name=tool_name, call_id=call_id, result=result_text, image_contents=result_images, duration_ms=duration_ms, metadata=metadata, session_id=self._session_id))", "unresolved"],
-        ["awaitable", "await trajectory.payload_observed(result_text=preview_result_ceiling(result_text, self._tool_result_ceiling_tokens, observation=payload_observation), image_count=len(result_images), observation=payload_observation)", "unresolved"],
-        ["awaitable", "await trajectory.finished(outcome=tool_outcome(cancelled=False, rejected=rejected, errored=errored, result_metadata=metadata), duration_ms=elapsed_ms, result_metadata=metadata, error_kind=raised_error_kind)", "unresolved"],
+        ["awaitable", "await self._bus.publish(InvocationToolCallResult(origin=origin, agent_name=self._agent_name, tool_name=tool_name, call_id=call_id, result=card_text, image_contents=result_images, duration_ms=duration_ms, metadata=metadata, session_id=self._session_id))", "unresolved"],
+        ["awaitable", "await trajectory.payload_observed(result_text=preview_result_ceiling(model_text, self._tool_result_ceiling_tokens, observation=payload_observation), image_count=len(result_images), observation=payload_observation)", "unresolved"],
+        ["awaitable", "await trajectory.finished(outcome=tool_outcome(cancelled=terminated, rejected=rejected, errored=errored, result_metadata=metadata), duration_ms=elapsed_ms, result_metadata=metadata, error_kind=raised_error_kind)", "unresolved"],
         ["wrapper", "await self._publish_progress()", "unresolved", "chrys.service.agent_middleware.events.sub_agent_events.SubAgentEventMiddleware._publish_progress"]
       ],
       "SubAgentEventMiddleware._publish_hosted_operation": [
@@ -3984,9 +3982,9 @@
         ["wrapper", "await finalize_mutation_tracking(self._mutation_tracker, mut_ctx, call_id, coordinator=self._mutation_coordinator, tool_errored=tool_failed)", "unresolved", "chrys.service.mutations.pipeline.finalize_mutation_tracking"],
         ["wrapper", "await apply_after_tool_extensions(self._extension_hooks, context, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=args, result_text=result_text, raised_text=raised_text, failed=errored or structured_failed or rejected, rejected=rejected, duration_ms=duration_ms)", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.apply_after_tool_extensions"],
         ["wrapper", "await fire_after_tool_hooks(manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=args, result_text=result_text, duration_ms=duration_ms, errored=errored, failed=structured_failed, approval_rejected=rejected, rejection_source=source, hook_confirmation=hook_confirmation(_meta), workspace_cwd=self._workspace_cwd, target_operation_id=trajectory.operation_id if trajectory is not None else None, origin=origin)", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.fire_after_tool_hooks"],
-        ["awaitable", "await self._bus.publish(InvocationToolCallResult(origin=origin, tool_name=tool_name, call_id=call_id, result=result_text, image_contents=result_images, duration_ms=duration_ms, session_id=self._session_id, metadata=metadata))", "unresolved"],
-        ["awaitable", "await trajectory.payload_observed(result_text=preview_result_ceiling(result_text, self._tool_result_ceiling_tokens, observation=payload_observation), image_count=len(result_images), observation=payload_observation)", "unresolved"],
-        ["awaitable", "await trajectory.finished(outcome=tool_outcome(cancelled=False, rejected=rejected, errored=errored, result_metadata=metadata), duration_ms=elapsed_ms, result_metadata=metadata, error_kind=raised_error_kind)", "unresolved"]
+        ["awaitable", "await self._bus.publish(InvocationToolCallResult(origin=origin, tool_name=tool_name, call_id=call_id, result=card_text, image_contents=result_images, duration_ms=duration_ms, session_id=self._session_id, metadata=metadata))", "unresolved"],
+        ["awaitable", "await trajectory.payload_observed(result_text=preview_result_ceiling(model_text, self._tool_result_ceiling_tokens, observation=payload_observation), image_count=len(result_images), observation=payload_observation)", "unresolved"],
+        ["awaitable", "await trajectory.finished(outcome=tool_outcome(cancelled=terminated, rejected=rejected, errored=errored, result_metadata=metadata), duration_ms=elapsed_ms, result_metadata=metadata, error_kind=raised_error_kind)", "unresolved"]
       ],
       "ToolEventMiddleware._process_tool_call._emit_progress": [
         ["awaitable", "await bus.publish(InvocationToolCallProgress(origin=origin, tool_name=tool_name, call_id=call_id, lines=lines, session_id=sid))", "unresolved"]

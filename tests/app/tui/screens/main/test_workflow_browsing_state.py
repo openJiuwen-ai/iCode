@@ -35,6 +35,8 @@ from ._workflow_support import (
     workflow_selection,
 )
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("failure", ["load", "declined"])
 async def test_failed_selection_keeps_the_committed_preview_ready_to_start(

@@ -11,6 +11,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptSurface,
@@ -676,6 +677,7 @@ async def test_sub_agent_copy_uses_prompt_input(monkeypatch: pytest.MonkeyPatch)
         click_copy_button(header)
         await pilot.pause()
 
+        await wait_for_clipboard(pilot.app)
         assert len(copied) == 1
         payload = copied[-1]
         assert "investigate the tests" in payload
@@ -868,6 +870,7 @@ async def test_sub_agent_error_copy_preserves_result_duration(monkeypatch: pytes
         click_copy_button(header)
         await pilot.pause()
 
+        await wait_for_clipboard(pilot.app)
         assert len(copied) == 1
         payload = copied[-1]
         assert "- **Status:** `error`" in payload

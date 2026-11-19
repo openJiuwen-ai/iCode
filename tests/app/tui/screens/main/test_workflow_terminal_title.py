@@ -32,6 +32,8 @@ from tests.support.waiting import wait_for
 if TYPE_CHECKING:
     from pathlib import Path
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 class _Tab:
     """Records each terminal title the main screen writes."""

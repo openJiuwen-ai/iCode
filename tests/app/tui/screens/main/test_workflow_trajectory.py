@@ -34,6 +34,8 @@ from ._workflow_support import (
     workflow_selection,
 )
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("workflow", [False, True], ids=["chat", "workflow"])
 async def test_f12_waits_for_completion_and_lease_release(

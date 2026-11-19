@@ -32,6 +32,8 @@ from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("submit", ["button", "keyboard"])
 async def test_running_workflow_uses_input_dialog_and_preserves_chat_draft(

@@ -26,6 +26,8 @@ from tests.support.workflow_history import record_workflow_run
 
 from ._workflow_support import WorkflowEngine, save_workflow_session, select_workflow_view, switch_mode
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("locale", ["en", "zh-Hans"])
 async def test_session_modes_and_archived_workflow_restore(

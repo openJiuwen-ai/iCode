@@ -19,6 +19,7 @@ from textual.pilot import Pilot
 from textual.selection import Selection
 from textual.widgets import Static, TabPane
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.dialogs.tool_view import _COPY_HINT, _NO_INPUT, ToolDetailModal
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
@@ -982,6 +983,7 @@ async def test_modal_right_click_copies_selected_text(monkeypatch: pytest.Monkey
             )
             await pilot.pause()
 
+        await wait_for_clipboard(pilot.app)
         assert copied == ["the result"]
         assert pilot.app.clipboard == "the result"
         assert modal.get_selected_text() is None

@@ -22,6 +22,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, open_workflow, switch_mode, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("workflow", [False, True], ids=["chat", "workflow"])
 async def test_app_mode_is_locked_until_pending_and_execution_work_finishes(

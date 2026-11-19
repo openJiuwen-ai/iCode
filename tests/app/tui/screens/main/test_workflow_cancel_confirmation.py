@@ -21,6 +21,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, confirm_workflow_cancel, open_workflow, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("locale", ["en", "zh-Hans"])
 async def test_cancel_requires_confirmation_and_dismissal_keeps_the_run(

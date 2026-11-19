@@ -22,6 +22,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, open_workflow, run_store, select_workflow_view, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("first_result", ["long", "long_line", "damaged", "missing"])
 async def test_all_output_nodes_remain_accessible(

@@ -32,6 +32,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, dismiss_workflow_notice, open_workflow, switch_mode
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_missing_selection_notice_preserves_draft_and_underlay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

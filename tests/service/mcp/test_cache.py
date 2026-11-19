@@ -46,6 +46,7 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.profiles.models.schema import ModelProfile
+from tests.support.async_tasks import running_task, wait_for_completion, wait_for_started
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
@@ -260,15 +261,21 @@ async def test_cancelled_cache_hit_during_prune_does_not_leak_refcount() -> None
         await release_close.wait()
 
     cache._close_tools = slow_close_tools  # type: ignore[method-assign]
-    task = asyncio.create_task(cache.acquire(target_config))
-    await asyncio.wait_for(entered_close.wait(), timeout=1.0)
-    task.cancel()
-    release_close.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        async with running_task(cache.acquire(target_config)) as task:
+            try:
+                await wait_for_started(entered_close, task, description="stale MCP connection closing")
+                task.cancel()
+                release_close.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            finally:
+                release_close.set()
 
-    assert cache._entries[target_key].refcount == 0
-    await cache.close_all()
+        assert cache._entries[target_key].refcount == 0
+    finally:
+        release_close.set()
+        await cache.close_all()
 
 
 async def test_cancelled_prune_still_closes_removed_tool() -> None:
@@ -290,13 +297,16 @@ async def test_cancelled_prune_still_closes_removed_tool() -> None:
         await cache.release(lease)
 
     cache._entries[lease.key].last_used = datetime.now(UTC) - timedelta(seconds=600)
-    prune_task = asyncio.create_task(cache.prune_idle())
-    await asyncio.wait_for(close_started.wait(), timeout=1.0)
-    prune_task.cancel()
-    close_continue.set()
+    async with running_task(cache.prune_idle()) as prune_task:
+        try:
+            await wait_for_started(close_started, prune_task, description="pruned MCP connection closing")
+            prune_task.cancel()
+            close_continue.set()
 
-    with pytest.raises(asyncio.CancelledError):
-        await prune_task
+            with pytest.raises(asyncio.CancelledError):
+                await prune_task
+        finally:
+            close_continue.set()
 
     assert fake.exit_count == 1
     assert lease.key not in cache._entries
@@ -938,20 +948,23 @@ async def test_cancelled_waiter_does_not_cancel_shared_connect_task() -> None:
 
     fake = _SlowMCPTool()
 
-    with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake) as factory:
-        first = asyncio.create_task(cache.acquire(config))
-        await asyncio.wait_for(entered.wait(), timeout=1.0)
-        second = asyncio.create_task(cache.acquire(config))
-        first.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await first
-        release_enter.set()
-        lease = await asyncio.wait_for(second, timeout=1.0)
+    try:
+        with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake) as factory:
+            async with running_task(cache.acquire(config)) as first:
+                await wait_for_started(entered, first, description="shared MCP connection opening")
+                async with running_task(cache.acquire(config)) as second:
+                    first.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await first
+                    release_enter.set()
+                    lease = await wait_for_completion(second)
 
-    assert factory.call_count == 1
-    assert lease.functions[0].name == "remote"
-    await cache.release(lease)
-    await cache.close_all()
+        assert factory.call_count == 1
+        assert lease.functions[0].name == "remote"
+        await cache.release(lease)
+    finally:
+        release_enter.set()
+        await cache.close_all()
     assert fake.exit_count == 1
 
 

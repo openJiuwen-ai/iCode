@@ -37,6 +37,7 @@ from tests.app.acp._session_manager_fakes import (
     _manager,
     _StaticListStore,
 )
+from tests.support.async_tasks import wait_for_completion
 
 
 @pytest.mark.asyncio
@@ -112,7 +113,7 @@ async def test_switch_agent_same_profile_is_noop(tmp_path) -> None:
         host=host,
     )
 
-    result = await asyncio.wait_for(manager.switch_agent("s1", "Code"), timeout=0.5)
+    result = await wait_for_completion(manager.switch_agent("s1", "Code"))
 
     assert result.from_profile == "Code"
     assert result.to_profile == "Code"

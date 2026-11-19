@@ -47,6 +47,7 @@ from chrys.service.mutations.store import SnapshotPolicy, SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource, RollbackExclusionReason
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.async_tasks import running_task, wait_for_started
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import SessionGenerationEngine
 from tests.support.waiting import wait_for
@@ -209,7 +210,7 @@ async def test_rollback_deferred_state_keeps_first_painted_indicator_until_previ
     host = _ModalHostApp(modal)
 
     async with host.run_test() as pilot:
-        await asyncio.wait_for(state_load_started.wait(), timeout=1)
+        await wait_for(state_load_started.is_set, description="state load started")
         await pilot.pause()
 
         assert host.screen is modal
@@ -289,17 +290,18 @@ async def test_cancelled_preview_keeps_projection_fenced_until_worker_thread_qui
     modal._projection_acquire = acquire_projection
     modal._projection_release = release_projection
 
-    operation = asyncio.create_task(modal._load_preview_state_guarded())
-    await asyncio.wait_for(projection_acquired.wait(), timeout=1)
-    assert await asyncio.to_thread(build_started.wait, 1)
+    async with running_task(modal._load_preview_state_guarded()) as operation:
+        try:
+            await wait_for_started(projection_acquired, operation, description="preview projection acquired")
+            assert await asyncio.to_thread(build_started.wait, 1)
 
-    operation.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await operation
-    assert projection_released.is_set() is False
-
-    release_build.set()
-    await asyncio.wait_for(projection_released.wait(), timeout=1)
+            operation.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+            assert projection_released.is_set() is False
+        finally:
+            release_build.set()
+    await wait_for(projection_released.is_set, description="projection released")
 
 
 @pytest.mark.asyncio
@@ -332,7 +334,7 @@ async def test_rollback_loading_height_matches_completed_empty_preview(tmp_path:
     host = _ModalHostApp(modal)
 
     async with host.run_test(size=(120, 36)) as pilot:
-        await asyncio.wait_for(state_load_started.wait(), timeout=1)
+        await wait_for(state_load_started.is_set, description="state load started")
         await pilot.pause()
         container = modal.query_one("#rollback-container", VerticalGroup)
         loading_height = container.outer_size.height
@@ -360,7 +362,7 @@ async def test_rollback_progress_modal_blocks_until_operation_finishes() -> None
     host = _ModalHostApp(modal)
 
     async with host.run_test(size=(120, 36)) as pilot:
-        await asyncio.wait_for(operation_started.wait(), timeout=1)
+        await wait_for(operation_started.is_set, description="operation started")
         await pilot.pause()
 
         assert host.screen is modal
@@ -409,7 +411,7 @@ async def test_rollback_progress_handoff_does_not_cancel_main_screen_owned_opera
     host = _ModalHostApp(modal)
 
     async with host.run_test(size=(120, 36)) as pilot:
-        await asyncio.wait_for(operation_started.wait(), timeout=1)
+        await wait_for(operation_started.is_set, description="operation started")
 
         modal.handoff_to_session_restore()
         await wait_for(
@@ -422,7 +424,7 @@ async def test_rollback_progress_handoff_does_not_cancel_main_screen_owned_opera
         assert operation_cancelled.is_set() is False
 
         release_operation.set()
-        await asyncio.wait_for(operation_finished.wait(), timeout=1)
+        await wait_for(operation_finished.is_set, description="operation finished")
 
 
 @pytest.mark.asyncio
@@ -440,7 +442,7 @@ async def test_rollback_progress_modal_defers_dismissal_until_unexpected_coverin
     host = _ModalHostApp(modal)
 
     async with host.run_test(size=(120, 36)) as pilot:
-        await asyncio.wait_for(operation_finished.wait(), timeout=1)
+        await wait_for(operation_finished.is_set, description="operation finished")
         await pilot.pause()
 
         assert host.screen is covering_modal
@@ -540,7 +542,7 @@ async def test_direct_rollback_replaces_progress_modal_with_single_restore_modal
         )
 
         await pilot.press("enter")
-        await asyncio.wait_for(restore_modal_pushed.wait(), timeout=2)
+        await wait_for(restore_modal_pushed.is_set, description="session restore modal pushed")
         await wait_for(
             lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted,
             timeout=4.0,
@@ -557,7 +559,7 @@ async def test_direct_rollback_replaces_progress_modal_with_single_restore_modal
         assert all(not isinstance(screen, RollbackProgressModal) for screen in app.screen_stack)
 
         release_rollback.set()
-        await asyncio.wait_for(rollback_finished.wait(), timeout=1)
+        await wait_for(rollback_finished.is_set, description="rollback finished")
         app.screen.dismiss(None)
         await wait_for(
             lambda: app.screen is main_screen,
@@ -775,7 +777,7 @@ async def test_rollback_paints_loading_shell_before_building_content(
     host = _ModalHostApp(modal)
 
     async with host.run_test() as pilot:
-        await asyncio.wait_for(refresh_started.wait(), timeout=1)
+        await wait_for(refresh_started.is_set, description="refresh started")
         await pilot.pause()
 
         assert host.screen is modal
@@ -837,10 +839,10 @@ async def test_rollback_escape_cancels_loading_before_dismiss(tmp_path: Path) ->
     host = _ModalHostApp(modal)
 
     async with host.run_test() as pilot:
-        await asyncio.wait_for(refresh_started.wait(), timeout=1)
+        await wait_for(refresh_started.is_set, description="refresh started")
 
         await pilot.press("escape")
-        await asyncio.wait_for(refresh_cancelled.wait(), timeout=1)
+        await wait_for(refresh_cancelled.is_set, description="refresh cancelled")
         await pilot.pause()
 
         assert host.dismiss_result is None
@@ -875,7 +877,7 @@ async def test_rollback_load_error_survives_removed_loading_shell(
     host = _ModalHostApp(modal)
 
     async with host.run_test() as pilot:
-        await asyncio.wait_for(refresh_started.wait(), timeout=1)
+        await wait_for(refresh_started.is_set, description="refresh started")
 
         def fail_refresh_bindings() -> None:
             raise RuntimeError("binding refresh failed")

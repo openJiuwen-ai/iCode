@@ -26,9 +26,10 @@ from chrys.foundation.tool_call_context import resolve_tool_call_context
 from chrys.foundation.tool_execution_stamp import write_execution_stamp
 from chrys.foundation.tool_kinds import KIND_SHELL, KIND_SUB_AGENT, get_tool_kind
 from chrys.foundation.tool_result_metadata import (
-    COMMITTED_ERROR_TEXT_KEY,
+    HOOK_RESULT_PENDING_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERRORED_METADATA_KEY,
+    TOOL_INTERRUPTED_METADATA_KEY,
     tool_payload_observation,
     tool_result_metadata_failure_state,
 )
@@ -45,7 +46,7 @@ from chrys.foundation.util.sub_agent_context import (
 )
 from chrys.kernel._result_ceiling import preview_result_ceiling
 from chrys.kernel.exceptions import tool_error_result_text
-from chrys.kernel.middleware import FunctionMiddleware
+from chrys.kernel.middleware import FunctionMiddleware, MiddlewareTermination
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_REJECTED_KEY,
     _SHORT_ID_LEN,
@@ -55,14 +56,14 @@ from chrys.service.agent_middleware._metadata_keys import (
 from chrys.service.agent_middleware.events.hook_dispatch import (
     apply_after_tool_extensions,
     apply_before_tool_hooks,
-    apply_result_hooks,
-    before_tool_context,
     final_tool_args,
+    finish_result_hooks,
     fire_after_tool_hooks,
     get_call_id,
     get_provider_call_id,
     get_tool_invocation_order,
     is_mutable_tool_args,
+    result_hooks_installed,
     set_call_id,
     set_tool_invocation_order,
     tool_may_have_run,
@@ -647,6 +648,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         errored = False
         raised_text: str | None = None
         raised_error_kind: str | None = None
+        terminated = False
         cancelled = False
         shell_metadata_token = None
         shell_metadata: dict[str, object] | None = None
@@ -685,12 +687,20 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         preamble.operation_id if preamble is not None and preamble.start_committed else None
                     ),
                 )
+            # Declared before the tool runs: if cancellation lands before the result
+            # hooks finish, the kernel must not treat the raw output as final.
+            if isinstance(context.metadata, dict) and result_hooks_installed(self._hook_manager, self._extension_hooks):
+                context.metadata[HOOK_RESULT_PENDING_KEY] = True
             await call_next()
+        except MiddlewareTermination as stop:
+            terminated = True
+            stop.expose_tool_result(context)
+            raise
         except Exception as exc:
             errored = True
             raised_error_kind = type(exc).__name__
-            error_text = tool_card_error_text(exc)
             raised_text = tool_error_result_text(exc)
+            error_text = tool_card_error_text(exc)
             raise
         except BaseException:
             cancelled = True
@@ -752,7 +762,8 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     # arguments the tool actually ran with, same as the main
                     # ToolEventMiddleware.
                     args = final_tool_args(context, args)
-                    if rejected and mut_ctx is not None:
+                    skipped = rejected or (terminated and not tool_may_have_run(context))
+                    if skipped and mut_ctx is not None:
                         # Rejected at approval, post-prepare: finalize is
                         # deliberately skipped (the tool never executed), so
                         # release the trace wrapper and close the observation
@@ -767,7 +778,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     metadata.update(generic_metadata)
                     if shell_metadata:
                         metadata.update(shell_metadata)
-                    if not rejected and mut_ctx is not None:
+                    if not skipped and mut_ctx is not None:
                         # Authorship gate for coordination claims: structured
                         # "Error: ..." results (tool_error / record_tool_failure)
                         # mean the write may not have happened — the observed
@@ -828,6 +839,8 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                             progress := sub_agent_metadata.progress.to_metadata()
                         ):
                             metadata[SUB_AGENT_PROGRESS_METADATA_KEY] = progress
+                    if terminated:
+                        metadata[TOOL_INTERRUPTED_METADATA_KEY] = True
                     if errored:
                         metadata[TOOL_ERRORED_METADATA_KEY] = True
                     structured_failed = tool_result_metadata_failure_state(metadata) is True
@@ -870,34 +883,20 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         target_operation_id=trajectory.operation_id if trajectory is not None else None,
                         origin=origin,
                     )
-                    original_result_text = result_text
-                    context.result, result_text = apply_result_hooks(
-                        context.result,
-                        result_text,
-                        result_override=hook_decision.result_override,
-                        extra_context=[*before_tool_context(context), *hook_decision.extra_context],
-                    )
-                    if (
-                        isinstance(context.metadata, dict)
-                        and raised_text is not None
-                        and result_text != original_result_text
-                    ):
-                        # A raised call: the kernel answers it after this middleware, so any change
-                        # to the result text (replacement or extra_context appended) must be marked
-                        # or the kernel rebuilds the result from the exception, discarding it.
-                        context.metadata[COMMITTED_ERROR_TEXT_KEY] = result_text
+                    card_text, model_text = finish_result_hooks(context, result_text, raised_text, hook_decision)
                     structured_error_kind = metadata.get(TOOL_ERROR_KIND_METADATA_KEY)
                     if not isinstance(context.metadata, dict):
                         context.metadata = {}
-                    write_execution_stamp(
-                        context.metadata,
-                        context.arguments,
-                        outcome="error" if errored or structured_failed else "ok",
-                        error_kind=(
-                            raised_error_kind
-                            or (structured_error_kind if isinstance(structured_error_kind, str) else None)
-                        ),
-                    )
+                    if not terminated:
+                        write_execution_stamp(
+                            context.metadata,
+                            context.arguments,
+                            outcome="error" if errored or structured_failed else "ok",
+                            error_kind=(
+                                raised_error_kind
+                                or (structured_error_kind if isinstance(structured_error_kind, str) else None)
+                            ),
+                        )
                     result_images = extract_result_images(context.result)
                     await self._bus.publish(
                         InvocationToolCallResult(
@@ -905,7 +904,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                             agent_name=self._agent_name,
                             tool_name=tool_name,
                             call_id=call_id,
-                            result=result_text,
+                            result=card_text,
                             image_contents=result_images,
                             duration_ms=duration_ms,
                             metadata=metadata,
@@ -917,7 +916,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         # same call in ``tool_events``.
                         await trajectory.payload_observed(
                             result_text=preview_result_ceiling(
-                                result_text,
+                                model_text,
                                 self._tool_result_ceiling_tokens,
                                 observation=payload_observation,
                             ),
@@ -926,7 +925,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         )
                         await trajectory.finished(
                             outcome=tool_outcome(
-                                cancelled=False, rejected=rejected, errored=errored, result_metadata=metadata
+                                cancelled=terminated, rejected=rejected, errored=errored, result_metadata=metadata
                             ),
                             duration_ms=elapsed_ms,
                             result_metadata=metadata,

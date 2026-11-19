@@ -27,6 +27,8 @@ from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, open_workflow, select_workflow_view
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("locale", ["en", "zh-Hans"])
 async def test_layout_button_preserves_live_state_and_retry_controls(

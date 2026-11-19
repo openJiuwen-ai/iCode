@@ -44,6 +44,7 @@ from textual import events
 from textual.message import Message
 from textual.widgets.text_area import Document, Edit, EditResult, Location, Selection, TextAreaTheme
 
+from chrys.app.tui.clipboard import native_clipboard_write_pending, uses_host_clipboard
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.util.diff_comments import CommentProbe, CommentReplacement
 from chrys.app.tui.widgets.chrome.image_paste import pasted_image_paths, save_clipboard_image_to_file
@@ -934,7 +935,9 @@ class DraftTextArea(_DraftTextAreaBase):
         # TODO(perf): Clipboard capture may run osascript/PIL/file I/O. Move
         # this boundary to a worker when paste completion can remain ordered
         # with subsequent input events.
-        if self.read_only:
+        # A queued text copy supersedes the old OS bitmap. Let the text paste
+        # path use the accepted text without opening the clipboard again.
+        if self.read_only or not uses_host_clipboard() or native_clipboard_write_pending(self.app):
             return None
         path = save_clipboard_image_to_file(self._clipboard_image_dir)
         if path is None:

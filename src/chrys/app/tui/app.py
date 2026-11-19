@@ -38,6 +38,16 @@ from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_su
 from chrys.app.parsing import SanitizingArgumentParser
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, copy_with_insert, paste_with_insert
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
+from chrys.app.tui.clipboard import (
+    ClipboardWriteFailed,
+    clipboard_failure_is_current,
+    close_clipboard,
+    copy_text_to_clipboards,
+    open_clipboard,
+    stop_clipboard,
+    uses_native_windows_clipboard,
+)
+from chrys.app.tui.copy_messages import COPY_FAILED
 from chrys.app.tui.graphics.detect import ask_terminal
 from chrys.app.tui.i18n import LocaleController, render_str
 from chrys.app.tui.notifications import NotificationService, NotificationSettings
@@ -960,6 +970,18 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             return
         self.exit()
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """Include stock Textual copy/cut actions in the native Windows queue."""
+        if uses_native_windows_clipboard():
+            copy_text_to_clipboards(self, text)
+        else:
+            super().copy_to_clipboard(text)
+
+    def on_clipboard_write_failed(self, event: ClipboardWriteFailed) -> None:
+        event.stop()
+        if self.is_running and clipboard_failure_is_current(self, event):
+            self.notify(render_str(self.localizer, COPY_FAILED.bind()), severity="error", markup=False)
+
     def action_copy_with_insert(self) -> None:
         """Copy the focused editor selection, then fall back to the screen selection."""
         copy_with_insert(self)
@@ -1037,6 +1059,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def on_mount(self) -> None:
         """Start the main screen after the optional loading shell paints."""
+        open_clipboard(self)
         await self._program_status_reporter.subscribe()
         self._set_terminal_title_for_cwd()
         # Closing the terminal or SIGTERM quits without asking, so the session's background commands stop.
@@ -1301,43 +1324,52 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def on_unmount(self) -> None:
         """Shutdown engine on exit."""
-        # While the terminal can still be written (Unmount precedes the
-        # driver close), settle the OSC 7501 record on idle and stop
-        # reporting; the engine shutdown below then cannot overwrite it.
-        await self._program_status_reporter.close()
-        if self._terminal_graphics is not None:
-            # Its images were freed when the app exited or crashed; this also ends the payload job.
-            await self._terminal_graphics.close()
-        self._gc_freeze.close()
-        if self._gc_freeze_watchdog is not None:
-            self._gc_freeze_watchdog.stop()
-            self._gc_freeze_watchdog = None
-        if self._startup_task is not None and not self._startup_task.done():
-            self._startup_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._startup_task
-        self._startup_task = None
-        if self._update_check_task is not None and not self._update_check_task.done():
-            self._update_check_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._update_check_task
-        self._update_check_task = None
-        if self._left_behind_task is not None and not self._left_behind_task.done():
-            self._left_behind_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._left_behind_task
-        self._left_behind_task = None
-        await self._engine.shutdown()
-        # Only now: a second SIGHUP or SIGTERM while the engine stops its
-        # background commands must not end the process before it has.
-        for signum in HANGUP_SIGNALS:
-            asyncio.get_running_loop().remove_signal_handler(signum)
-        # After the engine: its shutdown drains a still-finalizing run
-        # whose success callback can schedule one last title task; the
-        # updater must be the last thing torn down so that task is
-        # cancelled and awaited (its closed flag backstops other hosts).
-        if self._session_title_updater is not None:
-            await self._session_title_updater.shutdown()
+        stop_clipboard(self)
+        try:
+            # While the terminal can still be written (Unmount precedes the
+            # driver close), settle the OSC 7501 record on idle and stop
+            # reporting; the engine shutdown below then cannot overwrite it.
+            await self._program_status_reporter.close()
+            if self._terminal_graphics is not None:
+                # Its images were freed when the app exited or crashed; this also ends the payload job.
+                await self._terminal_graphics.close()
+            self._gc_freeze.close()
+            if self._gc_freeze_watchdog is not None:
+                self._gc_freeze_watchdog.stop()
+                self._gc_freeze_watchdog = None
+            if self._startup_task is not None and not self._startup_task.done():
+                self._startup_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._startup_task
+            self._startup_task = None
+            if self._update_check_task is not None and not self._update_check_task.done():
+                self._update_check_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._update_check_task
+            self._update_check_task = None
+            if self._left_behind_task is not None and not self._left_behind_task.done():
+                self._left_behind_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._left_behind_task
+            self._left_behind_task = None
+            await self._engine.shutdown()
+            # After the engine: its shutdown drains a still-finalizing run
+            # whose success callback can schedule one last title task; the
+            # updater must outlive the engine so that task is
+            # cancelled and awaited (its closed flag backstops other hosts).
+            if self._session_title_updater is not None:
+                await self._session_title_updater.shutdown()
+        finally:
+            # Clipboard failures must not prevent engine, signal or title cleanup.
+            try:
+                await close_clipboard(self)
+            except Exception:
+                logger.debug("Clipboard shutdown failed", exc_info=True)
+            finally:
+                # Keep repeat hangups handled through the last bounded drain,
+                # including cancellation or failure of clipboard cleanup.
+                for signum in HANGUP_SIGNALS:
+                    asyncio.get_running_loop().remove_signal_handler(signum)
 
     def _handle_exception(self, error: Exception) -> None:
         """Mirror Textual's crash handling, but also dump the traceback to a file.

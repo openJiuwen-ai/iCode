@@ -978,7 +978,7 @@ async def test_input_bar_relocalizes_semantic_state_and_cell_width_in_place(
         input_bar.retry_mode = False
         input_bar.agent_running = True
         input_bar.lock_with_text()
-        assert str(send.label) == "引导"
+        assert str(send.label) == "立刻发送"
 
     assert input_bar is not None
     assert input_bar not in controller._surfaces
@@ -1624,7 +1624,7 @@ async def test_input_bar_queued_draft_keeps_focus_until_unlock() -> None:
         assert text_area.disabled is False
         assert text_area.has_focus
         assert send_btn.disabled is False
-        assert str(send_btn.label) == "Steer"
+        assert str(send_btn.label) == "Send Now"
         assert ib.query_one("#cancel-btn", Button).display
         assert ib.query_one("#editor-btn", Button).render().plain == ">"
 

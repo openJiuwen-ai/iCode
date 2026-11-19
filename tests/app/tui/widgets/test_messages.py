@@ -20,6 +20,7 @@ from textual.pilot import Pilot
 from textual.selection import SELECT_ALL, Selection
 from textual.widgets import Button, Static
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.theme import CHRYS_THEME, TuiVariableDefaultsMixin
 from chrys.app.tui.widgets.chat import image_preview as image_preview_module
@@ -233,6 +234,7 @@ async def test_user_copy_button_shows_for_text_including_compressed_history(
 
         image_only.copy_user_message()
         assert pilot.app.clipboard == "existing"
+        await wait_for_clipboard(pilot.app)
         assert copied == []
 
 
@@ -590,6 +592,7 @@ async def test_empty_agent_message_hides_copy_button(monkeypatch: pytest.MonkeyP
 
         msg.copy_agent_response()
         assert pilot.app.clipboard == "existing"
+        await wait_for_clipboard(pilot.app)
         assert copied == []
 
 

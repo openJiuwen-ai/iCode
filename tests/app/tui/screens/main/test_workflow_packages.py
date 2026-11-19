@@ -33,6 +33,8 @@ from ._workflow_support import (
     workflow_notice_text,
 )
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 SOURCE = python_workflow("import helpers\ndef fn(value):\n    return value\n", "fn")
 FILES = {"helpers.py": b"VALUE = 1\n", "data/name.txt": b"world\n"}
 

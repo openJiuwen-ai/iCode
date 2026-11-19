@@ -16,6 +16,7 @@ from textual.widgets import Static
 from textual.widgets.text_area import Selection as TextAreaSelection
 
 from chrys.app.tui.behaviors import right_click_copy
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.screens.main.copy_actions import parse_copy_arguments
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.chat.messages import (
@@ -235,6 +236,7 @@ async def test_right_click_copies_chat_selection_then_clears_it(monkeypatch: pyt
         await pilot.pause()
 
         assert app.clipboard == text
+        await wait_for_clipboard(app)
         assert copied == [text]
         assert screen.get_selected_text() is None
 
@@ -283,6 +285,7 @@ async def test_right_click_input_selection_wins_over_stale_chat_selection(monkey
         await pilot.pause()
 
         assert app.clipboard == "input"
+        await wait_for_clipboard(app)
         assert copied == ["input"]
         assert text_area_copy_calls == [(input_area, True, "input")]
         assert input_area.selected_text == ""
@@ -476,6 +479,7 @@ async def test_right_click_over_markdown_removed_since_the_last_layout_still_cop
                 )
             )
 
+        await wait_for_clipboard(app)
         assert copied == [text]
         assert screen.selections == {}
         assert screen._mouse_down_offset is None
@@ -981,10 +985,12 @@ async def test_slash_copy_omits_colon_after_speaker_labels(monkeypatch: pytest.M
 
         app.main_screen._copy_agent_responses("all")
         assert app.clipboard == "[You]\nhello\n\n[Code Agent]\nhi there"
+        await wait_for_clipboard(app)
         assert copied[-1] == "[You]\nhello\n\n[Code Agent]\nhi there"
 
         app.main_screen._copy_agent_responses("")
         assert app.clipboard == "[Code Agent]\nhi there"
+        await wait_for_clipboard(app)
         assert copied[-1] == "[Code Agent]\nhi there"
 
 
@@ -1007,6 +1013,7 @@ async def test_agent_copy_button_copies_raw_final_response(monkeypatch: pytest.M
         await pilot.pause()
 
         assert app.clipboard == "hi **there**"
+        await wait_for_clipboard(app)
         assert copied[-1] == "hi **there**"
 
 
@@ -1031,6 +1038,7 @@ async def test_user_copy_button_copies_the_message_as_typed(monkeypatch: pytest.
         await pilot.pause()
 
         assert app.clipboard == text
+        await wait_for_clipboard(app)
         assert copied[-1] == text
 
 
@@ -1085,21 +1093,27 @@ async def test_slash_copy_supports_role_filters_and_all_turns(monkeypatch: pytes
         await pilot.pause()
 
         app.main_screen._copy_agent_responses("2")
+        await wait_for_clipboard(app)
         assert copied[-1] == "[Code Agent]\na2\n\n[Code Agent]\na3"
 
         app.main_screen._copy_agent_responses("agent 2")
+        await wait_for_clipboard(app)
         assert copied[-1] == "[Code Agent]\na2\n\n[Code Agent]\na3"
 
         app.main_screen._copy_agent_responses("user 2")
+        await wait_for_clipboard(app)
         assert copied[-1] == "[You]\nu2\n\n[You]\nu3"
 
         app.main_screen._copy_agent_responses("agent all")
+        await wait_for_clipboard(app)
         assert copied[-1] == "[Code Agent]\na1\n\n[Code Agent]\na2\n\n[Code Agent]\na3"
 
         app.main_screen._copy_agent_responses("user all")
+        await wait_for_clipboard(app)
         assert copied[-1] == "[You]\nu1\n\n[You]\nu2\n\n[You]\nu3"
 
         app.main_screen._copy_agent_responses("all")
+        await wait_for_clipboard(app)
         assert copied[-1] == (
             "[You]\nu1\n\n[Code Agent]\na1\n\n[You]\nu2\n\n[Code Agent]\na2\n\n[You]\nu3\n\n[Code Agent]\na3"
         )

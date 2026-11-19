@@ -31,6 +31,8 @@ from tests.app.acp._session_manager_fakes import (
     _StaticListStore,
     _unsupported_sse_mcp,
 )
+from tests.support.async_tasks import running_task, wait_for_completion
+from tests.support.waiting import wait_for
 from tests.support.workflow_history import workflow_state
 
 
@@ -683,15 +685,18 @@ async def test_close_waits_for_session_prompt_lock(tmp_path) -> None:
     )
     manager._sessions["s1"] = managed
 
-    async with managed.prompt_lock:
-        task = asyncio.create_task(manager.close("s1"))
-        await asyncio.sleep(0)
-        assert not task.done()
-        assert host.shutdown_called is False
-        with pytest.raises(AcpSessionError, match="not active"):
-            manager.get("s1")
+    async with running_task(manager.close("s1")) as task:
+        async with managed.prompt_lock:
+            await wait_for(lambda: managed.closing or task.done(), description="session marked closing")
+            if task.done():
+                await task
+            assert managed.closing
+            assert not task.done()
+            assert host.shutdown_called is False
+            with pytest.raises(AcpSessionError, match="not active"):
+                manager.get("s1")
 
-    await asyncio.wait_for(task, timeout=1)
+        await wait_for_completion(task)
     assert host.shutdown_called is True
 
 

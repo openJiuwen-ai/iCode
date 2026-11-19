@@ -56,6 +56,8 @@ from ._workflow_support import (
     workflow_selection,
 )
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 LOOP_SOURCE = b"""from chrys.workflows import WorkflowBuilder
 def echo(value):
     return value

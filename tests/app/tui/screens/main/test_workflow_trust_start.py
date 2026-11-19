@@ -23,6 +23,8 @@ from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, confirm_workflow_cancel, open_workflow, select_workflow_view
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_trust_dialog_precedes_top_level_execution_and_cancel_has_no_side_effects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
