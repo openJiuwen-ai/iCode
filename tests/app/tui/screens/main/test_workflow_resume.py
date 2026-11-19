@@ -7,6 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
@@ -16,6 +18,8 @@ from tests.support.waiting import wait_for
 from tests.support.workflow_history import record_workflow_run
 
 from ._workflow_support import WorkflowEngine, save_workflow_session
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 
 async def test_resume_chat_ignores_a_newer_workflow_session(tmp_path: Path) -> None:

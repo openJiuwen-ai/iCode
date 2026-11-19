@@ -28,6 +28,8 @@ from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, open_workflow, switch_mode
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("changed", [False, True])
 async def test_workspace_update_with_same_cwd_preserves_preparation_and_captures_all_paths(

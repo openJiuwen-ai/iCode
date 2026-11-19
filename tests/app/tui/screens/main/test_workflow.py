@@ -49,6 +49,8 @@ from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import CONDITIONAL_LOOP_WORKFLOW, python_workflow
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_mode_drafts_selection_confirmation_and_keyboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project = make_project(tmp_path)

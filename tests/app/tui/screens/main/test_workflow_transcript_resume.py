@@ -35,6 +35,8 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 from ._workflow_support import WorkflowEngine, switch_mode
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "retried"])
 async def test_resume_replays_node_progress_without_live_state_or_workflow_source(

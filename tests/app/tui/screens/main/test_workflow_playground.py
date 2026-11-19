@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.screen import MainScreen
     from chrys.orchestration.session_host import ChrysSessionHost
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 PLAYGROUND_SOURCE = Path(__file__).resolve().parents[4] / "service/workflows/fixtures/retry_playground.py"
 # The fixture paces itself for a person watching. These tests follow its events, so a slow
 # runner spends its per-test budget on the two real workers and the TUI, not on waiting.

@@ -56,6 +56,8 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.screen import MainScreen
     from chrys.orchestration.workflows.preview import WorkflowPreview
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 _SUMMARY_ONLY = "Full output is unavailable. Only the saved summary is shown."
 
 

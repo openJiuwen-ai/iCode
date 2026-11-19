@@ -96,17 +96,16 @@ def isolate_gc_freeze_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest.fixture
 def frozen_earlier_heap() -> Iterator[None]:
-    """Keep what earlier tests in this worker left alive out of this test's full collections.
+    """Keep earlier tests' objects out of full collections during timed TUI interactions.
 
-    A transcript replay ends its GC pause with one full ``gc.collect()``. That pass walks every
-    tracked object in the process, so its cost grows with the worker's whole history, not with
-    the replay: a quarter second in a long-lived worker, seconds on a loaded runner. Frozen,
-    that heap is skipped and the pass walks only what this test allocated.
+    Replays explicitly collect, and an automatic gen2 collection can also run while a
+    workflow test is waiting for its interpreter. Reclaim unreachable cycles before
+    freezing the survivors. Otherwise consecutive marked tests keep freezing discarded
+    widget trees until a later test has to collect the entire backlog.
 
-    Opt in with ``pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")`` in modules that
-    replay transcripts; never in one that exercises the GC freeze or the scroll GC pause, which
-    count frozen objects and collections themselves.
+    Use only for tests that do not exercise the GC freeze or scroll GC pause themselves.
     """
+    gc.collect()
     gc.freeze()
     yield
     gc.unfreeze()

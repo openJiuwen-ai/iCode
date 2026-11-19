@@ -44,6 +44,8 @@ from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, open_workflow, run_store, value_text, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_global_shadowed_symlink_delete_forgets_ledger_but_keeps_target(
     tmp_path: Path,

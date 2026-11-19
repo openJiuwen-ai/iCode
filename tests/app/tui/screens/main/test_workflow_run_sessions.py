@@ -53,6 +53,8 @@ if TYPE_CHECKING:
     from chrys.app.tui.widgets.workflow.projector import ObservedRun
     from chrys.service.workflows.artifacts import WorkflowRunRecord
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 class _Cover(ModalScreen[None]):
     def compose(self) -> ComposeResult:

@@ -43,6 +43,8 @@ if TYPE_CHECKING:
     from rich.console import Console, ConsoleOptions
     from rich.segment import Segment
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_execution_transitions_invalidate_workflow_bindings_without_focus_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

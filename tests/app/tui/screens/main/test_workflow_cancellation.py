@@ -26,6 +26,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, confirm_workflow_cancel, open_workflow
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("detail_open", [True, False])
 async def test_stop_settles_node_process_and_rejects_late_activity(

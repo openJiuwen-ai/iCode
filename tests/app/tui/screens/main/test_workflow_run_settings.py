@@ -43,6 +43,8 @@ if TYPE_CHECKING:
 
     from chrys.app.tui.screens.main.screen import MainScreen
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def _choose_directory(main: MainScreen, pilot: Pilot, path: Path, entry: str) -> WorkflowInputDialog | None:
     dialog = None

@@ -23,6 +23,8 @@ from tests.support.tui_helpers import rich_plain
 from tests.support.waiting import wait_for
 from tests.support.workflow_workers import python_workflow
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("width", [140, 90])
 async def test_welcome_follows_mode_workspace_and_locale(
