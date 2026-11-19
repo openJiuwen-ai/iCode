@@ -278,7 +278,9 @@ def _replace_index(
     ensure_analytics_item_id(index.additional_properties)
 
     kept = [m for m in messages if m is not previous_index]
-    position = next(index_ for index_, m in enumerate(kept) if _is_summary(m))
+    # No summary left in the head (only the index itself, or none at all):
+    # the index still leads the history.
+    position = next((index_ for index_, m in enumerate(kept) if _is_summary(m)), 0)
     state["messages"] = [*kept[:position], index, *kept[position:]]
     return ArchiveMerge(index=index, previous_index=previous_index, merged_summaries=())
 
