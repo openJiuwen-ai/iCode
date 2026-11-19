@@ -63,6 +63,7 @@ class ToolGroupRegistry:
         self._sub_agent_owning_groups: dict[SubAgentToolCall, ToolGroup] = {}
         self._unlinked_sub_agents: dict[str, list[SubAgentToolCall]] = {}
         self._tool_groups_by_call_id: dict[str, ToolGroup] = {}
+        self._turn_groups: set[ToolGroup] = set()
         self._tool_kinds: dict[str, str] = {}
         self._group_generation = 0
         self._group_open_lock = asyncio.Lock()
@@ -139,9 +140,13 @@ class ToolGroupRegistry:
         self._sub_agent_owning_groups.clear()
         self._unlinked_sub_agents.clear()
         self._tool_groups_by_call_id.clear()
+        self._turn_groups.clear()
 
-    def end_group(self) -> None:
+    def end_group(self, *, new_turn: bool = False) -> None:
         """Close the current tool group so the next tool starts a new group."""
+        if new_turn:
+            # Late results still route to the old group until a new start claims the ID.
+            self._turn_groups.clear()
         if self._current_tool_group is not None:
             self._current_tool_group.finalize_activity_header()
         self._group_generation += 1
@@ -224,7 +229,7 @@ class ToolGroupRegistry:
         """
         group_generation = self._group_generation
         owner = self._tool_groups_by_call_id.get(call_id)
-        if owner is not None and owner.ignores_repeated_start(call_id):
+        if owner is not None and owner in self._turn_groups and owner.ignores_repeated_start(call_id):
             return
         group = self._current_tool_group
         if running_in_place and owner is not None and owner.is_tool_running(call_id):
@@ -309,6 +314,7 @@ class ToolGroupRegistry:
             if mount_live is None and self._finalize_agent_message is not None:
                 self._finalize_agent_message()
             self._current_tool_group = group
+            self._turn_groups.add(group)
             return group
 
     async def add_tool_result(

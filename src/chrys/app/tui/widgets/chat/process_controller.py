@@ -209,7 +209,9 @@ class ProcessController:
         if new and not await self._mount_live_header(row, before=message):
             await self.remove_live_members((message,))
             return
-        self._arrange_live_segment(row)
+        # Later thinking may have moved the provisional answer below it.
+        if row.latest is not message:
+            self._arrange_live_segment(row)
         self._host.process_members_changed()
 
     def _register_live_member(
@@ -230,11 +232,11 @@ class ProcessController:
         seq = self._host.transcript_occurrence(member)
         index = len(row.members)
         if seq is not None:
-            for i, existing in enumerate(row.members):
-                existing_seq = self._host.transcript_occurrence(existing)
-                if existing_seq is None or existing_seq > seq:
-                    index = i
+            while index:
+                previous = self._host.transcript_occurrence(row.members[index - 1])
+                if previous is not None and previous <= seq:
                     break
+                index -= 1
         row.members.insert(index, member)
         self._owners[member] = ref(row)
         member.set_live_status_reporting(True)
@@ -410,7 +412,10 @@ class ProcessController:
         row.update_status()
 
     def thinking_finished(self, member: ThinkingMessage) -> None:
-        if self.owner_of(member) is not None:
+        owner = self.owner_of(member)
+        if isinstance(owner, LiveProcessRow) and owner.collapsed and not member.process_hidden:
+            self._sync_member_visibility(owner, member)
+        if owner is not None:
             self._host.process_members_changed()
 
     def set_live_row_collapsed(self, row: LiveProcessRow, collapsed: bool) -> None:

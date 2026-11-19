@@ -212,7 +212,7 @@ class LiveTranscriptRenderer:
         elif self._tools.current_tool_group is not None:
             # The turn goes on below the message: what it went past folds once that starts, as with no message.
             self._group_to_fold = self._tools.current_tool_group
-        self._tools.end_group()
+        self._tools.end_group(new_turn=not is_injection)
         self._finalize_current_agent_message()
         timestamp = format_message_created_at(created_at, self._resolve_message)
 

@@ -534,6 +534,56 @@ async def test_new_thinking_in_an_open_process_appears_above_the_streaming_answe
         assert not panel.query_one(WaitingRow).display
 
 
+async def test_text_followed_by_tools_keeps_arrival_order_without_scanning_the_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("prompt")
+        await _read(panel, "first", "first.py")
+        scan = create_autospec(panel.current_turn_children, side_effect=panel.current_turn_children)
+        monkeypatch.setattr(panel, "current_turn_children", scan)
+        for index in range(4):
+            await _say(panel, f"a{index}", "Checking another file.")
+            await _read(panel, f"c{index}", f"{index}.py")
+        scan.assert_not_called()
+
+
+async def test_finishing_an_open_thought_hides_it_under_its_folded_process() -> None:
+    async with ChatPanelApp(thinking_expanded=_on).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("prompt")
+        await _think(panel, "r1", "Working.", finish=False)
+        row = _row(panel)
+        await click_when_settled(pilot, row)
+        thought = panel.query_one(ThinkingMessage)
+        await click_when_settled(pilot, thought.query_one(".fold-row-header"))
+        await click_when_settled(pilot, row)
+        assert row.collapsed and thought.display and not thought.collapsed
+        panel.finish_thinking_segment("r1")
+        await panel.add_answer_delta("a1", "Done.")
+        await _settled(pilot)
+        assert row.collapsed and not thought.display
+        await click_when_settled(pilot, row)
+        assert thought.display
+
+
+async def test_paused_sub_agent_reusing_a_previous_turns_id_has_its_own_card() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("first turn")
+        await _read(panel, "same", "first.py")
+        await _finish(panel)
+        await panel.add_user_message("second turn")
+        await panel.add_tool_start("same", "Explore", KIND_SUB_AGENT, args={"task": "inspect"})
+        panel.link_sub_agent_invocation("same", "sub", "Explore", tool_name="Explore")
+        panel.sub_agent_paused("sub", "acp_transport", "connection closed", 2)
+        await _settled(pilot)
+        first, second = panel.query(ToolGroup)
+        assert first.all_complete and first._tool_records["same"].result == "ok"
+        assert second.get_tool("same") is not None and second.collapse_locked and second.display
+
+
 @pytest.mark.parametrize("finished", [False, True])
 async def test_the_segment_title_leaves_a_notice_where_it_appeared(finished: bool) -> None:
     async with ChatPanelApp(thinking_expanded=_on).run_test(size=(100, 40)) as pilot:
