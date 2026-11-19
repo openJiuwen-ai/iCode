@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 _HEADER_LIMIT = 16 * 1024
 _RELAY_BYTES = 65536
+# Header read and the upstream TCP handshake only. Cleared once both sockets
+# are relaying, so a quiet client does not abort a download still arriving.
+_HANDSHAKE_TIMEOUT_SECONDS = 10
 
 # Ranges a sandboxed command must not reach through the proxy.
 _BLOCKED = (
@@ -55,11 +58,7 @@ def address_is_blocked(value: str) -> bool:
         mapped = address.ipv4_mapped
         if mapped is not None:
             address = mapped
-    return any(
-        address in network
-        for network in _BLOCKED
-        if network.version == address.version
-    )
+    return any(address in network for network in _BLOCKED if network.version == address.version)
 
 
 def dial_address(host: str) -> str | None:
@@ -164,7 +163,7 @@ class GuardedProxy:
 
 
 def _read_header(client: socket.socket) -> bytes:
-    client.settimeout(10)
+    client.settimeout(_HANDSHAKE_TIMEOUT_SECONDS)
     data = bytearray()
     while b"\r\n\r\n" not in data:
         if len(data) > _HEADER_LIMIT:
@@ -235,11 +234,14 @@ def _handle_client(client: socket.socket) -> None:
         if dial is None:
             client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
             return
-        remote = socket.create_connection((dial, port), timeout=10)
+        remote = socket.create_connection((dial, port), timeout=_HANDSHAKE_TIMEOUT_SECONDS)
         if method == "CONNECT":
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         else:
             remote.sendall(header)
+        # Blocking relay: the handshake deadline must not apply to a download.
+        client.settimeout(None)
+        remote.settimeout(None)
         _relay(client, remote)
     except (OSError, ValueError, UnicodeError):
         try:

@@ -1,20 +1,23 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Supervisor unit tests. The launcher is never executed and no socket is bound."""
+"""Supervisor unit tests. The bundled launcher is never executed and no socket is bound."""
 
 from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import os
+import signal
 import socket
 import subprocess
 import sys
 import tomllib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 import httpx
 import pytest
@@ -46,9 +49,18 @@ class _FakeProcess:
     returncode: int | None = None
     stderr: str = ""
     stdout: str = ""
+    pid: int | None = None
 
     async def startup_output(self) -> tuple[str, str]:
         return self.stderr, self.stdout
+
+    async def request_exit(self) -> None:
+        return None
+
+    async def wait(self) -> int:
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
 
 
 @pytest.fixture(autouse=True)
@@ -712,6 +724,149 @@ async def test_shutdown_close_does_not_raise_async_generator_already_running(
     await supervisor._shutdown()
     assert entered is True
     assert proc.returncode is None
+
+
+_SIGNAL_RECORD = "SANDBOX_LAUNCHER_SIGNAL_PATH"
+_CATCHES_SIGTERM = """\
+import os
+import signal
+import time
+from pathlib import Path
+
+path = Path(os.environ["SANDBOX_LAUNCHER_SIGNAL_PATH"])
+
+def stop(signum, _frame):
+    path.write_text(str(signum), encoding="utf-8")
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+path.write_text("ready", encoding="utf-8")
+while True:
+    time.sleep(3600)
+"""
+_IGNORES_SIGTERM = """\
+import os
+import signal
+import time
+from pathlib import Path
+
+path = Path(os.environ["SANDBOX_LAUNCHER_SIGNAL_PATH"])
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+path.write_text("ready", encoding="utf-8")
+time.sleep(3600)
+"""
+
+
+async def _start_signal_child(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    script: str,
+) -> tuple[Path, supervisor._RunningServer]:
+    marker = tmp_path / "signal.txt"
+    monkeypatch.setenv(_SIGNAL_RECORD, str(marker))
+    monkeypatch.setattr(supervisor, "_launcher_argv", lambda: [sys.executable, "-c", script])
+    monkeypatch.setattr(supervisor, "_spawn_launcher", _REAL_SPAWN)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    await supervisor.ensure_started()
+    running = supervisor._server
+    assert running is not None
+    await wait_for(
+        lambda: marker.is_file() and marker.read_text(encoding="utf-8") == "ready",
+        description="launcher child is ready",
+    )
+    return marker, running
+
+
+def _assert_stopped_by_sigterm(marker: Path, returncode: int | None) -> None:
+    recorded = marker.read_text(encoding="utf-8")
+    if recorded == str(signal.SIGTERM):
+        assert returncode == 0
+        return
+    # Windows ends the process with TerminateProcess and does not enter the handler.
+    assert sys.platform == "win32"
+    assert recorded == "ready"
+    assert returncode == signal.SIGTERM
+
+
+async def test_stop_delivers_sigterm_before_the_kill_backstop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A child that exits on SIGTERM is not killed again when the stack closes."""
+    marker, running = await _start_signal_child(monkeypatch, tmp_path, _CATCHES_SIGTERM)
+    try:
+        await supervisor.shutdown()
+        _assert_stopped_by_sigterm(marker, running.proc.returncode)
+    finally:
+        await running.closer.aclose()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot ignore SIGTERM")
+async def test_ignored_sigterm_is_killed_within_the_grace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The grace wait is the bound. When it ends, the close still SIGKILLs the child."""
+    marker, running = await _start_signal_child(monkeypatch, tmp_path, _IGNORES_SIGTERM)
+
+    async def wait_for_exit(awaitable: Awaitable[int], timeout: float) -> int:
+        assert timeout == supervisor._STOP_GRACE_SECONDS
+        return await asyncio.wait_for(awaitable, 0)
+
+    shadow = ModuleType("asyncio")
+    shadow.__dict__.update(vars(asyncio), wait_for=wait_for_exit)
+    monkeypatch.setattr(supervisor, "asyncio", shadow)
+    try:
+        await supervisor.shutdown()
+        assert marker.read_text(encoding="utf-8") == "ready"
+        assert running.proc.returncode == -signal.SIGKILL
+    finally:
+        await running.closer.aclose()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot ignore SIGTERM")
+async def test_cancelling_the_stop_still_kills_a_child_that_ignores_sigterm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A second cancel waits out the grace and still reaches the kill backstop."""
+    marker, running = await _start_signal_child(monkeypatch, tmp_path, _IGNORES_SIGTERM)
+    grace_entered = asyncio.Event()
+    release_grace = asyncio.Event()
+
+    async def wait_for_exit(awaitable: Awaitable[int], timeout: float) -> int:
+        assert timeout == supervisor._STOP_GRACE_SECONDS
+        grace_entered.set()
+        await release_grace.wait()
+        return await asyncio.wait_for(awaitable, 0)
+
+    shadow = ModuleType("asyncio")
+    shadow.__dict__.update(vars(asyncio), wait_for=wait_for_exit)
+    monkeypatch.setattr(supervisor, "asyncio", shadow)
+    task = asyncio.create_task(supervisor.shutdown())
+    try:
+        await wait_for(
+            lambda: grace_entered.is_set() or task.done(),
+            description="grace wait is in progress",
+        )
+        assert not task.done()
+        task.cancel()
+        release_grace.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert marker.read_text(encoding="utf-8") == "ready"
+        assert running.proc.returncode == -signal.SIGKILL
+    finally:
+        release_grace.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await running.closer.aclose()
 
 
 async def test_bundled_server_sends_a_fresh_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:

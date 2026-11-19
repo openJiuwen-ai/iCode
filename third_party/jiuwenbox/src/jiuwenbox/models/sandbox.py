@@ -9,14 +9,13 @@ import uuid
 from datetime import datetime
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
+
 from jiuwenbox.server.runtime.errors import InvalidJobIdError, InvalidSandboxIdError
 from jiuwenbox.supervisor.daemon_ipc import SANDBOX_IP_ENV
 
 SANDBOX_ID_MIN_LEN = 4
 SANDBOX_ID_MAX_LEN = 40
-CUSTOM_SANDBOX_ID_RE = re.compile(
-    rf"^[0-9a-z_-]{{{SANDBOX_ID_MIN_LEN},{SANDBOX_ID_MAX_LEN}}}$"
-)
+CUSTOM_SANDBOX_ID_RE = re.compile(rf"^[0-9a-z_-]{{{SANDBOX_ID_MIN_LEN},{SANDBOX_ID_MAX_LEN}}}$")
 
 SANDBOX_ID_FORMAT_MESSAGE = (
     f"sandbox_id must be {SANDBOX_ID_MIN_LEN}-{SANDBOX_ID_MAX_LEN} characters "
@@ -25,20 +24,14 @@ SANDBOX_ID_FORMAT_MESSAGE = (
 )
 
 
-
-
 JOB_ID_MIN_LEN = 4
 JOB_ID_MAX_LEN = 40
-CUSTOM_JOB_ID_RE = re.compile(
-    rf"^[0-9a-z_-]{{{JOB_ID_MIN_LEN},{JOB_ID_MAX_LEN}}}$"
-)
+CUSTOM_JOB_ID_RE = re.compile(rf"^[0-9a-z_-]{{{JOB_ID_MIN_LEN},{JOB_ID_MAX_LEN}}}$")
 
 JOB_ID_FORMAT_MESSAGE = (
     f"job_id must be {JOB_ID_MIN_LEN}-{JOB_ID_MAX_LEN} characters and contain "
     "only lowercase letters, digits, hyphens, and underscores (e.g. http-srv)"
 )
-
-
 
 
 def generate_sandbox_id() -> str:
@@ -89,7 +82,9 @@ class SandboxRef(BaseModel):
 
     id: str
     phase: SandboxPhase = SandboxPhase.PROVISIONING
-    runtime: str = Field(default="process", validation_alias=AliasChoices("runtime", "sandbox_runtime"))
+    runtime: str = Field(
+        default="process", validation_alias=AliasChoices("runtime", "sandbox_runtime")
+    )
 
     pid: int | None = None
     created_at: datetime = Field(default_factory=datetime.now)
@@ -109,6 +104,9 @@ class ExecResult(BaseModel):
     exit_code: int
     stdout: str = ""
     stderr: str = ""
+    # True only when the daemon reports error "timeout". Exit code 124
+    # alone is not a timeout: other failures reuse that code.
+    timed_out: bool = False
 
 
 class BackgroundExecRequest(BaseModel):

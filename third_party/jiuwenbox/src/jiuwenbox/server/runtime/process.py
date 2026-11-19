@@ -77,6 +77,7 @@ from jiuwenbox.supervisor.daemon_ipc import (
     encode_request,
     recv_frame,
     send_frame,
+    send_frame_with_fds,
 )
 from jiuwenbox.supervisor.disk_floor import any_below_floor
 from jiuwenbox.supervisor.guarded_proxy import GuardedProxy
@@ -804,7 +805,7 @@ class _DaemonExecCall:
     stdin_bytes: bytes | None
     timeout: float | None
     ipc: _ExecIpcSlot
-    cgroup_procs: tuple[str, ...] = ()
+    cgroup_fds: tuple[int, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -829,7 +830,7 @@ class _DaemonBgExecCall:
     env: dict[str, str] | None
     workdir: str | None
     stdin_bytes: bytes | None
-    cgroup_procs: tuple[str, ...] = ()
+    cgroup_fds: tuple[int, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1106,6 +1107,12 @@ def _safe_close_fd(fd: int) -> None:
         os.close(fd)
     except OSError:
         logger.debug("Failed to close fd %d", fd, exc_info=True)
+
+
+def _close_cgroup_fds(fds: tuple[int, ...] | list[int]) -> None:
+    """Close command-cgroup fds once. A second close of a reused number is not attempted."""
+    for fd in fds:
+        _safe_close_fd(fd)
 
 
 def _summarize_command(command: list[str], max_length: int = 180) -> str:
@@ -1483,7 +1490,17 @@ class ProcessRuntime(RuntimeAdapter):
         payload = self._landlock_payloads.get(sandbox_id)
         if payload is not None:
             return payload
-        payload = encode_landlock_payload(policy)
+        # The private tmpfs on /tmp is created after the policy's read-only
+        # rule. Landlock unions rights, so a read-write rule for that exact
+        # path allows create and write inside the tmpfs. The host /tmp is
+        # not bind-mounted. A disabled Landlock policy is left unchanged.
+        ruled = policy
+        if policy.landlock.compatibility != "disabled":
+            ruled = policy.model_copy(deep=True)
+            read_write = ruled.filesystem_policy.read_write
+            if "/tmp" not in read_write:
+                read_write.append("/tmp")
+        payload = encode_landlock_payload(ruled)
         self._landlock_payloads[sandbox_id] = payload
         return payload
 
@@ -1628,15 +1645,13 @@ class ProcessRuntime(RuntimeAdapter):
         config.seccomp_fd = seccomp_fd
         _cover_host_runtime_directories(config)
         _rebind_under_private_tmpfs(config)
-        cgroup_handle = self._cgroup_handles.get(sandbox_id)
-        if cgroup_handle is not None:
-            # After the private /run tmpfs. An earlier bind would be hidden.
-            config.extra_args.extend(cgroup_module.sandbox_cgroup_bind_args(cgroup_handle))
+        # The command cgroup is not mounted. The host passes only that
+        # command's cgroup.procs fd on the exec request.
         if policy.network.mode == NetworkMode.GUARDED:
             proxy = self._guarded_proxies.get(sandbox_id)
             if proxy is not None and proxy.path is not None:
-                # Same reason as the cgroup bind: the private /run tmpfs
-                # would cover a socket mounted earlier.
+                # After the private /run tmpfs, which would cover a socket
+                # mounted earlier.
                 config.extra_args.extend(("--bind", str(proxy.path), "/run/guarded-proxy.sock"))
         _drop_host_session_env(config)
         if self._needs_privdrop_for_process_identity(
@@ -2995,14 +3010,14 @@ class ProcessRuntime(RuntimeAdapter):
         self._teardown_cgroup(sandbox_id)
 
     def _prepare_cgroup(self, sandbox_id: str, policy: SecurityPolicy) -> None:
-        """Create the sandbox cgroup before the mount and Landlock payload.
+        """Create the sandbox cgroup before the daemon starts.
 
-        The command cgroup directory has to be a read-write bind inside the
-        sandbox, and Landlock has to allow writes there. Both are fixed when
-        the daemon starts, so the cgroup exists before either is built.
-        An empty policy skips this. When this user cannot create a cgroup,
-        the sandbox still starts. Memory and process limits are absent, and
-        stopping a detached command falls back to the process group.
+        The command directory is not mounted and is not added to Landlock.
+        Each exec opens only that command's ``cgroup.procs`` and passes the
+        fd. An empty policy skips this. When this user cannot create a
+        cgroup, the sandbox still starts. Memory and process limits are
+        absent, and stopping a detached command falls back to the process
+        group.
         """
         if policy.cgroup.is_empty():
             return
@@ -3028,9 +3043,6 @@ class ProcessRuntime(RuntimeAdapter):
                 f"Failed to apply cgroup limits for sandbox {sandbox_id}: "
                 "supervisor child was not created"
             )
-        root = cgroup_module.SANDBOX_COMMAND_CGROUP_ROOT
-        if root not in policy.filesystem_policy.read_write:
-            policy.filesystem_policy.read_write.append(root)
         self._cgroup_handles[sandbox_id] = handle
 
     def _open_command_cgroup(
@@ -3059,6 +3071,39 @@ class ProcessRuntime(RuntimeAdapter):
                 stderr=f"failed to create command cgroup: {exc}",
             )
         return command, None
+
+    def _take_command_cgroup_fds(
+        self,
+        sandbox_id: str,
+    ) -> tuple[cgroup_module.CommandCgroup | None, list[int], ExecResult | None]:
+        """Create the command cgroup and open its ``cgroup.procs`` fds.
+
+        No handle means this sandbox has no cgroup. A sandbox that has one
+        must not exec when the directory cannot be created or the fd cannot
+        be opened. There is no mount fallback.
+        """
+        command, failure = self._open_command_cgroup(sandbox_id)
+        if failure is not None or command is None:
+            return command, [], failure
+        try:
+            fds = cgroup_module.open_command_cgroup_fds(command)
+        except OSError as exc:
+            logger.error(
+                "Failed to open command cgroup fd for sandbox %s: %s",
+                sandbox_id,
+                exc,
+            )
+            self._release_command_cgroup(command)
+            return (
+                None,
+                [],
+                ExecResult(
+                    exit_code=1,
+                    stdout="",
+                    stderr=f"failed to pass command cgroup: {exc}",
+                ),
+            )
+        return command, fds, None
 
     @staticmethod
     def _release_command_cgroup(command: cgroup_module.CommandCgroup | None) -> None:
@@ -3200,10 +3245,30 @@ class ProcessRuntime(RuntimeAdapter):
         sock: socket.socket,
         header_blob: bytes,
         stdin_bytes: bytes | None,
+        cgroup_fds: list[int] | None = None,
     ) -> None:
-        send_frame(sock, header_blob)
+        fds = list(cgroup_fds or ())
+        if fds:
+            send_frame_with_fds(sock, header_blob, fds)
+        else:
+            send_frame(sock, header_blob)
         if stdin_bytes:
             sock.sendall(stdin_bytes)
+
+    @staticmethod
+    def _exec_result_from_daemon_response(response: dict[str, Any]) -> ExecResult:
+        """Map a daemon exec response onto :class:`ExecResult`.
+
+        ``timed_out`` is set only when the daemon's ``error`` field is
+        ``timeout``. An exit code of 124 from any other failure stays false.
+        """
+        error = response.get("error")
+        return ExecResult(
+            exit_code=int(response.get("exit_code", 1)),
+            stdout=str(response.get("stdout", "")),
+            stderr=str(response.get("stderr", "")),
+            timed_out=error == "timeout",
+        )
 
     @staticmethod
     def _read_response_blob(sock: socket.socket) -> dict[str, Any]:
@@ -3293,7 +3358,11 @@ class ProcessRuntime(RuntimeAdapter):
             "command": list(call.command),
             "stdin_size": len(call.stdin_bytes or b""),
         }
-        if self._use_python_fastpath(list(call.command), call.sandbox_id):
+        # A command cgroup is joined from the passed fd. The resident
+        # fast path has no preexec hook, so it cannot take that fd.
+        if call.cgroup_fds:
+            request_payload["cgroup_fd_count"] = len(call.cgroup_fds)
+        elif self._use_python_fastpath(list(call.command), call.sandbox_id):
             request_payload["python_fastpath"] = True
         if call.env:
             request_payload["env"] = dict(call.env)
@@ -3301,13 +3370,12 @@ class ProcessRuntime(RuntimeAdapter):
             request_payload["workdir"] = call.workdir
         if call.timeout is not None:
             request_payload["timeout"] = call.timeout
-        if call.cgroup_procs:
-            request_payload["cgroup_procs"] = list(call.cgroup_procs)
         header_blob = encode_request(
             request_type=REQUEST_TYPE_EXEC,
             payload=request_payload,
         )
         if len(header_blob) > MAX_HEADER_BYTES:
+            _close_cgroup_fds(call.cgroup_fds)
             return ExecResult(
                 exit_code=1,
                 stderr=(
@@ -3315,7 +3383,11 @@ class ProcessRuntime(RuntimeAdapter):
                 ),
             )
 
-        sock = self._connect_daemon_socket(call.socket_path)
+        try:
+            sock = self._connect_daemon_socket(call.socket_path)
+        except OSError:
+            _close_cgroup_fds(call.cgroup_fds)
+            raise
         try:
             # Cancel may have won before this thread connected. Close the
             # new socket immediately so the command is never sent.
@@ -3331,7 +3403,7 @@ class ProcessRuntime(RuntimeAdapter):
                 sock.settimeout(call.timeout + EXEC_IPC_READ_MARGIN_SECONDS)
             else:
                 sock.settimeout(DEFAULT_EXEC_IPC_READ_TIMEOUT_SECONDS)
-            self._send_request_blob(sock, header_blob, call.stdin_bytes)
+            self._send_request_blob(sock, header_blob, call.stdin_bytes, list(call.cgroup_fds))
             try:
                 sock.shutdown(socket.SHUT_WR)
             except OSError:
@@ -3344,15 +3416,12 @@ class ProcessRuntime(RuntimeAdapter):
                 return None
             raise
         finally:
+            _close_cgroup_fds(call.cgroup_fds)
             with contextlib.suppress(OSError):
                 sock.close()
             call.ipc.release()
 
-        return ExecResult(
-            exit_code=int(response.get("exit_code", 1)),
-            stdout=str(response.get("stdout", "")),
-            stderr=str(response.get("stderr", "")),
-        )
+        return self._exec_result_from_daemon_response(response)
 
     def _exec_background_via_daemon_blocking(
         self,
@@ -3367,13 +3436,14 @@ class ProcessRuntime(RuntimeAdapter):
             request_payload["env"] = dict(call.env)
         if call.workdir:
             request_payload["workdir"] = call.workdir
-        if call.cgroup_procs:
-            request_payload["cgroup_procs"] = list(call.cgroup_procs)
+        if call.cgroup_fds:
+            request_payload["cgroup_fd_count"] = len(call.cgroup_fds)
         header_blob = encode_request(
             request_type=REQUEST_TYPE_EXEC_BACKGROUND,
             payload=request_payload,
         )
         if len(header_blob) > MAX_HEADER_BYTES:
+            _close_cgroup_fds(call.cgroup_fds)
             return {
                 "ok": False,
                 "started": False,
@@ -3382,16 +3452,21 @@ class ProcessRuntime(RuntimeAdapter):
                 ),
             }
 
-        sock = self._connect_daemon_socket(call.socket_path)
+        try:
+            sock = self._connect_daemon_socket(call.socket_path)
+        except OSError:
+            _close_cgroup_fds(call.cgroup_fds)
+            raise
         try:
             sock.settimeout(30.0)
-            self._send_request_blob(sock, header_blob, call.stdin_bytes)
+            self._send_request_blob(sock, header_blob, call.stdin_bytes, list(call.cgroup_fds))
             try:
                 sock.shutdown(socket.SHUT_WR)
             except OSError:
                 pass
             return self._read_response_blob(sock)
         finally:
+            _close_cgroup_fds(call.cgroup_fds)
             try:
                 sock.close()
             except OSError:
@@ -3481,7 +3556,7 @@ class ProcessRuntime(RuntimeAdapter):
 
         loop = asyncio.get_running_loop()
         oom_before = self._cgroup_oom_kill_count(sandbox_id)
-        command_cgroup, failure = self._open_command_cgroup(sandbox_id)
+        command_cgroup, cgroup_fds, failure = self._take_command_cgroup_fds(sandbox_id)
         if failure is not None:
             return failure
         slot = _ExecIpcSlot()
@@ -3497,9 +3572,7 @@ class ProcessRuntime(RuntimeAdapter):
                 stdin_bytes=request.stdin_data,
                 timeout=request.timeout,
                 ipc=slot,
-                cgroup_procs=(
-                    () if command_cgroup is None else tuple(command_cgroup.sandbox_procs_paths())
-                ),
+                cgroup_fds=tuple(cgroup_fds),
             ),
         )
         try:
@@ -3988,14 +4061,13 @@ class ProcessRuntime(RuntimeAdapter):
                 ),
             )
 
-        command_cgroup, failure = self._open_command_cgroup(sandbox_id)
+        command_cgroup, cgroup_fds, failure = self._take_command_cgroup_fds(sandbox_id)
         if failure is not None:
             return BackgroundExecResult(
                 started=False,
                 command=list(request.command),
                 error_message=failure.stderr,
             )
-        procs = () if command_cgroup is None else tuple(command_cgroup.sandbox_procs_paths())
         loop = asyncio.get_running_loop()
         try:
             response = await loop.run_in_executor(
@@ -4008,7 +4080,7 @@ class ProcessRuntime(RuntimeAdapter):
                     env=dict(request.env) if request.env else None,
                     workdir=request.workdir,
                     stdin_bytes=request.stdin_data,
-                    cgroup_procs=procs,
+                    cgroup_fds=tuple(cgroup_fds),
                 ),
             )
         except (ConnectionError, ValueError) as exc:

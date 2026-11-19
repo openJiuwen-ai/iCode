@@ -1127,8 +1127,26 @@ class ShellTools:
             if "supported only on Linux" in message:
                 return tool_error("sandbox_unsupported", message)
             return tool_error("sandbox_unavailable", message)
-        _record_shell_exit_code(completed.exit_code)
+        except UnicodeEncodeError:
+            _record_shell_error()
+            return tool_error(
+                "sandbox_unavailable",
+                "Sandbox path could not be encoded for the sandbox request.",
+            )
         captures = (_captured_text(completed.stdout), _captured_text(completed.stderr))
+        if completed.timed_out:
+            _record_shell_timeout(timeout)
+            message = f"Error: command timed out after {timeout} seconds."
+            if self._tasks is not None and self._tasks.full:
+                message += (
+                    " The session already runs as many background commands as it can, so it was stopped"
+                    " instead of moving to the background; stop one first."
+                )
+            partial = "\n".join(_output_parts(captures, partial=True))
+            if not partial:
+                return message
+            return await self._bound_result(partial, budget, captures, lead=f"{message}\n")
+        _record_shell_exit_code(completed.exit_code)
         parts = [*_output_parts(captures), f"[exit_code: {completed.exit_code}]"]
         return await self._bound_result("\n".join(parts), budget, captures)
 

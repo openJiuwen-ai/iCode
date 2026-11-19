@@ -38,9 +38,18 @@ cache entry is the physical primary root together with the whole mount
 set, so two workspaces do not share one mount, and a command whose mount
 set differs from the cached one (a directory added or removed) gets a new
 sandbox, which supersedes the cached one for that root. A cwd outside that
-set does not replace the writable sandbox and is not mounted read-write; it
-runs in a read-only sandbox. Binding ``/`` is not special: the base policy
-remounts ``/`` read-only.
+set does not add a bind and does not get a sandbox of its own. The command
+reuses the writable sandbox built from the workspace mounts, and the
+outside directory is only the process cwd. Binding ``/`` is not special:
+the base policy remounts ``/`` read-only.
+
+A physical cwd that is outside every workspace mount and lies under a
+protected tree is rejected with ``SandboxError`` before a sandbox is
+created. Protected trees are ``/run``, ``/tmp``, ``/var/run``, ``/var/tmp``,
+``/root``, and the account home directory. Comparison uses
+``os.path.realpath`` components, so a symlink into one of those trees is
+protected too. A cwd inside a workspace mount stays on the writable sandbox
+even when that mount itself is under a protected tree.
 
 Paths are compared as components after ``os.path.realpath``, so a sibling
 such as ``work-extra`` is not inside ``work``. Two symlink spellings of one
@@ -54,18 +63,30 @@ that exists inside the mount and is not a symlink: ``.ssh``, ``.bashrc``,
 ``.npmrc``, ``.wgetrc``, ``.curlrc``, ``.azure``, ``.config/gh``,
 ``.config/git``, ``.config/gcloud``, ``.config/glab``,
 ``.config/configstore``, ``.local/share/keyrings``, ``.aws``, ``.kube``,
-``.docker``, and ``.netrc``. ``host_path`` and ``sandbox_path`` are that path under the
-mount, not another spelling of its real path. A symlink is not followed. A
-path whose real location falls outside the mount is not bound; the
-comparison is ``os.path.realpath`` components, so ``work-extra`` is not
-inside ``work``. ``.config`` as a whole stays writable, and so does a
-project ``.git/hooks``. A read-only sandbox does not add these covers. The
-legacy single-cwd writable create uses the same covers.
+``.docker``, ``.netrc``, ``.chrys``, and the sandbox engine home directory.
+``host_path`` and ``sandbox_path`` are that path under the mount, not another
+spelling of its real path. A symlink is not followed. A path whose real
+location falls outside the mount is not bound; the comparison is
+``os.path.realpath`` components, so ``work-extra`` is not inside ``work``.
+``.config`` as a whole stays writable, and so does a project ``.git/hooks``.
+The legacy single-cwd writable create uses the same covers.
+
+The account control directories are also covered when an ancestor is a
+writable mount. The iCode directory is ``Path.home() / ".chrys"``. The
+sandbox engine home is the password-database home
+(``pwd.getpwuid(os.geteuid()).pw_dir``, or ``Path.home()`` when that is
+unavailable) joined with the engine home directory name. Each existing
+directory whose realpath is inside the mount, and which is not reached
+through a symlink that leaves the mount, is appended as a read-only bind of
+that path. A missing directory is skipped. This covers ``/home/user/.chrys``
+when the writable mount is ``/home``.
 
 When ``workspace_root`` is omitted, the first command cwd remains the
 writable root of a single legacy slot. That slot is separate from the
 workspace-keyed cache. Its mounts are the command cwd as given, and so is
-its exec ``workdir``.
+its exec ``workdir``. A later cwd does not bind a new host directory. A
+protected outside cwd raises ``SandboxError``. Any other outside cwd reuses
+the existing sandbox and passes that cwd as ``workdir``.
 
 A 404 for a cached id drops that one entry and creates one replacement.
 Any other HTTP error, and a second 404, still fail the call. Replacing a
@@ -101,7 +122,12 @@ sandbox was forgotten or already replaced and this was the last use, the
 sandbox is deleted, and that delete is shielded the same way. Another exec
 still running in that read-only sandbox keeps it until that exec ends.
 A cancel before this call has started an exec, a ``SandboxError``, and a
-completed exec do not change the cache.
+completed exec do not change the cache. A cancel during create, after the
+server has returned a sandbox id and before that id is cached or counted
+in flight, DELETEs the id. The delete is shielded, so a second cancellation
+does not skip it. A writable sandbox that was stored in the cache is not
+deleted. This path does not POST ``/stop``. A cancel before any id is known
+has nothing to delete.
 """
 
 from __future__ import annotations
@@ -113,7 +139,7 @@ import posixpath
 import re
 import time
 from collections.abc import Sequence
-from pathlib import PurePath, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.util.once_close import finish_close
@@ -136,6 +162,12 @@ _READ_ONLY = "ro"
 _CACHE_MISSING = "missing"
 _CACHE_REPLACE = "replace"
 _LOCK_WAIT_EXPIRED = "Sandbox command timed out waiting for the sandbox."
+_OUTSIDE_WORKDIR = "Sandbox command working directory is outside the workspace and was not mounted."
+_UNENCODABLE_PATH = "Sandbox path could not be encoded for the sandbox request."
+# Host trees that must not be bind-mounted merely because the process cwd
+# is there. The account home is added at the call. Comparison is realpath
+# components, so a symlink into one of these trees is protected too.
+_PROTECTED_DIRECTORIES = ("/run", "/tmp", "/var/run", "/var/tmp", "/root")
 
 # Process cache.
 # ``_sandbox_id`` / ``_writable_root`` are the legacy slot used when the
@@ -176,14 +208,19 @@ class SandboxError(Exception):
 
 
 class SandboxExec:
-    """One completed remote command. ``exit_code`` may be non-zero."""
+    """One completed remote command. ``exit_code`` may be non-zero.
 
-    __slots__ = ("exit_code", "stderr", "stdout")
+    ``timed_out`` is true only when the exec JSON says ``timed_out: true``.
+    An exit code of 124 by itself is not a timeout.
+    """
 
-    def __init__(self, exit_code: int, stdout: str, stderr: str) -> None:
+    __slots__ = ("exit_code", "stderr", "stdout", "timed_out")
+
+    def __init__(self, exit_code: int, stdout: str, stderr: str, timed_out: bool = False) -> None:
         self.exit_code = exit_code
         self.stdout = stdout
         self.stderr = stderr
+        self.timed_out = timed_out
 
 
 def _monotonic() -> float:
@@ -336,19 +373,53 @@ async def _ready_sandbox(
 
 
 async def _ready_legacy_sandbox(client: httpx.AsyncClient, cwd: str) -> str:
-    """Writable root is the first command cwd. Used when no workspace is passed."""
-    mode, current = _select_cache(cwd)
-    if current is not None:
-        state = await _cached_phase(client, current)
-        if state == _READY:
-            return current
-        if state == _CACHE_MISSING:
-            _drop_cache(mode)
-    sandbox_id = await _create_ready(client, _create_body(cwd, mode))
-    if mode == _READ_ONLY:
-        await _replace_readonly(client, sandbox_id, cwd, physical=False)
-    else:
-        _store_cache(sandbox_id, cwd)
+    """Writable root is the first command cwd. Used when no workspace is passed.
+
+    A later cwd does not bind a new host directory. One under a protected
+    tree raises. Any other later cwd reuses the sandbox created for the
+    first cwd.
+    """
+    if _legacy_inside(cwd):
+        return await _reuse_legacy_writable(client)
+    if _sandbox_id is not None and _writable_root is not None:
+        _reject_unmounted_protected(_physical_dir(cwd))
+        return await _reuse_legacy_writable(client)
+    return await _create_legacy_writable(client, cwd)
+
+
+def _legacy_inside(cwd: str) -> bool:
+    """Whether ``cwd`` is the legacy writable root or a directory inside it."""
+    if _sandbox_id is None or _writable_root is None:
+        return False
+    if _same_or_inside(_writable_root, cwd):
+        return True
+    return _same_or_inside_physical(_physical_dir(_writable_root), _physical_dir(cwd))
+
+
+async def _reuse_legacy_writable(client: httpx.AsyncClient) -> str:
+    """Return the legacy writable sandbox, recreating it at the same root.
+
+    A 404 drops the slot and creates one replacement of the original root.
+    The command cwd is not mounted.
+    """
+    root = _writable_root
+    current = _sandbox_id
+    if root is None or current is None:
+        raise SandboxError(_OUTSIDE_WORKDIR)
+    state = await _cached_phase(client, current)
+    if state == _READY:
+        return current
+    if state == _CACHE_MISSING:
+        _drop_cache(_READ_WRITE)
+    sandbox_id = await _create_ready(client, _create_body(root, _READ_WRITE))
+    _store_cache(sandbox_id, root)
+    return sandbox_id
+
+
+async def _create_legacy_writable(client: httpx.AsyncClient, cwd: str) -> str:
+    """Create the legacy writable sandbox. ``cwd`` is its only mount."""
+    sandbox_id = await _create_ready(client, _create_body(cwd, _READ_WRITE))
+    _store_cache(sandbox_id, cwd)
     return sandbox_id
 
 
@@ -358,15 +429,17 @@ async def _ready_workspace_sandbox(
     workspace_root: str,
     workspace_dirs: Sequence[str],
 ) -> tuple[str, str]:
-    """Read-write mount is the physical workspace, not ``cwd``.
+    """Read-write mounts are the workspace, never the command cwd.
 
-    The workdir is the physical cwd: only physical paths are mounted.
+    The workdir is the physical cwd. A physical cwd outside every workspace
+    mount does not add a bind. One that also lies under a protected tree
+    raises instead of running.
     """
     mounts = _workspace_mounts(workspace_root, workspace_dirs)
     physical_cwd = _physical_dir(cwd)
-    if _cwd_uses_writable(physical_cwd, mounts):
-        return await _ready_keyed_writable(client, mounts), physical_cwd
-    return await _ready_physical_readonly(client, physical_cwd), physical_cwd
+    if not _cwd_uses_writable(physical_cwd, mounts):
+        _reject_unmounted_protected(physical_cwd)
+    return await _ready_keyed_writable(client, mounts), physical_cwd
 
 
 async def _ready_keyed_writable(client: httpx.AsyncClient, mounts: tuple[str, ...]) -> str:
@@ -393,29 +466,6 @@ async def _ready_keyed_writable(client: httpx.AsyncClient, mounts: tuple[str, ..
     return sandbox_id
 
 
-async def _ready_physical_readonly(client: httpx.AsyncClient, physical_cwd: str) -> str:
-    """Run ``physical_cwd`` in a read-only sandbox without touching the writable one."""
-    cached = _readonly_id
-    if cached is not None and _readonly_covers(physical_cwd, physical=True):
-        state = await _cached_phase(client, cached)
-        if state == _READY:
-            return cached
-        if state == _CACHE_MISSING:
-            _drop_readonly()
-    sandbox_id = await _create_ready(client, _bind_body((physical_cwd,), _READ_ONLY))
-    await _replace_readonly(client, sandbox_id, physical_cwd, physical=True)
-    return sandbox_id
-
-
-def _readonly_covers(cwd_key: str, *, physical: bool) -> bool:
-    """Whether the cached read-only sandbox already contains ``cwd_key``."""
-    if _readonly_id is None or _readonly_root is None or _readonly_physical != physical:
-        return False
-    if physical:
-        return _same_or_inside_physical(_readonly_root, cwd_key)
-    return _same_or_inside(_readonly_root, cwd_key)
-
-
 async def _cached_phase(client: httpx.AsyncClient, sandbox_id: str) -> str:
     """``ready``, ``missing`` (HTTP 404), or ``replace`` (any other phase).
 
@@ -434,28 +484,60 @@ async def _cached_phase(client: httpx.AsyncClient, sandbox_id: str) -> str:
 
 
 async def _create_ready(client: httpx.AsyncClient, body: dict[str, Any]) -> str:
-    created = _json_object(await client.post("/api/v1/sandboxes", json=body))
-    sandbox_id = _require_id(created)
-    if created.get("phase") != _READY:
-        started = _json_object(await client.post(f"{_sandbox_path(sandbox_id)}/start"))
-        sandbox_id = _require_id(started)
-        if started.get("phase") != _READY:
-            raise _not_ready(started)
-    return sandbox_id
+    """Create a sandbox and return its id once the phase is ``ready``.
+
+    A cancellation after an id is known, and before the caller stores it,
+    DELETEs that id when nothing has cached it or is executing in it. The
+    delete is shielded. A cancel before the create response has no id to
+    delete. This does not POST ``/stop``.
+    """
+    known: list[str] = []
+    try:
+        created = _json_object(await _post_json(client, "/api/v1/sandboxes", body))
+        sandbox_id = _require_id(created)
+        known.append(sandbox_id)
+        if created.get("phase") != _READY:
+            started = _json_object(await client.post(f"{_sandbox_path(sandbox_id)}/start"))
+            started_id = _require_id(started)
+            if started_id not in known:
+                known.append(started_id)
+            sandbox_id = started_id
+            if started.get("phase") != _READY:
+                raise _not_ready(started)
+        return sandbox_id
+    except asyncio.CancelledError:
+        for sandbox_id in known:
+            await _delete_unowned(client, sandbox_id)
+        raise
 
 
-async def _replace_readonly(
+async def _delete_unowned(client: httpx.AsyncClient, sandbox_id: str) -> None:
+    """DELETE ``sandbox_id`` when no cache entry and no exec holds it.
+
+    A writable sandbox already stored in the cache is left in place. The
+    delete itself is shielded by ``_delete_sandbox``.
+    """
+    if _is_cached(sandbox_id) or _in_flight.get(sandbox_id, 0) > 0:
+        return
+    await _delete_sandbox(client, sandbox_id)
+
+
+async def _post_json(
     client: httpx.AsyncClient,
-    sandbox_id: str,
-    root: str,
-    *,
-    physical: bool,
-) -> None:
-    """Point the read-only cache at ``sandbox_id`` and retire a different previous id."""
-    previous = _readonly_id
-    _store_readonly(sandbox_id, root, physical=physical)
-    if previous is not None and previous != sandbox_id:
-        await _retire(client, previous)
+    url: str,
+    body: dict[str, Any],
+    **kwargs: Any,
+) -> httpx.Response:
+    """POST JSON. A path that cannot be encoded becomes ``SandboxError``.
+
+    httpx encodes JSON as UTF-8. A POSIX path carrying surrogate-escaped
+    bytes cannot be encoded, and the error text can include that path. The
+    replacement message does not.
+    """
+    try:
+        return await client.post(url, json=body, **kwargs)
+    except UnicodeEncodeError:
+        raise SandboxError(_UNENCODABLE_PATH) from None
 
 
 async def _retire(client: httpx.AsyncClient, sandbox_id: str) -> None:
@@ -564,9 +646,10 @@ async def _exec(
 ) -> SandboxExec:
     command_timeout = _exec_timeout_seconds(timeout_seconds, remaining)
     payload = _json_object(
-        await client.post(
+        await _post_json(
+            client,
             f"{_sandbox_path(sandbox_id)}/exec",
-            json={
+            {
                 "command": list(argv),
                 "workdir": workdir,
                 "timeout_seconds": command_timeout,
@@ -577,7 +660,13 @@ async def _exec(
     exit_code = payload.get("exit_code")
     if type(exit_code) is not int:
         raise SandboxError("Sandbox exec response did not include an exit code.")
-    return SandboxExec(exit_code, _stream_text(payload, "stdout"), _stream_text(payload, "stderr"))
+    # Only a JSON true is a timeout. Exit code 124 alone is a normal exit.
+    return SandboxExec(
+        exit_code,
+        _stream_text(payload, "stdout"),
+        _stream_text(payload, "stderr"),
+        timed_out=payload.get("timed_out") is True,
+    )
 
 
 def _exec_timeout_seconds(timeout_seconds: int, remaining: float) -> int:
@@ -724,6 +813,7 @@ _SENSITIVE_RELATIVE_PARTS: tuple[tuple[str, ...], ...] = (
     (".kube",),
     (".docker",),
     (".netrc",),
+    (".chrys",),
 )
 
 
@@ -748,16 +838,118 @@ def _bind_body(mounts: Sequence[str], mode: str) -> dict[str, Any]:
 
 
 def _sensitive_readonly_binds(mounts: Sequence[str]) -> list[dict[str, str]]:
-    """Read-only covers for account paths that exist inside ``mounts``."""
+    """Read-only covers for account paths that exist inside ``mounts``.
+
+    Relative names are covered at the mount root. The real iCode config
+    directory and the sandbox engine home are covered as well when an
+    ancestor of those directories is the mount, which is what protects
+    ``~/.chrys`` when the writable mount is the parent of the account home.
+    """
     covers: list[dict[str, str]] = []
+    seen: set[str] = set()
     for mount in mounts:
         physical_mount = os.path.realpath(mount)
-        for parts in _SENSITIVE_RELATIVE_PARTS:
-            candidate = _sensitive_cover_path(mount, physical_mount, parts)
-            if candidate is None:
-                continue
-            covers.append({"host_path": candidate, "sandbox_path": candidate, "mode": _READ_ONLY})
+        for parts in _sensitive_relative_parts():
+            _append_cover(covers, seen, _sensitive_cover_path(mount, physical_mount, parts))
+        for absolute in _account_control_dirs():
+            _append_cover(covers, seen, _account_control_cover(mount, physical_mount, absolute))
     return covers
+
+
+def _sensitive_relative_parts() -> tuple[tuple[str, ...], ...]:
+    """Account paths, including the sandbox engine home directory name."""
+    from chrys.service.sandbox.supervisor import sandbox_engine_home_dirname
+
+    return (*_SENSITIVE_RELATIVE_PARTS, (sandbox_engine_home_dirname(),))
+
+
+def _append_cover(covers: list[dict[str, str]], seen: set[str], candidate: str | None) -> None:
+    if candidate is None or candidate in seen:
+        return
+    seen.add(candidate)
+    covers.append({"host_path": candidate, "sandbox_path": candidate, "mode": _READ_ONLY})
+
+
+def _account_control_dirs() -> tuple[str, str]:
+    """iCode config directory and the sandbox engine home directory."""
+    return (_icode_config_dir(), _sandbox_engine_home_dir())
+
+
+def _icode_config_dir() -> str:
+    """Linux iCode config directory: ``Path.home() / ".chrys"``."""
+    return str(Path.home() / ".chrys")
+
+
+def _sandbox_engine_home_dir() -> str:
+    """Sandbox engine home under the password-database home."""
+    from chrys.service.sandbox.supervisor import sandbox_engine_home_dirname
+
+    return os.path.join(_password_database_home(), sandbox_engine_home_dirname())
+
+
+def _password_database_home() -> str:
+    """``pwd`` home for this uid, or ``Path.home()`` when that is unavailable."""
+    try:
+        import pwd
+
+        directory = pwd.getpwuid(os.geteuid()).pw_dir
+    except ImportError, KeyError, AttributeError, OSError:
+        directory = ""
+    if isinstance(directory, str) and directory:
+        return directory
+    return str(Path.home())
+
+
+def _account_control_cover(mount: str, physical_mount: str, absolute: str) -> str | None:
+    """Read-only bind of ``absolute`` when a writable ancestor mount contains it.
+
+    A missing directory is skipped. A symlink component is not followed, so a
+    target outside the mount is not bound. The bind path is ``absolute``
+    itself when that spelling is not the mount's own relative path.
+    """
+    if not absolute or not os.path.lexists(absolute):
+        return None
+    if not _same_or_inside_physical(physical_mount, os.path.realpath(absolute)):
+        return None
+    relative = _relative_parts(mount, absolute)
+    if relative is not None:
+        return _sensitive_cover_path(mount, physical_mount, relative)
+    if _symlink_inside_mount(absolute, physical_mount):
+        return None
+    return absolute
+
+
+def _relative_parts(root: str, path: str) -> tuple[str, ...] | None:
+    """Components of ``path`` strictly inside ``root``, or None when it is not."""
+    root_parts = PurePath(root).parts
+    path_parts = PurePath(path).parts
+    if len(path_parts) <= len(root_parts):
+        return None
+    if path_parts[: len(root_parts)] != root_parts:
+        return None
+    return path_parts[len(root_parts) :]
+
+
+def _symlink_inside_mount(absolute: str, physical_mount: str) -> bool:
+    """Whether a symlink on ``absolute`` sits inside ``physical_mount``.
+
+    The mount boundary itself is not treated as a symlink to follow. A symlink
+    anywhere inside the mount is not followed.
+    """
+    current = absolute
+    mount_length = len(PurePath(physical_mount).parts)
+    while True:
+        if os.path.islink(current):
+            return True
+        parent = os.path.dirname(current)
+        if parent == current or not os.path.lexists(parent):
+            return False
+        parent_real = os.path.realpath(parent)
+        if not _same_or_inside_physical(physical_mount, parent_real):
+            return False
+        if len(PurePath(parent_real).parts) <= mount_length:
+            return False
+        current = parent
 
 
 def _sensitive_cover_path(mount: str, physical_mount: str, parts: tuple[str, ...]) -> str | None:
@@ -818,20 +1010,50 @@ def _physical_dir(path: str) -> str:
     return os.path.realpath(path)
 
 
-def _select_cache(cwd: str) -> tuple[str, str | None]:
-    """Return the legacy mount mode and a cached id to reuse, if one covers ``cwd``.
+def _reject_unmounted_protected(physical_cwd: str) -> None:
+    """Raise when ``physical_cwd`` is outside the mounts and under a protected tree.
 
-    The first sandbox is writable at the cwd of its create. A later cwd
-    outside that root is read-only and must not replace the writable entry.
-    This slot is used only when the caller omits ``workspace_root``.
+    The caller has already decided the path is not inside a workspace mount
+    or the legacy writable root. Ordinary directories such as ``/usr`` are
+    not protected and do not raise.
     """
-    if _sandbox_id is not None and _writable_root is not None and _same_or_inside(_writable_root, cwd):
-        return _READ_WRITE, _sandbox_id
-    if _sandbox_id is None or _writable_root is None:
-        return _READ_WRITE, None
-    if _readonly_covers(cwd, physical=False):
-        return _READ_ONLY, _readonly_id
-    return _READ_ONLY, None
+    if _path_is_protected(physical_cwd):
+        raise SandboxError(_OUTSIDE_WORKDIR)
+
+
+def _path_is_protected(physical_path: str) -> bool:
+    """Whether ``physical_path`` is a protected tree or a directory inside one.
+
+    ``physical_path`` is already an ``os.path.realpath`` result. The protected
+    roots are resolved the same way, so a symlink such as ``/var/run`` →
+    ``/run`` protects both spellings.
+    """
+    return any(_same_or_inside_physical(root, physical_path) for root in _protected_roots())
+
+
+def _protected_roots() -> tuple[str, ...]:
+    """Real paths of the protected trees, including the account home."""
+    roots: list[str] = []
+    seen: set[str] = set()
+    for path in (*_PROTECTED_DIRECTORIES, *_account_homes()):
+        physical = _physical_dir(path)
+        if physical in seen:
+            continue
+        seen.add(physical)
+        roots.append(physical)
+    return tuple(roots)
+
+
+def _account_homes() -> tuple[str, ...]:
+    """Password-database home and ``Path.home()``, without duplicates."""
+    homes: list[str] = []
+    password_home = _password_database_home()
+    if password_home:
+        homes.append(password_home)
+    login_home = str(Path.home())
+    if login_home and login_home not in homes:
+        homes.append(login_home)
+    return tuple(homes)
 
 
 def _same_or_inside(root: str, cwd: str) -> bool:
@@ -898,15 +1120,6 @@ def _store_writable(primary: str, mounts: tuple[str, ...], sandbox_id: str) -> N
     """Workspace writable entry: ``sandbox_id`` was created with exactly ``mounts``."""
     _writable_by_root[primary] = sandbox_id
     _writable_mounts[primary] = mounts
-    _retiring.discard(sandbox_id)
-
-
-def _store_readonly(sandbox_id: str, root: str, *, physical: bool) -> None:
-    """Remember the read-only root. ``physical`` selects the comparison rule."""
-    global _readonly_id, _readonly_root, _readonly_physical
-    _readonly_id = sandbox_id
-    _readonly_root = root
-    _readonly_physical = physical
     _retiring.discard(sandbox_id)
 
 

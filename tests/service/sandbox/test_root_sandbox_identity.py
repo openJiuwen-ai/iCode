@@ -291,7 +291,11 @@ def test_bundled_bwrap_argv_hides_host_runtime_dirs_and_session_env(
     # ``/run`` and ``/tmp`` must exist before ``--remount-ro /``. bubblewrap
     # mkdir's a later ``--tmpfs`` target, and that mkdir fails once ``/`` is
     # read-only. ``/tmp`` is created by its earlier tmpfs; ``/run`` by ``--dir``.
-    remount_root = next(index for index, flag in enumerate(argv) if flag == "--remount-ro" and argv[index + 1] == "/")
+    # Policy paths go through ``Path``, which keeps ``/`` on POSIX and
+    # spells the same root as ``\`` on Windows. The runtime's own
+    # ``/run`` and ``/tmp`` tmpfs arguments stay POSIX either way.
+    root = str(Path("/"))
+    remount_root = next(index for index, flag in enumerate(argv) if flag == "--remount-ro" and argv[index + 1] == root)
 
     def _has(flag: str, path: str, *, before: int | None = None, after: int | None = None) -> bool:
         return any(

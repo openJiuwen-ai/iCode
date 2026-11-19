@@ -23,7 +23,9 @@ from jiuwenbox.models.sandbox import (
     PolicyMode,
     SandboxRef,
     SandboxSpec,
+    generate_sandbox_id,
 )
+from jiuwenbox.server.runtime.errors import SandboxNotFoundError
 from jiuwenbox.server.sandbox_manager import (
     SandboxBackgroundExecRequest,
     SandboxExecRequest,
@@ -57,9 +59,17 @@ async def _discard_task(task: asyncio.Task[object]) -> None:
             raise
 
 
+class _ClientDisconnect:
+    """Set when the HTTP client drops while a task is still running."""
+
+    def __init__(self) -> None:
+        self.client_gone = False
+
+
 async def _cancel_exec_on_http_disconnect(
     http_request: Request,
-    exec_task: asyncio.Task[ExecResult],
+    exec_task: asyncio.Task[object],
+    disconnect: _ClientDisconnect | None = None,
 ) -> None:
     """Cancel ``exec_task`` when the HTTP client drops.
 
@@ -76,8 +86,7 @@ async def _cancel_exec_on_http_disconnect(
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if (
-                not exec_task.done()
-                and probe.done()
+                probe.done()
                 and not probe.cancelled()
                 and probe.exception() is None
                 and bool(probe.result())
@@ -87,6 +96,8 @@ async def _cancel_exec_on_http_disconnect(
             if not probe.done():
                 probe.cancel()
             await _discard_task(probe)
+        if client_gone and disconnect is not None:
+            disconnect.client_gone = True
         if exec_task.done():
             return
         if client_gone:
@@ -104,6 +115,7 @@ async def _cancel_exec_on_http_disconnect(
 
 def _mgr():
     from jiuwenbox.server.app import get_manager
+
     return get_manager()
 
 
@@ -149,18 +161,99 @@ class ListFilesQuery(BaseModel):
     include_dirs: bool = True
 
 
+async def _delete_registered_sandbox(sandbox_id: str) -> None:
+    """Stop and drop a sandbox the client will not keep.
+
+    A create that has not registered an id yet is a no-op. A create that
+    reached READY in the race with cancellation is still removed.
+    """
+    manager = _mgr()
+    try:
+        present = any(item.id == sandbox_id for item in await manager.list_sandboxes())
+    except Exception:
+        logger.warning("failed to list sandboxes while dropping %s", sandbox_id, exc_info=True)
+        present = True
+    if not present:
+        return
+    try:
+        await manager.delete_sandbox(sandbox_id)
+    except SandboxNotFoundError:
+        return
+
+
 @router.post("/sandboxes", response_model=SandboxRef, status_code=201)
-async def create_sandbox(request: CreateSandboxRequest):
+async def create_sandbox(request: CreateSandboxRequest, http_request: Request):
     if request.sandbox_id is None or request.sandbox_id.strip() == "":
-        sandbox_id = None
+        sandbox_id = generate_sandbox_id()
     else:
         sandbox_id = request.sandbox_id
-    spec = SandboxSpec(env=request.env, sandbox_id=sandbox_id, sandbox_runtime=request.sandbox_runtime)
-    return await _mgr().create_sandbox(
-        spec,
-        policy_data=request.policy,
-        policy_mode=request.policy_mode,
+    spec = SandboxSpec(
+        env=request.env, sandbox_id=sandbox_id, sandbox_runtime=request.sandbox_runtime
     )
+    disconnect = _ClientDisconnect()
+    create_task = asyncio.create_task(
+        _mgr().create_sandbox(
+            spec,
+            policy_data=request.policy,
+            policy_mode=request.policy_mode,
+        )
+    )
+    watch_task = asyncio.create_task(
+        _cancel_exec_on_http_disconnect(http_request, create_task, disconnect)
+    )
+    # A response returned to a client that is still connected keeps the
+    # sandbox. Every other outcome, including a create that finishes only
+    # after cancellation, deletes it.
+    keep = False
+    try:
+        await asyncio.wait(
+            {create_task, watch_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not create_task.done():
+            watch_error = None
+            if watch_task.done() and not watch_task.cancelled():
+                watch_error = watch_task.exception()
+            disconnect.client_gone = True
+            create_task.cancel()
+            if watch_error is not None:
+                raise watch_error
+        try:
+            result = await create_task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            disconnect.client_gone = True
+            result = None
+        except Exception:
+            if disconnect.client_gone:
+                return Response(status_code=499)
+            keep = True
+            raise
+        if result is not None and not disconnect.client_gone:
+            keep = True
+            return result
+        return Response(status_code=499)
+    finally:
+        watch_task.cancel()
+        if not create_task.done():
+            create_task.cancel()
+        current = asyncio.current_task()
+        rearm_cancel = False
+        if current is not None and current.cancelling():
+            while current.uncancel():
+                pass
+            rearm_cancel = True
+        await _discard_task(watch_task)
+        if not create_task.done():
+            await _discard_task(create_task)
+        elif not create_task.cancelled():
+            create_task.exception()
+        if not keep:
+            await _delete_registered_sandbox(sandbox_id)
+        if rearm_cancel:
+            raise asyncio.CancelledError
 
 
 @router.get("/sandboxes", response_model=list[SandboxRef])
@@ -394,5 +487,7 @@ async def search_files(
             exclude_patterns=exclude_patterns,
         )
     except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"error": f"Directory not found: {sandbox_path}"})
+        return JSONResponse(
+            status_code=404, content={"error": f"Directory not found: {sandbox_path}"}
+        )
     return {"items": items}

@@ -17,10 +17,10 @@ can abort sandbox creation rather than silently dropping the limits.
 
 The limit parent stays empty. The daemon joins ``supervisor``. Each command
 joins ``supervisor/commands/cmd-<id>``, which is inside the daemon's cgroup
-namespace. ``/sys`` is read-only inside the sandbox, so that ``commands``
-directory is bind-mounted read-write at :data:`SANDBOX_COMMAND_CGROUP_ROOT`
-and the command writes its own pid there before exec. The host still kills
-and removes command cgroups through the host path.
+namespace. That ``commands`` directory is not mounted into the sandbox and
+is not a Landlock write path. The host opens only the command's own
+``cgroup.procs`` and passes that fd; the command writes ``0`` to it before
+exec. The host still kills and removes command cgroups through the host path.
 """
 
 from __future__ import annotations
@@ -56,8 +56,7 @@ _JIUWENBOX_ROOT_NAME = "jiuwenbox"
 # The limit-holding parent stays empty of processes.
 # The daemon joins ``supervisor``. Commands join children of
 # ``supervisor/commands``, which stays inside the cgroup namespace whose
-# root is ``supervisor``. ``/sys`` is read-only in the sandbox, so this
-# directory is bind-mounted at ``SANDBOX_COMMAND_CGROUP_ROOT``.
+# root is ``supervisor``. That directory is not mounted into the sandbox.
 _SUPERVISOR_CHILD_NAME = "supervisor"
 _COMMANDS_CHILD_NAME = "commands"
 _COMMAND_CHILD_PREFIX = "cmd-"
@@ -104,10 +103,10 @@ class CommandCgroup:
         return [str(path / "cgroup.procs") for path in self.paths]
 
     def sandbox_procs_paths(self) -> list[str]:
-        """In-sandbox ``cgroup.procs`` paths corresponding to :meth:`procs_paths`.
+        """In-sandbox paths that would correspond to :meth:`procs_paths`.
 
-        The host path sits on a read-only ``/sys`` bind. The command writes
-        the sandbox path, which is the read-write bind of ``commands``.
+        The runtime does not mount these. The command joins through an fd
+        from :func:`open_command_cgroup_fds` instead of writing a path.
         """
         if len(self.paths) == 1:
             return [f"{SANDBOX_COMMAND_CGROUP_ROOT}/{self.paths[0].name}/cgroup.procs"]
@@ -199,9 +198,7 @@ def _try_write_file(path: Path, content: str, *, what: str) -> None:
     try:
         _write_file(path, content)
     except OSError as exc:
-        raise CgroupSetupError(
-            f"failed to write {what} ({path}): {exc.strerror or exc}"
-        ) from exc
+        raise CgroupSetupError(f"failed to write {what} ({path}): {exc.strerror or exc}") from exc
 
 
 def _mkdir_cgroup(parent: Path, name: str) -> Path:
@@ -209,9 +206,7 @@ def _mkdir_cgroup(parent: Path, name: str) -> Path:
     try:
         child.mkdir(parents=False, exist_ok=False)
     except OSError as exc:
-        raise CgroupSetupError(
-            f"failed to create {child}: {exc.strerror or exc}"
-        ) from exc
+        raise CgroupSetupError(f"failed to create {child}: {exc.strerror or exc}") from exc
     return child
 
 
@@ -321,13 +316,9 @@ def _setup_v2(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
     try:
         group_dir.mkdir(parents=False, exist_ok=False)
     except FileExistsError as exc:
-        raise CgroupSetupError(
-            f"cgroup directory {group_dir} already exists"
-        ) from exc
+        raise CgroupSetupError(f"cgroup directory {group_dir} already exists") from exc
     except OSError as exc:
-        raise CgroupSetupError(
-            f"failed to create {group_dir}: {exc.strerror or exc}"
-        ) from exc
+        raise CgroupSetupError(f"failed to create {group_dir}: {exc.strerror or exc}") from exc
 
     supervisor_dir: Path | None = None
     command_parent: Path | None = None
@@ -455,8 +446,7 @@ def _setup_v1(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
                     _write_file(memsw_file, str(policy.memory_max))
                 except OSError as exc:
                     logger.warning(
-                        "cgroup v1: failed to set memory.memsw.limit_in_bytes "
-                        "for %s: %s",
+                        "cgroup v1: failed to set memory.memsw.limit_in_bytes for %s: %s",
                         sandbox_id,
                         exc,
                     )
@@ -499,9 +489,7 @@ def _setup_v1(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
             try:
                 path.rmdir()
             except OSError:
-                logger.warning(
-                    "cgroup v1: failed to remove %s after setup error", path
-                )
+                logger.warning("cgroup v1: failed to remove %s after setup error", path)
         raise
 
     return CgroupHandle(
@@ -518,20 +506,14 @@ def _create_v1_group(controller: str, sandbox_id: str) -> Path:
     try:
         parent.mkdir(parents=False, exist_ok=True)
     except OSError as exc:
-        raise CgroupSetupError(
-            f"failed to create {parent}: {exc.strerror or exc}"
-        ) from exc
+        raise CgroupSetupError(f"failed to create {parent}: {exc.strerror or exc}") from exc
     group_dir = parent / sandbox_id
     try:
         group_dir.mkdir(parents=False, exist_ok=False)
     except FileExistsError as exc:
-        raise CgroupSetupError(
-            f"cgroup directory {group_dir} already exists"
-        ) from exc
+        raise CgroupSetupError(f"cgroup directory {group_dir} already exists") from exc
     except OSError as exc:
-        raise CgroupSetupError(
-            f"failed to create {group_dir}: {exc.strerror or exc}"
-        ) from exc
+        raise CgroupSetupError(f"failed to create {group_dir}: {exc.strerror or exc}") from exc
     return group_dir
 
 
@@ -618,8 +600,7 @@ def attach(handle: CgroupHandle, pid: int) -> None:
             _write_file(procs_file, str(pid))
         except OSError as exc:
             raise CgroupSetupError(
-                f"failed to attach pid {pid} to {procs_file}: "
-                f"{exc.strerror or exc}"
+                f"failed to attach pid {pid} to {procs_file}: {exc.strerror or exc}"
             ) from exc
 
 
@@ -644,9 +625,7 @@ def kill_cgroup_processes(group_dir: Path, backend: CgroupBackend) -> None:
             try:
                 _write_file(kill_file, "1")
             except OSError as exc:
-                logger.warning(
-                    "cgroup teardown: failed to write %s: %s", kill_file, exc
-                )
+                logger.warning("cgroup teardown: failed to write %s: %s", kill_file, exc)
         return
     procs_file = group_dir / "cgroup.procs"
     try:
@@ -713,10 +692,11 @@ def sandbox_mounts(handle: CgroupHandle) -> list[tuple[str, str]]:
 
 
 def sandbox_cgroup_bind_args(handle: CgroupHandle) -> list[str]:
-    """bwrap arguments that expose command cgroups inside the sandbox.
+    """bwrap arguments that would expose command cgroups inside the sandbox.
 
-    Emitted after the private ``/run`` tmpfs, which would otherwise hide a
-    bind made earlier. ``--dir`` creates the mount point on that tmpfs.
+    The process runtime does not emit these. Mounting ``commands`` would
+    let the user command write a sibling ``cgroup.kill`` or move itself.
+    ``--dir`` creates the mount point on the private ``/run`` tmpfs.
     """
     mounts = sandbox_mounts(handle)
     if not mounts:
@@ -740,9 +720,7 @@ def create_command_cgroup(handle: CgroupHandle, command_id: str) -> CommandCgrou
         raise CgroupSetupError(f"invalid command cgroup id {command_id!r}")
     parents = handle.command_parent_paths or handle.paths
     if not parents:
-        raise CgroupSetupError(
-            f"sandbox {handle.sandbox_id} cgroup has no parent directory"
-        )
+        raise CgroupSetupError(f"sandbox {handle.sandbox_id} cgroup has no parent directory")
     name = f"{_COMMAND_CHILD_PREFIX}{command_id}"
     created: list[Path] = []
     try:
@@ -753,6 +731,35 @@ def create_command_cgroup(handle: CgroupHandle, command_id: str) -> CommandCgrou
             _rmdir_quiet(path)
         raise
     return CommandCgroup(backend=handle.backend, paths=created)
+
+
+def open_command_cgroup_fds(command: CommandCgroup) -> list[int]:
+    """Open each of this command's ``cgroup.procs`` files for the daemon.
+
+    The mode is ``O_WRONLY|O_CLOEXEC``. Only those files are opened, not
+    the command directory and not a sibling command. The caller passes
+    the fds and then closes its own copies. Raises ``OSError`` when a
+    file cannot be opened this way, including when ``O_CLOEXEC`` is
+    missing, so the exec fails instead of running outside the cgroup.
+    """
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    if not cloexec:
+        raise OSError("O_CLOEXEC is required to pass a command cgroup fd")
+    flags = os.O_WRONLY | cloexec
+    fds: list[int] = []
+    try:
+        for path in command.procs_paths():
+            fds.append(os.open(path, flags))
+    except OSError:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+    if not fds:
+        raise OSError("command cgroup has no cgroup.procs file")
+    return fds
 
 
 def kill_live_commands(handle: CgroupHandle) -> None:

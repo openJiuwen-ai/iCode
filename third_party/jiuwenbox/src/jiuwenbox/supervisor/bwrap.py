@@ -21,9 +21,9 @@ from jiuwenbox.models.policy import (
     BindRootEntries,
     CapabilityPolicy,
     FilesystemPolicy,
-    NetworkPolicy,
-    NetworkMode,
     NamespacePolicy,
+    NetworkMode,
+    NetworkPolicy,
     ProcessPolicy,
     SecurityPolicy,
 )
@@ -53,6 +53,13 @@ def _path_depth(path: str) -> int:
 def _non_root_bind_key(bind: tuple[str, str, str]) -> tuple[int, bool]:
     """Shallower destinations first, then read-write before read-only."""
     return (_path_depth(bind[1]), bind[2] == "--ro-bind")
+
+
+def _exact_destination(path: str) -> str:
+    """One mount target, without a trailing slash except for ``/``."""
+    if path == "/":
+        return "/"
+    return path.rstrip("/") or "/"
 
 
 def _append_unique(paths: list[str], path: str) -> None:
@@ -261,8 +268,8 @@ class BwrapConfig:
     @staticmethod
     def _apply_process(cfg: BwrapConfig, proc: ProcessPolicy) -> None:
         # Resolve user/group names to numeric IDs; fall back to 65534 (nobody)
-        import pwd
         import grp
+        import pwd
 
         try:
             cfg.uid = pwd.getpwnam(proc.run_as_user).pw_uid
@@ -342,8 +349,11 @@ class BwrapConfig:
 
         Non-root binds are emitted shallowest destination first, so a parent
         mount cannot hide a deeper bind. Read-only follows read-write at the
-        same depth. Root binds stay before ``--proc`` and ``--dev``. Device
-        binds stay after the path binds.
+        same depth. An explicit read-write bind of one exact destination
+        suppresses the read-only bind and ``--remount-ro`` of that same
+        path; a deeper read-only child still applies. Root binds stay
+        before ``--proc`` and ``--dev``. Device binds stay after the path
+        binds.
         """
         args: list[str] = [BWRAP_BINARY]
         bwrap_managed_mounts: set[str] = {
@@ -353,10 +363,14 @@ class BwrapConfig:
         # Drop any bind that would overlay /dev or /proc; see
         # ``_drop_bwrap_managed_binds`` for why this is required.
         ro_binds_in = self._drop_bwrap_managed_binds(
-            self.ro_binds, bwrap_managed_mounts, "read-only",
+            self.ro_binds,
+            bwrap_managed_mounts,
+            "read-only",
         )
         rw_binds_in = self._drop_bwrap_managed_binds(
-            self.rw_binds, bwrap_managed_mounts, "read-write",
+            self.rw_binds,
+            bwrap_managed_mounts,
+            "read-write",
         )
 
         if self.unshare_user:
@@ -392,6 +406,11 @@ class BwrapConfig:
         root_rw_binds = [(src, dst) for src, dst in rw_binds_in if dst == "/"]
         ro_binds = [(src, dst) for src, dst in ro_binds_in if dst != "/"]
         rw_binds = [(src, dst) for src, dst in rw_binds_in if dst != "/"]
+        # Record explicit read-write destinations before a root bind drops
+        # children it already covers. A later ``--ro-bind`` of the same
+        # destination would win, and ``--remount-ro`` would lock it again.
+        explicit_rw = {_exact_destination(dst) for _src, dst in root_rw_binds}
+        explicit_rw.update(_exact_destination(dst) for _src, dst in rw_binds)
         if root_rw_binds:
             # A read-write root bind already exposes every absolute child path.
             # Re-binding private children such as /home/<user>/.jiuwenswarm can
@@ -416,6 +435,13 @@ class BwrapConfig:
                 for src, dst in ro_binds
                 if not _same_path_bind_is_covered_by_root(src, dst)
             ]
+
+        root_ro_binds = [
+            (src, dst) for src, dst in root_ro_binds if _exact_destination(dst) not in explicit_rw
+        ]
+        ro_binds = [
+            (src, dst) for src, dst in ro_binds if _exact_destination(dst) not in explicit_rw
+        ]
 
         # A root bind must be applied before more specific mounts. Otherwise a
         # policy entry for "/" hides bwrap-created /proc, /dev, /tmp, /run, etc.
@@ -464,10 +490,7 @@ class BwrapConfig:
         }
 
         # create directories before binding over them
-        creation_ops = [
-            ("dir", path, permissions)
-            for path, permissions in writable_dir_mounts
-        ]
+        creation_ops = [("dir", path, permissions) for path, permissions in writable_dir_mounts]
         creation_ops.extend(("tmpfs", path, None) for path in tmpfs_mounts)
         creation_ops.sort(key=lambda item: _path_depth(item[1]))
         for op, path, permissions in creation_ops:
@@ -491,6 +514,8 @@ class BwrapConfig:
             args.extend(["--dev-bind", src, dst])
 
         for path in sorted(self.remount_ro, key=_path_depth, reverse=True):
+            if _exact_destination(path) in explicit_rw:
+                continue
             if path not in created_paths:
                 continue
             args.extend(["--remount-ro", path])
@@ -517,5 +542,3 @@ class BwrapConfig:
         args.extend(self.command)
 
         return args
-
-

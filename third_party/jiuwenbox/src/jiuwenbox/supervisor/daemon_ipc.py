@@ -14,6 +14,7 @@ participate in IPC.
 
 from __future__ import annotations
 
+import array
 import socket
 import struct
 from typing import Any
@@ -117,6 +118,38 @@ def send_frame(sock: socket.socket, payload: bytes) -> None:
     sock.sendall(struct.pack(">I", len(payload)))
     if payload:
         sock.sendall(payload)
+
+
+def send_frame_with_fds(
+    sock: socket.socket,
+    payload: bytes,
+    fds: list[int],
+) -> None:
+    """Send one length-prefixed frame and attach ``fds`` with ``SCM_RIGHTS``.
+
+    The descriptors ride on the first byte of this frame. An empty list
+    is a normal :func:`send_frame`. When descriptors are required and this
+    platform cannot pass them, raise ``OSError`` before any byte of the
+    frame is written.
+    """
+    if not fds:
+        send_frame(sock, payload)
+        return
+    if len(payload) > 0xFFFFFFFF:
+        raise ValueError(f"frame size {len(payload)} exceeds 4 GiB")
+    rights = getattr(socket, "SCM_RIGHTS", None)
+    sendmsg = getattr(sock, "sendmsg", None)
+    if rights is None or sendmsg is None:
+        raise OSError("SCM_RIGHTS is unavailable; cannot pass a command cgroup fd")
+    frame = struct.pack(">I", len(payload)) + payload
+    ancillary = [(socket.SOL_SOCKET, int(rights), array.array("i", fds).tobytes())]
+    view = memoryview(frame)
+    sent = sendmsg([view], ancillary)
+    if sent <= 0:
+        raise ConnectionError("socket closed while sending command cgroup fds")
+    rest = frame[sent:]
+    if rest:
+        sock.sendall(rest)
 
 
 def recv_frame(sock: socket.socket, max_size: int) -> bytes:

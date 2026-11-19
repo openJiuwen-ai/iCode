@@ -31,7 +31,7 @@ The default is off. While it is off, Shell commands behave as they do today. iCo
 
 ## Linux, and the sandbox iCode starts
 
-The sandbox runs on Linux only. The computer must be Linux, and it must have bubblewrap and python3 installed. The sandbox runs python3. iCode does not install bubblewrap or python3 for you.
+The sandbox runs on Linux only. The computer must be Linux, and it must have bubblewrap and python3 installed. The kernel must provide Landlock. The sandbox runs python3. iCode does not install bubblewrap or python3 for you. If the kernel does not provide Landlock, the sandbox fails to start, and iCode does not run that command outside the sandbox.
 
 iCode does not start this sandbox as root. If iCode itself is started as root, the sandbox refuses to run the command.
 
@@ -77,7 +77,7 @@ With `host`, this is not a read-isolated sandbox. The sandbox does not mount the
 
 ## Memory and processes
 
-When this computer lets the sandbox create a cgroup, a command is limited to 4 GiB of memory and 1024 processes. Reaching either limit stops that command. If it cannot create that cgroup, the command still runs, and those limits are not applied.
+When this computer lets the sandbox create a cgroup, that sandbox is limited to 4 GiB of memory and 1024 processes. Every command in the sandbox shares those limits. Reaching either limit stops work in that sandbox. If the computer cannot create that cgroup, commands still run, and those limits are not applied.
 
 One file the command creates cannot grow past 4 GiB. If the filesystem that holds the workspace has less than 1 GiB free, the sandbox stops commands and does not start another until space is free. Without a cgroup it stops the whole sandbox, background commands included; the first command after you free space starts it again. A write that is already in flight can still cross that line.
 

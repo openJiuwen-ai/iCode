@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""What a cancelled exec leaves behind: read-only sandboxes are deleted, the writable one stays.
+"""What a cancelled sandbox call leaves behind.
+
+A cancel during create, after an id is known, deletes that id. A cancel before
+any id is known deletes nothing. A cancelled exec keeps the writable sandbox.
+
 
 HTTP is mocked; nothing listens and nothing is spawned.
 """
@@ -64,104 +68,102 @@ def _no_stop(script: _Script) -> bool:
     return not any(path.endswith("/stop") for _method, path in _paths(script))
 
 
-async def test_cancelled_readonly_commands_each_delete_their_sandbox(
+def _is_start(request: httpx.Request) -> bool:
+    return request.method == "POST" and request.url.path.endswith("/start")
+
+
+def _is_delete(request: httpx.Request) -> bool:
+    return request.method == "DELETE"
+
+
+async def test_cancel_after_create_returns_an_id_deletes_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A read-only sandbox forgotten on cancel is deleted, not left idle. Nothing is stopped."""
+    """Once an id is known and not cached, cancel DELETEs it. A second cancel still does."""
     work = tmp_path / "work"
     work.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
     script = _Script()
+    script.create_phase = "created"
     script.distinct_ids = True
     release = asyncio.Event()
-    transport = _HoldingTransport(script, release, hold_when=_is_exec)
+    transport = _HoldingTransport(
+        script,
+        release,
+        hold_when=lambda request: _is_start(request) or _is_delete(request),
+    )
     _install_transport(monkeypatch, transport)
-    settings = _Settings()
-    tasks: list[asyncio.Task[SandboxExec]] = []
+    task = asyncio.create_task(_run_workspace(_Settings(), cwd=str(work), workspace_root=str(work)))
     try:
-        for index in range(3):
-            task = asyncio.create_task(
-                _run_workspace(settings, argv=("echo", str(index)), cwd=str(outside), workspace_root=str(work))
-            )
-            tasks.append(task)
-            await _cancel_once_in_exec(task, transport, index + 1)
-            assert backend._readonly_id is None
+        await wait_for(lambda: transport.held == 1 or task.done(), description="start is in flight")
+        if task.done():
+            await task
+        assert transport.held == 1
+        task.cancel()
+        await wait_for(lambda: transport.held == 2 or task.done(), description="delete is in flight")
+        if task.done():
+            await task
+        assert transport.held == 2
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
     finally:
         release.set()
-        await _cancel_pending(*tasks)
-    assert _create_bodies(script) == [_mount_body(_physical(outside), "ro")] * 3
+        await _cancel_pending(task)
+    assert _create_bodies(script) == [_mount_body(_physical(work), "rw")]
+    assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
     assert _exec_ids(script) == []
-    assert _deleted(script) == [
-        "/api/v1/sandboxes/sb-1",
-        "/api/v1/sandboxes/sb-2",
-        "/api/v1/sandboxes/sb-3",
-    ]
     assert _no_stop(script)
     assert backend._writable_by_root == {}
+    assert backend._sandbox_id is None
     assert backend._in_flight == {}
     assert backend._retiring == set()
 
 
-async def test_cancelled_readonly_exec_keeps_its_sandbox_for_another_running_exec(
+async def test_cancel_before_create_returns_an_id_deletes_nothing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The forgotten read-only sandbox is deleted once, after the other exec in it ends."""
+    """A cancel before the create response has no id, so the client deletes nothing."""
     work = tmp_path / "work"
     work.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
     script = _Script()
-    script.distinct_ids = True
     release = asyncio.Event()
-    transport = _HoldingTransport(script, release, hold_when=_is_exec)
+
+    def _is_create(request: httpx.Request) -> bool:
+        return request.method == "POST" and request.url.path == "/api/v1/sandboxes"
+
+    transport = _HoldingTransport(script, release, hold_when=_is_create)
     _install_transport(monkeypatch, transport)
-    settings = _Settings()
-    task_a = asyncio.create_task(
-        _run_workspace(settings, argv=("echo", "a"), cwd=str(outside), workspace_root=str(work))
-    )
-    task_b: asyncio.Task[SandboxExec] | None = None
+    task = asyncio.create_task(_run_workspace(_Settings(), cwd=str(work), workspace_root=str(work)))
     try:
-        await wait_for(lambda: transport.held == 1 or task_a.done(), description="first exec is in flight")
-        if task_a.done():
-            await task_a
-        task_b = asyncio.create_task(
-            _run_workspace(settings, argv=("echo", "b"), cwd=str(outside), workspace_root=str(work))
-        )
-        await _cancel_once_in_exec(task_a, transport, 2)
-        assert not task_b.done()
-        assert _deleted(script) == []
-        assert backend._readonly_id is None
-        assert backend._in_flight == {"sb-1": 1}
-        assert backend._retiring == {"sb-1"}
-        release.set()
-        second = await task_b
+        await wait_for(lambda: transport.held == 1 or task.done(), description="create is in flight")
+        if task.done():
+            await task
+        assert transport.held == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
     finally:
         release.set()
-        await _cancel_pending(task_a, task_b)
-    assert second.exit_code == 0
-    assert _create_bodies(script) == [_mount_body(_physical(outside), "ro")]
-    assert _exec_ids(script) == ["sb-1"]
-    assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
-    assert _paths(script).index(("DELETE", "/api/v1/sandboxes/sb-1")) > _paths(script).index(
-        ("POST", "/api/v1/sandboxes/sb-1/exec")
-    )
+        await _cancel_pending(task)
+    assert _create_bodies(script) == []
+    assert _deleted(script) == []
+    assert _exec_ids(script) == []
     assert _no_stop(script)
-    assert backend._in_flight == {}
-    assert backend._retiring == set()
+    assert backend._writable_by_root == {}
+    assert backend._sandbox_id is None
 
 
 async def test_cancelled_writable_exec_never_deletes_the_workspace_sandbox(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Cancel keeps the workspace sandbox cached and alive, while a cancelled read-only one goes."""
+    """Cancel keeps a cached writable sandbox, including when the cwd is outside it."""
     work = tmp_path / "work"
     work.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
+    outside = "/opt/chrys-sandbox-outside"
     physical_work = _physical(work)
     script = _Script()
     script.distinct_ids = True
@@ -171,9 +173,9 @@ async def test_cancelled_writable_exec_never_deletes_the_workspace_sandbox(
     settings = _Settings()
     tasks: list[asyncio.Task[SandboxExec]] = []
     try:
-        for index, cwd in enumerate((work, work, outside)):
+        for index, cwd in enumerate((str(work), str(work), outside)):
             task = asyncio.create_task(
-                _run_workspace(settings, argv=("echo", str(index)), cwd=str(cwd), workspace_root=str(work))
+                _run_workspace(settings, argv=("echo", str(index)), cwd=cwd, workspace_root=str(work))
             )
             tasks.append(task)
             await _cancel_once_in_exec(task, transport, index + 1)
@@ -181,13 +183,13 @@ async def test_cancelled_writable_exec_never_deletes_the_workspace_sandbox(
     finally:
         release.set()
         await _cancel_pending(*tasks)
-    assert _create_bodies(script) == [_mount_body(physical_work, "rw"), _mount_body(_physical(outside), "ro")]
-    assert _deleted(script) == ["/api/v1/sandboxes/sb-2"]
+    assert _create_bodies(script) == [_mount_body(physical_work, "rw")]
+    assert _deleted(script) == []
     assert _no_stop(script)
     followed = await _run_workspace(settings, argv=("echo", "again"), cwd=str(work), workspace_root=str(work))
     assert followed.exit_code == 0
     assert _exec_ids(script) == ["sb-1"]
-    assert _deleted(script) == ["/api/v1/sandboxes/sb-2"]
+    assert _deleted(script) == []
     assert backend._writable_by_root == {physical_work: "sb-1"}
     assert backend._in_flight == {}
     assert backend._retiring == set()

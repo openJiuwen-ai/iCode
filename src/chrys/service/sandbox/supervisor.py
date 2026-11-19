@@ -7,9 +7,12 @@ bundled policy file. Importing this module does not load that package.
 The child is started with stdin detached. Its stdout and stderr are read
 into a short tail so a failed start can include one line of the engine's
 own error, and that line never includes the bearer token. The child is
-retained so it can be stopped; a failed start closes it. Each start creates
-a bearer token and keeps it only in memory. This module does not run the
-user's command on the host.
+retained so it can be stopped; a failed start closes it. Stopping sends
+SIGTERM to the launcher process group and waits up to five seconds so the
+server can run its lifespan shutdown, then closes the child. A child that
+is still alive is killed by that close. Each start creates a bearer token
+and keeps it only in memory. This module does not run the user's command
+on the host.
 
 Each child keeps the ``sandbox.network`` value it was started with. The
 caller passes the value from its own settings, so a change reaches a
@@ -29,11 +32,12 @@ import asyncio
 import contextlib
 import os
 import secrets
+import signal
 import socket
 import subprocess
 import sys
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import NoReturn, Protocol
@@ -53,6 +57,11 @@ _FAILURE_LINE_CHARS = 200
 # the bytes already written, and give up if a grandchild still holds one open.
 _EXIT_DRAIN_SECONDS = 1.0
 _READ_CHUNK_BYTES = 4096
+# uvicorn runs lifespan shutdown on SIGTERM. After this, the context close
+# SIGKILLs a child that is still alive. ``managed_subprocess`` skips that kill
+# once ``returncode`` is set, so a launcher that exited on SIGTERM is not
+# killed again.
+_STOP_GRACE_SECONDS = 5.0
 
 
 class _ReturnCode(Protocol):
@@ -60,9 +69,19 @@ class _ReturnCode(Protocol):
     def returncode(self) -> int | None: ...
 
 
+class _ChildProcess(_ReturnCode, Protocol):
+    @property
+    def pid(self) -> int | None: ...
+
+    def wait(self) -> Awaitable[int]: ...
+
+
 class _LauncherProcess(_ReturnCode, Protocol):
     async def startup_output(self) -> tuple[str, str]:
         """Captured stderr and stdout, either of which may be empty."""
+
+    async def request_exit(self) -> None:
+        """SIGTERM the process group and wait until it exits or the grace passes."""
 
 
 @dataclass
@@ -86,6 +105,11 @@ _NETWORK_MODES = frozenset({"offline", "guarded", "host"})
 _server: _RunningServer | None = None
 _retired: list[_RunningServer] = []
 _lock: asyncio.Lock | None = None
+
+
+def sandbox_engine_home_dirname() -> str:
+    """Directory name of the sandbox engine home, under the account home."""
+    return ".jiuwenbox"
 
 
 def uds_http_base() -> str:
@@ -186,7 +210,7 @@ class _CapturedLauncher:
 
     def __init__(
         self,
-        proc: _ReturnCode,
+        proc: _ChildProcess,
         drain: asyncio.Task[None],
         stderr: _OutputTail,
         stdout: _OutputTail,
@@ -203,6 +227,9 @@ class _CapturedLauncher:
     @property
     def returncode(self) -> int | None:
         return self._proc.returncode
+
+    async def request_exit(self) -> None:
+        await _request_exit(self._proc)
 
     async def startup_output(self) -> tuple[str, str]:
         if self._proc.returncode is not None and not self._drain.done():
@@ -356,8 +383,48 @@ async def _spawn_launcher(env: dict[str, str]) -> AsyncGenerator[_LauncherProces
                 await drain
 
 
-async def _discard(stack: contextlib.AsyncExitStack) -> None:
-    await finish_close(asyncio.create_task(stack.aclose()))
+def _signal_launcher(pid: int) -> None:
+    """SIGTERM the launcher process group. Windows has no such group; SIGTERM ends that process."""
+    if pid <= 0:
+        return
+    if sys.platform == "win32":
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+        return
+    from chrys.foundation.platform.process import terminate_process_group
+
+    terminate_process_group(pid)
+
+
+async def _request_exit(proc: _ChildProcess) -> None:
+    """SIGTERM ``proc`` and wait out the grace. A timeout leaves it for the kill backstop."""
+    if proc.returncode is not None:
+        return
+    pid = proc.pid
+    if pid is None or pid <= 0:
+        return
+    _signal_launcher(pid)
+    try:
+        await asyncio.wait_for(proc.wait(), _STOP_GRACE_SECONDS)
+    except TimeoutError:
+        return
+
+
+async def _close_retained(stack: contextlib.AsyncExitStack, proc: _LauncherProcess | None) -> None:
+    """SIGTERM and wait, then close. The close SIGKILLs a child that is still alive.
+
+    Callers run this as the body of a ``finish_close`` task. A waiter cancel
+    must not cut the wait short and must not skip the close.
+    """
+    try:
+        if proc is not None:
+            await proc.request_exit()
+    finally:
+        await stack.aclose()
+
+
+async def _discard(stack: contextlib.AsyncExitStack, proc: _LauncherProcess | None = None) -> None:
+    await finish_close(asyncio.create_task(_close_retained(stack, proc)))
 
 
 async def _retire_current() -> None:
@@ -370,18 +437,32 @@ async def _retire_current() -> None:
     if running.leases:
         _retired.append(running)
         return
-    await _discard(running.closer)
+    await _discard(running.closer, running.proc)
+
+
+async def shutdown() -> None:
+    """Stop every retained bundled server, leased or not.
+
+    Process exit calls this when no other runtime is still live. A replaced
+    server that a command still leases is left running by a network change;
+    the last lease, and this call, both stop it by SIGTERM and then close.
+    """
+    await _shutdown()
 
 
 async def _shutdown() -> None:
-    """Stop every retained child, leased or not. Tests call this; a live server stays up otherwise."""
+    """Stop every retained child, leased or not."""
+    await finish_close(asyncio.create_task(_shutdown_retained()))
+
+
+async def _shutdown_retained() -> None:
     global _server
     async with _gate():
         children = [child for child in (_server, *_retired) if child is not None]
         _server = None
         _retired.clear()
         for child in children:
-            await _discard(child.closer)
+            await _close_retained(child.closer, child.proc)
 
 
 async def ensure_started(
@@ -419,7 +500,7 @@ async def leased_server(
         running.leases -= 1
         if running.leases == 0 and running in _retired:
             _retired.remove(running)
-            await _discard(running.closer)
+            await _discard(running.closer, running.proc)
 
 
 async def _current_server(network_mode: str, health_timeout: float) -> _RunningServer:
@@ -447,12 +528,13 @@ async def _current_server(network_mode: str, health_timeout: float) -> _RunningS
         token,
         network_mode=network_mode,
     )
+    proc: _LauncherProcess | None = None
     stack = contextlib.AsyncExitStack()
     try:
         proc = await stack.enter_async_context(_spawn_launcher(env))
         await _wait_until_healthy(listen, token, proc, health_timeout=health_timeout)
     except BaseException as exc:
-        await _discard(stack)
+        await _discard(stack, proc)
         if isinstance(exc, OSError):
             raise SandboxError("Sandbox server failed to start.") from None
         raise

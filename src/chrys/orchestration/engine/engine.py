@@ -141,6 +141,19 @@ def _unset_current_engine(engine: AgentEngine) -> None:
         _foreground_engine_session_id = next(reversed(_current_engines), None)
 
 
+async def _stop_bundled_sandbox(engine: AgentEngine) -> None:
+    """Stop the bundled sandbox server when this process's last runtime exits.
+
+    Another live engine may still have a command leasing that server. Leave it
+    until the lease ends. A session switch does not come through here.
+    """
+    if any(registered is not engine for registered in _current_engines.values()):
+        return
+    from chrys.service.sandbox.supervisor import shutdown as shutdown_sandbox
+
+    await shutdown_sandbox()
+
+
 class AgentEngine:
     """Top-level orchestrator for the Chrys agent.
 
@@ -599,9 +612,12 @@ class AgentEngine:
             finally:
                 await self._lifecycle.shutdown()
         finally:
-            if self._hook_confirmations is not None:
-                # After the release: what still waits on a question ends unavailable, and no answer is taken after.
-                await self._hook_confirmations.close()
+            try:
+                if self._hook_confirmations is not None:
+                    # After the release: what still waits on a question ends unavailable, and no answer is taken after.
+                    await self._hook_confirmations.close()
+            finally:
+                await _stop_bundled_sandbox(self)
 
     async def _session_operation(
         self,

@@ -708,28 +708,27 @@ async def test_cached_id_404_recreates_once_and_the_next_command_reuses_it(monke
     assert _SPAWN_CALLS == []
 
 
-async def test_readonly_cache_404_recreates_and_keeps_the_writable_sandbox(monkeypatch: pytest.MonkeyPatch):
+async def test_outside_cwd_reuses_the_writable_sandbox_after_a_404(monkeypatch: pytest.MonkeyPatch):
+    """An outside cwd does not bind a directory. A 404 recreates the original root."""
     script = _Script()
     script.distinct_ids = True
     _install(monkeypatch, script)
     settings = _Settings()
     await run_shell(settings, argv=("echo", "rw"), cwd="/work/sub", timeout_seconds=12, linux=True)
-    await run_shell(settings, argv=("echo", "ro"), cwd="/outside", timeout_seconds=12, linux=True)
+    await run_shell(settings, argv=("echo", "out"), cwd="/opt/chrys-sandbox-outside", timeout_seconds=12, linux=True)
     script.not_found_gets = 1
-    replaced = await run_shell(settings, argv=("echo", "new"), cwd="/outside", timeout_seconds=12, linux=True)
+    replaced = await run_shell(
+        settings, argv=("echo", "new"), cwd="/opt/chrys-sandbox-outside", timeout_seconds=12, linux=True
+    )
     back = await run_shell(settings, argv=("echo", "back"), cwd="/work/sub", timeout_seconds=12, linux=True)
     assert replaced.exit_code == 0
     assert back.exit_code == 0
-    assert _create_bodies(script) == [
-        _mount_body("/work/sub", "rw"),
-        _mount_body("/outside", "ro"),
-        _mount_body("/outside", "ro"),
-    ]
-    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-3", "sb-1"]
-    assert backend._sandbox_id == "sb-1"
+    assert _create_bodies(script) == [_mount_body("/work/sub", "rw"), _mount_body("/work/sub", "rw")]
+    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-2", "sb-2"]
+    assert _exec_workdirs(script)[1:3] == ["/opt/chrys-sandbox-outside", "/opt/chrys-sandbox-outside"]
+    assert backend._sandbox_id == "sb-2"
     assert backend._writable_root == "/work/sub"
-    assert backend._readonly_id == "sb-3"
-    assert backend._readonly_root == "/outside"
+    assert backend._readonly_id is None
     assert _SPAWN_CALLS == []
 
 
@@ -764,8 +763,8 @@ async def test_cached_get_other_http_error_does_not_create_another_sandbox(monke
     assert _SPAWN_CALLS == []
 
 
-async def test_cwd_outside_the_writable_root_runs_read_only(monkeypatch: pytest.MonkeyPatch):
-    """``/work`` is not inside the writable mount ``/work/sub``, so it runs read-only."""
+async def test_cwd_outside_the_writable_root_reuses_it_without_a_new_bind(monkeypatch: pytest.MonkeyPatch):
+    """``/work`` is not inside ``/work/sub`` and is not protected, so it adds no mount."""
     script = _Script()
     script.distinct_ids = True
     _install(monkeypatch, script)
@@ -778,12 +777,12 @@ async def test_cwd_outside_the_writable_root_runs_read_only(monkeypatch: pytest.
     assert nested.exit_code == 0
     assert outside.exit_code == 0
     assert back.exit_code == 0
-    assert _create_bodies(script) == [_mount_body("/work/sub", "rw"), _mount_body("/work", "ro")]
-    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-2", "sb-1"]
+    assert _create_bodies(script) == [_mount_body("/work/sub", "rw")]
+    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-1", "sb-1"]
+    assert _exec_workdirs(script) == ["/work/sub", "/work/sub/leaf", "/work", "/work/sub"]
     assert backend._sandbox_id == "sb-1"
     assert backend._writable_root == "/work/sub"
-    assert backend._readonly_id == "sb-2"
-    assert backend._readonly_root == "/work"
+    assert backend._readonly_id is None
     assert _SPAWN_CALLS == []
 
 
@@ -801,10 +800,12 @@ async def test_sibling_directory_is_not_inside_the_writable_root(monkeypatch: py
     assert sibling.exit_code == 0
     assert escaped.exit_code == 0
     assert child.exit_code == 0
-    assert _create_bodies(script) == [_mount_body("/work", "rw"), _mount_body("/work-extra", "ro")]
-    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-2", "sb-1"]
+    assert _create_bodies(script) == [_mount_body("/work", "rw")]
+    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-1", "sb-1"]
+    assert _exec_workdirs(script) == ["/work", "/work-extra", "/work/../work-extra", "/work/pkg"]
     assert backend._sandbox_id == "sb-1"
     assert backend._writable_root == "/work"
+    assert backend._readonly_id is None
     assert _SPAWN_CALLS == []
 
 
@@ -994,7 +995,7 @@ async def test_dropped_exec_connection_is_sandbox_error_and_closes_client(monkey
 
 
 async def test_slow_exec_does_not_block_another_commands_create(monkeypatch: pytest.MonkeyPatch):
-    """A paused exec releases the cache lock, so another cwd can create and exec."""
+    """A paused exec releases the cache lock, so another cwd can reuse the sandbox and exec."""
     script = _Script()
     script.distinct_ids = True
     entered = asyncio.Event()
@@ -1021,17 +1022,19 @@ async def test_slow_exec_does_not_block_another_commands_create(monkeypatch: pyt
         assert not task_a.done()
         assert not release.is_set()
         assert second.exit_code == 0
-        assert _create_bodies(script) == [_mount_body("/work", "rw"), _mount_body("/outside", "ro")]
-        assert _exec_ids(script) == ["sb-2"]
+        assert _create_bodies(script) == [_mount_body("/work", "rw")]
+        assert _exec_ids(script) == ["sb-1"]
         release.set()
         first = await task_a
     finally:
         release.set()
         await _cancel_pending(task_a, task_b)
     assert first.exit_code == 0
-    assert _exec_ids(script) == ["sb-2", "sb-1"]
+    assert _exec_ids(script) == ["sb-1", "sb-1"]
+    assert _exec_workdirs(script) == ["/outside", "/work"]
     assert backend._sandbox_id == "sb-1"
-    assert backend._readonly_id == "sb-2"
+    assert backend._readonly_id is None
+    assert _deleted(script) == []
     assert _SPAWN_CALLS == []
 
 
@@ -1179,6 +1182,7 @@ async def test_cancel_during_create_does_not_stop_the_sandbox(monkeypatch: pytes
         await _cancel_pending(task)
     assert not any(path.endswith("/stop") for _method, path in _paths(script))
     assert not any(path.endswith("/exec") for _method, path in _paths(script))
+    assert _deleted(script) == []
     assert backend._sandbox_id is None
     assert _SPAWN_CALLS == []
 
@@ -1253,37 +1257,34 @@ async def test_first_command_outside_the_workspace_does_not_become_the_read_writ
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """An outside cwd is read-only. It does not become the writable root."""
+    """An outside cwd is only the workdir. The writable mount stays the workspace."""
     work = tmp_path / "work"
     pkg = work / "pkg"
     pkg.mkdir(parents=True)
-    outside = tmp_path / "outside"
-    child = outside / "child"
-    child.mkdir(parents=True)
+    outside = "/opt/chrys-sandbox-outside"
+    child = "/opt/chrys-sandbox-outside/child"
     physical_work = _physical(work)
-    physical_outside = _physical(outside)
+    physical_outside = os.path.realpath(outside)
+    physical_child = os.path.realpath(child)
     script = _Script()
     script.distinct_ids = True
     _install(monkeypatch, script)
     settings = _Settings()
-    first = await _run_workspace(settings, argv=("echo", "out"), cwd=str(outside), workspace_root=str(work))
-    nested = await _run_workspace(settings, argv=("echo", "child"), cwd=str(child), workspace_root=str(work))
-    assert backend._writable_by_root == {}
-    assert backend._sandbox_id is None
-    assert backend._writable_root is None
+    first = await _run_workspace(settings, argv=("echo", "out"), cwd=outside, workspace_root=str(work))
+    nested = await _run_workspace(settings, argv=("echo", "child"), cwd=child, workspace_root=str(work))
     inside = await _run_workspace(settings, argv=("echo", "in"), cwd=str(pkg), workspace_root=str(work))
     assert first.exit_code == 0
     assert nested.exit_code == 0
     assert inside.exit_code == 0
-    assert _create_bodies(script) == [
-        _mount_body(physical_outside, "ro"),
-        _mount_body(physical_work, "rw"),
-    ]
-    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-2"]
-    assert _exec_workdirs(script) == [str(outside), str(child), str(pkg)]
-    assert backend._writable_by_root == {physical_work: "sb-2"}
-    assert backend._readonly_root == physical_outside
+    assert _create_bodies(script) == [_mount_body(physical_work, "rw")]
+    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-1"]
+    assert _exec_workdirs(script) == [physical_outside, physical_child, _physical(pkg)]
+    assert backend._writable_by_root == {physical_work: "sb-1"}
+    assert backend._sandbox_id is None
+    assert backend._writable_root is None
+    assert backend._readonly_id is None
     assert _mount_body(physical_outside, "rw") not in _create_bodies(script)
+    assert _mount_body(physical_outside, "ro") not in _create_bodies(script)
     assert _mount_body(_physical(pkg), "rw") not in _create_bodies(script)
     assert _SPAWN_CALLS == []
 
@@ -1318,25 +1319,24 @@ async def test_workspace_sibling_directory_is_not_read_write(tmp_path: Path, mon
     work = tmp_path / "work"
     sub = work / "sub"
     sub.mkdir(parents=True)
-    sibling = tmp_path / "work-extra"
-    sibling.mkdir()
+    sibling = "/opt/chrys-sandbox-sibling"
     physical_work = _physical(work)
-    physical_sibling = _physical(sibling)
+    physical_sibling = os.path.realpath(sibling)
     script = _Script()
     script.distinct_ids = True
     _install(monkeypatch, script)
     settings = _Settings()
     await _run_workspace(settings, argv=("echo", "work"), cwd=str(sub), workspace_root=str(work))
-    extra = await _run_workspace(settings, argv=("echo", "extra"), cwd=str(sibling), workspace_root=str(work))
+    extra = await _run_workspace(settings, argv=("echo", "extra"), cwd=sibling, workspace_root=str(work))
     again = await _run_workspace(settings, argv=("echo", "again"), cwd=str(work), workspace_root=str(work))
     assert extra.exit_code == 0
     assert again.exit_code == 0
-    assert _create_bodies(script) == [
-        _mount_body(physical_work, "rw"),
-        _mount_body(physical_sibling, "ro"),
-    ]
-    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-1"]
+    assert _create_bodies(script) == [_mount_body(physical_work, "rw")]
+    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-1"]
+    assert _exec_workdirs(script)[1] == physical_sibling
     assert backend._writable_by_root == {physical_work: "sb-1"}
+    assert backend._readonly_id is None
+    assert _mount_body(physical_sibling, "ro") not in _create_bodies(script)
     assert _SPAWN_CALLS == []
 
 
@@ -1348,10 +1348,9 @@ async def test_cancel_does_not_retarget_the_workspace_writable_root(
     work = tmp_path / "work"
     sub = work / "sub"
     sub.mkdir(parents=True)
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
+    elsewhere = "/opt/chrys-sandbox-elsewhere"
     physical_work = _physical(work)
-    physical_elsewhere = _physical(elsewhere)
+    physical_elsewhere = os.path.realpath(elsewhere)
     script = _Script()
     script.distinct_ids = True
     entered = asyncio.Event()
@@ -1374,18 +1373,17 @@ async def test_cancel_does_not_retarget_the_workspace_writable_root(
         await _cancel_pending(task)
     assert backend._writable_by_root == {physical_work: "sb-1"}
     followed = await _run_workspace(settings, argv=("echo", "two"), cwd=str(work), workspace_root=str(work))
-    outside = await _run_workspace(settings, argv=("echo", "out"), cwd=str(elsewhere), workspace_root=str(work))
+    outside = await _run_workspace(settings, argv=("echo", "out"), cwd=elsewhere, workspace_root=str(work))
     assert followed.exit_code == 0
     assert outside.exit_code == 0
-    assert _create_bodies(script) == [
-        _mount_body(physical_work, "rw"),
-        _mount_body(physical_elsewhere, "ro"),
-    ]
-    assert _exec_ids(script)[-2:] == ["sb-1", "sb-2"]
-    assert set(_exec_ids(script)) == {"sb-1", "sb-2"}
-    assert _exec_workdirs(script)[-2:] == [str(work), str(elsewhere)]
+    assert _create_bodies(script) == [_mount_body(physical_work, "rw")]
+    assert _exec_ids(script) == ["sb-1", "sb-1"]
+    assert _exec_workdirs(script) == [_physical(work), physical_elsewhere]
     assert backend._writable_by_root == {physical_work: "sb-1"}
+    assert backend._readonly_id is None
+    assert _deleted(script) == []
     assert _mount_body(_physical(sub), "rw") not in _create_bodies(script)
+    assert _mount_body(physical_elsewhere, "ro") not in _create_bodies(script)
     assert _SPAWN_CALLS == []
 
 
@@ -1417,47 +1415,34 @@ async def test_two_symlink_spellings_are_one_writable_sandbox(tmp_path: Path, mo
     assert _SPAWN_CALLS == []
 
 
-async def test_replacing_a_readonly_sandbox_deletes_the_one_being_replaced(
+async def test_two_outside_directories_share_the_workspace_sandbox(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Switching read-only sandboxes DELETEs the previous id.
-
-    ``_retire_replaced_readonly`` deletes ``/api/v1/sandboxes/{id}``. That is
-    not cancellation. Cancellation does not POST ``/stop`` and keeps the
-    writable cache.
-    """
+    """Outside directories are workdirs only. They do not create or replace a sandbox."""
     work = tmp_path / "work"
     sub = work / "sub"
     sub.mkdir(parents=True)
-    out_a = tmp_path / "out-a"
-    out_b = tmp_path / "out-b"
-    out_a.mkdir()
-    out_b.mkdir()
+    out_a = "/opt/chrys-sandbox-out-a"
+    out_b = "/opt/chrys-sandbox-out-b"
     physical_work = _physical(work)
-    physical_a = _physical(out_a)
-    physical_b = _physical(out_b)
     script = _Script()
     script.distinct_ids = True
     _install(monkeypatch, script)
     settings = _Settings()
     await _run_workspace(settings, argv=("echo", "work"), cwd=str(sub), workspace_root=str(work))
-    await _run_workspace(settings, argv=("echo", "a"), cwd=str(out_a), workspace_root=str(work))
-    switched = await _run_workspace(settings, argv=("echo", "b"), cwd=str(out_b), workspace_root=str(work))
+    await _run_workspace(settings, argv=("echo", "a"), cwd=out_a, workspace_root=str(work))
+    switched = await _run_workspace(settings, argv=("echo", "b"), cwd=out_b, workspace_root=str(work))
     back = await _run_workspace(settings, argv=("echo", "back"), cwd=str(work), workspace_root=str(work))
     assert switched.exit_code == 0
     assert back.exit_code == 0
-    assert [path for method, path in _paths(script) if method == "DELETE"] == ["/api/v1/sandboxes/sb-2"]
+    assert _deleted(script) == []
     assert ("POST", "/api/v1/sandboxes/sb-1/stop") not in _paths(script)
-    assert _create_bodies(script) == [
-        _mount_body(physical_work, "rw"),
-        _mount_body(physical_a, "ro"),
-        _mount_body(physical_b, "ro"),
-    ]
-    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-3", "sb-1"]
+    assert _create_bodies(script) == [_mount_body(physical_work, "rw")]
+    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-1", "sb-1"]
+    assert _exec_workdirs(script)[1:3] == [os.path.realpath(out_a), os.path.realpath(out_b)]
     assert backend._writable_by_root == {physical_work: "sb-1"}
-    assert backend._readonly_id == "sb-3"
-    assert backend._readonly_root == physical_b
+    assert backend._readonly_id is None
     assert _SPAWN_CALLS == []
 
 
@@ -1469,11 +1454,10 @@ async def test_extra_workspace_dir_is_not_treated_as_outside(tmp_path: Path, mon
     extra = tmp_path / "extra"
     pkg = extra / "pkg"
     pkg.mkdir(parents=True)
-    sibling = tmp_path / "work-extra"
-    sibling.mkdir()
+    sibling = "/opt/chrys-sandbox-sibling"
     physical_work = _physical(work)
     physical_extra = _physical(extra)
-    physical_sibling = _physical(sibling)
+    physical_sibling = os.path.realpath(sibling)
     script = _Script()
     script.distinct_ids = True
     _install(monkeypatch, script)
@@ -1496,20 +1480,19 @@ async def test_extra_workspace_dir_is_not_treated_as_outside(tmp_path: Path, mon
     outside = await _run_workspace(
         settings,
         argv=("echo", "out"),
-        cwd=str(sibling),
+        cwd=sibling,
         workspace_root=str(work),
         workspace_dirs=dirs,
     )
     assert in_extra.exit_code == 0
     assert in_work.exit_code == 0
     assert outside.exit_code == 0
-    assert _create_bodies(script) == [
-        _mount_body_paths((physical_work, physical_extra), "rw"),
-        _mount_body(physical_sibling, "ro"),
-    ]
-    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-2"]
-    assert _exec_workdirs(script) == [str(pkg), str(nested), str(sibling)]
+    assert _create_bodies(script) == [_mount_body_paths((physical_work, physical_extra), "rw")]
+    assert _exec_ids(script) == ["sb-1", "sb-1", "sb-1"]
+    assert _exec_workdirs(script) == [_physical(pkg), _physical(nested), physical_sibling]
     assert backend._writable_by_root == {physical_work: "sb-1"}
+    assert backend._readonly_id is None
+    assert _mount_body(physical_sibling, "ro") not in _create_bodies(script)
     assert _mount_body(_physical(pkg), "rw") not in _create_bodies(script)
     assert _mount_body(_physical(nested), "rw") not in _create_bodies(script)
     assert _SPAWN_CALLS == []
@@ -1676,19 +1659,29 @@ async def test_removing_a_workspace_dir_stops_using_the_sandbox_that_mounts_it(
         workspace_dirs=(str(extra),),
     )
     removed = await _run_workspace(settings, argv=("echo", "work"), cwd=str(work), workspace_root=str(work))
-    in_extra = await _run_workspace(settings, argv=("echo", "extra"), cwd=str(extra), workspace_root=str(work))
+    protected = backend._path_is_protected(_physical(extra))
+    in_extra: SandboxExec | None = None
+    if protected:
+        with pytest.raises(SandboxError, match="was not mounted"):
+            await _run_workspace(settings, argv=("echo", "extra"), cwd=str(extra), workspace_root=str(work))
+    else:
+        in_extra = await _run_workspace(settings, argv=("echo", "extra"), cwd=str(extra), workspace_root=str(work))
+        assert in_extra.exit_code == 0
     assert removed.exit_code == 0
-    assert in_extra.exit_code == 0
     assert _create_bodies(script) == [
         _mount_body_paths((physical_work, physical_extra), "rw"),
         _mount_body(physical_work, "rw"),
-        _mount_body(physical_extra, "ro"),
     ]
-    assert _exec_ids(script) == ["sb-1", "sb-2", "sb-3"]
+    if in_extra is None:
+        assert _exec_ids(script) == ["sb-1", "sb-2"]
+    else:
+        assert _exec_ids(script) == ["sb-1", "sb-2", "sb-2"]
+        assert _exec_workdirs(script)[-1] == _physical(extra)
     assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
     assert backend._writable_by_root == {physical_work: "sb-2"}
     assert backend._writable_mounts == {physical_work: (physical_work,)}
-    assert backend._readonly_id == "sb-3"
+    assert backend._readonly_id is None
+    assert _mount_body(physical_extra, "ro") not in _create_bodies(script)
     assert _SPAWN_CALLS == []
 
 
@@ -1742,17 +1735,15 @@ async def test_superseded_workspace_sandbox_is_deleted_only_after_its_running_ex
     assert _SPAWN_CALLS == []
 
 
-async def _replace_readonly_while_first_exec_runs(
+async def _supersede_while_first_exec_runs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[_Script, asyncio.Task[SandboxExec], asyncio.Event]:
-    """Park a read-only exec in ``sb-1``, then finish a command that replaces it with ``sb-2``."""
+    """Park an exec in ``sb-1``, then finish a command whose mount set replaces it with ``sb-2``."""
     work = tmp_path / "work"
     work.mkdir()
-    out_a = tmp_path / "out-a"
-    out_a.mkdir()
-    out_b = tmp_path / "out-b"
-    out_b.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
     script = _Script()
     script.distinct_ids = True
     entered = asyncio.Event()
@@ -1760,30 +1751,39 @@ async def _replace_readonly_while_first_exec_runs(
     transport = _PausingTransport(script, entered, release, pause_when=_is_exec)
     _install_transport(monkeypatch, transport)
     settings = _Settings()
-    task_a = asyncio.create_task(_run_workspace(settings, argv=("echo", "a"), cwd=str(out_a), workspace_root=str(work)))
+    task_a = asyncio.create_task(_run_workspace(settings, argv=("echo", "a"), cwd=str(work), workspace_root=str(work)))
     try:
-        await wait_for(lambda: entered.is_set() or task_a.done(), description="read-only exec is in flight")
+        await wait_for(lambda: entered.is_set() or task_a.done(), description="first exec is in flight")
         if task_a.done():
             await task_a
         assert not task_a.done()
-        second = await _run_workspace(settings, argv=("echo", "b"), cwd=str(out_b), workspace_root=str(work))
+        second = await _run_workspace(
+            settings,
+            argv=("echo", "b"),
+            cwd=str(work),
+            workspace_root=str(work),
+            workspace_dirs=(str(extra),),
+        )
     except BaseException:
         release.set()
         await _cancel_pending(task_a)
         raise
     assert second.exit_code == 0
-    assert backend._readonly_id == "sb-2"
-    assert _create_bodies(script) == [_mount_body(_physical(out_a), "ro"), _mount_body(_physical(out_b), "ro")]
+    assert backend._writable_by_root == {_physical(work): "sb-2"}
+    assert _create_bodies(script) == [
+        _mount_body(_physical(work), "rw"),
+        _mount_body_paths((_physical(work), _physical(extra)), "rw"),
+    ]
     assert _exec_ids(script) == ["sb-2"]
     return script, task_a, release
 
 
-async def test_replacing_a_readonly_sandbox_waits_for_its_running_exec(
+async def test_replacing_a_sandbox_waits_for_its_running_exec(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The replaced read-only sandbox is deleted after its last exec, not under it."""
-    script, task_a, release = await _replace_readonly_while_first_exec_runs(tmp_path, monkeypatch)
+    """The superseded sandbox is deleted after its last exec, not under it."""
+    script, task_a, release = await _supersede_while_first_exec_runs(tmp_path, monkeypatch)
     try:
         assert not task_a.done()
         assert _deleted(script) == []
@@ -1810,7 +1810,7 @@ async def test_cancelled_exec_in_a_replaced_sandbox_still_releases_and_deletes_i
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Cancel ends the in-flight use. The replaced sandbox is deleted, and nothing is stopped."""
-    script, task_a, release = await _replace_readonly_while_first_exec_runs(tmp_path, monkeypatch)
+    script, task_a, release = await _supersede_while_first_exec_runs(tmp_path, monkeypatch)
     try:
         assert _deleted(script) == []
         task_a.cancel()
@@ -1822,32 +1822,197 @@ async def test_cancelled_exec_in_a_replaced_sandbox_still_releases_and_deletes_i
     assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
     assert not any(path.endswith("/stop") for _method, path in _paths(script))
     assert _exec_ids(script) == ["sb-2"]
-    assert backend._readonly_id == "sb-2"
+    assert backend._writable_by_root == {_physical(tmp_path / "work"): "sb-2"}
+    assert backend._readonly_id is None
     assert backend._in_flight == {}
     assert backend._retiring == set()
     assert _SPAWN_CALLS == []
 
 
-@pytest.mark.parametrize("inside_workspace", [True, False], ids=["writable", "read-only"])
+@pytest.mark.parametrize("inside_workspace", [True, False], ids=["inside", "outside"])
 async def test_symlinked_cwd_execs_in_the_physical_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     inside_workspace: bool,
 ):
-    """Only physical paths are mounted, so the exec workdir is the physical cwd, not the alias."""
+    """The exec workdir is the physical cwd. An outside alias does not become a mount."""
     work = tmp_path / "work"
     work.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    target = work if inside_workspace else outside
+    target = work if inside_workspace else Path("/opt/chrys-sandbox-outside")
     alias = tmp_path / "alias"
     symlink_or_skip(alias, target, target_is_directory=True)
-    physical_target = _physical(target)
+    physical_target = os.path.realpath(alias)
     assert str(alias) != physical_target
     script = _Script()
     _install(monkeypatch, script)
     result = await _run_workspace(_Settings(), cwd=str(alias), workspace_root=str(work))
     assert result.exit_code == 0
-    assert _create_bodies(script) == [_mount_body(physical_target, "rw" if inside_workspace else "ro")]
+    assert _create_bodies(script) == [_mount_body(_physical(work), "rw")]
     assert _exec_workdirs(script) == [physical_target]
+    assert _mount_body(physical_target, "ro") not in _create_bodies(script)
     assert _SPAWN_CALLS == []
+
+
+_OUTSIDE_WORKDIR = "Sandbox command working directory is outside the workspace and was not mounted."
+
+
+@pytest.mark.parametrize(
+    "cwd",
+    [
+        "/tmp/chrys-sandbox-secret",
+        "/var/tmp/chrys-sandbox-secret",
+        "/var/run/chrys-sandbox-secret",
+        "/run/chrys-sandbox-secret",
+        "/root/chrys-sandbox-secret",
+    ],
+)
+async def test_protected_outside_cwd_is_rejected_without_a_bind(
+    monkeypatch: pytest.MonkeyPatch,
+    cwd: str,
+):
+    """A cwd under a protected tree does not create a sandbox or send a bind."""
+    script = _Script()
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError, match="was not mounted") as caught:
+        await _run_workspace(_Settings(), cwd=cwd, workspace_root="/opt/chrys-sandbox-work")
+    assert str(caught.value) == _OUTSIDE_WORKDIR
+    assert cwd not in str(caught.value)
+    assert _create_bodies(script) == []
+    assert _exec_ids(script) == []
+    assert backend._writable_by_root == {}
+    assert _SPAWN_CALLS == []
+
+
+async def test_account_home_outside_the_workspace_is_rejected(monkeypatch: pytest.MonkeyPatch):
+    """The account home is protected when it is not inside a workspace mount."""
+    home = str(Path.home())
+    script = _Script()
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError) as caught:
+        await _run_workspace(_Settings(), cwd=home, workspace_root="/opt/chrys-sandbox-work")
+    assert str(caught.value) == _OUTSIDE_WORKDIR
+    assert home not in str(caught.value)
+    assert _create_bodies(script) == []
+
+
+async def test_cwd_inside_a_protected_workspace_is_not_rejected(monkeypatch: pytest.MonkeyPatch):
+    """Protection applies only outside the workspace mounts."""
+    root = "/tmp/chrys-sandbox-project"
+    cwd = "/tmp/chrys-sandbox-project/src"
+    script = _Script()
+    _install(monkeypatch, script)
+    result = await _run_workspace(_Settings(), cwd=cwd, workspace_root=root)
+    assert result.exit_code == 0
+    assert _create_bodies(script) == [_mount_body(os.path.realpath(root), "rw")]
+    assert _exec_workdirs(script) == [os.path.realpath(cwd)]
+    assert backend._readonly_id is None
+
+
+async def test_legacy_later_protected_cwd_does_not_bind_a_new_directory(monkeypatch: pytest.MonkeyPatch):
+    """The first cwd is the writable root. A later protected cwd adds no bind."""
+    script = _Script()
+    _install(monkeypatch, script)
+    settings = _Settings()
+    first = await run_shell(
+        settings, argv=("echo", "one"), cwd="/tmp/chrys-sandbox-project", timeout_seconds=12, linux=True
+    )
+    with pytest.raises(SandboxError) as caught:
+        await run_shell(settings, argv=("echo", "two"), cwd="/tmp/chrys-sandbox-other", timeout_seconds=12, linux=True)
+    assert str(caught.value) == _OUTSIDE_WORKDIR
+    reused = await run_shell(
+        settings, argv=("echo", "three"), cwd="/opt/chrys-sandbox-outside", timeout_seconds=12, linux=True
+    )
+    assert first.exit_code == 0
+    assert reused.exit_code == 0
+    assert _create_bodies(script) == [_mount_body("/tmp/chrys-sandbox-project", "rw")]
+    assert _exec_workdirs(script) == ["/tmp/chrys-sandbox-project", "/opt/chrys-sandbox-outside"]
+    assert backend._writable_root == "/tmp/chrys-sandbox-project"
+    assert backend._readonly_id is None
+
+
+async def test_realpath_into_a_protected_tree_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A symlink spelling is judged by realpath, so a link into /tmp is protected."""
+    work = tmp_path / "work"
+    work.mkdir()
+    outside = "/opt/chrys-sandbox-alias"
+    protected = os.path.realpath("/tmp/chrys-sandbox-secret")
+    real_realpath = os.path.realpath
+
+    def fake_realpath(path: str) -> str:
+        if path == outside:
+            return protected
+        return real_realpath(path)
+
+    monkeypatch.setattr(backend.os.path, "realpath", fake_realpath)
+    script = _Script()
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError) as caught:
+        await _run_workspace(_Settings(), cwd=outside, workspace_root=str(work))
+    assert str(caught.value) == _OUTSIDE_WORKDIR
+    assert "chrys-sandbox" not in str(caught.value)
+    assert _create_bodies(script) == []
+
+
+async def test_symlink_into_a_protected_tree_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A real symlink whose target is under /tmp is not mounted."""
+    work = tmp_path / "work"
+    work.mkdir()
+    link = work / "escape"
+    symlink_or_skip(link, Path("/tmp/chrys-sandbox-secret"), target_is_directory=True)
+    script = _Script()
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError) as caught:
+        await _run_workspace(_Settings(), cwd=str(link), workspace_root=str(work))
+    assert str(caught.value) == _OUTSIDE_WORKDIR
+    assert "chrys-sandbox-secret" not in str(caught.value)
+    assert _create_bodies(script) == []
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("true", False),
+        (1, False),
+        (None, False),
+    ],
+)
+async def test_timed_out_is_only_json_true(monkeypatch: pytest.MonkeyPatch, flag: object, expected: bool):
+    """Exit code 124 is a normal exit unless the exec JSON says timed_out true."""
+    script = _Script()
+    payload: dict[str, object] = {"exit_code": 124, "stdout": "out", "stderr": "err"}
+    if flag is not None:
+        payload["timed_out"] = flag
+    script.exec_payload = payload
+    result = await _run(script, monkeypatch)
+    assert isinstance(result, SandboxExec)
+    assert result.exit_code == 124
+    assert result.stdout == "out"
+    assert result.timed_out is expected
+
+
+async def test_surrogate_path_becomes_sandbox_error_without_the_path(monkeypatch: pytest.MonkeyPatch):
+    """A non-UTF-8 path cannot be sent. The error text does not include it."""
+    script = _Script()
+    cwd = "/work/\udcff"
+    with pytest.raises(SandboxError) as caught:
+        await _run(script, monkeypatch, cwd=cwd)
+    assert str(caught.value) == "Sandbox path could not be encoded for the sandbox request."
+    assert "\udcff" not in str(caught.value)
+    assert _create_bodies(script) == []
+    assert _SPAWN_CALLS == []
+
+
+async def test_surrogate_workdir_on_exec_becomes_sandbox_error(monkeypatch: pytest.MonkeyPatch):
+    """The same encoding failure on exec does not escape as UnicodeEncodeError."""
+    script = _Script()
+    await _run(script, monkeypatch, cwd="/work")
+    with pytest.raises(SandboxError) as caught:
+        await _run(script, monkeypatch, cwd="/work/\udcff")
+    assert str(caught.value) == "Sandbox path could not be encoded for the sandbox request."
+    assert "\udcff" not in str(caught.value)
+    assert _exec_ids(script) == ["sb-1"]

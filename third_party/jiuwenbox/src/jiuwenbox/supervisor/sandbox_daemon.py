@@ -73,7 +73,9 @@ reach outside the standard library to load the daemon.
 
 from __future__ import annotations
 
+import array
 import contextlib
+import contextvars
 import datetime
 import errno
 import json
@@ -481,6 +483,102 @@ def _sweep_orphans() -> bool:
     return _sweep_namespace_orphans(_live_parents, os.kill, os.getpid())
 
 
+# Fds for the command about to be spawned. ``_start_command`` reads this
+# in the parent; the child's preexec closes them before exec so user code
+# does not inherit the cgroup.procs write end.
+_COMMAND_CGROUP_FDS: contextvars.ContextVar[tuple[int, ...]] = contextvars.ContextVar(
+    "jiuwenbox_command_cgroup_fds",
+    default=(),
+)
+
+
+def _close_fds(fds: list[int]) -> None:
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _parse_cgroup_fd_count(header: dict[str, Any]) -> int | None:
+    """How many ``cgroup.procs`` fds the exec request attached.
+
+    Absent means the caller did not pass fds (no cgroup, or an older
+    peer that still sends paths). A present value must match the fds
+    received with the header.
+    """
+    raw = header.get("cgroup_fd_count")
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise ValueError("cgroup_fd_count must be a non-negative integer")
+    return raw
+
+
+def _fds_from_ancillary(ancdata: list[tuple[int, int, bytes]]) -> list[int]:
+    rights = getattr(socket, "SCM_RIGHTS", None)
+    if rights is None:
+        return []
+    fds: list[int] = []
+    for level, kind, data in ancdata:
+        if level != socket.SOL_SOCKET or kind != rights or not data:
+            continue
+        width = array.array("i").itemsize
+        count = len(data) // width
+        unpacked = array.array("i")
+        unpacked.frombytes(data[: count * width])
+        fds.extend(int(fd) for fd in unpacked)
+    return fds
+
+
+def _recv_request_header(sock: socket.socket, max_size: int) -> tuple[bytes, list[int]]:
+    """Read the request header and any ``SCM_RIGHTS`` fds on its first bytes.
+
+    Platforms without ``recvmsg`` or ``SCM_RIGHTS`` read the frame as
+    bytes and return no fds. A truncated control message fails the
+    request so a command is not started with only some of its cgroup fds.
+    """
+    recvmsg = getattr(sock, "recvmsg", None)
+    rights = getattr(socket, "SCM_RIGHTS", None)
+    if recvmsg is None or rights is None:
+        return _recv_frame(sock, max_size), []
+    flags = getattr(socket, "MSG_CMSG_CLOEXEC", 0)
+    truncated = getattr(socket, "MSG_CTRUNC", 0)
+    buf = bytearray()
+    fds: list[int] = []
+    while len(buf) < 4:
+        try:
+            data, ancdata, msg_flags, _addr = recvmsg(4 - len(buf), 4096, flags)
+        except (AttributeError, OSError):
+            if buf or fds:
+                _close_fds(fds)
+                raise
+            return _recv_frame(sock, max_size), []
+        if truncated and msg_flags & truncated:
+            _close_fds(fds)
+            _close_fds(_fds_from_ancillary(list(ancdata)))
+            raise ConnectionError("truncated cgroup file descriptors")
+        if not data:
+            _close_fds(fds)
+            raise ConnectionError(
+                f"socket closed after {len(buf)}/4 bytes",
+            )
+        buf.extend(data)
+        fds.extend(_fds_from_ancillary(list(ancdata)))
+    (size,) = struct.unpack(">I", bytes(buf))
+    if size > max_size:
+        _close_fds(fds)
+        raise ValueError(
+            f"incoming frame size {size} exceeds limit {max_size}",
+        )
+    try:
+        payload = _recv_exact(sock, size)
+    except Exception:
+        _close_fds(fds)
+        raise
+    return payload, fds
+
+
 def _parse_cgroup_procs(header: dict[str, Any]) -> list[str]:
     """Return host ``cgroup.procs`` paths from an exec request.
 
@@ -498,6 +596,17 @@ def _parse_cgroup_procs(header: dict[str, Any]) -> list[str]:
             raise ValueError("cgroup_procs must be a list of paths")
         paths.append(item)
     return paths
+
+
+def _join_cgroup_fds(fds: list[int]) -> None:
+    """Move this process into each command cgroup before exec.
+
+    ``0`` is the writing process. The caller closes the fds before exec
+    so the user command does not inherit them. A failed write leaves the
+    command in the supervisor cgroup, so the caller must fail the exec.
+    """
+    for fd in fds:
+        os.write(fd, b"0\n")
 
 
 def _join_cgroup_procs(procs_paths: list[str]) -> None:
@@ -540,11 +649,24 @@ def _limit_output_file_size() -> None:
         return
 
 
-def _make_command_preexec(procs_paths: list[str]) -> Callable[[], None]:
+def _make_command_preexec(
+    procs_paths: list[str],
+    cgroup_fds: list[int] | None = None,
+) -> Callable[[], None]:
+    fds = list(cgroup_fds or ())
+
     def _preexec() -> None:
-        _join_cgroup_procs(procs_paths)
-        _limit_output_file_size()
-        _prefer_oom_kill_self()
+        try:
+            if fds:
+                _join_cgroup_fds(fds)
+            else:
+                _join_cgroup_procs(procs_paths)
+            _limit_output_file_size()
+            _prefer_oom_kill_self()
+        finally:
+            # ``pass_fds`` clears CLOEXEC. Close before exec so user code
+            # does not inherit the cgroup.procs fd.
+            _close_fds(fds)
 
     return _preexec
 
@@ -557,6 +679,7 @@ def _bridge_guarded_client(client: socket.socket) -> None:
         client.close()
         return
     try:
+
         def pump(src: socket.socket, dst: socket.socket) -> None:
             try:
                 while True:
@@ -921,7 +1044,11 @@ class _CommandShim:
         shim: its processes then reparent out of the daemon's tree, and
         only the namespace sweep (``_sweep_orphans``) still reaches them.
         """
-        if self._shim.poll() is None and _kill_process_tree(self._shim.pid) and self._shim.poll() is None:
+        if (
+            self._shim.poll() is None
+            and _kill_process_tree(self._shim.pid)
+            and self._shim.poll() is None
+        ):
             return True
         return _sweep_orphans()
 
@@ -969,6 +1096,7 @@ def _start_command(
     """
     shim_env = dict(os.environ)
     shim_env.pop(LISTENER_FD_ENV, None)
+    cgroup_fds = list(_COMMAND_CGROUP_FDS.get())
     spec_r, spec_w = os.pipe()
     status_r, status_w = os.pipe()
     try:
@@ -988,13 +1116,13 @@ def _start_command(
             env=shim_env,
             cwd=workdir or None,
             close_fds=True,
-            pass_fds=(spec_r, status_w),
+            pass_fds=(spec_r, status_w, *cgroup_fds),
             # Its own session, so ``kill(0)`` from user code cannot reach
             # the long-running daemon's process group.
             start_new_session=True,
             # The cgroup join must happen in the child before exec; the
-            # hook only writes files and calls setrlimit.
-            preexec_fn=_make_command_preexec(cgroup_procs),  # noqa: PLW1509
+            # hook writes ``0`` to the passed fds, then closes them.
+            preexec_fn=_make_command_preexec(cgroup_procs, cgroup_fds),  # noqa: PLW1509
         )
     except BaseException:
         os.close(spec_w)
@@ -1003,6 +1131,9 @@ def _start_command(
     finally:
         os.close(spec_r)
         os.close(status_w)
+        # The child has its own copies. Close the parent's so the daemon
+        # does not keep a write end of cgroup.procs.
+        _close_fds(cgroup_fds)
     handle = _CommandShim(shim, spec_w, status_r)
     handle.start(marshal.dumps((list(command), env)))
     return handle
@@ -1240,8 +1371,40 @@ def _collect_exec_output(
     )
 
 
-def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState) -> None:
+def _claim_cgroup_join(
+    header: dict[str, Any],
+    owned: list[int],
+) -> tuple[list[str], list[int]]:
+    """Choose path join or fd join and take ownership of ``owned``.
+
+    ``owned`` is cleared. When the request did not ask for fds, they are
+    closed and the legacy path list is returned. When it did, the fds are
+    returned for preexec and a count mismatch raises ``ValueError`` after
+    the fds are closed.
+    """
+    count = _parse_cgroup_fd_count(header)
+    if count is None:
+        _close_fds(owned)
+        owned.clear()
+        return _parse_cgroup_procs(header), []
+    if len(owned) != count:
+        _close_fds(owned)
+        owned.clear()
+        raise ValueError("failed to pass command cgroup")
+    claimed = list(owned)
+    owned.clear()
+    return [], claimed
+
+
+def _handle_exec(
+    conn: socket.socket,
+    header: dict[str, Any],
+    state: DaemonState,
+    cgroup_fds: list[int] | None = None,
+) -> None:
     """Run a single user command and stream the result back to ``conn``."""
+    owned = list(cgroup_fds or ())
+    claimed: list[int] = []
     try:
         command = header.get("command")
         if not isinstance(command, list) or not command:
@@ -1269,7 +1432,7 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             raise ValueError(f"invalid stdin_size {stdin_size}")
 
         stdin_bytes = _recv_exact(conn, stdin_size) if stdin_size else b""
-        cgroup_procs = _parse_cgroup_procs(header)
+        cgroup_procs, claimed = _claim_cgroup_join(header, owned)
 
         # Python ForkServer fast path (default ON -- a transparent optimisation,
         # no env var required). Activated when BOTH
@@ -1278,34 +1441,46 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
         # A command cgroup must be joined in preexec, which the resident
         # worker does not do, so that request stays on the Popen path.
         # Falls back to the normal ``subprocess.Popen`` path below otherwise.
-        if not cgroup_procs and header.get("python_fastpath") and _fastpath_enabled():
+        if (
+            not cgroup_procs
+            and not claimed
+            and header.get("python_fastpath")
+            and _fastpath_enabled()
+        ):
             if _try_fastpath_exec(conn, command, header, stdin_bytes):
                 return
 
         merged_env = build_child_env(env_override)
 
+        token = _COMMAND_CGROUP_FDS.set(tuple(claimed))
         try:
-            proc = _start_command(
-                command,
-                env=merged_env,
-                workdir=workdir,
-                stdin=subprocess.PIPE if stdin_size else subprocess.DEVNULL,
-                output=subprocess.PIPE,
-                cgroup_procs=cgroup_procs,
-            )
-        except OSError as exc:
-            # ``OSError`` already covers ``FileNotFoundError`` and
-            # ``PermissionError``; keep one branch (G.ERR.09).
-            _send_response(
-                conn,
-                _exec_response(
-                    exit_code=127,
-                    stderr=f"failed to spawn command: {exc}",
-                    started=False,
-                    error="spawn_failed",
-                ),
-            )
-            return
+            try:
+                proc = _start_command(
+                    command,
+                    env=merged_env,
+                    workdir=workdir,
+                    stdin=subprocess.PIPE if stdin_size else subprocess.DEVNULL,
+                    output=subprocess.PIPE,
+                    cgroup_procs=cgroup_procs,
+                )
+            except OSError as exc:
+                # ``OSError`` already covers ``FileNotFoundError`` and
+                # ``PermissionError``; keep one branch (G.ERR.09).
+                _send_response(
+                    conn,
+                    _exec_response(
+                        exit_code=127,
+                        stderr=f"failed to spawn command: {exc}",
+                        started=False,
+                        error="spawn_failed",
+                    ),
+                )
+                return
+        finally:
+            _COMMAND_CGROUP_FDS.reset(token)
+            # ``_start_command`` closed the parent's copies. Drop the
+            # numbers so the handler finally does not close a reused fd.
+            claimed.clear()
 
         try:
             reason, stdout_bytes, stderr_bytes = _collect_exec_output(
@@ -1370,6 +1545,9 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             )
         except OSError:
             pass
+    finally:
+        _close_fds(owned)
+        _close_fds(claimed)
 
 
 # ---------------------------------------------------------------------------
@@ -3461,7 +3639,13 @@ def _bg_job_response(
     return response
 
 
-def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None:
+def _handle_exec_background(
+    conn: socket.socket,
+    header: dict[str, Any],
+    cgroup_fds: list[int] | None = None,
+) -> None:
+    owned = list(cgroup_fds or ())
+    claimed: list[int] = []
     try:
         job_id = header.get("job_id")
         if not isinstance(job_id, str) or not job_id.strip():
@@ -3482,7 +3666,7 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
             raise ValueError(f"invalid stdin_size {stdin_size}")
 
         stdin_bytes = _recv_exact(conn, stdin_size) if stdin_size else b""
-        cgroup_procs = _parse_cgroup_procs(header)
+        cgroup_procs, claimed = _claim_cgroup_join(header, owned)
 
         if not _try_reserve_bg_job(job_id):
             _send_response(
@@ -3501,29 +3685,34 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
         try:
             merged_env = build_child_env(env_override)
 
+            token = _COMMAND_CGROUP_FDS.set(tuple(claimed))
             try:
-                # Background jobs discard stdout/stderr; use ``exec`` when
-                # output must be captured.
-                proc = _start_command(
-                    command,
-                    env=merged_env,
-                    workdir=workdir,
-                    stdin=subprocess.PIPE if stdin_size else subprocess.DEVNULL,
-                    output=subprocess.DEVNULL,
-                    cgroup_procs=cgroup_procs,
-                )
-            except OSError as exc:
-                _send_response(
-                    conn,
-                    _bg_job_response(
-                        ok=False,
-                        job_id=job_id,
-                        started=False,
-                        error="spawn_failed",
-                        stderr=f"failed to spawn background command: {exc}",
-                    ),
-                )
-                return
+                try:
+                    # Background jobs discard stdout/stderr; use ``exec`` when
+                    # output must be captured.
+                    proc = _start_command(
+                        command,
+                        env=merged_env,
+                        workdir=workdir,
+                        stdin=subprocess.PIPE if stdin_size else subprocess.DEVNULL,
+                        output=subprocess.DEVNULL,
+                        cgroup_procs=cgroup_procs,
+                    )
+                except OSError as exc:
+                    _send_response(
+                        conn,
+                        _bg_job_response(
+                            ok=False,
+                            job_id=job_id,
+                            started=False,
+                            error="spawn_failed",
+                            stderr=f"failed to spawn background command: {exc}",
+                        ),
+                    )
+                    return
+            finally:
+                _COMMAND_CGROUP_FDS.reset(token)
+                claimed.clear()
             try:
                 if stdin_size and proc.stdin is not None:
                     proc.stdin.write(stdin_bytes)
@@ -3578,6 +3767,9 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
                 stderr=f"daemon internal error: {exc}",
             ),
         )
+    finally:
+        _close_fds(owned)
+        _close_fds(claimed)
 
 
 def _handle_bg_status(conn: socket.socket, header: dict[str, Any]) -> None:
@@ -3700,8 +3892,9 @@ def _handle_bg_kill(conn: socket.socket, header: dict[str, Any]) -> None:
 def _handle_connection(conn: socket.socket, state: DaemonState) -> None:
     state.begin_request()
     try:
+        received: list[int] = []
         try:
-            header_bytes = _recv_frame(conn, MAX_HEADER_BYTES)
+            header_bytes, received = _recv_request_header(conn, MAX_HEADER_BYTES)
         except OSError:
             # ``OSError`` already covers ``ConnectionError`` (G.ERR.09).
             return
@@ -3721,7 +3914,12 @@ def _handle_connection(conn: socket.socket, state: DaemonState) -> None:
 
         request_type = header.get("type")
         if request_type == REQUEST_TYPE_EXEC:
-            _handle_exec(conn, header, state)
+            try:
+                _handle_exec(conn, header, state, received)
+            finally:
+                # The exec handler closes these fds. Forget the numbers
+                # before this function's finally runs.
+                received.clear()
         elif request_type == REQUEST_TYPE_SHUTDOWN:
             _send_response(
                 conn,
@@ -3735,7 +3933,10 @@ def _handle_connection(conn: socket.socket, state: DaemonState) -> None:
         elif request_type == REQUEST_TYPE_LIST_DIR:
             _handle_list_dir(conn, header)
         elif request_type == REQUEST_TYPE_EXEC_BACKGROUND:
-            _handle_exec_background(conn, header)
+            try:
+                _handle_exec_background(conn, header, received)
+            finally:
+                received.clear()
         elif request_type == REQUEST_TYPE_BG_STATUS:
             _handle_bg_status(conn, header)
         elif request_type == REQUEST_TYPE_BG_KILL:
@@ -3751,6 +3952,7 @@ def _handle_connection(conn: socket.socket, state: DaemonState) -> None:
                 },
             )
     finally:
+        _close_fds(received)
         try:
             conn.shutdown(socket.SHUT_RDWR)
         except OSError:

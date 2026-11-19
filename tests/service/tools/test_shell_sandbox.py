@@ -28,6 +28,7 @@ from chrys.foundation.tool_result_metadata import (
     SHELL_BACKGROUND_TASK_METADATA_KEY,
     SHELL_EXIT_CODE_METADATA_KEY,
     SHELL_TIMED_OUT_METADATA_KEY,
+    SHELL_TIMEOUT_SECONDS_METADATA_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERRORED_METADATA_KEY,
 )
@@ -641,7 +642,6 @@ async def test_sandbox_timeout_does_not_background_or_spawn_host(
             "adopt",
             "_backgrounded_result",
             "_record_background_task",
-            "_record_shell_timeout",
             "_follow",
             *_HOST_EXECUTORS,
         }
@@ -691,6 +691,69 @@ async def test_sandbox_timeout_does_not_background_or_spawn_host(
         assert result.endswith("[exit_code: 0]")
         assert "finished" in result
         assert metadata.get(TOOL_ERRORED_METADATA_KEY) is not True
+
+
+async def test_sandbox_timed_out_flag_reports_a_timeout(
+    runtime: SessionEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``timed_out: true`` is the host timeout result. Exit 124 alone is not."""
+    counts = _spy_host(monkeypatch)
+    calls: list[_ShellCall] = []
+    _patch_run_shell(monkeypatch, calls, SandboxExec(124, "partial-out", "partial-err", timed_out=True))
+    shell = ShellTools(runtime, settings=Settings(sandbox_enabled=True))
+
+    with _metadata() as metadata:
+        result = await shell.execute("echo hello", reason="test", timeout=9)
+
+    assert result.startswith("Error: command timed out after 9 seconds.\n")
+    assert "[partial output]\npartial-out" in result
+    assert "[partial stderr]\npartial-err" in result
+    assert "[exit_code:" not in result
+    assert metadata[SHELL_TIMED_OUT_METADATA_KEY] is True
+    assert metadata[SHELL_TIMEOUT_SECONDS_METADATA_KEY] == 9
+    assert SHELL_EXIT_CODE_METADATA_KEY not in metadata
+    assert calls[0].timeout_seconds == 9
+    _assert_host_idle(counts)
+
+
+async def test_sandbox_exit_124_without_timed_out_is_a_normal_exit(
+    runtime: SessionEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[_ShellCall] = []
+    _patch_run_shell(monkeypatch, calls, SandboxExec(124, "done", "", timed_out=False))
+    shell = ShellTools(runtime, settings=Settings(sandbox_enabled=True))
+
+    with _metadata() as metadata:
+        result = await shell.execute("echo hello", reason="test", timeout=9)
+
+    assert result.endswith("[exit_code: 124]")
+    assert "done" in result
+    assert "timed out" not in result
+    assert metadata[SHELL_EXIT_CODE_METADATA_KEY] == 124
+    assert metadata.get(SHELL_TIMED_OUT_METADATA_KEY) is not True
+
+
+async def test_sandbox_unicode_encode_error_is_unavailable(
+    runtime: SessionEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-UTF-8 path must not escape the shell tool."""
+
+    async def run_shell(*_args: object, **_kwargs: object) -> SandboxExec:
+        raise UnicodeEncodeError("utf-8", "\udcff", 0, 1, "surrogates not allowed")
+
+    monkeypatch.setattr("chrys.service.sandbox.backend.run_shell", run_shell)
+    shell = ShellTools(runtime, settings=Settings(sandbox_enabled=True))
+
+    with _metadata() as metadata:
+        result = await shell.execute("echo hello", reason="test")
+
+    assert result.startswith("Error:")
+    assert "could not be encoded" in result
+    assert "\udcff" not in result
+    assert "surrogates" not in result
+    assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "sandbox_unavailable"
+    assert metadata[TOOL_ERRORED_METADATA_KEY] is True
+    assert "[exit_code:" not in result
 
 
 # ───────────────────────── both shell constructions ─────────────────────────

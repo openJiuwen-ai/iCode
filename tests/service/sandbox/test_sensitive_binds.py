@@ -284,19 +284,16 @@ async def test_config_children_are_covered_without_the_parent_or_git_hooks(
     ]
 
 
-async def test_read_only_sandbox_does_not_add_sensitive_covers(
+async def test_outside_workdir_does_not_bind_that_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cwd outside the workspace is read-only and does not gain account covers."""
+    """An outside cwd is not a mount, so its account files are not covers."""
     work = tmp_path / "work"
     work.mkdir()
-    outside = tmp_path / "outside"
-    (outside / ".ssh").mkdir(parents=True)
-    (outside / ".gitconfig").write_text("name = test\n", encoding="utf-8")
     script = _Script()
-    await _run(script, monkeypatch, cwd=str(outside), workspace_root=str(work))
-    assert _bind_mounts(script) == [_bind(_physical(outside), "ro")]
+    await _run(script, monkeypatch, cwd="/opt/chrys-sandbox-outside", workspace_root=str(work))
+    assert _bind_mounts(script) == [_bind(_physical(work), "rw")]
 
 
 async def test_legacy_writable_cwd_covers_sensitive_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -352,6 +349,122 @@ def _recorded_binds(argv: list[str]) -> list[tuple[str, str, str]]:
             continue
         index += 1
     return recorded
+
+
+async def test_chrys_and_jiuwenbox_directories_are_covered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``.chrys`` and ``.jiuwenbox`` directly inside a writable mount are read-only."""
+    work = tmp_path / "work"
+    (work / ".chrys").mkdir(parents=True)
+    (work / ".jiuwenbox").mkdir()
+    physical = _physical(work)
+    script = _Script()
+    await _run(script, monkeypatch, cwd=str(work), workspace_root=str(work))
+    assert _bind_mounts(script) == [
+        _bind(physical, "rw"),
+        _bind(os.path.join(physical, ".chrys"), "ro"),
+        _bind(os.path.join(physical, ".jiuwenbox"), "ro"),
+    ]
+
+
+async def test_account_control_dirs_under_an_ancestor_mount_are_covered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/home/user/.chrys`` is covered when the writable mount is ``/home``."""
+    home = tmp_path / "home"
+    user = home / "user"
+    (user / ".chrys").mkdir(parents=True)
+    (user / ".jiuwenbox").mkdir()
+    monkeypatch.setattr(backend, "_icode_config_dir", lambda: str(user / ".chrys"))
+    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(user / ".jiuwenbox"))
+    physical = _physical(home)
+    script = _Script()
+    await _run(script, monkeypatch, cwd=str(home), workspace_root=str(home))
+    assert _bind_mounts(script) == [
+        _bind(physical, "rw"),
+        _bind(os.path.join(physical, "user", ".chrys"), "ro"),
+        _bind(os.path.join(physical, "user", ".jiuwenbox"), "ro"),
+    ]
+
+
+async def test_missing_account_control_dir_is_not_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A control directory that does not exist is skipped."""
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.setattr(backend, "_icode_config_dir", lambda: str(tmp_path / "missing-chrys"))
+    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(tmp_path / "missing-jiuwenbox"))
+    script = _Script()
+    await _run(script, monkeypatch, cwd=str(work), workspace_root=str(work))
+    assert _bind_mounts(script) == [_bind(_physical(work), "rw")]
+
+
+async def test_account_control_dir_outside_the_mount_is_not_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real account directory is not a cover when it sits outside the mount."""
+    work = tmp_path / "work"
+    work.mkdir()
+    sibling = tmp_path / "sibling"
+    (sibling / ".chrys").mkdir(parents=True)
+    monkeypatch.setattr(backend, "_icode_config_dir", lambda: str(sibling / ".chrys"))
+    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(tmp_path / "missing-jiuwenbox"))
+    script = _Script()
+    await _run(script, monkeypatch, cwd=str(work), workspace_root=str(work))
+    assert _bind_mounts(script) == [_bind(_physical(work), "rw")]
+
+
+async def test_account_control_symlink_that_leaves_the_mount_is_not_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A symlink from the mount onto a directory outside it is not followed."""
+    home = tmp_path / "home"
+    home.mkdir()
+    outside = tmp_path / "outside-user"
+    (outside / ".chrys").mkdir(parents=True)
+    link = home / "user"
+    symlink_or_skip(link, outside, target_is_directory=True)
+    monkeypatch.setattr(backend, "_icode_config_dir", lambda: str(link / ".chrys"))
+    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(tmp_path / "missing-jiuwenbox"))
+    script = _Script()
+    await _run(script, monkeypatch, cwd=str(home), workspace_root=str(home))
+    assert _bind_mounts(script) == [_bind(_physical(home), "rw")]
+
+
+async def test_account_control_dir_is_not_bound_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The relative cover and the account-directory cover of the same path are one bind."""
+    work = tmp_path / "work"
+    (work / ".chrys").mkdir(parents=True)
+    physical = _physical(work)
+    covered = os.path.join(physical, ".chrys")
+    monkeypatch.setattr(backend, "_icode_config_dir", lambda: covered)
+    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(tmp_path / "missing-jiuwenbox"))
+    script = _Script()
+    await _run(script, monkeypatch, cwd=str(work), workspace_root=str(work))
+    assert _bind_mounts(script) == [_bind(physical, "rw"), _bind(covered, "ro")]
+
+
+def test_sandbox_engine_home_dir_uses_the_password_database_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sandbox engine home lives under the password-database home, not only ``Path.home()``."""
+    monkeypatch.setattr(backend, "_password_database_home", lambda: "/srv/account")
+    assert backend._sandbox_engine_home_dir() == os.path.join("/srv/account", ".jiuwenbox")
+
+
+def test_password_database_home_prefers_pw_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``pw_dir`` wins. A missing ``pwd`` entry falls back to ``Path.home()``."""
+    import sys
+    import types
+
+    fake = types.ModuleType("pwd")
+
+    class _Record:
+        pw_dir = "/srv/pw-home"
+
+    fake.getpwuid = lambda _uid: _Record()
+    monkeypatch.setitem(sys.modules, "pwd", fake)
+    monkeypatch.setattr(backend.os, "geteuid", lambda: 0, raising=False)
+    assert backend._password_database_home() == "/srv/pw-home"
 
 
 def test_parent_read_write_bind_precedes_child_read_only_bind() -> None:
