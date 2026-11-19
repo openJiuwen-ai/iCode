@@ -69,6 +69,7 @@ from chrys.app.tui.support.gc_freeze import (
 )
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolGroup
 from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
@@ -645,7 +646,12 @@ async def _add_tool_group_collapse_probe(panel: ChatPanel) -> None:
         KIND_SHELL,
         args={"command": "uv run pytest tests/gc_collapse_probe.py -q"},
     )
-    panel._tool_groups_by_call_id[_COLLAPSE_PROBE_CALL_ID].collapsed = False
+    group = panel._tool_groups_by_call_id[_COLLAPSE_PROBE_CALL_ID]
+    # A running turn folds its steps into one row; open it so the group mounts its cards.
+    process = panel._process_controller.owner_of(group)
+    if isinstance(process, LiveProcessRow) and process.collapsed:
+        panel._toggle_live_process_row(process)
+    group.collapsed = False
     await panel.add_tool_result(
         _COLLAPSE_PROBE_CALL_ID,
         "shell",

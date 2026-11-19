@@ -692,10 +692,12 @@ class MainScreenViewAdapter:
         )
         self._screen.query_one(TrajectoryDashboard).show_session(session_id, path)
         self.sync_main_surface()
+        self._screen.refresh_bindings()  # Esc Back shows only while the trajectory is in front.
 
     def hide_trajectory_dashboard(self) -> None:
         self._screen.query_one(TrajectoryDashboard).hide_dashboard()
         self.sync_main_surface()
+        self._screen.refresh_bindings()
         self._screen.query_one(InputBar).focus_input()
 
     def select_trajectory_turn(self, turn_id: str) -> None:
@@ -720,7 +722,8 @@ class MainScreenViewAdapter:
         self._screen.query_one("#footer-row").display = not shell
         # It shows the chat session's hook runs only: a workflow's hooks run on
         # the workflow's own manager, which reports nothing.
-        self._screen.query_one(HookIndicator).display = not workflow
+        # Esc Back takes the right end while the trajectory fills the main area.
+        self._screen.query_one(HookIndicator).display = not workflow and not dashboard.foreground
         self._screen._sync_workflow_timer()
 
     def open_confirm_dialog(

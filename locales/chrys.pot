@@ -1690,28 +1690,10 @@ msgstr ""
 msgid "settings.ui.chat.file_snapshot_inline_chars.label"
 msgstr ""
 
-#. English: Automatically fold completed turns
-#. chrys-meta={"fingerprint":"0dbfa66db6994053f1b028a5a8be48037876a9958c58f1ed65c1162649a2d074","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.ui.chat.fold_finished_turns.label"
-msgstr ""
-
 #. English: Full-color images
 #. chrys-meta={"fingerprint":"f7bdad3865459dc049b6b8babf8b6cfd87fb48b926019174798e5cfabd5cb35b","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.ui.chat.image_graphics.label"
-msgstr ""
-
-#. English: Expand thinking by default
-#. chrys-meta={"fingerprint":"3d187e34709e9b4d6156cc40d0b44cb6e74930750947e596a8c9d11dc9f5a349","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.ui.chat.show_thinking.label"
-msgstr ""
-
-#. English: Expand tool details by default
-#. chrys-meta={"fingerprint":"79644eefc7d4277f1f44569d63fa5be51591030d7d8fc4ed2ccf9ad44d6c5e70","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.ui.chat.tool_groups_expanded.label"
 msgstr ""
 
 #. English: Editor keymap
@@ -4827,7 +4809,7 @@ msgstr ""
 
 #. English: Back
 #. chrys-meta={"fingerprint":"54e3d3a7dd67439200ea93a892b5b3ae5e17574c6ac23d0f2ba9275cb436cf9b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/screen.py
+#: src/chrys/app/tui/binding_display.py
 msgid "tui.binding.back"
 msgstr ""
 
@@ -11823,13 +11805,6 @@ msgstr ""
 msgid "tui.settings.hint.tools.web_search.private_origins"
 msgstr ""
 
-#. English: Fold activity after successful replies. Applies to future completed
-#. turns and sessions opened afterwards; existing folds keep their state.
-#. chrys-meta={"fingerprint":"dd6f495b926ae2dd26c75f387f91bd697b778178dc885330561ea6187c6faa50","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.ui.chat.fold_finished_turns"
-msgstr ""
-
 #. English: Show images in full color in Ghostty, kitty, iTerm2 3.7.5 or later,
 #. WezTerm, VS Code with terminal images on and Windows Terminal 1.22 or later,
 #. asking the terminal at startup which one it is. When off, or in other
@@ -11837,21 +11812,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5c545554ef6729a1c740b6e9cbd8a4f2f57fb3e2fa449b522fd7e61aa0b635a6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.image_graphics"
-msgstr ""
-
-#. English: Expand new thinking while the model writes it. When off, the folded
-#. row shows the estimated token count and speed. Click it at any time to read
-#. the full text.
-#. chrys-meta={"fingerprint":"b0fb777fbe8cd96c7286ab6c22895ed223bf50a353552011d1d8270d6e366695","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.ui.chat.show_thinking"
-msgstr ""
-
-#. English: Expand new tool groups by default. When off, click the tool status
-#. at any time to view details.
-#. chrys-meta={"fingerprint":"b2b8a4e58431aba828e9a5e19336c9399f3afde680e311e53ecb5c0fd169e47b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.ui.chat.tool_groups_expanded"
 msgstr ""
 
 #. English: Language of menus, hints and messages; changes apply immediately.

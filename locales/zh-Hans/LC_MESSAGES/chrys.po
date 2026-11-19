@@ -1724,29 +1724,11 @@ msgstr "仅在自动审查标记后弹出审批对话框"
 msgid "settings.ui.chat.file_snapshot_inline_chars.label"
 msgstr "内联文件快照上限（字符）"
 
-#. English: Automatically fold completed turns
-#. chrys-meta={"fingerprint":"0dbfa66db6994053f1b028a5a8be48037876a9958c58f1ed65c1162649a2d074","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.ui.chat.fold_finished_turns.label"
-msgstr "自动折叠已完成轮次"
-
 #. English: Full-color images
 #. chrys-meta={"fingerprint":"f7bdad3865459dc049b6b8babf8b6cfd87fb48b926019174798e5cfabd5cb35b","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.ui.chat.image_graphics.label"
 msgstr "全彩图片"
-
-#. English: Expand thinking by default
-#. chrys-meta={"fingerprint":"3d187e34709e9b4d6156cc40d0b44cb6e74930750947e596a8c9d11dc9f5a349","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.ui.chat.show_thinking.label"
-msgstr "默认展开思考"
-
-#. English: Expand tool details by default
-#. chrys-meta={"fingerprint":"79644eefc7d4277f1f44569d63fa5be51591030d7d8fc4ed2ccf9ad44d6c5e70","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.ui.chat.tool_groups_expanded.label"
-msgstr "默认展开工具详情"
 
 #. English: Editor keymap
 #. chrys-meta={"fingerprint":"66c6bfce6c8be56b157631ae18937e606af7ba047ebc9a45c095198081a19cd6","multiline":false,"placeholders":[]}
@@ -4864,7 +4846,7 @@ msgstr "智能体"
 
 #. English: Back
 #. chrys-meta={"fingerprint":"54e3d3a7dd67439200ea93a892b5b3ae5e17574c6ac23d0f2ba9275cb436cf9b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/screen.py
+#: src/chrys/app/tui/binding_display.py
 msgid "tui.binding.back"
 msgstr "返回"
 
@@ -12037,13 +12019,6 @@ msgstr "智能体未指定数量时每次搜索返回的结果数；默认 {defa
 msgid "tui.settings.hint.tools.web_search.private_origins"
 msgstr "JSON 列表，列出网络搜索可以访问的私有网络或本地网络来源。"
 
-#. English: Fold activity after successful replies. Applies to future completed
-#. turns and sessions opened afterwards; existing folds keep their state.
-#. chrys-meta={"fingerprint":"dd6f495b926ae2dd26c75f387f91bd697b778178dc885330561ea6187c6faa50","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.ui.chat.fold_finished_turns"
-msgstr "成功回复后折叠执行过程。适用于之后完成的轮次和之后打开的会话；已有折叠块保持当前状态。"
-
 #. English: Show images in full color in Ghostty, kitty, iTerm2 3.7.5 or later,
 #. WezTerm, VS Code with terminal images on and Windows Terminal 1.22 or later,
 #. asking the terminal at startup which one it is. When off, or in other
@@ -12052,21 +12027,6 @@ msgstr "成功回复后折叠执行过程。适用于之后完成的轮次和之
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.image_graphics"
 msgstr "在 Ghostty、kitty、iTerm2 3.7.5 及以上版本、WezTerm、开启了终端图片的 VS Code 和 Windows Terminal 1.22 及以上版本中以全彩显示图片，为此启动时会询问终端类型。关闭此项或在其他终端中，图片以彩色色块绘制。"
-
-#. English: Expand new thinking while the model writes it. When off, the folded
-#. row shows the estimated token count and speed. Click it at any time to read
-#. the full text.
-#. chrys-meta={"fingerprint":"b0fb777fbe8cd96c7286ab6c22895ed223bf50a353552011d1d8270d6e366695","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.ui.chat.show_thinking"
-msgstr "开启后，模型写出思考时完整展开显示。关闭时，折叠行显示估算的 token 数和速度。随时点击都可查看完整思考。"
-
-#. English: Expand new tool groups by default. When off, click the tool status
-#. at any time to view details.
-#. chrys-meta={"fingerprint":"b2b8a4e58431aba828e9a5e19336c9399f3afde680e311e53ecb5c0fd169e47b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.ui.chat.tool_groups_expanded"
-msgstr "开启后，新工具组默认展开；关闭时只显示当前操作，可随时点击工具状态查看详情。"
 
 #. English: Language of menus, hints and messages; changes apply immediately.
 #. chrys-meta={"fingerprint":"ec66e93eeffb79198acd8c49e3aa25373a97497033d12f0fa6f302864a2d4554","multiline":false,"placeholders":[]}
@@ -17699,6 +17659,12 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "settings.prompt_shortcuts.paths.label"
 #~ msgstr "快捷指令目录"
 
+#~ msgid "settings.ui.chat.show_thinking.label"
+#~ msgstr "默认展开思考"
+
+#~ msgid "settings.ui.chat.tool_groups_expanded.label"
+#~ msgstr "默认展开工具详情"
+
 #~ msgid "settings.value_clamped"
 #~ msgstr "{source}={raw}：{detail}，已改用 {adjusted}。"
 
@@ -17953,6 +17919,12 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.settings.hint.trajectory.verify_commands"
 #~ msgstr "以逗号分隔、视为测试、构建或代码检查验证的命令词或短语。"
+
+#~ msgid "tui.settings.hint.ui.chat.show_thinking"
+#~ msgstr "模型写出思考时默认展开。思考折叠时，显示估算的 token 数和速度。执行过程收起时，新思考也保持为一行。"
+
+#~ msgid "tui.settings.hint.ui.chat.tool_groups_expanded"
+#~ msgstr "新工具组默认展开。执行过程收起时，新工具组保持折叠。点击工具组可查看详情。"
 
 #~ msgid "tui.settings.migrate.button.copy"
 #~ msgstr "复制"

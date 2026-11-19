@@ -302,9 +302,9 @@ async def test_reload_reports_applied_deferred_and_conflicting_values_once(agent
     install_process_settings(load_settings())
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         warnings = await capture_events(session.bus, ev.Warning)
-        session.engine.settings_handle.override(chat_fold_finished_turns=True)
+        session.engine.settings_handle.override(approval_defer_while_judging=False)
         path.write_text(
-            f"model.profile.active: {MAIN_MODEL}\nui.theme: nord\nui.chat.fold_finished_turns: true\n"
+            f"model.profile.active: {MAIN_MODEL}\nui.theme: nord\nui.approval.defer_while_judging: false\n"
             "notifications.enabled: false\ntrajectory.verify_commands: mycheck\notel.enabled: true\n"
             "agent.default_profile: QA\napproval.default_mode: auto\n",
             encoding="utf-8",
@@ -334,10 +334,10 @@ async def test_reload_reports_applied_deferred_and_conflicting_values_once(agent
         assert all(key in pending for key in ("agent.default_profile", "approval.default_mode"))
 
         path.write_text(
-            path.read_text(encoding="utf-8").replace("fold_finished_turns: true", "fold_finished_turns: false"),
+            path.read_text(encoding="utf-8").replace("defer_while_judging: false", "defer_while_judging: true"),
             encoding="utf-8",
         )
-        assert "ui.chat.fold_finished_turns" in (await reload_report(session))["controls.reload_shadowed"]
+        assert "ui.approval.defer_while_judging" in (await reload_report(session))["controls.reload_shadowed"]
         path.write_text("ui.theme: gone-theme\n", encoding="utf-8")
         lines = await reload_report(session)
         assert get_model_pointer()[0] == ""

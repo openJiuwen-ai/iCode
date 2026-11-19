@@ -3,10 +3,9 @@
 """The main chat shows the model's thinking as it streams, above what it led to.
 
 It streams open or as one folded row, as the user's choice reads when it
-starts, and folds once the turn goes on past it. Thinking is not part of the
-answer: an answer above it stays the answer, copying leaves it out, and a
-retry that gives up its response takes it away. A transcript that shows no
-thinking is as it would be without it.
+starts, and folds once the turn goes on past it. Thinking alone leaves an
+answer eligible to be the final reply. Copying leaves thinking out, and a
+retry that gives up its response takes it away.
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ from textual.widget import AwaitMount, Widget
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.util import stream_tokens
 from chrys.app.tui.widgets.chat import messages as messages_module
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     ErrorMessage,
@@ -33,11 +33,15 @@ from chrys.app.tui.widgets.chat.messages import (
     _AgentHeader,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
-from chrys.app.tui.widgets.chat.renderers.read_file import ReadFileToolCall
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
-from tests.support.tui_helpers import ChatPanelApp, chat_content_children, click_when_settled
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY, HistoryMarkerKind
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, TOOL_CALL_KIND_METADATA_KEY
+from chrys.kernel import Content, Message
+from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
+from tests.support.tui_helpers import ChatPanelApp, chat_content_children, click_when_settled, open_process_for
 from tests.support.waiting import wait_for
 
 
@@ -57,11 +61,18 @@ async def _tool(cp: ChatPanel, call_id: str) -> None:
     await cp.add_tool_result(call_id, "read_file", "tool output")
 
 
-def _shape(cp: ChatPanel) -> list[tuple[str, str]]:
-    """Each transcript entry as (kind, text); a tool group gives the number of its calls."""
+def _shape(cp: ChatPanel, *, visible_only: bool = False) -> list[tuple[str, str]]:
+    """Content entries as (kind, text); groups count their calls."""
     shape: list[tuple[str, str]] = []
     for child in chat_content_children(cp):
-        if isinstance(child, ThinkingMessage):
+        if visible_only and not child.display:
+            continue
+        if isinstance(child, LiveProcessRow):
+            continue
+        if isinstance(child, ProcessBlock):
+            if visible_only:
+                shape.append(("process", child.render().plain))
+        elif isinstance(child, ThinkingMessage):
             shape.append(("thinking", child.text))
         elif isinstance(child, AgentMessage):
             shape.append(("intermediate" if child._is_intermediate else "answer", child.text))
@@ -81,13 +92,20 @@ async def test_thinking_streams_above_what_it_led_to_and_folds_once_the_turn_goe
     async with ChatPanelApp(thinking_expanded=None if expanded is None else lambda: expanded).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
-        await _think(cp, "r1", "Let me ", "look first.", finish=False)
+        await _think(cp, "r1", "Let me ", finish=False)
         if expanded is not None:
             streaming = cp.query_one(ThinkingMessage)
-            assert streaming.collapsed is not expanded, "it streams as the choice reads"
+            open_process_for(streaming)
+            streaming.collapsed = not expanded
+        await _think(cp, "r1", "look first.", finish=False)
+        if expanded is not None:
+            assert streaming.collapsed is not expanded, "streaming keeps the user's open or folded state"
             if expanded:
                 await wait_for(
-                    lambda: streaming.query_one(VirtualizedMarkdown).shown_source == "Let me look first.",
+                    lambda: (
+                        bool(streaming.query(VirtualizedMarkdown))
+                        and streaming.query_one(VirtualizedMarkdown).shown_source == "Let me look first."
+                    ),
                     pilot=pilot,
                     description="the open thinking shows its text as it streams",
                 )
@@ -145,6 +163,8 @@ async def test_thinking_ends_the_tool_group_above_it_once_its_text_is_not_blank(
         await _think(cp, "r-blank", " ", "\n")
         await _tool(cp, "read-2")
         group = cp.query_one(ToolGroup)
+        open_process_for(group)
+        group.collapsed = False
         assert _shape(cp) == [("user", "prompt"), ("tools", "2")], "blank thinking mounts nothing, the group stays open"
 
         assert not group.collapsed
@@ -202,12 +222,116 @@ async def test_thinking_after_an_answer_leaves_it_the_answer_until_another_answe
                 ("answer", "Second."),
             ]
         else:
-            assert _shape(cp) == [("user", "prompt"), ("answer", "First."), ("thinking", "Maybe more?")]
+            assert _shape(cp) == [("user", "prompt"), ("thinking", "Maybe more?"), ("answer", "First.")]
             await wait_for(
                 lambda: cp.query_one(AgentMessage).query_one(MessageCopyButton).display,
                 pilot=pilot,
-                description="the answer above the thinking offers its copy button",
+                description="the final answer offers its copy button",
             )
+
+
+def _folded_and_open_process(cp: ChatPanel) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    folded = _shape(cp, visible_only=True)
+    assert not cp.toggle_fold_all()
+    return folded, _shape(cp, visible_only=True)
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        ("answer", "thinking"),
+        ("answer", "thinking", "answer"),
+        ("answer", "thinking", "tool", "answer"),
+        ("answer", "thinking", "thinking", "answer"),
+        ("thinking", "answer", "thinking"),
+    ],
+    ids=["final", "next-answer", "tool", "two-thoughts", "thoughts-around-answer"],
+)
+async def test_live_and_replay_keep_interleaved_process_members_in_order(steps: tuple[str, ...]) -> None:
+    prompt = Message("user", [Content.from_text("prompt")])
+    assistant: list[Content] = []
+    history = [prompt.to_dict()]
+    answer = ""
+    thoughts_after_answer: list[tuple[str, str]] = []
+    visible_transition: list[tuple[str, str]] = []
+    expected_transition: list[tuple[str, str]] = []
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.add_user_message("prompt")
+        for index, step in enumerate(steps):
+            segment = f"segment-{index}"
+            previous_answer = answer
+            if step == "thinking":
+                text = f"Thought {index}."
+                # Replay joins consecutive fragments in the same channel.
+                summary = index > 0 and steps[index - 1] == "thinking"
+                channel = "reasoning_summary" if summary else "reasoning"
+                props = {REASONING_SUMMARY_KEY: True} if summary else None
+                assistant.append(Content.from_text_reasoning(text=text, additional_properties=props))
+                await cp.add_thinking_delta(segment, channel, text)
+                cp.finish_thinking_segment(segment)
+                if answer:
+                    thoughts_after_answer.append(("thinking", text))
+                    open_process_for(cp.query(ThinkingMessage).last())
+            elif step == "answer":
+                answer = f"Answer {index}."
+                assistant.append(Content.from_text(answer, additional_properties={ANSWER_SEGMENT_KEY: segment}))
+                await cp.add_answer_delta(segment, answer)
+                cp.finish_answer_segment(segment, completed=True)
+            else:
+                assistant.append(
+                    Content.from_function_call(
+                        call_id=segment,
+                        name="read_file",
+                        arguments="{}",
+                        additional_properties={TOOL_CALL_KIND_METADATA_KEY: KIND_FILESYSTEM_READ},
+                    )
+                )
+                history.append(Message("assistant", assistant).to_dict())
+                history.append(
+                    Message("tool", [Content.from_function_result(call_id=segment, result="tool output")]).to_dict()
+                )
+                assistant = []
+                await _tool(cp, segment)
+                answer = ""
+            if step != "thinking" and thoughts_after_answer:
+                expected_transition = [("intermediate", previous_answer), *thoughts_after_answer]
+                visible_transition = [entry for entry in _shape(cp, visible_only=True) if entry in expected_transition]
+                thoughts_after_answer.clear()
+        await cp.add_agent_message(answer)
+        history.append(Message("assistant", assistant).to_dict())
+        live_shape = _folded_and_open_process(cp)
+
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.replay_history(history)
+        await cp.wait_replay_complete()
+        assert _folded_and_open_process(cp) == live_shape
+
+    assert visible_transition == expected_transition
+
+
+async def test_a_displaced_answer_returns_to_its_slot_in_a_finished_segment_before_an_injection() -> None:
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.add_user_message("prompt")
+        await cp.add_answer_delta("a1", "First.")
+        cp.finish_answer_segment("a1", completed=True)
+        await _think(cp, "r1", "Maybe more?")
+        await cp.add_user_message("Please continue.", is_injection=True)
+        await cp.add_answer_delta("a2", "Second.")
+        cp.finish_answer_segment("a2", completed=True)
+        await cp.add_agent_message("Second.")
+
+        assert not cp.toggle_fold_all()
+        answer = cp.query(AgentMessage).first()
+        thought = cp.query_one(ThinkingMessage)
+        injection = cp.query(UserMessage).last()
+        assert [child for child in cp.displayed_children if child in (answer, thought, injection)] == [
+            answer,
+            thought,
+            injection,
+        ]
 
 
 @pytest.mark.parametrize("ending", ["segment-failed", "error", "interrupted", "retry", "new-prompt"])
@@ -265,11 +389,15 @@ async def test_thinking_a_retry_removes_is_not_kept_to_fold_once_the_turn_goes_o
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await _think(cp, "r-done", "# Given up\n\n" + "\n\n".join(f"Paragraph {index}." for index in range(50)))
+        open_process_for(cp.query_one(ThinkingMessage))
+        cp.query_one(ThinkingMessage).collapsed = False
 
         def parsed() -> bool:
             # Queried each time: a reference held here would keep the message alive.
             message = cp.query_one(ThinkingMessage)
-            return message.query_one(VirtualizedMarkdown).shown_source == message.text
+            return bool(message.query(VirtualizedMarkdown)) and (
+                message.query_one(VirtualizedMarkdown).shown_source == message.text
+            )
 
         await wait_for(parsed, pilot=pilot, description="the thinking's body parsed")
         removed = weakref.ref(cp.query_one(ThinkingMessage))
@@ -302,6 +430,27 @@ async def test_an_interrupt_while_a_retry_removes_its_thinking_still_removes_all
         assert _shape(cp) == [("user", "prompt")]
 
 
+async def test_an_interrupt_removing_a_process_header_still_withdraws_its_answer_segments() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.add_user_message("prompt")
+        await cp.add_answer_delta("a1", "Intermediate.")
+        cp.finish_answer_segment("a1", completed=True)
+        await cp.add_answer_delta("a2", "Given up.")
+        assert _shape(cp) == [("user", "prompt"), ("intermediate", "Intermediate."), ("answer", "Given up.")]
+        assert cp.query_one(LiveProcessRow).members == [cp.query(AgentMessage).first()]
+
+        removal = asyncio.create_task(cp.withdraw_answer(("a1", "a2")))
+        await asyncio.sleep(0)
+        assert not removal.done()
+        removal.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await removal
+
+        assert _shape(cp) == [("user", "prompt")]
+        assert not cp.query(LiveProcessRow)
+
+
 async def test_whether_thinking_opens_is_read_as_its_segment_opens() -> None:
     expanded = [False]
     async with ChatPanelApp(thinking_expanded=lambda: expanded[0]).run_test() as pilot:
@@ -311,6 +460,7 @@ async def test_whether_thinking_opens_is_read_as_its_segment_opens() -> None:
         expanded[0] = True
         await _think(cp, "r1", "to its end.", finish=False)
         first = cp.query_one(ThinkingMessage)
+        open_process_for(first)
         assert first.collapsed is True
         await _think(cp, "r2", "Open ", finish=False)
         expanded[0] = False
@@ -380,6 +530,7 @@ async def test_folded_thinking_reports_progress_on_ticks_and_previews_text_only_
         await cp.add_user_message("prompt")
         await _think(cp, "r1", "User" * 100, finish=False)
         thinking = cp.query_one(ThinkingMessage)
+        open_process_for(thinking)
         header = thinking.query_one(_AgentHeader)
         await wait_for(lambda: thinking._progress_timer is not None, pilot=pilot, description="thinking shown")
         count_row = header.render()
@@ -431,6 +582,7 @@ async def test_hidden_thinking_counts_without_a_timer_and_catches_up_when_shown(
         await cp.add_user_message("prompt")
         await _think(cp, "r1", "User", finish=False)
         thinking = cp.query_one(ThinkingMessage)
+        open_process_for(thinking)
         header = thinking.query_one(_AgentHeader)
         assert thinking._progress_timer is None
 
@@ -460,6 +612,8 @@ async def test_thinking_names_what_it_shows_and_folds_from_its_header_once_compl
         await cp.add_user_message("prompt")
         await _think(cp, "r1", "Step one.", finish=False)
         thinking = cp.query_one(ThinkingMessage)
+        open_process_for(thinking)
+        thinking.collapsed = False
         header = thinking.query_one(_AgentHeader)
         assert header.render().plain == "▾ Thinking"
         # Streaming, it folds and opens from its header too.
@@ -502,34 +656,6 @@ async def test_thinking_names_what_it_shows_and_folds_from_its_header_once_compl
         await wait_for(lambda: thinking.collapsed, pilot=pilot, description="complete thinking folded again")
 
 
-async def test_fold_all_folds_complete_thinking_with_the_tool_groups_but_leaves_thinking_that_streams_open() -> None:
-    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
-        cp = pilot.app.query_one(ChatPanel)
-        await cp.add_user_message("prompt")
-        await _tool(cp, "read-1")
-        await _think(cp, "r1", "Step one.")
-        await cp.add_thinking_delta("s1", "reasoning_summary", "In short, ")
-        (group,) = cp.query(ToolGroup)
-        thinking, streaming = cp.query(ThinkingMessage)
-        # The turn went on past the group and the complete thinking: both folded.
-        assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (True, True, False)
-
-        # Nothing that folds is open, so fold-all unfolds; the streaming thinking keeps its state.
-        assert cp.toggle_fold_all() is False
-        assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (False, False, False)
-        await wait_for(lambda: bool(thinking.query(VirtualizedMarkdown)), pilot=pilot, description="body rebuilt")
-        await wait_for(lambda: bool(group.query(ReadFileToolCall)), pilot=pilot, description="calls rebuilt")
-
-        assert cp.toggle_fold_all() is True
-        assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (True, True, False)
-        await wait_for(lambda: not thinking.query(VirtualizedMarkdown), pilot=pilot, description="body removed")
-
-        # Complete, the open summary folds with them.
-        cp.finish_thinking_segment("s1")
-        assert cp.toggle_fold_all() is True
-        assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (True, True, True)
-
-
 async def test_thinking_opened_as_its_last_text_arrives_shows_that_text(monkeypatch: pytest.MonkeyPatch) -> None:
     async with ChatPanelApp(thinking_expanded=lambda: False).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
@@ -558,3 +684,71 @@ async def test_thinking_opened_as_its_last_text_arrives_shows_that_text(monkeypa
             pilot=pilot,
             description="opened, the body shows the text the stream ended with",
         )
+
+
+@pytest.mark.parametrize("ending", ["success", "interrupt", "failure", "resume"])
+async def test_interleaved_turn_matches_replay_after_stopping_or_continuing(ending: str) -> None:
+    first = [
+        Message("user", [Content.from_text("prompt")]).to_dict(),
+        Message(
+            "assistant",
+            [Content.from_text("First."), Content.from_text_reasoning(text="Later thought.")],
+        ).to_dict(),
+    ]
+    injection = Message(
+        "user", [Content.from_text("Continue.")], additional_properties={HistoryMarkerKind.INJECTED_KEY: True}
+    ).to_dict()
+
+    def body(panel: ChatPanel) -> list[tuple[str, str]]:
+        return [
+            (kind, text)
+            for kind, text in _shape(panel, visible_only=True)
+            if kind in {"user", "thinking", "answer", "intermediate"}
+        ]
+
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        if ending == "resume":
+            await panel.replay_history([*first, injection], recovered_from_sidecar=True)
+            await panel.wait_replay_complete()
+            panel.agent_running = True
+            await panel.add_answer_delta("a2", "Second.")
+            panel.finish_answer_segment("a2", completed=True)
+            await panel.add_agent_message("Second.")
+            history = [*first, injection, Message("assistant", [Content.from_text("Second.")]).to_dict()]
+        else:
+            await panel.add_user_message("prompt")
+            panel.agent_running = True
+            await panel.add_answer_delta("a1", "First.")
+            panel.finish_answer_segment("a1", completed=True)
+            await _think(panel, "r1", "Later thought.")
+            history = first
+            if ending == "success":
+                await panel.add_agent_message("First.")
+            else:
+                panel.agent_running = False
+                if ending == "interrupt":
+                    await panel.add_interrupted()
+                else:
+                    await panel.add_error("Failed.")
+                history = [
+                    *first,
+                    Message(
+                        "assistant",
+                        [Content.from_text("Stopped.")],
+                        additional_properties={
+                            HistoryMarkerKind.KEY: HistoryMarkerKind.INTERRUPTED,
+                            "_interrupted_by": "user" if ending == "interrupt" else "error",
+                        },
+                    ).to_dict(),
+                ]
+        if panel.query(ProcessBlock):
+            panel.toggle_fold_all()
+        live_shape = body(panel)
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(history, recovered_from_sidecar=ending == "interrupt")
+        await panel.wait_replay_complete()
+        if panel.query(ProcessBlock):
+            panel.toggle_fold_all()
+        assert body(panel) == live_shape

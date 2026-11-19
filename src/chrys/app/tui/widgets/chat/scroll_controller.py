@@ -13,6 +13,7 @@ from textual.timer import Timer
 from textual.widget import Widget
 
 from chrys.app.tui.util.visibility import set_widget_visibility_without_layout
+from chrys.app.tui.widgets.chat.fold_gap import FOLD_GAP_ROWS, FoldGap
 from chrys.app.tui.widgets.chat.ports import ChatScrollHost
 
 _MANUAL_SCROLL_GC_RESUME_SECONDS = 0.25
@@ -191,6 +192,8 @@ class ChatScrollController:
         """Where that layout put the top of ``_reveal``, margin included; -1 until one does."""
         self._fold_shrink = False
         """An entry folded, or gave rows up, since the last layout: the transcript shrinks in that layout."""
+        self._guide_fold: tuple[Widget, int] | None = None
+        """The header to place at the mouse's viewport row if folding would leave it offscreen."""
 
     def entry_folded(self) -> None:
         """Show an entry that folded, or gave rows up, in the layout that places it.
@@ -201,6 +204,12 @@ class ChatScrollController:
         text arrives, too: until it does, they would stand blank.
         """
         self._fold_shrink = True
+
+    def place_guide_fold_at(self, header: Widget, viewport_row: int) -> None:
+        """Keep an offscreen fold header under the mouse in the layout that folds it."""
+        if self._host.is_anchored and not self._host.is_anchor_released():
+            return
+        self._guide_fold = (header, viewport_row)
 
     def set_agent_running(self, running: bool) -> None:
         """Mirror current run state and reset the final gate only on run start."""
@@ -294,6 +303,7 @@ class ChatScrollController:
         if self.final_response_started:
             return
         self.final_response_started = True
+        self._guide_fold = None
         self.auto_scroll_paused_by_user = False
         if self._host.is_anchored:
             self._host.set_anchor_released(False)
@@ -372,7 +382,33 @@ class ChatScrollController:
             self._show_fold_shrink(virtual_h - size.height)
         if not optimal and (self.view_hold_active or self._view_hold_child is not None):
             self._hold_view(result)
+        if not optimal and self._guide_fold is not None:
+            self._place_guide_fold(result, size.height, max(0, virtual_h - size.height))
         return result
+
+    def _place_guide_fold(self, result: DockArrangeResult, viewport_height: int, max_scroll_y: int) -> None:
+        request, self._guide_fold = self._guide_fold, None
+        if request is None or not self._fold_shrink:
+            return
+        if self._host.is_anchored and not self._host.is_anchor_released():
+            return
+        header, viewport_row = request
+        for placement in result.placements:
+            if placement.widget is not header:
+                continue
+            row = placement.region.y + header.styles.gutter.top
+            if isinstance(header, FoldGap) and header.gap_above:
+                row += FOLD_GAP_ROWS
+            scroll_y = round(self._host.scroll_y)
+            if scroll_y <= row < scroll_y + viewport_height:
+                return
+            new_y = min(max_scroll_y, max(0, row - viewport_row))
+            self._host.set_scroll_y_reactive(new_y)
+            self._host.set_scroll_target_y_reactive(new_y)
+            self._host.set_vertical_scrollbar_position(new_y)
+            if self.view_hold_active:
+                self._view_hold_child = self._first_visible_child(result, new_y)
+            return
 
     def _show_fold_shrink(self, max_scroll_y: int) -> None:
         """Bring a view below the transcript's new bottom, *max_scroll_y*, up to it in the arrangement a fold shrank.
@@ -506,6 +542,7 @@ class ChatScrollController:
         self._settle_reanchor_generation += 1
         self._reveal = None
         self._reveal_top = -1
+        self._guide_fold = None
 
     def _reanchor_after_settle_unless_jumped(self, generation: int) -> None:
         if generation == self._settle_reanchor_generation:
@@ -770,6 +807,7 @@ class ChatScrollController:
         self._reveal = None
         self._reveal_top = -1
         self._fold_shrink = False
+        self._guide_fold = None
         self._entries_bottom = 0
         self._sized_entries_bottom = 0
         self._unwatched_virtual_size = None
@@ -797,3 +835,4 @@ class ChatScrollController:
         self._arrangement = None
         self._reveal = None
         self._reveal_top = -1
+        self._guide_fold = None

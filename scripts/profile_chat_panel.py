@@ -59,7 +59,6 @@ class Metrics:
     tool_sets_per_turn: int
     expected_tool_calls: int
     collapsed: bool
-    fold_finished_turns: bool
     displayed_transcript_entries: int
     process_blocks: int
     wait_for_diffs: bool
@@ -155,15 +154,10 @@ class ChatProfileApp(TuiVariableDefaultsMixin, App[None]):
     }
     """
 
-    def __init__(self, *, fold_finished_turns: bool = False) -> None:
-        self._fold_finished_turns = fold_finished_turns
-        super().__init__()
-
     def compose(self) -> ComposeResult:
         yield ChatPanel(
             cwd="/tmp/chrys-profile",
             thinking_expanded=lambda: True,
-            fold_finished_turns=lambda: self._fold_finished_turns,
         )
 
 
@@ -289,7 +283,7 @@ async def run_profile(args: argparse.Namespace) -> Metrics:
         tracemalloc.start()
     rss_before = _rss_mb(process)
 
-    async with ChatProfileApp(fold_finished_turns=args.fold_finished_turns).run_test(size=tuple(args.size)) as pilot:
+    async with ChatProfileApp().run_test(size=tuple(args.size)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
 
         async def wait_for_frame() -> None:
@@ -393,7 +387,6 @@ async def run_profile(args: argparse.Namespace) -> Metrics:
             tool_sets_per_turn=args.tool_sets_per_turn,
             expected_tool_calls=_expected_tool_calls(args),
             collapsed=args.collapsed,
-            fold_finished_turns=args.fold_finished_turns,
             displayed_transcript_entries=sum(widget.display for widget in panel.transcript_content_children()),
             process_blocks=len(panel.query("ProcessBlock")),
             wait_for_diffs=args.wait_for_diffs,
@@ -527,11 +520,6 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--size", type=int, nargs=2, default=(120, 36), metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--expanded", dest="collapsed", action="store_false")
-    parser.add_argument(
-        "--fold-finished-turns",
-        action="store_true",
-        help="Fold successful process history, as the main chat does by default.",
-    )
     parser.set_defaults(collapsed=True)
     parser.add_argument("--instrument-markdown", action="store_true")
     parser.add_argument("--no-tracemalloc", action="store_true", help="Disable tracemalloc for latency-focused runs.")

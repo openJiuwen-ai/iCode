@@ -43,6 +43,7 @@ from tests.support.tui_helpers import (
     WidgetApp,
     click_copy_button,
     click_widget,
+    open_process_for,
     png_bytes,
     rich_plain,
 )
@@ -408,6 +409,8 @@ async def test_file_tool_copy_includes_snapshot_diff(monkeypatch: pytest.MonkeyP
 
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_tool_start("c1", "write_file", "filesystem.write", args={"path": "README.md"})
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         await pilot.pause()
         header = pilot.app.query_one(ToolCardHeader)
         assert header.actions_visible is False

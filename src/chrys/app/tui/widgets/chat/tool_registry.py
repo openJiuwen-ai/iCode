@@ -8,14 +8,9 @@ InvocationToolCallResult are published from the tool's own invocation task
 awaits the subscribed TUI handler chain inline — so a start's publish does
 not return until the card exists and its ownership is registered, and the
 tool only executes after that. A result therefore cannot overtake its own
-start today, even for provider-reused call_ids across turns. The
-interleaving hardening in this module (group-open lock, call-id
-pre-registration before the mount await, generation gates) guards what CAN
-interleave now — parallel tool invocation tasks with distinct call_ids —
-plus anything that would de-serialize same-id delivery in the future:
-stream()-based TUI consumption, out-of-band synthetic results, or a
-fire-and-forget ``publish``. See the residual-window note on
-``_open_tool_group`` before relying on that serialization elsewhere.
+start. The group-open lock, call-id pre-registration and generation
+checks keep ownership consistent when distinct tool calls start or finish
+in parallel, or the transcript clears during a mount.
 """
 
 from __future__ import annotations
@@ -33,12 +28,11 @@ from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from chrys.app.tui.widgets import PromptDraft
+    from chrys.app.tui.widgets.chat.process_controller import ProcessController
     from chrys.foundation.models.ask_user import AskUserQuestion
-
-
-def _expanded_by_default() -> bool:
-    return True
 
 
 class ToolGroupRegistry:
@@ -50,17 +44,19 @@ class ToolGroupRegistry:
         ui: TranscriptUiPort,
         status: StatusCleanupPort,
         finalize_agent_message: Callable[[], None] | None = None,
-        tool_groups_expanded: Callable[[], bool] | None = None,
         tool_widget_configurator: Callable[[Widget], None] | None = None,
         workspace_cwd: Callable[[], str] | None = None,
+        process: ProcessController | None = None,
+        mount_live_group: Callable[[ToolGroup], Awaitable[bool]] | None = None,
     ) -> None:
         self._mount = mount
         self._ui = ui
         self._status = status
         self._workspace_cwd = workspace_cwd
         self._finalize_agent_message = finalize_agent_message
-        self._tool_groups_expanded = tool_groups_expanded or _expanded_by_default
         self._tool_widget_configurator = tool_widget_configurator
+        self._process = process
+        self._mount_live_group = mount_live_group
         self._current_tool_group: ToolGroup | None = None
         self._sub_agent_widgets: dict[str, SubAgentToolCall] = {}
         self._retired_sub_agent_widgets: dict[str, SubAgentToolCall] = {}
@@ -227,25 +223,23 @@ class ToolGroupRegistry:
         *started_at* is when the call started, as ``time.monotonic()`` read it, if not now.
         """
         group_generation = self._group_generation
+        owner = self._tool_groups_by_call_id.get(call_id)
+        if owner is not None and owner.ignores_repeated_start(call_id):
+            return
         group = self._current_tool_group
-        if running_in_place and self.is_tool_running(call_id):
-            group = self._tool_groups_by_call_id[call_id]
+        if running_in_place and owner is not None and owner.is_tool_running(call_id):
+            group = owner
         if group is None:
             group = await self._open_tool_group(group_generation)
             if group is None:
                 return
 
         # Publish ownership BEFORE the mount await. ``add_tool`` creates the
-        # logical tool record synchronously, so a fast result racing the
-        # widget mount already routes here and is absorbed into the record
-        # (the widget picks it up after mounting) — routing through a stale
-        # owner of a provider-reused call_id would complete the old card and
-        # strand this one as running forever. The continuation below never
-        # writes the map again: whatever invalidated this entry during the
-        # await (reset_for_clear emptying the map, a newer reused-id start
-        # pre-registering itself) is newer and must win. Only the sub-agent
-        # fallback queue is generation-gated — end_group/clear emptied it,
-        # and a later invocation must not claim this stale card.
+        # logical record before mounting. A result arriving during mount can
+        # update the record immediately and the card picks it up afterward.
+        # The continuation leaves routing alone: clear or a newer start may
+        # have changed it while the mount awaited. The sub-agent fallback
+        # queue belongs to the generation in which the group opened.
         self._tool_groups_by_call_id[call_id] = group
         if provider_hosted:
             await group.add_tool(
@@ -281,15 +275,6 @@ class ToolGroupRegistry:
         crash on it (NoMatches). Lock waiters re-read the published group
         and reuse it instead of mounting a duplicate. Returns None when the
         group lifecycle advanced (interrupt/clear) while this call awaited.
-
-        Residual window: a result for a provider-reused call_id landing
-        while this method awaits would still route to the stale owner — no
-        record exists anywhere for the new occurrence yet, so the
-        pre-registration in ``add_tool_start`` (which runs only after this
-        returns) cannot cover it. Unreachable while the pipeline serializes
-        same-id start/result (see module docstring); if that serialization
-        is ever removed, close this with a pending-result stash keyed by
-        call_id and consumed by ``add_tool``.
         """
         async with self._group_open_lock:
             if self._group_generation != group_generation:
@@ -300,18 +285,28 @@ class ToolGroupRegistry:
             await self._status.remove_trailing_status()
             if self._group_generation != group_generation:
                 return None
+            mount_live = self._mount_live_group if self._process is not None else None
             group = ToolGroup(
-                tool_widget_configurator=self._tool_widget_configurator, workspace_cwd=self._workspace_cwd
+                tool_widget_configurator=self._tool_widget_configurator,
+                workspace_cwd=self._workspace_cwd,
+                collapsed=True,
+                on_collapse_lock_changed=self._process.group_lock_changed if self._process is not None else None,
             )
-            group.collapsed = not self._tool_groups_expanded()
-            mounted = await self._mount.mount_transcript_widget(group)
+            if mount_live is None:
+                mounted = await self._mount.mount_transcript_widget(group)
+            else:
+                mounted = await mount_live(group)
             if not mounted or self._group_generation != group_generation:
-                await self._mount.remove_transcript_widget(group)
+                try:
+                    if self._process is not None:
+                        await self._process.remove_live_members((group,))
+                finally:
+                    await self._mount.remove_transcript_widget(group)
                 return None
             # The text above settles and folds only now, with nothing awaited before the group's first call shows
             # it: a layout during the mount would show the text folded and the waiting row gone, with nothing in
             # their place, for a frame.
-            if self._finalize_agent_message is not None:
+            if mount_live is None and self._finalize_agent_message is not None:
                 self._finalize_agent_message()
             self._current_tool_group = group
             return group

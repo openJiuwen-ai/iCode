@@ -18,6 +18,7 @@ from chrys.app.tui.i18n import LocaleController, render_str
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.widget import Widget
 
     from chrys.foundation.i18n import Localizer
 
@@ -43,8 +44,24 @@ class ChrysFooter(Footer):
     byte-for-byte unchanged.
     """
 
-    def __init__(self, *, locale_controller: LocaleController | None = None) -> None:
+    # The corner key takes the right end without the stock palette slot's rule and
+    # padding, so it is no wider than the hook indicator it replaces in any locale.
+    DEFAULT_CSS = """
+    ChrysFooter FooterKey.-corner {
+        dock: right;
+        .footer-key--key {
+            padding: 0 1 0 0;
+        }
+        .footer-key--description {
+            padding: 0;
+        }
+    }
+    """
+
+    def __init__(self, *, locale_controller: LocaleController | None = None, corner_key: str | None = None) -> None:
+        """``corner_key`` puts that screen binding in the right corner in place of the quit key."""
         self._locale_controller = locale_controller
+        self._corner_key = corner_key
         self._visible_binding_signature: _BindingSignature | None = None
         self._binding_recompose_generation = 0
         self._binding_recompose_in_progress = False
@@ -52,7 +69,7 @@ class ChrysFooter(Footer):
         self._localization_dirty = False
         self._rendered_locale_revision: int | None = None
         self._rendered_key_displays: dict[FooterKey, _FooterKeyDisplay] = {}
-        super().__init__()
+        super().__init__(show_command_palette=corner_key is None)
         # Render the screen-level shortcuts in the initial composition. Textual
         # normally composes an empty Footer and waits for a bindings signal, but
         # Chrys may push the startup loading dialog before that signal's deferred
@@ -99,7 +116,8 @@ class ChrysFooter(Footer):
         """
         controller = self._locale_controller
         if controller is None:
-            yield from super().compose()
+            for child in super().compose():
+                yield self._in_corner(child)
             return
 
         active_bindings = self.screen.active_bindings
@@ -142,8 +160,14 @@ class ChrysFooter(Footer):
                 content = child.content
                 literal = content if isinstance(content, str) else str(content)
                 child.update(Content.from_text(literal, markup=False), layout=False)
-            yield child
+            yield self._in_corner(child)
         self._rendered_locale_revision = compose_revision
+
+    def _in_corner(self, child: Widget) -> Widget:
+        """Dock the corner key at the right end, as wide as the hook indicator it stands in for."""
+        if self._corner_key is not None and isinstance(child, FooterKey) and child.key == self._corner_key:
+            child.add_class("-corner")
+        return child
 
     def _resolve_display(self, display: _FooterKeyDisplay, localizer: Localizer) -> tuple[str, str]:
         spec = resolve_binding_display(display.binding)

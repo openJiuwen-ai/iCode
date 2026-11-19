@@ -21,6 +21,15 @@ SCHEMA_VERSION: Final = 1
 RESERVED_DOC_KEYS: Final = frozenset({"schema_version", "migrations"})
 """Top-level housekeeping keys: never settings, never "unknown"."""
 
+RETIRED_SETTING_KEYS: Final = frozenset(
+    {"ui.chat.fold_finished_turns", "ui.chat.show_thinking", "ui.chat.tool_groups_expanded"}
+)
+"""Settings that no longer exist and replace nothing: a saved value is skipped, never "unknown".
+
+The document is left as it is: rewriting it only to drop the line would turn a
+symlinked ``settings.yaml`` into a plain copy.
+"""
+
 
 def user_settings_path() -> Path:
     """The user-layer settings document in the platform configuration directory."""
@@ -40,6 +49,8 @@ def flatten_user_doc(
     its own warning, not a batch of unknown grandchildren. Unknown keys are
     returned, not dropped silently: they stay in the file on write (a patch
     never rewrites what it did not touch), and the loader reports them once.
+    A key in :data:`RETIRED_SETTING_KEYS` is neither: it is skipped unless the
+    caller asks for it by name.
     """
     values: dict[str, Any] = {}
     unknown: list[str] = []
@@ -48,6 +59,8 @@ def flatten_user_doc(
         for name, value in node.items():
             dotted = f"{prefix}.{name}" if prefix else str(name)
             if not prefix and dotted in RESERVED_DOC_KEYS:
+                continue
+            if dotted in RETIRED_SETTING_KEYS and dotted not in known_keys:
                 continue
             if dotted in known_keys:
                 values[dotted] = value

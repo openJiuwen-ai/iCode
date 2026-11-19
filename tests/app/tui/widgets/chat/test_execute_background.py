@@ -8,8 +8,9 @@ import pytest
 
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers.execute import ExecuteToolCall
+from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.foundation.tool_result_metadata import SHELL_BACKGROUND_TASK_METADATA_KEY, SHELL_EXIT_CODE_METADATA_KEY
-from tests.support.tui_helpers import ChatPanelApp
+from tests.support.tui_helpers import ChatPanelApp, open_process_for
 
 _BACKGROUND = {SHELL_BACKGROUND_TASK_METADATA_KEY: {"id": "bg-1", "pid": 4242, "trigger": "user", "log": "/l"}}
 
@@ -19,6 +20,8 @@ async def test_running_shell_card_hints_ctrl_t_and_ends_in_the_background() -> N
     async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("c1", "bash", "shell", args={"command": "npm run dev", "timeout": 120})
+        open_process_for(panel.query(ToolGroup).last())
+        panel.query(ToolGroup).last().collapsed = False
         card = pilot.app.query_one(ExecuteToolCall)
         assert card.offers_background
         assert "ctrl+t moves it to the background" in card._running_label_text().plain
@@ -35,6 +38,8 @@ async def test_a_failed_shell_card_still_says_what_moved_to_the_background() -> 
     async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("c1", "bash", "shell", args={"command": "npm run dev & npm test", "timeout": 120})
+        open_process_for(panel.query(ToolGroup).last())
+        panel.query(ToolGroup).last().collapsed = False
         card = pilot.app.query_one(ExecuteToolCall)
 
         metadata = {**_BACKGROUND, SHELL_EXIT_CODE_METADATA_KEY: 3}
