@@ -144,6 +144,10 @@ class RsiProjector:
         except OSError, ValueError, TypeError, json.JSONDecodeError:
             self._nodes[task_id] = {}
             return
+        if not isinstance(data, dict):
+            # A tree.json holding a list or a scalar is as unusable as a broken one.
+            self._nodes[task_id] = {}
+            return
         nodes: dict[str, RsiTreeNode] = {}
         for item in data.get("nodes") or []:
             if not isinstance(item, dict):
