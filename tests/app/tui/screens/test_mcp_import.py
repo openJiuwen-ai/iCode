@@ -16,6 +16,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.collapsible import CollapsibleTitle
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.agents import import_mcp_dialog
 from chrys.app.tui.screens.agents.import_mcp_dialog import ImportMcpServersDialog, _ImportItem
@@ -240,7 +241,7 @@ async def test_preview_and_imported_fields_keep_raw_values_through_copy_edit_and
         enabled=False,
     )
     copied: list[str] = []
-    monkeypatch.setattr("chrys.app.tui.clipboard.platform_helpers.clipboard_copy", copied.append)
+    monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
     app = PanelApp(MCPConfigPanel([]))
     async with app.run_test(size=(120, 100)) as pilot:
         source = FakeSource("fake", "Fake", McpImportResult((candidate(config),)))
@@ -255,12 +256,14 @@ async def test_preview_and_imported_fields_keep_raw_values_through_copy_edit_and
         assert value_input.value == raw
         value_input.select_all()
         value_input.action_copy()
-        assert copied[-1] == raw
+        await wait_for_clipboard(app)
+        assert copied.pop() == raw
         preview_description = item.card.query_one("#mcp-desc-0", TextArea)
         assert raw in preview_description.text
         preview_description.action_select_all()
         preview_description.action_copy()
-        assert copied[-1] == preview_description.text
+        await wait_for_clipboard(app)
+        assert copied.pop() == preview_description.text
         assert item.imported is not None and item.imported.enabled is False
         item.tick.value = True
         await import_ticked(dialog, pilot)
@@ -271,7 +274,8 @@ async def test_preview_and_imported_fields_keep_raw_values_through_copy_edit_and
         assert raw in description.text
         description.action_select_all()
         description.action_copy()
-        assert copied[-1] == description.text
+        await wait_for_clipboard(app)
+        assert copied.pop() == description.text
         saved = card.get_config()
         assert saved.name == config.name
         assert saved.allowed_tools == config.allowed_tools
@@ -291,12 +295,14 @@ async def test_preview_and_imported_fields_keep_raw_values_through_copy_edit_and
         value_input.insert_text_at_cursor(" edited")
         value_input.select_all()
         value_input.action_copy()
-        assert copied[-1] == raw + " edited"
+        await wait_for_clipboard(app)
+        assert copied.pop() == raw + " edited"
         original_description = description.text
         description.insert("\nedited " + raw, description.document.end)
         description.action_select_all()
         description.action_copy()
-        assert copied[-1] == original_description + "\nedited " + raw
+        await wait_for_clipboard(app)
+        assert copied.pop() == original_description + "\nedited " + raw
         edited = card.get_config()
         assert edited.description == original_description + "\nedited " + raw
         if transport == "stdio":
