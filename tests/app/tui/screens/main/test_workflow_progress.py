@@ -32,6 +32,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, open_workflow
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 # Every failure state records the same error in the node's journal, which the open details render
 # live and a later open replays; the state only decides whether a retry follows. So each state runs

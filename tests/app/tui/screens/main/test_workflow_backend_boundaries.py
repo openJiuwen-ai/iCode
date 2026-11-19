@@ -34,6 +34,8 @@ from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, open_workflow, save_workflow_session, switch_mode, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_preview_and_start_share_workspace_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project = make_project(tmp_path)

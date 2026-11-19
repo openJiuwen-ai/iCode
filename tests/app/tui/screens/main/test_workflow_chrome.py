@@ -45,6 +45,8 @@ from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 from tests.support.workflow_workers import python_workflow
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_workflow_hides_status_bar_through_run_and_restores_chat_details(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

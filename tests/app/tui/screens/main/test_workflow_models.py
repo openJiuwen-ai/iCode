@@ -36,6 +36,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, dismiss_workflow_notice, open_workflow, switch_mode, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 MODEL_A = WorkflowModelSelection("model-a", "Workflow [A]", "model-a-id")
 MODEL_B = WorkflowModelSelection("model-b", "Workflow B", "model-b-id")
 

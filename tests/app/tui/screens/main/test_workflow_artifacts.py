@@ -38,6 +38,8 @@ from ._workflow_support import (
     workflow_selection,
 )
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_restored_node_shows_previous_output_without_live_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

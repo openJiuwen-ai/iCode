@@ -21,6 +21,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, open_workflow
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 SOURCE = b"""from chrys.workflows import WorkflowBuilder
 def echo(value):
     return value

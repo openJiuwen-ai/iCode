@@ -24,6 +24,8 @@ from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, open_workflow, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_new_workflow_picker_uses_current_workspace_and_cancel_keeps_bound_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

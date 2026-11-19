@@ -31,6 +31,8 @@ from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, open_workflow, run_store, save_workflow_session, select_workflow_view
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 def _values(info: WorkflowInfo) -> list[str]:
     return [str(widget.content) for widget in info.query(Static)]

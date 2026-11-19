@@ -35,6 +35,8 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 from ._workflow_support import WorkflowEngine, switch_mode
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "retried"])
 async def test_resume_replays_node_progress_without_live_state_or_workflow_source(
@@ -160,8 +162,9 @@ async def test_resume_replays_node_progress_without_live_state_or_workflow_sourc
                 await click_when_settled(pilot, "#workflow-attempt-1")
                 await wait_for(
                     lambda: (
-                        dialog.query_one(AgentTranscriptSurface) is not failed_surface
-                        and bool(dialog.query(AgentMessage))
+                        (current := dialog.query_one_optional(AgentTranscriptSurface)) is not None
+                        and current is not failed_surface
+                        and any(message.text == "Done" for message in current.query(AgentMessage))
                     ),
                     pilot=pilot,
                 )

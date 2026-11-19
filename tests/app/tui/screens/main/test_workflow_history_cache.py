@@ -22,6 +22,8 @@ from tests.support.workflow_history import record_workflow_run
 
 from ._workflow_support import WorkflowEngine, save_workflow_session, value_text
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("history_state", ["corrupt", "empty", "missing_current"])
 async def test_previous_history_is_cached_without_hiding_current_output(
