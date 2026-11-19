@@ -627,7 +627,6 @@ async def test_a_guide_fold_uses_the_view_after_prepend(title_visible: bool) -> 
         member = panel.query_one(ThinkingMessage) if title_visible else later_member
         top = panel.content_region.y
         row = panel.content_region.height - 3 if title_visible else process.virtual_region.y - notice.virtual_region.y
-        panel.begin_view_hold()
         panel.release_anchor()
         panel.scroll_to(y=process.virtual_region.y - row, animate=False, immediate=True)
         await _settled(pilot)
@@ -637,6 +636,8 @@ async def test_a_guide_fold_uses_the_view_after_prepend(title_visible: bool) -> 
         older = Static("\n".join(["older"] * max(4, 2 - row)))
 
         with pilot.app.batch_update():
+            # The prepend can be the first arrangement after the hold starts.
+            panel.begin_view_hold()
             await panel.mount_replay_batch([older], before=panel.transcript_content_children()[0])
             panel.on_guide_fold_requested(GuideFoldRequested(member, process=True, screen_y=edge))
         await _settled(pilot)

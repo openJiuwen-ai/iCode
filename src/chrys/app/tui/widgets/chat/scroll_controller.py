@@ -481,6 +481,8 @@ class ChatScrollController:
     def begin_view_hold(self) -> None:
         """Keep a scrolled-up view on its content while entries land above it."""
         self.view_hold_active = True
+        # The first arrangement during the hold may already contain prepended entries.
+        self._view_hold_arrangement = self._arrangement
 
     def end_view_hold(self) -> None:
         """Stop tracking after the next arrange applies the last pending shift."""
