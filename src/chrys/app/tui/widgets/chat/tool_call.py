@@ -1740,6 +1740,7 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
         paths as the calls gave them, as a transcript that may run elsewhere does."""
         self._collapse_lock_call_ids: set[str] = set()
         self._on_collapse_lock_changed = on_collapse_lock_changed
+        self.live_process_state_changed: Callable[[ToolGroup, ToolTally], None] | None = None
         self._process_status: tuple[ToolTally, bool, bool] | None = None
         super().__init__()
         if is_compressed:
@@ -1923,6 +1924,8 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
             started_at=started_at,
         )
         self.set_content_visible(True)
+        # An answer can arrive while the running card is still waiting to mount.
+        self._update_title()
         async with self._content_structure_lock:
             # The structure lock may have yielded behind a collapse restore or
             # prune. Revalidate before constructing a renderer: Textual keeps
@@ -1930,6 +1933,7 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
             # can no longer accept mounts.
             if not self._accepts_tool_mounts():
                 self._tool_records.pop(call_id, None)
+                self._update_title()
                 return
             record = self._tool_records[call_id]
             existing = self._tools.get(call_id)
@@ -1941,11 +1945,9 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
                     existing.update_identity(record.tool_name, record.tool_kind)
                 if running and record.args is not None and isinstance(existing, _ToolArgsUpdatable):
                     existing.update_args(record.args)
-                self._update_title()
                 return
             if self._cards_visible and not self._content_mounted:
                 await self._restore_completed_tool_widgets_locked()
-                self._update_title()
                 return
             if (
                 not self._cards_visible
@@ -1955,7 +1957,6 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
                 # A result can arrive while the start waits for a prune. It
                 # already lives in the record; there is no live card to bind.
                 self._content_mounted = False
-                self._update_title()
                 return
 
             tc = self._build_tool_widget(record)
@@ -1974,7 +1975,6 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
             if record := self._tool_records.get(call_id):
                 self._apply_tool_record_state(record, tc)
             self._content_mounted = len(self._tools) == len(self._tool_records)
-        self._update_title()
 
     async def add_collapsed_replay_tool(
         self,
@@ -2277,6 +2277,8 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
         status = (self.tool_tally, self.all_complete, self.collapse_locked)
         if status != self._process_status:
             self._process_status = status
+            if self.live_process_state_changed is not None:
+                self.live_process_state_changed(self, status[0])
             self.post_message(self.ProcessStateChanged(self))
 
     @property

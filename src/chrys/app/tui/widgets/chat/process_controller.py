@@ -239,6 +239,9 @@ class ProcessController:
                 index -= 1
         row.members.insert(index, member)
         self._owners[member] = ref(row)
+        if isinstance(member, ToolGroup):
+            member.live_process_state_changed = self.group_state_changed
+            row.set_group_tally(member, member.tool_tally)
         member.set_live_status_reporting(True)
         self._sync_member_visibility(row, member)
         self._update_live_row(row)
@@ -250,7 +253,6 @@ class ProcessController:
         self._segment_start = None
         if row is not None:
             self.set_live_row_collapsed(row, True)
-            row.tally = process_tally(row.members)
             self._stop_live_preview(row)
             row.settle()
 
@@ -272,6 +274,8 @@ class ProcessController:
             row.display = False
             for member in row.members:
                 self._owners.pop(member, None)
+                if isinstance(member, ToolGroup):
+                    member.live_process_state_changed = None
                 if reveal_members:
                     member.set_process_hidden(False)
         if reveal_members:
@@ -304,6 +308,9 @@ class ProcessController:
                 self._owners.pop(member, None)
                 row.members.remove(member)
                 row.running_members.discard(member)
+                if isinstance(member, ToolGroup):
+                    member.live_process_state_changed = None
+                    row.set_group_tally(member, None)
                 member.set_live_status_reporting(False)
                 member.set_process_hidden(False)
         emptied: list[LiveProcessRow] = []
@@ -312,7 +319,6 @@ class ProcessController:
                 self._arrange_live_segment(row)
             if row.members:
                 if row.settled:
-                    row.tally = process_tally(row.members)
                     row.update_status(resample=row.latest is not old_latest)
                 else:
                     self._update_live_row(row)
@@ -352,12 +358,11 @@ class ProcessController:
         row = self._active_row
         if row is None or self.owner_of(member) is not row:
             return
-        if not isinstance(member, (AgentMessage, ThinkingMessage, ToolGroup)):
-            return
-        if member.live_status_animates:
-            row.running_members.add(member)
-        else:
-            row.running_members.discard(member)
+        if isinstance(member, ThinkingMessage):
+            if member.live_status_animates:
+                row.running_members.add(member)
+            else:
+                row.running_members.discard(member)
         if row.collapsed:
             was_summarized = row.summarized
             self._sync_live_summary(row)
@@ -369,20 +374,26 @@ class ProcessController:
         row = self._active_row
         if row is not None:
             row.answering = answer
-            # Status messages from work that just started may still be queued.
-            row.running_members = {member for member in row.members if member.live_status_animates}
             self._update_live_row(row)
 
     @staticmethod
     def _sync_live_summary(row: LiveProcessRow) -> None:
-        summarized = row.collapsed and row.answering is not None and not row.running_members
-        if summarized and not row.summarized:
-            row.tally = process_tally(row.members)
-        row.summarized = summarized
+        row.summarized = row.collapsed and row.answering is not None and not row.running_members
 
     def refresh_localization(self) -> None:
         for row in self._live_rows:
             row.refresh(layout=False)
+
+    def group_state_changed(self, group: ToolGroup, tally: ToolTally) -> None:
+        """Record tool changes before a new answer can overtake their queued UI messages."""
+        row = self.owner_of(group)
+        if isinstance(row, LiveProcessRow):
+            row.set_group_tally(group, tally)
+            if not row.settled:
+                if group.live_status_animates:
+                    row.running_members.add(group)
+                else:
+                    row.running_members.discard(group)
 
     def group_lock_changed(self, group: ToolGroup) -> None:
         row = self.owner_of(group)
@@ -407,14 +418,14 @@ class ProcessController:
 
     def _update_live_row(self, row: LiveProcessRow) -> None:
         self._sync_live_summary(row)
-        if not row.collapsed and not row.settled:
-            row.tally = process_tally(row.members)
         row.update_status()
 
     def thinking_finished(self, member: ThinkingMessage) -> None:
         owner = self.owner_of(member)
-        if isinstance(owner, LiveProcessRow) and owner.collapsed and not member.process_hidden:
-            self._sync_member_visibility(owner, member)
+        if isinstance(owner, LiveProcessRow):
+            owner.running_members.discard(member)
+            if owner.collapsed and not member.process_hidden:
+                self._sync_member_visibility(owner, member)
         if owner is not None:
             self._host.process_members_changed()
 
@@ -503,14 +514,7 @@ class ProcessController:
 
     def member_changed(self, group: ToolGroup) -> None:
         block = self.owner_of(group)
-        if isinstance(block, LiveProcessRow):
-            if block.settled or block.summarized or not block.collapsed:
-                tally = process_tally(block.members)
-                if block.tally != tally:
-                    block.tally = tally
-                    block.refresh(layout=False)
-            return
-        if block is None:
+        if not isinstance(block, ProcessBlock):
             return
         tally = process_tally(block.members)
         if block.tally != tally:

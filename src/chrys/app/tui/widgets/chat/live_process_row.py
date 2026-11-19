@@ -69,6 +69,7 @@ class LiveProcessRow(ProcessGuideMixin, RunningTitle, FoldGap, Static, can_focus
         self.collapsed = True
         self.members: list[LiveProcessMember] = []
         self.tally = ToolTally()
+        self._group_tallies: dict[ToolGroup, ToolTally] = {}
         self.settled = False
         self.summarized = False
         self.answering: AgentMessage | None = None
@@ -98,6 +99,21 @@ class LiveProcessRow(ProcessGuideMixin, RunningTitle, FoldGap, Static, can_focus
     def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
         # The layout that measured the gap already placed this row.
         return super()._size_updated(size, virtual_size, container_size, layout=False)
+
+    def set_group_tally(self, group: ToolGroup, tally: ToolTally | None) -> None:
+        """Replace one group's contribution, including late results after this row settles."""
+        previous = self._group_tallies.get(group)
+        if previous == tally:
+            return
+        if previous is not None:
+            self.tally -= previous
+        if tally is None:
+            self._group_tallies.pop(group)
+        else:
+            self._group_tallies[group] = tally
+            self.tally += tally
+        if self.summarized or not self.collapsed:
+            self.refresh(layout=False)
 
     def update_status(self, *, resample: bool = False) -> None:
         latest = self.latest

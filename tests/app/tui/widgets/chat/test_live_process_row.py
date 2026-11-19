@@ -670,6 +670,35 @@ async def test_a_sub_agent_s_own_activity_reaches_the_row() -> None:
         await _status_shows(pilot, panel, "Reading notes.txt")
 
 
+async def test_new_reply_and_late_result_do_not_rescan_previous_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("inspect")
+        await _read(panel, "first", "first.py", done=False)
+        for index in range(16):
+            await _say(panel, f"a{index}", "Checking another file.")
+            await _read(panel, f"c{index}", f"{index}.py")
+        await _settled(pilot)
+        row = _row(panel)
+        visits = 0
+
+        class CountedMembers(list):
+            def __iter__(self):
+                nonlocal visits
+                for member in super().__iter__():
+                    visits += 1
+                    yield member
+
+        with monkeypatch.context() as patch:
+            patch.setattr(row, "members", CountedMembers(row.members))
+            await panel.add_answer_delta("final", "Here is the answer.")
+            assert not row.summarized
+            await panel.add_tool_result("first", "read_file", "Error: cannot read", canonical_status="failed")
+            await _settled(pilot)
+            assert row.summarized and row.tally.total == 17 and row.tally.failed == 1
+        assert visits == 0
+
+
 @pytest.mark.parametrize("read_still_running", [False, True], ids=["tools-finished", "last-tool-finishes-under-answer"])
 async def test_the_row_summarizes_while_an_answer_streams_once_the_tools_finish(
     monkeypatch: pytest.MonkeyPatch,
