@@ -1090,6 +1090,11 @@ class BackendEventHandler:
         if self._state.render_gate.defers(event):
             self._state.render_gate.defer(event)
             return
+        if isinstance(event, TurnStarted):
+            # A retry/continue starts without mounting a new user message, so the
+            # previous run's interrupted/error card would otherwise sit above the
+            # new thinking and tool output until the first answer segment lands.
+            await self._ui().clear_settled_status()
         if isinstance(event, UnansweredInputDropped):
             await self._ui().apply_fresh_turn_cleanup(
                 retired_previous_turn=event.retired_previous_turn, removed_item_ids=event.removed_item_ids

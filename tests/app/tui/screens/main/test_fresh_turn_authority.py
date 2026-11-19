@@ -17,7 +17,12 @@ import chrys.orchestration.engine.build.builder as builder_module
 import chrys.service.agent_middleware.events.tool_events as tool_events_module
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.main.screen import MainScreen
-from chrys.app.tui.widgets.chat.messages import MessageRollbackButton, ThinkingMessage, UserMessage
+from chrys.app.tui.widgets.chat.messages import (
+    InterruptedMessage,
+    MessageRollbackButton,
+    ThinkingMessage,
+    UserMessage,
+)
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
@@ -283,6 +288,37 @@ async def test_fast_cleanup_and_turn_started_wait_for_the_new_opener_to_mount(tm
         assert [message.text for message in panel.query(UserMessage)] == ["New input"]
         assert panel.query_one(UserMessage).turn_number == 6
         assert [item.turn_index for item in panel.toc_items] == [6]
+
+
+async def test_turn_started_clears_the_previous_interrupted_status(tmp_path: Path) -> None:
+    """A retry/continue starts without a user message; its TurnStarted owns the card's cleanup."""
+    from chrys.foundation.events.types import TurnStarted
+
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(80, 28)):
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        panel = main.query_one(ChatPanel)
+        panel.set_session_id("current")
+        await panel.add_user_message("Previous")
+        panel.apply_turn_started(6)
+        await panel.add_interrupted()
+        assert len(panel.query(InterruptedMessage)) == 1
+
+        main._state.run.agent_running = True
+        main._state.run.started_at = datetime.now(tz=UTC)
+        await bus.publish(
+            TurnStarted(
+                session_id="current",
+                timestamp=main._state.run.started_at + timedelta(seconds=1),
+                turn_number=7,
+                is_retry=True,
+            ),
+            raise_handler_errors=True,
+        )
+
+        assert not panel.query(InterruptedMessage)
 
 
 @pytest.mark.parametrize("deferred", [False, True])

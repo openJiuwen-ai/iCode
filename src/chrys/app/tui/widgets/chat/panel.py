@@ -1861,6 +1861,17 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         if isinstance(last, (ErrorMessage, InterruptedMessage)):
             last.hide_action()
 
+    async def clear_settled_status(self) -> None:
+        """Remove the settled run's trailing terminal card when the next run starts.
+
+        A retry/continue starts without mounting a new user message, so the
+        interrupted/error card would otherwise stay above the new thinking and
+        tool output until the first answer segment lands. Removal happens only
+        after the backend accepts the new run (its ``TurnStarted``); a refused
+        retry keeps the card.
+        """
+        await self._remove_trailing_status()
+
     async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
         """Remove the answer text a Continue, Retry or steer dropped from history: the messages these segments showed.
 
