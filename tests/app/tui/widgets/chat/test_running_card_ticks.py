@@ -21,11 +21,13 @@ import pytest
 from rich.text import Text
 from textual.app import App
 from textual.content import Content
+from textual.geometry import Size
 from textual.widgets import Static
 
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.chat import compaction_card as compaction_card_module
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers import execute as execute_module
 from chrys.app.tui.widgets.chat.renderers import sub_agent as sub_agent_module
@@ -72,16 +74,22 @@ async def _populate(panel: ChatPanel) -> None:
     await panel.add_user_message("Investigate everything in parallel.")
 
 
-async def _start_live_cards(panel: ChatPanel) -> tuple[SubAgentToolCall, ExecuteToolCall, ToolGroup]:
+async def _start_live_cards(
+    panel: ChatPanel, *, tail: list[str] = _TAIL
+) -> tuple[SubAgentToolCall, ExecuteToolCall, ToolGroup]:
     await panel.add_tool_start(
         "agent", "explore_agent", KIND_SUB_AGENT, args={"prompt": "Map the modules.", "profile": "Explore"}
     )
     await panel.add_tool_start("shell", "shell", KIND_SHELL, args={"command": "make test"})
-    panel.update_tool_progress("shell", _TAIL)
+    panel.update_tool_progress("shell", tail)
     group = panel.query(ToolGroup).last()
     agent, shell = group.get_tool("agent"), group.get_tool("shell")
     assert isinstance(agent, SubAgentToolCall) and isinstance(shell, ExecuteToolCall)
     return agent, shell, group
+
+
+def _toggle_live_process(panel: ChatPanel) -> None:
+    panel.on_live_process_row_toggle_requested(LiveProcessRow.ToggleRequested(panel.query_one(LiveProcessRow)))
 
 
 def _plain(widget: Static) -> str:
@@ -133,6 +141,7 @@ async def test_shown_running_cards_tick_without_laying_out_a_populated_main_scre
         panel = main.query_one(ChatPanel)
         await _populate(panel)
         agent, shell, group = await _start_live_cards(panel)
+        _toggle_live_process(panel)
         group.collapsed = False
         await _settle(app, main)
         layout = create_autospec(main._refresh_layout, side_effect=main._refresh_layout)
@@ -211,20 +220,44 @@ async def test_running_cards_ticked_while_collapsed_show_current_text_when_expan
         assert isinstance(main, MainScreen)
         panel = main.query_one(ChatPanel)
         await _populate(panel)
-        agent, shell, group = await _start_live_cards(panel)
+        agent, shell, group = await _start_live_cards(panel, tail=["initial shell output"])
         assert group.collapsed
+        _toggle_live_process(panel)
+        group.collapsed = False
         await _settle(app, main)
+        tail = shell.query_one("#exec-panel", Static)
+        assert tail.outer_size.height == 1 + tail.styles.gutter.height
+        assert "initial shell output" in _frame_text(app)
+
+        _toggle_live_process(panel)
+        assert group.collapsed and group.process_hidden
+        await _settle(app, main)
+        layout_heights: list[int] = []
+        refresh_layout = main._refresh_layout
+
+        def record_reveal(size: Size | None = None, scroll: bool = False) -> None:
+            refresh_layout(size, scroll)
+            if group.display and not group.collapsed and not scroll:
+                layout_heights.append(tail.outer_size.height)
+
+        layout = create_autospec(refresh_layout, side_effect=record_reveal)
+        monkeypatch.setattr(main, "_refresh_layout", layout)
 
         clock.now += 5.0
         panel.update_tool_progress("shell", [f"hidden line {index}" for index in range(3)])
         frame_before = agent._spin_idx
         await wait_for(lambda: agent._spin_idx != frame_before, description="collapsed card ticked")
+        await _settle(app, main)
+        layout.assert_not_called()
+
+        _toggle_live_process(panel)
         group.collapsed = False
         await _settle(app, main)
 
-        # Streamed output paints when it arrives, shown or not.
-        tail = shell.query_one("#exec-panel", Static)
-        assert tail.outer_size.height == 10 + tail.styles.gutter.height
+        # The same layout that reveals the card measures the output which arrived while it was hidden.
+        expected_height = 4 + tail.styles.gutter.height
+        assert layout_heights and layout_heights[0] == expected_height
+        assert tail.outer_size.height == expected_height
         assert "hidden line 2" in _frame_text(app)
         # The first tick after the cards show paints the elapsed time they reached while hidden.
         await wait_for(

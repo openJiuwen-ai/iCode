@@ -53,21 +53,6 @@ _HINT_UI_LOCALE = msg(
     "tui.settings.hint.ui.locale",
     fallback="Language of menus, hints and messages; changes apply immediately.",
 )
-_HINT_UI_CHAT_THINKING_EXPANDED = msg(
-    "tui.settings.hint.ui.chat.show_thinking",
-    fallback=(
-        "Expand new thinking while the model writes it. When off, the folded row shows the estimated token count "
-        "and speed. Click it at any time to read the full text."
-    ),
-)
-_HINT_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
-    "tui.settings.hint.ui.chat.tool_groups_expanded",
-    fallback="Expand new tool groups by default. When off, click the tool status at any time to view details.",
-)
-_HINT_UI_CHAT_FOLD_FINISHED_TURNS = msg(
-    "tui.settings.hint.ui.chat.fold_finished_turns",
-    fallback="Fold activity after successful replies. Applies to future completed turns and sessions opened afterwards; existing folds keep their state.",
-)
 _HINT_UI_CHAT_IMAGE_GRAPHICS = msg(
     "tui.settings.hint.ui.chat.image_graphics",
     fallback=(
@@ -334,12 +319,7 @@ TABS: tuple[SettingsTab, ...] = (
             ),
             SettingsSection(
                 _SECTION_DISPLAY,
-                (
-                    SettingRowSpec("ui.chat.show_thinking", hint=_HINT_UI_CHAT_THINKING_EXPANDED),
-                    SettingRowSpec("ui.chat.tool_groups_expanded", hint=_HINT_UI_CHAT_TOOL_GROUPS_EXPANDED),
-                    SettingRowSpec("ui.chat.fold_finished_turns", hint=_HINT_UI_CHAT_FOLD_FINISHED_TURNS),
-                    SettingRowSpec("ui.chat.image_graphics", hint=_HINT_UI_CHAT_IMAGE_GRAPHICS),
-                ),
+                (SettingRowSpec("ui.chat.image_graphics", hint=_HINT_UI_CHAT_IMAGE_GRAPHICS),),
             ),
             SettingsSection(
                 _SECTION_INPUT,

@@ -331,7 +331,7 @@ class ReadFileToolCall(BaseToolCard):
             panel.border_subtitle = render_text(widget_localizer(self), TOOL_CARD_REJECTED.bind())
             self.add_class("-rejected")
             with suppress(Exception):
-                panel.update(Text(result))
+                update_static_in_place(panel, Text(result))
             self.add_class("-done")
             self._show_tool_copy_button()
             return
@@ -340,7 +340,7 @@ class ReadFileToolCall(BaseToolCard):
             self.status = "error"
             self.add_class("-error")
             with suppress(Exception):
-                panel.update(Text(result))
+                update_static_in_place(panel, Text(result))
             self.add_class("-done")
             self._show_tool_copy_button()
             return
@@ -368,12 +368,12 @@ class ReadFileToolCall(BaseToolCard):
             )
             with suppress(Exception):
                 if display_truncated:
-                    panel.update(Group(syntax, Text("...", style="dim")))
+                    update_static_in_place(panel, Group(syntax, Text("...", style="dim")))
                 else:
-                    panel.update(syntax)
+                    update_static_in_place(panel, syntax)
         else:
             with suppress(Exception):
-                panel.update("")
+                update_static_in_place(panel, "")
 
         self.add_class("-done")
         self._show_tool_copy_button()
@@ -390,6 +390,6 @@ class ReadFileToolCall(BaseToolCard):
         panel.border_title = Text(f"{self._file_path} [{error_label}]")
         self.add_class("-error")
         with suppress(Exception):
-            panel.update(Text(error))
+            update_static_in_place(panel, Text(error))
         self.add_class("-done")
         self._show_tool_copy_button()

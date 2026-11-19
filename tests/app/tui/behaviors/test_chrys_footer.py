@@ -601,7 +601,7 @@ async def test_diff_screen_footer_uses_controller_and_localizes_without_main_tra
         diff_screen = app.screen
         assert diff_screen._locale_controller is app.locale_controller
         footer = diff_screen.query_one(ChrysFooter)
-        expected_en_keys = {"Back", "Toggle Split View", "Toggle Change List", "Quit"}
+        expected_en_keys = {"Back", "Toggle Split View", "Toggle Change List"}
         await wait_for(
             lambda: {key.description for key in footer.query("FooterKey")} == expected_en_keys,
             pilot=pilot,
@@ -625,7 +625,7 @@ async def test_diff_screen_footer_uses_controller_and_localizes_without_main_tra
         monkeypatch.setattr(chat, "update_node_styles", lambda animate=True: chat_restyles.append(None))
 
         assert app.locale_controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
-        expected_zh_keys = {"返回", "切换并排视图", "显示/隐藏文件列表", "退出"}
+        expected_zh_keys = {"返回", "切换并排视图", "显示/隐藏文件列表"}
         await wait_for(
             lambda: {key.description for key in footer.query("FooterKey")} == expected_zh_keys,
             pilot=pilot,

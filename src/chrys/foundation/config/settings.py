@@ -695,14 +695,6 @@ _LABEL_SEARCH_RESPECT_GITIGNORE = msg("settings.tools.search.respect_gitignore.l
 _LABEL_TOOLS_IMAGE_SEND_LIMIT_KB = msg("settings.tools.image.send_limit_kb.label", fallback="Image size limit (KB)")
 _LABEL_UI_THEME = msg("settings.ui.theme.label", fallback="Theme")
 _LABEL_UI_LOCALE = msg("settings.ui.locale.label", fallback="UI Language")
-_LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
-    "settings.ui.chat.tool_groups_expanded.label",
-    fallback="Expand tool details by default",
-)
-_LABEL_UI_CHAT_THINKING_EXPANDED = msg("settings.ui.chat.show_thinking.label", fallback="Expand thinking by default")
-_LABEL_UI_CHAT_FOLD_FINISHED_TURNS = msg(
-    "settings.ui.chat.fold_finished_turns.label", fallback="Automatically fold completed turns"
-)
 _LABEL_UI_CHAT_IMAGE_GRAPHICS = msg("settings.ui.chat.image_graphics.label", fallback="Full-color images")
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
@@ -1526,48 +1518,6 @@ class Settings:
     )
 
     # ── Chat rendering ────────────────────────────────────────────
-    tool_groups_expanded: bool = field(
-        default=False,
-        metadata=spec(
-            key="ui.chat.tool_groups_expanded",
-            label=_LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED,
-            coerce=bool_coercer(),
-            apply=Apply.LIVE,
-            group="ui",
-            kind=Kind.BOOL,
-            project_merge=ProjectMerge.DENY,
-        ),
-    )
-
-    # TUI presentation only: whether the model's readable thinking opens in the
-    # main chat as it arrives, or stays folded to its one-line row. The key keeps
-    # the name it shipped under, when turning it off left thinking out.
-    chat_thinking_expanded: bool = field(
-        default=False,
-        metadata=spec(
-            key="ui.chat.show_thinking",
-            label=_LABEL_UI_CHAT_THINKING_EXPANDED,
-            coerce=bool_coercer(),
-            apply=Apply.LIVE,
-            group="ui",
-            kind=Kind.BOOL,
-            project_merge=ProjectMerge.DENY,
-        ),
-    )
-
-    chat_fold_finished_turns: bool = field(
-        default=True,
-        metadata=spec(
-            key="ui.chat.fold_finished_turns",
-            label=_LABEL_UI_CHAT_FOLD_FINISHED_TURNS,
-            coerce=bool_coercer(),
-            apply=Apply.LIVE,
-            group="ui",
-            kind=Kind.BOOL,
-            project_merge=ProjectMerge.DENY,
-        ),
-    )
-
     # Whether chat images use the terminal's own graphics (kitty protocol, Sixel) where the terminal
     # is known to have them; off, every terminal shows the half-block approximation. Read once, when
     # the TUI starts: what the terminal already holds is not redrawn.
@@ -2098,11 +2048,6 @@ def persist_locale(locale: str) -> Exception | None:
     """Write ``ui.locale`` to the user settings document without raising."""
     # Content-free logging by design: the requested value must not reach the log.
     return _persist_one("ui.locale", locale, log_value=False)
-
-
-def persist_tool_groups_expanded(value: bool) -> Exception | None:
-    """Persist whether newly created live tool groups start expanded."""
-    return _persist_one("ui.chat.tool_groups_expanded", value)
 
 
 def persist_approval_mode(mode: str) -> Exception | None:

@@ -49,6 +49,7 @@ from chrys.app.tui.widgets.chat.tool_call import ToolCall, ToolGroup
 from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex, WorkspacePathIndex
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
 from tests.support.pilot_barrier import screen_is_settled
+from tests.support.tui_helpers import open_process_for
 from tests.support.waiting import wait_for
 
 
@@ -911,6 +912,8 @@ async def test_frozen_completed_tool_subtree_dies_on_its_idle_full_reclaim() -> 
         panel = app.query_one(ChatPanel)
         await panel.add_user_message("tools")
         await panel.add_tool_start("tool1", "plain_tool", "", args={"value": 1})
+        open_process_for(panel.query(ToolGroup).last())
+        panel.query(ToolGroup).last().collapsed = False
         await panel.add_tool_result("tool1", "plain_tool", "done", 10)
         group = panel.query_one(ToolGroup)
         descendant_ref = _tool_call_weakref(group, "tool1")

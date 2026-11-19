@@ -17,6 +17,7 @@ from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
 from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     ErrorMessage,
@@ -48,6 +49,7 @@ from tests.support.tui_helpers import (
     ChatPanelApp,
     WidgetApp,
     chat_content_children,
+    click_when_settled,
 )
 from tests.support.waiting import wait_for
 
@@ -1137,16 +1139,60 @@ async def test_chat_panel_withdraws_the_answer_segments_a_bare_continue_asks_for
         assert cp.query_one(status_type) is status
 
 
-async def test_a_start_reusing_a_finished_call_id_leaves_that_card_showing_the_call_its_result_answered() -> None:
+@pytest.mark.parametrize("pruned", [False, True], ids=["mounted", "pruned"])
+async def test_a_start_reusing_a_finished_call_id_leaves_that_card_showing_the_call_its_result_answered(
+    pruned: bool,
+) -> None:
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await cp.add_tool_start("c1", "alpha", "", '{"x": 1}', args={"x": 1})
+        group = cp.query_one(ToolGroup)
+        row = next(iter(cp.query(LiveProcessRow)), None)
+        if row is not None and not pruned:
+            await click_when_settled(pilot, row)
+            group.collapsed = False
         await cp.add_tool_result("c1", "alpha", "alpha result")
+        if pruned:
+            assert row is not None
+            await wait_for(lambda: not group.query(ToolCall), pilot=pilot, description="the finished card is pruned")
         await cp.add_tool_start("c1", "beta", "", '{"y": 2}', args={"y": 2})
+        if pruned:
+            assert row is not None
+            await click_when_settled(pilot, row)
+            group.collapsed = False
+            await wait_for(lambda: bool(group.query(ToolCall)), pilot=pilot, description="the original card is rebuilt")
 
         [card] = cp.query(ToolCall)
-        assert (card.tool_name, card.args, card.status) == ("alpha", {"x": 1}, "complete")
+        assert (card.tool_name, card.args, card.status, card.result_text) == (
+            "alpha",
+            {"x": 1},
+            "complete",
+            "alpha result",
+        )
+        if row is not None:
+            assert row.render().plain.startswith("▾ 1 tool call:")
+        [record] = group._tool_records.values()
+        assert record is not None and (record.args, record.result) == ({"x": 1}, "alpha result")
+
+
+async def test_a_repeated_tool_start_does_not_open_a_new_group_after_an_answer() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("prompt")
+        await panel.add_tool_start("c1", "alpha", "", args={"x": 1})
+        await panel.add_tool_result("c1", "alpha", "alpha result")
+        await panel.add_answer_delta("a1", "The answer.")
+        await panel.add_tool_start("c1", "beta", "", args={"y": 2})
+
+        [group] = panel.query(ToolGroup)
+        row = panel.query_one(LiveProcessRow)
+        await click_when_settled(pilot, row)
+        group.collapsed = False
+        await wait_for(lambda: bool(group.query(ToolCall)), pilot=pilot, description="the original card is visible")
+        assert panel.query_one(AgentMessage).display
+        assert row.render().plain.startswith("▾ 1 tool call:")
+        assert group.query_one(ToolCall).result_text == "alpha result"
 
 
 async def test_chat_panel_keeps_every_answer_a_withdrawal_does_not_name() -> None:

@@ -21,7 +21,7 @@ from chrys.app.tui.widgets.chat.messages import ThinkingMessage, _AgentHeader
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import Localizer
-from tests.support.tui_helpers import ChatPanelApp, resize_when_settled
+from tests.support.tui_helpers import ChatPanelApp, open_process_for, resize_when_settled
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -69,8 +69,10 @@ async def test_a_folded_thinking_row_cuts_its_preview_to_the_width_and_a_resize_
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await cp.add_thinking_delta("r1", "reasoning", "[bold]list[int][/bold] 先检查改动范围和调用链 " * 10)
-        cp.finish_thinking_segment("r1")
         (thinking,) = cp.query(ThinkingMessage)
+        open_process_for(thinking)
+        thinking.collapsed = False
+        cp.finish_thinking_segment("r1")
         header = thinking.query_one(_AgentHeader)
         await wait_for(lambda: header.content_size.width > 0, pilot=pilot, description="header laid out")
         assert header.render().plain == "▾ Thought"
@@ -115,8 +117,10 @@ async def test_a_selection_over_a_folded_row_copies_the_preview_text_it_covers()
         await cp.add_thinking_delta(
             "r1", "reasoning", "先检查 Inspect the retry path, then the continuation ticket it reuses."
         )
-        cp.finish_thinking_segment("r1")
         (thinking,) = cp.query(ThinkingMessage)
+        open_process_for(thinking)
+        thinking.collapsed = False
+        cp.finish_thinking_segment("r1")
         header = thinking.query_one(_AgentHeader)
         screen = pilot.app.screen
 
@@ -149,8 +153,10 @@ async def test_a_language_switch_reaches_a_folded_row_at_its_next_fold_and_a_sel
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await cp.add_thinking_delta("r1", "reasoning", "Inspect the retry path.")
-        cp.finish_thinking_segment("r1")
         (thinking,) = cp.query(ThinkingMessage)
+        open_process_for(thinking)
+        thinking.collapsed = False
+        cp.finish_thinking_segment("r1")
         header = thinking.query_one(_AgentHeader)
         screen = pilot.app.screen
         thinking.collapsed = True
@@ -213,8 +219,10 @@ async def test_a_drag_inside_a_folded_row_selects_its_text_and_a_click_folds() -
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await cp.add_thinking_delta("r1", "reasoning", "Inspect the retry path.")
-        cp.finish_thinking_segment("r1")
         (thinking,) = cp.query(ThinkingMessage)
+        open_process_for(thinking)
+        thinking.collapsed = False
+        cp.finish_thinking_segment("r1")
         header = thinking.query_one(_AgentHeader)
         thinking.collapsed = True
         await wait_for(lambda: header.render().plain.startswith("▸"), pilot=pilot, description="folded row")

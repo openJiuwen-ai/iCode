@@ -446,6 +446,7 @@ def test_migrated_bindings_preserve_english_and_keymap_contracts() -> None:
         ("pageup", "chat_page_up", "Chat Page Up", False, None, True, "", False, None),
         ("pagedown", "chat_page_down", "Chat Page Down", False, None, True, "", False, None),
         ("ctrl+end", "chat_scroll_bottom", "Chat Scroll Bottom", False, None, True, "", False, None),
+        ("escape", "go_back", "Back", True, None, True, "", False, None),
         ("ctrl+q", "quit", "Quit", False, None, True, "", False, None),
         ("escape", "go_back", "Back", True, None, True, "", False, None),
         ("space", "toggle_view", "Toggle Split View", True, None, True, "", False, None),

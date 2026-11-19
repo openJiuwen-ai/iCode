@@ -22,6 +22,7 @@ from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.events.types import Warning as WarningEvent
 from chrys.foundation.i18n import MessageRef
 from chrys.orchestration import startup
+from tests.support.symlinks import symlink_or_skip
 
 
 def _isolate_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -43,6 +44,39 @@ def _claim_env_name(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     """Restore ``name`` after any environment writes made by the code under test."""
     monkeypatch.setenv(name, "claimed")
     monkeypatch.delenv(name)
+
+
+@pytest.mark.parametrize("saved", ["true", "false"])
+def test_startup_skips_the_retired_process_folding_setting_and_leaves_a_symlinked_file_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, saved: str
+) -> None:
+    from chrys.foundation.config.warnings import settings_warning_events
+
+    _isolate_startup(monkeypatch, tmp_path)
+    monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: None)
+    monkeypatch.setattr("chrys.foundation.observability.setup.setup_otel", lambda _settings: None)
+    path = tmp_path / "config" / "settings.yaml"
+    # A first start records the existing one-time migrations, as on any machine that has run iCode.
+    path.write_text("ui:\n  theme: nord\n", encoding="utf-8")
+    startup.bootstrap_runtime()
+    shared = tmp_path / "dotfiles" / "settings.yaml"
+    shared.parent.mkdir()
+    shared.write_text(
+        path.read_text(encoding="utf-8") + f"ui.chat.fold_finished_turns: {saved}\nui.chat.typo: 1\n", encoding="utf-8"
+    )
+    original = shared.read_bytes()
+    path.unlink()
+    symlink_or_skip(path, shared)
+
+    result = startup.bootstrap_runtime()
+
+    unknown = [event for event in settings_warning_events(result.loaded) if event.code == "setting_unknown_keys"]
+    assert len(unknown) == 1
+    assert "ui.chat.typo" in unknown[0].message
+    assert "fold_finished_turns" not in unknown[0].message
+    # Nothing rewrites the document to drop the retired line, so the link survives.
+    assert path.is_symlink()
+    assert shared.read_bytes() == original
 
 
 def test_set_process_title_delegates_to_setproctitle(monkeypatch: pytest.MonkeyPatch) -> None:

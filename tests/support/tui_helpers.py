@@ -36,8 +36,11 @@ from chrys.app.tui.screens.main.suggestions import SuggestionCallbacks, Suggesti
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.support.gc_freeze import GcAbsorbRequested, GcReclaimRequested
 from chrys.app.tui.widgets.chat.agent_transcript_surface import AgentTranscriptSurface
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ChatBottomSpacer, _ScrollToBottomButton
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
+from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
@@ -662,21 +665,15 @@ class ChatPanelApp(LocalizedApp):
         localization: TranscriptLocalizationPort | None = None,
         *,
         thinking_expanded: Callable[[], bool] | None = None,
-        fold_finished_turns: Callable[[], bool] | None = None,
-        tool_groups_expanded: Callable[[], bool] | None = None,
     ) -> None:
         self._localization = localization
         self._thinking_expanded = thinking_expanded
-        self._fold_finished_turns = fold_finished_turns
-        self._tool_groups_expanded = tool_groups_expanded
         super().__init__()
 
     def compose(self) -> ComposeResult:
         yield ChatPanel(
             localization=self._localization,
             thinking_expanded=self._thinking_expanded,
-            fold_finished_turns=self._fold_finished_turns,
-            tool_groups_expanded=self._tool_groups_expanded,
         )
 
 
@@ -692,6 +689,20 @@ class GcMessageChatPanelApp(ChatPanelApp):
 
     def on_gc_reclaim_requested(self, message: GcReclaimRequested) -> None:
         self.gc_messages.append(message)
+
+
+def open_process_for(member: ProcessMember) -> None:
+    """Open a main-chat member's process through its production toggle, leaving its own fold state alone."""
+    panel = member.parent
+    if not isinstance(panel, ChatPanel):
+        return
+    process = panel._process_controller.owner_of(member)
+    if process is None or not process.collapsed:
+        return
+    if isinstance(process, LiveProcessRow):
+        panel._toggle_live_process_row(process)
+    elif isinstance(process, ProcessBlock):
+        panel._toggle_process_block(process)
 
 
 def chat_content_children(panel: ChatPanel) -> list[object]:
