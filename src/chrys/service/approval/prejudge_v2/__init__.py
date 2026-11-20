@@ -541,7 +541,11 @@ def _opaque(argv: tuple[str, ...]) -> bool:
         return False
     head = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
     return head in _OPAQUE or (
-        head == "printf" and (argv[1:2] == ("-v",) or any(re.search(r"%[-+ #'0-9.*]*n", arg) for arg in argv[1:]))
+        head == "printf"
+        and (
+            any(arg.startswith("-v") for arg in argv[1:2])
+            or any(re.search(r"%[-+ #'0-9.*]*n", arg) for arg in argv[1:])
+        )
     )
 
 

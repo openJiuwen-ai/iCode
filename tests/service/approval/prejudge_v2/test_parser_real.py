@@ -5,10 +5,17 @@ from __future__ import annotations
 
 import pytest
 
-from chrys.service.approval.prejudge_v2 import Route, analyze, load_policy, route
+from chrys.service.approval.prejudge_v2 import Matcher, Policy, Route, Rule, analyze, load_policy, route
 from tests.support.prejudge import require_grammars
 
 require_grammars("tree_sitter", "tree_sitter_bash")
+
+
+@pytest.mark.parametrize("dialect", ["bash", "git_bash"])
+@pytest.mark.parametrize("source", ["printf -v label sample", "printf -vlabel sample", "printf '%n' label"])
+def test_bash_stateful_printf_defers_even_with_a_matching_rule(dialect, source):
+    policy = Policy("enforce", "fixture", (Rule("printf", Route.ALLOW, Matcher("argv_first", ("printf",))),))
+    assert route(source, dialect, policy).reason_code == "opaque_carrier"
 
 
 @pytest.mark.parametrize(
