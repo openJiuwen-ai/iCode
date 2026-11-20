@@ -8,6 +8,9 @@ import logging
 import math
 import ntpath
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import PurePath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -49,6 +52,29 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Set while a caller re-reads a directory purely to learn why a selector missed.  The
+# parse-time warnings all come from this module's logger, so one filter covers them.
+_SILENT_READ: ContextVar[bool] = ContextVar("chrys_agent_profile_read_silent", default=False)
+
+
+class _SilentReadFilter(logging.Filter):
+    """Drop the records a re-read would only repeat — this one read says nothing new."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _SILENT_READ.get()
+
+
+logger.addFilter(_SilentReadFilter())
+
+
+@contextmanager
+def _silent_read() -> Iterator[None]:
+    token = _SILENT_READ.set(True)
+    try:
+        yield
+    finally:
+        _SILENT_READ.reset(token)
 
 
 class AgentProfileLoadError(ProfileLoadError):
@@ -860,8 +886,24 @@ def _parse_profile(path: Path, text: str) -> AgentProfile:
         raise AgentProfileLoadError(f"Invalid agent profile structure in {path}: {e}") from e
 
 
+def _scan(directory: Path) -> ProfileDirScan[AgentProfile]:
+    """The mechanical read both wrappers below share; logs whatever the parser logs."""
+    return scan_profiles(directory, _parse_profile, AgentProfileLoadError, skip_hidden=True)
+
+
+def read_profile_dir(directory: Path) -> ProfileDirScan[AgentProfile]:
+    """Read *directory* without reporting on it: what loaded, and what could not.
+
+    Callers that only need to know why a selector missed — an error message, not a
+    listing — must not repeat what :func:`scan_profile_dir` already logged, and that
+    includes the WARNINGs the parser emits while loading a file it keeps.
+    """
+    with _silent_read():
+        return _scan(directory)
+
+
 def scan_profile_dir(directory: Path) -> ProfileDirScan[AgentProfile]:
-    scan = scan_profiles(directory, _parse_profile, AgentProfileLoadError, skip_hidden=True)
+    scan = _scan(directory)
     for path, issue in scan.invalid.items():
         logger.error(
             "Skipping invalid agent profile %s: %s (any builtin with this name stays active)", path, issue.reason

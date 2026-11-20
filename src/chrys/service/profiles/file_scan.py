@@ -8,7 +8,7 @@ import errno
 import os
 import stat
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,7 @@ from typing import Any
 import yaml
 from yaml.constructor import ConstructorError
 
+from chrys.foundation.i18n import DisplaySequence
 from chrys.foundation.platform.files import digest_bytes
 from chrys.foundation.text.encoding import decode_bytes
 
@@ -65,6 +66,19 @@ class ProfileDirScan[P]:
     invalid: dict[Path, ProfileFileIssue] = field(default_factory=dict)
     fingerprints: dict[Path, str | None] = field(default_factory=dict)
     directory_error: OSError | None = None
+
+
+def unreadable_file_notes(invalid: Mapping[Path, ProfileFileIssue]) -> DisplaySequence | None:
+    """One note per profile file the scan could not read, or None when they all loaded.
+
+    A file whose YAML does not parse leaves no profile behind, so a selector aimed
+    at it reads exactly like a selector aimed at nothing: one cause, two symptoms.
+    The pair shown is the one ``profile list`` prints — the path, then coordinates
+    or a field name, both written to stay meaningful in any locale.
+    """
+    if not invalid:
+        return None
+    return DisplaySequence(tuple(f"{path} ({issue.reason})" for path, issue in sorted(invalid.items())))
 
 
 def read_profile_bytes(path: Path) -> bytes:

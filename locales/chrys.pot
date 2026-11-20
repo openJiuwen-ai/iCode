@@ -1083,6 +1083,20 @@ msgstr ""
 msgid "run.model_profile_not_found_with_available"
 msgstr ""
 
+#. English: Model profile not found: {model}. Available model profiles:
+#. {available}. Could not read these profile files: {files}
+#. chrys-meta={"fingerprint":"80c9f87eb462b5b65ad5f063aaeca979fb8586e49dffb11a50ebceeec5d0c042","multiline":false,"placeholders":["available","files","model"]}
+#: src/chrys/app/cli/run.py
+msgid "run.model_profile_not_found_with_available_and_unreadable"
+msgstr ""
+
+#. English: Model profile not found: {model}. Could not read these profile
+#. files: {files}
+#. chrys-meta={"fingerprint":"264a7540b8c50bdf5637a5652622199067865b264f47adc003d6ad0686703f5a","multiline":false,"placeholders":["files","model"]}
+#: src/chrys/app/cli/run.py
+msgid "run.model_profile_unreadable"
+msgstr ""
+
 #. English: Pass -C <dir> to continue it in another directory.
 #. chrys-meta={"fingerprint":"cf403302bf53005778ba686af15e573154017a629880c6d102e3de389c674a5b","multiline":false,"placeholders":[]}
 #: src/chrys/app/cli/run.py
@@ -1099,6 +1113,20 @@ msgstr ""
 #. chrys-meta={"fingerprint":"e764c18ab99cf9f25dd0f63bd5760b0117b82136b71b952c9ea9ca8a56e12368","multiline":false,"placeholders":["available","name"]}
 #: src/chrys/orchestration/session_host.py
 msgid "session_host.agent_profile_not_found_with_available"
+msgstr ""
+
+#. English: Agent profile not found: {name}. Available profiles: {available}.
+#. Could not read these profile files: {files}
+#. chrys-meta={"fingerprint":"095c4e27890634e9f890ddfdf0f6b65b16d8aeca27bba664d5729d2ea4dffbca","multiline":false,"placeholders":["available","files","name"]}
+#: src/chrys/orchestration/session_host.py
+msgid "session_host.agent_profile_not_found_with_available_and_unreadable"
+msgstr ""
+
+#. English: Agent profile not found: {name}. Could not read these profile
+#. files: {files}
+#. chrys-meta={"fingerprint":"984647473f2d11d3cd636181b209bfb226ca13558c9694dcd149ec6a3ef5aed1","multiline":false,"placeholders":["files","name"]}
+#: src/chrys/orchestration/session_host.py
+msgid "session_host.agent_profile_unreadable"
 msgstr ""
 
 #. English: Agent requested user input in headless mode: {detail}
