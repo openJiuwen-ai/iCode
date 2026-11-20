@@ -140,6 +140,12 @@ class TestElideMiddle:
         cells = row_cells(_meta("abc", cwd=f"/repos/{long_dir}"), now=_BASE)
         assert cells["directory"] == "Lazy-Theta-w…ding-master"
 
+    def test_an_emoji_directory_does_not_overflow_the_column(self) -> None:
+        """The column is 24 cells wide whatever the name is made of; the emoji must not spill."""
+        long_dir = "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466" * 6
+        cells = row_cells(_meta("abc", cwd=f"/repos/{long_dir}"), now=_BASE)
+        assert cell_len(cells["directory"]) <= 24, f"{cells['directory']!r} is {cell_len(cells['directory'])} cells"
+
 
 class TestFormatTokens:
     def test_below_thousand_is_verbatim(self) -> None:
