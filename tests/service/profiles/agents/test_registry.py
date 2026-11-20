@@ -13,6 +13,8 @@ from uuid import UUID
 
 import pytest
 
+from chrys.foundation.config.settings import Settings
+from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.service.profiles.agents.loader import load_profile_from_yaml
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import (
@@ -23,6 +25,7 @@ from chrys.service.profiles.agents.schema import (
     SubAgentRef,
     SubAgentsConfig,
 )
+from chrys.service.tools.packs import ToolBuild, assemble_tools
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -909,3 +912,39 @@ def test_load_user_profiles_skips_source_that_cannot_be_moved(tmp_path: Path, mo
     assert sorted(p.name for p in tmp_path.iterdir() if not p.name.startswith(".")) == ["my-custom.yaml"]
     assert source.read_bytes() == source_bytes
     assert "could not be moved to Custom.yaml" in caplog.text
+
+
+async def test_shadowing_a_builtin_keeps_the_preset_filter_of_a_broken_sibling_field(tmp_path: Path) -> None:
+    """A recognized preset must survive a broken custom field beside it.
+
+    Skipping the file instead leaves the builtin active, and the builtin shell has no
+    filter at all: ``mkdir`` would run where the user's ``read_only`` preset forbids it.
+    """
+    (tmp_path / "Code.yaml").write_text(
+        "name: Code\ntools:\n  builtins: [shell]\n  shell_filter:\n"
+        "    preset: read_only\n    mode: Whitelist\n    commands: [rg]\n",
+        encoding="utf-8",
+    )
+    registry = AgentProfileRegistry()
+    registry.load_builtins()
+    assert registry.load_user_profiles(tmp_path) == 1
+    profile = registry.get("Code")
+    assert profile is not None
+    assert profile.tools.shell_filter is not None
+    assert profile.tools.shell_filter.preset == "read_only"
+
+    build = ToolBuild(
+        tools=profile.tools,
+        agent_name=profile.name,
+        runtime=SessionEnvironment.capture(),
+        settings=Settings(),
+        session_id="test",
+    )
+    assembled = await assemble_tools(build)
+    shell_tool = {tool.name: tool for tool in assembled.tools}[build.runtime.platform.shell.name]
+
+    target = tmp_path / "probe_dir"
+    blocked = await shell_tool(f"mkdir {target}", reason="probe")
+
+    assert blocked.startswith("Error: command blocked")
+    assert not target.exists()

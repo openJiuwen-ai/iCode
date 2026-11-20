@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -15,7 +16,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import WorkingDir
 from chrys.foundation.tool_kinds import KIND_ASK_USER, get_tool_kind
-from chrys.service.profiles.agents.schema import ALWAYS_LOADED_TOOL_CATEGORIES, ToolsConfig
+from chrys.service.profiles.agents.schema import ALWAYS_LOADED_TOOL_CATEGORIES, ShellFilterConfig, ToolsConfig
 from chrys.service.tools import packs as tool_packs
 from chrys.service.tools.builtins.doc_converter import DocConverterTools
 from chrys.service.tools.names import chrys_reserved_tool_names
@@ -85,6 +86,20 @@ async def test_shell_pack_adds_one_tool_per_shell() -> None:
     tools = (await tool_packs.assemble_tools(_build(["shell"]))).tools
     # The platform shell, any extra one (Git Bash on Windows), then sleep.
     assert len(tools) == 2 + len(runtime.platform.extra_shells)
+
+
+async def test_shell_filter_with_unrecognized_mode_falls_back_to_whitelist() -> None:
+    """A config built in code can carry any mode; it must never turn into "no filtering"."""
+    shell_filter = ShellFilterConfig(commands=["echo"])
+    shell_filter.mode = cast("Any", "Whitelist")
+    build = replace(_build(["shell"]), tools=ToolsConfig(builtins=["shell"], shell_filter=shell_filter))
+    assembled = await tool_packs.assemble_tools(build)
+    shell_tool = {tool.name: tool for tool in assembled.tools}[build.runtime.platform.shell.name]
+
+    blocked = await shell_tool("ls .", reason="attempt")
+    assert blocked.startswith("Error: command blocked")
+    allowed = await shell_tool("echo hello", reason="test")
+    assert "hello" in allowed
 
 
 async def test_extra_shells_share_one_workspace_listing(tmp_path: Path) -> None:
