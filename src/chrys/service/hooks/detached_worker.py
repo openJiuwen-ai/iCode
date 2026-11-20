@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from chrys.service.hooks.outbox import Outbox, OutboxJob, has_terminal_record
+from chrys.service.hooks.outbox import Outbox, OutboxJob, has_terminal_record, is_valid_job_id
 
 
 async def _run_child(cmd: list[str], *, cwd: str, env: dict[str, str]) -> int | None:
@@ -98,10 +98,14 @@ def _load_job(value: Any) -> OutboxJob | None:
     if not isinstance(value, dict):
         return None
     try:
-        return OutboxJob(**value)
+        job = OutboxJob(**value)
     except TypeError as exc:
         _stderr(f"Error: failed to load detached hook outbox job: {exc}")
         return None
+    if not is_valid_job_id(job.job_id):
+        _stderr("Error: failed to load detached hook outbox job: invalid job ID")
+        return None
+    return job
 
 
 def _stderr(message: str) -> None:

@@ -123,7 +123,7 @@ async def test_detached_worker_skips_a_job_completed_after_handoff(tmp_path, mon
 
 async def test_main_launches_the_hook_before_recreating_the_outbox(tmp_path, monkeypatch):
     root = tmp_path / "missing-outbox"
-    job = OutboxJob(job_id="job", hook_id="done", event="after_turn", payload={}, created_at="")
+    job = OutboxJob(job_id="0123456789abcdef", hook_id="done", event="after_turn", payload={}, created_at="")
     invocation, _, _ = _write_invocation(tmp_path, outbox_root=root, job=job)
 
     async def run_child(*args, **kwargs):
@@ -202,8 +202,16 @@ async def test_main_reports_unreadable_invocation(tmp_path: Path, capsys: pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "job",
+    [
+        {"unexpected": "field"},
+        {"job_id": "invalid", "hook_id": "h", "event": "after_turn", "payload": {}, "created_at": ""},
+    ],
+)
 async def test_main_tolerates_malformed_outbox_job_dict(
     tmp_path: Path,
+    job: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -212,7 +220,7 @@ async def test_main_tolerates_malformed_outbox_job_dict(
     invocation, _payload, _result = _write_invocation(
         tmp_path,
         outbox_root=outbox_root,
-        job={"unexpected": "field"},
+        job=job,
     )
 
     async def _success(_cmd: list[str], *, cwd: str, env: dict[str, str]) -> int:

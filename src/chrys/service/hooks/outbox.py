@@ -31,6 +31,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -49,11 +50,22 @@ PENDING = "pending"
 DONE = "done"
 FAILED = "failed"
 MAX_TERMINAL_RECORD_BYTES: Final = 64 * 1024 * 1024
+_JOB_ID = re.compile(r"[0-9a-f]{16}")
+
+
+def is_valid_job_id(job_id: object) -> bool:
+    return isinstance(job_id, str) and _JOB_ID.fullmatch(job_id) is not None
+
+
+def _job_filename(job_id: str) -> str:
+    if not is_valid_job_id(job_id):
+        raise ValueError("Invalid outbox job ID")
+    return f"{job_id}.json"
 
 
 def has_terminal_record(root: Path, job_id: str) -> bool:
     """Check for a valid terminal outcome without touching the outbox."""
-    terminal, _ = _terminal_status(root, f"{job_id}.json", job_id)
+    terminal, _ = _terminal_status(root, _job_filename(job_id), job_id)
     return terminal
 
 
@@ -224,11 +236,13 @@ class Outbox:
 
     def skip_pending(self, job_id: str) -> bool:
         """Skip a terminal job and discard its leftover pending file when possible."""
-        skip, _ = self._skip_pending_path(self._root / PENDING / f"{job_id}.json")
+        skip, _ = self._skip_pending_path(self._root / PENDING / _job_filename(job_id))
         return skip
 
     def _skip_pending_path(self, pending: Path) -> tuple[bool, str | None]:
         """Return the skip verdict and a diagnostic for the recovery scan."""
+        if not is_valid_job_id(pending.stem):
+            return True, f"Outbox job {pending} has an invalid filename; ignoring"
         skip, diagnostic = _terminal_status(self._root, pending.name, pending.stem)
         if skip:
             with contextlib.suppress(OSError):
@@ -291,12 +305,13 @@ class Outbox:
 
     def _write(self, job: OutboxJob) -> None:
         data = asdict(job)
-        path = self._root / PENDING / f"{job.job_id}.json"
+        path = self._root / PENDING / _job_filename(job.job_id)
         _write_json_atomic_owner_only(path, data)
 
     def _move(self, job: OutboxJob, *, src: str, dst: str) -> None:
-        src_path = self._root / src / f"{job.job_id}.json"
-        dst_path = self._root / dst / f"{job.job_id}.json"
+        name = _job_filename(job.job_id)
+        src_path = self._root / src / name
+        dst_path = self._root / dst / name
         data = asdict(job)
         source_edit(data, "hook_source")
         # Publish the outcome before removing the pending entry.
@@ -312,6 +327,9 @@ class Outbox:
             return None
         if not isinstance(data, dict) or "job_id" not in data:
             logger.warning("Outbox job %s is malformed; ignoring", path)
+            return None
+        if data["job_id"] != path.stem:
+            logger.warning("Outbox job %s has a job ID that does not match its filename; ignoring", path)
             return None
         source_edit(data, "hook_source")
         all_fields = set(OutboxJob.__dataclass_fields__)

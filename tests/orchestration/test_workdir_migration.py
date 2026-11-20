@@ -93,7 +93,7 @@ def _old_record(name: str, directory: Path) -> tuple[dict[str, Any], dict[str, A
     if "/outbox/" in name:
         job = asdict(
             OutboxJob(
-                job_id="job",
+                job_id=Path(name).stem,
                 hook_id="archive",
                 event="after_turn",
                 payload={},
@@ -513,7 +513,7 @@ def test_finished_outbox_records_are_left_as_written(tmp_path, folder):
 
 def test_old_outbox_job_is_recoverable_without_migration(tmp_path):
     config = get_platform().config_dir
-    path, raw, _ = _write_old(config, "hooks/outbox/pending/job.json", tmp_path)
+    path, raw, _ = _write_old(config, "hooks/outbox/pending/0123456789abcdef.json", tmp_path)
     outbox = Outbox(config / "hooks" / "outbox")
     assert _start()[1] == []
     [job] = outbox.list_stale_pending(retry_age_seconds=0)
