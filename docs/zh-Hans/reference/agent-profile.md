@@ -216,7 +216,7 @@ tools:
 
 | 值 | 行为 |
 | --- | --- |
-| `read_only` | 只允许内置命令名单中的命令，并阻止未被引号包围的重定向和命令替换。例如：`ls`、`cat`、`rg`、`git`、`python`、`curl` 和 PowerShell 的 `Get-Content` 等。不检查命令参数、子命令或脚本内容，因此不保证命令只读，也不是安全沙箱。 |
+| `read_only` | 只允许内置命令名单中的命令，并阻止未被引号包围的重定向和命令替换。例如：`ls`、`cat`、`rg`、`git`、`python`、`curl` 和 PowerShell 的 `Get-Content` 等。不检查命令参数、子命令或脚本内容，因此不保证命令只读，也不是安全沙箱。审批的自动放行是另一套更严格的安全边界，与这个过滤器无关；参阅[了解自动放行与安全保护](../guides/configuration/approval.md#了解自动放行与安全保护)。 |
 | `unrestricted` | 不进行 Shell 过滤。通常直接省略 `shell_filter` 即可。 |
 
 只有上表中的名称有效。无论使用哪种写法，写成其他名称都会让整个 profile 无效：iCode 会跳过该文件，而不是在关闭 Shell 过滤的情况下加载，并会报出需要修改的字段 `tools.shell_filter.preset`。要关闭过滤，请写 `unrestricted` 或省略 `shell_filter`。

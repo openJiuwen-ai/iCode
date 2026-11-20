@@ -12,10 +12,11 @@ from typing import Any
 
 _SENSITIVE_TARGET_RE = re.compile(
     r"""(?ix)
-    (^|[\s'"`=:/\\])
+    (^|[\s'"`=:/\\*?])
     (
         \.env(?:\.(?!example|sample|template)\w[\w.-]*)?
         | \.envrc
+        | proc[/\\](?:self|thread-self|\d+)[/\\]environ
         | \.git[/\\](?:config(?:\.worktree)?|hooks)
         | \.git-credentials
         | \.config[/\\]git[/\\]credentials
@@ -35,7 +36,7 @@ _SENSITIVE_TARGET_RE = re.compile(
         | bank[_-]?account|credit[_-]?card|card[_-]?number|payment[_-]?method
         | crypto[_-]?wallet|wallet\.dat
     )
-    (?=$|[\s'"`;|&<>/\\])
+    (?=$|[\s'"`;|&<>/\\*?])
     """
 )
 _ENV_DUMP_RE = re.compile(

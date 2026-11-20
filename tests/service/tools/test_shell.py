@@ -62,6 +62,27 @@ async def test_execute_simple_command(shell: ShellTools) -> None:
     assert "[exit_code: 0]" in result
 
 
+async def test_direct_argv_is_what_the_real_spawn_runs(shell: ShellTools) -> None:
+    """The backend must spawn the validated argv, not re-parse the command text.
+
+    This is a real spawn (no mocked backend): if the direct argv wiring is
+    removed, the command string runs and prints ``should-not-run`` instead.
+    """
+    argv = (sys.executable, "-c", "print('direct-argv-ok')")
+    command = "echo should-not-run"
+
+    if IS_UNIX:
+        output, returncode = await shell._execute_pty(command, shell._shell, cwd=".", timeout=15, argv=argv)
+    else:
+        output, returncode, stderr = await shell._execute_pipe(command, shell._shell, cwd=".", timeout=15, argv=argv)
+        assert stderr.text() == ""
+
+    text = output.text()
+    assert "direct-argv-ok" in text
+    assert "should-not-run" not in text
+    assert returncode == 0
+
+
 async def test_execute_pipe_closes_stdin_at_once(shell: ShellTools, monkeypatch: pytest.MonkeyPatch) -> None:
     """The Windows pipe path gives the command an input that has already ended.
 

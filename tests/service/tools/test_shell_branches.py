@@ -189,12 +189,26 @@ async def test_execute_records_exit_code_metadata(runtime: SessionEnvironment, m
     metadata: dict[str, object] = {}
 
     async def _pty_done(
-        command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
+        command: str,
+        shell: ShellInfo,
+        cwd: str,
+        timeout: int | float,
+        reason: str = "",
+        *,
+        argv: Sequence[str] | None = None,
+        sanitized: bool = False,
     ) -> tuple[CapturedOutput, int]:
         return CapturedOutput(b"boom", b"", 4), 7
 
     async def _pipe_done(
-        command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
+        command: str,
+        shell: ShellInfo,
+        cwd: str,
+        timeout: int | float,
+        reason: str = "",
+        *,
+        argv: Sequence[str] | None = None,
+        sanitized: bool = False,
     ) -> tuple[CapturedOutput, int, CapturedOutput]:
         return CapturedOutput(b"boom", b"", 4), 7, CapturedOutput(b"", b"", 0)
 
@@ -219,7 +233,14 @@ async def test_execute_records_timeout_metadata(runtime: SessionEnvironment, mon
     metadata: dict[str, object] = {}
 
     async def _timeout(
-        command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
+        command: str,
+        shell: ShellInfo,
+        cwd: str,
+        timeout: int | float,
+        reason: str = "",
+        *,
+        argv: Sequence[str] | None = None,
+        sanitized: bool = False,
     ) -> tuple[CapturedOutput, int]:
         raise _Timeout((CapturedOutput(b"before", b"", 6),))
 
