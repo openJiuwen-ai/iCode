@@ -30,6 +30,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -238,6 +239,10 @@ class Outbox:
         if not isinstance(data, dict) or "job_id" not in data:
             logger.warning("Outbox job %s is malformed; ignoring", path)
             return None
+        # The id names the files this job moves between: only the one this file was named after.
+        if data["job_id"] != path.stem or not _JOB_ID.fullmatch(path.stem):
+            logger.warning("Outbox job %s names another file; ignoring", path)
+            return None
         all_fields = set(OutboxJob.__dataclass_fields__)
         valid_keys = all_fields - {"extra"}
         extra = {k: v for k, v in data.items() if k not in all_fields}
@@ -259,6 +264,9 @@ class Outbox:
         except TypeError as exc:
             logger.warning("Outbox job %s could not be loaded: %s", path, exc)
             return None
+
+
+_JOB_ID = re.compile(r"[0-9a-f]{16}")
 
 
 def _now_iso() -> str:
