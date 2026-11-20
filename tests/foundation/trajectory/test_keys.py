@@ -6,12 +6,14 @@ import asyncio
 import errno
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from chrys.foundation.platform import get_platform, key_files
+from chrys.foundation.platform import files, get_platform, key_files
 from chrys.foundation.platform.files import SecureFileError
 from chrys.foundation.trajectory import keys as keys_module
 from chrys.foundation.trajectory.fingerprint import (
@@ -165,6 +167,37 @@ def test_ensure_owner_only_directory_creates_and_tightens(tmp_path: Path) -> Non
     target.chmod(0o755)
     ensure_owner_only_directory(target)
     assert stat.S_IMODE(target.stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS extended-ACL semantics")
+def test_ensure_owner_only_directory_strips_an_inherited_acl(tmp_path: Path) -> None:
+    """A parent's inheritable ACE survives fchmod, so a 0700 directory could stay group-listable."""
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o700)
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow list,search,file_inherit,directory_inherit", str(shared)],
+        stdin=subprocess.DEVNULL,
+        check=True,
+    )
+    target = shared / "models"
+    target.mkdir(mode=0o700)
+    assert _has_extended_acl(target)
+
+    ensure_owner_only_directory(target)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700
+    assert not _has_extended_acl(target)
+
+
+def _has_extended_acl(path: Path) -> bool:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        files._verify_darwin_no_acl(fd)
+    except files.SecureFileError:
+        return True
+    finally:
+        os.close(fd)
+    return False
 
 
 def test_ensure_owner_only_directory_rejects_a_file(tmp_path: Path) -> None:

@@ -8,7 +8,10 @@ import logging
 from dataclasses import MISSING, fields
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.text.yaml_io import dump_yaml
+from chrys.foundation.trajectory.keys import ensure_owner_only_directory
+from chrys.service.profiles.agents.loader import is_filename_safe_profile_name
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,14 +54,27 @@ def _user_profiles_dir() -> Path:
 def save_profile(profile: ModelProfile) -> Path:
     """Serialize *profile* to YAML and write to ``~/.chrys/models/{id}.yaml``.
 
+    The file holds the provider API key, so it is written atomically and
+    owner-only: 0600 on POSIX, an owner-only DACL on Windows. The ``models/``
+    directory is created (or tightened) owner-only where the OS has POSIX
+    modes, and a symbolic link in its place is refused on every platform.
+
+    Raises:
+        ValueError: If ``profile.id`` is not filename-safe. The loader scans
+            only the top level of the directory, so an id carrying a path
+            separator would be written where nothing ever reads it back.
+
     Returns the path written.
     """
+    if not is_filename_safe_profile_name(profile.id):
+        msg = f"Model profile id {profile.id!r} is not filename-safe; use a bare name, not a path"
+        raise ValueError(msg)
     target_dir = _user_profiles_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
+    ensure_owner_only_directory(target_dir)
     path = target_dir / f"{profile.id}.yaml"
     data = profile_to_dict(profile)
     text = dump_yaml(data)
-    path.write_text(text, encoding="utf-8")
+    atomic_write_owner_only_text(path, text)
     logger.debug("Saved model profile to %s", path)
     return path
 
