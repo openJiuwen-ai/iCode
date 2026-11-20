@@ -16,6 +16,7 @@ import yaml
 from textual.containers import Vertical
 from textual.geometry import Region
 from textual.widgets import Button, Checkbox, Input, Label, OptionList, Select, Static
+from textual.widgets.select import InvalidSelectValueError
 
 from chrys.app.tui.screens.models.screen import (
     _API_STYLE_CHAT_COMPLETIONS,
@@ -28,6 +29,7 @@ from chrys.app.tui.screens.models.screen import (
     _OPTION_VALUE_PLACEHOLDER,
     _PROVIDER_BASE_URL,
     _VISION,
+    ModelConfigScreen,
 )
 from chrys.foundation.i18n import Localizer
 from chrys.foundation.i18n.formatting import format_message
@@ -43,7 +45,7 @@ from tests.app.tui.screens._model_config_support import (
     single_profile_registry,
 )
 from tests.support.paths import SRC_ROOT
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, rich_plain
 from tests.support.waiting import wait_for, wait_until
 
 pytestmark = pytest.mark.usefixtures("isolated_model_config_dir", "clear_model_profile_env")
@@ -839,6 +841,93 @@ async def test_model_config_responses_capable_provider_api_style_round_trip(prov
     assert saved.api_style == "chat_completions"
     assert hidden_saved.provider == "anthropic"
     assert hidden_saved.api_style == "chat_completions"
+
+
+def _provider_shown_text(screen: ModelConfigScreen) -> str:
+    """The provider the dropdown's closed control shows, as painted."""
+    select = screen.query_one("#mc-provider", Select)
+    return rich_plain(select.query_one("#label", Static).render())
+
+
+@pytest.mark.parametrize("provider", ["mock", "openai-compatible", ""])
+async def test_model_config_opens_a_profile_with_an_unlisted_provider(provider: str) -> None:
+    """A profile naming a provider the form does not ship opens instead of taking the panel down.
+
+    The dropdown only ever offers the shipped providers, and ``Select.value``
+    rejects anything else, so the panel has to carry the stored value itself.
+    """
+    registry, profile = single_profile_registry(provider=provider)
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, _pilot):
+        assert str(screen.query_one("#mc-provider", Select).value) == provider
+        # An empty provider renders with nothing after the colon, which painting trims.
+        assert _provider_shown_text(screen) == f"Not listed: {provider}".rstrip()
+
+
+async def test_model_config_drops_the_unlisted_provider_entry_when_another_profile_loads() -> None:
+    registry, profile = single_profile_registry(id="model-mock", name="Mock A", provider="mock")
+    listed = ModelProfile(id="model-openai", name="OpenAI A", model_id="gpt-test")
+    registry.register(listed)
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, _pilot):
+        select = screen.query_one("#mc-provider", Select)
+        screen._load_profile(listed.id)
+
+        assert str(select.value) == "openai"
+        with pytest.raises(InvalidSelectValueError):
+            select.value = "mock"
+
+
+async def test_model_config_clears_the_unlisted_provider_entry_when_a_listed_one_is_picked() -> None:
+    registry, profile = single_profile_registry(provider="mock")
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):
+        select = screen.query_one("#mc-provider", Select)
+        select.value = "anthropic"
+        await wait_for(
+            lambda: select.query_one(OptionList).option_count == 4,
+            pilot=pilot,
+            description="the unlisted entry retired with the picked provider",
+        )
+
+        assert str(select.value) == "anthropic"
+        assert _provider_shown_text(screen) == "Anthropic"
+        with pytest.raises(InvalidSelectValueError):
+            select.value = "mock"
+
+
+async def test_model_config_saves_a_mock_provider_profile() -> None:
+    """``mock`` is a provider the engine builds a client for, so Save must accept it.
+
+    The Save button is the only caller of ``_validate``, so the edit has to go
+    through it: a refused provider leaves the profile unsaved.
+    """
+    registry, profile = single_profile_registry(provider="mock")
+
+    def renamed() -> bool:
+        stored = registry.get(profile.id)
+        return stored is not None and stored.name == "Renamed Mock"
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):
+        screen.query_one("#mc-name", Input).value = "Renamed Mock"
+        await click_when_settled(pilot, "#mc-save")
+        await wait_for(renamed, pilot=pilot, description="the mock profile saved through the Save button")
+
+        assert screen._validate() == []
+        assert str(screen.query_one("#mc-provider", Select).value) == "mock"
+
+    stored = registry.get(profile.id)
+    assert stored is not None
+    assert (stored.name, stored.provider) == ("Renamed Mock", "mock")
+
+
+async def test_model_config_rejects_a_provider_the_engine_cannot_build() -> None:
+    registry, profile = single_profile_registry(provider="openai-compatible")
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, _pilot):
+        errors = screen._validate()
+
+    assert "Provider must be one of: OpenAI, Anthropic, DeepSeek (OpenAI), GLM (OpenAI)." in errors
 
 
 async def test_max_output_tokens_label_shows_wire_param_per_provider(monkeypatch: pytest.MonkeyPatch) -> None:
