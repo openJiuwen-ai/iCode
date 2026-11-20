@@ -21,7 +21,7 @@ from chrys.app.tui.widgets.chat.replay_mount import REPLAY_MOUNT_BATCH_SIZE
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup, ToolGroupTitle
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.app.tui.widgets.welcome import WelcomeWidget
-from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY, HistoryMarkerKind
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, TOOL_CALL_KIND_METADATA_KEY
 from chrys.kernel import Content
 from tests.app.tui.widgets._scroll_gc import install_fake_chat_panel_gc
@@ -67,6 +67,14 @@ def _turns(count: int = _TURNS, *, with_tools: bool = False) -> list[dict[str, o
         messages.append(
             {"role": "assistant", "contents": [{"type": "text", "text": f"answer {index}\n\nmore about {index}"}]}
         )
+        if index + 1 < count:
+            messages.append(
+                {
+                    "role": "system",
+                    "contents": [],
+                    "additional_properties": {HistoryMarkerKind.KEY: HistoryMarkerKind.TURN},
+                }
+            )
     return messages
 
 
@@ -825,15 +833,12 @@ async def test_a_toc_jump_queued_before_an_unmount_never_runs(monkeypatch: pytes
         assert jumps == []
 
 
-@pytest.mark.parametrize("fold_processes", [False, True])
-async def test_fold_all_during_prepend_reaches_tool_groups_mounted_later(
-    monkeypatch: pytest.MonkeyPatch, fold_processes: bool
-) -> None:
+async def test_fold_all_during_prepend_reaches_tool_groups_mounted_later(monkeypatch: pytest.MonkeyPatch) -> None:
     # Folded turns hide entries, so the tail and the first batch mount all of the unfolded history but its first
     # prompt: the turns past it leave a tool group each pending, six here. More would only add work the wait must
     # outlast.
-    count = _TOOL_TURNS + 6 if fold_processes else _TOOL_TURNS
-    async with ChatPanelApp(fold_finished_turns=lambda: fold_processes).run_test(size=_SIZE) as pilot:
+    count = _TOOL_TURNS + 6
+    async with ChatPanelApp().run_test(size=_SIZE) as pilot:
         cp = pilot.app.query_one(ChatPanel)
         gate = _PrependGate(cp, monkeypatch)
         await cp.replay_history(_turns(count, with_tools=True))
@@ -860,7 +865,7 @@ async def test_fold_all_during_prepend_reaches_thinking_mounted_later(monkeypatc
     """Only the oldest turns thought, so fold-all finds no fold mounted yet: the pending thinking takes the choice."""
     thought_turns = 4
     messages = _turns()
-    for message in messages[: 2 * thought_turns]:
+    for message in messages[: 3 * thought_turns]:
         if message["role"] == "assistant":
             message["contents"] = [Content.from_text_reasoning(text="Thinking first.").to_dict(), *message["contents"]]
 

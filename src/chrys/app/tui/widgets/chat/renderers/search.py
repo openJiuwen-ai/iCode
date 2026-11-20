@@ -213,7 +213,7 @@ class _SearchToolCall(BaseToolCard):
             self.add_class("-success")
 
         with suppress(Exception):
-            panel.update(Text(sanitize_source_text(body, tab_size=8)))
+            update_static_in_place(panel, Text(sanitize_source_text(body, tab_size=8)))
         self.add_class("-done")
         self._show_tool_copy_button()
 
@@ -229,7 +229,7 @@ class _SearchToolCall(BaseToolCard):
         panel.border_title = Text(f"{sanitize_legacy_scalar(self._build_title())} [{error_label}]")
         self.add_class("-error")
         with suppress(Exception):
-            panel.update(Text(sanitize_source_text(error, tab_size=8)))
+            update_static_in_place(panel, Text(sanitize_source_text(error, tab_size=8)))
         self.add_class("-done")
         self._show_tool_copy_button()
 

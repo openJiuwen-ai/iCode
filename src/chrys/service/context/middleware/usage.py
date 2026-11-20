@@ -20,6 +20,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.errors import ProviderResponseError
+from chrys.foundation.trajectory.context import forwarded_exchange_trace
 from chrys.kernel import ChatResponse, ResponseStream, normalize_stream_usage
 from chrys.kernel.instrumentation import _stream_error_of
 from chrys.kernel.middleware import ChatContext, ChatMiddleware
@@ -28,6 +29,7 @@ from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
+    from chrys.foundation.trajectory.context import ExchangeTrace
     from chrys.kernel import ChatResponseUpdate, Message
     from chrys.service.context.compaction import UnifiedContextStrategy
 
@@ -82,6 +84,9 @@ class UsageTrackingMiddleware(ChatMiddleware):
         # the executor error path or a retry boundary.  A landed response
         # that response validation, above this middleware, rejects is counted
         # like any other.
+        # The exchange this call acquires: what its usage says is recorded
+        # under it, not under the run the whole tool loop shares.
+        exchange = forwarded_exchange_trace(context.kwargs)
         try:
             await call_next()
         except ProviderResponseError as err:
@@ -89,6 +94,7 @@ class UsageTrackingMiddleware(ChatMiddleware):
                 self._handle_usage(
                     dict(err.usage_details),
                     use_local_context_estimate=self._should_guard_failed_response_usage(),
+                    exchange=exchange,
                 )
             raise
 
@@ -105,7 +111,7 @@ class UsageTrackingMiddleware(ChatMiddleware):
             def on_stream_final(response: ChatResponse) -> ChatResponse:
                 nonlocal stream_usage_handled
                 stream_usage_handled = True
-                return self._on_stream_final(response, stream_usage_chunks=stream_usage_chunks)
+                return self._on_stream_final(response, stream_usage_chunks=stream_usage_chunks, exchange=exchange)
 
             def on_stream_cleanup() -> None:
                 nonlocal stream_usage_handled
@@ -120,6 +126,7 @@ class UsageTrackingMiddleware(ChatMiddleware):
                         self._handle_usage(
                             dict(stream_error.usage_details),
                             use_local_context_estimate=self._should_guard_failed_response_usage(),
+                            exchange=exchange,
                         )
                     except Exception:
                         logger.exception("Failed to report usage from a failed stream")
@@ -133,7 +140,7 @@ class UsageTrackingMiddleware(ChatMiddleware):
             result.with_cleanup_hook(on_stream_cleanup)
         # Non-streaming: capture usage directly from the ChatResponse
         elif isinstance(result, ChatResponse) and result.usage_details:
-            self._handle_response_usage(result, dict(result.usage_details))
+            self._handle_response_usage(result, dict(result.usage_details), exchange=exchange)
 
     def _extract_stream_update_usages(self, update: ChatResponseUpdate) -> list[dict[str, Any]]:
         """Return usage payloads from a streaming update."""
@@ -148,6 +155,7 @@ class UsageTrackingMiddleware(ChatMiddleware):
         response: ChatResponse,
         *,
         stream_usage_chunks: list[dict[str, Any]] | None = None,
+        exchange: ExchangeTrace | None = None,
     ) -> ChatResponse:
         """Result hook — fires after stream finalization.
 
@@ -159,17 +167,20 @@ class UsageTrackingMiddleware(ChatMiddleware):
         usage = normalize_stream_usage(stream_usage_chunks or [])
         if usage is not None:
             response.usage_details = usage
-            self._handle_response_usage(response, usage)
+            self._handle_response_usage(response, usage, exchange=exchange)
         elif response.usage_details:
-            self._handle_response_usage(response, dict(response.usage_details))
+            self._handle_response_usage(response, dict(response.usage_details), exchange=exchange)
         return response
 
-    def _handle_response_usage(self, response: ChatResponse, usage: Mapping[str, Any]) -> None:
+    def _handle_response_usage(
+        self, response: ChatResponse, usage: Mapping[str, Any], *, exchange: ExchangeTrace | None = None
+    ) -> None:
         """Apply the hosted aggregate guard with any provider occupancy view."""
         use_local_context_estimate = self._should_use_local_context_estimate(response)
         self._handle_usage(
             usage,
             use_local_context_estimate=use_local_context_estimate,
+            exchange=exchange,
         )
 
     def _should_use_local_context_estimate(self, response: ChatResponse) -> bool:
@@ -194,14 +205,15 @@ class UsageTrackingMiddleware(ChatMiddleware):
         *,
         use_local_context_estimate: bool = False,
         context_input_tokens: int | None = None,
+        exchange: ExchangeTrace | None = None,
     ) -> None:
-        """Process captured usage details.
+        """Process captured usage details of the call that *exchange* acquired.
 
         Calibrates BEFORE firing so system overhead is available in the event.
         """
         self._last_usage = usage
         if not use_local_context_estimate:
-            self._calibrate_strategy(usage)
+            self._calibrate_strategy(usage, exchange)
         elif context_input_tokens is None and self._compaction_strategy is not None:
             context_input_tokens = resolve_hosted_context_input_tokens(
                 usage,
@@ -257,7 +269,7 @@ class UsageTrackingMiddleware(ChatMiddleware):
             use_local_context_estimate,
         )
 
-    def _calibrate_strategy(self, usage: Mapping[str, Any]) -> None:
+    def _calibrate_strategy(self, usage: Mapping[str, Any], exchange: ExchangeTrace | None = None) -> None:
         """Let the compaction strategy learn overhead from the API response.
 
         Uses ``_last_included_tokens`` (set by the strategy's ``__call__``
@@ -269,6 +281,17 @@ class UsageTrackingMiddleware(ChatMiddleware):
             return
         api_input = usage.get("input_token_count") or 0
         self._compaction_strategy.calibrate(api_input)
+        # The same provider count says how much of the previous request this
+        # one read from the cache; a hosted aggregate (skipped by the caller)
+        # says neither.
+        cache_read = usage.get("cache_read_input_token_count")
+        if cache_read is None:
+            cache_read = extract_cache_hit_tokens(usage)
+        self._compaction_strategy.observe_response_usage(
+            input_tokens=api_input,
+            cache_read_tokens=int(cache_read) if cache_read is not None else 0,
+            exchange=exchange,
+        )
 
 
 def contains_provider_hosted_content(messages: Sequence[Message]) -> bool:

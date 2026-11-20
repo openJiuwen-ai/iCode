@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from chrys.service.hooks.outbox import Outbox, OutboxJob
+from chrys.service.hooks.outbox import Outbox, OutboxJob, has_terminal_record, is_valid_job_id
 
 
 async def _run_child(cmd: list[str], *, cwd: str, env: dict[str, str]) -> int | None:
@@ -60,11 +60,13 @@ async def _main(path: Path) -> int:
     outbox_root = str(raw.get("outbox_root") or "")
     job = _load_job(raw.get("job"))
 
-    exit_code = await _run_child(cmd, cwd=cwd, env=env)
-
     try:
-        if outbox_root and job is not None:
-            outbox = Outbox(Path(outbox_root))
+        root = Path(outbox_root) if outbox_root else None
+        if root is not None and job is not None and has_terminal_record(root, job.job_id):
+            return 0
+        exit_code = await _run_child(cmd, cwd=cwd, env=env)
+        if root is not None and job is not None:
+            outbox = Outbox(root)
             if exit_code == 0:
                 outbox.mark_done(job, exit_code=0)
             else:
@@ -96,10 +98,14 @@ def _load_job(value: Any) -> OutboxJob | None:
     if not isinstance(value, dict):
         return None
     try:
-        return OutboxJob(**value)
+        job = OutboxJob(**value)
     except TypeError as exc:
         _stderr(f"Error: failed to load detached hook outbox job: {exc}")
         return None
+    if not is_valid_job_id(job.job_id):
+        _stderr("Error: failed to load detached hook outbox job: invalid job ID")
+        return None
+    return job
 
 
 def _stderr(message: str) -> None:

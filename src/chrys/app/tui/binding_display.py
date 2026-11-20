@@ -15,6 +15,7 @@ from chrys.foundation.i18n import MessageDef, msg
 
 logger = logging.getLogger(__name__)
 
+BACK_BINDING = msg("tui.binding.back", fallback="Back")
 CLOSE_BINDING = msg("tui.binding.close", fallback="Close")
 CANCEL_BINDING = msg("tui.binding.cancel", fallback="Cancel")
 COPY_BINDING = msg("tui.binding.copy", fallback="Copy")
@@ -25,6 +26,7 @@ TOGGLE_VIEW_BINDING = msg("tui.binding.toggle_view", fallback="Toggle view")
 
 _SHARED_BINDING_DISPLAY_IDS = frozenset(
     {
+        BACK_BINDING.key,
         CLOSE_BINDING.key,
         CANCEL_BINDING.key,
         COPY_BINDING.key,
@@ -123,6 +125,7 @@ def iter_binding_display_specs() -> Iterator[BindingDisplaySpec]:
 
 
 __all__ = [
+    "BACK_BINDING",
     "CANCEL_BINDING",
     "CLOSE_BINDING",
     "COPY_BINDING",

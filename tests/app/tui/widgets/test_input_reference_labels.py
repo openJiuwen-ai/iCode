@@ -14,6 +14,7 @@ from textual.events import Paste
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.support import prompt_history
+from chrys.app.tui.widgets.chrome import input_bar as input_bar_module
 from chrys.app.tui.widgets.chrome.input_bar import InputBar, _ChatTextArea
 from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.foundation.config.settings import Settings
@@ -542,18 +543,15 @@ async def test_a_quote_inside_a_command_a_paste_opens_is_not_sent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_insert_the_draft_refuses_keeps_the_undo_steps() -> None:
+async def test_an_insert_the_draft_refuses_keeps_the_undo_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Refusing(_ChatTextArea):
         refuse = False
 
         def _replace_via_keyboard(self, insert, start, end):  # type: ignore[no-untyped-def]
             return None if self.refuse else super()._replace_via_keyboard(insert, start, end)
 
-    class _App(App):
-        def compose(self) -> ComposeResult:
-            yield _Refusing()
-
-    app = _App()
+    monkeypatch.setattr(input_bar_module, "_ChatTextArea", _Refusing)
+    app = _LabelApp()
     async with app.run_test() as pilot:
         text_area = app.query_one(_Refusing)
         text_area.focus()
@@ -625,8 +623,8 @@ async def test_a_label_keeps_its_color_on_the_cursor_line() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_long_pasted_side_question_shows_the_side_question_button() -> None:
-    """Typed or pasted (folded by its size), the same ``/btw`` question reads the same on the button."""
+async def test_a_long_pasted_side_question_keeps_send_and_interrupt_available() -> None:
+    """Folded side questions use the running Send action while Interrupt remains available."""
     from textual.widgets import Button
 
     app = _LabelApp()
@@ -638,10 +636,12 @@ async def test_a_long_pasted_side_question_shows_the_side_question_button() -> N
         assert text_area.text.startswith("[Pasted text #1")
 
         await wait_for(
-            lambda: str(input_bar.query_one("#send-btn", Button).label) == "Send side question",
+            lambda: input_bar.query_one("#running-send-btn", Button).display,
             pilot=pilot,
-            description="the button offers the side question",
+            description="the button offers Send for the side question",
         )
+        assert str(input_bar.query_one("#running-send-btn", Button).label) == "Send"
+        assert str(input_bar.query_one("#send-btn", Button).label) == "Interrupt"
 
 
 @pytest.mark.asyncio

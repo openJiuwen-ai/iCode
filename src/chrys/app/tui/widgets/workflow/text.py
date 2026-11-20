@@ -48,7 +48,7 @@ SESSION_TITLE = msg("tui.workflow.session_title", fallback="{name} · Session: {
 TITLE = msg("tui.workflow.title", fallback="Workflow")
 BUILTIN = msg("tui.workflow.source.builtin", fallback="builtin")
 GLOBAL = msg("tui.workflow.source.global", fallback="global")
-PROJECT = msg("tui.workflow.source.project", fallback="project")
+WORKDIR = msg("tui.workflow.source.workdir", fallback="working directory")
 SESSION_LOCKED = msg(
     "tui.workflow.session_locked",
     fallback="This session already has runs. Create a new session to select another workflow.",
@@ -100,8 +100,8 @@ CODE_VIEW = msg("tui.workflow.tab.code", fallback="Source")
 STALE = msg("tui.workflow.stale", fallback="This workflow changed. Reopen it to preview and confirm before starting.")
 CODE_CHANGED = msg("tui.workflow.code_changed", fallback="This file differs from what was previewed.")
 DELETE = msg("tui.workflow.delete", fallback="Delete workflow")
-DELETE_PROJECT = msg(
-    "tui.workflow.delete_project", fallback="Project files may be recoverable in Git. Run history stays."
+DELETE_WORKDIR = msg(
+    "tui.workflow.delete_workdir", fallback="Working directory files may be recoverable in Git. Run history stays."
 )
 DELETE_GLOBAL = msg("tui.workflow.delete_global", fallback="Global files cannot be recovered. Run history stays.")
 DELETE_PACKAGE_NOTE = msg(
@@ -146,7 +146,7 @@ FAILED_PHASE = msg("tui.workflow.node.failed_phase", fallback="Failed during: {p
 
 PHASES = {"body": PHASE_BODY, "outgoing": PHASE_OUTGOING, "until": PHASE_UNTIL, "combine": PHASE_COMBINE}
 
-SOURCES = {"builtin": BUILTIN, "global": GLOBAL, "project": PROJECT}
+SOURCES = {"builtin": BUILTIN, "global": GLOBAL, "workdir": WORKDIR}
 
 
 @dataclass(frozen=True, slots=True)

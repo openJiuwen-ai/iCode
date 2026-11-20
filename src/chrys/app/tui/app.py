@@ -38,6 +38,16 @@ from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_su
 from chrys.app.parsing import SanitizingArgumentParser
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, copy_with_insert, paste_with_insert
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
+from chrys.app.tui.clipboard import (
+    ClipboardWriteFailed,
+    clipboard_failure_is_current,
+    close_clipboard,
+    copy_text_to_clipboards,
+    open_clipboard,
+    stop_clipboard,
+    uses_native_windows_clipboard,
+)
+from chrys.app.tui.copy_messages import COPY_FAILED
 from chrys.app.tui.graphics.detect import ask_terminal
 from chrys.app.tui.i18n import LocaleController, render_str
 from chrys.app.tui.notifications import NotificationService, NotificationSettings
@@ -89,6 +99,7 @@ from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.signals import HANGUP_SIGNALS
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.startup import catalog_load_warning
+from chrys.orchestration.workdir_migration import MIGRATION_NOTICE
 from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import (
@@ -960,6 +971,18 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             return
         self.exit()
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """Include stock Textual copy/cut actions in the native Windows queue."""
+        if uses_native_windows_clipboard():
+            copy_text_to_clipboards(self, text)
+        else:
+            super().copy_to_clipboard(text)
+
+    def on_clipboard_write_failed(self, event: ClipboardWriteFailed) -> None:
+        event.stop()
+        if self.is_running and clipboard_failure_is_current(self, event):
+            self.notify(render_str(self.localizer, COPY_FAILED.bind()), severity="error", markup=False)
+
     def action_copy_with_insert(self) -> None:
         """Copy the focused editor selection, then fall back to the screen selection."""
         copy_with_insert(self)
@@ -1011,9 +1034,6 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             localization=self.localizer,
             locale_controller=self._locale_controller,
             on_editor_keymap_changed=self._record_editor_keymap_override,
-            tool_groups_expanded=lambda: self._settings_handle.settings.tool_groups_expanded,
-            thinking_expanded=lambda: self._settings_handle.settings.chat_thinking_expanded,
-            fold_finished_turns=lambda: self._settings_handle.settings.chat_fold_finished_turns,
             approval_mode=self._engine.approval_mode,
             reset_program_status=self._program_status_reporter.reset_context,
         )
@@ -1037,6 +1057,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def on_mount(self) -> None:
         """Start the main screen after the optional loading shell paints."""
+        open_clipboard(self)
         await self._program_status_reporter.subscribe()
         self._set_terminal_title_for_cwd()
         # Closing the terminal or SIGTERM quits without asking, so the session's background commands stop.
@@ -1096,11 +1117,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         if self._gc_freeze.started:
             self._gc_freeze_watchdog = self.set_interval(GC_FREEZE_WATCHDOG_PERIOD_SECONDS, self._gc_freeze.on_tick)
 
-        # MainScreen has now subscribed to ``Warning``; flush any
-        # warnings collected before the bus had listeners.
-        for w in self._startup_warnings:
-            await self._bus.publish(w)
-        self._startup_warnings.clear()
+        # A restore replaces the transcript. Add its startup notice afterwards.
+        await self._publish_startup_warnings(defer_migration_notice=True)
 
         registry = self._agent_registry
         if not registry.list_profiles():
@@ -1114,12 +1132,22 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             # No engine start means no restore either: the bootstrap settings
             # stay in force, so their warnings are due after all.
             await self._flush_deferred_settings_warnings()
+            await self._publish_startup_warnings()
         return screen, profile
 
     async def _start_engine_after_refresh(self, profile: AgentProfile, screen: MainScreen) -> None:
         """Let the main screen paint before agent construction imports its tools."""
         if await self._wait_for_startup_refresh():
             await self._start_engine(profile, screen)
+            await self._publish_startup_warnings()
+
+    async def _publish_startup_warnings(self, *, defer_migration_notice: bool = False) -> None:
+        warnings, self._startup_warnings = self._startup_warnings, []
+        for warning in warnings:
+            if defer_migration_notice and warning.code == MIGRATION_NOTICE:
+                self._startup_warnings.append(warning)
+            else:
+                await self._bus.publish(warning)
 
     async def _wait_for_startup_refresh(self) -> bool:
         """Wait for a paint while tolerating shutdown and a late callback."""
@@ -1301,43 +1329,52 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def on_unmount(self) -> None:
         """Shutdown engine on exit."""
-        # While the terminal can still be written (Unmount precedes the
-        # driver close), settle the OSC 7501 record on idle and stop
-        # reporting; the engine shutdown below then cannot overwrite it.
-        await self._program_status_reporter.close()
-        if self._terminal_graphics is not None:
-            # Its images were freed when the app exited or crashed; this also ends the payload job.
-            await self._terminal_graphics.close()
-        self._gc_freeze.close()
-        if self._gc_freeze_watchdog is not None:
-            self._gc_freeze_watchdog.stop()
-            self._gc_freeze_watchdog = None
-        if self._startup_task is not None and not self._startup_task.done():
-            self._startup_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._startup_task
-        self._startup_task = None
-        if self._update_check_task is not None and not self._update_check_task.done():
-            self._update_check_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._update_check_task
-        self._update_check_task = None
-        if self._left_behind_task is not None and not self._left_behind_task.done():
-            self._left_behind_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._left_behind_task
-        self._left_behind_task = None
-        await self._engine.shutdown()
-        # Only now: a second SIGHUP or SIGTERM while the engine stops its
-        # background commands must not end the process before it has.
-        for signum in HANGUP_SIGNALS:
-            asyncio.get_running_loop().remove_signal_handler(signum)
-        # After the engine: its shutdown drains a still-finalizing run
-        # whose success callback can schedule one last title task; the
-        # updater must be the last thing torn down so that task is
-        # cancelled and awaited (its closed flag backstops other hosts).
-        if self._session_title_updater is not None:
-            await self._session_title_updater.shutdown()
+        stop_clipboard(self)
+        try:
+            # While the terminal can still be written (Unmount precedes the
+            # driver close), settle the OSC 7501 record on idle and stop
+            # reporting; the engine shutdown below then cannot overwrite it.
+            await self._program_status_reporter.close()
+            if self._terminal_graphics is not None:
+                # Its images were freed when the app exited or crashed; this also ends the payload job.
+                await self._terminal_graphics.close()
+            self._gc_freeze.close()
+            if self._gc_freeze_watchdog is not None:
+                self._gc_freeze_watchdog.stop()
+                self._gc_freeze_watchdog = None
+            if self._startup_task is not None and not self._startup_task.done():
+                self._startup_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._startup_task
+            self._startup_task = None
+            if self._update_check_task is not None and not self._update_check_task.done():
+                self._update_check_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._update_check_task
+            self._update_check_task = None
+            if self._left_behind_task is not None and not self._left_behind_task.done():
+                self._left_behind_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._left_behind_task
+            self._left_behind_task = None
+            await self._engine.shutdown()
+            # After the engine: its shutdown drains a still-finalizing run
+            # whose success callback can schedule one last title task; the
+            # updater must outlive the engine so that task is
+            # cancelled and awaited (its closed flag backstops other hosts).
+            if self._session_title_updater is not None:
+                await self._session_title_updater.shutdown()
+        finally:
+            # Clipboard failures must not prevent engine, signal or title cleanup.
+            try:
+                await close_clipboard(self)
+            except Exception:
+                logger.debug("Clipboard shutdown failed", exc_info=True)
+            finally:
+                # Keep repeat hangups handled through the last bounded drain,
+                # including cancellation or failure of clipboard cleanup.
+                for signum in HANGUP_SIGNALS:
+                    asyncio.get_running_loop().remove_signal_handler(signum)
 
     def _handle_exception(self, error: Exception) -> None:
         """Mirror Textual's crash handling, but also dump the traceback to a file.
@@ -1491,7 +1528,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
 
         install_log_handler()
 
-        bootstrap = bootstrap_runtime(project_root=Path(os.getcwd()))
+        bootstrap = bootstrap_runtime(workdir=Path(os.getcwd()))
 
         bus = EventBus()
         registry = AgentProfileRegistry()

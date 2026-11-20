@@ -15,6 +15,7 @@ from textual.widgets import Checkbox, Input, TextArea
 from chrys.app.tui import app as chrys_app
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.app import ChrysApp
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.i18n import LocaleSwitchStatus
 from chrys.app.tui.notifications import NotificationService
 from chrys.foundation.config.settings import DEFAULT_THEME, Settings
@@ -490,7 +491,7 @@ async def test_insert_clipboard_shortcuts_cover_editor_and_screen_selection(
     clipboard = {"text": "outside"}
     monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
     monkeypatch.setattr(
-        "chrys.app.tui.clipboard.platform_helpers.clipboard_copy",
+        "chrys.app.tui.clipboard.clipboard_copy",
         lambda text: clipboard.__setitem__("text", text),
     )
     monkeypatch.setattr(
@@ -582,7 +583,7 @@ async def test_insert_clipboard_shortcuts_reach_focused_embedded_terminal(
     monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
     monkeypatch.setattr("chrys.app.tui.clipboard.platform_helpers.clipboard_paste", lambda: "shell paste")
     copied: list[str] = []
-    monkeypatch.setattr("chrys.app.tui.clipboard.platform_helpers.clipboard_copy", copied.append)
+    monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
     app = _TerminalApp(
         EventBus(),
         _Engine(),  # type: ignore[arg-type]
@@ -615,6 +616,7 @@ async def test_insert_clipboard_shortcuts_reach_focused_embedded_terminal(
         await pilot.press("ctrl+insert")
         await pilot.pause()
 
+        await wait_for_clipboard(app)
         assert copied == []
         assert writes == ["\x1b[200~shell paste\x1b[201~"]
 
@@ -622,6 +624,7 @@ async def test_insert_clipboard_shortcuts_reach_focused_embedded_terminal(
         await pilot.press("ctrl+insert")
         await pilot.pause()
 
+        await wait_for_clipboard(app)
         assert copied == ["shell selection"]
         assert app.clipboard == "shell selection"
         assert writes == ["\x1b[200~shell paste\x1b[201~"]
@@ -662,7 +665,7 @@ async def test_insert_clipboard_shortcuts_fall_back_to_app_actions_for_stock_con
     screen_selection: dict[str, str | None] = {"text": None}
     monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
     monkeypatch.setattr(
-        "chrys.app.tui.clipboard.platform_helpers.clipboard_copy",
+        "chrys.app.tui.clipboard.clipboard_copy",
         lambda text: clipboard.__setitem__("text", text),
     )
     monkeypatch.setattr(

@@ -17,6 +17,7 @@ from textual.screen import ModalScreen
 from textual.selection import Selection
 from textual.widgets import Button, Static
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.screens.dialogs.ask_user import AskUserDialog, AskUserInlineResult
 from chrys.app.tui.theme import CHRYS_ANSI_THEME
 from chrys.app.tui.widgets import AskUserOptions, AskUserPrompt, AskUserTabbedContent, PromptDraft
@@ -588,5 +589,6 @@ async def test_ask_user_dialog_right_click_copies_selected_question_text(
         await pilot.pause()
 
         assert app.clipboard == "copy question"
+        await wait_for_clipboard(app)
         assert copied == ["copy question"]
         assert dialog.get_selected_text() is None

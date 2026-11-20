@@ -37,7 +37,12 @@ async def test_error_then_stop_preserves_old_dual_flags(executor):
         hooks.has_hooks_for.return_value = True
         host = SimpleNamespace(
             session=SimpleNamespace(
-                hook_manager=hooks, agent_profile=None, session_id="session", workspace=None, turn_number=1
+                hook_manager=hooks,
+                agent_profile=None,
+                session_id="session",
+                workspace=None,
+                turn_number=1,
+                runtime_meta=None,
             ),
             current=SimpleNamespace(loaded=SimpleNamespace(bindings=executor), manifest=make_manifest()),
         )

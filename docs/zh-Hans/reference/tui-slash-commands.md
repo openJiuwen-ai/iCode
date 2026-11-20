@@ -17,7 +17,7 @@
 
 - 示例：输入 `/approval` 后按空格键，会显示 `Manual`、`Auto` 和 `Bypass`。
 
-参数建议列表出现后，可以使用上下方向键选择并按 **Enter** 执行，也可以用鼠标点击所需项目。
+参数建议列表出现后，可以使用上下方向键选择并按 **Enter** 执行，也可以用鼠标点击所需选项。
 
 ## 查看命令说明
 
@@ -67,7 +67,7 @@
 
 ## 快捷指令
 
-快捷指令是保存为 Markdown 文件的提示词，放在 `~/.chrys/shortcuts`（Windows：`%APPDATA%\chrys\shortcuts`）或项目的 `.chrys/shortcuts` 中。输入 `/` 后，它们列在“快捷指令”分组中；选中一个，或输入 `/名称 参数` 后按 **Tab** 或 **Enter**，提示词会填入输入栏，修改后再发送。如何编写，详见[编写和使用快捷指令](../guides/extensions/shortcuts.md)。
+快捷指令是保存为 Markdown 文件的提示词，放在 `~/.chrys/shortcuts`（Windows：`%APPDATA%\chrys\shortcuts`）或工作目录的 `.chrys/shortcuts` 中。输入 `/` 后，它们列在“快捷指令”分组中；选中一个，或输入 `/名称 参数` 后按 **Tab** 或 **Enter**，提示词会填入输入栏，修改后再发送。如何编写，详见[编写和使用快捷指令](../guides/extensions/shortcuts.md)。
 
 直接输入名称时，依次匹配内置命令、Skill、快捷指令。
 

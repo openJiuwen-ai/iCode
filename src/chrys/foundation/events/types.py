@@ -236,6 +236,15 @@ class UserInject(Event):
 
 
 @dataclass
+class UserInjectSteer(Event):
+    """Try steering the active pass with an already queued message, without resubmitting it."""
+
+    injection_id: str = ""
+    accepted: bool = field(default=False, compare=False)
+    """The backend accepted the request; InvocationSteered reports the actual pass ending."""
+
+
+@dataclass
 class UserInjectCancel(Event):
     """User cancels a queued mid-run injection before the model sees it.
 
@@ -1210,7 +1219,7 @@ class HookConfirmationRequest(Event):
     """The agent profile that wants the operation."""
     hook_id: str
     hook_source: str = ""
-    """``project`` or ``global``; empty when unknown."""
+    """``workdir`` or ``global``; empty when unknown."""
     reason: str = ""
     """What the hook wrote: plain text, never markup."""
     subject: HookConfirmationSubjectKind
@@ -1340,9 +1349,9 @@ class RuntimeHookDetails:
 
 @dataclass
 class RuntimeHookSourceDetails:
-    """One project or global source contributing runtime hooks."""
+    """One working directory or global source contributing runtime hooks."""
 
-    scope: Literal["project", "global"] = "global"
+    scope: Literal["workdir", "global"] = "global"
     source_path: str = ""
     hooks: list[RuntimeHookDetails] = field(default_factory=list)
 
@@ -1408,6 +1417,12 @@ class AgentLoadProgress(Event):
     """Generic per-item identifier, such as an MCP server or sub-agent profile."""
     detail: str = ""
     """Raw untranslated dynamic reason associated with this progress update."""
+    stage: str = ""
+    """Nested initialization phase; outer counts still count completed sub-agents."""
+    stage_subject: str = ""
+    """The nested resource, such as the MCP server being connected."""
+    stage_status: str = ""
+    """Nested phase status, independent of the owning sub-agent's status."""
 
 
 @dataclass

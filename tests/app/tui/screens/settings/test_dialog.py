@@ -83,7 +83,7 @@ async def test_mounting_the_dialog_writes_nothing_and_focuses_a_control() -> Non
         assert ports.notification_ports.saved == []
         assert isinstance(dialog.focused, Select)
         rows = dialog.rows()
-        assert len(rows) == ROW_COUNT == 41
+        assert len(rows) == ROW_COUNT == 38
         assert all(row.spec.key != "trajectory.verify_commands" for row in rows)
         assert dialog.query_one(TabbedContent).active == pane_id(GENERAL_TAB_ID)
 
@@ -466,7 +466,7 @@ async def test_badges_and_status_follow_apply_kind_and_pending_state() -> None:
         assert _badges(rows["approval.default_mode"]) == "⚠"
         assert _badges(rows["log.raw_http_capture"]) == "⚠"
         assert _badges(rows["otel.enabled"]) == ""
-        assert _badges(rows["project.config_enabled"]) == ""
+        assert _badges(rows["workdir.config_enabled"]) == ""
         assert str(container.border_subtitle) == "Changes are saved as you make them"
         assert not container.has_class("-status-active")
 
@@ -705,18 +705,18 @@ async def test_an_env_pinned_bypass_shows_as_the_current_choice_without_writing(
 
 
 @pytest.mark.asyncio
-async def test_a_dormant_project_file_swaps_the_project_gate_hint_until_the_gate_is_on() -> None:
+async def test_a_dormant_workdir_file_swaps_the_workdir_gate_hint_until_the_gate_is_on() -> None:
     from pathlib import Path
 
-    from chrys.foundation.config.settings_store import DormantProjectConfig, LoadedSettings
+    from chrys.foundation.config.settings_store import DormantWorkdirConfig, LoadedSettings
 
     ports = StubPorts()
     ports.handle.install(
         LoadedSettings(
             settings=Settings(),
             provenance={},
-            dormant_project=(
-                DormantProjectConfig(
+            dormant_workdir=(
+                DormantWorkdirConfig(
                     path=Path("/ws/.chrys/settings.yaml"), keys=("rollback.snapshots_keep", "app.dev_mode")
                 ),
             ),
@@ -726,15 +726,15 @@ async def test_a_dormant_project_file_swaps_the_project_gate_hint_until_the_gate
     async with app.run_test(size=(100, 40)) as pilot:
         dialog = await _open(pilot, ports, initial_tab="safety")
         await pilot.pause()
-        row = _rows(dialog)["project.config_enabled"]
+        row = _rows(dialog)["workdir.config_enabled"]
 
-        assert _hint(row) == "Project settings found (2 keys) — enable to apply them."
+        assert _hint(row) == "Working directory settings found (2 keys) — enable to apply them."
 
         row.query_one(Checkbox).value = True
         await pilot.pause()
 
-        assert ports.persisted == [{"project.config_enabled": True}]
-        assert _hint(row).startswith("Let <workspace>/.chrys/settings.yaml")
+        assert ports.persisted == [{"workdir.config_enabled": True}]
+        assert _hint(row).startswith("Load settings from .chrys/settings.yaml")
 
 
 @pytest.mark.asyncio

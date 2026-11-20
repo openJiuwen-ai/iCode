@@ -66,7 +66,7 @@ def test_templates_admit_on_the_builtin_agent_profiles(template: Path) -> None:
 
 
 def test_discovery_lists_the_templates_as_builtin(tmp_path: Path) -> None:
-    found = discover_workflows(config_dir=tmp_path, project_cwd=None)
+    found = discover_workflows(config_dir=tmp_path, workdir=None)
 
     assert [(source.workflow_id, source.source_kind) for source in found.sources] == [
         (path.stem, SOURCE_KIND_BUILTIN) for path in TEMPLATES

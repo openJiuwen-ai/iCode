@@ -65,7 +65,7 @@ from tests.orchestration.engine._recovery_helpers import (
 from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -673,7 +673,7 @@ async def test_a_live_choice_made_during_a_switch_s_rebuild_survives_its_commit(
 ) -> None:
     started = await _start(agent_engine, monkeypatch, tmp_path)
     engine = started.engine
-    assert engine.settings.chat_thinking_expanded is False
+    assert engine.settings.approval_defer_while_judging is True
     release = asyncio.Event()
     started.clients.hold = release
     switch = SessionOnlySwitch(model_profile=OTHER_MODEL)
@@ -684,7 +684,7 @@ async def test_a_live_choice_made_during_a_switch_s_rebuild_survives_its_commit(
         )
         assert not publish.done()
 
-        engine.settings_handle.override(chat_thinking_expanded=True)
+        engine.settings_handle.override(approval_defer_while_judging=False)
     finally:
         release.set()
     await publish
@@ -692,7 +692,7 @@ async def test_a_live_choice_made_during_a_switch_s_rebuild_survives_its_commit(
     assert switch.applied is True
     assert _model(engine) == OTHER_MODEL
     assert engine.settings.model_profile == OTHER_MODEL
-    assert engine.settings.chat_thinking_expanded is True
+    assert engine.settings.approval_defer_while_judging is False
 
 
 async def test_a_live_choice_keeps_the_session_model(
@@ -702,10 +702,10 @@ async def test_a_live_choice_keeps_the_session_model(
     engine = started.engine
     await _switch(engine, model=OTHER_MODEL)
 
-    engine.settings_handle.override(chat_thinking_expanded=True)
+    engine.settings_handle.override(approval_defer_while_judging=False)
 
     assert engine.settings.model_profile == OTHER_MODEL
-    assert engine.settings.chat_thinking_expanded is True
+    assert engine.settings.approval_defer_while_judging is False
     assert _session_model(engine) == OTHER_MODEL
     # And the next rebuild is still made on it.
     await _publish(engine, SettingsReload())
@@ -862,9 +862,9 @@ async def test_a_workflow_started_after_a_shortcut_model_switch_runs_on_the_defa
     # A headless host is the harness that runs workflows; the engine it holds handles the switch as the TUI's does.
     # Its default model is the one it started with (§5: workflows read their startup snapshot and the files).
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="done")])])
-    project = make_project(tmp_path)
-    write_workflow(project, "review", _AGENT_WORKFLOW)
-    host = make_host(tmp_path, project=project)
+    workdir = make_workdir(tmp_path)
+    write_workflow(workdir, "review", _AGENT_WORKFLOW)
+    host = make_host(tmp_path, project=workdir)
     registry = host.engine.model_registry
     assert registry is not None
     registry.register(ModelProfile(id="second-model", name="second-model", provider="mock", model_id="second-model"))

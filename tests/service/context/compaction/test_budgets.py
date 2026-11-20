@@ -28,11 +28,11 @@ def _profile(context: int, output: int, *, name: str = "Budget Test") -> ModelPr
 @pytest.mark.parametrize(
     ("context", "output", "expected"),
     [
-        (200_000, 20_000, CompactionBudgets(200_000, 20_000, 10_000, 170_000, 106_250, 148_750, False)),
-        (200_000, 30_000, CompactionBudgets(200_000, 30_000, 10_000, 160_000, 100_000, 140_000, False)),
-        (100_000, 32_000, CompactionBudgets(100_000, 32_000, 5_000, 63_000, 39_375, 55_125, False)),
-        (100_000, 64_000, CompactionBudgets(100_000, 64_000, 5_000, 31_000, 19_375, 27_125, False)),
-        (100_000, 70_000, CompactionBudgets(100_000, 70_000, 5_000, 30_000, 18_750, 26_250, True)),
+        (200_000, 20_000, CompactionBudgets(200_000, 20_000, 10_000, 170_000, 106_250, 127_500, 148_750, False)),
+        (200_000, 30_000, CompactionBudgets(200_000, 30_000, 10_000, 160_000, 100_000, 120_000, 140_000, False)),
+        (100_000, 32_000, CompactionBudgets(100_000, 32_000, 5_000, 63_000, 39_375, 47_250, 55_125, False)),
+        (100_000, 64_000, CompactionBudgets(100_000, 64_000, 5_000, 31_000, 19_375, 23_250, 27_125, False)),
+        (100_000, 70_000, CompactionBudgets(100_000, 70_000, 5_000, 30_000, 18_750, 22_500, 26_250, True)),
     ],
 )
 def test_worked_budget_rows(context: int, output: int, expected: CompactionBudgets) -> None:
@@ -70,6 +70,7 @@ def test_target_and_force_use_half_up_integer_rounding() -> None:
 
     assert budgets.trigger_tokens == 63_004
     assert budgets.target_tokens == 39_378
+    assert budgets.satisfied_tokens == 47_253
     assert budgets.force_compress_tokens == 55_129
 
 
@@ -94,4 +95,5 @@ def test_integer_ordering_invariant_over_grid(context: int, output_factor: int) 
     budgets = derive_compaction_budgets(_profile(context, output))
 
     assert 1 <= budgets.target_tokens < budgets.force_compress_tokens < budgets.trigger_tokens <= context
+    assert budgets.target_tokens <= budgets.satisfied_tokens <= budgets.force_compress_tokens
     assert budgets.trigger_pct <= 1.0

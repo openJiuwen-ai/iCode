@@ -26,6 +26,7 @@ class ProcessSegment:
     index: int
     members: tuple[int, ...]
     fold: bool
+    answer: int | None
 
 
 def plan_process_segments(entries: list[ProcessEntry], *, protect_last_turn: bool = False) -> list[ProcessSegment]:
@@ -62,6 +63,7 @@ def plan_process_segments(entries: list[ProcessEntry], *, protect_last_turn: boo
                 if index != final
                 and entries[index].kind in {"answer", "thinking", "intermediate", "tool", "failure", "retry"}
             )
+            answer = final if final is not None and anchor < final < stop else None
             result.append(
                 ProcessSegment(
                     opener,
@@ -69,6 +71,7 @@ def plan_process_segments(entries: list[ProcessEntry], *, protect_last_turn: boo
                     segment,
                     members,
                     success and not protected,
+                    answer,
                 )
             )
     return result

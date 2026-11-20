@@ -191,7 +191,7 @@ keep status notifications short and use `on_error: ignore` where appropriate.
 ```json
 {
   ...,
-  "trigger": "phase1|phase2|phase3|phase4|force",
+  "trigger": "phase1|phase2|phase3|phase4",
   "usage_pct": 0.82,
   "tokens_before": 174000,
   "sub_agent": { ... }              // present only for sub-agent compactions
@@ -223,17 +223,22 @@ Recognized top-level keys:
 
 | Key | Type | Honoured when | Meaning |
 |---|---|---|---|
-| `action` | `"block"` / `"modify"` / `"allow"` (default) | Blocking hooks on gated events only | Gate the action. |
+| `action` | `"block"` / `"modify"` / `"ask"` / `"warn"` / `"allow"` (default) | Blocking hooks on gated events only | Gate the action. `"ask"` puts it to the user; `"warn"` lets it through and keeps the text it carries. |
 | `reason` | string | `action: block` | Surfaced to the user (and the model for tool blocks). |
 | `args_override` | object | Blocking `before_tool_call` only | Merged over `tool.args` before the tool runs. |
 | `system_reminder` | string | Blocking `user_prompt_submit` only | Wrapped in `<system-reminder>` and appended to the next LLM call. |
-| `extra_context` | string | Blocking `after_tool_call` / `tool_error` only | Appended to the tool's result text. |
+| `extra_context` | string | Blocking `before_tool_call` / `after_tool_call` / `tool_error` | Appended to the tool's result text. From `before_tool_call` it does not change whether the call runs. |
 
 Notes:
 
 - An empty or missing result file means "no opinion" — equivalent to
   `{ "action": "allow" }`.
-- Invalid JSON logs a warning and is treated as "no opinion".
+- Invalid JSON logs a warning. On a gating event that counts as a failed hook:
+  `on_error` applies, so `on_error: block` refuses the operation. Off a gating
+  event it is still "no opinion", and so is a failed hook there.
+- An action this version does not know is a failed hook the same way, but only
+  the action is dropped: `reason`, `system_reminder`, `extra_context` and
+  `result_override` beside it still apply.
 - Unknown keys are ignored. Future Chrys versions may add new keys.
 - Async and `fire_and_forget` hooks may still write the file, but their
   decisions are **discarded** — by the time the subprocess exits, the gated
@@ -332,17 +337,17 @@ YAML:
     on_error: warn
 ```
 
-### Python: inject project context on new main turns
+### Python: inject working directory context on new main turns
 
 ```python
 #!/usr/bin/env python3
-"""Append a project-specific <system-reminder> to new main-turn prompts."""
+"""Append a working directory-specific <system-reminder> to new main-turn prompts."""
 
 import json
 import os
 
 REMINDER = (
-    "[Project: customer-portal] Follow the conventions in docs/style.md. "
+    "[Working directory: customer-portal] Follow the conventions in docs/style.md. "
     "Run `pnpm test` before claiming any task is done."
 )
 
@@ -360,7 +365,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
 YAML:
 
 ```yaml
-- id: project-reminders
+- id: working directory-reminders
   event: user_prompt_submit
   run:
     type: script
@@ -676,10 +681,10 @@ behaviour the second time.
 
 ---
 
-## Project-level scripts
+## Working directory scripts
 
-A `path:` in a project-level `hooks.yaml` resolves relative to the
-project file's own directory, not the global one. That is,
+A `path:` in a working directory `hooks.yaml` resolves relative to the
+working directory file's own directory, not the global one. That is,
 `path: scripts/foo.py` in `<workspace>/.chrys/hooks/hooks.yaml`
 resolves to `<workspace>/.chrys/hooks/scripts/foo.py`. The same
 `path:` in the global file resolves to
@@ -693,9 +698,9 @@ see [configuration.md](configuration.md#type-script).
 
 Hooks are arbitrary subprocesses and run without an in-process
 approval prompt. This applies equally to the global file and any
-project file. A project file loads only while the user's own
-`project.hooks_enabled` setting is on (default off; a project file
-cannot set it). Once it is on, treat the project file as executable
+working directory file. A working directory file loads only while the user's own
+`workdir.hooks_enabled` setting is on (default off; a working directory file
+cannot set it). Once it is on, treat the working directory file as executable
 code committed to the repo, the same way you would treat a
 `Makefile` or a `.github/workflows/*.yml`. See
-[project-hooks.md](project-hooks.md) for the layered merge rules.
+[workdir-hooks.md](workdir-hooks.md) for the layered merge rules.

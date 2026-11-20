@@ -35,10 +35,10 @@ from chrys.service.workflows.orphans import read_run_terminal
 from tests.support.waiting import wait_for
 from tests.support.workflow_history import record_workflow_run
 
-_BINDING = WorkflowIdentity("review", "/project/review.py", "project")
+_BINDING = WorkflowIdentity("review", "/project/review.py", "workdir")
 
 
-async def _hooks(*, project_root: str, project_hooks_enabled: bool, session_id: str, request_id: str = "") -> None:
+async def _hooks(*, workdir: str, workdir_hooks_enabled: bool, session_id: str, request_id: str = "") -> None:
     return None
 
 

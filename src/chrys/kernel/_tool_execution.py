@@ -52,9 +52,15 @@ from chrys.foundation.tool_execution_stamp import EXECUTION_STAMP_KEY, execution
 from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY, read_tool_invocation_order
 from chrys.foundation.tool_kinds import TOOL_CALL_KIND_METADATA_KEY, get_tool_kind
 from chrys.foundation.tool_result_metadata import (
+    COMMITTED_ERROR_TEXT_KEY,
+    HOOK_RESULT_APPLIED_KEY,
+    HOOK_RESULT_PENDING_KEY,
+    INTERRUPTED_TOOL_RESULT_TEXT,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERROR_MESSAGE_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
+    TOOL_INTERRUPTED_METADATA_KEY,
+    TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY,
     TOOL_RESULT_METADATA_KEY,
 )
 from chrys.foundation.trajectory.context import current_trajectory
@@ -136,7 +142,12 @@ class ToolResultCommit(Protocol):
     already holds, even after the exchange was sealed.
     """
 
+    @property
+    def has_raw_result(self) -> bool: ...
+
     def commit_raw(self, result: Content) -> None: ...
+
+    def replace_raw_with_error(self, text: str) -> None: ...
 
     def commit_final(self, result: Content) -> None: ...
 
@@ -948,17 +959,24 @@ async def _invoke_function_call(
             # crash checkpoint complete; terminal construction overwrites it
             # from ``context.metadata`` after middleware unwinds.
             additional = _result_additional_properties(function_call, context)
+            carried = dict(additional.get(TOOL_RESULT_METADATA_KEY, {}))
             parent_metadata = sub_agent_parent_result_metadata.get()
             if parent_metadata is not None:
-                carried: dict[str, Any] = {}
                 if parent_metadata.sub_agent_invocation_id:
                     carried["sub_agent_invocation_id"] = parent_metadata.sub_agent_invocation_id
                 if parent_metadata.sub_agent_log_file:
                     carried["sub_agent_log_file"] = parent_metadata.sub_agent_log_file
                 if parent_metadata.sub_agent_audit_complete:
                     carried["sub_agent_audit_complete"] = True
-                if carried:
-                    additional[TOOL_RESULT_METADATA_KEY] = carried
+            if context.metadata.get(HOOK_RESULT_PENDING_KEY):
+                # A crash checkpoint can be written as soon as this slot is filled.
+                # Keep the original value in the pipeline only, until its hooks finish.
+                value = INTERRUPTED_TOOL_RESULT_TEXT
+                carried[TOOL_FAILED_METADATA_KEY] = True
+                carried[TOOL_INTERRUPTED_METADATA_KEY] = True
+                carried[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] = True
+            if carried:
+                additional[TOOL_RESULT_METADATA_KEY] = carried
             result_commit.commit_raw(
                 Content.from_function_result(
                     call_id=call_id,
@@ -1002,10 +1020,23 @@ async def _invoke_function_call(
             )
         return result
 
+    def checkpoint_error(exc: Exception) -> None:
+        # A raw slot records completed work. Once a middleware supersedes it
+        # with an error, checkpoint the public result before an outer hook can
+        # suspend. A pending result hook already has a safe placeholder.
+        if result_commit is None or not result_commit.has_raw_result:
+            return
+        context.metadata.pop(HOOK_RESULT_APPLIED_KEY, None)
+        if not context.metadata.get(HOOK_RESULT_PENDING_KEY):
+            committed = context.metadata.get(COMMITTED_ERROR_TEXT_KEY)
+            text = committed if isinstance(committed, str) else tool_error_result_text(exc)
+            result_commit.replace_raw_with_error(apply_result_ceiling(text, tool_result_ceiling_tokens))
+
     try:
         function_result = await pipeline.execute(
             context=context,
             final_handler=final_function_handler,
+            on_error=checkpoint_error if result_commit is not None else None,
         )
         return Content.from_function_result(
             call_id=call_id,
@@ -1017,13 +1048,20 @@ async def _invoke_function_call(
         # boundary, so their measured timing and result metadata are now on
         # the invocation context. Commit with that context before the outer
         # batch-level cancellation fallback loses it.
+        #
+        # Only resolved values belong in history. Apply the normal token ceiling
+        # here too, since a hook can expand the result before cancellation.
+        if asyncio.iscoroutine(context.result):
+            context.result = None
+        elif context.result is not None and tool_result_ceiling_tokens is not None:
+            context.result = apply_result_ceiling(context.result, tool_result_ceiling_tokens)
         if result_commit is not None:
             result_commit.commit_interrupted(function_call, context)
         raise
     except MiddlewareTermination as term_exc:
         # Re-raise to signal loop termination, capturing any middleware-set
         # result first.
-        if context.result is not None:
+        if context.result is not None and not term_exc.prebuilt_result_exposed:
             term_exc.result = Content.from_function_result(
                 call_id=call_id,
                 result=context.result,
@@ -1036,6 +1074,12 @@ async def _invoke_function_call(
             # external objects that are deliberately unsafe to deep-copy.
             owned_result = copy(term_exc.result)
             owned_result.call_id = call_id
+            if term_exc.prebuilt_result_exposed:
+                body = owned_result.items if owned_result.items is not None else owned_result.result
+                if context.result is not body:
+                    reviewed = Content.from_function_result(call_id=call_id, result=context.result)
+                    owned_result.items = reviewed.items
+                    owned_result.result = reviewed.result
             prebuilt_properties = term_exc.result.additional_properties
             # This call's properties go on top of whatever the prebuilt result
             # carried, the same fold every other result path uses: a result
@@ -1063,9 +1107,19 @@ async def _invoke_function_call(
             tool.name,
             exc,
         )
+        # A middleware that cleaned the error text owns what the model reads: it
+        # committed the replacement under COMMITTED_ERROR_TEXT_KEY before
+        # re-raising, and rebuilding the result from ``exc`` alone would throw
+        # that away — the one place sensitive text most often lands. Read only
+        # that mark: ``context.result`` on its own already holds the tool's own
+        # output when the tool succeeded and a later middleware raised, and
+        # passing that on as the error text would tell the model a failed call
+        # produced it. An empty replacement is a replacement (withheld), so the
+        # value is used as it stands rather than the exception's text returning.
+        committed = context.metadata.get(COMMITTED_ERROR_TEXT_KEY)
         return Content.from_function_result(
             call_id=function_call.call_id,  # type: ignore[arg-type]
-            result=tool_error_result_text(exc),
+            result=committed if isinstance(committed, str) else tool_error_result_text(exc),
             # Never None: it marks the result failed for the consecutive-error
             # count and the providers' error flag, whatever the model reads.
             exception=_failure_record_text(exc),

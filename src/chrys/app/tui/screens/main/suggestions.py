@@ -37,7 +37,7 @@ from chrys.app.tui.widgets.chrome.commands import (
     is_slash_command_candidate,
     parse_slash_draft,
 )
-from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex, WorkspacePathIndex
+from chrys.app.tui.widgets.chrome.file_index import WorkdirPathIndex, WorkspacePathIndex
 from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft, ShortcutIntent
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.foundation.i18n import MessageRef, msg
@@ -134,7 +134,7 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from chrys.app.tui.i18n import LocaleController
-    from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathSuggestion
+    from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathSuggestion
     from chrys.foundation.events.types import RuntimeSkillDetails
 
 
@@ -1090,7 +1090,7 @@ class SuggestionHandler:
         self._invalidate_file_query_results()
         return index
 
-    def _file_snapshot(self) -> ProjectPathIndex | None:
+    def _file_snapshot(self) -> WorkdirPathIndex | None:
         """Return the snapshot installed for the current root, without building one."""
         index = self._file_index
         if index is None or index.root != self._current_file_root():
@@ -1159,9 +1159,9 @@ class SuggestionHandler:
 
     def _file_suggestion_items(
         self,
-        paths: list[ProjectPathSuggestion],
+        paths: list[WorkdirPathSuggestion],
         *,
-        index: ProjectPathIndex | None = None,
+        index: WorkdirPathIndex | None = None,
     ) -> list[SuggestionItem]:
         """Build suggestion rows for project file and directory paths."""
         items = [SuggestionItem(value=path.path, label=path.path, kind=path.kind) for path in paths]
@@ -1198,7 +1198,7 @@ class SuggestionHandler:
 
     def _show_or_update_file_suggestions(
         self,
-        paths: list[ProjectPathSuggestion],
+        paths: list[WorkdirPathSuggestion],
         *,
         keep_selection: bool = False,
     ) -> None:
@@ -1262,7 +1262,7 @@ class SuggestionHandler:
             if self._file_query_context_current(revision, snapshot):
                 self._apply_file_query_result(matches, keep_selection=keep_selection)
 
-    def _file_query_context_current(self, revision: int, snapshot: ProjectPathIndex) -> bool:
+    def _file_query_context_current(self, revision: int, snapshot: WorkdirPathIndex) -> bool:
         """Return whether a query result is still allowed to update the UI."""
         return (
             revision == self._file_query_revision
@@ -1271,7 +1271,7 @@ class SuggestionHandler:
             and self._file_snapshot() is snapshot
         )
 
-    def _apply_file_query_result(self, matches: list[ProjectPathSuggestion], *, keep_selection: bool = False) -> None:
+    def _apply_file_query_result(self, matches: list[WorkdirPathSuggestion], *, keep_selection: bool = False) -> None:
         """Apply current file-query results to the suggestion list."""
         if not self._view.is_attached:
             return

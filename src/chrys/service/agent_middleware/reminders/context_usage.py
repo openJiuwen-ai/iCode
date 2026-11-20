@@ -18,12 +18,25 @@ if TYPE_CHECKING:
 
 
 CONTEXT_USAGE_WARNING = (
-    "[Context Usage] WARNING: Context usage is high. Use `list_compressed_contexts` to see "
-    "available fold markers, then `compress_context` with a marker_id to "
-    "compress older turns into a summary. Use `recall_context` to query "
-    "compressed blocks if you need specific details later."
+    "[Context Usage] NOTE: Context usage is high. This is for your information only: the "
+    "platform compacts older content on its own, so no action is needed."
 )
-"""Sent once when context usage reaches the warning threshold."""
+"""Sent once when context usage reaches the warning threshold.
+
+It reports the state and nothing else.  Any mention of folding here, even as
+an option, makes a model fold on the spot: the note arrives with the usage of
+the turn before, often on the very request a booked pass is about to shrink,
+and the model's fold then rewrites the prompt head a second time.
+"""
+
+CONTEXT_USAGE_WARNING_MANUAL = (
+    "[Context Usage] NOTE: Context usage is high, and automatic compaction is turned off "
+    "for this agent: nothing frees context unless older turns are folded. "
+    "`list_compressed_contexts` shows the fold markers, `compress_context` with a marker_id "
+    "folds the turns up to it into a summary, and `recall_context` queries a compressed "
+    "block later."
+)
+"""The note where nothing compacts on its own: it says what frees context and leaves the decision with the model."""
 
 
 def context_usage_percent(usage: Mapping[str, Any], *, max_context_tokens: int) -> float:
@@ -46,9 +59,12 @@ def _total_tokens(usage: Mapping[str, Any]) -> int:
 class ContextWarningSource:
     """The context-usage warning one middleware offers, and whether it is armed."""
 
-    def __init__(self, *, max_context_tokens: int, warn_threshold_pct: float) -> None:
+    def __init__(
+        self, *, max_context_tokens: int, warn_threshold_pct: float, automatic_compaction: bool = True
+    ) -> None:
         self._max_context_tokens = max_context_tokens
         self._warn_threshold_pct = warn_threshold_pct
+        self._warning = CONTEXT_USAGE_WARNING if automatic_compaction else CONTEXT_USAGE_WARNING_MANUAL
         # Whether the next turn at or above the warning threshold warns: a
         # request carrying the warning disarms it, a turn below re-arms it.
         # A new middleware (rebuild, restart) warns again at most once.
@@ -67,7 +83,7 @@ class ContextWarningSource:
         if usage_pct < self._warn_threshold_pct * 100:
             self._armed = True
             return None
-        return CONTEXT_USAGE_WARNING if self._armed else None
+        return self._warning if self._armed else None
 
     def delivered(self, _messages: Sequence[Message]) -> None:
         """Request observer: a request carried the warning, which disarms it."""

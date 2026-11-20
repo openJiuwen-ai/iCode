@@ -23,7 +23,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -35,12 +35,14 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 from ._workflow_support import WorkflowEngine, switch_mode
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "retried"])
 async def test_resume_replays_node_progress_without_live_state_or_workflow_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     target = project / "input.txt"
     target.write_text("Archived tool result [literal]")
@@ -160,8 +162,9 @@ async def test_resume_replays_node_progress_without_live_state_or_workflow_sourc
                 await click_when_settled(pilot, "#workflow-attempt-1")
                 await wait_for(
                     lambda: (
-                        dialog.query_one(AgentTranscriptSurface) is not failed_surface
-                        and bool(dialog.query(AgentMessage))
+                        (current := dialog.query_one_optional(AgentTranscriptSurface)) is not None
+                        and current is not failed_surface
+                        and any(message.text == "Done" for message in current.query(AgentMessage))
                     ),
                     pilot=pilot,
                 )

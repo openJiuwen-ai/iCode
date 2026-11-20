@@ -40,6 +40,7 @@ from chrys.foundation.events.types import (
     SettingsReloaded,
     TodoListUpdated,
     UserInjectResult,
+    Warning,
 )
 from chrys.foundation.i18n import DisplayPath, Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
@@ -90,6 +91,20 @@ def test_approval_mode_updated_updates_state_header_and_notification() -> None:
     assert screen.header_approval_mode is ApprovalMode.AUTO
     assert notifications == [("Approval mode: AUTO", "Approval", "information", 2)]
     assert debug_log[-1] == ("ApprovalMode", "AUTO")
+
+
+async def test_startup_migration_uses_one_system_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    handler = make_backend_handler(SimpleNamespace())
+    messages = []
+
+    async def add_system(message: str) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr(handler._ui(), "add_system", add_system)
+    warning = Warning(code="workdir_data_migrated", message="Migrated working directory data.")
+    await handler.on_warning(warning)
+    await handler.on_warning(warning)
+    assert messages == [warning.message]
 
 
 def test_settings_reloaded_reprojects_notification_settings() -> None:
@@ -1223,3 +1238,31 @@ def test_todo_list_updated_sets_todo_state_and_debug_logs() -> None:
 
     assert screen.todo_state == TodoListState(items=tuple(items))
     assert ("TodoListUpdated", "1/3 done") in debug_calls
+
+
+@pytest.mark.parametrize("requeue", [False, True])
+async def test_consumed_injection_does_not_clear_a_draft_reclaimed_while_its_bubble_mounts(
+    monkeypatch: pytest.MonkeyPatch, requeue: bool
+) -> None:
+    from unittest.mock import create_autospec
+
+    from chrys.app.tui.widgets.chat.panel import ChatPanel
+
+    calls: list[object] = []
+    screen = _make_injection_outcome_screen(calls)
+    handler = make_backend_handler(screen)
+    pending = screen._state.pending_injection
+    pending.begin("old", "sent")
+    panel = screen.query_one(ChatPanel)
+    original = panel.add_user_message
+
+    async def reclaim(*args: object, **kwargs: object) -> None:
+        await original(*args, **kwargs)
+        pending.clear()
+        if requeue:
+            pending.begin("new", "new draft")
+
+    monkeypatch.setattr(panel, "add_user_message", create_autospec(original, side_effect=reclaim))
+    await handler.on_injection_outcome(UserInjectResult(text="sent", injection_id="old", consumed=True))
+    assert "unlock_and_clear" not in calls
+    assert pending.injection_id == ("new" if requeue else None)

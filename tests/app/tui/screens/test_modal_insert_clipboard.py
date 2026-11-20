@@ -42,7 +42,7 @@ def clipboard(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     state = {"text": "outside"}
     monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
     monkeypatch.setattr(
-        "chrys.app.tui.clipboard.platform_helpers.clipboard_copy",
+        "chrys.app.tui.clipboard.clipboard_copy",
         lambda text: state.__setitem__("text", text),
     )
     monkeypatch.setattr("chrys.app.tui.clipboard.platform_helpers.clipboard_paste", lambda: state["text"])

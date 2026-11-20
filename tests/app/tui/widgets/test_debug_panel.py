@@ -9,6 +9,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import Static
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.widgets.sidebar.debug import DebugPanel, _ClickableLog
 from chrys.foundation.config.settings import Settings
@@ -56,4 +57,5 @@ async def test_debug_log_click_copies_to_terminal_and_os_clipboards(monkeypatch:
         click_widget(log)
 
         assert pilot.app.clipboard == "plain event"
+        await wait_for_clipboard(pilot.app)
         assert copied == ["plain event"]

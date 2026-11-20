@@ -89,13 +89,9 @@ class _Recorder:
         self.notices: list[tuple[str, str]] = []
         self.open_error: OSError | None = None
         monkeypatch.setattr(session_title_dialog, "can_open_in_file_manager", lambda: can_open)
-        monkeypatch.setattr(session_title_dialog, "copy_text_to_clipboards", self._copy)
+        monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", self.copied.append)
         monkeypatch.setattr(session_title_dialog, "open_in_file_manager", self._open)
         monkeypatch.setattr(SessionTitleDialog, "notify", self._notify)
-
-    def _copy(self, _app: object, text: str) -> bool:
-        self.copied.append(text)
-        return True
 
     def _open(self, folder: Path) -> None:
         if self.open_error is not None:
@@ -134,7 +130,7 @@ async def test_identity_row_copies_the_short_session_id_and_keeps_the_dialog_ope
 
         assert rich_plain(dialog.query_one("#session-title-id", Static).render()) == "e9796bf52747"
         await click_when_settled(pilot, "#session-title-copy-id")
-        await wait_for(lambda: recorder.copied, pilot=pilot, description="session id copied")
+        await wait_for(lambda: recorder.notices, pilot=pilot, description="session id copy completed")
 
         assert recorder.copied == ["e9796bf52747"]
         assert recorder.notices == [("Session ID copied", "information")]

@@ -74,8 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
         "list",
         help="List the workflows found for the current directory",
         description="List the workflows found for the current directory: builtin templates, the user's global "
-        "directory, and the project's .chrys/workflows directory. A workflow is a .py file, or a folder holding a "
-        ".py file of the same name; a project workflow shadows a global one, which shadows a builtin.",
+        "directory, and the working directory's .chrys/workflows directory. A workflow is a .py file, or a folder holding a "
+        ".py file of the same name; a working directory workflow shadows a global one, which shadows a builtin.",
         add_help=False,
     )
     add_help_option(list_parser)
@@ -160,7 +160,7 @@ def _rows(catalog: WorkflowCatalog, discovery: Discovery) -> list[_WorkflowRow]:
 def _list_command(args: argparse.Namespace) -> int:
     prepared = headless.prepare_runtime()
     headless.write_pending_warnings(prepared, as_json=args.json)
-    catalog = WorkflowCatalog(config_dir=get_platform().config_dir, project_cwd=Path.cwd())
+    catalog = WorkflowCatalog(config_dir=get_platform().config_dir, workdir=Path.cwd())
     discovery = catalog.discover()
     for skipped in discovery.skipped:
         headless.write_warning(f"Skipped {skipped.path}: {skipped.reason}", as_json=args.json, code="workflow_skipped")

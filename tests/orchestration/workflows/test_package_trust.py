@@ -31,7 +31,7 @@ from chrys.service.workflows.interpreter import InterpreterError
 from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow_package,
@@ -63,7 +63,7 @@ async def test_a_confirmed_folder_runs_with_its_helpers_and_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow_package(project, "pkg", _entry(tmp_path / "loaded"), _helpers("hello"))
     host = make_host(tmp_path, project=project)
     try:
@@ -84,7 +84,7 @@ async def test_previews_and_runs_keep_bytecode_only_in_the_private_cache_of_the_
     monkeypatch.setattr(catalog_module, "worker_bytecode_cache_dir", worker_bytecode_cache_dir)
     monkeypatch.setattr(coordinator_module, "worker_bytecode_cache_dir", worker_bytecode_cache_dir)
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow_package(project, "pkg", _entry(tmp_path / "loaded"), _helpers("hello"))
     cache = get_platform().config_dir / "workflows" / ".pycache"
     host = make_host(tmp_path, project=project)
@@ -106,7 +106,7 @@ async def test_a_helper_edit_that_keeps_its_size_and_time_runs_once_confirmed_ag
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     entry = write_workflow_package(project, "pkg", _entry(tmp_path / "loaded"), _helpers("hello"))
     helper = entry.parent / "helpers.py"
     host = make_host(tmp_path, project=project)
@@ -128,10 +128,10 @@ async def test_a_helper_edit_that_keeps_its_size_and_time_runs_once_confirmed_ag
 
 
 async def test_a_helper_edited_after_confirmation_needs_a_new_confirmation(tmp_path: Path) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     marker = tmp_path / "loaded"
     entry = write_workflow_package(project, "pkg", _entry(marker), _helpers("hello"))
-    catalog = WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=project)
+    catalog = WorkflowCatalog(config_dir=tmp_path / "config", workdir=project)
     catalog.confirm(await catalog.preview("pkg", trust=True))
     marker.unlink()
     await catalog.preview("pkg")
@@ -148,7 +148,7 @@ async def test_admission_refuses_a_folder_changed_since_its_confirmation_before_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     marker = tmp_path / "loaded"
     entry = write_workflow_package(project, "pkg", _entry(marker), _helpers("hello"))
     host = make_host(tmp_path, project=project)
@@ -172,10 +172,10 @@ async def test_admission_refuses_a_folder_changed_since_its_confirmation_before_
 
 
 async def test_a_helper_edited_during_confirmation_cannot_be_authorized(tmp_path: Path) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     marker = tmp_path / "loaded"
     entry = write_workflow_package(project, "pkg", _entry(marker), _helpers("hello"))
-    catalog = WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=project)
+    catalog = WorkflowCatalog(config_dir=tmp_path / "config", workdir=project)
 
     async def approve(inspection: WorkflowInspection) -> bool:
         assert inspection.source.package is not None and inspection.source.package.file_count == 3

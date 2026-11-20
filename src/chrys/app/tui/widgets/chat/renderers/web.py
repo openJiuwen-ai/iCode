@@ -13,6 +13,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from chrys.app.tui.util.source_text import BIDI_AND_ZERO_WIDTH_CODEPOINTS
+from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.widgets.chat.tool_call import ToolCall
 from chrys.foundation.i18n.formatting import sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.net.url import normalize_url
@@ -64,4 +65,4 @@ class WebToolCall(ToolCall):
             summary.append(sanitize_legacy_scalar(url) + "\n", style=Style(link=url))
             summary.append(Text(sanitize_legacy_block(self._truncate_result(result))))
         with suppress(NoMatches):
-            self.query_one("#tc-body", Static).update(summary)
+            update_static_in_place(self.query_one("#tc-body", Static), summary)

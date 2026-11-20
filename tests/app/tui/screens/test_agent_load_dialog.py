@@ -14,7 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import LocaleController
-from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
+from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog, sub_agent_load_stage_message
 from chrys.app.tui.util.rich_style import rich_style_from_textual_color
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 from chrys.foundation.config.settings import Settings
@@ -41,6 +41,48 @@ def _message(dialog: AgentLoadDialog) -> str:
 
 def _line_text(dialog: AgentLoadDialog) -> list[str]:
     return _message(dialog).splitlines()
+
+
+@pytest.mark.asyncio
+async def test_child_stage_keeps_outer_progress_active_until_registration_finishes() -> None:
+    dialog = AgentLoadDialog(title="Loading", subtitle="Parent")
+
+    class TestApp(App):
+        def compose(self) -> ComposeResult:
+            yield Static("placeholder")
+
+    async with TestApp().run_test() as pilot:
+        await pilot.app.push_screen(dialog)
+        await wait_for(lambda: dialog.is_mounted, pilot=pilot, description="agent loading dialog mounted")
+        detail = sub_agent_load_stage_message("Explore", "mcp", "search", "done")
+        assert detail is not None
+        completed = dialog.update_progress(detail, phase="sub_agents", current=0, total=1, status="running")
+        assert completed is False
+        assert _line_text(dialog) == ["▸ Loading sub-agent Explore → Connected MCP server search: 0/1"]
+        assert dialog._progress_entries[0].status == "active"
+        detail = sub_agent_load_stage_message("Explore", "skills", "", "done")
+        assert detail is not None
+        assert dialog.update_progress(detail, phase="sub_agents", current=0, total=1, status="running") is False
+        assert _line_text(dialog) == ["▸ Loading sub-agent Explore → Skills loaded: 0/1"]
+        assert dialog.update_progress("Loaded sub-agent Explore", phase="sub_agents", current=1, total=1, status="done")
+        assert dialog._progress_entries[0].status == "done"
+        assert "Sub-agents loaded: 1/1" in _message(dialog)
+
+
+@pytest.mark.parametrize(
+    ("stage", "subject", "status", "expected"),
+    [
+        ("mcp", "search", "failed", "正在加载子智能体 Explore → MCP 服务器 search 连接失败"),
+        ("skills", "", "done", "正在加载子智能体 Explore → Skills 已加载"),
+    ],
+)
+def test_child_stage_localizes_chinese(stage: str, subject: str, status: str, expected: str) -> None:
+    controller = LocaleController(Settings(locale="zh-Hans"))
+    dialog = AgentLoadDialog(locale_controller=controller)
+    detail = sub_agent_load_stage_message("Explore", stage, subject, status)
+    assert detail is not None
+    dialog.update_progress(detail, phase="sub_agents", current=0, total=1, status="running")
+    assert dialog._message == expected
 
 
 @pytest.mark.asyncio

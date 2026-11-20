@@ -28,7 +28,8 @@ from chrys.foundation.trajectory.envelope import EventDraft
 from chrys.foundation.trajectory.event_types import EventType, RuntimeFinishReason
 from chrys.foundation.trajectory.writer import EmitResult
 from chrys.service.hooks.events import HookEvent
-from chrys.service.hooks.manager import HookManager
+from chrys.service.hooks.manager import HookManager, check_operation
+from chrys.service.hooks.operation import HookOperation
 from chrys.service.hooks.outbox import DONE, FAILED, OutboxJob
 from chrys.service.hooks.runner import HookResult
 from chrys.service.hooks.schema import (
@@ -50,7 +51,7 @@ from tests.support.trajectory_invariants import assert_trajectory_file_accounted
 from tests.support.waiting import wait_until
 
 
-def _file(*hooks: HookConfig, **settings_overrides: float | int) -> HooksFile:
+def _file(*hooks: HookConfig, **settings_overrides: float) -> HooksFile:
     return HooksFile(
         version=1,
         settings=HookSettings(**settings_overrides),
@@ -197,6 +198,227 @@ async def test_after_tool_block_action_ignored_but_extra_context_kept(hooks_dir:
 
 
 @pytest.mark.asyncio
+async def test_before_tool_extra_context_is_kept_without_blocking(hooks_dir: Path) -> None:
+    script = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"extra_context": "careful"}, f)
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="warn", event=HookEvent.BEFORE_TOOL_CALL, script=script)),
+        hooks_dir=hooks_dir,
+    )
+
+    decision = await mgr.fire(HookEvent.BEFORE_TOOL_CALL, {"tool": {"name": "read_file", "args": {}}})
+
+    assert decision.blocked is False
+    assert decision.extra_context == ["careful"]
+
+
+@pytest.mark.asyncio
+async def test_after_tool_hook_result_override_replaces_the_result_text(hooks_dir: Path) -> None:
+    script = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"result_override": "sanitised"}, f)
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="sanitise", event=HookEvent.AFTER_TOOL_CALL, script=script)),
+        hooks_dir=hooks_dir,
+    )
+
+    decision = await mgr.fire(HookEvent.AFTER_TOOL_CALL, {})
+
+    assert decision.result_override == "sanitised"
+    assert decision.extra_context == []
+
+
+@pytest.mark.asyncio
+async def test_the_last_result_override_wins(hooks_dir: Path) -> None:
+    first = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"result_override": "first"}, f)
+        """,
+    )
+    second = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"result_override": "second"}, f)
+        """,
+    )
+    mgr = HookManager(
+        file=_file(
+            _hook(hook_id="a", event=HookEvent.AFTER_TOOL_CALL, script=first),
+            _hook(hook_id="b", event=HookEvent.AFTER_TOOL_CALL, script=second),
+        ),
+        hooks_dir=hooks_dir,
+    )
+
+    decision = await mgr.fire(HookEvent.AFTER_TOOL_CALL, {})
+
+    assert decision.result_override == "second"
+
+
+@pytest.mark.asyncio
+async def test_a_later_result_override_hook_sees_the_text_the_earlier_one_produced(hooks_dir: Path) -> None:
+    """A chain of cleaners composes: each reads what the last one left, like an argument override.
+
+    Two guards run over the same tool result. The first strips one thing, the
+    second another; if the second still reads the original text it re-emits its
+    own view of the original and everything the first did is lost.
+    """
+    record = hooks_dir / "chain.jsonl"
+    first = textwrap.dedent(
+        f"""
+        import json, os
+        with open(os.environ["CHRYS_HOOK_PAYLOAD_FILE"], encoding="utf-8") as f:
+            seen = json.load(f)["result"]["text"]
+        with open(r"{record}", "a", encoding="utf-8") as f:
+            f.write(json.dumps({{"hook": "first", "saw": seen}}) + "\\n")
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as f:
+            json.dump({{"result_override": seen.replace("SECRET", "[redacted]")}}, f)
+        """,
+    )
+    second = textwrap.dedent(
+        f"""
+        import json, os
+        with open(os.environ["CHRYS_HOOK_PAYLOAD_FILE"], encoding="utf-8") as f:
+            seen = json.load(f)["result"]["text"]
+        with open(r"{record}", "a", encoding="utf-8") as f:
+            f.write(json.dumps({{"hook": "second", "saw": seen}}) + "\\n")
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as f:
+            json.dump({{"result_override": seen.replace("TOKEN", "[token]")}}, f)
+        """,
+    )
+    mgr = HookManager(
+        file=_file(
+            _hook(hook_id="a", event=HookEvent.AFTER_TOOL_CALL, script=first),
+            _hook(hook_id="b", event=HookEvent.AFTER_TOOL_CALL, script=second),
+        ),
+        hooks_dir=hooks_dir,
+    )
+
+    decision = await mgr.fire(HookEvent.AFTER_TOOL_CALL, {"result": {"text": "SECRET and TOKEN"}})
+
+    rows = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
+    by_hook = {row["hook"]: row["saw"] for row in rows}
+    assert by_hook["first"] == "SECRET and TOKEN"
+    # The second reads what the first left, not the original.
+    assert by_hook["second"] == "[redacted] and TOKEN"
+    # And both replacements survive in the text the model finally reads.
+    assert decision.result_override == "[redacted] and [token]"
+
+
+@pytest.mark.asyncio
+async def test_result_override_is_ignored_on_an_event_that_takes_none(hooks_dir: Path) -> None:
+    script = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"result_override": "sanitised"}, f)
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="sanitise", event=HookEvent.AFTER_TURN, script=script)),
+        hooks_dir=hooks_dir,
+    )
+
+    decision = await mgr.fire(HookEvent.AFTER_TURN, {})
+
+    assert decision.result_override is None
+
+
+async def test_gating_hook_payload_names_the_operation_and_counts_its_checks(hooks_dir: Path) -> None:
+    """A hook that keeps per-call state can tell a re-check from a new call by ``operation``."""
+    script = textwrap.dedent(
+        """
+        import json, os, sys
+        with open(os.environ["CHRYS_HOOK_PAYLOAD_FILE"], encoding="utf-8") as f:
+            payload = json.load(f)
+        with open(sys.argv[1], "a", encoding="utf-8") as out:
+            out.write(json.dumps(payload.get("operation")) + "\\n")
+        """,
+    )
+    seen = hooks_dir / "seen.jsonl"
+    mgr = HookManager(
+        file=_file(
+            _hook(
+                hook_id="probe",
+                event=HookEvent.BEFORE_TOOL_CALL,
+                argv=[sys.executable, "-c", script, str(seen)],
+            ),
+        ),
+        hooks_dir=hooks_dir,
+    )
+    operation = HookOperation(subject="tool", session_id="s1", tool_name="bash", arguments={"command": "ls"})
+
+    await check_operation(mgr, HookEvent.BEFORE_TOOL_CALL, operation, dict)
+    operation.replace_arguments({"command": "rm -rf build"})
+    await check_operation(mgr, HookEvent.BEFORE_TOOL_CALL, operation, dict)
+
+    rows = [json.loads(line) for line in seen.read_text(encoding="utf-8").splitlines()]
+    assert [row["check"] for row in rows] == [1, 2]
+    assert [row["revision"] for row in rows] == [1, 2]
+    assert rows[0]["id"] == rows[1]["id"] == operation.operation_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_a_later_blocking_hook_in_the_same_pass_sees_the_updated_revision(
+    hooks_dir: Path,
+) -> None:
+    """A modify from one hook commits a new version; the next hook reads the updated revision.
+
+    Without the per-hook refresh a second hook still sees the original revision while
+    reading the already-changed arguments, so a hook that de-duplicates by revision
+    would skip them.
+    """
+    seen_file = hooks_dir / "seen.jsonl"
+    record_script = textwrap.dedent(
+        """
+        import json, os, sys
+        with open(os.environ["CHRYS_HOOK_PAYLOAD_FILE"], encoding="utf-8") as f:
+            payload = json.load(f)
+        op = payload.get("operation") or {}
+        with open(sys.argv[1], "a", encoding="utf-8") as out:
+            out.write(json.dumps({"rev": op.get("revision")}) + "\\n")
+        """,
+    )
+    action_modify = "import json; json.dump({'action': 'modify', 'args_override': {'x': 'y'}}, open(os.environ['CHRYS_HOOK_RESULT'], 'w'))"
+    action_allow = "import json; json.dump({'action': 'allow'}, open(os.environ['CHRYS_HOOK_RESULT'], 'w'))"
+    mgr = HookManager(
+        file=_file(
+            _hook(
+                hook_id="change",
+                event=HookEvent.BEFORE_TOOL_CALL,
+                argv=[sys.executable, "-c", record_script + "\n" + action_modify, str(seen_file)],
+            ),
+            _hook(
+                hook_id="observe",
+                event=HookEvent.BEFORE_TOOL_CALL,
+                argv=[sys.executable, "-c", record_script + "\n" + action_allow, str(seen_file)],
+            ),
+        ),
+        hooks_dir=hooks_dir,
+    )
+    operation = HookOperation(subject="tool", session_id="s1", tool_name="bash", arguments={"x": 1})
+    decision = await mgr.fire(
+        HookEvent.BEFORE_TOOL_CALL,
+        {"tool": {"name": "bash", "args": {"x": 1}}, "session_id": "s1", "cwd": "/"},
+        operation=operation,
+    )
+    assert not decision.blocked
+    revs = [json.loads(line)["rev"] for line in seen_file.read_text().strip().splitlines()]
+    assert revs == [1, 2], f"expected revisions [1, 2], got {revs}"
+
+
 async def test_blocking_hook_modify_action(hooks_dir: Path) -> None:
     script = textwrap.dedent(
         """
@@ -349,6 +571,87 @@ async def test_failed_blocking_hook_ignores_decision_file_when_on_error_warn(hoo
         hooks_dir=hooks_dir,
     )
     decision = await mgr.fire(HookEvent.BEFORE_TOOL_CALL, {})
+    assert decision.blocked is False
+
+
+@pytest.mark.asyncio
+async def test_gating_hook_with_an_invalid_result_file_counts_as_failed(hooks_dir: Path) -> None:
+    """Exit code 0 and a broken result file: the hook meant to decide the call, so on_error decides."""
+    script = textwrap.dedent(
+        """
+        import os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            f.write("{not json")
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="broken", event=HookEvent.BEFORE_TOOL_CALL, script=script, on_error="block")),
+        hooks_dir=hooks_dir,
+    )
+
+    decision = await mgr.fire(HookEvent.BEFORE_TOOL_CALL, {})
+
+    assert decision.blocked is True
+    assert "invalid_result_file" in decision.block_reason
+
+
+@pytest.mark.asyncio
+async def test_gating_hook_with_an_unknown_action_counts_as_failed(hooks_dir: Path) -> None:
+    script = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"action": "deny", "reason": "typo of block"}, f)
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="typo", event=HookEvent.BEFORE_TOOL_CALL, script=script, on_error="block")),
+        hooks_dir=hooks_dir,
+    )
+
+    decision = await mgr.fire(HookEvent.BEFORE_TOOL_CALL, {})
+
+    assert decision.blocked is True
+    assert "unknown_action" in decision.block_reason
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_result_file_follows_on_error_warn(hooks_dir: Path) -> None:
+    """Without on_error=block the operation goes on, as for any other failed hook."""
+    script = textwrap.dedent(
+        """
+        import os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            f.write("{not json")
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="broken", event=HookEvent.BEFORE_TOOL_CALL, script=script)),
+        hooks_dir=hooks_dir,
+    )
+
+    decision = await mgr.fire(HookEvent.BEFORE_TOOL_CALL, {})
+
+    assert decision.blocked is False
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_result_file_on_a_non_gating_event_is_no_decision(hooks_dir: Path) -> None:
+    """after_tool_call cannot stop anything: an invalid file there stays a logged warning."""
+    script = textwrap.dedent(
+        """
+        import os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            f.write("{not json")
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="broken", event=HookEvent.AFTER_TOOL_CALL, script=script, on_error="block")),
+        hooks_dir=hooks_dir,
+    )
+
+    decision = await mgr.fire(HookEvent.AFTER_TOOL_CALL, {})
+
     assert decision.blocked is False
 
 
@@ -615,9 +918,9 @@ async def test_a_durable_hook_is_committed_before_its_span_is_written(hooks_dir:
 
 
 @pytest.mark.asyncio
-async def test_durable_project_hook_persists_source_path(hooks_dir: Path) -> None:
+async def test_durable_workdir_hook_persists_source_path(hooks_dir: Path) -> None:
     source = "/project-a/.chrys/hooks/hooks.yaml"
-    project_hook = _hook(
+    workdir_hook = _hook(
         hook_id="project-durable",
         event=HookEvent.AFTER_TURN,
         mode="async",
@@ -626,8 +929,8 @@ async def test_durable_project_hook_persists_source_path(hooks_dir: Path) -> Non
     )
     mgr = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source=source),
-            hooks=[project_hook],
+            workdir=HooksFile(hooks=[workdir_hook], source=source),
+            hooks=[workdir_hook],
             settings=HookSettings(outbox_retry_age_seconds=0.0),
         ),
         hooks_dir=hooks_dir,
@@ -639,7 +942,7 @@ async def test_durable_project_hook_persists_source_path(hooks_dir: Path) -> Non
         pending_files = list((hooks_dir / "outbox" / "pending").glob("*.json"))
         assert len(pending_files) == 1
         data = json.loads(pending_files[0].read_text(encoding="utf-8"))
-        assert data["hook_source"] == "project"
+        assert data["hook_source"] == "workdir"
         assert data["hook_source_path"] == source
     finally:
         mgr._sem.release()
@@ -1173,6 +1476,29 @@ async def test_durable_async_cancel_stays_pending_for_retry(hooks_dir: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_queued_outbox_retry_skips_a_job_completed_before_acquiring_its_slot(hooks_dir, monkeypatch):
+    hook = _hook(hook_id="archive", event=HookEvent.AFTER_TURN, mode="async", delivery="durable")
+    mgr = HookManager(file=_file(hook, outbox_retry_age_seconds=0.0, max_parallel_hooks=1), hooks_dir=hooks_dir)
+    job = mgr._outbox.write_pending(hook_id=hook.id, event=str(hook.event), payload={})
+    executed = []
+
+    async def run_and_wait(*args, **kwargs):
+        executed.append(hook.id)
+        return HookResult(hook_id=hook.id, exit_code=0)
+
+    monkeypatch.setattr(mgr._runner, "run_and_wait", run_and_wait)
+    async with mgr._sem:
+        assert await mgr.recover_outbox() == 1
+        mgr._outbox.mark_done(job, exit_code=0)
+    await mgr.drain_session()
+
+    assert executed == []
+    terminal = mgr._outbox.root / DONE / f"{job.job_id}.json"
+    assert json.loads(terminal.read_bytes())["retries"] == 0
+    assert not list((mgr._outbox.root / "pending").glob("*.json"))
+
+
+@pytest.mark.asyncio
 async def test_recover_outbox_force_fails_over_retry_cap(hooks_dir: Path) -> None:
     # Pre-create a pending job with retries >= cap by hand.
     from chrys.service.hooks.outbox import Outbox
@@ -1193,13 +1519,13 @@ async def test_recover_outbox_force_fails_over_retry_cap(hooks_dir: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_recover_outbox_uses_source_marker_for_duplicate_project_global_ids(hooks_dir: Path) -> None:
-    project_hook = _hook(
+async def test_recover_outbox_uses_source_marker_for_duplicate_workdir_global_ids(hooks_dir: Path) -> None:
+    workdir_hook = _hook(
         hook_id="dup",
         event=HookEvent.AFTER_TURN,
         mode="async",
         delivery="durable",
-        argv=["project"],
+        argv=["workdir"],
     )
     global_hook = _hook(
         hook_id="dup",
@@ -1210,9 +1536,9 @@ async def test_recover_outbox_uses_source_marker_for_duplicate_project_global_id
     )
     mgr = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source="/project/.chrys/hooks/hooks.yaml"),
+            workdir=HooksFile(hooks=[workdir_hook], source="/project/.chrys/hooks/hooks.yaml"),
             global_=HooksFile(hooks=[global_hook], source="/config/hooks/hooks.yaml"),
-            hooks=[project_hook, global_hook],
+            hooks=[workdir_hook, global_hook],
             settings=HookSettings(outbox_retry_age_seconds=0.0),
         ),
         hooks_dir=hooks_dir,
@@ -1221,7 +1547,7 @@ async def test_recover_outbox_uses_source_marker_for_duplicate_project_global_id
         hook_id="dup",
         event=str(HookEvent.AFTER_TURN),
         payload={"event": str(HookEvent.AFTER_TURN)},
-        hook_source="project",
+        hook_source="workdir",
         hook_source_path="/project/.chrys/hooks/hooks.yaml",
     )
     retried: list[str] = []
@@ -1241,14 +1567,14 @@ async def test_recover_outbox_uses_source_marker_for_duplicate_project_global_id
     queued = await mgr.recover_outbox()
 
     assert queued == 1
-    assert retried == ["project"]
+    assert retried == ["workdir"]
 
 
 @pytest.mark.asyncio
-async def test_recover_outbox_rejects_project_job_from_different_source_path(hooks_dir: Path) -> None:
+async def test_recover_outbox_rejects_workdir_job_from_different_source_path(hooks_dir: Path) -> None:
     active_source = "/project-b/.chrys/hooks/hooks.yaml"
     stale_source = "/project-a/.chrys/hooks/hooks.yaml"
-    project_hook = _hook(
+    workdir_hook = _hook(
         hook_id="same-id",
         event=HookEvent.AFTER_TURN,
         mode="async",
@@ -1257,8 +1583,8 @@ async def test_recover_outbox_rejects_project_job_from_different_source_path(hoo
     )
     mgr = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source=active_source),
-            hooks=[project_hook],
+            workdir=HooksFile(hooks=[workdir_hook], source=active_source),
+            hooks=[workdir_hook],
             settings=HookSettings(outbox_retry_age_seconds=0.0),
         ),
         hooks_dir=hooks_dir,
@@ -1267,7 +1593,7 @@ async def test_recover_outbox_rejects_project_job_from_different_source_path(hoo
         hook_id="same-id",
         event=str(HookEvent.AFTER_TURN),
         payload={"event": str(HookEvent.AFTER_TURN)},
-        hook_source="project",
+        hook_source="workdir",
         hook_source_path=stale_source,
     )
     retried: list[str] = []
@@ -1296,7 +1622,7 @@ async def test_recover_outbox_rejects_project_job_from_different_source_path(hoo
 
 @pytest.mark.asyncio
 async def test_recover_outbox_fails_ambiguous_legacy_duplicate_id(hooks_dir: Path) -> None:
-    project_hook = _hook(
+    workdir_hook = _hook(
         hook_id="dup",
         event=HookEvent.AFTER_TURN,
         mode="async",
@@ -1310,9 +1636,9 @@ async def test_recover_outbox_fails_ambiguous_legacy_duplicate_id(hooks_dir: Pat
     )
     mgr = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source="/project/.chrys/hooks/hooks.yaml"),
+            workdir=HooksFile(hooks=[workdir_hook], source="/project/.chrys/hooks/hooks.yaml"),
             global_=HooksFile(hooks=[global_hook], source="/config/hooks/hooks.yaml"),
-            hooks=[project_hook, global_hook],
+            hooks=[workdir_hook, global_hook],
             settings=HookSettings(outbox_retry_age_seconds=0.0),
         ),
         hooks_dir=hooks_dir,
@@ -1403,3 +1729,109 @@ async def test_async_hook_cancelled_while_queued_still_closes_its_span(hooks_dir
 
     finished = sink.only(EventType.HOOK_OPERATION_FINISHED)
     assert finished.payload["outcome"] == HookOutcome.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_a_hook_may_name_action_warn_and_keep_its_text(hooks_dir: Path) -> None:
+    """``warn`` means "let it through, and tell the model"; it is not an unknown action.
+
+    A hook that writes ``{"action": "warn", "extra_context": ...}`` on a gating
+    event used to be counted as failed, so the text was dropped under the default
+    ``on_error`` and the call refused under ``on_error: block`` -- the opposite of
+    what the hook said.
+    """
+    script = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"action": "warn", "extra_context": "this package looks like a typo"}, f)
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="warn", event=HookEvent.BEFORE_TOOL_CALL, script=script)),
+        hooks_dir=hooks_dir,
+    )
+    operation = HookOperation(subject="tool", session_id="s1", tool_name="bash", arguments={"command": "ls"})
+
+    decision = await check_operation(mgr, HookEvent.BEFORE_TOOL_CALL, operation, dict)
+
+    assert decision.blocked is False
+    assert decision.invalidated is False
+    assert decision.extra_context == ["this package looks like a typo"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_action_is_still_an_unusable_result(hooks_dir: Path) -> None:
+    """A name iCode does not know stays a failed hook; only ``warn`` was added.
+
+    What it does not do is take the rest of the file with it: the action alone
+    is unreadable, so the call goes ahead and the context beside it still arrives.
+    """
+    script = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"action": "continue", "extra_context": "kept"}, f)
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="typo", event=HookEvent.BEFORE_TOOL_CALL, script=script)),
+        hooks_dir=hooks_dir,
+    )
+    operation = HookOperation(subject="tool", session_id="s1", tool_name="bash", arguments={"command": "ls"})
+
+    decision = await check_operation(mgr, HookEvent.BEFORE_TOOL_CALL, operation, dict)
+
+    # on_error defaults to warn: the call runs, and the text the hook wrote comes with it.
+    assert decision.blocked is False
+    assert decision.extra_context == ["kept"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_action_does_not_discard_the_rest_of_the_result_file(hooks_dir: Path) -> None:
+    """An action iCode cannot read says nothing about the fields beside it.
+
+    A hook written against an older or newer list of actions still means its
+    ``system_reminder``: dropping the whole file would take away a decision an
+    existing hook made, which an additive change must not do.
+    """
+    script = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"action": "continue", "system_reminder": "remember this"}, f)
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="old", event=HookEvent.USER_PROMPT_SUBMIT, script=script)),
+        hooks_dir=hooks_dir,
+    )
+    operation = HookOperation(subject="input", session_id="s1", input_text="hi")
+
+    decision = await check_operation(mgr, HookEvent.USER_PROMPT_SUBMIT, operation, dict)
+
+    # The call goes ahead and the reminder the hook wrote still reaches the model.
+    assert decision.blocked is False
+    assert decision.system_reminders == ["remember this"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_result_file_still_discards_the_whole_file(hooks_dir: Path) -> None:
+    """Not JSON: nothing in it can be attributed to the hook, so nothing is taken."""
+    script = textwrap.dedent(
+        """
+        import os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            f.write('{"system_reminder": "half a fi')
+        """,
+    )
+    mgr = HookManager(
+        file=_file(_hook(hook_id="broken", event=HookEvent.USER_PROMPT_SUBMIT, script=script)),
+        hooks_dir=hooks_dir,
+    )
+    operation = HookOperation(subject="input", session_id="s1", input_text="hi")
+
+    decision = await check_operation(mgr, HookEvent.USER_PROMPT_SUBMIT, operation, dict)
+
+    assert decision.blocked is False
+    assert decision.system_reminders == []

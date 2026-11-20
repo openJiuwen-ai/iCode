@@ -13,7 +13,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.widget import Widget
 
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
 
@@ -150,8 +150,15 @@ class WelcomeWidget(Widget):
 
     def action_copy_text(self, text: str) -> None:
         """``@click`` target of :func:`copy_on_click`."""
-        copy_text_to_clipboards(self.app, text)
-        self.notify(text, title=render_str(widget_localizer(self), COPIED_TITLE.bind()), timeout=2, markup=False)
+        dispatched = copy_text_to_clipboards(self.app, text)
+        notify_after_copy(
+            self,
+            text,
+            dispatched=dispatched,
+            title=render_str(widget_localizer(self), COPIED_TITLE.bind()),
+            timeout=2,
+            markup=False,
+        )
 
     def _notice_lines(self, width: int) -> tuple[Text, ...]:
         if self._notice is None or width <= 0:

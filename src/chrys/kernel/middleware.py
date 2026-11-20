@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, TypeIs, cast
 
+from ._content import Content
 from ._types import ResponseStream
 from .client import SupportsAclose, _PreparedRequestObserverClient
 
@@ -58,6 +59,17 @@ class MiddlewareTermination(Exception):
     def __init__(self, message: str = "Middleware terminated execution.", *, result: Any = None) -> None:
         super().__init__(message)
         self.result = result
+        self.prebuilt_result_exposed = False
+
+    def expose_tool_result(self, context: FunctionInvocationContext) -> None:
+        """Let outer result hooks review the same payload the tool loop will consume."""
+        if context.result is not None:
+            return
+        if isinstance(self.result, Content):
+            self.prebuilt_result_exposed = True
+            context.result = self.result.items if self.result.items is not None else self.result.result
+        else:
+            context.result = self.result
 
 
 class FunctionInvocationContext:
@@ -394,30 +406,41 @@ class FunctionMiddlewarePipeline:
         self,
         context: FunctionInvocationContext,
         final_handler: Callable[[FunctionInvocationContext], Awaitable[Any]],
+        *,
+        on_error: Callable[[Exception], None] | None = None,
     ) -> Any:
         if not self._middleware:
             # With no middleware to observe context.result, the fast path
             # deliberately returns the raw result without populating that field.
             return await final_handler(context)
 
+        reported_error: Exception | None = None
+
         def create_next_handler(index: int) -> Callable[[], Awaitable[None]]:
-            if index >= len(self._middleware):
-
-                async def final_wrapper() -> None:
-                    context.result = final_handler(context)
-                    if inspect.isawaitable(context.result):
-                        context.result = await context.result
-
-                return final_wrapper
-
             async def current_handler() -> None:
-                await self._middleware[index].process(context, create_next_handler(index + 1))
+                nonlocal reported_error
+                try:
+                    if index == len(self._middleware):
+                        raw = final_handler(context)
+                        context.result = (await raw) if inspect.isawaitable(raw) else raw
+                    else:
+                        await self._middleware[index].process(context, create_next_handler(index + 1))
+                except MiddlewareTermination:
+                    raise
+                except Exception as exc:
+                    if on_error is not None and exc is not reported_error:
+                        reported_error = exc
+                        on_error(exc)
+                    raise
 
             return current_handler
 
-        # Function termination propagates so the tool loop can stop.
-        await create_next_handler(0)()
-        return context.result
+        try:
+            await create_next_handler(0)()
+            return context.result
+        finally:
+            # A reported exception owns its traceback, including these frames.
+            reported_error = None
 
 
 class MiddlewareSplit(NamedTuple):

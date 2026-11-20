@@ -43,7 +43,7 @@ async def test_preview_resolves_target_project_fallback_without_chat_overrides(
         )
     monkeypatch.delenv("CHRYS_MODEL_PROFILE", raising=False)
     freeze_process_env()
-    startup = load_settings(project_root=tmp_path / "chat")
+    startup = load_settings(workdir=tmp_path / "chat")
     handle = SettingsHandle(startup)
     handle.override(model_profile="chat", model_profile_override="chat", model_profile_override_sub_agents=True)
     agents, models = AgentProfileRegistry(), ModelProfileRegistry()

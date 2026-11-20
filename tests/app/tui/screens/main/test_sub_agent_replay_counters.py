@@ -12,6 +12,7 @@ import pytest
 import chrys.orchestration.engine.build.builder as builder_module
 import chrys.orchestration.sub_agents.tools as sub_agent_module
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
@@ -35,6 +36,7 @@ from chrys.service.state.store import JsonFileStateStore
 from tests.support.engines import AgentEngineFactory
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
 from tests.support.tui_app_harness import make_chrys_app
+from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
 
 pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
@@ -159,6 +161,8 @@ async def test_restored_sub_agent_cards_show_their_context_and_spend(
             description="session restored",
         )
         await main.query_one(ChatPanel).wait_replay_complete()
+        # The turn's steps fold behind its process row: open it to reach the cards.
+        await click_when_settled(pilot, main.query_one(ProcessBlock))
         for group in main.query(ToolGroup):
             group.collapsed = False
         await wait_for(

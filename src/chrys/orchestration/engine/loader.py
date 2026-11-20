@@ -10,7 +10,7 @@ import copy
 import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.errors import ConfigError
@@ -113,7 +113,7 @@ def _workspace_signature(workspace: Workspace | None) -> tuple[str, tuple[str, .
 
 
 def _workspace_primary_cwd(workspace: Workspace | None) -> str:
-    """Return the workspace primary cwd used for project-scoped config."""
+    """Return the workspace primary cwd used for directory-scoped settings."""
     return workspace.primary_cwd if workspace is not None else ""
 
 
@@ -165,6 +165,21 @@ def _preserved_history_state(raw: dict | None) -> dict | None:
     objects. Falsy/empty history returns ``None`` — no carryover to preserve.
     """
     return copy.deepcopy(raw) if raw else None
+
+
+SESSION_START_OPERATIONS: Final = frozenset({"startup", "new_session", "reset"})
+"""The loads that start a session, as opposed to replacing one under it.
+
+A restore is not one of them: ``session_restored`` already says the session came
+back, and firing ``session_start`` too would change what an existing hook sees
+then, including a rollback to an earlier turn. Profile switches and rebuilds are
+not either: the session was already running.
+"""
+
+
+def fires_session_start(operation: str) -> bool:
+    """Whether a load of *operation* starts a session, so its hooks fire."""
+    return operation in SESSION_START_OPERATIONS
 
 
 class AgentLoader:
@@ -265,12 +280,12 @@ class AgentLoader:
         old_hook_manager = self._session.hook_manager
         hook_manager = old_hook_manager
         if old_hook_manager is None or operation == "workspace_change":
-            # Project hooks are primary-cwd scoped, so the candidate is built for
+            # Working directory hooks are scoped to the primary cwd, so the candidate is built for
             # the root the staged workspace would install, not the live one.
             build_settings = (staged_loaded if staged_loaded is not None else self._settings_handle.base).settings
             hook_manager = await self.build_hook_manager(
-                project_root=_workspace_primary_cwd(workspace),
-                project_hooks_enabled=build_settings.project_hooks_enabled,
+                workdir=_workspace_primary_cwd(workspace),
+                workdir_hooks_enabled=build_settings.workdir_hooks_enabled,
             )
         return hook_manager
 
@@ -326,12 +341,12 @@ class AgentLoader:
         )
 
     async def build_hook_manager(
-        self, *, project_root: str, project_hooks_enabled: bool, session_id: str | None = None
+        self, *, workdir: str, workdir_hooks_enabled: bool, session_id: str | None = None
     ) -> HookManager | None:
         resolved_session_id = session_id or self._session.session_id
         manager = await SessionHookFactory(self._bus, confirmations=self._hook_confirmations)(
-            project_root=project_root,
-            project_hooks_enabled=project_hooks_enabled,
+            workdir=workdir,
+            workdir_hooks_enabled=workdir_hooks_enabled,
             session_id=resolved_session_id,
         )
         # Every main-session manager reports to the TUI; workflow managers are
@@ -557,7 +572,11 @@ class AgentLoader:
         # blocking hook still runs inline at this post-ready boundary.
         # Profile-switch/rebuild operations skip this so users don't see a
         # hook fire every time the same session reloads infrastructure.
-        if self._session.hook_manager is not None and operation in {"startup", "new_session", "reset"}:
+        # A restore does not fire it: ``session_restored`` already tells a hook
+        # the session came back, and firing this too would change what an
+        # existing ``session_start`` hook sees on a restore, including a
+        # rollback to an earlier turn.
+        if self._session.hook_manager is not None and fires_session_start(operation):
             from chrys.service.hooks.events import HookEvent
 
             await self._session.hook_manager.fire(
@@ -578,6 +597,9 @@ class AgentLoader:
         status: str = "",
         subject: str = "",
         detail: str = "",
+        stage: str = "",
+        stage_subject: str = "",
+        stage_status: str = "",
     ) -> None:
         """Publish an agent load progress event."""
         await self._bus.publish(
@@ -591,6 +613,9 @@ class AgentLoader:
                 status=status,
                 subject=subject,
                 detail=detail,
+                stage=stage,
+                stage_subject=stage_subject,
+                stage_status=stage_status,
                 session_id=self._session.session_id,
             ),
         )
@@ -657,12 +682,12 @@ class AgentLoader:
         staged_hook_manager = old_hook_manager
         new_loaded = staged_loaded if staged_loaded is not None else self._settings_handle.base
         resources = self._permits.staged_reload_resources()
-        # Project hooks are primary-cwd scoped and gated by ``project.hooks_enabled``:
+        # Working directory hooks are scoped to the primary cwd and gated by ``workdir.hooks_enabled``:
         # a new primary cwd or a flipped gate rebuilds the manager for the root
         # the build is about to install (the live one when the workspace stays).
         reload_hook_manager = (
             workspace is not None and _workspace_primary_cwd(old_workspace) != _workspace_primary_cwd(workspace)
-        ) or new_loaded.settings.project_hooks_enabled != self._settings_handle.base.settings.project_hooks_enabled
+        ) or new_loaded.settings.workdir_hooks_enabled != self._settings_handle.base.settings.workdir_hooks_enabled
         hook_manager_root = _workspace_primary_cwd(workspace if workspace is not None else old_workspace)
         hook_manager_replacement_committed = False
 
@@ -724,8 +749,8 @@ class AgentLoader:
                 self._mcp_cache.begin_refresh()
             elif reload_hook_manager:
                 staged_hook_manager = await self.build_hook_manager(
-                    project_root=hook_manager_root,
-                    project_hooks_enabled=new_loaded.settings.project_hooks_enabled,
+                    workdir=hook_manager_root,
+                    workdir_hooks_enabled=new_loaded.settings.workdir_hooks_enabled,
                 )
 
             staged = self.stage(

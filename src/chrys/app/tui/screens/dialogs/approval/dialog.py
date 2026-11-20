@@ -78,9 +78,11 @@ _DECLINE = msg("tui.approval.button.decline", fallback="Decline (N)")
 _REASON_TITLE = msg("tui.approval.reason_title", fallback="Add a decline reason")
 _REUSE_TITLE = msg("tui.approval.reuse.title", fallback="Remember Approval")
 _REUSE_SESSION = msg("tui.approval.reuse.session", fallback="This session")
-_REUSE_PROJECT = msg("tui.approval.reuse.project", fallback="This project")
+_REUSE_WORKDIR = msg("tui.approval.reuse.workdir", fallback="This working directory")
 _REUSE_SESSION_HINT = msg("tui.approval.reuse.session_hint", fallback="Also applies when you restore this session.")
-_REUSE_PROJECT_HINT = msg("tui.approval.reuse.project_hint", fallback="Also applies in other sessions in this project.")
+_REUSE_WORKDIR_HINT = msg(
+    "tui.approval.reuse.workdir_hint", fallback="Also applies in other sessions in this working directory."
+)
 _REUSE_FILES = msg(
     "tui.approval.reuse.files",
     fallback="Don't ask again to modify these files",
@@ -367,9 +369,9 @@ class ApprovalDialog(
                         tooltip=render_str(localizer, _REUSE_SESSION_HINT.bind()),
                     )
                     yield _ApprovalRadioButton(
-                        Text(render_str(localizer, _REUSE_PROJECT.bind())),
-                        id="reuse-project",
-                        tooltip=render_str(localizer, _REUSE_PROJECT_HINT.bind()),
+                        Text(render_str(localizer, _REUSE_WORKDIR.bind())),
+                        id="reuse-workdir",
+                        tooltip=render_str(localizer, _REUSE_WORKDIR_HINT.bind()),
                     )
                 if offer.prefix:
                     with Collapsible(title=render_str(localizer, _REUSE_ADVANCED.bind()), id="reuse-advanced"):
@@ -401,8 +403,8 @@ class ApprovalDialog(
         session = self.query_one("#reuse-session", RadioButton).value
         prefix = offer.prefix and self.query_one("#reuse-extra-args", Checkbox).value
         if prefix:
-            return "PREFIX_SESSION" if session else "PREFIX_PROJECT"
-        return "EXACT_SESSION" if session else "EXACT_PROJECT"
+            return "PREFIX_SESSION" if session else "PREFIX_WORKDIR"
+        return "EXACT_SESSION" if session else "EXACT_WORKDIR"
 
     def _novel_remote_title(self) -> str:
         """Remote-chosen title, only when it adds information beyond the body.

@@ -42,73 +42,30 @@ from chrys.service.skills.runner import SubprocessScriptRunner
 if TYPE_CHECKING:
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.service.profiles.agents.schema import SkillConfig, SkillsConfig
+    from chrys.service.skills.discovery import SkillDiscoveryScope
 
 logger = logging.getLogger(__name__)
 
 
 SKILLS_STATIC_PROMPT = """\
-You have access to skills — packaged domain expertise with instructions, \
-reference resources, and executable scripts.
+## Skills
+The runtime catalog in a system reminder lists available skills and revisions.
+Use a skill when requested or when its description fits; choose the most specific.
+Call `load_skill` before using its resources or scripts. Do not reload unchanged
+skills unless requested; check the current catalog for revisions.
 
-Skills use progressive disclosure: the current runtime skill catalog is appended \
-to the latest user message in a system reminder. That catalog shows names, \
-descriptions, revisions, and file-based skill directories when available. Full \
-content is loaded on demand via skill tools.
-
-## Using skills
-
-1. **Match**: When a task aligns with a skill's description, or the user \
-explicitly requests one, proceed to step 2. If multiple skills match, choose \
-the most specific. If none apply, proceed normally without loading any skill.
-
-2. **Load**: Call `load_skill` with the skill name to retrieve full \
-instructions. The response may list resources and scripts available for that \
-skill. Do not re-load a skill already loaded in this conversation unless the \
-latest runtime catalog shows a changed skill or the user asks you to refresh it.
-
-3. **Follow**: Execute the loaded instructions. When they reference \
-supporting material:
-   - Call `read_skill_resource` to read any referenced resource.
+Use `read_skill_resource` for references and `run_skill_script` for scripts,
+not file or shell tools. Preserve names and directory prefixes exactly:
+- `skill_name`: "style-guide", not "style-guide.md".
+- `resource_name`: "references/FAQ.md", not "FAQ.md".
 {runner_instructions}
-   - Pass exact ordered script tokens via the `arguments` array \
-(e.g. `arguments: ["input.txt", "output.txt"]`). Use `arguments` for \
-subcommands, short flags, repeated flags, global flags before a subcommand, \
-and `--` passthrough. Use `args` only as optional sugar for flat, \
-order-insensitive CLI flags.
-
-## Parameter naming
-
-Use names exactly as listed — preserve directory prefixes, do not append \
-file extensions to skill names:
-- `skill_name`: e.g. `"style-guide"` (not `"style-guide.md"`)
-- `resource_name`: e.g. `"references/FAQ.md"` (not `"FAQ.md"`)
-- `script_name`: e.g. `"scripts/convert.py"` (not `"convert.py"`)
-  File-based script names are paths relative to the skill directory, using \
-forward slashes on every platform. A script stored at \
-`<skill_dir>/scripts/{{skill_script_name}}.py` must be invoked with \
-`script_name: "scripts/{{skill_script_name}}.py"`, not \
-`"{{skill_script_name}}.py"`.
-
 ## Constraints
-
-- Always call `load_skill` before accessing a skill's resources or scripts.
-- Only use skill tools to interact with skill content — do not use \
-file-read or shell tools to access skill files directly.
-- Always execute skill scripts via `run_skill_script`. Never run them \
-through shell/bash/zsh/pwsh/powershell tools (e.g. `bash scripts/convert.py`, \
-`python scripts/convert.py`, `./scripts/convert.py`) — the skill runner \
-handles skill-path validation, interpreter selection, timeouts, approval, \
-and provenance consistently. The runner is not a security sandbox: scripts \
-retain the user's normal file, network, and process privileges and inherit \
-most of the iCode process environment. Use executable skills only from \
-sources you trust.
-- Do not verify script file existence before calling `run_skill_script`; \
-the skill system resolves paths internally.
-- Scripts run in the user's primary working directory by default. \
-When the catalog lists a `skill_dir` for a skill, it is an absolute path for \
-the current platform. Use it to build an absolute `cwd` or argument when the \
-skill needs paths relative to its package. Override via the `cwd` parameter \
-only when needed, and pass an absolute path (relative paths are rejected).
+Do not probe script existence; the runner resolves and validates paths and handles
+interpreters, timeouts, approval, and provenance. It is not a security sandbox:
+scripts retain the user's file/network/process privileges and most environment
+variables. Run executable skills only from trusted sources.
+Scripts default to the primary workspace. For package-relative paths, use the
+catalog's absolute skill_dir; an explicit cwd must be absolute.
 """
 
 
@@ -241,9 +198,9 @@ def _is_absolute_config_path(raw: str) -> bool:
 
 
 def _collect_skill_paths(
-    config: SkillsConfig, runtime: SessionEnvironment | None = None, *, project_skills_enabled: bool = False
+    config: SkillsConfig, runtime: SessionEnvironment | None = None, *, workdir_skills_enabled: bool = False
 ) -> list[str]:
-    """Merge profile skill paths with the default user/project skills directories.
+    """Merge profile skill paths with the default user/working directory skills directories.
 
     Three auto-loaded locations:
 
@@ -253,7 +210,7 @@ def _collect_skill_paths(
       is True.  This is a shared cross-tool skills directory opt-in per
       profile (default: True).
     * ``<runtime.cwd>/.agents/skills/`` — included when ``runtime`` is provided,
-      the user's ``project.skills_enabled`` setting (*project_skills_enabled*)
+      the user's ``workdir.skills_enabled`` setting (*workdir_skills_enabled*)
       is on AND ``config.auto_load_cwd_agents_skills`` is True.  Reloaded
       automatically when the workspace cwd changes because the agent is rebuilt
       with a fresh ``SessionEnvironment``.
@@ -284,11 +241,11 @@ def _collect_skill_paths(
         shared_dir = user_agents_dir() / "skills"
         append_unique(str(shared_dir.expanduser().resolve()))
 
-    # Project trust (default off), then the profile opt-in (default on):
+    # Working directory trust (default off), then the profile opt-in (default on):
     # <cwd>/.agents/skills/.  Tied to the agent's SessionEnvironment (not
     # os.getcwd()) so it follows the workspace through soft-restarts triggered
     # by /chdir or the file picker.
-    if runtime is not None and project_skills_enabled and config.auto_load_cwd_agents_skills and runtime.cwd:
+    if runtime is not None and workdir_skills_enabled and config.auto_load_cwd_agents_skills and runtime.cwd:
         cwd_dir = Path(runtime.cwd) / ".agents" / "skills"
         append_unique(str(cwd_dir.expanduser().resolve()))
 
@@ -300,7 +257,8 @@ async def create_skills_provider(
     runtime: SessionEnvironment | None = None,
     session_dir: Path | None = None,
     *,
-    project_skills_enabled: bool = False,
+    workdir_skills_enabled: bool = False,
+    discovery_scope: SkillDiscoveryScope | None = None,
 ) -> tuple[ChrysSkillsProvider | None, list[SkillProviderWarning]]:
     """Create a ChrysSkillsProvider from chrys SkillsConfig.
 
@@ -309,8 +267,10 @@ async def create_skills_provider(
         runtime: Optional ``SessionEnvironment`` used by the script runner as the
             default subprocess cwd when the agent does not supply ``cwd``.
         session_dir: Current session directory for recoverable script-output spills.
-        project_skills_enabled: The user's ``project.skills_enabled`` setting;
+        workdir_skills_enabled: The user's ``workdir.skills_enabled`` setting;
             the working folder's ``.agents/skills`` loads only when it is on.
+        discovery_scope: Optional build-local initial file discovery. It is
+            never retained by the provider's runtime refresh callback.
 
     Returns ``(provider, warnings)`` where *warnings* collects any non-fatal
     errors (e.g. a single invalid skill that was skipped).  Empty
@@ -322,7 +282,7 @@ async def create_skills_provider(
     ``asyncio.to_thread``) so callers can query ``skill_names`` /
     ``skill_sources`` / ``skill_details`` synchronously during startup.
     """
-    paths = _collect_skill_paths(config, runtime, project_skills_enabled=project_skills_enabled)
+    paths = _collect_skill_paths(config, runtime, workdir_skills_enabled=workdir_skills_enabled)
     warnings: list[SkillProviderWarning] = []
     missing_seen: set[str] = set()
     for raw in config.paths:
@@ -356,16 +316,8 @@ async def create_skills_provider(
     script_ext = tuple(config.script_extensions)
     tracker = _FileSkillLoadTracker()
 
-    async def _load_all_skills() -> list[Skill]:
-        file_skills: list[Skill] = []
-        if paths:
-            file_skills, failures = await asyncio.to_thread(
-                discover_file_skills,
-                paths,
-                script_extensions=script_ext,
-            )
-            tracker.record(failures)
-
+    def _merge_skills(file_skills: list[Skill], failures: list[SkillLoadFailure]) -> list[Skill]:
+        tracker.record(failures)
         merged: list[Skill] = []
         seen: set[str] = set()
         for skill in (*file_skills, *inline_skills):
@@ -379,6 +331,18 @@ async def create_skills_provider(
             seen.add(key)
             merged.append(skill)
         return merged
+
+    async def _load_all_skills() -> list[Skill]:
+        # Runtime refreshes deliberately never capture the initial discovery scope.
+        file_skills: list[Skill] = []
+        failures: list[SkillLoadFailure] = []
+        if paths:
+            file_skills, failures = await asyncio.to_thread(
+                discover_file_skills,
+                paths,
+                script_extensions=script_ext,
+            )
+        return _merge_skills(file_skills, failures)
 
     try:
         provider = ChrysSkillsProvider(
@@ -396,7 +360,11 @@ async def create_skills_provider(
     # Eagerly trigger discovery so synchronous callers (TUI startup screen)
     # can read skill_names / skill_sources / skill_details without awaiting.
     try:
-        await provider.initialize()
+        if discovery_scope is None:
+            await provider.initialize()
+        else:
+            file_skills, failures = await discovery_scope.discover(paths, script_extensions=script_ext)
+            await provider.initialize(initial_skills=_merge_skills(file_skills, failures))
     except Exception as exc:
         msg = f"Failed to discover skills: {exc}"
         logger.warning(msg)

@@ -314,9 +314,9 @@ A sub-agent pauses only for a client that declared `subAgentPause` (see
 |---|---|---|
 | `profiles/agents/list` | — | Agent profile summaries, including a `builtin` flag. |
 | `profiles/agents/read` | `name` | Full agent profile. **MCP `headers`/`env` values masked as `"***"`.** |
-| `profiles/agents/write` | `profile` | Persist. Masked `"***"` MCP secrets restored from the stored profile. |
+| `profiles/agents/write` | `profile` | Persist user settings. Built-in system and compaction prompts remain package-owned; create a custom agent with a new name and ID to change them. If explicitly submitted prompts differ from the built-in values, the response includes `ignored_fields` (using `instructions` and/or `compaction.last_words_template`); other settings are still saved. Unchanged or omitted prompt fields produce no warning. Masked `"***"` MCP secrets are restored from the stored profile. |
 | `profiles/agents/delete` | `name` | Delete a user agent profile. Built-in profiles are rejected; clients should migrate the previous "delete shadow to restore built-in" behavior to `profiles/agents/reset`. |
-| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. Returns `changed: false` when no shadow or resettable changes exist. |
+| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. System and compaction prompts remain package-owned and are excluded from reset comparisons. Returns `changed: false` when no shadow or resettable changes exist. |
 | `profiles/models/list` | — | Model profile summaries (no secrets). |
 | `profiles/models/read` | `id` | Full model profile. **`api_key` masked as `"***"`.** |
 | `profiles/models/write` | `profile` | Persist. `api_key` of `""`/`"***"` preserves the stored key. Omitting `stream` or sending `null` streams for a new profile and keeps the stored value on an update; `false` (or another false spelling such as `0` or `""`) turns streaming off. |
@@ -625,6 +625,13 @@ One-way `ext_notification` pushes, bridged from `EventBus`:
   `chrys/approval_reviewed`.
 - Agent load lifecycle: `chrys/agent_load_started`, `chrys/agent_load_progress`,
   `chrys/agent_load_finished`, `chrys/agent_load_failed`.
+  Nested initialization updates add optional `stage` (`mcp` or `skills`),
+  `stageSubject` (the MCP server name, or empty for Skills), and `stageStatus`
+  (`running`, `done`, or `failed`) fields to `chrys/agent_load_progress`.
+  These fields are omitted when there is no nested stage. `current`, `total`,
+  and `failed` keep their outer progress meaning; a nested stage finishing
+  does not mean the owning sub-agent has finished loading. `message` remains
+  the English compatibility text.
 - Diagnostics: `chrys/error`, `chrys/warning`, `chrys/context_compressed`,
   `chrys/context_pressure`, `chrys/tool_compacted`,
   `chrys/compaction_started`, `chrys/compaction_finished`.
@@ -643,7 +650,8 @@ Notes:
 - `chrys/error` is `{ sessionId, code, message, recoverable, kind, retryable,
   statusCode, hint }`; see *Failures* for the last four.
 - `chrys/warning` is `{ sessionId, code, message }`, plus `reason` when the code has
-  a machine-readable cause. `trajectory_activation_failed` always carries one, saying
+  a machine-readable cause. Startup migration warnings and notices are sent during
+  initialization without `sessionId`. `trajectory_activation_failed` always carries one, saying
   why the session records no trajectory: `lease_held` (another live writer has it),
   `permission` (the session's files or a folder above them refused this user: the
   wrong owner or mode, an ACL, a link, or a read-only folder), `key_unavailable`,

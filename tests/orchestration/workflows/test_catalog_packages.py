@@ -20,9 +20,9 @@ from chrys.service.workflows.discovery import (
     LAYOUT_PACKAGE,
     SOURCE_KIND_GLOBAL,
     global_workflows_dir,
-    project_workflows_dir,
+    workdir_workflows_dir,
 )
-from tests.orchestration.workflows._hosting import make_project, write_workflow_package
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow_package
 from tests.support.symlinks import junction_or_skip, symlink_or_skip
 from tests.support.workflow_workers import python_workflow
 
@@ -30,7 +30,7 @@ SOURCE = python_workflow("def fn(text):\n    return text\n", "fn")
 
 
 def _catalog(tmp_path: Path) -> WorkflowCatalog:
-    return WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=make_project(tmp_path))
+    return WorkflowCatalog(config_dir=tmp_path / "config", workdir=make_workdir(tmp_path))
 
 
 def _write(path: Path, body: bytes) -> Path:
@@ -41,7 +41,7 @@ def _write(path: Path, body: bytes) -> Path:
 
 async def test_a_folder_preview_is_stale_once_a_covered_file_changes(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
-    entry = write_workflow_package(catalog.project_cwd, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
+    entry = write_workflow_package(catalog.workdir, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
     preview = await catalog.preview("pkg", trust=True)
     assert preview.source.layout == LAYOUT_PACKAGE
     assert catalog.candidate_paths(preview.source)[:2] == (entry.resolve(), entry.parent.resolve())
@@ -56,10 +56,10 @@ async def test_a_folder_preview_is_stale_once_a_covered_file_changes(tmp_path: P
     assert not catalog.is_current(preview)
 
 
-@pytest.mark.parametrize("kind", ["project", "global"])
+@pytest.mark.parametrize("kind", ["workdir", "global"])
 async def test_a_folder_appearing_above_a_file_makes_its_preview_stale(tmp_path: Path, kind: str) -> None:
     catalog = _catalog(tmp_path)
-    root = project_workflows_dir(catalog.project_cwd) if kind == "project" else global_workflows_dir(catalog.config_dir)
+    root = workdir_workflows_dir(catalog.workdir) if kind == "workdir" else global_workflows_dir(catalog.config_dir)
     _write(root / "x.py", SOURCE)
     preview = await catalog.preview("x", trust=True)
     assert preview.source.layout == LAYOUT_FILE and catalog.is_current(preview)
@@ -76,12 +76,12 @@ async def test_a_global_sdk_workflow_stays_current_after_its_preview_writes_the_
     home = tmp_path / "home"
     config_dir = home / ".chrys"
     # Run from the home directory, the project's workflow folder is the global one.
-    project_cwd = make_project(tmp_path) if project == "elsewhere" else home
+    workdir = make_workdir(tmp_path) if project == "elsewhere" else home
     if project == "linked-home":
         home.mkdir()
-        project_cwd = tmp_path / "linked"
-        symlink_or_skip(project_cwd, home, target_is_directory=True)
-    catalog = WorkflowCatalog(config_dir=config_dir, project_cwd=project_cwd)
+        workdir = tmp_path / "linked"
+        symlink_or_skip(workdir, home, target_is_directory=True)
+    catalog = WorkflowCatalog(config_dir=config_dir, workdir=workdir)
     _write(global_workflows_dir(config_dir) / "sdk.py", SOURCE)
 
     preview = await catalog.preview("sdk", trust=True)
@@ -96,7 +96,7 @@ async def test_a_broken_folder_above_the_preview_is_never_read_by_a_check(
 ) -> None:
     catalog = _catalog(tmp_path)
     _write(global_workflows_dir(catalog.config_dir) / "x.py", SOURCE)
-    broken = write_workflow_package(catalog.project_cwd, "x", SOURCE).parent
+    broken = write_workflow_package(catalog.workdir, "x", SOURCE).parent
     symlink_or_skip(broken / "shared.py", _write(tmp_path / "outside.py", b"VALUE = 1\n"))
     preview = await catalog.preview("x", trust=True)
     assert preview.source.source_kind == SOURCE_KIND_GLOBAL
@@ -123,7 +123,7 @@ async def test_a_broken_folder_above_the_preview_is_never_read_by_a_check(
 @pytest.mark.parametrize("argument", ["entry", "folder"])
 async def test_deleting_a_folder_workflow_removes_only_its_entry(tmp_path: Path, argument: str) -> None:
     catalog = _catalog(tmp_path)
-    entry = write_workflow_package(catalog.project_cwd, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
+    entry = write_workflow_package(catalog.workdir, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
     _write(entry.parent / ".git" / "HEAD", b"ref\n")
     history = _write(tmp_path / "session" / "workflows" / "run" / "source.py", SOURCE)
     preview = await catalog.preview("pkg", trust=True)
@@ -152,7 +152,7 @@ def test_an_entry_inside_a_folder_of_its_name_can_be_deleted(tmp_path: Path) -> 
 @pytest.mark.parametrize("argument", ["entry", "folder"])
 def test_a_folder_swapped_for_a_link_is_not_deleted_through(tmp_path: Path, kind: str, argument: str) -> None:
     catalog = _catalog(tmp_path)
-    entry = write_workflow_package(catalog.project_cwd, "pkg", SOURCE)
+    entry = write_workflow_package(catalog.workdir, "pkg", SOURCE)
     canonical = entry.resolve()
     target = tmp_path / "elsewhere"
     target.mkdir()
@@ -180,7 +180,7 @@ def test_an_entry_that_is_not_a_file_is_refused_by_the_check_before_any_confirma
     tmp_path: Path, entry_kind: str, refusal: str
 ) -> None:
     catalog = _catalog(tmp_path)
-    entry = write_workflow_package(catalog.project_cwd, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
+    entry = write_workflow_package(catalog.workdir, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
     entry.unlink()
     if entry_kind == "link":
         target = _write(tmp_path / "elsewhere.py", SOURCE)
@@ -201,7 +201,7 @@ def test_an_entry_another_user_owns_is_refused_by_the_check_before_any_confirmat
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     catalog = _catalog(tmp_path)
-    entry = write_workflow_package(catalog.project_cwd, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
+    entry = write_workflow_package(catalog.workdir, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
     if sys.platform == "win32":
 
         def foreign_owner(fd: int) -> None:
@@ -222,7 +222,7 @@ def test_an_entry_another_user_owns_is_refused_by_the_check_before_any_confirmat
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 def test_an_entry_you_own_but_cannot_read_still_passes_the_check_and_is_deleted(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
-    entry = write_workflow_package(catalog.project_cwd, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
+    entry = write_workflow_package(catalog.workdir, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
     entry.chmod(0)
 
     catalog.check_delete(str(entry.parent.resolve()))
@@ -233,7 +233,7 @@ def test_an_entry_you_own_but_cannot_read_still_passes_the_check_and_is_deleted(
 
 def test_an_entry_the_file_system_would_keep_is_refused_by_the_check_before_any_confirmation(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
-    entry = write_workflow_package(catalog.project_cwd, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
+    entry = write_workflow_package(catalog.workdir, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
     if sys.platform != "win32" and os.geteuid() == 0:
         pytest.skip("root may delete from a read-only folder")
     # POSIX keeps the files of a folder that can't be written; Windows keeps a read-only file.
@@ -252,7 +252,7 @@ def test_an_entry_the_file_system_would_keep_is_refused_by_the_check_before_any_
 
 def test_the_delete_check_passes_a_deletable_folder_workflow_and_deletes_nothing(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
-    entry = write_workflow_package(catalog.project_cwd, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
+    entry = write_workflow_package(catalog.workdir, "pkg", SOURCE, {"helpers.py": b"VALUE = 1\n"})
 
     catalog.check_delete(str(entry.parent.resolve()))
     catalog.check_delete(str(entry.resolve()))

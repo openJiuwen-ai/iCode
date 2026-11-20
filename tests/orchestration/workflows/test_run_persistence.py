@@ -19,7 +19,7 @@ from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.workflows.layout import run_dir
 from chrys.service.workflows.store import RunRecord, WorkflowRunStore, read_run_events, read_run_output
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, patch_runtime, run, write_workflow
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
 
@@ -28,7 +28,7 @@ async def test_load_and_native_output_are_collected_before_worker_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     source = python_workflow(
         "import os\nprint('loaded')\ndef fn(value):\n    os.write(1, b'x' * 100_000 + b'NATIVE-END')\n    return 'done'\n",
         "fn",
@@ -53,7 +53,7 @@ async def test_inline_duplicate_answers_are_journaled_once_before_node_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(
         project, "ask", python_workflow("async def fn(value, ctx):\n    return await ctx.ask('Continue?')\n", "fn")
     )
@@ -91,7 +91,7 @@ async def test_cancel_drains_thread_write_before_terminal_and_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "write", python_workflow("def fn(value):\n    return 'done'\n", "fn"))
     host = make_host(tmp_path, project=project)
     entered, release = threading.Event(), threading.Event()
@@ -148,7 +148,7 @@ async def test_loop_outgoing_retry_replays_the_attempt_that_wrote_its_output(
     from chrys.service.workflows.store import read_node_value
 
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(
         project,
         "retry",

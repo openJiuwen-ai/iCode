@@ -150,13 +150,14 @@ def build_candidate_runner_factory(
 
     Builtins and user profiles are loaded first so declared sub-agents
     (e.g. Code → Explore/General) resolve like a normal iCode session. The
-    candidate is then registered on that private registry so the mutated
-    profile shadows any same-name agent already on disk.
+    candidate is registered as an independent custom agent so its experimental
+    prompts never overwrite a package-owned builtin.
     """
 
     def factory(candidate: AgentProfile) -> HeadlessCaseRunner:
         registry = AgentProfileRegistry()
         registry.load_all()
+        candidate = registry.clone(candidate)
         registry.register(candidate)
         return HeadlessCaseRunner(
             agent=candidate.name,

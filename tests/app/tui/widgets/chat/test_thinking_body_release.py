@@ -18,7 +18,7 @@ from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import GcMessageChatPanelApp, click_when_settled
+from tests.support.tui_helpers import GcMessageChatPanelApp, click_when_settled, open_process_for
 from tests.support.waiting import wait_for
 
 
@@ -31,8 +31,13 @@ async def test_fold_releases_body_with_epoch_aware_reclaim(monkeypatch: pytest.M
         await panel.add_thinking_delta("r1", "reasoning", "# Evidence\n\nLook at the file.")
         panel.finish_thinking_segment("r1")
         message = panel.query_one(ThinkingMessage)
+        open_process_for(message)
+        message.collapsed = False
         await wait_for(
-            lambda: message.query_one(VirtualizedMarkdown).shown_source == message.text,
+            lambda: (
+                bool(message.query(VirtualizedMarkdown))
+                and message.query_one(VirtualizedMarkdown).shown_source == message.text
+            ),
             pilot=pilot,
             description="thinking parse ready",
         )
@@ -230,6 +235,7 @@ async def _text_folded_before_its_body_shows_its_final_text(
     await panel.add_answer_delta("a1", "\n\nThird part.\n\nFourth part.")
     panel.finish_answer_segment("a1", completed=True)
     await panel.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, args={"path": "x.py"})
+    open_process_for(message)
     assert (message.collapsed, body.display, body.shown_source) == (True, False, shown)
     return message, body
 
@@ -306,6 +312,7 @@ async def test_thinking_opened_as_it_streams_shows_its_final_text_once_that_pars
         panel.agent_running = True
         await panel.add_thinking_delta("r1", "reasoning", opened)
         message = panel.query_one(ThinkingMessage)
+        open_process_for(message)
         await wait_for(lambda: screen_is_settled(pilot.app, panel.screen), pilot=pilot, description="it streams")
         assert message.collapsed
         painted: list[str | None] = []

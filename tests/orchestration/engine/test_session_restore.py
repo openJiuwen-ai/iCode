@@ -311,7 +311,7 @@ async def test_failed_startup_restore_reset_rederives_settings_for_the_fallback_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Fallback startup runs in the process cwd, so whatever the failed target
-    left installed describes the wrong project trust domain."""
+    left installed describes the wrong workdir trust domain."""
     replacement_settings = Settings(default_approval_mode="auto")
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=JsonFileStateStore(tmp_path))
     load_kwargs: dict[str, Any] = {}
@@ -325,7 +325,7 @@ async def test_failed_startup_restore_reset_rederives_settings_for_the_fallback_
 
     await engine.reset_after_failed_startup_restore()
 
-    assert load_kwargs["project_root"] == Path(os.getcwd())
+    assert load_kwargs["workdir"] == Path(os.getcwd())
     assert engine.settings is replacement_settings
 
 
@@ -827,7 +827,7 @@ async def test_session_restore_derives_settings_from_the_target_sessions_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The restore crosses into the target's project trust domain: its root —
+    """The restore crosses into the target's workdir trust domain: its root —
     not the current session's — is what the staged load is derived from."""
     agent_profile = _profile("Code")
     target_cwd = tmp_path / "restored-workspace"
@@ -852,7 +852,7 @@ async def test_session_restore_derives_settings_from_the_target_sessions_root(
     finally:
         engine.session.guard.release()
 
-    assert load_kwargs["project_root"] == Path(str(target_cwd))
+    assert load_kwargs["workdir"] == Path(str(target_cwd))
     assert engine.settings is replacement_settings
 
 

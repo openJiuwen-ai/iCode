@@ -26,6 +26,7 @@ from chrys.foundation.events.types import (
     UserInject,
     UserInjectCancel,
     UserInjectResult,
+    UserInjectSteer,
     UserInterrupt,
     UserMessage,
     UserRetry,
@@ -797,6 +798,10 @@ class TurnCoordinator:
         executor = self._current.loaded.bindings if self._current.loaded is not None else None
         if executor is not None:
             executor.skip_retry_wait(event.wait_id)
+
+    async def on_user_inject_steer(self, event: UserInjectSteer) -> None:
+        """Steer only with a message that still belongs to the running turn's queue."""
+        event.accepted = await self._injector.steer_pending(event.injection_id)
 
     async def on_user_inject_cancel(self, event: UserInjectCancel) -> None:
         """Withdraw a queued mid-run injection before the model sees it.

@@ -1152,7 +1152,8 @@ async def test_all_tab_comment_title_names_the_file_and_line(locale) -> None:
         )
 
 
-_LONG_FILE = "".join(f"line {i}\n" for i in range(1, 10_010))
+# Blank padding keeps the real five-digit line numbers without tokenizing thousands of unrelated Python statements.
+_LONG_FILE = "\n" * 10_000 + "".join(f"line {i}\n" for i in range(10_001, 10_010))
 
 
 @pytest.mark.parametrize("width", [60, 80, 100, 120])

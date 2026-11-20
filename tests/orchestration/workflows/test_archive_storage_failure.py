@@ -28,7 +28,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -46,7 +46,7 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 async def test_terminal_archive_failure_reaches_result_events_and_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, terminal: str, record_kind: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     target = project / "input.txt"
     target.write_text("readable input")
     client = ArchiveClient(target, terminal)

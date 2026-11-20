@@ -21,10 +21,12 @@ from chrys.foundation.tool_execution_stamp import (
 )
 from chrys.foundation.trajectory.context import trajectory_scope
 from chrys.foundation.trajectory.event_types import EventType, ToolOutcome
+from chrys.foundation.trajectory.fingerprint import DOMAIN_TOOL_CONTENT, fingerprint_text
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import OPERATION_ID_KEY
 from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
 from chrys.kernel._result_ceiling import apply_result_ceiling
+from chrys.kernel.exceptions import GENERIC_TOOL_ERROR_TEXT
 from chrys.service.agent_middleware import SubAgentEventMiddleware, ToolEventMiddleware
 from chrys.service.agent_middleware._metadata_keys import _APPROVAL_REJECTED_KEY
 from chrys.service.agent_middleware.events import sub_agent_events as sub_agent_events_module
@@ -35,7 +37,7 @@ from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.tools.result_metadata import tool_error
 from tests.service.agent_middleware._event_fakes import RewriteArgsHookManager, _ctx
-from tests.service.trajectory._fakes import CancelAckSink, FakeSink, make_context
+from tests.service.trajectory._fakes import FINGERPRINT_KEY, CancelAckSink, FakeSink, make_context
 
 
 def _execution_stamp_middleware(
@@ -317,6 +319,25 @@ async def test_event_middlewares_close_an_operation_interrupted_after_the_call_r
 
     assert sink.only(EventType.TOOL_PAYLOAD_OBSERVED)
     assert sink.only(EventType.TOOL_OPERATION_FINISHED).payload["outcome"] == ToolOutcome.INTERRUPTED
+
+
+@pytest.mark.parametrize("kind", ["main", "sub_agent"])
+async def test_error_payload_measures_the_text_sent_to_the_model(kind: str) -> None:
+    middleware = _execution_stamp_middleware(kind)
+    context = _ctx("example")
+
+    async def fail() -> None:
+        raise RuntimeError("detail for the tool card")
+
+    sink = FakeSink()
+    with trajectory_scope(make_context(sink)), pytest.raises(RuntimeError):
+        await middleware.process(context, fail)
+
+    payload = sink.only(EventType.TOOL_PAYLOAD_OBSERVED).payload
+    assert payload["model_visible_bytes"] == len(GENERIC_TOOL_ERROR_TEXT.encode())
+    assert payload["content_fingerprint"] == fingerprint_text(
+        FINGERPRINT_KEY, DOMAIN_TOOL_CONTENT, GENERIC_TOOL_ERROR_TEXT
+    )
 
 
 @pytest.mark.parametrize("kind", ["main", "sub_agent"])

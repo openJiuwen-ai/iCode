@@ -40,7 +40,7 @@ Filesystem restrictions may prevent iCode from adding the `.conflict` marker. In
 
 The original profiles for built-in agents are included with the iCode installation. When you edit and save a built-in agent through the TUI, iCode creates a profile with the same name in the [user agent profile directory](#user-agent-profile-directory). For example, editing and saving the built-in agent named `Code` creates `Code.yaml`.
 
-The built-in agent names are `Code`, `QA`, `Explore`, and `General`. A profile manually created in the user agent profile directory with any of these `name` values also overrides the corresponding built-in agent. An override replaces the entire built-in profile; it does not inherit or merge any other fields from it. Delete the corresponding user profile and restart iCode to restore the built-in profile.
+The built-in agent names are `Code`, `QA`, `Explore`, and `General`. A profile manually created in the user agent profile directory with any of these `name` values also overrides the corresponding built-in agent. The `instructions` and `compaction.last_words_template` fields always come from the installed built-in profile, including when their built-in value is empty. User settings omit these fields when saved. Other fields retain the values from the user profile; they are not merged with built-in defaults. Legacy overrides containing nonempty system or compaction prompts are backed up as independent custom agents before the protected fields are removed. Empty or whitespace-only prompts do not create a backup. To customize prompts, clone the built-in agent and use its new name and ID. Delete the corresponding user profile and restart iCode to restore the built-in profile.
 
 ## Basic profile example
 
@@ -77,9 +77,9 @@ If "Code review" appears in the list, the profile has loaded. If it does not app
 | --- | --- | --- | --- |
 | `name` | String | Required | Profile name, also used as the base of the normalized filename. Sub-agent references use this value. |
 | `id` | String | Assigned automatically | Stable identifier. If omitted or empty, iCode automatically assigns a 12-character hexadecimal ID: it reuses the built-in agent's ID when the names match, or generates a new ID otherwise. You can also specify a unique ID manually; quote an ID made only of digits, such as `id: "123"`, because an unquoted one is read as a number and the profile fails to load. When copying and modifying an existing profile to create a new one, remove the `id` field so iCode can assign a new ID. |
-| `display_name` | String | Empty | Display name. |
-| `description` | String | Empty | Describes the agent's purpose. Also used as the default tool description for a sub-agent when none is specified. |
-| `sub_agent_only` | Boolean | `false` | If `true`, the agent cannot be selected as the main agent and can only be called by other agents. Forced to `true` for external ACP agents. |
+| `display_name` | String | Empty | Display name. Must be text: an unquoted number or boolean, such as `display_name: 2024`, makes the whole profile fail to load, so quote it as text instead. Earlier versions read such a value as is and then failed in `agent list` or ACP. |
+| `description` | String | Empty | Describes the agent's purpose. Also used as the default tool description for a sub-agent when none is specified. Must be text: an unquoted number or boolean, such as `description: 42`, makes the whole profile fail to load. |
+| `sub_agent_only` | Boolean | `false` | If `true`, the agent cannot be selected as the main agent and can only be called by other agents. This field also accepts `true`/`false`, `yes`/`no` and `on`/`off` as text, in any case. Forced to `true` for external ACP agents. |
 | `instructions` | String or list of strings | Empty | Main behavioral instructions for agents of the built-in type. A list is joined into one text, one item per line. External ACP profiles ignore this field. |
 | `model` | Object | `{}` | Binds a model profile. See [model](#model). |
 | `tools` | Object | `{}` | Configures built-in tools, MCP, and shell filtering. See [tools](#tools). |
@@ -435,9 +435,9 @@ skills:
 | `script_timeout` | Positive integer | `300` | Maximum runtime for a skill script, in seconds. Leaving it out, or writing it with no value, keeps the default; a value that is not a positive integer causes the entire agent profile to be skipped. |
 | `script_extensions` | List of strings | `[.py, .sh, .ps1]` | Extensions allowed for skill scripts. The required interpreters must already be installed. |
 | `auto_load_user_agents_skills` | Boolean | `true` | Whether to load the user-level shared Agent Skills directory. |
-| `auto_load_cwd_agents_skills` | Boolean | `true` | Whether to load `.agents/skills` in the current working directory; “Load project skills” (`project.skills_enabled`) must also be on in settings. Reloaded when switching working directories. |
+| `auto_load_cwd_agents_skills` | Boolean | `true` | Whether to load `.agents/skills` in the current working directory; “Load working directory skills” (`workdir.skills_enabled`) must also be on in settings. Reloaded when switching working directories. |
 
-The iCode user skills directory is always loaded. The user-level shared Agent Skills directory is loaded by default; the current working directory's skills directory loads once “Load project skills” is on in settings. Each can be disabled with its corresponding `auto_load_*` field. For user-level directory paths, see [Skill installation locations](../guides/extensions/skills.md#skill-installation-locations).
+The iCode user skills directory is always loaded. The user-level shared Agent Skills directory is loaded by default; the current working directory's skills directory loads once “Load working directory skills” is on in settings. Each can be disabled with its corresponding `auto_load_*` field. For user-level directory paths, see [Skill installation locations](../guides/extensions/skills.md#skill-installation-locations).
 
 When multiple sources contain skills with the same name, precedence from highest to lowest is: earlier directories in `paths`, the iCode user skills directory, the user-level shared Agent Skills directory, the current working directory's skills directory, and earlier definitions in `inline`. If one search root contains multiple skills with the same name, discovery order is unspecified. Keep only one to ensure that the intended version loads.
 
@@ -468,7 +468,7 @@ For installation steps, directory conventions, loading verification, and usage, 
 memory:
   files:
     - AGENTS.md
-    - docs/project-context.md
+    - docs/working-directory-context.md
   folders:
     - docs/reference
 ```

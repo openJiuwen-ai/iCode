@@ -117,7 +117,7 @@ async def test_status_bar_relocalizes_status_tool_trail_tooltip_and_literal_payl
                 runtime_details=AgentRuntimeDetails(
                     hook_sources=[
                         RuntimeHookSourceDetails(
-                            scope="project",
+                            scope="workdir",
                             hooks=[
                                 RuntimeHookDetails(id="guard", enabled=True),
                                 RuntimeHookDetails(id="notify", enabled=True),

@@ -44,7 +44,7 @@ from textual.widgets import TextArea
 
 from chrys.app.tui.behaviors.right_click_copy import handle_text_area_right_click_copy
 from chrys.app.tui.binding_display import COPY_BINDING, PASTE_BINDING, localized_binding
-from chrys.app.tui.clipboard import copy_text_to_clipboards, paste_text_from_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, paste_text_from_clipboards, uses_native_windows_clipboard
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.foundation.i18n import MessageDef, msg
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
@@ -199,6 +199,8 @@ class EnhancedTextArea(TextArea):
         await super()._on_key(event)
 
     def action_undo(self) -> None:
+        if self.read_only:
+            return
         try:
             super().action_undo()
         except ValueError, IndexError:
@@ -226,6 +228,8 @@ class EnhancedTextArea(TextArea):
         history.checkpoint()
 
     def action_redo(self) -> None:
+        if self.read_only:
+            return
         try:
             super().action_redo()
         except ValueError, IndexError:
@@ -303,8 +307,9 @@ class EnhancedTextArea(TextArea):
         if not selected:
             return
         start, end = self.selection
+        if not copy_text_to_clipboards(self.app, selected) and uses_native_windows_clipboard():
+            return
         self._delete_via_keyboard(start, end)
-        copy_text_to_clipboards(self.app, selected)
 
     def action_paste(self) -> None:
         """Paste from the freshest clipboard available to this frontend."""

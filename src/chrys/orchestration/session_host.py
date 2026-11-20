@@ -707,7 +707,7 @@ class ChrysSessionHost:
 
     # -- workflows -----------------------------------------------------------------------
 
-    def _project_workspace(self) -> Workspace:
+    def _workflow_origin(self) -> Workspace:
         """The workspace inherited by a new workflow session, copied at admission."""
         return self._engine.workspace or self._workspace or Workspace.from_cwd(self._cwd)
 
@@ -717,17 +717,17 @@ class ChrysSessionHost:
 
     @property
     def workflow_catalog(self) -> WorkflowCatalog:
-        config_dir, project_cwd = (
+        config_dir, workdir = (
             get_platform().config_dir,
             Path(
                 self._workflow_selection.workspace.primary_cwd
                 if self._workflow_selection is not None
-                else self._project_workspace().primary_cwd
+                else self._workflow_origin().primary_cwd
             ),
         )
         catalog = self._workflow_catalog
-        if catalog is None or (catalog.config_dir, catalog.project_cwd) != (config_dir, project_cwd):
-            catalog = self._workflow_catalog = WorkflowCatalog(config_dir=config_dir, project_cwd=project_cwd)
+        if catalog is None or (catalog.config_dir, catalog.workdir) != (config_dir, workdir):
+            catalog = self._workflow_catalog = WorkflowCatalog(config_dir=config_dir, workdir=workdir)
         return catalog
 
     @property
@@ -770,13 +770,13 @@ class ChrysSessionHost:
                     )
                 )
             return self._workflow_selection
-        return WorkflowDraft(workflow_id, WorkspaceSnapshot.capture(workspace or self._project_workspace()))
+        return WorkflowDraft(workflow_id, WorkspaceSnapshot.capture(workspace or self._workflow_origin()))
 
     async def preview_workflow(
         self, target: WorkflowTarget, *, timeout: float | None = None, trust: bool = False
     ) -> PreparedWorkflow:
         """Prepare the exact target; ``trust`` explicitly authorizes execution of unconfirmed source."""
-        catalog = WorkflowCatalog(config_dir=get_platform().config_dir, project_cwd=Path(target.workspace.primary_cwd))
+        catalog = WorkflowCatalog(config_dir=get_platform().config_dir, workdir=Path(target.workspace.primary_cwd))
         preview = await catalog.preview(
             target.workflow_id,
             timeout=timeout,
@@ -788,7 +788,7 @@ class ChrysSessionHost:
     def confirm_workflow(self, prepared: PreparedWorkflow) -> None:
         """Confirm a prepared definition independently of the current browsing selection."""
         catalog = WorkflowCatalog(
-            config_dir=get_platform().config_dir, project_cwd=Path(prepared.target.workspace.primary_cwd)
+            config_dir=get_platform().config_dir, workdir=Path(prepared.target.workspace.primary_cwd)
         )
         catalog.confirm(prepared.preview)
 

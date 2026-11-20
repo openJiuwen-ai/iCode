@@ -123,7 +123,7 @@ def test_prepare_runtime_configures_stdio(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(acp_cli, "bootstrap_runtime", fake_bootstrap_runtime)
 
-    assert acp_cli._prepare_runtime() is loaded
+    assert acp_cli._prepare_runtime() == (loaded, ())
 
     assert seen == {"configure_stdio": True}
 
@@ -149,7 +149,7 @@ def test_prepare_runtime_uses_interactive_transient_retry_default(monkeypatch: p
         lambda *, configure_stdio: RuntimeBootstrap(loaded=load_settings()),
     )
 
-    loaded = acp_cli._prepare_runtime()
+    loaded, _ = acp_cli._prepare_runtime()
 
     assert loaded.settings.effective_max_transient_retries() == 10
 
@@ -177,7 +177,9 @@ async def test_run_command_wires_buddy_callback_and_approval_timeout(
             captured["shutdown"] = True
 
     class _Server:
-        def __init__(self, manager: _Manager, *, initial_vision: bool, permission_timeout_seconds: float) -> None:
+        def __init__(
+            self, manager: _Manager, *, initial_vision: bool, permission_timeout_seconds: float, startup_warnings: tuple
+        ) -> None:
             captured["server_manager"] = manager
             captured["initial_vision"] = initial_vision
             captured["permission_timeout_seconds"] = permission_timeout_seconds
@@ -186,7 +188,7 @@ async def test_run_command_wires_buddy_callback_and_approval_timeout(
         captured["server"] = server
 
     loaded = load_settings()
-    monkeypatch.setattr(acp_cli, "_prepare_runtime", lambda: loaded)
+    monkeypatch.setattr(acp_cli, "_prepare_runtime", lambda: (loaded, ()))
     monkeypatch.setattr(acp_cli, "AgentProfileRegistry", _Registry)
     monkeypatch.setattr(acp_cli, "ModelProfileRegistry", _Registry)
     monkeypatch.setattr(acp_cli, "AcpSessionManager", _Manager)

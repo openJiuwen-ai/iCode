@@ -260,9 +260,9 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
     cwd = _apply_cwd(args.cwd)
     prompt = _resolve_prompt(args)
     # Normalized once, to the host's own reading of the flag: the host strips
-    # the id and treats a blank one as "no session", and a project-free
+    # the id and treats a blank one as "no session", and a directory-independent
     # bootstrap for a run that then starts fresh would silently drop the
-    # working directory's project layer.
+    # working directory's settings layer.
     session_id = (args.session or "").strip()
     prepared = headless.prepare_runtime(restoring_session=bool(session_id))
     holder.runtime = prepared

@@ -29,7 +29,7 @@ from chrys.orchestration.workflows.catalog import WorkflowCatalog
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AcpAgentConfig
 from chrys.service.workflows.discovery import BUILTIN_DIR, global_workflows_dir
-from tests.orchestration.workflows._hosting import make_profile, make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_profile, make_workdir, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from textual.pilot import Pilot
 
     from chrys.app.tui.screens.main.screen import MainScreen
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 
 async def _choose_directory(main: MainScreen, pilot: Pilot, path: Path, entry: str) -> WorkflowInputDialog | None:
@@ -74,7 +76,7 @@ async def _choose_directory(main: MainScreen, pilot: Pilot, path: Path, entry: s
 async def test_workspace_preview_shows_loading_after_trust_and_keeps_cancel_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str, cancel: bool
 ) -> None:
-    project, other = make_project(tmp_path), make_project(tmp_path / "other")
+    project, other = make_workdir(tmp_path), make_workdir(tmp_path / "other")
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
@@ -158,7 +160,7 @@ def _backend_source(backend: str) -> bytes:
 
 
 async def test_default_model_only_for_kernel_nodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     agents = AgentProfileRegistry()
     agents.register(make_profile("Kernel"))
@@ -196,7 +198,7 @@ async def test_default_model_only_for_kernel_nodes(tmp_path: Path, monkeypatch: 
             pilot=pilot,
         )
         assert "current working directory" in str(app.screen.query_one("#confirm-message", Static).content)
-        assert main._workflow.project_cwd == str(project)
+        assert main._workflow.workdir == str(project)
 
 
 @pytest.mark.parametrize("source_kind", ["global", "builtin"])
@@ -204,7 +206,7 @@ async def test_directory_change_updates_preview_outer_path_and_submitted_workspa
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_kind: str
 ) -> None:
     # Editable installs can put the builtin source underneath the workspace.
-    project = BUILTIN_DIR.parent if source_kind == "builtin" else make_project(tmp_path)
+    project = BUILTIN_DIR.parent if source_kind == "builtin" else make_workdir(tmp_path)
     other, shared = tmp_path / "other [literal]", tmp_path / "shared"
     other.mkdir()
     shared.mkdir()
@@ -299,7 +301,7 @@ async def test_directory_change_updates_preview_outer_path_and_submitted_workspa
 async def test_saved_session_directory_is_read_only_in_run_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main = app._main_screen
@@ -317,7 +319,7 @@ async def test_saved_session_directory_is_read_only_in_run_input(
 async def test_directory_change_rejects_shadowed_workflow_before_loading_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
 ) -> None:
-    project, other = make_project(tmp_path), make_project(tmp_path / "other")
+    project, other = make_workdir(tmp_path), make_workdir(tmp_path / "other")
     monkeypatch.chdir(project)
     source = python_workflow("def echo(value):\n    return value\n", "echo")
     marker = other / "loaded"
@@ -348,7 +350,7 @@ async def test_directory_change_rejects_shadowed_workflow_before_loading_it(
 async def test_cancel_during_directory_preview_keeps_original_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
 ) -> None:
-    project, other = make_project(tmp_path), tmp_path / "other"
+    project, other = make_workdir(tmp_path), tmp_path / "other"
     other.mkdir()
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
@@ -390,7 +392,7 @@ async def test_directory_dependent_manifest_is_confirmed_before_committing_works
 ) -> None:
     from chrys.app.tui.screens.dialogs.workflow_confirm import WorkflowConfirmDialog
 
-    project, other = make_project(tmp_path), tmp_path / "other"
+    project, other = make_workdir(tmp_path), tmp_path / "other"
     other.mkdir()
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
@@ -419,7 +421,7 @@ async def test_directory_dependent_manifest_is_confirmed_before_committing_works
         if dialog is not None:
             assert str(dialog.query_one("#workflow-input-directory", Static).content) == expected
             assert not dialog.query_one("#workflow-input-start", Button).disabled
-        assert main._workflow.project_cwd == expected
+        assert main._workflow.workdir == expected
         assert main._workflow_panel.preview is not None
         assert main._workflow_panel.preview.title == expected
 
@@ -427,7 +429,7 @@ async def test_directory_dependent_manifest_is_confirmed_before_committing_works
 async def test_newer_directory_change_drains_old_preparation_before_committing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     first, second = tmp_path / "first", tmp_path / "second"
     first.mkdir()
     second.mkdir()
@@ -443,7 +445,7 @@ async def test_newer_directory_change_drains_old_preparation_before_committing(
         original = WorkflowCatalog.preview
 
         async def preview(catalog, *args, **kwargs):
-            if catalog.project_cwd == first:
+            if catalog.workdir == first:
                 entered.set()
                 try:
                     await asyncio.Event().wait()
@@ -464,8 +466,8 @@ async def test_newer_directory_change_drains_old_preparation_before_committing(
         finally:
             release.set()
             await asyncio.gather(*[task for task in (old, new) if task is not None], return_exceptions=True)
-        assert controller.project_cwd == str(second)
-        assert controller.browser.catalog.project_cwd == second
+        assert controller.workdir == str(second)
+        assert controller.browser.catalog.workdir == second
         assert (
             controller.browser.loaded is not None
             and controller.browser.loaded.preview.source.workflow_id == main._workflow_panel.definition.workflow_id
@@ -478,7 +480,7 @@ async def test_newer_directory_change_drains_old_preparation_before_committing(
 async def test_draft_follows_workspace_updates_until_user_selects_a_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     engine = WorkflowEngine()
     engine.workspace = Workspace.from_cwd(str(project))
@@ -495,7 +497,7 @@ async def test_draft_follows_workspace_updates_until_user_selects_a_directory(
             await main._services.bus.publish(events.WorkspaceUpdated(primary_cwd=str(cwd)), raise_handler_errors=True)
             # Following re-previews the definition in a real worker, the same cost open_workflow budgets for.
             await wait_for(
-                lambda cwd=cwd: controller.project_cwd == str(cwd),
+                lambda cwd=cwd: controller.workdir == str(cwd),
                 pilot=pilot,
                 timeout=ENGINE_TURN_TIMEOUT,
                 description=f"the draft follows the workspace into {cwd.name}",
@@ -508,13 +510,13 @@ async def test_draft_follows_workspace_updates_until_user_selects_a_directory(
         await controller.browser.change_draft_workspace(str(project))
         engine.workspace = Workspace.from_cwd(str(tmp_path))
         await main._services.bus.publish(events.WorkspaceUpdated(primary_cwd=str(tmp_path)), raise_handler_errors=True)
-        assert controller.project_cwd == str(project)
+        assert controller.workdir == str(project)
 
 
 async def test_workspace_preview_cancellation_does_not_cancel_the_event_publisher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project, other = make_project(tmp_path), tmp_path / "other"
+    project, other = make_workdir(tmp_path), tmp_path / "other"
     other.mkdir()
     monkeypatch.chdir(project)
     engine = WorkflowEngine()
@@ -546,7 +548,7 @@ async def test_workspace_preview_cancellation_does_not_cancel_the_event_publishe
             main._workflow.leave()
             await wait_for(cancelled.is_set, pilot=pilot)
             assert publisher.exception() is None
-            assert main._workflow.project_cwd == str(project)
+            assert main._workflow.workdir == str(project)
         finally:
             release.set()
             await publisher
@@ -557,7 +559,7 @@ async def test_leaving_during_workspace_confirmation_dismisses_it_without_changi
 ) -> None:
     from chrys.app.tui.screens.dialogs.workflow_confirm import WorkflowConfirmDialog
 
-    project, other = make_project(tmp_path), tmp_path / "other"
+    project, other = make_workdir(tmp_path), tmp_path / "other"
     other.mkdir()
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())

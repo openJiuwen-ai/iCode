@@ -17,6 +17,7 @@ from textual.geometry import Region
 
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import ChatPanelApp
 from tests.support.waiting import wait_for
@@ -135,6 +136,9 @@ async def test_replayed_transcript_lays_markdown_out_only_at_real_widths(monkeyp
         fence = "\n".join(f"value_{line} = {line} * {turn}" for line in range(8))
         answer = f"## Answer {turn}\n\n{_DOCUMENT}\n\n```python\n{fence}\n```\n"
         messages.append({"role": "assistant", "contents": [{"type": "text", "text": answer}]})
+        messages.append(
+            {"role": "system", "contents": [], "additional_properties": {HistoryMarkerKind.KEY: HistoryMarkerKind.TURN}}
+        )
 
     async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)

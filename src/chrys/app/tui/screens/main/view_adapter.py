@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from textual.css.query import NoMatches
 
 from chrys.app.tui.buddy_messages import BUDDY_TITLE
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.notifications import NotificationEvent
 from chrys.app.tui.screens.main.dialog_controllers import (
     AgentLoadDialogHandle,
@@ -33,6 +33,7 @@ from chrys.app.tui.screens.main.ports import (
     ConfirmMessage,
     InputLabel,
     InputRestore,
+    InputSubmission,
     NotificationSeverity,
     StatusMessage,
     StatusTrail,
@@ -355,8 +356,15 @@ class MainScreenViewAdapter:
     def clear_ask_user_inline_prompts(self) -> None:
         self._screen.query_one(ChatPanel).clear_ask_user_inline_prompts()
 
-    def lock_input_with_text(self) -> None:
-        self._screen.query_one(InputBar).lock_with_text()
+    def lock_input_with_text(self) -> InputSubmission:
+        input_bar = self._screen.query_one(InputBar)
+        input_bar.lock_with_text()
+        return InputSubmission(input_bar.draft(), input_bar.draft_revision)
+
+    def set_injection_steering(self, steering: bool) -> None:
+        input_bar = self._screen.query_one(InputBar)
+        if input_bar.locked and input_bar.injection_phase:
+            input_bar.injection_phase = "steering" if steering else "queued"
 
     def unlock_input_keep_if_locked(self) -> None:
         input_bar = self._screen.query_one(InputBar)
@@ -508,14 +516,14 @@ class MainScreenViewAdapter:
     def set_input_paste_cwd(self, cwd: str) -> None:
         self._screen.query_one(InputBar).set_paste_cwd(cwd)
 
-    def unlock_input_clearing(self, text: str) -> None:
-        """Unlock the composer, clearing it unless edited since *text* was sent.
+    def clear_submitted_input(self, submission: InputSubmission) -> None:
+        """Clear a successfully sent draft only if it has never been edited or replaced.
 
-        A locked composer is read-only, so it still holds what was sent; Enter
-        sends the composer's text stripped.
+        The synchronous revision also catches edits undone back to the same
+        text; compare the whole draft, including fields and references, too.
         """
         input_bar = self._screen.query_one(InputBar)
-        if input_bar.locked or input_bar.value.strip() == text:
+        if input_bar.draft_revision == submission.revision and input_bar.draft() == submission.draft:
             input_bar.unlock_and_clear()
 
     def restore_input_draft(self, draft: str | ChatDraft) -> bool:
@@ -608,8 +616,16 @@ class MainScreenViewAdapter:
             return list(panel.get_user_messages())
         return list(panel.get_agent_responses())
 
-    def copy_text(self, text: str) -> None:
-        copy_text_to_clipboards(self._screen.app, text)
+    def copy_text(self, text: str, *, message: StatusMessage, title: StatusMessage) -> None:
+        dispatched = copy_text_to_clipboards(self._screen.app, text)
+        notify_after_copy(
+            self._screen,
+            self._render_status_message(message),
+            dispatched=dispatched,
+            title=self._render_status_message(title),
+            timeout=2,
+            markup=False,
+        )
 
     def toggle_chat_fold_all(self) -> bool:
         return self._screen.query_one(ChatPanel).toggle_fold_all()
@@ -676,10 +692,12 @@ class MainScreenViewAdapter:
         )
         self._screen.query_one(TrajectoryDashboard).show_session(session_id, path)
         self.sync_main_surface()
+        self._screen.refresh_bindings()  # Esc Back shows only while the trajectory is in front.
 
     def hide_trajectory_dashboard(self) -> None:
         self._screen.query_one(TrajectoryDashboard).hide_dashboard()
         self.sync_main_surface()
+        self._screen.refresh_bindings()
         self._screen.query_one(InputBar).focus_input()
 
     def select_trajectory_turn(self, turn_id: str) -> None:
@@ -704,7 +722,8 @@ class MainScreenViewAdapter:
         self._screen.query_one("#footer-row").display = not shell
         # It shows the chat session's hook runs only: a workflow's hooks run on
         # the workflow's own manager, which reports nothing.
-        self._screen.query_one(HookIndicator).display = not workflow
+        # Esc Back takes the right end while the trajectory fills the main area.
+        self._screen.query_one(HookIndicator).display = not workflow and not dashboard.foreground
         self._screen._sync_workflow_timer()
 
     def open_confirm_dialog(

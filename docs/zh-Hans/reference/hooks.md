@@ -4,7 +4,7 @@
 
 > **安全提示**
 >
-> 钩子直接使用当前用户的权限运行，不经过工具审批，也不受安全沙箱限制。启用项目自带的钩子前，请检查其配置文件以及运行的脚本和命令。
+> 钩子直接使用当前用户的权限运行，不经过工具审批，也不受安全沙箱限制。启用工作目录自带的钩子前，请检查其配置文件以及运行的脚本和命令。
 >
 > 钩子可能接收对话内容、工具参数和工具运行结果。若钩子会将这些数据发送到外部服务，请注意检查其中是否包含敏感信息。
 
@@ -31,7 +31,7 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | 范围 | macOS 和 Linux | Windows |
 | --- | --- | --- |
 | 全局 | `~/.chrys/hooks/hooks.yaml` | `%APPDATA%\chrys\hooks\hooks.yaml` |
-| 项目 | `<working-directory>/.chrys/hooks/hooks.yaml` | `<working-directory>\.chrys\hooks\hooks.yaml` |
+| 工作目录 | `<working-directory>/.chrys/hooks/hooks.yaml` | `<working-directory>\.chrys\hooks\hooks.yaml` |
 
 两处都可以改用 `hooks.yml` 或 `hooks.json`。同一目录存在多个候选文件时，iCode 按 `hooks.yaml`、`hooks.yml`、`hooks.json` 的顺序只加载第一个。
 
@@ -39,15 +39,15 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 
 文件无法按检测到的编码解码时，iCode 会报告配置警告并禁用该文件中的钩子，不会替换命令或其他配置值中的字符。
 
-`<working-directory>` 是会话的工作目录。对于项目配置，iCode 只检查 `<working-directory>/.chrys/hooks/`，不会在工作目录的父目录或子目录中查找。
+`<working-directory>` 是会话的工作目录。对于工作目录配置，iCode 只检查 `<working-directory>/.chrys/hooks/`，不会在工作目录的父目录或子目录中查找。
 
 ## 加载配置文件
 
-项目钩子随你打开的仓库而来，因此默认不加载。如需加载，在终端用户界面（Terminal User Interface，TUI）中按 **F10** 打开“设置”，在“安全管控”-“项目信任”区域勾选“加载项目钩子”（`project.hooks_enabled`）。工作目录中有未加载的项目钩子时，iCode 会弹出提示。全局钩子始终加载。
+工作目录钩子随你打开的仓库而来，因此默认不加载。如需加载，在终端用户界面（Terminal User Interface，TUI）中按 **F10** 打开“设置”，在“安全管控”-“工作目录信任”区域勾选“加载工作目录钩子”（`workdir.hooks_enabled`）。工作目录中有未加载的工作目录钩子时，iCode 会弹出提示。全局钩子始终加载。
 
 在磁盘上编辑钩子配置文件不会实时生效。修改后，需要在空闲时执行 `/reload`、切换会话或重启 iCode，让 iCode 重新加载配置。仅修改钩子脚本则不需要重新加载；脚本会在下次触发钩子时使用新内容。
 
-在 TUI 中输入 `/runtime`，打开“钩子”标签页，可以查看当前加载的项目钩子和全局钩子。在终端中，[`icode hook list`](#icode-hook-list) 显示在当前目录启动的会话会加载哪些钩子，[`icode hook validate`](#icode-hook-validate) 检查配置文件。
+在 TUI 中输入 `/runtime`，打开“钩子”标签页，可以查看当前加载的工作目录钩子和全局钩子。在终端中，[`icode hook list`](#icode-hook-list) 显示在当前目录启动的会话会加载哪些钩子，[`icode hook validate`](#icode-hook-validate) 检查配置文件。
 
 ## 配置文件结构
 
@@ -74,7 +74,7 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | `outbox_retry_age_seconds` | 数值（>= `0`） | `60.0` | 仅用于持久投递钩子。iCode 启动后，会重试因上次退出或崩溃而未记录为完成的钩子任务。此设置指定重试前至少等待的秒数，从任务上次开始执行时算起；任务从未执行过时，则从创建时算起。 |
 | `outbox_max_retries` | 整数（>= `0`） | `3` | 仅用于持久投递钩子。每个钩子任务最多启动的次数，包括首次执行。使用默认值 `3` 时，中断的任务最多重试两次；设为 `1` 时不重试；设为 `0` 时，从未启动的任务也会被记录为失败。 |
 
-同时存在项目和全局配置时，`settings` 按字段合并：项目文件中的值优先，其次使用全局文件中的值，两个文件均未设置时使用默认值。
+同时存在工作目录和全局配置时，`settings` 按字段合并：工作目录文件中的值优先，其次使用全局文件中的值，两个文件均未设置时使用默认值。
 
 ### 定义钩子
 
@@ -90,7 +90,7 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | `enabled` | 布尔值 | `true` | 设为 `false` 可停用该钩子而不删除配置。 |
 | `description` | 字符串 | `""` | 该钩子的说明，便于识别；不改变运行行为。 |
 
-`id` 可以包含中文、空格和特殊符号，但不能包含换行符、制表符或其他无法正常显示的字符。`id` 包含空格或特殊符号时，应使用引号包住整个值。项目配置和全局配置可以使用相同的 `id`，两条钩子都会运行。
+`id` 可以包含中文、空格和特殊符号，但不能包含换行符、制表符或其他无法正常显示的字符。`id` 包含空格或特殊符号时，应使用引号包住整个值。工作目录配置和全局配置可以使用相同的 `id`，两条钩子都会运行。
 
 ## 事件
 
@@ -104,23 +104,34 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | --- | --- | --- |
 | `session_start` | 智能体准备就绪后。启动 iCode、新建会话或将当前会话撤回到开始处时会触发；切换智能体或模型不会触发。 | 无 |
 | `session_restored` | 已保存的会话恢复后。启动 iCode 后立即恢复会话时，`session_start` 和 `session_restored` 都可能触发。 | `restored_session_id`：本次恢复的已保存会话 ID |
-| `session_end` | 当前会话结束时：退出 iCode、切换会话、新建会话、删除或清空当前会话，或将当前会话撤回到开始处。 | 无 |
+| `session_end` | 当前会话结束时：退出 iCode、切换会话、新建会话、删除或清空当前会话，或将当前会话回滚到开始处。 | 无 |
 
 ### 轮次事件
 
 | 事件 | 运行时机 | 额外字段 |
 | --- | --- | --- |
 | `before_turn` | 一轮开始前。 | `turn`：从 `1` 开始的轮次编号<br>`user_text`：当前轮使用的用户文本<br>`is_retry`：是否正在重试同一轮 |
-| `after_turn` | 一轮结束后，包括正常完成、用户中断和运行失败。 | `turn`：从 `1` 开始的轮次编号<br>`status`：`ok`、`interrupted` 或 `failed`<br>`failed`：本轮是否未正常完成，运行失败或被中断时均为 `true` |
+| `after_turn` | 一轮结束后，包括正常完成、用户中断和运行失败。 | `turn`：从 `1` 开始的轮次编号<br>`status`：`ok`、`interrupted` 或 `failed`<br>`failed`：本轮是否未正常完成，运行失败或被中断时均为 `true`<br>`usage`：token 用量，见下 |
 
 ### 用户操作事件
 
 | 事件 | 运行时机 | 额外字段 |
 | --- | --- | --- |
-| `user_prompt_submit` | 用户提交开始新一轮的消息、在智能体运行期间提交补充消息，或提交 `/btw` 顺便问时。 | `text`：用户提交的文本；顺便问为不带 `/btw` 前缀的问题<br>`injected`：`true` 表示发送给运行中主轮次的补充消息；`false` 表示开始主对话新一轮的消息或顺便问<br>`side_question`：顺便问为 `true`；主对话消息省略该字段（缺失时按 `false` 处理） |
+| `user_prompt_submit` | 用户提交开始新一轮的消息、在智能体运行期间提交补充消息，或提交 `/btw` 顺便问时。 | `text`：用户提交的文本；顺便问为不带 `/btw` 前缀的问题<br>`injected`：`true` 表示发送给运行中主轮次的补充消息；`false` 表示开始主对话新一轮的消息或顺便问<br>`side_question`：顺便问为 `true`；主对话消息省略该字段（缺失时按 `false` 处理）<br>`usage`：token 用量，见下<br>`system_prompt`：本轮模型调用最前面的系统提示：智能体的指令，加上 `AGENTS.md` 等记忆文件渲染出的内容，顺序与模型收到的一致；智能体还未加载时为空字符串。顺便问给出的是这次顺便问自己的调用所用的提示，因为它不带工具、也不以主智能体的身份回答 |
 | `user_interrupt` | 用户中断当前轮后。 | 无 |
 
 判断消息是否开始主对话的新一轮时，应同时检查 `not payload.get("injected", False)` 和 `not payload.get("side_question", False)`。顺便问发送 `injected: false` 和 `side_question: true`，不会开始主对话轮次，也不会触发 `before_turn` / `after_turn`。仅输入 `/btw` 查看已保存的顺便问不会触发 `user_prompt_submit`。
+
+`after_turn` 和 `user_prompt_submit` 的 `usage` 给出 iCode 自己记的 token 用量。`input_tokens` 和 `total_tokens` 通常是服务商报告的数值；当服务商没有报告上下文窗口用量时，iCode 会用本地估算替代，以保持预算判断有效——此时这两个字段是估算值。`output_tokens` 和所有会话累计值始终反映服务商数据。
+
+| 字段 | 含义 |
+| --- | --- |
+| `input_tokens`、`output_tokens`、`total_tokens` | 最近一次完成的模型调用各自的用量。会话刚开始、还没有调用完成时都是 `0`。 |
+| `cache_hit_tokens` | 最近一次调用的缓存命中 token 数；该次调用没有报告缓存信息时为 `null`，服务商首次报告之前的所有调用都属此类。它描述的是单次调用，之后遇到不报告缓存信息的调用仍会是 `null`；需要持久的会话级数字请用 `total_session_cache_hit_tokens`。 |
+| `total_session_tokens`、`total_session_input_tokens`、`total_session_output_tokens` | 本次会话到此刻的累计用量。 |
+| `total_session_cache_hit_tokens` | 本次会话到此刻的缓存命中累计 token 数；会话中所有没有报告缓存信息的调用按 `0` 计入。 |
+
+需要按上下文窗口判断预算的钩子应使用最近一次调用的数值，而不是重新对文本分词：模型的 tokenizer 与钩子的估算很难一致。`output_tokens` 和所有会话累计值始终是服务商报告的数值；`input_tokens` 和 `total_tokens` 通常也是，但服务商没有报告上下文窗口用量时，iCode 会用本地估算替代，以保持预算判断有效。
 
 ### 工具事件
 
@@ -128,9 +139,13 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 
 | 事件 | 运行时机 | 额外字段 |
 | --- | --- | --- |
-| `before_tool_call` | 工具进入审批和执行流程前。如果用户在审批时编辑了参数，该钩子会在工具运行前使用编辑后的参数再次运行。 | `tool`：工具名称、类别、调用 ID 和参数 |
-| `after_tool_call` | 工具调用返回后。工具正常返回结果、返回失败结果、因审批未通过而未执行，或被 `before_tool_call` 钩子拒绝时都会触发。 | `tool`：工具调用<br>`result`：运行结果 |
-| `tool_error` | 工具调用抛出运行错误后。同一次调用会先触发 `after_tool_call`，再触发 `tool_error`。 | `tool`：工具调用<br>`result`：运行结果，其中 `result.error` 为 `true` |
+| `before_tool_call` | 工具进入审批和执行流程前。如果用户在审批时编辑了参数，该钩子会在工具运行前使用编辑后的参数再次运行。 | `tool`：工具名称、类别、调用 ID 和参数<br>`origin`：发起这次调用的调用（见下） |
+| `after_tool_call` | 工具调用返回后。工具正常返回结果、返回失败结果、因审批未通过而未执行，或被 `before_tool_call` 钩子拒绝时都会触发。 | `tool`：工具调用<br>`origin`：同上<br>`result`：运行结果 |
+| `tool_error` | 工具调用抛出运行错误后。同一次调用会先触发 `after_tool_call`，再触发 `tool_error`。 | `tool`：工具调用<br>`origin`：同上<br>`result`：运行结果，其中 `result.error` 为 `true` |
+
+`origin` 描述发起这次工具调用的调用本身：`kind`（`turn`、`sub_agent` 或 `workflow_node`）、`session_id`、`invocation_id`、`attempt`，以及递归向外的 `parent`（最外层为 `null`）。子智能体的工具调用携带它 `sub_agent_start` 事件里公布的 `invocation_id`，因此同一个 profile 的多个并发子智能体可以区分开；`parent` 一路指回这次调用最终所属的对话轮次或工作流节点。调用没有绑定调用时 `origin` 为 `null`。该字段是新增的，既有钩子不受影响。
+
+并发执行的多个子智能体可能读写同一份状态文件。钩子需要按子智能体区分状态时，应使用 `origin.invocation_id` 而不是 `session_id`。
 
 ### 审批事件
 
@@ -166,7 +181,6 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | `phase2` | 移除较早的工具调用及其结果。 |
 | `phase3` | 用摘要代替已完成的较早轮次。 |
 | `phase4` | 生成用于续接当前任务的 Last Words，并缩减当前轮内容。 |
-| `force` | 强制压缩。 |
 
 ### 工作流事件
 
@@ -185,8 +199,8 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | --- | --- |
 | `user_prompt_submit` | 拒绝消息、[请你确认](#请你确认)或添加系统提醒。被拒绝的主对话消息会留在输入框中；如果是在智能体运行期间提交的，智能体会继续工作。顺便问被拒绝时会在卡片中显示原因；顺便问的系统提醒仅用于该顺便问。 |
 | `before_tool_call` | 拒绝工具调用、[请你确认](#请你确认)或修改参数，但不能批准调用或绕过审批。 |
-| `after_tool_call` | 向工具结果追加上下文，但不能撤销已经发生的调用。 |
-| `tool_error` | 向工具错误追加上下文，但不能撤销已经发生的调用。 |
+| `after_tool_call` | 向工具结果追加上下文或替换结果文本，但不能撤销已经发生的调用。 |
+| `tool_error` | 向工具错误追加上下文或替换结果文本，但不能撤销已经发生的调用。 |
 
 ### 异步钩子的等待时机
 
@@ -409,7 +423,7 @@ iCode 会按字面量替换 `env` 值和 `cwd` 中出现的上述模板。其他
 | `timeout_seconds` | 大于 `0` 的数值 | `30.0` | 钩子的最长运行时间，单位为秒；启用 `detach` 时忽略。 |
 | `on_error` | `block`、`warn` 或 `ignore` | `warn` | 钩子失败后的处理方式，具体行为见下表。 |
 
-`on_error` 决定钩子无法启动、运行超时或返回非零退出码时，iCode 如何继续：
+`on_error` 决定钩子无法启动、运行超时、返回非零退出码，或在闸门事件上留下的结果文件无法采用时，iCode 如何继续：
 
 | 值 | 行为 |
 | --- | --- |
@@ -486,6 +500,8 @@ execution:
 | `profile` | 当前智能体的名称，例如 `Code`。对于子智能体事件，以及子智能体内部的工具、审批和上下文压缩事件，此字段是子智能体的配置名称。 |
 | `cwd` | 当前会话的工作目录。`run.cwd` 设置的是钩子进程的工作目录，不会改变此字段。 |
 | `confirmation_available` | 仅用于 `user_prompt_submit` 和 `before_tool_call`。此钩子能[请你确认](#请你确认)时为 `true`：它是阻塞式钩子，并且有人能回答（`icode run` 和从命令行运行的工作流中没有）。可据此决定无人可问时怎么处理。 |
+| `extra_context_available` | 仅用于 `before_tool_call`。此钩子返回的 `extra_context` 会随调用结果交给模型时为 `true`：它是阻塞式钩子。旧版 iCode 不发送此字段，也会忽略 `before_tool_call` 的 `extra_context`；需要确保提示送达的钩子可以检查它是否为 `true`，否则改用 `ask` 或 `block`。 |
+| `operation` | 仅用于 `user_prompt_submit` 和 `before_tool_call`。同一次操作（工具调用或用户输入）的身份：`id`、当前参数版本 `revision`、以及这是第几次检查 `check`。参数被审批编辑或被钩子修改后，iCode 从头重新检查，同一次操作会出现多次，`check` 从 1 递增而 `id` 不变。需要按调用计数的钩子应据此去重，而不是把每次检查当成新的调用。 |
 
 例如，一次工具调用前的输入包含以下基础字段：
 
@@ -538,6 +554,7 @@ execution:
 | `rejection_source` | 仅在调用被拒绝时出现；`user` 表示用户拒绝，`hook` 表示钩子拒绝，`approval_invalidated` 表示审批后参数改写使原授权失效。 |
 | `hook_denied` | 仅在调用被拒绝时出现；仅钩子拒绝时为 `true`，其他拒绝来源均为 `false`。 |
 | `hook_confirmation` | 仅当钩子[请你确认](#请你确认)后调用没有继续时出现，说明原因：`declined`（你选择了取消）、`timed_out`（未及时回答）或 `unavailable`（无人可问）。此时 `rejection_source` 为 `hook`。 |
+| `outcome` | 这次调用是怎么结束的，取 `rejected`（被拒绝，没有执行）、`errored`（抛出异常）、`failed`（返回了失败结果，没有抛异常）或 `ok`（执行并返回）。同一次调用的 `after_tool_call` 和 `tool_error` 带着同一个值。它说明的是这次调用怎么结束，不是哪一次调用，所以按调用计数请用 `tool.call_id`，或者只监听 `after_tool_call`（每次调用都触发，包括后面还会触发 `tool_error` 的那些）。 |
 
 `error: true` 时，`failed` 也为 `true`，但 `failed: true` 不一定表示抛出了异常。`tool_error` 只在抛出异常时触发；需要检查各类失败时，应监听 `after_tool_call` 并检查 `result.failed`。
 
@@ -582,16 +599,20 @@ execution:
 
 | 字段 | 类型 | 生效事件与条件 | 说明 |
 | --- | --- | --- | --- |
-| `action` | `allow`、`block`、`modify` 或 `ask` | `user_prompt_submit`、`before_tool_call` | 默认为 `allow`。两种事件都接受 `block` 和 `ask`；只有 `before_tool_call` 接受 `modify`。 |
+| `action` | `allow`、`block`、`modify`、`ask` 或 `warn` | `user_prompt_submit`、`before_tool_call` | 默认为 `allow`。两种事件都接受 `block` 和 `ask`；只有 `before_tool_call` 接受 `modify`。`warn` 放行调用并保留钩子提供的文本。 |
 | `reason` | 字符串 | `user_prompt_submit`、`before_tool_call`，且 `action: block` 或 `ask` | 用于 `block` 时，是向用户显示的拒绝原因，工具调用被拒绝时也会提供给模型；用于 `ask` 时，是 iCode 请你确认时显示的内容。 |
 | `args_override` | 对象 | `before_tool_call` 且 `action: modify` | 将其中的顶层字段加入现有 `tool.args`。同名字段会替换原值；如果值是对象，该对象也会被整体替换。 |
 | `system_reminder` | 字符串 | `user_prompt_submit` | 作为系统提醒加入当前轮的每一次模型调用。 |
-| `extra_context` | 字符串 | `after_tool_call`、`tool_error` | 追加到工具结果文本，不能撤销已经发生的调用。 |
+| `extra_context` | 字符串 | `before_tool_call`、`after_tool_call`、`tool_error` | 追加到工具结果文本，不能撤销已经发生的调用。来自 `before_tool_call` 时不影响调用是否执行：调用执行后，这段文本排在 `after_tool_call` 的内容之前，钩子可以借此放行调用、同时提醒模型。被拒绝的调用不会带上它；调用参数被重新检查时（见[请你确认](#请你确认)），只保留最后一次检查的文本。 |
+| `result_override` | 字符串 | `after_tool_call`、`tool_error` | 替换模型读到的工具结果文本，不能撤销已经发生的调用。多个钩子都给出时，按执行顺序后一个覆盖前一个。空字符串会扣留结果文本，省略该字段则保留之前的文本。带图片的结果保留图片，只替换文本；非文本结果保持不变。`extra_context` 排在替换后的文本之后。 |
+
+如果工具已经返回，但结果钩子尚未执行完就发生中断，恢复后的历史会显示中断提示。历史仍会记录该工具已经执行，重试时不会重复调用。子代理自身的对话记录和最终回答预览会单独保存，仍可能包含父调用的钩子处理前的内容。
 
 结果文件按以下规则读取：
 
 - 空文件或未写入结果等同于 `{"action": "allow"}`。
-- JSON 无效、顶层不是对象或文件超过 1 MiB 时，iCode 会记录警告并忽略结果，按无决定处理。
+- JSON 无效、顶层不是对象或文件超过 1 MiB 时，iCode 会记录警告并忽略结果。在 `user_prompt_submit` 和 `before_tool_call` 上，这按钩子失败处理：即使退出码为 `0`，也应用 `on_error`。
+- `action` 不是 `allow`、`block`、`modify`、`ask` 或 `warn` 时同样按钩子失败处理，写错的动作不会静默放行当前操作。丢掉的只有这个动作：结果文件里的其他字段（`reason`、`system_reminder`、`extra_context`、`result_override`）照常生效，所以写了本版本不认识的 action 的钩子，它写的其他内容都还在。
 - 未知字段会被忽略。
 
 多个钩子的决定如何组合，见[多个钩子的执行顺序与配置合并](#多个钩子的执行顺序与配置合并)。
@@ -616,10 +637,10 @@ iCode 随即暂停这次操作并询问你，显示钩子、原因，以及工�
 
 ### 执行顺序
 
-同时加载项目配置和全局配置时，执行模式决定钩子在哪个阶段运行，配置来源决定每个阶段内的顺序。对于同一次事件，iCode 按以下两个阶段处理钩子：
+同时加载工作目录配置和全局配置时，执行模式决定钩子在哪个阶段运行，配置来源决定每个阶段内的顺序。对于同一次事件，iCode 按以下两个阶段处理钩子：
 
-1. 依次检查并运行匹配的阻塞式钩子：先检查项目钩子，再检查全局钩子，各自保持配置文件中的定义顺序。
-2. 如果没有钩子拒绝操作，iCode 再启动匹配的异步和即发即弃钩子：先按项目配置中的定义顺序启动，再按全局配置中的定义顺序启动。这些非阻塞钩子可能并发运行，因此完成顺序不一定与启动顺序相同。
+1. 依次检查并运行匹配的阻塞式钩子：先检查工作目录钩子，再检查全局钩子，各自保持配置文件中的定义顺序。
+2. 如果没有钩子拒绝操作，iCode 再启动匹配的异步和即发即弃钩子：先按工作目录配置中的定义顺序启动，再按全局配置中的定义顺序启动。这些非阻塞钩子可能并发运行，因此完成顺序不一定与启动顺序相同。
 
 阻塞式钩子返回的操作决定按以下规则组合：
 
@@ -627,22 +648,23 @@ iCode 随即暂停这次操作并询问你，显示钩子、原因，以及工�
 | --- | --- |
 | `args_override` | 立即修改工具参数。后续钩子使用修改后的参数进行匹配和检查；多个钩子修改同一参数时，后运行的钩子覆盖先运行的钩子。 |
 | `system_reminder`、`extra_context` | 按钩子的执行顺序累积。 |
+| `result_override` | 按钩子的执行顺序覆盖，后运行的钩子给出即生效。 |
 | `action: block` | 对 `user_prompt_submit` 和 `before_tool_call`，第一个拒绝决定会停止当前事件的剩余钩子，包括尚未启动的非阻塞钩子。 |
 | `action: ask` | iCode 在下一个钩子运行前询问你。你选择继续时，其余钩子接着运行；否则按拒绝处理。多个钩子都询问时，会逐个询问。 |
 
 对于 `user_prompt_submit` 和 `before_tool_call`，阻塞式钩子失败且配置了 `on_error: block` 时，同样会拒绝当前操作并停止当前事件的剩余钩子。
 
-因此，项目钩子修改工具参数后，后续全局钩子会看到修改后的参数；项目钩子拒绝操作后，当前事件的全局钩子不会运行。
+因此，工作目录钩子修改工具参数后，后续全局钩子会看到修改后的参数；工作目录钩子拒绝操作后，当前事件的全局钩子不会运行。
 
 ### 同名 ID 不会覆盖钩子
 
-项目配置和全局配置可以定义相同的 `id`。两个钩子都会保留，iCode 同时会记录重名警告。
+工作目录配置和全局配置可以定义相同的 `id`。两个钩子都会保留，iCode 同时会记录重名警告。
 
-同一配置文件内不能出现重复的 `id`，否则该配置文件加载失败。`id` 只用于标识钩子，不是覆盖键；在项目配置中定义同名钩子，不能覆盖或停用全局钩子。需要停用全局钩子时，应编辑全局配置，将该钩子的 `enabled` 设为 `false`，或者删除该钩子定义。
+同一配置文件内不能出现重复的 `id`，否则该配置文件加载失败。`id` 只用于标识钩子，不是覆盖键；在工作目录配置中定义同名钩子，不能覆盖或停用全局钩子。需要停用全局钩子时，应编辑全局配置，将该钩子的 `enabled` 设为 `false`，或者删除该钩子定义。
 
 ### 设置合并与加载失败
 
-项目配置和全局配置中的 `settings` 按字段合并：项目配置中明确设置的值优先，其次使用全局配置中的值；两处都没有设置时使用默认值。
+工作目录配置和全局配置中的 `settings` 按字段合并：工作目录配置中明确设置的值优先，其次使用全局配置中的值；两处都没有设置时使用默认值。
 
 任一配置文件无效时，iCode 会显示警告，并停用该文件定义的所有钩子；另一处有效配置文件仍然生效。未找到配置文件不会产生警告。如需查看文件中的全部问题，运行 [`icode hook validate`](#icode-hook-validate)。
 
@@ -656,18 +678,18 @@ iCode 随即暂停这次操作并询问你，显示钩子、原因，以及工�
 icode hook list [--json]
 ```
 
-命令依次列出找到的每个配置文件，先列项目配置文件，再列全局配置文件。每个文件的第一行显示其路径和以下状态之一：
+命令依次列出找到的每个配置文件，先列工作目录配置文件，再列全局配置文件。每个文件的第一行显示其路径和以下状态之一：
 
 | 状态 | 含义 |
 | --- | --- |
 | `loaded` | 在此目录启动的会话会运行该文件中的钩子 |
-| `not loaded` | 项目钩子未开启，参见[加载配置文件](#加载配置文件)。如果文件同时有错误，也会显示第一个错误 |
+| `not loaded` | 工作目录钩子未开启，参见[加载配置文件](#加载配置文件)。如果文件同时有错误，也会显示第一个错误 |
 | `invalid, not loaded` | 文件有错误，会话不会运行其中任何钩子。此处只显示第一个错误；运行 `icode hook validate` 可查看全部错误 |
 
 随后按顺序列出该文件中的钩子。每个钩子先显示 ID，括号中为事件和运行模式，`enabled` 为 `false` 时另加 `turned off`。有匹配条件时，下一行 `match:` 列出匹配条件；之后的 `run:` 行为 `script` 加脚本路径、`command` 加程序名，或 `shell`。命令参数、环境变量的值和 Shell 片段不会显示，因为其中可能含有密码或令牌。只有从运行命令的文件夹能找到脚本路径和程序时（文件存在，或程序在 `PATH` 中），才会显示它们；否则显示 `…`，因为其中可能还写了别的内容，例如 `"notify --token abc"`。只能通过钩子自己的 `cwd` 或 `PATH` 设置找到的程序，也显示为 `…`。`icode hook validate` 会报告它能确定不存在的脚本和程序。因匹配条件中的正则表达式无效而被跳过的钩子，显示在 `skipped` 行中。
 
 ```text
-Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
+Working directory hooks: ./.chrys/hooks/hooks.yaml (loaded)
   record-turn (after_turn, fire_and_forget)
     run: script scripts/record_turn.py
   protect-env (before_tool_call, blocking)
@@ -677,7 +699,7 @@ Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
 
 即使有文件无效，该命令的退出码也为 0；如需检查文件，请使用 `icode hook validate`。
 
-添加 `--json` 后，stdout 输出一个对象：`version`（当前为 `1`）、`files` 和 `searched`（查找过的文件夹）。`files` 中每项包含 `scope`（`project` 或 `global`）、`path`、`state`（`loaded`、`not_loaded` 或 `invalid`；项目钩子未开启时总是 `not_loaded`）、`error`（使会话不加载该文件的错误，格式与 `validate` 的诊断项相同，没有时为 `null`；其他错误，例如脚本不存在，只由 `validate` 报告）、`hooks`，以及 `skipped`（每项包含 `id` 和 `reason`）。每个钩子包含 `id`、`event`、`enabled`、`description`、`execution`、`match` 和 `run`；`run` 中的 `type` 为 `script`、`command` 或 `shell`，`path` 为脚本路径，`program` 为命令的程序；钩子为其他类型或列表中显示为 `…` 时为 `null`。
+添加 `--json` 后，stdout 输出一个对象：`version`（当前为 `1`）、`files` 和 `searched`（查找过的文件夹）。`files` 中每项包含 `scope`（`workdir` 或 `global`）、`path`、`state`（`loaded`、`not_loaded` 或 `invalid`；工作目录钩子未开启时总是 `not_loaded`）、`error`（使会话不加载该文件的错误，格式与 `validate` 的诊断项相同，没有时为 `null`；其他错误，例如脚本不存在，只由 `validate` 报告）、`hooks`，以及 `skipped`（每项包含 `id` 和 `reason`）。每个钩子包含 `id`、`event`、`enabled`、`description`、`execution`、`match` 和 `run`；`run` 中的 `type` 为 `script`、`command` 或 `shell`，`path` 为脚本路径，`program` 为命令的程序；钩子为其他类型或列表中显示为 `…` 时为 `null`。
 
 ### `icode hook validate`
 
@@ -687,7 +709,7 @@ Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
 icode hook validate [<path>] [--json]
 ```
 
-不指定 `<path>` 时，命令检查当前目录的项目配置文件和全局配置文件；即使项目钩子未开启，也会检查项目配置文件。`<path>` 可以是钩子配置文件（文件名和位置不限），也可以是文件夹；指定文件夹时，检查会话会在该文件夹中读取的那个文件。
+不指定 `<path>` 时，命令检查当前目录的工作目录配置文件和全局配置文件；即使工作目录钩子未开启，也会检查工作目录配置文件。`<path>` 可以是钩子配置文件（文件名和位置不限），也可以是文件夹；指定文件夹时，检查会话会在该文件夹中读取的那个文件。
 
 会话遇到第一个错误就停止，并忽略整个文件；校验则会继续，报告每个有问题的钩子。对于能被接受、但很可能达不到预期效果的配置，校验也会给出警告。
 
@@ -727,7 +749,7 @@ FAIL 1 file · 2 hooks: 1 error, 1 warning
 | `durable_blocking` | 为阻塞式钩子设置了 `delivery: durable`，阻塞式钩子不使用该设置 |
 | `broad_before_tool_call` | `before_tool_call` 钩子没有匹配条件，会在每次工具调用时运行 |
 | `retired_shell_arg` | `match.args` 使用了 shell 参数的旧名：`working_dir`，或在 `tool_kind: shell` 下的 `max_tokens`；目前仍会匹配 shell 调用。参见[已改名的 shell 参数](#已改名的-shell-参数) |
-| `duplicate_id_across_files` | 项目和全局配置文件都定义了该 `id`，两个钩子都会运行 |
+| `duplicate_id_across_files` | 工作目录和全局配置文件都定义了该 `id`，两个钩子都会运行 |
 | `shadowed_file` | 文件夹中有多个钩子配置文件，只读取第一个（参见[配置文件位置](#配置文件位置)） |
 | `program_not_found` | 在 `PATH` 中找不到运行已启用钩子的命令或脚本所需的程序，或者在 Windows 上找到的只是提示从 Microsoft Store 获取 Python 的占位程序 |
 | `unknown_template_var` | `run.cwd` 或 `run.env` 使用了 iCode 不会替换的 `${...}` 变量，或者 `run.argv` 或 `run.args` 使用了任何 `${...}` 变量（iCode 只替换 `cwd` 和 `env` 值中的变量），该变量会按原样传递 |
@@ -740,6 +762,6 @@ FAIL 1 file · 2 hooks: 1 error, 1 warning
 | --- | --- |
 | `version` | 整数：报告格式版本，当前为 `1` |
 | `status` | 字符串：`pass` 或 `fail` |
-| `files` | 对象数组：检查过的每个文件，包含 `scope`（`project`、`global`，或在命令行中指定的文件为 `path`）、`path`、`loaded`（在此目录启动的会话是否加载该文件；`path` 时为 `null`）和 `hook_count`（钩子条目数） |
+| `files` | 对象数组：检查过的每个文件，包含 `scope`（`workdir`、`global`，或在命令行中指定的文件为 `path`）、`path`、`loaded`（在此目录启动的会话是否加载该文件；`path` 时为 `null`）和 `hook_count`（钩子条目数） |
 | `searched` | 字符串数组：命令查找过的文件夹或路径 |
 | `diagnostics` | 对象数组：每个问题的 `severity`（`error` 或 `warning`）、`code`、`message`、`file`、`line` 和 `column`（从 1 开始）、`hook_id`，以及 `entry`（钩子在 `hooks` 中的位置，从 0 开始） |

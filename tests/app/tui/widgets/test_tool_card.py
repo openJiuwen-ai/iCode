@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from types import ModuleType
+
 import pytest
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -13,6 +16,8 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static
 
+from chrys.app.tui import clipboard
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.widgets.chat import tool_renderers
 from chrys.app.tui.widgets.chat.fold_rows import FoldRow
@@ -38,6 +43,7 @@ from tests.support.tui_helpers import (
     WidgetApp,
     click_copy_button,
     click_widget,
+    open_process_for,
     png_bytes,
     rich_plain,
 )
@@ -263,6 +269,7 @@ async def test_tool_copy_button_copies_full_input_and_output(monkeypatch: pytest
         click_copy_button(tc.query_one(ToolCardHeader))
         await pilot.pause()
 
+        await wait_for_clipboard(pilot.app)
         assert copied
         assert len(copied) == 1
         payload = copied[-1]
@@ -296,6 +303,7 @@ async def test_tool_copy_button_sanitizes_control_characters(monkeypatch: pytest
         click_copy_button(tc.query_one(ToolCardHeader))
         await pilot.pause()
 
+        await wait_for_clipboard(pilot.app)
         assert len(copied) == 1
         payload = copied[-1]
         assert "query\tvalue\nnul:" in payload
@@ -312,7 +320,23 @@ async def test_tool_copy_button_sanitizes_control_characters(monkeypatch: pytest
         assert "\x7f" not in payload
 
 
-async def test_tool_copy_large_payload_skips_terminal_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(params=["macos", "windows"])
+def ssh_clipboard_platform(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    os_name: str = request.param
+    monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
+    monkeypatch.setenv("SSH_CONNECTION", "client 123 server 22")
+    platform = clipboard.platform_helpers
+    shadow = ModuleType(platform.__name__)
+    shadow.__dict__.update(platform.__dict__)
+    info = replace(platform.get_platform(), os_name=os_name)
+    shadow.get_platform = lambda: info
+    monkeypatch.setattr(clipboard, "platform_helpers", shadow)
+    return os_name
+
+
+async def test_tool_copy_large_payload_skips_terminal_clipboard(
+    monkeypatch: pytest.MonkeyPatch, ssh_clipboard_platform: str
+) -> None:
     async with LocalizedWidgetApp(lambda: ToolCall("c1", "zsh", args={"command": "yes"})).run_test() as pilot:
         copied: list[str] = []
         monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
@@ -324,12 +348,17 @@ async def test_tool_copy_large_payload_skips_terminal_clipboard(monkeypatch: pyt
         click_copy_button(tc.query_one(ToolCardHeader))
         await pilot.pause()
 
-        assert copied
-        assert len(copied) == 1
-        assert pilot.app.clipboard != copied[-1]
+        await wait_for_clipboard(pilot.app)
+        assert pilot.app.clipboard == ""
+        if ssh_clipboard_platform == "windows":
+            assert copied == []
+        else:
+            assert copied == [tc.format_tool_execution_copy()]
 
 
-async def test_tool_copy_small_payload_reports_terminal_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tool_copy_small_payload_reports_terminal_unavailable(
+    monkeypatch: pytest.MonkeyPatch, ssh_clipboard_platform: str
+) -> None:
     class ToolApp(LocalizedApp):
         def __init__(self) -> None:
             super().__init__()
@@ -341,7 +370,15 @@ async def test_tool_copy_small_payload_reports_terminal_unavailable(monkeypatch:
         def copy_to_clipboard(self, _text: str) -> None:
             raise RuntimeError("terminal clipboard unavailable")
 
-        def notify(self, message: str, **_kwargs: object) -> None:  # type: ignore[override]
+        def notify(
+            self,
+            message: str,
+            *,
+            title: str = "",
+            severity: str = "information",
+            timeout: float | None = None,
+            markup: bool = True,
+        ) -> None:
             self.notifications.append(message)
 
     async with ToolApp().run_test() as pilot:
@@ -355,8 +392,14 @@ async def test_tool_copy_small_payload_reports_terminal_unavailable(monkeypatch:
         click_copy_button(tc.query_one(ToolCardHeader))
         await pilot.pause()
 
-        assert copied
-        assert "terminal clipboard unavailable" in pilot.app.notifications[-1]
+        await wait_for_clipboard(pilot.app)
+        assert pilot.app.clipboard == ""
+        if ssh_clipboard_platform == "windows":
+            assert copied == []
+            assert pilot.app.notifications == ["Could not copy to the system clipboard. Please try again."]
+        else:
+            assert copied == [tc.format_tool_execution_copy()]
+            assert "terminal clipboard unavailable" in pilot.app.notifications[-1]
 
 
 async def test_file_tool_copy_includes_snapshot_diff(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -366,6 +409,8 @@ async def test_file_tool_copy_includes_snapshot_diff(monkeypatch: pytest.MonkeyP
 
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_tool_start("c1", "write_file", "filesystem.write", args={"path": "README.md"})
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         await pilot.pause()
         header = pilot.app.query_one(ToolCardHeader)
         assert header.actions_visible is False
@@ -383,6 +428,7 @@ async def test_file_tool_copy_includes_snapshot_diff(monkeypatch: pytest.MonkeyP
         click_copy_button(header)
         await pilot.pause()
 
+        await wait_for_clipboard(pilot.app)
         assert len(copied) == 1
         payload = copied[-1]
         assert "## Diff" in payload

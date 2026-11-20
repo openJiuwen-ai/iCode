@@ -56,6 +56,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import get_platform
+from chrys.foundation.util.imports import import_off_loop
 from chrys.orchestration.engine.state.lifecycle_permits import RebuildPermitDenied
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -72,6 +73,8 @@ from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.profiles.models.serializer import save_profile
 from chrys.service.prompt_shortcuts import load_prompt_shortcuts, prompt_shortcut_folders
 from chrys.service.state.store import JsonFileStateStore
+from chrys.service.tools.packs import IMPLEMENTATION_MODULES
+from tests.service.llm._model_list_support import preload_sdks
 from tests.support.scripted_clients import FrameworkBoom
 from tests.support.toasts import shown_toasts
 from tests.support.tui_app_harness import make_chrys_app
@@ -355,6 +358,13 @@ async def running_session(
     nothing is waited for. A load's dialog goes through its finished steps and
     closes without pausing on them unless *load_holds* keeps its real pauses.
     """
+    # Builtin profiles also construct sub-agent/approval clients: mocking the
+    # main model does not avoid their SDK imports. A cold worker can spend the
+    # entire UI-ready budget reading bytecode or waiting on those import locks.
+    # Prepare the real dependencies before mounting the app; all engine builds,
+    # progress events and loading-dialog transitions still run normally.
+    await asyncio.to_thread(preload_sdks)
+    await import_off_loop(*IMPLEMENTATION_MODULES)
     if not load_holds:
         monkeypatch.setattr(AgentLoadDialog, "COMPLETE_STEP_HOLD_SECONDS", 0.0)
         monkeypatch.setattr(AgentLoadDialog, "FINISH_HOLD_SECONDS", 0.0)

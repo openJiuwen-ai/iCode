@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import dataclasses
-import functools
 import io
 import os
 import sys
@@ -22,6 +21,7 @@ from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.events.types import Warning as WarningEvent
 from chrys.foundation.i18n import MessageRef
 from chrys.orchestration import startup
+from tests.support.symlinks import symlink_or_skip
 
 
 def _isolate_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -43,6 +43,39 @@ def _claim_env_name(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     """Restore ``name`` after any environment writes made by the code under test."""
     monkeypatch.setenv(name, "claimed")
     monkeypatch.delenv(name)
+
+
+@pytest.mark.parametrize("saved", ["true", "false"])
+def test_startup_skips_the_retired_process_folding_setting_and_leaves_a_symlinked_file_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, saved: str
+) -> None:
+    from chrys.foundation.config.warnings import settings_warning_events
+
+    _isolate_startup(monkeypatch, tmp_path)
+    monkeypatch.setattr("chrys.foundation.patches.apply_all", lambda: None)
+    monkeypatch.setattr("chrys.foundation.observability.setup.setup_otel", lambda _settings: None)
+    path = tmp_path / "config" / "settings.yaml"
+    # A first start records the existing one-time migrations, as on any machine that has run iCode.
+    path.write_text("ui:\n  theme: nord\n", encoding="utf-8")
+    startup.bootstrap_runtime()
+    shared = tmp_path / "dotfiles" / "settings.yaml"
+    shared.parent.mkdir()
+    shared.write_text(
+        path.read_text(encoding="utf-8") + f"ui.chat.fold_finished_turns: {saved}\nui.chat.typo: 1\n", encoding="utf-8"
+    )
+    original = shared.read_bytes()
+    path.unlink()
+    symlink_or_skip(path, shared)
+
+    result = startup.bootstrap_runtime()
+
+    unknown = [event for event in settings_warning_events(result.loaded) if event.code == "setting_unknown_keys"]
+    assert len(unknown) == 1
+    assert "ui.chat.typo" in unknown[0].message
+    assert "fold_finished_turns" not in unknown[0].message
+    # Nothing rewrites the document to drop the retired line, so the link survives.
+    assert path.is_symlink()
+    assert shared.read_bytes() == original
 
 
 def test_set_process_title_delegates_to_setproctitle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -525,25 +558,25 @@ def test_bootstrap_survives_a_settings_document_held_by_another_process(
 ) -> None:
     # A second Chrys must still start while the first is stalled inside the
     # document's lock: the read is on every entry point's startup path.
-    from chrys.foundation.config.yaml_store import lock_path_for, read_yaml_document, update_yaml_doc
+    from chrys.foundation.config import yaml_store
     from chrys.foundation.util.lock import FileLock
 
     _quiet_bootstrap(monkeypatch, tmp_path)
+
     # Real lock, real contention, real ``TimeoutError`` — only the ten-second
     # wait is shortened, at every point on the boot path that reaches for this
     # document, so the test costs milliseconds instead of stalling a worker for
     # three full production timeouts.
-    for target, function in (
-        ("chrys.foundation.config.settings_store.read_yaml_document", read_yaml_document),
-        ("chrys.foundation.config.migrations.update_yaml_doc", update_yaml_doc),
-    ):
-        monkeypatch.setattr(target, functools.partial(function, lock_timeout=0.05))
+    def short_lock(path, *, timeout):
+        return FileLock(path, timeout=min(timeout, 0.05))
+
+    monkeypatch.setattr(yaml_store, "FileLock", short_lock)
     monkeypatch.delenv("CHRYS_THEME", raising=False)
     settings_path = tmp_path / "config" / "settings.yaml"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text("schema_version: 1\nui:\n  theme: solar\n", encoding="utf-8")
 
-    held = FileLock(lock_path_for(settings_path), timeout=0)
+    held = FileLock(yaml_store.lock_path_for(settings_path), timeout=0)
     held.acquire()
     try:
         bootstrap = startup.bootstrap_runtime()
@@ -582,7 +615,7 @@ def test_bootstrap_ignores_and_preserves_dotenv_files(monkeypatch, tmp_path, led
         patch("builtins.open", file_open),
         patch("os.open", wraps=os.open) as fd_open,
     ):
-        bootstrap = startup.bootstrap_runtime(project_root=tmp_path)
+        bootstrap = startup.bootstrap_runtime(workdir=tmp_path)
 
     opened = set()
     for args, kwargs in (*file_open.call_args_list, *fd_open.call_args_list):

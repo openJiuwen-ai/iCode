@@ -19,7 +19,6 @@ from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
 from chrys.foundation.util.time import utc_iso
 from chrys.kernel import EXCLUDED_KEY as _EXCLUDED_KEY
 from chrys.kernel import (
-    TOOL_CALL_CONTENT_TYPES,
     AgentSession,
     HistoryProvider,
     Message,
@@ -28,7 +27,7 @@ from chrys.kernel import (
     strip_invalidated_conversation_handles,
 )
 from chrys.service.context.middleware.usage import contains_provider_hosted_content, resolve_hosted_context_input_tokens
-from chrys.service.context.tool_content import tool_call_name
+from chrys.service.context.providers.fold_summary import build_fold_summary, first_user_text, fold_summary_turn_chars
 from chrys.service.session.message_metadata import (
     LAST_ASSISTANT_CREATED_AT_STATE_KEY,
     MESSAGE_CREATED_AT_KEY,
@@ -73,6 +72,8 @@ _TURN_KEY = TURN_INDEX_KEY
 TURN_STARTED_AT_KEY = "_turn_started_at"
 """On a turn marker: when the pass it closes began, as the user sent its message or pressed Continue or Retry."""
 _BLOCK_ID_KEY = "_block_id"
+_BLOCK_LABEL_CHARS = 80
+"""How much of a block's first user message a listing shows to tell blocks apart."""
 PRE_OUTPUT_HISTORY_LEN_STATE_KEY = "_chrys_pre_output_history_len"
 
 
@@ -424,25 +425,30 @@ class CompressibleHistoryProvider(HistoryProvider):
             self._compaction_strategy.persist_exclusions_to_state(messages)
             state_rewritten_after_output |= len(messages) != previous_length
 
-        # Force-compress: if context usage still exceeds force_compress_pct
-        # after compaction, auto-compress the oldest uncompressed turn.
+        # A turn that ended above the force line books a turn-boundary pass on
+        # the strategy (history is not rewritten here); a provider without a
+        # strategy folds its oldest turn instead.
         state_rewritten_after_output = (
-            await self._check_force_compress(state, context, session.invalidated_service_session_ids)
+            await self._check_turn_end_usage(state, context, session.invalidated_service_session_ids)
             or state_rewritten_after_output
         )
         if state_rewritten_after_output:
             _refresh_pre_output_history_len_from_anchors(state, current_turn_anchors)
 
-    async def _check_force_compress(
+    async def _check_turn_end_usage(
         self,
         state: dict[str, Any],
         context: SessionContext,
         invalidated_handles: Collection[str] | None = None,
     ) -> bool:
-        """Auto-compress the oldest turn if context usage exceeds force_compress_pct.
+        """Act on a turn that ended above ``force_compress_pct``; return whether history was rewritten.
 
-        Delegates to the strategy's ``force_compress`` if available, falling
-        back to the static ``compress()`` for strategy-less providers.
+        With a strategy this only books a turn-boundary pass: the next request
+        compacts down to the target in one pass, oldest tool output first.
+        Folding one turn here instead would rewrite the prompt head after
+        nearly every turn while freeing about as much as the turn added.  A
+        strategy-less provider folds its oldest turn with the static
+        ``compress()``.
         """
         if self._max_context_tokens <= 0 or self._force_compress_pct >= 1.0:
             return False
@@ -457,7 +463,7 @@ class CompressibleHistoryProvider(HistoryProvider):
             return False
 
         # ``usage_details`` is the billable aggregate across every model call
-        # in a tool loop.  Force-compression needs the final call's input size,
+        # in a tool loop.  This check needs the final call's input size,
         # which represents the actual context occupancy.
         if not context.response or not context.response.latest_usage_details:
             return False
@@ -479,24 +485,19 @@ class CompressibleHistoryProvider(HistoryProvider):
         if pct <= self._force_compress_pct:
             return False
 
-        # Find the oldest available fold marker
+        # The turn that just ended has no marker yet, so every marker here is
+        # an older turn: the ones a turn-boundary pass may work on.
         info = self.list_compressed(state)
         markers = info.get("markers", [])
         if not markers:
             return False
 
-        marker_id = markers[0]["marker_id"]
-        summary = _auto_summary(state, markers[0].get("position", 0))
-
         if self._compaction_strategy is not None:
-            compressed_context_id = await self._compaction_strategy.force_compress(
-                marker_id,
-                summary,
-                source="auto",
-                usage_pct=pct,
-                tokens_before=input_tokens,
-            )
-            return compressed_context_id is not None
+            self._compaction_strategy.request_turn_boundary_pass()
+            return False
+
+        marker_id = markers[0]["marker_id"]
+        summary = _auto_summary(state, markers[0].get("position", 0), max_context_tokens=self._max_context_tokens)
         try:
             self.compress(state, marker_id, summary)
         except ValueError:
@@ -543,7 +544,7 @@ class CompressibleHistoryProvider(HistoryProvider):
         """Compress messages from the last summary up to (inclusive) the target marker.
 
         Thin wrapper around :func:`_compress_state`.  Use the unified
-        strategy's ``queue_compression`` / ``force_compress`` for
+        strategy's ``queue_compression`` for
         tool-loop-aware compression.
 
         Returns:
@@ -573,6 +574,7 @@ class CompressibleHistoryProvider(HistoryProvider):
                 "turn_range": b.turn_range,
                 "num_messages": len(b.messages),
                 "created_at": b.created_at,
+                "first_user_text": first_user_text(b.messages, _BLOCK_LABEL_CHARS),
             }
             for b in compressed
         ]
@@ -601,17 +603,15 @@ class CompressibleHistoryProvider(HistoryProvider):
 
 
 # ---------------------------------------------------------------------------
-# Auto-summary for force-compress
+# Deterministic summary of a turn folded without the model
 # ---------------------------------------------------------------------------
 
-_AUTO_SUMMARY_USER_MAX = 100
-"""Max characters for user message text in auto-generated summaries."""
 
+def _auto_summary(state: dict[str, Any], marker_position: int, *, max_context_tokens: int = 0) -> str:
+    """Summarise the fold range ending at *marker_position* without a model call.
 
-def _auto_summary(state: dict[str, Any], marker_position: int) -> str:
-    """Generate a summary from messages up to marker_position for auto-compression.
-
-    Extracts user message snippets and tool names from the fold range.
+    *max_context_tokens* sizes each turn's share of the summary; unknown
+    (``0``) gives a turn the largest share.
     """
     messages: list[Message] = state.get("messages", [])
 
@@ -621,32 +621,7 @@ def _auto_summary(state: dict[str, Any], marker_position: int) -> str:
         if _is_compressed_summary(msg):
             fold_start = i + 1
 
-    fold_range = messages[fold_start : marker_position + 1]
-    if not fold_range:
-        return "Earlier conversation"
-
-    user_snippets: list[str] = []
-    tool_names: set[str] = set()
-
-    for msg in fold_range:
-        # Skip synthetic ``continue`` nudges so a fold summary never opens
-        # with "User: continue"; injections are real user input and stay.
-        if msg.role == "user" and not is_continuation_message(msg):
-            text = msg.text or ""
-            if text:
-                if len(text) > _AUTO_SUMMARY_USER_MAX:
-                    text = text[:_AUTO_SUMMARY_USER_MAX] + "..."
-                user_snippets.append(text)
-        for c in msg.contents:
-            if c.type in TOOL_CALL_CONTENT_TYPES and (name := tool_call_name(c)):
-                tool_names.add(name)
-
-    parts: list[str] = []
-    if user_snippets:
-        parts.append(f"User: {user_snippets[0]}")
-        if len(user_snippets) > 1:
-            parts.append(f"(+{len(user_snippets) - 1} more messages)")
-    if tool_names:
-        parts.append(f"Tools: {', '.join(sorted(tool_names))}")
-
-    return "; ".join(parts) if parts else "Earlier conversation"
+    return build_fold_summary(
+        messages[fold_start : marker_position + 1],
+        turn_chars=fold_summary_turn_chars(max_context_tokens),
+    )

@@ -8,6 +8,7 @@ import pytest
 from textual.actions import SkipAction
 from textual.app import App, ComposeResult
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.widgets.input import EnhancedInput
 from tests.support.waiting import wait_for
 
@@ -60,7 +61,7 @@ async def test_copy_keys_synchronize_app_and_os_clipboards(
     copy_key: str,
 ) -> None:
     os_clipboard: list[str] = []
-    monkeypatch.setattr("chrys.app.tui.clipboard.platform_helpers.clipboard_copy", os_clipboard.append)
+    monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", os_clipboard.append)
 
     app = _Harness()
     async with app.run_test() as pilot:
@@ -75,6 +76,7 @@ async def test_copy_keys_synchronize_app_and_os_clipboards(
 
         assert input_widget.value == "hello world"
         assert app.clipboard == "hello world"
+        await wait_for_clipboard(app)
         assert os_clipboard == ["hello world"]
 
 
@@ -83,7 +85,7 @@ async def test_ctrl_x_then_ctrl_v_round_trips_through_os_clipboard(monkeypatch: 
     os_clipboard = {"text": "older-os-text"}
     monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
     monkeypatch.setattr(
-        "chrys.app.tui.clipboard.platform_helpers.clipboard_copy",
+        "chrys.app.tui.clipboard.clipboard_copy",
         lambda text: os_clipboard.__setitem__("text", text),
     )
     monkeypatch.setattr(
@@ -103,6 +105,7 @@ async def test_ctrl_x_then_ctrl_v_round_trips_through_os_clipboard(monkeypatch: 
         await pilot.pause()
 
         assert input_widget.value == ""
+        await wait_for_clipboard(app)
         assert os_clipboard["text"] == "hello world"
 
         app.copy_to_clipboard("stale-app-text")

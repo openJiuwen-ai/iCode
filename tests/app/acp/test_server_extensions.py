@@ -641,7 +641,7 @@ async def test_session_runtime_extension_returns_runtime_payload() -> None:
         skill_sources={"builtin": ["skill1"]},
         hook_sources=[
             RuntimeHookSourceDetails(
-                scope="project",
+                scope="workdir",
                 source_path="/repo/.chrys/hooks/hooks.yaml",
                 hooks=[
                     RuntimeHookDetails(
@@ -682,7 +682,7 @@ async def test_session_runtime_extension_returns_runtime_payload() -> None:
     assert result["runtimeDetails"]["model"]["selection_source"] == "active"
     assert result["runtimeDetails"]["hook_sources"] == [
         {
-            "scope": "project",
+            "scope": "workdir",
             "source_path": "/repo/.chrys/hooks/hooks.yaml",
             "hooks": [
                 {
@@ -1151,6 +1151,56 @@ async def test_remaining_extension_requests_route_to_manager(case: _RouteCase) -
         assert ("chrys/runtime_update", {"sessionId": "s1"}) in [
             (method, {"sessionId": params.get("sessionId")}) for method, params in client.ext_notifications
         ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("stage", "stage_subject", "stage_status"),
+    [("mcp", "search", "running"), ("mcp", "search", "failed"), ("skills", "", "done")],
+)
+async def test_sub_agent_initialization_stage_reaches_acp_without_changing_outer_counts(
+    stage: str, stage_subject: str, stage_status: str
+) -> None:
+    host = _FakeHost(event_bus=EventBus())
+    client = _FakeClient()
+    server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(client)
+
+    await server._handle_event(
+        "s1",
+        AgentLoadProgress(
+            phase="sub_agents",
+            message="Loading sub-agent Explore",
+            server_name="Explore",
+            subject="Explore",
+            current=0,
+            total=3,
+            status="running",
+            stage=stage,
+            stage_subject=stage_subject,
+            stage_status=stage_status,
+        ),
+        AcpEventBridge(),
+        {},
+    )
+
+    assert client.ext_notifications == [
+        (
+            "chrys/agent_load_progress",
+            {
+                "sessionId": "s1",
+                "phase": "sub_agents",
+                "message": "Loading sub-agent Explore",
+                "serverName": "Explore",
+                "current": 0,
+                "total": 3,
+                "failed": 0,
+                "stage": stage,
+                "stageSubject": stage_subject,
+                "stageStatus": stage_status,
+            },
+        )
+    ]
 
 
 @pytest.mark.anyio

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Spec tests for loading prompt shortcut files from global and project folders."""
+"""Spec tests for loading prompt shortcut files from global and workdir folders."""
 
 from __future__ import annotations
 
@@ -15,7 +15,12 @@ from typing import Any
 import pytest
 
 import chrys.service.prompt_shortcuts.loader as loader_module
-from chrys.service.prompt_shortcuts import PromptShortcut, load_prompt_shortcuts, project_roots, prompt_shortcut_sources
+from chrys.service.prompt_shortcuts import (
+    PromptShortcut,
+    load_prompt_shortcuts,
+    prompt_shortcut_sources,
+    shortcut_search_dirs,
+)
 from chrys.service.prompt_shortcuts.loader import working_folder_dirs
 from tests.support.symlinks import symlink_or_skip
 
@@ -62,9 +67,9 @@ def test_the_shortcuts_folder_loads_with_nested_names(config_dir: Path) -> None:
     assert commands["review"].template == "Review the change."
 
 
-def test_workspace_none_turns_project_shortcuts_off(config_dir: Path, tmp_path: Path) -> None:
+def test_workspace_none_turns_workdir_shortcuts_off(config_dir: Path, tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
-    _write(workspace / ".chrys" / "shortcuts" / "proj.md", "Project prompt")
+    _write(workspace / ".chrys" / "shortcuts" / "proj.md", "Workdir prompt")
     _write(config_dir / "shortcuts" / "mine.md", "My prompt")
 
     assert [c.name for c in load_prompt_shortcuts(config_dir=config_dir, workspace=None)] == ["mine"]
@@ -185,13 +190,13 @@ def test_opencode_folder_names_are_not_read(config_dir: Path, tmp_path: Path) ->
     _write(config_dir / "commands" / "global-plural.md", "Global plural")
     _write(config_dir / "command" / "global-singular.md", "Global singular")
     workspace = tmp_path / "ws"
-    _write(workspace / ".chrys" / "commands" / "project-plural.md", "Project plural")
-    _write(workspace / ".chrys" / "command" / "project-singular.md", "Project singular")
-    _write(workspace / ".chrys" / "shortcuts" / "project.md", "Project")
+    _write(workspace / ".chrys" / "commands" / "workdir-plural.md", "Workdir plural")
+    _write(workspace / ".chrys" / "command" / "workdir-singular.md", "Workdir singular")
+    _write(workspace / ".chrys" / "shortcuts" / "workdir.md", "Workdir")
 
     commands = load_prompt_shortcuts(config_dir=config_dir, workspace=str(workspace))
 
-    assert [c.name for c in commands] == ["project"]
+    assert [c.name for c in commands] == ["workdir"]
 
 
 def test_outside_a_repo_only_the_workspace_is_read(config_dir: Path, tmp_path: Path) -> None:
@@ -201,14 +206,14 @@ def test_outside_a_repo_only_the_workspace_is_read(config_dir: Path, tmp_path: P
     _write(parent / ".chrys" / "shortcuts" / "parent.md", "Parent")
     _write(workspace / ".chrys" / "shortcuts" / "child.md", "Child")
 
-    assert [p.resolve() for p in project_roots(str(workspace))] == [workspace.resolve()]
+    assert [p.resolve() for p in shortcut_search_dirs(str(workspace))] == [workspace.resolve()]
     commands = load_prompt_shortcuts(config_dir=config_dir, workspace=str(workspace))
     assert [c.name for c in commands] == ["child"]
     assert _under(commands[0].path, workspace / ".chrys")
 
 
 @pytest.mark.parametrize("marker", ["dir", "file"])
-def test_project_roots_walk_up_to_the_nearest_git_marker(tmp_path: Path, marker: str) -> None:
+def test_workdir_roots_walk_up_to_the_nearest_git_marker(tmp_path: Path, marker: str) -> None:
     above = tmp_path / "above"
     repo = above / "repo"
     workspace = repo / "pkg" / "sub"
@@ -218,12 +223,12 @@ def test_project_roots_walk_up_to_the_nearest_git_marker(tmp_path: Path, marker:
     else:
         (repo / ".git").write_text("gitdir: ../elsewhere/.git\n", encoding="utf-8")
 
-    roots = [p.resolve() for p in project_roots(str(workspace))]
+    roots = [p.resolve() for p in shortcut_search_dirs(str(workspace))]
 
     assert roots == [workspace.resolve(), (repo / "pkg").resolve(), repo.resolve()]
 
 
-def test_project_roots_at_repo_root_and_nested_repo(tmp_path: Path) -> None:
+def test_workdir_roots_at_repo_root_and_nested_repo(tmp_path: Path) -> None:
     outer = tmp_path / "outer"
     inner = outer / "inner"
     workspace = inner / "x"
@@ -231,11 +236,11 @@ def test_project_roots_at_repo_root_and_nested_repo(tmp_path: Path) -> None:
     (outer / ".git").mkdir()
     (inner / ".git").write_text("gitdir: ../.git/modules/inner\n", encoding="utf-8")
 
-    assert [p.resolve() for p in project_roots(str(outer))] == [outer.resolve()]
-    assert [p.resolve() for p in project_roots(str(workspace))] == [workspace.resolve(), inner.resolve()]
+    assert [p.resolve() for p in shortcut_search_dirs(str(outer))] == [outer.resolve()]
+    assert [p.resolve() for p in shortcut_search_dirs(str(workspace))] == [workspace.resolve(), inner.resolve()]
 
 
-def test_project_shortcuts_from_every_level_load_nearest_first(config_dir: Path, tmp_path: Path) -> None:
+def test_workdir_shortcuts_from_every_level_load_nearest_first(config_dir: Path, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     pkg = repo / "pkg"
     workspace = pkg / "sub"
@@ -255,7 +260,7 @@ def test_project_shortcuts_from_every_level_load_nearest_first(config_dir: Path,
     assert _under(by_name["root-only"].path, repo / ".chrys")
 
 
-def test_same_names_dedupe_global_first_then_nearest_project(config_dir: Path, tmp_path: Path) -> None:
+def test_same_names_dedupe_global_first_then_nearest_workdir(config_dir: Path, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     workspace = repo / "pkg"
     workspace.mkdir(parents=True)
@@ -278,19 +283,19 @@ def test_same_names_dedupe_global_first_then_nearest_project(config_dir: Path, t
 def test_same_name_comparison_is_case_insensitive(config_dir: Path, tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     _write(config_dir / "shortcuts" / "Review.md", "Global review")
-    _write(workspace / ".chrys" / "shortcuts" / "review.md", "Project review")
-    _write(workspace / ".chrys" / "shortcuts" / "Git" / "Commit.md", "Project commit")
+    _write(workspace / ".chrys" / "shortcuts" / "review.md", "Workdir review")
+    _write(workspace / ".chrys" / "shortcuts" / "Git" / "Commit.md", "Workdir commit")
 
     commands = load_prompt_shortcuts(config_dir=config_dir, workspace=str(workspace))
 
-    assert [c.template for c in commands] == ["Project commit", "Global review"]
+    assert [c.template for c in commands] == ["Workdir commit", "Global review"]
     assert [_under(c.path, workspace) for c in commands] == [True, False]
 
 
 def test_shortcuts_are_sorted_by_name_whatever_their_folder(config_dir: Path, tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
-    _write(workspace / ".chrys" / "shortcuts" / "aaa.md", "Project")
-    _write(workspace / ".chrys" / "shortcuts" / "Mmm.md", "Project upper")
+    _write(workspace / ".chrys" / "shortcuts" / "aaa.md", "Workdir")
+    _write(workspace / ".chrys" / "shortcuts" / "Mmm.md", "Workdir upper")
     _write(config_dir / "shortcuts" / "zzz.md", "Global")
     _write(config_dir / "shortcuts" / "bbb.md", "Global b")
 
@@ -318,7 +323,7 @@ def test_workspace_at_home_reads_config_dir_only_as_global(tmp_path: Path) -> No
 def test_paths_are_unique_and_edits_show_on_next_load(config_dir: Path, tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     target = _write(config_dir / "shortcuts" / "edit-me.md", "Before")
-    _write(workspace / ".chrys" / "shortcuts" / "proj.md", "Project")
+    _write(workspace / ".chrys" / "shortcuts" / "proj.md", "Workdir")
 
     first = load_prompt_shortcuts(config_dir=config_dir, workspace=str(workspace))
     assert len({c.path for c in first}) == len(first) == 2
@@ -396,8 +401,8 @@ def test_sources_drop_shadowed_names_and_folders_left_empty(config_dir: Path, tm
     workspace = tmp_path / "ws"
     _write(config_dir / "shortcuts" / "Review.md", "Global review")
     _write(config_dir / "shortcuts" / "fix.md", "Global fix")
-    _write(workspace / ".chrys" / "shortcuts" / "REVIEW.md", "Project review")
-    _write(workspace / ".chrys" / "shortcuts" / "Fix.md", "Project fix")
+    _write(workspace / ".chrys" / "shortcuts" / "REVIEW.md", "Workdir review")
+    _write(workspace / ".chrys" / "shortcuts" / "Fix.md", "Workdir fix")
 
     sources = prompt_shortcut_sources(config_dir=config_dir, workspace=str(workspace))
 
@@ -504,7 +509,7 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
-def test_a_project_folder_linked_out_of_its_repository_is_skipped_with_one_warning(
+def test_a_workdir_folder_linked_out_of_its_repository_is_skipped_with_one_warning(
     config_dir: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     repo = _repo(tmp_path)
@@ -522,7 +527,7 @@ def test_a_project_folder_linked_out_of_its_repository_is_skipped_with_one_warni
     assert caplog.text.count("leads out of") == 1
 
 
-def test_a_project_config_folder_linked_out_of_its_repository_is_skipped(config_dir: Path, tmp_path: Path) -> None:
+def test_a_workdir_config_folder_linked_out_of_its_repository_is_skipped(config_dir: Path, tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     outside = tmp_path / "elsewhere"
     _write(outside / "shortcuts" / "leak.md", "Leak")
@@ -531,7 +536,7 @@ def test_a_project_config_folder_linked_out_of_its_repository_is_skipped(config_
     assert load_prompt_shortcuts(config_dir=config_dir, workspace=str(repo)) == []
 
 
-def test_a_project_folder_linked_inside_its_repository_loads(config_dir: Path, tmp_path: Path) -> None:
+def test_a_workdir_folder_linked_inside_its_repository_loads(config_dir: Path, tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     shared = repo / "tools" / "shared-shortcuts"
     _write(shared / "review.md", "Review")
@@ -547,7 +552,7 @@ def test_a_project_folder_linked_inside_its_repository_loads(config_dir: Path, t
     ]
 
 
-def test_a_project_shortcut_file_linked_out_of_its_repository_is_skipped_with_one_warning(
+def test_a_workdir_shortcut_file_linked_out_of_its_repository_is_skipped_with_one_warning(
     config_dir: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     repo = _repo(tmp_path)
@@ -565,7 +570,7 @@ def test_a_project_shortcut_file_linked_out_of_its_repository_is_skipped_with_on
     assert caplog.text.count("leads out of") == 1
 
 
-def test_a_project_shortcut_file_linked_inside_its_repository_loads(config_dir: Path, tmp_path: Path) -> None:
+def test_a_workdir_shortcut_file_linked_inside_its_repository_loads(config_dir: Path, tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     shared = repo / "prompts" / "review.md"
     _write(shared, "Review")
@@ -698,7 +703,7 @@ def test_an_unchanged_file_keeps_its_parse_even_when_its_text_differs(
     assert parsed.paths == []
 
 
-# -- the user folder is never a project folder -------------------------------------
+# -- the user folder is never a workdir folder -------------------------------------
 
 
 def test_workspace_at_home_reads_the_config_dir_once_as_the_users_own(tmp_path: Path) -> None:

@@ -102,6 +102,20 @@ def _string_list_field(raw: object, field: str) -> list[str]:
     return list(cast("list[str]", raw))
 
 
+def _text_field(raw: object, field: str) -> str:
+    """Parse a top-level text field; a missing value is empty text.
+
+    A non-text value (an unquoted number, a list) would reach callers that
+    compare, strip or casefold it, so the profile is refused instead.
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        msg = f"Agent profile field '{field}' must be a string; got {type(raw).__name__}"
+        raise AgentProfileLoadError(msg, field=field)
+    return raw
+
+
 def _positive_int_field(raw: object, field: str, *, default: int) -> int:
     """Parse a positive integer field; a missing value keeps ``default``.
 
@@ -601,7 +615,7 @@ def _parse_approval(raw: object) -> ApprovalConfig:
     return ApprovalConfig(
         default=_approval_rule(raw_map.get("default", defaults.default), "approval.default"),
         overrides=overrides,
-        user_can_override=raw_map.get("user_can_override", defaults.user_can_override),
+        user_can_override=coerce_bool(raw_map.get("user_can_override"), default=defaults.user_can_override),
     )
 
 
@@ -788,9 +802,9 @@ def _parse_profile(path: Path, text: str) -> AgentProfile:
         profile = AgentProfile(
             name=name,
             id=profile_id,
-            display_name=data.get("display_name", ""),
-            description=data.get("description", ""),
-            sub_agent_only=bool(data.get("sub_agent_only", False)),
+            display_name=_text_field(data.get("display_name"), "display_name"),
+            description=_text_field(data.get("description"), "description"),
+            sub_agent_only=coerce_bool(data.get("sub_agent_only"), default=False),
             acp=_parse_acp(data.get("acp")) if acp_present else None,
             instructions=_instructions_field(data.get("instructions"), "instructions"),
             tools=_parse_tools(data.get("tools")),

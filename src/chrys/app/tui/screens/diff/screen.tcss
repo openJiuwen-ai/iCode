@@ -5,6 +5,10 @@ DiffScreen {
     background: $background;
 }
 
+DiffScreen ChrysFooter FooterKey.-corner {
+    padding-left: 1;
+}
+
 #diff-container {
     height: 1fr;
     border: round $tui-border-primary $border-opacity;

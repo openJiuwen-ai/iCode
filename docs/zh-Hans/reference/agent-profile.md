@@ -40,7 +40,7 @@ iCode 在启动时加载这些文件。手工新增、修改或删除配置文�
 
 内置智能体的原始配置随 iCode 安装。通过 TUI 修改并保存内置智能体后，iCode 会在[用户智能体配置目录](#用户智能体配置目录)中生成同名配置文件。例如，修改并保存名称为 `Code` 的内置智能体后会生成 `Code.yaml`。
 
-内置智能体的 `name` 包括 `Code`、`QA`、`Explore` 和 `General`。在用户智能体配置目录下手工创建的配置文件使用上述任一 `name` 时，也会覆盖对应的内置智能体。覆盖配置会完整替代内置配置，不会继承或合并内置配置中的其他字段。删除对应的用户配置文件并重启 iCode，即可恢复使用内置配置。
+内置智能体的 `name` 包括 `Code`、`QA`、`Explore` 和 `General`。在用户智能体配置目录下手工创建的配置文件使用上述任一 `name` 时，也会覆盖对应的内置智能体。`instructions` 和 `compaction.last_words_template` 始终采用当前安装版本的内置值，包括内置值为空的情况，保存用户设置时会省略这两个字段。其他字段保留用户配置中的值，不与内置默认值合并。包含非空系统提示词或压缩提示词的旧版覆盖配置会先备份为独立的自定义智能体，再移除受保护字段；提示词为空或仅含空白时不会生成备份。如需自定义提示词，请克隆内置智能体，使用副本的新名称和 ID。删除对应的用户配置文件并重启 iCode，即可恢复使用内置配置。
 
 ## 基础配置示例
 
@@ -77,9 +77,9 @@ icode agent list
 | --- | --- | --- | --- |
 | `name` | 字符串 | 必填 | 配置名称，也是规范文件名的主体。子智能体引用使用此值。 |
 | `id` | 字符串 | 自动分配 | 稳定标识符。省略或留空时，iCode 会自动分配一个 12 位十六进制 ID：与内置智能体同名时沿用其 ID，否则生成新的 ID。也可以手动填写唯一 ID；纯数字 ID 需要加引号，例如 `id: "123"`，否则会被读取为数字，导致配置加载失败。复制已有配置文件并在其基础上修改以创建新的配置时，建议删除 `id` 字段，由 iCode 自动分配新的 ID。 |
-| `display_name` | 字符串 | 空 | 显示名称。 |
-| `description` | 字符串 | 空 | 说明智能体用途，也作为子智能体未填写工具描述时的默认描述。 |
-| `sub_agent_only` | 布尔值 | `false` | 为 `true` 时不能选作主智能体，只能被其他智能体调用。外部 ACP 智能体会被强制设为 `true`。 |
+| `display_name` | 字符串 | 空 | 显示名称。必须是文本：写成未加引号的数字或布尔值（如 `display_name: 2024`）会让整份配置加载失败，请加引号写成文本。此前的版本会原样读入这类值，随后在 `agent list` 或 ACP 中出错。 |
+| `description` | 字符串 | 空 | 说明智能体用途，也作为子智能体未填写工具描述时的默认描述。必须是文本：写成未加引号的数字或布尔值（如 `description: 42`）会让整份配置加载失败。 |
+| `sub_agent_only` | 布尔值 | `false` | 为 `true` 时不能选作主智能体，只能被其他智能体调用。该字段也接受任何大小写的文本 `true`/`false`、`yes`/`no`、`on`/`off`。外部 ACP 智能体会被强制设为 `true`。 |
 | `instructions` | 字符串或字符串列表 | 空 | 提供给内置类型智能体的主要行为指令。写成列表时，各项按每项一行合成一段文本。外部 ACP 配置会忽略此字段。 |
 | `model` | 对象 | `{}` | 绑定模型配置，见 [model](#model)。 |
 | `tools` | 对象 | `{}` | 配置内置工具、MCP 和 Shell 过滤，见 [tools](#tools)。 |
@@ -435,9 +435,9 @@ skills:
 | `script_timeout` | 正整数 | `300` | Skill 脚本最长运行秒数。省略或只写字段名不给值时取默认 `300`；写成非正整数的具体值会导致整个 agent profile 被跳过。 |
 | `script_extensions` | 字符串列表 | `[.py, .sh, .ps1]` | 允许作为 Skill 脚本运行的扩展名；所需解释器必须已经安装。 |
 | `auto_load_user_agents_skills` | 布尔值 | `true` | 是否加载 Agent Skills 用户级共享目录。 |
-| `auto_load_cwd_agents_skills` | 布尔值 | `true` | 是否加载当前工作目录的 `.agents/skills`；还需在设置中开启“加载项目 Skills”（`project.skills_enabled`）。切换工作目录后重新加载。 |
+| `auto_load_cwd_agents_skills` | 布尔值 | `true` | 是否加载当前工作目录的 `.agents/skills`；还需在设置中开启“加载工作目录 Skills”（`workdir.skills_enabled`）。切换工作目录后重新加载。 |
 
-iCode 用户 Skill 目录始终加载；Agent Skills 用户级共享目录默认加载；当前工作目录 Skill 目录在设置中开启“加载项目 Skills”后加载。两者可分别通过两个 `auto_load_*` 字段关闭。用户级 Skill 目录路径见[Skill 安装位置](../guides/extensions/skills.md#skill-安装位置)。
+iCode 用户 Skill 目录始终加载；Agent Skills 用户级共享目录默认加载；当前工作目录 Skill 目录在设置中开启“加载工作目录 Skills”后加载。两者可分别通过两个 `auto_load_*` 字段关闭。用户级 Skill 目录路径见[Skill 安装位置](../guides/extensions/skills.md#skill-安装位置)。
 
 多个来源出现同名 Skill 时，优先级从高到低为：`paths` 中靠前的目录、iCode 用户 Skill 目录、Agent Skills 用户级共享目录、当前工作目录 Skill 目录、`inline` 中靠前的定义。同一个搜索根目录中存在多个同名 Skill 时，发现顺序不确定；为确保加载指定版本，请只保留其中一个。
 
@@ -468,7 +468,7 @@ Skill 的安装步骤、目录规范、加载验证和使用方式详见[安装�
 memory:
   files:
     - AGENTS.md
-    - docs/project-context.md
+    - docs/working-directory-context.md
   folders:
     - docs/reference
 ```

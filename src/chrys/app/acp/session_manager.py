@@ -74,8 +74,8 @@ from chrys.service.profiles.agents.loader import load_profile_from_yaml as load_
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile, MCPServerConfig
 from chrys.service.profiles.agents.serializer import delete_profile as delete_agent_profile
+from chrys.service.profiles.agents.serializer import profile_directory_lock
 from chrys.service.profiles.agents.serializer import profile_to_dict as agent_profile_to_dict
-from chrys.service.profiles.agents.serializer import save_profile as save_agent_profile
 from chrys.service.profiles.agents.serializer import stored_profile_name as stored_agent_profile_name
 from chrys.service.profiles.models.loader import load_profile_from_yaml as load_model_profile_from_yaml
 from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -335,6 +335,10 @@ class AcpSessionManager:
             msg = "Agent profile name is required."
             raise AcpSessionError(msg)
         self.load_registries()
+        with profile_directory_lock(_agent_profile_directory()):
+            return self._write_agent_profile_locked(data)
+
+    def _write_agent_profile_locked(self, data: dict[str, object]) -> dict[str, object]:
         profile_data = dict(data)
         profile_data["name"] = _safe_profile_file_stem(profile_data["name"], field_name="agent profile name")
         name = str(profile_data["name"])
@@ -370,16 +374,33 @@ class AcpSessionManager:
         _reject_unresolved_masked_acp_secrets(profile_data, restoration=acp_restoration)
         profile = _agent_profile_from_data(profile_data)
         profile.name = _safe_profile_file_stem(profile.name, field_name="agent profile name")
-        path = save_agent_profile(profile)
+        ignored_fields: list[str] = []
+        if template := self._agent_registry.get_builtin_template(profile.name):
+            if "instructions" in profile_data and profile.instructions != template.instructions:
+                ignored_fields.append("instructions")
+            compaction = profile_data.get("compaction")
+            if (
+                isinstance(compaction, dict)
+                and "last_words_template" in compaction
+                and profile.compaction.last_words_template != template.compaction.last_words_template
+            ):
+                ignored_fields.append("compaction.last_words_template")
+        self._agent_registry.enforce_builtin_prompts(profile)
+        path = self._agent_registry.save(profile, user_dir=_agent_profile_directory())
         self._agent_registry.register(profile)
         return {
             "profile": _agent_profile_info(profile, builtin=self._agent_registry.is_builtin(profile.name)),
             "path": str(path),
+            **({"ignored_fields": ignored_fields} if ignored_fields else {}),
         }
 
     def delete_agent_profile(self, name: str) -> dict[str, object]:
         """Delete a user agent profile from disk and registry."""
         self.load_registries()
+        with profile_directory_lock(_agent_profile_directory()):
+            return self._delete_agent_profile_locked(name)
+
+    def _delete_agent_profile_locked(self, name: str) -> dict[str, object]:
         name = _safe_profile_file_stem(name, field_name="agent profile name")
         if self._agent_registry.is_builtin(name):
             msg = f"Built-in agent profiles cannot be deleted; reset {name!r} instead."
@@ -418,6 +439,10 @@ class AcpSessionManager:
     def reset_agent_profile(self, name: str) -> dict[str, object]:
         """Reset a built-in agent while retaining Skills, MCP, Memory, and Extensions settings."""
         self.load_registries()
+        with profile_directory_lock(_agent_profile_directory()):
+            return self._reset_agent_profile_locked(name)
+
+    def _reset_agent_profile_locked(self, name: str) -> dict[str, object]:
         name = _safe_profile_file_stem(name, field_name="agent profile name")
         current = self._agent_registry.get(name)
         template = self._agent_registry.get_builtin_template(name)
@@ -425,6 +450,8 @@ class AcpSessionManager:
             msg = f"Built-in agent profile not found: {name}"
             raise AcpSessionError(msg)
         stored_name = self._stored_agent_profile_name(name)
+        if stored_name == name:
+            self._agent_registry.migrate_builtin_prompts(_agent_profile_directory())
         reset = self._agent_registry.build_builtin_reset(name, preserve_from=current)
         if _agent_profile_reset_comparison_dict(reset) == _agent_profile_reset_comparison_dict(template):
             changed = reset != current
@@ -436,7 +463,7 @@ class AcpSessionManager:
             changed = reset != current
             if changed:
                 self._require_agent_profile_file_owner(name, stored_name)
-                save_agent_profile(reset)
+                self._agent_registry.save(reset, user_dir=_agent_profile_directory())
         if changed:
             self._agent_registry.register(reset)
         return {
@@ -1525,7 +1552,7 @@ class AcpSessionManager:
     def _session_loaded_settings(self, cwd: str) -> LoadedSettings:
         """Derive one session's settings under its own project trust domain.
 
-        The manager's base settings are deliberately project-free — a
+        The manager's base settings are deliberately workdir-free — a
         manager-level project layer would leak one session's trust decisions
         into every other — so each session re-loads with its resolved cwd as
         the project root. Everything process-wide still flows from the base:
@@ -1539,7 +1566,7 @@ class AcpSessionManager:
         with self._global_settings_lock:
             base = self._loaded_settings
             candidate = load_settings(
-                project_root=Path(cwd),
+                workdir=Path(cwd),
                 eval_context=EvalContext(
                     frontend_default_max_transient_retries=base.settings.frontend_default_max_transient_retries
                 ),
@@ -1705,6 +1732,12 @@ def _workspace_from_dirs(primary_cwd: str, additional_directories: list[str] | N
     return Workspace(primary_cwd=primary_cwd, working_dirs=dirs)
 
 
+def _agent_profile_directory() -> Path:
+    from chrys.foundation.platform import get_platform
+
+    return get_platform().config_dir / "agents"
+
+
 def _agent_profile_from_data(data: dict[str, object]) -> AgentProfile:
     with tempfile.TemporaryDirectory(prefix="chrys-agent-profile-") as temp_dir:
         stem = _safe_profile_file_stem(data.get("name", "profile"), field_name="agent profile name")
@@ -1835,7 +1868,13 @@ def _agent_profile_reset_comparison_dict(profile: AgentProfile) -> dict[str, Any
     """Serialize after normalizing the order-insensitive Skills extension list."""
     normalized = deepcopy(profile)
     normalized.skills.script_extensions = sorted(normalized.skills.script_extensions)
-    return agent_profile_to_dict(normalized)
+    data = agent_profile_to_dict(normalized)
+    data.pop("instructions", None)
+    if isinstance(compaction := data.get("compaction"), dict):
+        compaction.pop("last_words_template", None)
+        if not compaction:
+            data.pop("compaction")
+    return data
 
 
 _MASK = "***"

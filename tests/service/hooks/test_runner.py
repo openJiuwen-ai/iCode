@@ -28,7 +28,7 @@ from chrys.foundation.platform import process as process_mod
 from chrys.foundation.platform import runtime_paths, script_commands
 from chrys.service.hooks import runner as runner_mod
 from chrys.service.hooks.events import HookEvent
-from chrys.service.hooks.loader import load_hooks_project
+from chrys.service.hooks.loader import load_workdir_hooks
 from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookMatch, HookRun
 from tests.support.stopped_child import STOPS_ITSELF
@@ -448,33 +448,33 @@ async def test_script_path_resolves_relative_to_hooks_dir(tmp_path: Path, monkey
 
 
 @pytest.mark.asyncio
-async def test_project_script_path_resolves_relative_to_project_hooks_file(
+async def test_workdir_script_path_resolves_relative_to_workdir_hooks_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project_root = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     config_hooks_dir = tmp_path / "config" / "hooks"
-    project_scripts_dir = project_root / ".chrys" / "hooks" / "scripts"
-    project_scripts_dir.mkdir(parents=True)
+    workdir_scripts_dir = workdir / ".chrys" / "hooks" / "scripts"
+    workdir_scripts_dir.mkdir(parents=True)
     config_hooks_dir.mkdir(parents=True)
-    (project_root / ".chrys" / "hooks" / "hooks.yaml").write_text(
+    (workdir / ".chrys" / "hooks" / "hooks.yaml").write_text(
         """\
 version: 1
 hooks:
-  - id: project-script
+  - id: workdir-script
     event: session_start
     run:
       type: script
-      path: scripts/project_smoke.py
+      path: scripts/workdir_smoke.py
     execution:
       mode: blocking
       timeout_seconds: 5
 """,
         encoding="utf-8",
     )
-    (project_scripts_dir / "project_smoke.py").write_text("print('from-project-script')\n", encoding="utf-8")
+    (workdir_scripts_dir / "workdir_smoke.py").write_text("print('from-workdir-script')\n", encoding="utf-8")
 
-    file = load_hooks_project(project_root)
+    file = load_workdir_hooks(workdir)
     assert file is not None
     hook = file.hooks[0]
     runner = HookRunner(hooks_dir=config_hooks_dir)
@@ -483,7 +483,7 @@ hooks:
     result = await runner.run_and_wait(hook, {})
 
     assert result.exit_code == 0
-    assert "from-project-script" in result.stdout
+    assert "from-workdir-script" in result.stdout
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="setsid not available on Windows")

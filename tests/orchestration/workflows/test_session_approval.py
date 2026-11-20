@@ -15,7 +15,7 @@ from chrys.orchestration.workflows.runner import WorkflowRunner
 from chrys.orchestration.workflows.session import WorkflowSessionOwner
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.state.store import JsonFileStateStore
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, run, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.waiting import wait_for
 from tests.support.workflow_workers import python_workflow
@@ -26,7 +26,7 @@ from tests.support.workflow_workers import python_workflow
 async def test_workflows_share_launch_mode_across_changes_new_sessions_and_restore(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: ApprovalMode, interactive: bool
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "echo", python_workflow("def echo(value):\n    return value\n", "echo"))
     observed: list[ApprovalMode] = []
     real_run = WorkflowRunner.run
@@ -67,7 +67,7 @@ async def test_workflows_share_launch_mode_across_changes_new_sessions_and_resto
 async def test_workflow_scoped_approval_requests_are_ignored_and_launch_changes_do_not_save_sessions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "echo", python_workflow("def echo(value):\n    return value\n", "echo"))
     host = make_host(tmp_path, project=project)
     store = JsonFileStateStore(tmp_path / "sessions")
@@ -100,7 +100,7 @@ async def test_workflow_scoped_approval_requests_are_ignored_and_launch_changes_
 async def test_mode_changes_during_admission_are_visible_before_the_runner_starts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "echo", python_workflow("def echo(value):\n    return value\n", "echo"))
     host = make_host(tmp_path, project=project)
     entered, release = asyncio.Event(), asyncio.Event()

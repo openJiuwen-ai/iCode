@@ -26,9 +26,11 @@ if TYPE_CHECKING:
     from chrys.service.hooks.validation import CheckedFile, HookDiagnostic, HooksReport
 
 
-_NOT_LOADED: Final = "not loaded: turn on Load project hooks under Settings → Safety → Project trust"
+_NOT_LOADED: Final = (
+    "not loaded: turn on Load working directory hooks under Settings → Safety → Working directory trust"
+)
 # The listing says this itself, on the file's own line.
-_DORMANT_WARNING_CODE: Final = "project_hooks_dormant"
+_DORMANT_WARNING_CODE: Final = "workdir_hooks_dormant"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = commands.add_parser(
         "list",
         help="List the hooks found for the current directory",
-        description="List the project hooks file (.chrys/hooks in the current directory), then the global one, "
+        description="List the working directory hooks file (.chrys/hooks in the current directory), then the global one, "
         "with the hooks each defines in configuration order, and say whether a session started here loads it. "
         "Nothing is run.",
         add_help=False,
@@ -57,8 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
         "validate",
         help="Check hooks configuration files and report each problem",
         description="Check hooks configuration files as a session would load them, and report every problem with "
-        "its file and line. Nothing is run. With no PATH, check the project file for the current directory (also "
-        "when project hooks are off) and the global file. Exit code 0 means PASS (warnings allowed), 1 means FAIL.",
+        "its file and line. Nothing is run. With no PATH, check the working directory file for the current directory (also "
+        "when working directory hooks are off) and the global file. Exit code 0 means PASS (warnings allowed), 1 means FAIL.",
         add_help=False,
     )
     add_help_option(validate_parser)
@@ -87,14 +89,14 @@ def main(argv: list[str] | None = None) -> int:
                 as_json=args.json,
             )
             report = check_default_sources(
-                config_dir, workspace, project_hooks_enabled=runtime.settings.project_hooks_enabled
+                config_dir, workspace, workdir_hooks_enabled=runtime.settings.workdir_hooks_enabled
             )
             _write_list(report, workspace, as_json=args.json)
             return 0
         headless.write_pending_warnings(runtime, as_json=args.json)
         if args.path is None:
             report = check_default_sources(
-                config_dir, workspace, project_hooks_enabled=runtime.settings.project_hooks_enabled
+                config_dir, workspace, workdir_hooks_enabled=runtime.settings.workdir_hooks_enabled
             )
         else:
             report = check_path(Path(args.path), config_dir=config_dir)
@@ -148,7 +150,7 @@ def _list_lines(report: HooksReport, workspace: Path) -> list[str]:
 
 def _file_lines(checked: CheckedFile, workspace: Path) -> list[str]:
     source = checked.source
-    scope = "Project" if source.scope == "project" else "Global"
+    scope = "Working directory" if source.scope == "workdir" else "Global"
     path = shown_path(str(source.path), workspace)
     invalid = None
     if checked.rejection is not None:

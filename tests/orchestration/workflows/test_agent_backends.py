@@ -47,7 +47,7 @@ from tests.orchestration.workflows._hosting import (
     hold_workflow_deadline,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -86,7 +86,7 @@ async def test_workflow_agent_uses_session_mcp_cache_and_releases_its_acquisitio
         released.append(self)
 
     monkeypatch.setattr(MCPAdapter, "disconnect_all", create_autospec(disconnect, side_effect=release))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "mcp", _workflow(PROFILE))
     host = make_host(tmp_path, project=project, profiles=[profile])
     try:
@@ -124,13 +124,13 @@ async def test_workflow_agent_warns_once_when_its_on_demand_mcp_tools_can_unbind
         for name in ("alpha", "down", "beta")
     ]
 
-    async def connect(_adapter: MCPAdapter, config: MCPServerConfig) -> list[object]:
+    async def connect(_adapter: MCPAdapter, config: MCPServerConfig, *, acquisition_scope=None) -> list[object]:
         if config.name == "down":
             raise RuntimeError("server down")
         return []
 
     monkeypatch.setattr(MCPAdapter, "connect", create_autospec(MCPAdapter.connect, side_effect=connect))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "mcp", _workflow("MCP"))
     claude = ModelProfile(
         id="claude", name="Claude 5.5", provider="anthropic", model_id="claude-opus-5-5", chat_options=chat_options
@@ -172,15 +172,15 @@ async def test_cancellation_while_mcp_shell_opens_disconnects_partial_acquisitio
         create_autospec(mcp_connection_module._create_mcp_tool, return_value=fake),
     )
 
-    async def connect(self: MCPAdapter, configs, *, progress=None):
-        tools = await original(self, configs, progress=progress)
+    async def connect(self: MCPAdapter, configs, *, progress=None, acquisition_scope=None):
+        tools = await original(self, configs, progress=progress, acquisition_scope=acquisition_scope)
         adapters.append(self)
         connected.set()
         await asyncio.Event().wait()
         return tools
 
     monkeypatch.setattr(MCPAdapter, "connect_all", create_autospec(original, side_effect=connect))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     path = write_workflow(project, "mcp", _workflow("MCP"))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])
     task = None
@@ -251,7 +251,7 @@ async def test_acp_workflow_completion_cancel_and_automatic_retry_reap_processes
         return await original_prompt(self, text)
 
     monkeypatch.setattr(AcpAgentClient, "prompt", create_autospec(original_prompt, side_effect=prompt))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     source = _workflow("External")
     if scenario == "override":
         source = source.replace(
@@ -395,7 +395,7 @@ async def test_acp_progress_is_archived_before_terminal_and_cancel_preserves_it(
             idle_timeout_seconds=0,
         ),
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "external", _workflow("External"))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])
     checkpointed = asyncio.Event()
@@ -450,7 +450,7 @@ async def test_acp_node_value_has_the_extent_the_profile_configured(
             result_mode=result_mode,
         ),
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "external", _workflow("External"))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])
     try:
@@ -501,7 +501,7 @@ async def test_an_acp_node_retries_a_silent_agent_in_a_fresh_session_but_not_a_l
         return result
 
     monkeypatch.setattr(acp_client_module, "spawn_acp_process", create_autospec(original_spawn, side_effect=spawn))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(
         project,
         "external",
@@ -539,12 +539,12 @@ async def test_workflow_agent_hands_its_servers_cwd_and_the_session_folder_to_th
     profile.tools.mcp = [MCPServerConfig(name="own", transport="stdio", command="unused", cwd="tools/srv")]
     seen: list[tuple[str, str | None]] = []
 
-    async def connect(adapter: MCPAdapter, config: MCPServerConfig) -> list[object]:
+    async def connect(adapter: MCPAdapter, config: MCPServerConfig, *, acquisition_scope=None) -> list[object]:
         seen.append((config.cwd, adapter._stdio_cwd))
         return []
 
     monkeypatch.setattr(MCPAdapter, "connect", create_autospec(MCPAdapter.connect, side_effect=connect))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "mcp", _workflow("MCP"))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])
     try:

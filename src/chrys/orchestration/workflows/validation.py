@@ -45,12 +45,12 @@ from chrys.service.workflows.admission import (
 )
 from chrys.service.workflows.discovery import (
     BUILTIN_DIR,
+    CHRYS_DIR_NAME,
     LAYOUT_PACKAGE,
     MAX_PACKAGE_DEPTH,
-    PROJECT_CONFIG_DIR_NAME,
     SOURCE_KIND_BUILTIN,
     SOURCE_KIND_GLOBAL,
-    SOURCE_KIND_PROJECT,
+    SOURCE_KIND_WORKDIR,
     WORKFLOWS_DIR_NAME,
     SourceLayout,
     WorkflowCandidate,
@@ -60,9 +60,9 @@ from chrys.service.workflows.discovery import (
     global_workflows_dir,
     is_global_workflows_dir,
     is_link_stat,
-    project_workflows_dir,
     read_source,
     recognize_candidate,
+    workdir_workflows_dir,
 )
 from chrys.service.workflows.environment import WorkflowEnvironmentError, metadata_block_line, parse_environment_request
 from chrys.service.workflows.graph import GraphSpec, ManifestError, manifest_warnings
@@ -286,7 +286,7 @@ def _resolve(check: _Check, argument: str, workspace: Path, config_dir: Path) ->
     kind = _kind_of(root, config_dir)
     candidate = recognize_candidate(root, entry, kind, reserves_sdk=kind == SOURCE_KIND_GLOBAL)
     if candidate is None:
-        if inner is not None:  # a project, or its .chrys folder; a workflow folder may hold one of its own
+        if inner is not None:  # a directory, or its .chrys folder; a workflow folder may hold one of its own
             hint = f"pass one of the workflow files or folders in {inner}"
             raise _StageFailed(
                 _error("path_not_workflow", "resolve", "this folder is not a workflow", file=str(target), hint=hint)
@@ -331,14 +331,14 @@ def _same(left: Path, right: Path) -> bool:
 
 def _is_workflow_dir(folder: Path, config_dir: Path) -> bool:
     """A directory discovery lists workflows in: a ``.chrys/workflows``, the global one or the builtin one."""
-    if folder.name == WORKFLOWS_DIR_NAME and folder.parent.name == PROJECT_CONFIG_DIR_NAME:
+    if folder.name == WORKFLOWS_DIR_NAME and folder.parent.name == CHRYS_DIR_NAME:
         return True
     return is_global_workflows_dir(folder, config_dir) or _same(folder, BUILTIN_DIR)
 
 
 def _workflow_dir_of(folder: Path, config_dir: Path) -> Path | None:
-    """*folder* when discovery lists workflows in it, else the workflow directory it holds as a project or ``.chrys`` folder."""
-    for inner in (folder, folder / WORKFLOWS_DIR_NAME, folder / PROJECT_CONFIG_DIR_NAME / WORKFLOWS_DIR_NAME):
+    """*folder* when discovery lists workflows in it, else the workflow directory it holds as a working directory or ``.chrys`` folder."""
+    for inner in (folder, folder / WORKFLOWS_DIR_NAME, folder / CHRYS_DIR_NAME / WORKFLOWS_DIR_NAME):
         if _is_workflow_dir(inner, config_dir) and _is_folder(_lstat(inner)):
             return inner
     return None
@@ -360,7 +360,7 @@ def _kind_of(root: Path, config_dir: Path) -> str:
         return SOURCE_KIND_BUILTIN
     if is_global_workflows_dir(root, config_dir):
         return SOURCE_KIND_GLOBAL
-    return SOURCE_KIND_PROJECT
+    return SOURCE_KIND_WORKDIR
 
 
 def _listed(root: Path, name: str) -> os.DirEntry[str] | None:
@@ -379,7 +379,7 @@ def _listed(root: Path, name: str) -> os.DirEntry[str] | None:
 
 def _not_found(argument: str, target: Path, workspace: Path, config_dir: Path) -> Diagnostic:
     hint = None
-    named = discover_workflows(config_dir=config_dir, project_cwd=workspace).find(argument)
+    named = discover_workflows(config_dir=config_dir, workdir=workspace).find(argument)
     if named is not None:
         location = Path(named.canonical_path).parent if named.package is not None else named.canonical_path
         hint = f"to check workflow '{argument}', pass its path: {location}"
@@ -415,10 +415,10 @@ def _unrecognized(path: Path, *, folder: bool, kind: str, listed: bool) -> Diagn
 
 def _shadowing(candidate: WorkflowCandidate, root: Path, workspace: Path, config_dir: Path) -> list[Diagnostic]:
     """A warning when *candidate* sits where discovery looks but another workflow of its id would run instead."""
-    roots = (BUILTIN_DIR, global_workflows_dir(config_dir), project_workflows_dir(workspace))
+    roots = (BUILTIN_DIR, global_workflows_dir(config_dir), workdir_workflows_dir(workspace))
     if not any(_same(root, other) for other in roots):
         return []
-    winner = discover_workflows(config_dir=config_dir, project_cwd=workspace).find(candidate.workflow_id)
+    winner = discover_workflows(config_dir=config_dir, workdir=workspace).find(candidate.workflow_id)
     if winner is None or _same(Path(winner.canonical_path), candidate.path):
         return []
     location = Path(winner.canonical_path).parent if winner.package is not None else Path(winner.canonical_path)

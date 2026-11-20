@@ -28,7 +28,7 @@ async def test_the_factory_attaches_the_engine_s_confirmation_service(tmp_path) 
 
     managers = [
         await SessionHookFactory(bus, confirmations=service)(
-            project_root=str(tmp_path), project_hooks_enabled=False, session_id=session_id
+            workdir=str(tmp_path), workdir_hooks_enabled=False, session_id=session_id
         )
         for session_id in ("chat", "workflow-run")
     ]

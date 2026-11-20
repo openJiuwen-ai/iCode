@@ -43,14 +43,14 @@ pytestmark = pytest.mark.usefixtures("clear_model_profile_env")
 
 def settings_with_trust(trusted: bool) -> str:
     """The user's settings file, which also holds the model they selected."""
-    return f"model.profile.active: {MAIN_MODEL}\nproject.hooks_enabled: {str(trusted).lower()}\n"
+    return f"model.profile.active: {MAIN_MODEL}\nworkdir.hooks_enabled: {str(trusted).lower()}\n"
 
 
 def global_hooks() -> Path:
     return get_platform().config_dir / "hooks" / "hooks.json"
 
 
-def project_hooks() -> Path:
+def workdir_hooks() -> Path:
     return Path.cwd() / ".chrys" / "hooks" / "hooks.json"
 
 
@@ -109,7 +109,7 @@ async def hook_session(agent_engine, tmp_path, monkeypatch, *, trusted: bool = F
     if trusted:
         settings_path().write_text(settings_with_trust(True), encoding="utf-8")
     activate_model_profile(MAIN_MODEL)
-    settings = Settings(model_profile=MAIN_MODEL, workspace_change_notice=False, project_hooks_enabled=trusted)
+    settings = Settings(model_profile=MAIN_MODEL, workspace_change_notice=False, workdir_hooks_enabled=trusted)
     async with running_session(
         agent_engine, tmp_path, monkeypatch, agents=[reading_agent()], settings=settings
     ) as session:
@@ -175,13 +175,13 @@ async def test_an_edited_rule_applies_to_the_next_event(agent_engine, tmp_path, 
 # and the reload keeps the running rules on any problem it reports, whatever it is.
 @pytest.mark.parametrize(
     ("damage", "source"),
-    [("unparsable", "global"), ("invalid-entry", "project"), ("skipped-rule", "project")],
-    ids=["unparsable-global", "invalid-entry-project", "skipped-rule-project"],
+    [("unparsable", "global"), ("invalid-entry", "workdir"), ("skipped-rule", "workdir")],
+    ids=["unparsable-global", "invalid-entry-workdir", "skipped-rule-workdir"],
 )
 async def test_a_damaged_file_keeps_the_rule_that_was_blocking(agent_engine, tmp_path, monkeypatch, source, damage):
-    path = global_hooks() if source == "global" else project_hooks()
+    path = global_hooks() if source == "global" else workdir_hooks()
     write_hooks(path, blocks_reading("old-rule"))
-    async with hook_session(agent_engine, tmp_path, monkeypatch, trusted=source == "project") as session:
+    async with hook_session(agent_engine, tmp_path, monkeypatch, trusted=source == "workdir") as session:
         running = manager(session)
         drains = count_drains(monkeypatch, running)
         if damage == "unparsable":
@@ -215,7 +215,7 @@ async def test_a_link_whose_target_is_gone_is_not_a_deleted_file(agent_engine, t
         shared = dotfiles / "hooks"
         shared.mkdir()
         (dotfiles / "hooks.json").rename(shared / "hooks.json")
-        symlink_or_skip(project_hooks().parent.parent, dotfiles, target_is_directory=True)
+        symlink_or_skip(workdir_hooks().parent.parent, dotfiles, target_is_directory=True)
     elif link == "junction":
         junction_or_skip(global_hooks().parent, dotfiles)
     else:
@@ -243,7 +243,7 @@ def test_a_config_folder_known_by_a_link_whose_target_is_gone_is_not_deleted(tmp
     monkeypatch.setattr(session_hooks, "conventional_config_dir", lambda: home / "config")
     symlink_or_skip(home / "config", tmp_path / "unmounted", target_is_directory=True)
 
-    read = read_hooks_strict(project_root=str(tmp_path), project_hooks_enabled=False)
+    read = read_hooks_strict(workdir=str(tmp_path), workdir_hooks_enabled=False)
 
     assert [problem.path for problem in read.problems] == [str(home / "config")]
 
@@ -264,19 +264,17 @@ async def test_a_parse_failure_reports_where_it_is_and_quotes_nothing_from_the_f
         assert "xoxb-secret-value" not in line
 
 
-def test_the_same_project_and_global_files_read_as_unchanged(tmp_path):
-    project = tmp_path / "project"
-    project_file = project / ".chrys" / "hooks" / "hooks.json"
-    write_hooks(project_file, blocks_reading("project-rule"))
+def test_the_same_workdir_and_global_files_read_as_unchanged(tmp_path):
+    workdir = tmp_path / "workdir"
+    workdir_file = workdir / ".chrys" / "hooks" / "hooks.json"
+    write_hooks(workdir_file, blocks_reading("workdir-rule"))
     write_hooks(global_hooks(), blocks_reading("global-rule"), settings={"shutdown_grace_seconds": 7})
-    first = read_hooks_strict(project_root=str(project), project_hooks_enabled=True)
+    first = read_hooks_strict(workdir=str(workdir), workdir_hooks_enabled=True)
     running = SessionHookFactory(EventBus()).manager_for(first.merged)
 
     assert not first.problems
-    assert hooks_unchanged(running, read_hooks_strict(project_root=str(project), project_hooks_enabled=True).merged)
-    assert not hooks_unchanged(
-        running, read_hooks_strict(project_root=str(project), project_hooks_enabled=False).merged
-    )
+    assert hooks_unchanged(running, read_hooks_strict(workdir=str(workdir), workdir_hooks_enabled=True).merged)
+    assert not hooks_unchanged(running, read_hooks_strict(workdir=str(workdir), workdir_hooks_enabled=False).merged)
 
 
 async def test_the_same_content_keeps_the_manager_and_a_running_async_hook(agent_engine, tmp_path, monkeypatch):
@@ -310,10 +308,10 @@ async def test_the_same_content_keeps_the_manager_and_a_running_async_hook(agent
         )
 
 
-async def test_turning_trust_on_with_a_bad_project_file_changes_nothing(agent_engine, tmp_path, monkeypatch):
+async def test_turning_trust_on_with_a_bad_workdir_file_changes_nothing(agent_engine, tmp_path, monkeypatch):
     write_hooks(global_hooks(), blocks_reading("global-rule"))
-    project_hooks().parent.mkdir(parents=True)
-    project_hooks().write_text("{not json", encoding="utf-8")
+    workdir_hooks().parent.mkdir(parents=True)
+    workdir_hooks().write_text("{not json", encoding="utf-8")
     async with hook_session(agent_engine, tmp_path, monkeypatch) as session:
         running = manager(session)
         runtime = session.engine.current.require_loaded()
@@ -327,21 +325,23 @@ async def test_turning_trust_on_with_a_bad_project_file_changes_nothing(agent_en
             description="the reload stopped",
         )
         await wait_for(
-            lambda: any("with project hooks still not loaded" in message for _, message in notices(session.app)),
+            lambda: any(
+                "with working directory hooks still not loaded" in message for _, message in notices(session.app)
+            ),
             pilot=session.pilot,
             description="the failure names what stays in effect",
         )
         assert not session.seen.of(ev.SettingsReloaded)
         assert manager(session) is running
         assert session.engine.current.require_loaded() is runtime
-        assert session.engine.settings_handle.settings.project_hooks_enabled is False
+        assert session.engine.settings_handle.settings.workdir_hooks_enabled is False
         assert "blocked by global-rule" in await read_attempt(session, tmp_path)
 
 
-async def test_turning_trust_off_replaces_the_project_rules_when_the_rest_is_valid(agent_engine, tmp_path, monkeypatch):
-    write_hooks(project_hooks(), blocks_reading("project-rule"))
+async def test_turning_trust_off_replaces_the_workdir_rules_when_the_rest_is_valid(agent_engine, tmp_path, monkeypatch):
+    write_hooks(workdir_hooks(), blocks_reading("workdir-rule"))
     async with hook_session(agent_engine, tmp_path, monkeypatch, trusted=True) as session:
-        assert "blocked by project-rule" in await read_attempt(session, tmp_path)
+        assert "blocked by workdir-rule" in await read_attempt(session, tmp_path)
         settings_path().write_text(settings_with_trust(False), encoding="utf-8")
 
         await reloaded(session)

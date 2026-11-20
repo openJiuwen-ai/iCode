@@ -59,7 +59,6 @@ from tests.app.tui.screens._model_list_support import (
     _two_profiles,
     _without_default_url,
     arrow_shown,
-    assert_overlay_visible,
     bring_into_view,
     click_fetch,
     fetch_and_settle,
@@ -92,6 +91,7 @@ from tests.app.tui.screens._model_list_support import (
     url_hinted,
     url_label,
     v1_fixed,
+    wait_for_overlay_visible,
 )
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for, wait_until_quiet
@@ -737,7 +737,7 @@ async def test_found_list_shows_the_arrow_and_opens_with_focus(fake_discover: Fa
 
         assert arrow_shown(screen)
         await wait_for(lambda: overlay(screen).has_focus, pilot=pilot, description="focus in the list")
-        assert_overlay_visible(screen)
+        await wait_for_overlay_visible(screen, pilot)
         await wait_for(lambda: model_input(screen).region.width < base_width, pilot=pilot)
         assert model_input(screen).value == "gpt-test"
         assert screen.query_one("#mc-model-arrow").can_focus is False

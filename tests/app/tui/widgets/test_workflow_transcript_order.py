@@ -28,7 +28,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -45,8 +45,8 @@ NODE_PROMPT = "Node-specific input [literal]: " + "\n".join(["review the change"
 async def test_workflow_live_and_archived_progress_interleave_text_and_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream: bool
 ) -> None:
-    project = make_project(tmp_path)
-    target = project / "input.txt"
+    workdir = make_workdir(tmp_path)
+    target = workdir / "input.txt"
     target.write_text("Read this twice.")
     client = ArchiveClient(target, "completed", pause_before_final=True)
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client], builtin_tools=True)
@@ -62,8 +62,8 @@ async def test_workflow_live_and_archived_progress_interleave_text_and_tools(
             "prepare_node = wf.python('prepare', prepare)\nwf.start(prepare_node)\nwf.edge(prepare_node, node)",
         )
     )
-    write_workflow(project, "archive", workflow_source.encode())
-    host = make_host(tmp_path, project=project, profiles=[make_profile(builtins=["filesystem.read"])], stream=stream)
+    write_workflow(workdir, "archive", workflow_source.encode())
+    host = make_host(tmp_path, project=workdir, profiles=[make_profile(builtins=["filesystem.read"])], stream=stream)
     journal = AgentTranscriptJournal()
     answers = AnswerSegments()
 
@@ -145,7 +145,7 @@ def _assert_order(surface: AgentTranscriptSurface) -> None:
 async def test_text_before_a_hosted_call_shows_before_its_card(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream: bool
 ) -> None:
-    project = make_project(tmp_path)
+    workdir = make_workdir(tmp_path)
     hosted = Content.from_image_generation_tool_result(
         image_id="image-1",
         outputs=[Content.from_uri("data:image/png;base64,QUJD", media_type="image/png")],
@@ -158,8 +158,8 @@ async def test_text_before_a_hosted_call_shows_before_its_card(
         responses=[HostedMockResponse(lead_text="Drawing it.", hosted=[hosted], text="Done")]
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
-    write_workflow(project, "archive", source())
-    host = make_host(tmp_path, project=project, stream=stream)
+    write_workflow(workdir, "archive", source())
+    host = make_host(tmp_path, project=workdir, stream=stream)
     journal = AgentTranscriptJournal()
     answers = AnswerSegments()
 

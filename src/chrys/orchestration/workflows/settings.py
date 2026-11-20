@@ -30,9 +30,7 @@ if TYPE_CHECKING:
 _SHARED_STARTUP_FIELDS = frozenset({"model_profile", "ask_user_timeout_seconds", "max_transient_retries"})
 
 
-async def load_workflow_settings(
-    project_cwd: Path, *, startup: LoadedSettings, handle: SettingsHandle
-) -> LoadedSettings:
+async def load_workflow_settings(workdir: Path, *, startup: LoadedSettings, handle: SettingsHandle) -> LoadedSettings:
     if not startup.provenance:
         # Embedders can supply an explicit Settings object instead of a layered load.
         effective = startup.overlay(Source.SESSION, default_approval_mode=handle.settings.default_approval_mode)
@@ -45,7 +43,7 @@ async def load_workflow_settings(
         }
         candidate = await asyncio.to_thread(
             load_settings,
-            project_root=project_cwd,
+            workdir=workdir,
             eval_context=EvalContext(
                 frontend_default_max_transient_retries=startup.settings.frontend_default_max_transient_retries
             ),

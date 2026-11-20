@@ -25,9 +25,9 @@ _CONSTRUCTION_GLOBAL_HOOKS_INVALID = msg(
     multiline=True,
 )
 
-_CONSTRUCTION_PROJECT_HOOKS_INVALID = msg(
-    "construction.project_hooks_invalid",
-    fallback="Project hooks config could not be loaded: {detail}. Project hooks disabled; global hooks unaffected.",
+_CONSTRUCTION_WORKDIR_HOOKS_INVALID = msg(
+    "construction.workdir_hooks_invalid",
+    fallback="Working directory hooks config could not be loaded: {detail}. Working directory hooks disabled; global hooks unaffected.",
     multiline=True,
 )
 
@@ -88,18 +88,18 @@ def _read_hooks_folder(hooks_dir: Path, *named: Path) -> tuple[HooksFile | None,
     return None, ()
 
 
-def read_hooks_strict(*, project_root: str, project_hooks_enabled: bool) -> StrictHooks:
-    """Read the global hooks and, when trusted, the project hooks, reporting instead of skipping anything."""
+def read_hooks_strict(*, workdir: str, workdir_hooks_enabled: bool) -> StrictHooks:
+    """Read the global hooks and, when trusted, the working directory hooks, reporting instead of skipping anything."""
     from pathlib import Path
 
-    from chrys.service.hooks.loader import merge_hooks_files, project_hooks_dir
+    from chrys.service.hooks.loader import merge_hooks_files, workdir_hooks_dir
 
     global_hooks, problems = _read_hooks_folder(get_platform().config_dir / "hooks", conventional_config_dir())
-    project_hooks: HooksFile | None = None
-    if project_hooks_enabled:
-        project_hooks, project_problems = _read_hooks_folder(project_hooks_dir(Path(project_root)))
-        problems = (*project_problems, *problems)
-    return StrictHooks(merge_hooks_files(project=project_hooks, global_=global_hooks), problems)
+    workdir_hooks: HooksFile | None = None
+    if workdir_hooks_enabled:
+        workdir_hooks, workdir_problems = _read_hooks_folder(workdir_hooks_dir(Path(workdir)))
+        problems = (*workdir_problems, *problems)
+    return StrictHooks(merge_hooks_files(workdir=workdir_hooks, global_=global_hooks), problems)
 
 
 def hooks_unchanged(manager: HookManager | None, merged: MergedHooksFile) -> bool:
@@ -119,7 +119,7 @@ class SessionHookFactory:
         self._confirmations = confirmations
 
     async def __call__(
-        self, *, project_root: str, project_hooks_enabled: bool, session_id: str | None, request_id: str = ""
+        self, *, workdir: str, workdir_hooks_enabled: bool, session_id: str | None, request_id: str = ""
     ) -> HookManager | None:
         """Resolve hooks for the target workspace and report warnings to its session."""
         from pathlib import Path
@@ -127,12 +127,12 @@ class SessionHookFactory:
         from chrys.service.hooks.loader import (
             HooksConfigError,
             load_hooks_dir,
-            load_hooks_project,
+            load_workdir_hooks,
             merge_hooks_files,
         )
 
         config_dir = get_platform().config_dir
-        root = Path(project_root)
+        root = Path(workdir)
 
         global_hooks: HooksFile | None = None
         try:
@@ -151,26 +151,26 @@ class SessionHookFactory:
             )
             global_hooks = None
 
-        project_hooks: HooksFile | None = None
+        workdir_hooks: HooksFile | None = None
         try:
-            if project_hooks_enabled:
-                project_hooks = load_hooks_project(root)
+            if workdir_hooks_enabled:
+                workdir_hooks = load_workdir_hooks(root)
         except (HooksConfigError, OSError) as exc:
             await self._bus.publish(
                 Warning(
-                    code="project_hooks_config_invalid",
+                    code="workdir_hooks_config_invalid",
                     message=(
-                        f"Project hooks config could not be loaded: {exc}. Project hooks disabled; global hooks unaffected."
+                        f"Working directory hooks config could not be loaded: {exc}. Working directory hooks disabled; global hooks unaffected."
                     ),
-                    display_message=_CONSTRUCTION_PROJECT_HOOKS_INVALID.bind(detail=DisplayBlock(str(exc))),
+                    display_message=_CONSTRUCTION_WORKDIR_HOOKS_INVALID.bind(detail=DisplayBlock(str(exc))),
                     session_id=session_id,
                     request_id=request_id,
                 )
             )
-            project_hooks = None
+            workdir_hooks = None
 
-        merged = merge_hooks_files(project=project_hooks, global_=global_hooks)
-        for loaded in (merged.project, merged.global_):
+        merged = merge_hooks_files(workdir=workdir_hooks, global_=global_hooks)
+        for loaded in (merged.workdir, merged.global_):
             if loaded is None:
                 continue
             for skipped in loaded.skipped_hooks:

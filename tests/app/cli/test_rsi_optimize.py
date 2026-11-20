@@ -47,12 +47,13 @@ def test_optimize_parser_accepts_agent_and_optimizer_model() -> None:
 def test_candidate_runner_factory_registers_the_mutated_profile() -> None:
     profile = AgentProfile(name="RsiCandidate", instructions="be brief\n")
     runner = build_candidate_runner_factory(timeout=9.0)(profile)
-    assert runner.agent == "RsiCandidate"
+    assert runner.agent == "RsiCandidate-copy"
     assert runner.timeout == 9.0
     assert runner.agent_registry is not None
-    loaded = runner.agent_registry.get("RsiCandidate")
+    loaded = runner.agent_registry.get(runner.agent)
     assert loaded is not None
     assert loaded.instructions == "be brief\n"
+    assert loaded.id != profile.id
 
 
 def test_candidate_runner_factory_keeps_declared_sub_agents() -> None:
@@ -68,7 +69,11 @@ def test_candidate_runner_factory_keeps_declared_sub_agents() -> None:
     registry = runner.agent_registry
     assert registry is not None
     assert registry.get("Code") is not None
-    assert registry.get("Code").instructions == "rsi mutated instructions\n"
+    assert registry.get("Code").instructions == code.instructions
+    candidate = registry.get(runner.agent)
+    assert candidate.instructions == "rsi mutated instructions\n"
+    assert candidate.id != code.id
+    assert candidate.sub_agents == mutated.sub_agents
     assert registry.get("Explore") is not None
     assert registry.get("General") is not None
 
