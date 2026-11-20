@@ -63,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("Cleared selected grants.\n")
         return 0
     rows: list[tuple[ApprovalGrantStore, ApprovalGrant]] = []
+    unreadable = False
     for store in stores:
         for record in store.load():
             try:
@@ -71,6 +72,12 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             if project is None or grant.project == project:
                 rows.append((store, grant))
+        unreadable = unreadable or store.unreadable
+    if unreadable:
+        # A store that cannot be read must not look like a store that holds nothing.
+        sys.stderr.write(
+            f"Some approval stores could not be read; run `{APP_COMMAND} approval clear --all` to reset them.\n"
+        )
     if args.action == "revoke":
         for store, grant in rows:
             if grant.id == args.id:
@@ -98,6 +105,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 + "\n"
             )
-        if not rows:
+        if not rows and not unreadable:
             sys.stdout.write("No remembered approvals.\n")
-    return 0
+    return 1 if unreadable else 0

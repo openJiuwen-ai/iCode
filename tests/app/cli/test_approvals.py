@@ -14,6 +14,7 @@ import pytest
 from chrys.app.cli import app, approvals
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.service.approval.grant_store import session_grants_path
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
@@ -116,3 +117,17 @@ async def test_session_restore_fork_and_delete_grant_lifecycle(grants):
     assert not session_path.exists()
     assert [rule.scope for rule in rebuilt.service.rules()] == ["PROJECT"]
     assert rebuilt.service.match(candidate)
+
+
+def test_cli_reports_an_unreadable_store_instead_of_an_empty_one(grants, capsys):
+    binding, _ = grants
+    atomic_write_owner_only_text(binding.service.store.path, "{")
+    assert approvals.main(["list"]) == 1
+    streams = capsys.readouterr()
+    assert "No remembered approvals." not in streams.out
+    assert "could not be read" in streams.err
+    assert "clear --all" in streams.err
+    assert approvals.main(["clear", "--all"]) == 0
+    out = capsys.readouterr().out
+    assert approvals.main(["list"]) == 0
+    assert "No remembered approvals." in capsys.readouterr().out or out
