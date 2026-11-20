@@ -47,7 +47,7 @@ EXPECTED_TOOLS = [
 
 def test_real_iCode_binding_exposes_nine_tools_and_hooks(tmp_path: Path) -> None:
     if "browser" not in discover_extensions().sources:
-        pytest.skip("browser-use is not installed as a distribution in this environment")
+        pytest.skip("icode-browser-use is not installed as a distribution in this environment")
 
     loaded = asyncio.run(load_extensions(["browser"]))
     assert len(loaded) == 1

@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import screenshot
-from browser_use.errors import BadRequest, BrowserError
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.actions import screenshot
+from icode_browser_use.errors import BadRequest, BrowserError
+from icode_browser_use.snapshot.fusion import FusedNode
 
 _PNG_1X1 = base64.b64encode(
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"

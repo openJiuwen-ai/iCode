@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from browser_use.snapshot.fusion import FusedNode
-from browser_use.snapshot.serializer import render, sanitize_text, weight
+from icode_browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.snapshot.serializer import render, sanitize_text, weight
 
 
 def node(

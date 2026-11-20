@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "browser_use"
+SRC = Path(__file__).resolve().parents[1] / "src" / "icode_browser_use"
 
 
 def test_every_subprocess_start_sets_stdin() -> None:

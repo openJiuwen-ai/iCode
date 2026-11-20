@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-EXTENSION = Path(__file__).resolve().parents[1] / "src" / "browser_use" / "extension"
+EXTENSION = Path(__file__).resolve().parents[1] / "src" / "icode_browser_use" / "extension"
 
 
 def test_manifest_grants_only_the_bridge_apis() -> None:
@@ -22,6 +22,7 @@ def test_manifest_grants_only_the_bridge_apis() -> None:
         "clipboardWrite",
     }
     assert manifest["action"]["default_popup"] == "popup.html"
+    assert "host_permissions" not in manifest
     assert manifest["options_ui"] == {"page": "options.html", "open_in_tab": True}
     assert manifest["background"] == {"service_worker": "background.js", "type": "module"}
 
@@ -33,8 +34,11 @@ def test_background_uses_real_tabs_and_refuses_browser_close() -> None:
         "chrome.debugger.attach",
         "chrome.tabs.group",
         "chrome.debugger.onEvent",
-        'method === "Browser.close"',
-        "Browser.close is not allowed",
+        'method.startsWith("Browser.")',
+        "is not allowed in bridge mode",
+        "Target.getTargets",
+        "isGatedPageEvent",
+        "handlePortDisconnect",
         "requireOwned",
         "chrome.runtime.onStartup",
         "chrome.runtime.onInstalled",

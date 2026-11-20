@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from browser_use.config import BrowserConfig
-from browser_use.errors import BadRequest, StaleRef
-from browser_use.session import BrowserSession, RefEntry
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.errors import BadRequest, StaleRef
+from icode_browser_use.session import BrowserSession, RefEntry
 
 
 def make_session() -> BrowserSession:

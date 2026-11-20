@@ -14,10 +14,10 @@ from types import SimpleNamespace
 import pytest
 from chrys.extensions import ToolCall, ToolContext, ToolError, TurnContext
 
-from browser_use import registry
-import browser_use.extension as ext
-from browser_use.errors import BadRequest, ConnectionClosed, StaleRef
-from browser_use.journal import Journal
+from icode_browser_use import registry
+import icode_browser_use.extension as ext
+from icode_browser_use.errors import BadRequest, ConnectionClosed, StaleRef
+from icode_browser_use.journal import Journal
 
 
 class FakeSession:
@@ -421,7 +421,7 @@ def test_action_status_routes_through_the_browser_handle(tmp_path, monkeypatch: 
 
 
 def test_upload_resolves_a_relative_path_against_ctx_cwd(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from browser_use.config import BrowserConfig
+    from icode_browser_use.config import BrowserConfig
 
     browser = add_browser()
     browser.session.cfg = BrowserConfig(allowed_domains=("example.com",), state_dir=tmp_path / "state")
@@ -513,7 +513,7 @@ def test_guard_blocks_shell_only_in_strict_mode(tmp_path, monkeypatch, value):
 
 @pytest.mark.parametrize("roots", ["root", ""])
 def test_broker_upload_roots(tmp_path, monkeypatch, roots):
-    from browser_use.config import BrowserConfig
+    from icode_browser_use.config import BrowserConfig
 
     monkeypatch.setenv("ICODE_BROWSER_UPLOAD_ROOTS", roots)
     browser = add_browser()
@@ -601,9 +601,9 @@ def test_tool_signatures_match_core_contracts() -> None:
 
 def test_the_bundled_extension_manifest_matches_the_package_version() -> None:
     """doctor warns when they differ; forgetting to bump the manifest would warn forever."""
-    from browser_use import __version__
+    from icode_browser_use import __version__
 
-    manifest_path = Path(__file__).resolve().parents[1] / "src" / "browser_use" / "extension" / "manifest.json"
+    manifest_path = Path(__file__).resolve().parents[1] / "src" / "icode_browser_use" / "extension" / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["version"] == __version__
 
@@ -1032,7 +1032,7 @@ def test_context_hides_query_tokens(tmp_path) -> None:
 
 
 def test_playbook_is_byte_stable_and_contains_w13_rules(tmp_path) -> None:
-    from browser_use.prompts import BROWSER_PLAYBOOK
+    from icode_browser_use.prompts import BROWSER_PLAYBOOK
 
     add_browser()
     turn = TurnContext.for_testing(tmp_path, prompt="hi", agent_name="A", session_id="s1")

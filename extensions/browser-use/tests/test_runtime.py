@@ -7,9 +7,9 @@ import contextlib
 
 import pytest
 
-import browser_use.runtime as runtime
-from browser_use.errors import BadRequest, CDPTimeout, PageHung
-from browser_use.types import ToolDef
+import icode_browser_use.runtime as runtime
+from icode_browser_use.errors import BadRequest, CDPTimeout, PageHung
+from icode_browser_use.types import ToolDef
 
 
 class FakeSession:

@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from browser_use.config import BrowserConfig
-from browser_use.downloads import DownloadInfo
-from browser_use.errors import BadRequest
-from browser_use.session import BrowserSession, _MAX_ACTIVE_DOWNLOADS
-import browser_use.session as session_module
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.downloads import DownloadInfo
+from icode_browser_use.errors import BadRequest
+from icode_browser_use.session import BrowserSession, _MAX_ACTIVE_DOWNLOADS
+import icode_browser_use.session as session_module
 
 
 def make_session(tmp_path: Path, **overrides) -> BrowserSession:

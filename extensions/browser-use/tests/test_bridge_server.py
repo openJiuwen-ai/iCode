@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from browser_use.bridge import server as bridge_server
-from browser_use.bridge.protocol import PROTOCOL_VERSION, encode_message
-from browser_use.bridge.server import BridgeServer
-from browser_use.bridge.transport import BridgeTransport
-from browser_use.config import BrowserConfig
-from browser_use.errors import CDPTimeout, ConnectionClosed, Unavailable
-from browser_use.session import BrowserSession
+from icode_browser_use.bridge import server as bridge_server
+from icode_browser_use.bridge.protocol import PROTOCOL_VERSION, encode_message
+from icode_browser_use.bridge.server import BridgeServer
+from icode_browser_use.bridge.transport import BridgeTransport
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.errors import CDPTimeout, ConnectionClosed, Unavailable
+from icode_browser_use.session import BrowserSession
 
 
 async def _send(writer, payload: dict) -> None:
@@ -257,7 +257,7 @@ def test_bridge_hardens_the_discovery_file(tmp_path: Path, monkeypatch) -> None:
     called: list[Path] = []
 
     async def scenario() -> None:
-        monkeypatch.setattr("browser_use.bridge.server._harden_file", called.append)
+        monkeypatch.setattr("icode_browser_use.bridge.server._harden_file", called.append)
         server = BridgeServer(tmp_path / "bridge.json")
         await server.start()
         await server.aclose()

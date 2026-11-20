@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import save_state, upload
-from browser_use.errors import BadRequest
+from icode_browser_use.actions import save_state, upload
+from icode_browser_use.errors import BadRequest
 
 
 class FakeClient:

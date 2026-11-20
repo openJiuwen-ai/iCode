@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import browser_use.bridge.install as bridge_install
-from browser_use.bridge.install import (
+import icode_browser_use.bridge.install as bridge_install
+from icode_browser_use.bridge.install import (
     HOST_NAME,
     extension_id_from_key,
     extension_id_from_manifest,
@@ -42,10 +42,10 @@ def test_extension_id_from_manifest(tmp_path: Path) -> None:
 
 
 def test_manifest_shape_and_origin() -> None:
-    manifest = native_host_manifest(Path(r"C:\tools\browser-use-host.exe"), "abcdefghijklmnop")
+    manifest = native_host_manifest(Path(r"C:\tools\icode-browser-use-host.exe"), "abcdefghijklmnop")
     assert manifest["name"] == HOST_NAME
     assert manifest["type"] == "stdio"
-    assert manifest["path"] == r"C:\tools\browser-use-host.exe"
+    assert manifest["path"] == r"C:\tools\icode-browser-use-host.exe"
     assert manifest["allowed_origins"] == ["chrome-extension://abcdefghijklmnop/"]
 
 

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
-from browser_use.actions import snapshot
-from browser_use.config import BrowserConfig
-from browser_use.session import BrowserSession
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.actions import snapshot
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.session import BrowserSession
+from icode_browser_use.snapshot.fusion import FusedNode
 
 
 def _node(

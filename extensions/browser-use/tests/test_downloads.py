@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from browser_use.downloads import (
+from icode_browser_use.downloads import (
     NAME_LIMIT,
     display_url,
     file_size,

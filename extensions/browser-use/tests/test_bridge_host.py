@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from browser_use.bridge.host import bridge_file
-from browser_use.bridge.protocol import encode_message, read_async_frame
-from browser_use.bridge.server import BridgeServer
+from icode_browser_use.bridge.host import bridge_file
+from icode_browser_use.bridge.protocol import encode_message, read_async_frame
+from icode_browser_use.bridge.server import BridgeServer
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -43,7 +43,7 @@ def test_native_host_pumps_frames_both_ways(tmp_path: Path) -> None:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "browser_use.bridge.host",
+            "icode_browser_use.bridge.host",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -97,7 +97,7 @@ def test_host_reconnects_to_a_new_bridge_generation(tmp_path: Path) -> None:
         process1 = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "browser_use.bridge.host",
+            "icode_browser_use.bridge.host",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -118,7 +118,7 @@ def test_host_reconnects_to_a_new_bridge_generation(tmp_path: Path) -> None:
             process2 = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
-                "browser_use.bridge.host",
+                "icode_browser_use.bridge.host",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -158,7 +158,7 @@ def test_host_exits_when_the_plugin_disconnects(tmp_path: Path) -> None:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "browser_use.bridge.host",
+            "icode_browser_use.bridge.host",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

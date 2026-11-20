@@ -8,20 +8,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use import distribution
+from icode_browser_use import distribution
 
 
 def _entry_point(name: str = "browser") -> importlib.metadata.EntryPoint:
     return importlib.metadata.EntryPoint(
-        name=name, value="browser_use.extension:extension", group=distribution.ENTRY_POINT_GROUP
+        name=name, value="icode_browser_use.extension:extension", group=distribution.ENTRY_POINT_GROUP
     )
 
 
 def _pack(root: Path) -> Path:
     pack = root / "extensions" / distribution.EXTENSION_ID
-    (pack / "browser_use").mkdir(parents=True)
+    (pack / "icode_browser_use").mkdir(parents=True)
     (pack / "__init__.py").write_text("extension = None\n", encoding="utf-8")
-    (pack / "browser_use" / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "icode_browser_use" / "__init__.py").write_text("", encoding="utf-8")
     return pack
 
 
@@ -52,8 +52,8 @@ def test_folder_pack_finds_both_host_layouts(tmp_path):
 
 
 def test_loaded_from_separates_the_two_loaders():
-    assert distribution.loaded_from("browser_use.diagnose") == "distribution"
-    assert distribution.loaded_from("_chrys_extension_browser.browser_use.cli") == "folder"
+    assert distribution.loaded_from("icode_browser_use.diagnose") == "distribution"
+    assert distribution.loaded_from("_chrys_extension_browser.icode_browser_use.cli") == "folder"
 
 
 def test_conflict_needs_both_sources(tmp_path, monkeypatch):
@@ -63,16 +63,16 @@ def test_conflict_needs_both_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(importlib.metadata, "entry_points", lambda **_: (_entry_point(),))
     folder, label = distribution.conflict(tmp_path)
     assert folder.parent.name == distribution.EXTENSION_ID
-    assert label == "browser_use.extension:extension"
+    assert label == "icode_browser_use.extension:extension"
 
 
 def test_broker_command_requires_a_python_interpreter_and_module_name():
-    command = distribution.broker_command(module_name="browser_use.broker_client", executable="/usr/bin/python3.14")
-    assert command == ["/usr/bin/python3.14", "-m", "browser_use.broker"]
+    command = distribution.broker_command(module_name="icode_browser_use.broker_client", executable="/usr/bin/python3.14")
+    assert command == ["/usr/bin/python3.14", "-m", "icode_browser_use.broker"]
     assert (
-        distribution.broker_command(module_name="browser_use.broker_client", executable="C:/tools/icode.exe") is None
+        distribution.broker_command(module_name="icode_browser_use.broker_client", executable="C:/tools/icode.exe") is None
     )
-    assert distribution.broker_command(module_name="_chrys_extension_browser.browser_use.x") is None
+    assert distribution.broker_command(module_name="_chrys_extension_browser.icode_browser_use.x") is None
 
 
 def test_install_pack_copies_and_uninstall_keeps_user_data(tmp_path, monkeypatch):
@@ -85,7 +85,7 @@ def test_install_pack_copies_and_uninstall_keeps_user_data(tmp_path, monkeypatch
 
     target = distribution.install_pack(source, config_dir=config)
     assert target == config / "extensions" / "browser"
-    assert (target / "browser_use" / "__init__.py").is_file()
+    assert (target / "icode_browser_use" / "__init__.py").is_file()
     assert not list(target.parent.glob(".browser.*.tmp"))
 
     with pytest.raises(ValueError, match="already exists"):

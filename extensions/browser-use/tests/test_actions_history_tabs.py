@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from browser_use.actions import back, forward, reload, tab_close
-from browser_use.config import BrowserConfig
-from browser_use.errors import BadRequest, CDPTimeout, TargetNotFound, Unavailable
-from browser_use.session import BrowserSession
+from icode_browser_use.actions import back, forward, reload, tab_close
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.errors import BadRequest, CDPTimeout, TargetNotFound, Unavailable
+from icode_browser_use.session import BrowserSession
 
 
 def _history_session(current: int, count: int = 3) -> SimpleNamespace:
@@ -127,8 +127,8 @@ def test_a_failed_close_is_reported_and_the_tab_stays_tracked() -> None:
 
 
 def test_close_timeouts_never_recycle_the_current_page(monkeypatch) -> None:
-    from browser_use import runtime
-    from browser_use.actions import build_tool_defs
+    from icode_browser_use import runtime
+    from icode_browser_use.actions import build_tool_defs
 
     session = _tab_session(close_error=CDPTimeout("Target.closeTarget", 1))
     session._target_id, session._session_id = "root", "s-root"

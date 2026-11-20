@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import wait_for
-from browser_use.errors import (
+from icode_browser_use.actions import wait_for
+from icode_browser_use.errors import (
     BadRequest,
     BrowserError,
     ConnectionClosed,
@@ -18,7 +18,7 @@ from browser_use.errors import (
     TargetAmbiguous,
     TargetNotFound,
 )
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.snapshot.fusion import FusedNode
 
 
 class Clock:
@@ -454,7 +454,7 @@ def test_page_stable_waits_for_the_default_quiet_window(deterministic_clock) -> 
     assert "page quiet_ms=1600 mutations=" in text, "the success names the quiet window it saw"
     assert "status=succeeded" in text
     expressions = [params["expression"] for name, params, _ in session.client.calls if name == "Runtime.evaluate"]
-    assert expressions == [wait_for._STABLE_PAGE_EXPR] * 2
+    assert expressions == [wait_for._STABLE_PAGE_EXPR] * 2 + [wait_for._STABLE_PAGE_CLEANUP_EXPR]
 
 
 def test_page_stable_rejects_a_timeout_shorter_than_the_quiet_window() -> None:
@@ -474,7 +474,7 @@ def test_target_stable_uses_the_node_observer(deterministic_clock) -> None:
     probe_functions = [
         params["functionDeclaration"] for name, params, _ in session.client.calls if name == "Runtime.callFunctionOn"
     ]
-    assert probe_functions == [wait_for._STABLE_NODE_FN] * 2
+    assert probe_functions == [wait_for._STABLE_NODE_FN] * 2 + [wait_for._STABLE_NODE_CLEANUP_FN]
 
 
 def test_stable_timeout_reports_the_last_quiet_window(deterministic_clock) -> None:
@@ -568,7 +568,7 @@ def test_params_expose_the_new_conditions_and_the_timeout_cap() -> None:
 
 def test_stable_observers_do_not_reuse_the_snapshot_probe_counter() -> None:
     """``window.__chrys_mutations`` is the snapshot probe's plain number: reading ``.at`` from it gives NaN."""
-    from browser_use.snapshot.fusion import MUTATION_COUNT_EXPRESSION
+    from icode_browser_use.snapshot.fusion import MUTATION_COUNT_EXPRESSION
 
     counter = MUTATION_COUNT_EXPRESSION.split("||")[0].strip()
     assert counter == "window.__chrys_mutations"

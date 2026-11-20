@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import browser_use.bridge.install as bridge_install
+import icode_browser_use.bridge.install as bridge_install
 
 PUBLIC_KEY = "dGVzdC1rZXk="
 
@@ -85,7 +85,7 @@ def test_cli_doctor_reports_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 
         "registered_manifest",
         lambda name: manifest if name == "chrome" else None,
     )
-    monkeypatch.setattr("browser_use.bridge.host.bridge_file", lambda: discovery)
+    monkeypatch.setattr("icode_browser_use.bridge.host.bridge_file", lambda: discovery)
     with pytest.raises(SystemExit) as exit_info:
         bridge_install.main(["doctor", "--manifest-path", str(manifest)])
     assert exit_info.value.code == 0
@@ -134,7 +134,7 @@ def test_cli_doctor_reports_a_stale_discovery(tmp_path: Path, monkeypatch: pytes
     discovery.write_text(json.dumps({"pid": 999999, "generation": "abc"}), encoding="utf-8")
     monkeypatch.setattr(bridge_install, "default_extension_install_dir", lambda: extension)
     monkeypatch.setattr(bridge_install, "registered_manifest", lambda _name: manifest)
-    monkeypatch.setattr("browser_use.bridge.host.bridge_file", lambda: discovery)
+    monkeypatch.setattr("icode_browser_use.bridge.host.bridge_file", lambda: discovery)
     with pytest.raises(SystemExit) as exit_info:
         bridge_install.main(["doctor", "--manifest-path", str(manifest)])
     assert exit_info.value.code == 1

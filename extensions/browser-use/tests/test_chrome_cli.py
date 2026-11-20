@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from browser_use import chrome, diagnose
-from browser_use.config import CHROME_DEVTOOLS_PREFERENCE, CHROME_LOGIN_PREFERENCE, BrowserConfig
+from icode_browser_use import chrome, diagnose
+from icode_browser_use.config import CHROME_DEVTOOLS_PREFERENCE, CHROME_LOGIN_PREFERENCE, BrowserConfig
 
 
 def test_connect_saves_only_after_handshake_and_disconnect_restores_owned(tmp_path, monkeypatch, capsys):
@@ -24,7 +24,7 @@ def test_connect_saves_only_after_handshake_and_disconnect_restores_owned(tmp_pa
 
 
 def test_fresh_install_connects_without_a_bridge(tmp_path, monkeypatch, capsys):
-    from browser_use.bridge import install
+    from icode_browser_use.bridge import install
 
     for name in ("BRIDGE", "CDP_URL", "BROKER", "ALLOWED_DOMAINS", "ALLOWED_ORIGINS"):
         monkeypatch.delenv(f"ICODE_BROWSER_{name}", raising=False)

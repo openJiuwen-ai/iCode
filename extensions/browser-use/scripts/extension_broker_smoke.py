@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 from chrys.extensions import ToolContext
 
-from browser_use import extension
-from browser_use.broker_client import BrokerSession
+from icode_browser_use import extension
+from icode_browser_use.broker_client import BrokerSession
 
 from smoke_common import chrome_executable, clean_environment
 
@@ -41,7 +41,7 @@ async def _run() -> None:
         work = Path(temp)
         with patch.dict(os.environ, _env(work), clear=True), (work / "broker.log").open("ab") as log:
             broker = subprocess.Popen(
-                [sys.executable, "-m", "browser_use.broker"],
+                [sys.executable, "-m", "icode_browser_use.broker"],
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,

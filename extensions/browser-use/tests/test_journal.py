@@ -8,7 +8,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from browser_use.journal import DISPATCHED, PREPARED, RESULT, Journal, describe
+from icode_browser_use.journal import DISPATCHED, PREPARED, RESULT, Journal, describe
 
 
 def journal(tmp_path: Path, **overrides: object) -> Journal:
@@ -160,9 +160,9 @@ def test_reopening_the_file_finds_earlier_rows(tmp_path: Path) -> None:
 
 
 def test_journal_rows_survive_a_session_restart(tmp_path: Path) -> None:
-    from browser_use.actions.actionability import lookup_action, record_action
-    from browser_use.config import BrowserConfig
-    from browser_use.session import BrowserSession
+    from icode_browser_use.actions.actionability import lookup_action, record_action
+    from icode_browser_use.config import BrowserConfig
+    from icode_browser_use.session import BrowserSession
 
     cfg = BrowserConfig(allowed_domains=("example.com",), state_dir=tmp_path / "state")
     first = BrowserSession(cfg, journal_owner="owner-a", journal_session="slot-0")
@@ -178,9 +178,9 @@ def test_journal_rows_survive_a_session_restart(tmp_path: Path) -> None:
 
 
 def test_another_session_object_cannot_read_the_journal(tmp_path: Path) -> None:
-    from browser_use.actions.actionability import lookup_action, record_action
-    from browser_use.config import BrowserConfig
-    from browser_use.session import BrowserSession
+    from icode_browser_use.actions.actionability import lookup_action, record_action
+    from icode_browser_use.config import BrowserConfig
+    from icode_browser_use.session import BrowserSession
 
     cfg = BrowserConfig(allowed_domains=("example.com",), state_dir=tmp_path / "state")
     first = BrowserSession(cfg, journal_owner="owner-a", journal_session="slot-0")

@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import click
-from browser_use.errors import CDPTimeout, ConnectionClosed
-from browser_use.journal import RESULT, Journal
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.actions import click
+from icode_browser_use.errors import CDPTimeout, ConnectionClosed
+from icode_browser_use.journal import RESULT, Journal
+from icode_browser_use.snapshot.fusion import FusedNode
 
 
 def _page(*, href: str = "https://example.com", mutations: int = 0, expanded: int = 0, dialogs: int = 0) -> dict:
@@ -480,7 +480,7 @@ def test_a_click_that_loses_the_connection_stays_prepared(monkeypatch) -> None:
 
 
 def test_a_dialog_opened_by_the_click_blocks_the_result(monkeypatch) -> None:
-    from browser_use.dialog import DialogInfo
+    from icode_browser_use.dialog import DialogInfo
 
     session = FakeSession()
     info = DialogInfo(seq=1, kind="alert", message="fixture alert")
@@ -1213,8 +1213,8 @@ def test_input_submit_async_toggle_waits_and_verifies_control_state(monkeypatch)
 
 
 def test_target_facts_distinguishes_detached_node_from_probe_failure() -> None:
-    from browser_use.actions import actionability
-    from browser_use.errors import BrowserError, StaleRef
+    from icode_browser_use.actions import actionability
+    from icode_browser_use.errors import BrowserError, StaleRef
 
     async def raise_stale(*_args, **_kwargs):
         raise StaleRef("gone")
@@ -1256,7 +1256,7 @@ def test_click_reports_dispatch_state_for_blocked_and_dispatch_timeout(monkeypat
 
 
 def test_no_layout_object_cdp_error_is_translated_to_bad_request() -> None:
-    from browser_use.errors import BadRequest, BrowserError
+    from icode_browser_use.errors import BadRequest, BrowserError
 
     session = FakeSession()
 

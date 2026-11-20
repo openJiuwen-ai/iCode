@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import actionability, click, extract, fill, hover, wait_for
-from browser_use.errors import BadRequest
-from browser_use.journal import Journal
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.actions import actionability, click, extract, fill, hover, wait_for
+from icode_browser_use.errors import BadRequest
+from icode_browser_use.journal import Journal
+from icode_browser_use.snapshot.fusion import FusedNode
 
 
 class _ShadowClient:

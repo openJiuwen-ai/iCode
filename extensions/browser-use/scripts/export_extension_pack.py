@@ -4,7 +4,7 @@
 The wheel is for an iCode that has a Python package installer; a standalone
 distribution instead drops this folder where iCode's own extension loader reads
 it (``<config_dir>/extensions/browser``). The folder package vendors the whole
-core under ``browser_use/``, which uses only relative imports, so it needs
+core under ``icode_browser_use/``, which uses only relative imports, so it needs
 neither the wheel nor a source checkout.
 
 Example::
@@ -12,7 +12,7 @@ Example::
     python scripts/export_extension_pack.py --out dist
     python dist/extensions/browser/doctor.py --json
 
-The build fails if a copied module imports ``browser_use`` by absolute
+The build fails if a copied module imports ``icode_browser_use`` by absolute
 name: that would silently depend on an installed wheel.
 """
 
@@ -27,10 +27,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "src" / "browser_use"
+SOURCE = ROOT / "src" / "icode_browser_use"
 ID = "browser"
 
-_ABSOLUTE_IMPORT = re.compile(r"^\s*(?:from|import)\s+browser_use\b", re.MULTILINE)
+_ABSOLUTE_IMPORT = re.compile(r"^\s*(?:from|import)\s+icode_browser_use\b", re.MULTILINE)
 _IGNORED = shutil.ignore_patterns(
     "__pycache__",
     "*.pyc",
@@ -47,8 +47,8 @@ INIT = '''# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserve
 """iCode browser extension, installed as a folder package instead of a wheel.
 
 iCode loads this file as the extension module for id ``{id}`` and reads
-``extension`` from it. The core below is vendored in ``browser_use/`` and
-uses only relative imports, so nothing here needs the ``browser-use`` wheel or
+``extension`` from it. The core below is vendored in ``icode_browser_use/`` and
+uses only relative imports, so nothing here needs the ``icode-browser-use`` wheel or
 a source checkout.
 
 Install: run ``python doctor.py install`` here, or copy this folder to
@@ -56,14 +56,14 @@ Install: run ``python doctor.py install`` here, or copy this folder to
 ``%APPDATA%/chrys/extensions`` on Windows). Diagnostics: ``python doctor.py``.
 
 The Owned and Attach backends work from this package. Bridge and Broker need
-``browser-use-host`` / ``browser-use-broker``, which only an installed wheel
+``icode-browser-use-host`` / ``icode-browser-use-broker``, which only an installed wheel
 provides; ``doctor.py`` reports them as unavailable rather than starting a
 command that cannot work.
 """
 
 from __future__ import annotations
 
-from .browser_use.extension import extension
+from .icode_browser_use.extension import extension
 
 __all__ = ["extension"]
 __version__ = "{version}"
@@ -77,7 +77,7 @@ DOCTOR = '''# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reser
     python doctor.py uninstall [--config-dir PATH]
 
 The core is loaded the way iCode would load it, but through the package's own
-``browser_use/`` entry instead of this folder's ``__init__.py``: the
+``icode_browser_use/`` entry instead of this folder's ``__init__.py``: the
 extension module needs ``chrys.extensions`` members that an older iCode may not
 have, and the diagnostics must still run there and say which members are
 missing instead of failing to start.
@@ -92,7 +92,7 @@ import types
 from pathlib import Path
 
 MODULE = "_chrys_extension_{id}"
-CORE = "browser_use"
+CORE = "icode_browser_use"
 
 
 def load() -> None:
@@ -153,7 +153,7 @@ only opens a connection to a running Bridge or Broker with `--connect`.
 ## Backends
 
 Owned and Attach work from this package. Bridge and Broker need the
-`browser-use-host` and `browser-use-broker` commands, which only the wheel
+`icode-browser-use-host` and `icode-browser-use-broker` commands, which only the wheel
 installs; `doctor` reports them as unavailable instead of starting a broken
 child process.
 
@@ -179,8 +179,8 @@ def build(out: Path, source: Path = SOURCE) -> Path:
         shutil.rmtree(target)
     target.mkdir(parents=True)
     try:
-        shutil.copytree(source, target / "browser_use", ignore=_IGNORED)
-        _compile(target / "browser_use")
+        shutil.copytree(source, target / "icode_browser_use", ignore=_IGNORED)
+        _compile(target / "icode_browser_use")
     except BaseException:
         # Never leave a half-written package behind for the host to discover.
         shutil.rmtree(target, ignore_errors=True)
@@ -217,7 +217,7 @@ def _check_relative_imports(core: Path) -> None:
     ]
     if offenders:
         raise SystemExit(
-            "these modules import browser_use absolutely and would need the wheel: " + ", ".join(offenders)
+            "these modules import icode_browser_use absolutely and would need the wheel: " + ", ".join(offenders)
         )
 
 

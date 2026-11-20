@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from browser_use.bridge.protocol import (
+from icode_browser_use.bridge.protocol import (
     MAX_MESSAGE_BYTES,
     MAX_TCP_MESSAGE_BYTES,
     ChunkAssembler,

@@ -9,12 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import browser_use.broker as broker_module
+import icode_browser_use.broker as broker_module
 
-from browser_use.bridge.protocol import encode_message
-from browser_use.broker import BrokerServer
-from browser_use.broker_client import BrokerClient, BrokerSession
-from browser_use.config import BrowserConfig
+from icode_browser_use.bridge.protocol import encode_message
+from icode_browser_use.broker import BrokerServer
+from icode_browser_use.broker_client import BrokerClient, BrokerSession
+from icode_browser_use.config import BrowserConfig
 
 
 @pytest.mark.parametrize("chosen", ["chosen", ""])
@@ -31,7 +31,7 @@ def test_stop_resolves_state_without_allowlist(tmp_path, monkeypatch, chosen):
     # Avoid contacting any broker in the real default state directory.
     monkeypatch.setattr(Path, "is_file", lambda self: False)
     broker_module.main()
-    assert captured == [tmp_path / chosen if chosen else Path.home() / ".cache" / "browser-use"]
+    assert captured == [tmp_path / chosen if chosen else Path.home() / ".cache" / "icode-browser-use"]
 
 
 def _cfg(tmp_path) -> BrowserConfig:

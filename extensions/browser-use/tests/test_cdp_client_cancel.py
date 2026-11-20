@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from browser_use.cdp.client import CDPClient
+from icode_browser_use.cdp.client import CDPClient
 
 
 class CancellingSocket:

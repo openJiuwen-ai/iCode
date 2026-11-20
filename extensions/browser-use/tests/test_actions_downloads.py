@@ -9,11 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import download_cancel, downloads
-from browser_use.downloads import DownloadInfo
-from browser_use.errors import BadRequest
-from browser_use.journal import Journal
-from browser_use.validation import validate
+from icode_browser_use.actions import download_cancel, downloads
+from icode_browser_use.downloads import DownloadInfo
+from icode_browser_use.errors import BadRequest
+from icode_browser_use.journal import Journal
+from icode_browser_use.validation import validate
 
 
 class FakeSession:

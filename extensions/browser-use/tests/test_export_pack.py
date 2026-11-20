@@ -16,14 +16,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use import __version__
+from icode_browser_use import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILDER = runpy.run_path(str(ROOT / "scripts" / "export_extension_pack.py"))
 
 
 def _build(tmp_path: Path) -> Path:
-    return BUILDER["build"](tmp_path / "out", ROOT / "src" / "browser_use")
+    return BUILDER["build"](tmp_path / "out", ROOT / "src" / "icode_browser_use")
 
 
 def _load(pack: Path, monkeypatch) -> object:
@@ -46,12 +46,12 @@ def test_export_layout_is_self_contained(tmp_path):
         "__init__.py",
         "doctor.py",
         "README.md",
-        "browser_use/__init__.py",
-        "browser_use/extension.py",
-        "browser_use/extension/manifest.json",
-        "browser_use/extension/background.js",
-        "browser_use/extension/chunks.js",
-        "browser_use/extension/permissions.js",
+        "icode_browser_use/__init__.py",
+        "icode_browser_use/extension.py",
+        "icode_browser_use/extension/manifest.json",
+        "icode_browser_use/extension/background.js",
+        "icode_browser_use/extension/chunks.js",
+        "icode_browser_use/extension/permissions.js",
     ):
         assert (pack / relative).is_file(), relative
     assert not list(pack.rglob("__pycache__"))
@@ -61,7 +61,7 @@ def test_export_layout_is_self_contained(tmp_path):
 
     init = (pack / "__init__.py").read_text(encoding="utf-8")
     assert f'__version__ = "{__version__}"' in init
-    assert "from .browser_use.extension import extension" in init
+    assert "from .icode_browser_use.extension import extension" in init
 
 
 def test_exported_pack_installs_and_uninstalls_through_its_own_command(tmp_path, monkeypatch):
@@ -69,7 +69,7 @@ def test_exported_pack_installs_and_uninstalls_through_its_own_command(tmp_path,
     pytest.importorskip("chrys.extensions")
     pack = _build(tmp_path)
     _load(pack, monkeypatch)  # registers the package so its submodules import
-    cli = importlib.import_module("_chrys_extension_browser.browser_use.cli")
+    cli = importlib.import_module("_chrys_extension_browser.icode_browser_use.cli")
     monkeypatch.setattr(importlib.metadata, "entry_points", lambda **_: ())
     config = tmp_path / "config"
     state = tmp_path / "state"
@@ -78,7 +78,7 @@ def test_exported_pack_installs_and_uninstalls_through_its_own_command(tmp_path,
     assert cli.main(["install", "--source", str(pack), "--config-dir", str(config)]) == 0
     installed = config / "extensions" / "browser"
     assert (installed / "doctor.py").is_file()
-    assert (installed / "browser_use" / "extension" / "manifest.json").is_file()
+    assert (installed / "icode_browser_use" / "extension" / "manifest.json").is_file()
 
     assert cli.main(["uninstall", "--config-dir", str(config)]) == 0
     assert not installed.exists()
@@ -147,7 +147,7 @@ def test_exported_pack_reports_its_folder_origin_and_unavailable_backends(tmp_pa
     assert completed.returncode == 0, completed.stderr
     document = json.loads(completed.stdout)
     assert document["plugin"]["install"] == "folder"
-    assert document["plugin"]["module"] == "_chrys_extension_browser.browser_use.diagnose"
+    assert document["plugin"]["module"] == "_chrys_extension_browser.icode_browser_use.diagnose"
     assert document["plugin"]["import"] == "ok"
     assert document["host"]["extension_api"] == "ok"
     assert document["config"]["ok"] is True
@@ -156,12 +156,12 @@ def test_exported_pack_reports_its_folder_origin_and_unavailable_backends(tmp_pa
 
 
 def test_export_refuses_an_absolute_package_import(tmp_path):
-    source = tmp_path / "src" / "browser_use"
+    source = tmp_path / "src" / "icode_browser_use"
     (source / "extension").mkdir(parents=True)
     (source / "__init__.py").write_text('__version__ = "0.0.1"\n', encoding="utf-8")
     (source / "extension" / "manifest.json").write_text("{}", encoding="utf-8")
     (source / "extension" / "background.js").write_text("", encoding="utf-8")
-    (source / "bad.py").write_text("from browser_use.config import BrowserConfig\n", encoding="utf-8")
+    (source / "bad.py").write_text("from icode_browser_use.config import BrowserConfig\n", encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="import browser_use absolutely"):
+    with pytest.raises(SystemExit, match="import icode_browser_use absolutely"):
         BUILDER["build"](tmp_path / "out", source)

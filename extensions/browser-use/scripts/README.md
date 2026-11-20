@@ -38,7 +38,7 @@ repository root with the project venv and `PYTHONPATH=src`
 | `snapshot_density_smoke.py` | real Chrome through the adapter on the `/dense` fixture: three same-name text siblings fold to one `×3` line while `browser_find` still returns all three refs, an unnamed empty node is not printed but stays findable, an unnamed scroller keeps its `*` marker, `browser_snapshot(target=…)` prints only that subtree and names it in the header, and the Owned browser exits |
 | `logs_smoke.py` | real Chrome console and network logs, sensitive value redaction, and incremental reads with `since` |
 | `history_tabs_smoke.py` | real Chrome back, forward, reload, popup close, and last-tab protection |
-| `agent_chat_smoke.py` | **model-level** browser-use acceptance: hands a plain user task to a real agent (`python -m chrys.app.cli.app run -t … -a BrowserExt`) on the `/chat` fixture and judges only the model's behaviour — exactly one message submitted (server counter), no `browser_evaluate`, a bounded number of tool calls, and the streamed answer sentence reported verbatim. Tool progress is read from stdout **and** stderr (iCode 0.36 writes it to stderr) |
+| `agent_chat_smoke.py` | **model-level** icode-browser-use acceptance: hands a plain user task to a real agent (`python -m chrys.app.cli.app run -t … -a BrowserExt`) on the `/chat` fixture and judges only the model's behaviour — exactly one message submitted (server counter), no `browser_evaluate`, a bounded number of tool calls, and the streamed answer sentence reported verbatim. Tool progress is read from stdout **and** stderr (iCode 0.36 writes it to stderr) |
 | `shadow_dom_smoke.py` | real Chrome on `/shadow-nested`: open Shadow DOM extract/click, nested closed Shadow DOM `browser_fill`/`browser_click`/`browser_extract` fallback, and shadow-internal vs. light-DOM occlusion contrast |
 | `w13_reliability_smoke.py` | unified W13 real-Chrome reliability gate across `/shadow-nested`, `/async-toggle`, `/dynamic-comments`, `/tall` (scrolled target clip), tab foreground/background status, and clean Chrome exit |
 
@@ -64,7 +64,7 @@ browser and at your own checkout.
 Build the wheel first. With `uv`, Python and Chrome/Edge available, run:
 
 ```powershell
-python scripts/wheel_extension_smoke.py --wheel dist/browser_use-0.3.2-py3-none-any.whl --host-version 0.35.2 --allow-public-network
+python scripts/wheel_extension_smoke.py --wheel dist/icode_browser_use-0.3.2-py3-none-any.whl --host-version 0.35.2 --allow-public-network
 ```
 
 `--wheel` selects the exact existing artifact; the runner installs it together
@@ -79,7 +79,7 @@ test-only evaluate check; package installation also needs access to its package
 source. The smoke does not relax the browser network policy or enable local
 origin support. JSON lines record the wheel SHA256, installed versions/import
 paths, checks and owned-process cleanup; retain stdout as evidence. It also runs
-the wheel's own `browser-use doctor --json` (install `distribution`, host API
+the wheel's own `icode-browser-use doctor --json` (install `distribution`, host API
 `ok`, Broker startable) and finishes by uninstalling the wheel and requiring
 that neither the package nor the `chrys.extensions` entry point remains.
 
@@ -98,7 +98,7 @@ python scripts/extension_pack_smoke.py --host-version 0.35.2 --allow-browser
 ```
 
 The exporter writes `extensions/browser/`: the core vendored under
-`browser_use/` (relative imports only), a root `__init__.py` that exposes
+`icode_browser_use/` (relative imports only), a root `__init__.py` that exposes
 `extension`, and a `doctor.py` that loads the core without executing the pack
 root (so an older host still gets a report). `extension_pack_smoke.py` creates a
 temporary uv venv with only `iCode-TUI` at the pinned version, proves neither the
@@ -109,7 +109,7 @@ browser from it against the loopback fixture site: Owned (the plugin launches an
 closes the browser) and Attach (closing plugin resources leaves the browser the
 script started alive). It then uninstalls with `doctor.py uninstall` and requires
 the state folder to survive. Bridge and Broker need the wheel's
-`browser-use-host`/`browser-use-broker` commands, so the pack's doctor
+`icode-browser-use-host`/`icode-browser-use-broker` commands, so the pack's doctor
 reports those backends instead of starting a command that cannot work.
 
 Neither smoke is four-path acceptance.

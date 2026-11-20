@@ -34,7 +34,7 @@ import tempfile
 import urllib.request
 
 _ROOT = Path(__file__).resolve().parents[1]
-if (_ROOT / "src" / "browser_use").is_dir():
+if (_ROOT / "src" / "icode_browser_use").is_dir():
     sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT / "scripts"))
 
@@ -99,10 +99,10 @@ async def wait_for_counter(origin: str, key: str, value: int, *, description: st
 
 
 async def run(args: argparse.Namespace) -> None:
-    from browser_use.actions import build_tool_defs
-    from browser_use.config import BrowserConfig
-    from browser_use.runtime import call_tool
-    from browser_use.session import BrowserSession
+    from icode_browser_use.actions import build_tool_defs
+    from icode_browser_use.config import BrowserConfig
+    from icode_browser_use.runtime import call_tool
+    from icode_browser_use.session import BrowserSession
 
     with (
         tempfile.TemporaryDirectory(prefix="fixture-browser-", ignore_cleanup_errors=True) as directory,

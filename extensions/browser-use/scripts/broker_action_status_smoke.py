@@ -9,9 +9,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from browser_use.broker import BrokerServer
-from browser_use.broker_client import BrokerClient
-from browser_use.config import BrowserConfig
+from icode_browser_use.broker import BrokerServer
+from icode_browser_use.broker_client import BrokerClient
+from icode_browser_use.config import BrowserConfig
 
 from smoke_common import chrome_executable
 

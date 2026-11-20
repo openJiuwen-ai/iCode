@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from browser_use.errors import BadRequest
-from browser_use.validation import to_json_schema, validate
+from icode_browser_use.errors import BadRequest
+from icode_browser_use.validation import to_json_schema, validate
 
 
 def test_defaults_and_known_keys() -> None:

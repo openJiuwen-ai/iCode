@@ -30,7 +30,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _ROOT = Path(__file__).resolve().parents[1]
-if (_ROOT / "src" / "browser_use").is_dir():
+if (_ROOT / "src" / "icode_browser_use").is_dir():
     sys.path.insert(0, str(_ROOT / "src"))
 
 
@@ -71,7 +71,7 @@ def require(condition: bool, message: str) -> None:
 
 async def run(args: argparse.Namespace) -> None:
     from chrys.extensions import ToolContext
-    from browser_use import extension as ext
+    from icode_browser_use import extension as ext
 
     with tempfile.TemporaryDirectory(prefix="browser-recovery-") as directory:
         root = Path(directory).resolve()

@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from browser_use.actions import logs
-from browser_use.config import BrowserConfig
-from browser_use.page_log import MAX_ENTRIES, PageLog, scrub
-from browser_use.session import BrowserSession
+from icode_browser_use.actions import logs
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.page_log import MAX_ENTRIES, PageLog, scrub
+from icode_browser_use.session import BrowserSession
 
 
 def _console(kind, *args):
@@ -218,7 +218,7 @@ def test_more_credential_shapes_are_masked_and_stack_positions_survive():
         assert scrub(benign) == benign
 
 def test_short_urls_drop_path_parameters_and_keep_ipv6_hosts():
-    from browser_use.page_log import _short_url
+    from icode_browser_use.page_log import _short_url
 
     assert _short_url("https://h/p;jsessionid=ABC?x=1") == "https://h/p"
     assert _short_url("http://[::1]:8080/a") == "http://[::1]:8080/a"
@@ -226,8 +226,8 @@ def test_short_urls_drop_path_parameters_and_keep_ipv6_hosts():
     assert _short_url("https://user:pw@example.com:8443/a/b?x=1") == "https://example.com:8443/a/b"
 
 def test_a_restarted_browser_does_not_show_the_previous_run_s_logs():
-    from browser_use.config import BrowserConfig
-    from browser_use.session import BrowserSession
+    from icode_browser_use.config import BrowserConfig
+    from icode_browser_use.session import BrowserSession
 
     session = BrowserSession(BrowserConfig(allowed_domains=("example.com",)))
     session.page_log.console("7", _console("error", {"type": "string", "value": "old run"}))
@@ -256,8 +256,8 @@ def test_a_reduced_document_response_is_left_to_the_full_one():
     assert [(entry.text, entry.url) for entry in log.entries("t")] == [("GET 404", "https://example.com/missing")]
 
 def _session_with_client(capabilities):
-    from browser_use.config import BrowserConfig
-    from browser_use.session import BrowserSession
+    from icode_browser_use.config import BrowserConfig
+    from icode_browser_use.session import BrowserSession
 
     session = BrowserSession(BrowserConfig(allowed_domains=("example.com",)))
     methods = []

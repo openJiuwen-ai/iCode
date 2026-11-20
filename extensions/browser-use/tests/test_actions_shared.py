@@ -7,15 +7,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions._shared import (
+from icode_browser_use.actions._shared import (
     capture_and_register,
     capture_sources,
     gather_in_order,
     send_watching_dialog,
 )
-from browser_use.dialog import DialogInfo
-from browser_use.errors import CDPTimeout, ConnectionClosed
-from browser_use.snapshot.fusion import FrameInfo
+from icode_browser_use.dialog import DialogInfo
+from icode_browser_use.errors import CDPTimeout, ConnectionClosed
+from icode_browser_use.snapshot.fusion import FrameInfo
 
 
 class FakeSession:

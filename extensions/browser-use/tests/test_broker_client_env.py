@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from browser_use.broker_client import BrokerClient, _requested_wait_seconds
-from browser_use.config import BrowserConfig
-from browser_use.errors import Unavailable
+from icode_browser_use.broker_client import BrokerClient, _requested_wait_seconds
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.errors import Unavailable
 
 
 def test_spawn_overrides_inherited_names(tmp_path, monkeypatch):
@@ -19,7 +19,7 @@ def test_spawn_overrides_inherited_names(tmp_path, monkeypatch):
     def popen(*args, **kwargs):
         captured.update(kwargs["env"])
 
-    monkeypatch.setattr("browser_use.broker_client.subprocess.Popen", popen)
+    monkeypatch.setattr("icode_browser_use.broker_client.subprocess.Popen", popen)
     cfg = BrowserConfig(state_dir=tmp_path, allowed_domains=("example.com",))
     BrokerClient(cfg)._spawn()
     child = BrowserConfig.from_env(captured)
@@ -37,7 +37,7 @@ def test_spawn_passes_configured_origins(tmp_path, monkeypatch):
     def popen(*args, **kwargs):
         captured.update(kwargs["env"])
 
-    monkeypatch.setattr("browser_use.broker_client.subprocess.Popen", popen)
+    monkeypatch.setattr("icode_browser_use.broker_client.subprocess.Popen", popen)
     cfg = BrowserConfig(
         state_dir=tmp_path,
         allowed_domains=("example.com",),
@@ -49,7 +49,7 @@ def test_spawn_passes_configured_origins(tmp_path, monkeypatch):
 
 
 def test_spawn_refuses_when_this_runtime_cannot_launch_python(tmp_path, monkeypatch):
-    monkeypatch.setattr("browser_use.broker_client.broker_command", lambda **_: None)
+    monkeypatch.setattr("icode_browser_use.broker_client.broker_command", lambda **_: None)
     cfg = BrowserConfig(state_dir=tmp_path, allowed_domains=("example.com",), broker_autostart=True)
     with pytest.raises(Unavailable) as info:
         BrokerClient(cfg)._spawn()

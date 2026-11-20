@@ -7,10 +7,10 @@ import time
 
 import pytest
 
-from browser_use.config import BrowserConfig
-from browser_use.dialog import DialogInfo
-from browser_use.errors import BadRequest, BrowserError, DialogPending
-from browser_use.session import BrowserSession, PageState
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.dialog import DialogInfo
+from icode_browser_use.errors import BadRequest, BrowserError, DialogPending
+from icode_browser_use.session import BrowserSession, PageState
 
 
 def make_session(**overrides) -> BrowserSession:

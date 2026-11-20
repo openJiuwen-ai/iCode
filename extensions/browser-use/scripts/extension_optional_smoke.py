@@ -30,7 +30,7 @@ async def _run() -> None:
                 "ICODE_BROWSER_IDLE_CLOSE_SECONDS": "0",
             }
         )
-        import browser_use.extension as ext
+        import icode_browser_use.extension as ext
 
         ext = importlib.reload(ext)
         names = {tool.name for tool in ext.extension.tools}

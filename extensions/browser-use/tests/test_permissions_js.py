@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-EXTENSION = Path(__file__).resolve().parents[1] / "src" / "browser_use" / "extension"
+EXTENSION = Path(__file__).resolve().parents[1] / "src" / "icode_browser_use" / "extension"
 NODE = shutil.which("node")
 
 

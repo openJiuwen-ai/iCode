@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import _shared
-from browser_use.errors import StaleRef
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.actions import _shared
+from icode_browser_use.errors import StaleRef
+from icode_browser_use.snapshot.fusion import FusedNode
 
 
 def _node(epoch: int) -> FusedNode:

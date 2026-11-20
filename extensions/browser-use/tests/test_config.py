@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from browser_use.config import CHROME_LOGIN_PREFERENCE, BrowserConfig, BrowserEnv, ConfigError
+from icode_browser_use.config import CHROME_LOGIN_PREFERENCE, BrowserConfig, BrowserEnv, ConfigError
 
 
 SETTINGS = [
@@ -84,7 +84,7 @@ def test_explicit_mapping_does_not_inherit_state(monkeypatch, primary):
     if primary is not None:
         env["ICODE_BROWSER_STATE_DIR"] = primary
     cfg = BrowserConfig.from_env(env)
-    assert cfg.state_dir == Path.home() / ".cache" / "browser-use"
+    assert cfg.state_dir == Path.home() / ".cache" / "icode-browser-use"
     assert BrowserEnv({}).state_dir() == cfg.state_dir
 
 

@@ -37,7 +37,7 @@ import sys
 import tempfile
 
 _ROOT = Path(__file__).resolve().parents[1]
-if (_ROOT / "src" / "browser_use").is_dir():
+if (_ROOT / "src" / "icode_browser_use").is_dir():
     # Exercise the working tree, not an older installed copy.
     sys.path.insert(0, str(_ROOT / "src"))
 
@@ -207,11 +207,11 @@ async def _check(
     extra_origin: str | None = None,
     ws_url: str,
 ) -> None:
-    from browser_use.actions import build_tool_defs
-    from browser_use.config import BrowserConfig
-    from browser_use.errors import Blocked
-    from browser_use.runtime import call_tool
-    from browser_use.session import BrowserSession
+    from icode_browser_use.actions import build_tool_defs
+    from icode_browser_use.config import BrowserConfig
+    from icode_browser_use.errors import Blocked
+    from icode_browser_use.runtime import call_tool
+    from icode_browser_use.session import BrowserSession
 
     origins = [allowed_origin] + ([extra_origin] if extra_origin else [])
     upload_root = root / "upload"

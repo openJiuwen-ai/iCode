@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from browser_use.cdp.targets import TargetManager
-from browser_use.config import BrowserConfig
-from browser_use.errors import StaleRef, TargetNotFound
-from browser_use.session import BrowserSession
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.cdp.targets import TargetManager
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.errors import StaleRef, TargetNotFound
+from icode_browser_use.session import BrowserSession
+from icode_browser_use.snapshot.fusion import FusedNode
 
 
 class FakeClient:

@@ -2,7 +2,7 @@
 
 """Unified W13 real-browser reliability acceptance gate.
 
-Drives real Chrome through ``browser_use.extension`` against the loopback
+Drives real Chrome through ``icode_browser_use.extension`` against the loopback
 fixture site to verify all W13 improvements in one repeatable run:
 
 1. ``/shadow-nested`` (P0-1 & P1-1):
@@ -53,7 +53,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
-import browser_use.extension as ext  # noqa: E402
+import icode_browser_use.extension as ext  # noqa: E402
 from chrys.extensions import ToolContext  # noqa: E402
 from fixture_site import serve  # noqa: E402
 from smoke_common import chrome_executable  # noqa: E402

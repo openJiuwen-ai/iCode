@@ -10,10 +10,10 @@ from typing import Any
 
 import pytest
 
-from browser_use.actions import select_option
-from browser_use.errors import BrowserError, ConnectionClosed
-from browser_use.journal import Journal
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.actions import select_option
+from icode_browser_use.errors import BrowserError, ConnectionClosed
+from icode_browser_use.journal import Journal
+from icode_browser_use.snapshot.fusion import FusedNode
 
 SINGLE = {
     "ok": True,
@@ -309,7 +309,7 @@ def test_disabled_option_cannot_be_selected(monkeypatch) -> None:
 
 
 def test_a_dialog_opened_by_the_change_handler_blocks_the_result(monkeypatch) -> None:
-    from browser_use.dialog import DialogInfo
+    from icode_browser_use.dialog import DialogInfo
 
     session = FakeSession()
     info = DialogInfo(seq=1, kind="alert", message="change handler")

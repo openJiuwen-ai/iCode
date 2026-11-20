@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-from browser_use.config import BrowserConfig
-from browser_use.session import _MAX_REMEMBERED_LOADS, BrowserSession
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.session import _MAX_REMEMBERED_LOADS, BrowserSession
 
 
 def session():

@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from browser_use.config import BrowserConfig, ConfigError, parse_origins
-from browser_use.policy import (
+from icode_browser_use.config import BrowserConfig, ConfigError, parse_origins
+from icode_browser_use.policy import (
     NetworkPolicy,
     canonical_origin,
     decide,

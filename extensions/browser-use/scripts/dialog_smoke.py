@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
-import browser_use.extension as ext  # noqa: E402 - the path shim above must run first
+import icode_browser_use.extension as ext  # noqa: E402 - the path shim above must run first
 from chrys.extensions import ToolContext, ToolError  # noqa: E402
 
 from fixture_site import serve  # noqa: E402

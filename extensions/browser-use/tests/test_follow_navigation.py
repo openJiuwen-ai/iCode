@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import time
 
-from browser_use.actions import back
-from browser_use.config import BrowserConfig
-from browser_use.session import BrowserSession
+from icode_browser_use.actions import back
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.session import BrowserSession
 
 
 class _NavClient:

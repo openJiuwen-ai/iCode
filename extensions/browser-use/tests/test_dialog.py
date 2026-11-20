@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from browser_use.dialog import MESSAGE_LIMIT, DialogInfo, redact_message
+from icode_browser_use.dialog import MESSAGE_LIMIT, DialogInfo, redact_message
 
 
 def test_redacts_secret_assignments_and_keeps_surrounding_text() -> None:

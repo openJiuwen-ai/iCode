@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from browser_use.broker_client import BrokerClient
-from browser_use.config import BrowserConfig
-from browser_use.errors import Unavailable
+from icode_browser_use.broker_client import BrokerClient
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.errors import Unavailable
 
 
 def _cfg(tmp_path: Path) -> BrowserConfig:

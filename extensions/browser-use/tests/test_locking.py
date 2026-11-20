@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-import browser_use.extension as ext
+import icode_browser_use.extension as ext
 from chrys.extensions import ToolContext
-from browser_use.errors import Unavailable
-from browser_use.locking import OWNER_META_FILE, acquire_instance_lock, probe_instance_lock
-from browser_use.prompts import BROWSER_PLAYBOOK
+from icode_browser_use.errors import Unavailable
+from icode_browser_use.locking import OWNER_META_FILE, acquire_instance_lock, probe_instance_lock
+from icode_browser_use.prompts import BROWSER_PLAYBOOK
 
 
 def test_acquire_writes_owner_meta_and_release_cleans_it(tmp_path: Path) -> None:

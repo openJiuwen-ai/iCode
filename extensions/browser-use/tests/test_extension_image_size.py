@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from browser_use.extension import _image_size
+from icode_browser_use.extension import _image_size
 
 
 def test_image_size_reads_png_header() -> None:

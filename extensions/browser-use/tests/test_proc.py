@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from browser_use._proc import windows_hidden_kwargs
+from icode_browser_use._proc import windows_hidden_kwargs
 
 
 def test_windows_hidden_kwargs_match_the_platform() -> None:

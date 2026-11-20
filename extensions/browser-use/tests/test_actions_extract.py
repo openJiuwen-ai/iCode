@@ -6,7 +6,7 @@ import asyncio
 import re
 from types import SimpleNamespace
 
-from browser_use.actions import extract
+from icode_browser_use.actions import extract
 
 NEXT = re.compile(r"… \(\+(\d+) more chars; next offset=(\d+)\)$")
 

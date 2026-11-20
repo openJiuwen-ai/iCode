@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from browser_use import cli, distribution
+from icode_browser_use import cli, distribution
 
 
 def _pack(root: Path) -> Path:
     pack = root / "extensions" / "browser"
-    (pack / "browser_use").mkdir(parents=True)
+    (pack / "icode_browser_use").mkdir(parents=True)
     (pack / "__init__.py").write_text("extension = None\n", encoding="utf-8")
-    (pack / "browser_use" / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "icode_browser_use" / "__init__.py").write_text("", encoding="utf-8")
     return pack
 
 
@@ -28,7 +28,7 @@ def _wheel(monkeypatch) -> None:
         "entry_points",
         lambda **_: (
             importlib.metadata.EntryPoint(
-                name="browser", value="browser_use.extension:extension", group=distribution.ENTRY_POINT_GROUP
+                name="browser", value="icode_browser_use.extension:extension", group=distribution.ENTRY_POINT_GROUP
             ),
         ),
     )
@@ -37,7 +37,7 @@ def _wheel(monkeypatch) -> None:
 def test_help_and_unknown_commands(capsys):
     assert cli.main([]) == 0
     printed = capsys.readouterr().out
-    assert "browser-use doctor" in printed
+    assert "icode-browser-use doctor" in printed
     assert "--bridge" in printed
 
     assert cli.main(["bogus"]) == 2
@@ -104,7 +104,7 @@ def test_uninstall_removes_the_folder_and_reports_a_remaining_wheel(tmp_path, mo
     assert cli.main(["uninstall", "--config-dir", str(tmp_path)]) == 1
     captured = capsys.readouterr()
     assert "removed:" in captured.out
-    assert "uv pip uninstall browser-use" in captured.err
+    assert "uv pip uninstall icode-browser-use" in captured.err
     assert not (tmp_path / "extensions" / "browser").exists()
 
     assert cli.main(["uninstall", "--config-dir", str(tmp_path)]) == 1

@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from browser_use.errors import TargetAmbiguous
-from browser_use.snapshot.fusion import COMPUTED_STYLES, FrameInfo, FusedNode, fuse
-from browser_use.snapshot.scoring import rank, resolve_ambiguity
+from icode_browser_use.errors import TargetAmbiguous
+from icode_browser_use.snapshot.fusion import COMPUTED_STYLES, FrameInfo, FusedNode, fuse
+from icode_browser_use.snapshot.scoring import rank, resolve_ambiguity
 
 FRAME = FrameInfo(frame_id="f", viewport=(800.0, 600.0))
 

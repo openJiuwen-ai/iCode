@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import dialog as dialog_action
-from browser_use.dialog import DialogInfo
-from browser_use.errors import BadRequest
-from browser_use.journal import Journal
+from icode_browser_use.actions import dialog as dialog_action
+from icode_browser_use.dialog import DialogInfo
+from icode_browser_use.errors import BadRequest
+from icode_browser_use.journal import Journal
 
 
 class FakeSession:

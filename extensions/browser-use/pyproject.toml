@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "browser-use"
+name = "icode-browser-use"
 version = "0.3.3"
 description = "Browser automation for iCode: a stdlib-only CDP core and a Python extension"
 readme = "README.md"
@@ -19,16 +19,16 @@ classifiers = [
 ]
 
 [project.scripts]
-browser-use = "browser_use.cli:main"
-browser-use-host = "browser_use.bridge.host:main"
-browser-use-bridge = "browser_use.bridge.install:main"
-browser-use-broker = "browser_use.broker:main"
+icode-browser-use = "icode_browser_use.cli:main"
+icode-browser-use-host = "icode_browser_use.bridge.host:main"
+icode-browser-use-bridge = "icode_browser_use.bridge.install:main"
+icode-browser-use-broker = "icode_browser_use.broker:main"
 
 [project.entry-points."chrys.extensions"]
-browser = "browser_use.extension:extension"
+browser = "icode_browser_use.extension:extension"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/browser_use"]
+packages = ["src/icode_browser_use"]
 
 [dependency-groups]
 dev = ["pytest>=8", "iCode-TUI; python_full_version >= '3.14'"]

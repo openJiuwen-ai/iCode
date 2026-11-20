@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 from chrys.extensions import ToolContext, ToolError, TurnContext
 
-import browser_use.extension as ext
-from browser_use import registry
-from browser_use.journal import Journal
+import icode_browser_use.extension as ext
+from icode_browser_use import registry
+from icode_browser_use.journal import Journal
 
 
 class FakeOwnedSession:

@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 os.environ["ICODE_BROWSER_EVALUATE"] = "allow"  # read at import: the page needs a way to log
 
-import browser_use.extension as ext  # noqa: E402 - the path shim above must run first
+import icode_browser_use.extension as ext  # noqa: E402 - the path shim above must run first
 from chrys.extensions import ToolContext  # noqa: E402
 
 from fixture_site import serve  # noqa: E402

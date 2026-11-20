@@ -7,10 +7,10 @@ import asyncio
 
 import pytest
 
-from browser_use.actions import snapshot, tab_switch, tabs
-from browser_use.errors import TargetNotFound
-from browser_use.session import PageInfo
-from browser_use.types import text_block
+from icode_browser_use.actions import snapshot, tab_switch, tabs
+from icode_browser_use.errors import TargetNotFound
+from icode_browser_use.session import PageInfo
+from icode_browser_use.types import text_block
 
 
 class FakeSession:
@@ -123,8 +123,8 @@ def test_tabs_displays_background_and_foreground_markers() -> None:
 def test_screenshot_timeout_on_background_tab_explains_throttling() -> None:
     from types import SimpleNamespace
 
-    from browser_use.actions import screenshot
-    from browser_use.errors import CDPTimeout, Unavailable
+    from icode_browser_use.actions import screenshot
+    from icode_browser_use.errors import CDPTimeout, Unavailable
 
     class BgClient:
         async def send(self, method, params=None, session_id=None, timeout=None):

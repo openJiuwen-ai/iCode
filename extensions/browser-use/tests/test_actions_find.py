@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import find
-from browser_use.errors import BadRequest
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.actions import find
+from icode_browser_use.errors import BadRequest
+from icode_browser_use.snapshot.fusion import FusedNode
 
 
 def _node(role: str, name: str, ref: int) -> FusedNode:
@@ -38,7 +38,7 @@ def test_find_role_filter_and_limit() -> None:
 
 
 def test_find_refreshes_a_stale_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
-    from browser_use.actions import snapshot as snapshot_action
+    from icode_browser_use.actions import snapshot as snapshot_action
 
     stale = _node("button", "Old", 1)
     stale.epoch = 7
@@ -61,7 +61,7 @@ def test_find_refreshes_a_stale_snapshot(monkeypatch: pytest.MonkeyPatch) -> Non
 
 @pytest.mark.parametrize(("dirty", "fresh"), [(True, False), (False, True)])
 def test_find_refreshes_in_the_same_epoch(monkeypatch: pytest.MonkeyPatch, dirty: bool, fresh: bool) -> None:
-    from browser_use.actions import snapshot as snapshot_action
+    from icode_browser_use.actions import snapshot as snapshot_action
 
     session = SimpleNamespace(
         page_epoch=7,

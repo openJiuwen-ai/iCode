@@ -9,10 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import press_key
-from browser_use.errors import BadRequest, CDPTimeout, ConnectionClosed
-from browser_use.journal import Journal
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.actions import press_key
+from icode_browser_use.errors import BadRequest, CDPTimeout, ConnectionClosed
+from icode_browser_use.journal import Journal
+from icode_browser_use.snapshot.fusion import FusedNode
 
 FACTS = {
     "tag": "input",
@@ -334,7 +334,7 @@ def test_lost_connection_stays_prepared(monkeypatch) -> None:
 
 
 def test_a_dialog_opened_by_the_key_blocks_the_result(monkeypatch) -> None:
-    from browser_use.dialog import DialogInfo
+    from icode_browser_use.dialog import DialogInfo
 
     session = FakeSession()
     info = DialogInfo(seq=1, kind="confirm", message="Submit?")

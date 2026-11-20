@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from browser_use.actions import navigate
-from browser_use.errors import BadRequest, Blocked, Unavailable
+from icode_browser_use.actions import navigate
+from icode_browser_use.errors import BadRequest, Blocked, Unavailable
 
 
 def make_session(base="https://example.com/dir/page?old=1"):

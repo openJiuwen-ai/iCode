@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from browser_use.config import BrowserConfig, is_valid_domain, parse_domains
-from browser_use.policy import (
+from icode_browser_use.config import BrowserConfig, is_valid_domain, parse_domains
+from icode_browser_use.policy import (
     _AUTO_ATTACH_PARAMS,
     NetworkPolicy,
     decide,
@@ -47,7 +47,7 @@ def test_decide_fails_closed() -> None:
 def test_network_policy_blocks_unresolvable_host() -> None:
     import asyncio
 
-    from browser_use.policy import NetworkPolicy
+    from icode_browser_use.policy import NetworkPolicy
 
     async def empty(_host: str) -> list[str]:
         return []
@@ -194,7 +194,7 @@ def test_arm_child_retries_once_when_the_connection_is_alive() -> None:
 def test_arm_child_does_not_retry_on_a_closed_connection() -> None:
     import asyncio
 
-    from browser_use.errors import ConnectionClosed
+    from icode_browser_use.errors import ConnectionClosed
 
     class ClosedClient(FakeClient):
         async def send(self, method, params=None, session_id=None, timeout=None):
@@ -239,10 +239,10 @@ def test_arm_page_resumes_before_secondary_commands() -> None:
     methods = [call[0] for call in client.calls if call[0] != "on"]
     assert methods == [
         "Fetch.enable",
+        "Target.setAutoAttach",
         "Runtime.runIfWaitingForDebugger",
         "Network.enable",
         "Network.setBlockedURLs",
-        "Target.setAutoAttach",
     ]
     assert policy.arm_failures == 0 and policy.arm_degraded == 0
 

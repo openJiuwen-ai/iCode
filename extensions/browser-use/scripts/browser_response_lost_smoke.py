@@ -18,14 +18,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from browser_use.bridge.protocol import PROTOCOL_VERSION
-from browser_use.bridge.server import BridgeServer
-from browser_use.errors import CDPTimeout
+from icode_browser_use.bridge.protocol import PROTOCOL_VERSION
+from icode_browser_use.bridge.server import BridgeServer
+from icode_browser_use.errors import CDPTimeout
 
 from smoke_common import chrome_executable
 
 CHROME = chrome_executable()
-EXTENSION = Path(os.environ["LOCALAPPDATA"]) / "browser-use" / "extension"
+EXTENSION = Path(os.environ["LOCALAPPDATA"]) / "icode-browser-use" / "extension"
 
 
 class FrameProxy:

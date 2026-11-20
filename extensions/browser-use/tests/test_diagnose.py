@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from browser_use import __version__, diagnose, distribution
+from icode_browser_use import __version__, diagnose, distribution
 
 DEAD_PID = 2_147_483_647
 pytest.importorskip("chrys")  # every case here needs a host to report against
@@ -190,7 +190,7 @@ def test_one_id_installed_twice_is_reported(sandbox, monkeypatch):
         "entry_points",
         lambda **_: (
             importlib.metadata.EntryPoint(
-                name="browser", value="browser_use.extension:extension", group="chrys.extensions"
+                name="browser", value="icode_browser_use.extension:extension", group="chrys.extensions"
             ),
         ),
     )
@@ -201,7 +201,7 @@ def test_one_id_installed_twice_is_reported(sandbox, monkeypatch):
     assert len(conflict) == 1
     assert conflict[0]["severity"] == "error"
     assert str(pack / "__init__.py") in conflict[0]["message"]
-    assert "browser_use.extension:extension" in conflict[0]["message"]
+    assert "icode_browser_use.extension:extension" in conflict[0]["message"]
     assert document["plugin"]["folder"] == str(pack / "__init__.py")
     assert document["ok"] is False
 
@@ -263,7 +263,7 @@ def test_bridge_install_state_is_reported(sandbox, monkeypatch):
     unpacked = sandbox / "unpacked"
     unpacked.mkdir()
     (unpacked / "manifest.json").write_text(json.dumps({"version": "0.0.1"}), encoding="utf-8")
-    host = sandbox / "browser-use-host"
+    host = sandbox / "icode-browser-use-host"
     host.write_bytes(b"")
     manifest = sandbox / "native-host.json"
     manifest.write_text(json.dumps({"path": str(host), "allowed_origins": []}), encoding="utf-8")
@@ -369,13 +369,13 @@ def test_summary_and_json_exit_codes(sandbox, capsys, monkeypatch):
 
 
 def test_module_entry_point_reports_a_launchable_broker(sandbox):
-    """``python -m browser_use.diagnose`` must not treat its own ``__main__`` name as the core."""
-    if distribution.broker_command(module_name="browser_use") is None:
+    """``python -m icode_browser_use.diagnose`` must not treat its own ``__main__`` name as the core."""
+    if distribution.broker_command(module_name="icode_browser_use") is None:
         pytest.skip("this interpreter is not exposed as a python executable")
     env = {key: value for key, value in os.environ.items() if not key.startswith("ICODE_BROWSER_")}
     env.update(_env(sandbox), PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
     completed = subprocess.run(
-        [sys.executable, "-m", "browser_use.diagnose", "--json", "--config-dir", str(sandbox / "config")],
+        [sys.executable, "-m", "icode_browser_use.diagnose", "--json", "--config-dir", str(sandbox / "config")],
         env=env,
         capture_output=True,
         text=True,
@@ -445,7 +445,7 @@ class _ProbeServer:
 
 
 def _probe_server(monkeypatch, *, fail_start: BaseException | None = None, fail_wait: BaseException | None = None):
-    import browser_use.bridge.server as bridge_server
+    import icode_browser_use.bridge.server as bridge_server
 
     _ProbeServer.fail_start = fail_start
     _ProbeServer.fail_wait = fail_wait
@@ -476,7 +476,7 @@ def test_probe_bridge_honours_a_short_configured_wait(sandbox, monkeypatch):
 
 
 def test_probe_bridge_failure_is_a_stable_code(sandbox, monkeypatch):
-    from browser_use.errors import Unavailable
+    from icode_browser_use.errors import Unavailable
 
     _probe_server(monkeypatch, fail_wait=Unavailable("extension bridge host did not connect within 5s"))
     result, problems = diagnose.probe_bridge(env=_env(sandbox))
@@ -489,7 +489,7 @@ def test_probe_bridge_failure_is_a_stable_code(sandbox, monkeypatch):
 
 
 def test_probe_bridge_reports_a_state_folder_held_by_another_instance(sandbox, monkeypatch):
-    from browser_use.errors import Unavailable
+    from icode_browser_use.errors import Unavailable
 
     _probe_server(monkeypatch, fail_start=Unavailable("another plugin instance is using the state folder"))
     result, problems = diagnose.probe_bridge(env=_env(sandbox))
@@ -502,7 +502,7 @@ def test_probe_bridge_reports_a_state_folder_held_by_another_instance(sandbox, m
 
 
 def test_probe_bridge_reports_another_live_bridge_server(sandbox, monkeypatch):
-    from browser_use.errors import Unavailable
+    from icode_browser_use.errors import Unavailable
 
     _probe_server(monkeypatch, fail_wait=Unavailable("no client"))
     monkeypatch.setattr(diagnose, "_discovery", lambda _path: ({"pid": 1}, None))

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from chrys.extensions import ToolContext
 
-from browser_use import registry
+from icode_browser_use import registry
 
 
 def ctx(tmp_path: Path, *, session: str | None = "s1", agent: str = "A", with_session_dir: bool = True):

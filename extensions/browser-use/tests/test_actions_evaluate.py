@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from browser_use.actions import evaluate
-from browser_use.journal import Journal
+from icode_browser_use.actions import evaluate
+from icode_browser_use.journal import Journal
 
 
 @pytest.mark.parametrize(

@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions._shared import detect_login
-from browser_use.config import BrowserConfig, LOGIN_WAIT_MAX
-from browser_use.errors import Busy
-from browser_use.session import BrowserSession
+from icode_browser_use.actions._shared import detect_login
+from icode_browser_use.config import BrowserConfig, LOGIN_WAIT_MAX
+from icode_browser_use.errors import Busy
+from icode_browser_use.session import BrowserSession
 
 
 def session():
@@ -198,8 +198,8 @@ def test_new_tools_respect_the_login_wait(action, allowed):
     ("browser_tab_close", False),
 ])
 def test_new_tools_respect_an_open_dialog(action, allowed):
-    from browser_use.dialog import DialogInfo
-    from browser_use.errors import DialogPending
+    from icode_browser_use.dialog import DialogInfo
+    from icode_browser_use.errors import DialogPending
 
     async def run():
         s = session()

@@ -13,9 +13,9 @@ from types import SimpleNamespace
 import pytest
 from chrys.extensions import ToolContext, ToolError
 
-import browser_use.extension as ext
-from browser_use.actions.actionability import record_action
-from browser_use.journal import Journal
+import icode_browser_use.extension as ext
+from icode_browser_use.actions.actionability import record_action
+from icode_browser_use.journal import Journal
 
 
 class FakeOwnedSession:

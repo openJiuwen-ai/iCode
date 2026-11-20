@@ -25,13 +25,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from browser_use.bridge.protocol import PROTOCOL_VERSION
-from browser_use.bridge.server import BridgeServer
+from icode_browser_use.bridge.protocol import PROTOCOL_VERSION
+from icode_browser_use.bridge.server import BridgeServer
 
 from smoke_common import chrome_executable
 
 CHROME = chrome_executable()
-EXTENSION = Path(os.environ["LOCALAPPDATA"]) / "browser-use" / "extension"
+EXTENSION = Path(os.environ["LOCALAPPDATA"]) / "icode-browser-use" / "extension"
 LOAD_EXTENSION_REMOVED_IN = 137
 
 
@@ -161,7 +161,7 @@ def main() -> None:
         raise SystemExit(
             f"Chrome {major} ignores --load-extension (removed in {LOAD_EXTENSION_REMOVED_IN}).\n"
             "Load the unpacked extension once in a persistent profile, install the native host\n"
-            "(`browser-use-bridge install`), then rerun with `--profile <that profile>`.\n"
+            "(`icode-browser-use-bridge install`), then rerun with `--profile <that profile>`.\n"
             "Chrome for Testing keeps the flag and can be passed through CHRYS_CHROME."
         )
     if not (EXTENSION / "manifest.json").is_file():

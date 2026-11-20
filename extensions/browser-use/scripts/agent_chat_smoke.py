@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Model-level browser-use acceptance on the fixture chat SPA.
+"""Model-level icode-browser-use acceptance on the fixture chat SPA.
 
 Unlike the other smokes this one does not call the adapter itself: it hands a
 plain user task to a real agent (``icode run -a BrowserExt``) and judges only

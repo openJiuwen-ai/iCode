@@ -12,7 +12,7 @@ from pathlib import Path
 
 from chrys.extensions import ToolContext, ToolError
 
-from browser_use import extension as ext
+from icode_browser_use import extension as ext
 
 from smoke_common import chrome_executable
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from browser_use.bridge import install
-from browser_use.config import BrowserConfig
-from browser_use.session import BrowserSession
+from icode_browser_use.bridge import install
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.session import BrowserSession
 
 
 class FakeClient:

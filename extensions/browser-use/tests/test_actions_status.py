@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from browser_use.actions import action_status
-from browser_use.actions.actionability import mark_dispatched, record_action
-from browser_use.errors import BadRequest
-from browser_use.journal import Journal
+from icode_browser_use.actions import action_status
+from icode_browser_use.actions.actionability import mark_dispatched, record_action
+from icode_browser_use.errors import BadRequest
+from icode_browser_use.journal import Journal
 
 
 def session(epoch: int = 7):

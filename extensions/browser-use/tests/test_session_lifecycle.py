@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-from browser_use.config import BrowserConfig
-from browser_use.errors import Unavailable
-from browser_use.session import BrowserSession
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.errors import Unavailable
+from icode_browser_use.session import BrowserSession
 
 
 def config(**overrides) -> BrowserConfig:

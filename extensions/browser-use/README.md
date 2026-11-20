@@ -1,4 +1,4 @@
-# browser-use
+# icode-browser-use
 
 Browser automation for iCode as a `chrys.extensions` plugin.
 
@@ -43,18 +43,18 @@ The wheel has no third-party dependencies, so it can be installed into iCode's
 interpreter from a folder without network access:
 
 ```bash
-python -m pip install --no-index --find-links <folder> browser-use==0.3.3
+python -m pip install --no-index --find-links <folder> icode-browser-use==0.3.3
 ```
 
 On Windows use iCode's interpreter
 (`%APPDATA%\uv\tools\icode-tui\Scripts\python.exe`); on macOS/Linux use the
 interpreter under `uv tool dir`. The same wheel can be uninstalled with
-`python -m pip uninstall browser-use`.
+`python -m pip uninstall icode-browser-use`.
 
 Find iCode's interpreter with `uv tool dir`: on Windows it is
 `%APPDATA%\uv\tools\icode-tui\Scripts\python.exe`; on macOS/Linux it is
 `~/.local/share/uv/tools/icode-tui/bin/python`. Reinstalling with
-`uv tool install iCode-TUI --with ./dist/browser_use-*.whl` also works but
+`uv tool install iCode-TUI --with ./dist/icode_browser_use-*.whl` also works but
 re-resolves iCode's whole environment. The package must be installed into
 iCode's environment; a project-local `.venv` is invisible to it.
 
@@ -71,13 +71,13 @@ python dist/extensions/browser/doctor.py install
 `install` copies `extensions/browser/` to `<config_dir>/extensions/browser`
 (`~/.chrys/extensions` on macOS/Linux, `%APPDATA%/chrys/extensions` on Windows),
 where iCode's own extension loader runs it. The folder vendors the core under
-`browser_use/` and uses relative imports only, so it needs neither the
+`icode_browser_use/` and uses relative imports only, so it needs neither the
 wheel nor a source checkout. `python dist/extensions/browser/doctor.py
 uninstall` removes it again; browser profiles, logins and action journals in the
 state folder stay.
 
 The folder package runs the Owned and Attach backends. Bridge and Broker need
-the `browser-use-host` and `browser-use-broker` commands that only the wheel
+the `icode-browser-use-host` and `icode-browser-use-broker` commands that only the wheel
 installs, so the plugin refuses to autostart the Broker from there and the
 diagnostics report those backends instead of starting a command that cannot
 work.
@@ -89,7 +89,7 @@ diagnostics.
 Leave both network settings unset to browse public sites. Set `ICODE_BROWSER_ALLOWED_DOMAINS`
 to restrict public sites or see [Local development](#local-development) for loopback access.
 Once either list is configured, only the listed destinations are allowed. Set `ICODE_BROWSER_BROKER=1`
-and start `browser-use-broker` in the same state dir for the persistent
+and start `icode-browser-use-broker` in the same state dir for the persistent
 Broker; `ICODE_BROWSER_GUARD=strict` / `ICODE_BROWSER_EXECUTABLE` follow the same
 rule.
 
@@ -113,10 +113,10 @@ approval:
 ## Diagnostics
 
 ```bash
-browser-use doctor            # short report
-browser-use doctor --json     # one machine-readable document (schema 1)
-browser-use doctor --connect  # also dial a running Bridge or Broker
-browser-use doctor --bridge   # actively wait for the extension to connect
+icode-browser-use doctor            # short report
+icode-browser-use doctor --json     # one machine-readable document (schema 1)
+icode-browser-use doctor --connect  # also dial a running Bridge or Broker
+icode-browser-use doctor --bridge   # actively wait for the extension to connect
 ```
 
 `doctor` is read-only by default: it reads files and process ids, never launches
@@ -137,7 +137,7 @@ and `1` otherwise.
 Two version checks catch a half-done upgrade: the imported plugin version is
 compared with the installed distribution (`plugin_version_mismatch` — restart
 iCode), and the unpacked extension's manifest version with the installed plugin
-(`bridge_version_mismatch` — re-run `browser-use-bridge install`). Both are
+(`bridge_version_mismatch` — re-run `icode-browser-use-bridge install`). Both are
 warnings, so the exit status stays 0; read the reported advice.
 
 Every problem carries a stable code, a message and the advice that fixes it:
@@ -150,7 +150,7 @@ Every problem carries a stable code, a message and the advice that fixes it:
 `broker_unreachable`, `broker_config_differs`, `broker_unsupported`.
 
 When the export tool is around, the folder package carries the same command as
-`python <pack>/doctor.py`. `browser-use install` and `browser-use uninstall`
+`python <pack>/doctor.py`. `icode-browser-use install` and `icode-browser-use uninstall`
 manage the folder package itself: `install` refuses to add a second source for
 an id the wheel (as visible to this Python) or the single-file layout already
 provides, because iCode then loads neither copy; `uninstall` removes the
@@ -213,13 +213,13 @@ Limits worth knowing before relying on it:
 
 ## Use your everyday Chrome login
 
-Keep your signed-in Chrome 144 or later open and run `python -m browser_use.chrome connect --chrome`
+Keep your signed-in Chrome 144 or later open and run `python -m icode_browser_use.chrome connect --chrome`
 in a terminal. If Chrome's settings page opens, turn on **Allow remote debugging**. The plugin saves
 the choice. Select **Allow** when Chrome asks for permission to connect during a browser task.
 [Chrome connection instructions](https://developer.chrome.com/docs/devtools/agents/get-started/configuration/#connect-to-an-existing-browser-session)
 
-`python -m browser_use.chrome status` shows which backend new handles will use.
-`python -m browser_use.chrome disconnect` clears the saved choice. To revoke Chrome's debugging
+`python -m icode_browser_use.chrome status` shows which backend new handles will use.
+`python -m icode_browser_use.chrome disconnect` clears the saved choice. To revoke Chrome's debugging
 permission, turn it off at `chrome://inspect/#remote-debugging`.
 
 ## Which login state the agent gets
@@ -241,7 +241,7 @@ Attach and Bridge never launch a browser; Owned owns (and closes) the Chrome it
 starts. A Bridge that has never handshaked in this state folder now fails a tool
 call within 5 s (afterwards it waits up to `ICODE_BROWSER_BRIDGE_WAIT`, default
 35 s, because the extension reconnects on its own 30 s alarm); the error points
-at `browser-use doctor --bridge`.
+at `icode-browser-use doctor --bridge`.
 
 ## Reuse an existing browser (attach mode)
 
@@ -266,17 +266,17 @@ The profile you attach to is the login state the agent gets.
 
 ## Extension bridge
 
-`python -m browser_use.chrome connect --bridge` verifies the native host and saves the choice for new
-browser handles. `python -m browser_use.chrome status` shows the backend for new handles and
-`python -m browser_use.chrome disconnect` clears the saved preference. An explicit
+`python -m icode_browser_use.chrome connect --bridge` verifies the native host and saves the choice for new
+browser handles. `python -m icode_browser_use.chrome status` shows the backend for new handles and
+`python -m icode_browser_use.chrome disconnect` clears the saved preference. An explicit
 `ICODE_BROWSER_BRIDGE` environment setting takes precedence. With the Bridge, a loopback server in the
 plugin waits for Chrome's native-messaging host, which pumps frames to the MV3
 extension; the extension drives a tab it owns through `chrome.debugger`. This
 reuses the running browser's login state without copying a profile or closing
 the browser.
 
-To update an existing unpacked Bridge at the default path, run `python -m browser_use.chrome update-bridge`,
-reload **iCode Browser Bridge** at `chrome://extensions`, and run `python -m browser_use.chrome connect --bridge`.
+To update an existing unpacked Bridge at the default path, run `python -m icode_browser_use.chrome update-bridge`,
+reload **iCode Browser Bridge** at `chrome://extensions`, and run `python -m icode_browser_use.chrome connect --bridge`.
 The connect command reports the version Chrome is running. Bridge 0.3.3 supports site-filtered browser logs and owned-tab visibility/activation (`tab_state`: `Bridge.tabState` and `Target.activateTarget`).
 
 Setup:
@@ -285,13 +285,13 @@ Setup:
 # 1. register the native host, copy the bundled extension, and open the setup pages
 # Run from the iCode source root to install the optional Bridge command
 uv tool install ./extensions/browser-use
-browser-use-bridge install --open
+icode-browser-use-bridge install --open
 # opens chrome://extensions and the extension folder
 # (on a machine where Chrome is not found, open chrome://extensions manually)
 
 # 2. in chrome://extensions: Developer mode -> Load unpacked -> the printed folder
 # 3. verify and save the connection
-python -m browser_use.chrome connect --bridge
+python -m icode_browser_use.chrome connect --bridge
 ```
 
 `--extension-dir` overrides the source (development), `--extension-copy`
@@ -340,7 +340,7 @@ and shows recent changes. The default stays Ask until changed there.
 
 Still open: branded Chrome's manual unpacked load. Updating the extension
 replaces the stable copy; close Chrome first because loaded files can be
-locked. Uninstall with `browser-use-bridge uninstall`.
+locked. Uninstall with `icode-browser-use-bridge uninstall`.
 
 ## Action result semantics
 
@@ -639,7 +639,7 @@ file.
 | `ICODE_BROWSER_BRIDGE` | off | `1` connects through the Chrome extension bridge (requires the extension and native host) |
 | `ICODE_BROWSER_BRIDGE_FILE` | `state_dir/bridge.json` | Rendezvous file the plugin writes for the native host (port + token) |
 | `ICODE_BROWSER_HEADLESS` | `0` | `1` runs without a window (owned mode only) |
-| `ICODE_BROWSER_STATE_DIR` | `~/.cache/browser-use` | Chrome profile, logs, per-browser state |
+| `ICODE_BROWSER_STATE_DIR` | `~/.cache/icode-browser-use` | Chrome profile, logs, per-browser state |
 | `ICODE_BROWSER_EVALUATE` | off | `allow` registers `browser_evaluate` (high-risk, approval) |
 | `ICODE_BROWSER_SAVE_STATE` | off | `allow` registers `browser_save_state` (high-risk, approval) |
 | `ICODE_BROWSER_UPLOAD_ROOTS` | unset | Path-separated roots `browser_upload` may read; empty falls back to process cwd |
@@ -661,9 +661,9 @@ The Broker is a local loopback daemon with a user-only discovery file
 acquire a lease and forward tool calls. Start it outside the plugin process:
 
 ```bash
-browser-use-broker          # start for the current ICODE_BROWSER_STATE_DIR
-browser-use-broker --stop   # authenticated shutdown + cleanup
-browser-use-broker --stop --purge-profiles  # also delete sessions/<digest> profiles
+icode-browser-use-broker          # start for the current ICODE_BROWSER_STATE_DIR
+icode-browser-use-broker --stop   # authenticated shutdown + cleanup
+icode-browser-use-broker --stop --purge-profiles  # also delete sessions/<digest> profiles
 ```
 
 `ICODE_BROWSER_BROKER_AUTOSTART=1` is a development-only fallback that spawns the

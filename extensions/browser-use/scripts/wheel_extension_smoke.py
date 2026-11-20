@@ -3,7 +3,7 @@
 
 Example (the wheel must already exist; host version must be an exact release)::
 
-    python scripts/wheel_extension_smoke.py --wheel dist/browser_use-0.3.2-py3-none-any.whl \
+    python scripts/wheel_extension_smoke.py --wheel dist/icode_browser_use-0.3.2-py3-none-any.whl \
         --host-version 0.35.2 --allow-public-network \
         --executable "C:/Program Files/Google/Chrome/Application/chrome.exe"
 
@@ -68,8 +68,8 @@ def wheel_identity(wheel: Path) -> tuple[str, str]:
         if len(names) != 1:
             raise RuntimeError("Expected one distribution in wheel")
         metadata = Parser().parsestr(archive.read(names[0]).decode("utf-8"))
-    if metadata["Name"].lower().replace("_", "-") != "browser-use":
-        raise RuntimeError("--wheel must be a browser-use wheel")
+    if metadata["Name"].lower().replace("_", "-") != "icode-browser-use":
+        raise RuntimeError("--wheel must be a icode-browser-use wheel")
     return digest, metadata["Version"]
 
 
@@ -93,7 +93,7 @@ def verify_installation(wheel: Path, dist: importlib.metadata.Distribution, dige
         package_files = [
             name
             for name in archive.namelist()
-            if name.startswith("browser_use/")
+            if name.startswith("icode_browser_use/")
             and not name.endswith(("/", ".pyc"))
             and "__pycache__" not in Path(name).parts
         ]
@@ -121,8 +121,8 @@ def require(condition: bool, message: str) -> None:
 
 def doctor_report(root: Path) -> None:
     """The wheel's own diagnostics entry: it must see a distribution install and a usable config."""
-    command = Path(sys.executable).parent / ("browser-use.exe" if os.name == "nt" else "browser-use")
-    require(command.is_file(), f"the wheel did not install the browser-use command: {command}")
+    command = Path(sys.executable).parent / ("icode-browser-use.exe" if os.name == "nt" else "icode-browser-use")
+    require(command.is_file(), f"the wheel did not install the icode-browser-use command: {command}")
     completed = subprocess.run(
         [str(command), "doctor", "--json", "--config-dir", str(root / "config")],
         capture_output=True,
@@ -136,7 +136,7 @@ def doctor_report(root: Path) -> None:
     require(document["plugin"]["install"] == "distribution", f"doctor install differs: {document['plugin']}")
     require(document["plugin"]["folder"] is None, f"doctor found a folder source: {document['plugin']}")
     require(
-        (document["plugin"]["distribution"] or "").startswith("browser-use"),
+        (document["plugin"]["distribution"] or "").startswith("icode-browser-use"),
         f"doctor distribution label differs: {document['plugin']}",
     )
     require(document["plugin"]["import"] == "ok", f"the host cannot import the extension: {document['plugin']}")
@@ -175,7 +175,7 @@ async def run_installed(args, root: Path) -> None:
         sys.prefix != sys.base_prefix and sys.flags.isolated == 1, "Runner requires an isolated venv interpreter (-I)"
     )
     require(importlib.metadata.version("iCode-TUI") == args.host_version, "Installed host version differs from pin")
-    dist = importlib.metadata.distribution("browser-use")
+    dist = importlib.metadata.distribution("icode-browser-use")
     require(dist.version == version, "Installed plugin version differs from wheel")
     verify_installation(args.wheel, dist, digest)
     points = [point for point in dist.entry_points if point.group == "chrys.extensions" and point.name == "browser"]
@@ -185,7 +185,7 @@ async def run_installed(args, root: Path) -> None:
     import chrys
     from chrys.service.extensions import bind_extension, load_extensions
 
-    import browser_use.extension as adapter
+    import icode_browser_use.extension as adapter
 
     plugin_path = Path(adapter.__file__).resolve()
     host_path = Path(chrys.__file__).resolve()
@@ -372,7 +372,7 @@ async def run_with_timeout(args, root: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--wheel", type=Path, required=True, help="Already-built browser-use wheel")
+    parser.add_argument("--wheel", type=Path, required=True, help="Already-built icode-browser-use wheel")
     parser.add_argument("--host-version", required=True, help="Exact iCode-TUI version (no ranges)")
     parser.add_argument("--python", default="3.14", help="uv Python interpreter/version for the temporary venv")
     parser.add_argument("--executable", help="Explicit Chrome/Edge executable; otherwise use plugin discovery")
@@ -453,7 +453,7 @@ def main() -> None:
 
 UNINSTALLED = """\
 import importlib.metadata, importlib.util
-if importlib.util.find_spec("browser_use") is not None:
+if importlib.util.find_spec("icode_browser_use") is not None:
     raise SystemExit("the package is still importable")
 if [point for point in importlib.metadata.entry_points(group="chrys.extensions") if point.name == "browser"]:
     raise SystemExit("the extension entry point is still installed")
@@ -463,7 +463,7 @@ if [point for point in importlib.metadata.entry_points(group="chrys.extensions")
 def _require_uninstall(python: Path, root: Path, env: dict[str, str]) -> None:
     """A clean uninstall leaves neither the package nor its extension entry point behind."""
     subprocess.run(
-        ["uv", "pip", "uninstall", "--python", str(python), "browser-use", "--no-config"],
+        ["uv", "pip", "uninstall", "--python", str(python), "icode-browser-use", "--no-config"],
         cwd=root,
         env=env,
         check=True,
@@ -478,10 +478,10 @@ def _require_uninstall(python: Path, root: Path, env: dict[str, str]) -> None:
         stdin=subprocess.DEVNULL,
         timeout=60,
     )
-    script = python.parent / ("browser-use.exe" if os.name == "nt" else "browser-use")
+    script = python.parent / ("icode-browser-use.exe" if os.name == "nt" else "icode-browser-use")
     require(not script.exists(), f"the console script survived uninstall: {script}")
     require(not (root / "config" / "extensions" / "browser").exists(), "uninstall left a folder package")
-    report("uninstalled", wheel="browser-use")
+    report("uninstalled", wheel="icode-browser-use")
 
 
 if __name__ == "__main__":

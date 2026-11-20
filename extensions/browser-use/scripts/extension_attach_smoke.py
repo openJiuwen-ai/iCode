@@ -26,8 +26,8 @@ from pathlib import Path
 import psutil
 from chrys.extensions import ToolContext
 
-from browser_use import extension as ext
-from browser_use.cdp.launcher import chrome_argv
+from icode_browser_use import extension as ext
+from icode_browser_use.cdp.launcher import chrome_argv
 
 from fixture_site import serve
 from smoke_common import chrome_executable

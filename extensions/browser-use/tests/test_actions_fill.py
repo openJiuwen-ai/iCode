@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from browser_use.actions import _shared, actionability, fill
-from browser_use.errors import CDPTimeout, StaleRef
-from browser_use.journal import Journal
-from browser_use.snapshot.fusion import FusedNode
+from icode_browser_use.actions import _shared, actionability, fill
+from icode_browser_use.errors import CDPTimeout, StaleRef
+from icode_browser_use.journal import Journal
+from icode_browser_use.snapshot.fusion import FusedNode
 
 FOCUS_VALUE = {
     "focused": True,
@@ -470,7 +470,7 @@ def test_fill_records_prepared_before_sending_and_never_stores_the_typed_text(mo
 
 
 def test_a_dialog_opened_by_the_fill_blocks_the_result(monkeypatch) -> None:
-    from browser_use.dialog import DialogInfo
+    from icode_browser_use.dialog import DialogInfo
 
     session = FakeSession()
     info = DialogInfo(seq=1, kind="alert", message="onchange fired")

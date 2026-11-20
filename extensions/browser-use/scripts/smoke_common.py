@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import sys
 
-from browser_use.cdp.launcher import discover_chrome
+from icode_browser_use.cdp.launcher import discover_chrome
 
 _BROWSER_ENV = ("CHRYS_CHROME", "ICODE_BROWSER_EXECUTABLE")
 _ICODE_ENV = ("CHRYS_ICODE_SRC", "ICODE_SRC")
@@ -26,7 +26,7 @@ def chrome_executable() -> Path:
         candidate = Path(value)
         if not candidate.is_file():
             raise SystemExit(f"{name} is set but is not a file: {candidate}")
-        print(f"browser-use smoke: using browser from {name}: {candidate}", file=sys.stderr)
+        print(f"icode-browser-use smoke: using browser from {name}: {candidate}", file=sys.stderr)
         return candidate
     found = discover_chrome()
     if not found:
@@ -34,7 +34,7 @@ def chrome_executable() -> Path:
             "Chrome/Edge was not found; set CHRYS_CHROME to its executable "
             "(for example C:/Program Files/Google/Chrome/Application/chrome.exe)"
         )
-    print(f"browser-use smoke: discovered browser: {found}", file=sys.stderr)
+    print(f"icode-browser-use smoke: discovered browser: {found}", file=sys.stderr)
     return Path(found)
 
 
@@ -48,11 +48,11 @@ def icode_checkout() -> Path:
         root = candidate.parent if candidate.name == "src" else candidate
         if not (root / "src" / "chrys").is_dir():
             raise SystemExit(f"{name} is set but {root} does not contain src/chrys")
-        print(f"browser-use smoke: using iCode checkout from {name}: {root}", file=sys.stderr)
+        print(f"icode-browser-use smoke: using iCode checkout from {name}: {root}", file=sys.stderr)
         return root
     root = Path(__file__).resolve().parents[3]
     if (root / "src" / "chrys").is_dir():
-        print(f"browser-use smoke: using iCode checkout: {root}", file=sys.stderr)
+        print(f"icode-browser-use smoke: using iCode checkout: {root}", file=sys.stderr)
         return root
     raise SystemExit("iCode checkout not found; set CHRYS_ICODE_SRC to the iCode repository root")
 

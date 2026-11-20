@@ -2,7 +2,7 @@
 """Opt-in acceptance of the exported folder package in a clean environment.
 
 One temporary uv venv contains only the pinned iCode host -- never the
-``browser-use`` wheel. In that environment the script exports
+``icode-browser-use`` wheel. In that environment the script exports
 ``extensions/browser/`` from this checkout and runs it the way iCode's extension
 loader does:
 
@@ -86,7 +86,7 @@ def main() -> None:
     env = clean_environment()
     with tempfile.TemporaryDirectory(prefix="pack-smoke-", ignore_cleanup_errors=True) as directory:
         root = Path(directory).resolve()
-        pack = BUILDER["build"](root / "dist", ROOT / "src" / "browser_use")
+        pack = BUILDER["build"](root / "dist", ROOT / "src" / "icode_browser_use")
         report("exported", pack=str(pack))
         venv = root / "venv"
         _run(["uv", "venv", "--python", args.python, str(venv), "--no-config"], root, env, timeout=60)
@@ -135,11 +135,11 @@ def _run(command: list[str], root: Path, env: dict[str, str], *, timeout: int) -
 async def runner(args) -> None:
     require(sys.prefix != sys.base_prefix, "runner must use the temporary venv interpreter")
     require(importlib.metadata.version("iCode-TUI") == args.host_version, "the host version differs from the pin")
-    require(importlib.util.find_spec("browser_use") is None, "the wheel must not be installed")
+    require(importlib.util.find_spec("icode_browser_use") is None, "the wheel must not be installed")
     require(str(Path(args.repo).resolve() / "src") not in sys.path, "the checkout must not be importable")
-    report("path_host", browser_use_host=shutil.which("browser-use-host"))
+    report("path_host", icode_browser_use_host=shutil.which("icode-browser-use-host"))
     pack = Path(args.pack).resolve()
-    require((pack / "browser_use" / "extension" / "manifest.json").is_file(), "the exported pack is incomplete")
+    require((pack / "icode_browser_use" / "extension" / "manifest.json").is_file(), "the exported pack is incomplete")
     report("environment", python=sys.executable, host_version=args.host_version, pack=str(pack))
 
     from fixture_site import serve
@@ -248,7 +248,7 @@ def doctor(pack: Path, root: Path, env: dict[str, str], args) -> None:
     require("broker_not_running" in codes and "bridge_not_running" in codes, f"missing advice: {sorted(codes)}")
     host = document["bridge"]["host_executable"]
     if host is None:
-        require("bridge_host_missing" in codes, "an absent browser-use-host was not reported with advice")
+        require("bridge_host_missing" in codes, "an absent icode-browser-use-host was not reported with advice")
     else:
         require("bridge_host_missing" not in codes, "an executable on PATH must not be reported as missing")
     require(all(problem["advice"] for problem in document["problems"]), "every problem needs advice")
@@ -285,7 +285,7 @@ async def owned(extension, root: Path, origin: str, env: dict[str, str]) -> None
 async def attach(extension, root: Path, origin: str, env: dict[str, str]) -> None:
     profile = root / "attach-chrome"
     profile.mkdir()
-    launcher = importlib.import_module(f"{PACK_MODULE}.browser_use.cdp.launcher")
+    launcher = importlib.import_module(f"{PACK_MODULE}.icode_browser_use.cdp.launcher")
     chrome = subprocess.Popen(
         launcher.chrome_argv(str(Path(env["ICODE_BROWSER_EXECUTABLE"]).resolve()), profile, headless=True),
         stdin=subprocess.DEVNULL,
@@ -324,7 +324,7 @@ def _tools(extension, root: Path, name: str):
         session_dir=root / f"session-{name}",
     )
     bound = bind_extension("browser", extension, build).tools
-    core = importlib.import_module(f"{PACK_MODULE}.browser_use.extension")
+    core = importlib.import_module(f"{PACK_MODULE}.icode_browser_use.extension")
     return {tool.name: tool for tool in bound}, core
 
 

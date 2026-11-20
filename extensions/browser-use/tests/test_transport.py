@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from browser_use.cdp.launcher import LaunchResult
-from browser_use.config import BrowserConfig
-from browser_use.errors import Unavailable
-from browser_use.transport import AttachedTransport, OwnedTransport
+from icode_browser_use.cdp.launcher import LaunchResult
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.errors import Unavailable
+from icode_browser_use.transport import AttachedTransport, OwnedTransport
 
 
 class FakeClient:

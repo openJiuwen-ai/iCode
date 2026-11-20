@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from browser_use.actions._shared import call_value, eval_value
-from browser_use.config import BrowserConfig
-from browser_use.session import BrowserSession
+from icode_browser_use.actions._shared import call_value, eval_value
+from icode_browser_use.config import BrowserConfig
+from icode_browser_use.session import BrowserSession
 
 
 class FakeClient:
