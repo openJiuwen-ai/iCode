@@ -50,6 +50,12 @@ Sessions used through an ACP client also appear in the TUI's "Chat Sessions" win
 
 Shell commands that the agent moved to the background keep running across turns, and stop when the client closes the session or iCode exits. See [Commands that keep running in the background](../configuration/tools.md#commands-that-keep-running-in-the-background).
 
+## MCP servers from the client
+
+When the client creates or restores a session, it can also hand iCode the MCP servers that session should use. Servers that run as a local process (the stdio transport) are started by iCode and run in the session's working directory; they stop when the session closes. The environment variables the client supplies reach that process as written, and the rest of iCode's environment is passed along too. Servers reachable over HTTP are connected directly. SSE servers are not supported yet.
+
+The client's values are used exactly as given: text such as `{{API_KEY}}` is not filled in from iCode's environment. A server that fails to start does not stop the session: the other tools stay available, and the client can see which server failed.
+
 ## Interact through the client
 
 iCode sends agent replies and tool call status to the client. A reply reaches the client as the model writes it. When the model service returns the model's reasoning as readable text, iCode sends it as the agent's thoughts, also when it replays a restored session; reasoning of sub-agents is not sent. If a reply fails partway, the client keeps the part it already showed, and the error follows. When you retry, iCode first tells the client to remove the part of the reply that was cut off, and tool calls stay. A retry with a message goes on from that message; one without writes the reply again. When the client cancels a task, iCode interrupts the current task.

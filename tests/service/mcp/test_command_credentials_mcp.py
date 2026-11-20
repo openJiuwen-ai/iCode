@@ -338,6 +338,34 @@ async def test_a_stdio_server_gets_tokens_only_for_its_own_settings(
     assert commands.runs == 1
 
 
+async def test_literal_stdio_env_stays_as_written_and_runs_nothing(commands: _Commands) -> None:
+    """An ACP client's environment is literal, even one that matches a profile's command."""
+    commands.outcomes = ["must-not-appear"]
+    handle = resolve_env_templates(_PLACEHOLDER, location="a profile")
+    await refresh([handle])
+    code = (
+        "import json, os\n"
+        "print(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': os.environ['TOKEN']}), flush=True)\n"
+        "input()\n"
+    )
+    config = MCPServerConfig(
+        name="srv",
+        transport="stdio",
+        command="tool",
+        env={"TOKEN": _PLACEHOLDER},
+        resolve_env_templates=False,
+    )
+    effective_env = resolve_mcp_effective_config(config, stdio_cwd=os.getcwd()).stdio_env
+
+    server = StdioServerParameters(command=sys.executable, args=["-c", code], env=effective_env)
+    async with tolerant_stdio_client(server, inherit_env=False) as (read_stream, _write_stream):
+        message = await asyncio.wait_for(read_stream.receive(), timeout=ENGINE_TURN_TIMEOUT)
+
+    assert message.message.root.method == _PLACEHOLDER
+    # Only the refresh above ran a command; the launch itself ran nothing.
+    assert commands.runs == 1
+
+
 async def test_a_stdio_launch_whose_command_fails_keeps_the_last_token(commands: _Commands) -> None:
     commands.outcomes = ["first", _CommandFailedError("exited with code 3")]
     handle = resolve_env_templates(_PLACEHOLDER, location="test")

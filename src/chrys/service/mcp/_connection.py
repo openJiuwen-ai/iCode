@@ -126,7 +126,11 @@ def _create_mcp_tool(config: MCPServerConfig) -> MCPTool:
         env = _STDIO_ENV_OVERRIDE.get()
         env_is_complete = _STDIO_ENV_IS_COMPLETE.get()
         if env is None:
-            env = resolve_env_template_mapping(config.env, location=f"MCP server {config.name!r} env")
+            env = (
+                resolve_env_template_mapping(config.env, location=f"MCP server {config.name!r} env")
+                if config.resolve_env_templates
+                else dict(config.env)
+            )
             env_is_complete = False
         kwargs: dict[str, Any] = {
             **common,

@@ -142,6 +142,8 @@ def _consume_task_exception(task: asyncio.Task[Any]) -> None:
 
 
 def _resolved_stdio_env(config: MCPServerConfig) -> dict[str, str]:
+    if not config.resolve_env_templates:
+        return dict(config.env)
     return resolve_env_template_mapping(config.env, location=f"MCP server {config.name!r} env")
 
 
@@ -222,6 +224,9 @@ def resolve_mcp_effective_config(config: MCPServerConfig, *, stdio_cwd: str | No
             "env": _stable_mapping(key_env),
             "cwd": resolved_stdio_cwd,
         }
+        if not config.resolve_env_templates:
+            # Only a literal env changes the child, so only it may change the key.
+            payload["stdio"]["resolve_env_templates"] = False
         stdio_env = child_env
     elif config.transport == "http":
         http_headers = _resolved_http_headers(config)
