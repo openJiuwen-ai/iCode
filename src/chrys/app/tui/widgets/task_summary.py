@@ -12,12 +12,13 @@ from rich.text import Text
 from textual.containers import HorizontalGroup, VerticalGroup
 from textual.widgets import Static
 
+from chrys.app.tui.util.formatting import grapheme_clusters
 from chrys.app.tui.util.source_text import mark_hidden_format
 from chrys.foundation.i18n import msg
 from chrys.foundation.i18n.formatting import sanitize_terminal_block
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
 
     from textual.app import ComposeResult
 
@@ -25,21 +26,6 @@ if TYPE_CHECKING:
 
 
 _DURATION = msg("tui.task_summary.duration", fallback="Running for {duration}")
-
-
-def _graphemes(value: str) -> Iterator[tuple[str, int]]:
-    """Use the renderer's graphemes, keeping regional-indicator flag pairs together."""
-    spans, _ = split_graphemes(value)
-    index = 0
-    while index < len(spans):
-        start, end, cells = spans[index]
-        if end == start + 1 and 0x1F1E6 <= ord(value[start]) <= 0x1F1FF and index + 1 < len(spans):
-            next_start, next_end, next_cells = spans[index + 1]
-            if next_end == next_start + 1 and 0x1F1E6 <= ord(value[next_start]) <= 0x1F1FF:
-                end, cells = next_end, cells + next_cells
-                index += 1
-        yield value[start:end], cells
-        index += 1
 
 
 def display_command(value: str) -> str:
@@ -59,7 +45,7 @@ def display_command(value: str) -> str:
 
 
 def _take_cells(value: str, width: int, *, tail: bool = False) -> str:
-    graphemes = list(_graphemes(value))
+    graphemes = grapheme_clusters(value)
     selected = []
     used = 0
     for cluster, cells in reversed(graphemes) if tail else graphemes:
@@ -78,7 +64,7 @@ def preview_text(value: str, width: int) -> tuple[str, bool]:
     for line in value.split("\n"):
         current = ""
         used = 0
-        for cluster, cells in _graphemes(line):
+        for cluster, cells in grapheme_clusters(line):
             if used + cells > width:
                 lines.append(current)
                 current, used = "", 0
