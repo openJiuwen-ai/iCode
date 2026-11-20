@@ -103,13 +103,29 @@ def apply_mutations(profile: AgentProfile, mutations: list[Mutation] | tuple[Mut
     return current
 
 
+def _already_appended(base: str, addition: str) -> bool:
+    """Whether *addition* already sits in *base* as a run of whole blocks.
+
+    A plain substring check drops a new instruction that happens to occur inside
+    an existing one without appending anything.
+    """
+    blocks = [block.strip() for block in addition.split("\n\n") if block.strip()]
+    if not blocks:
+        return False
+    base_blocks = [block.strip() for block in base.split("\n\n") if block.strip()]
+    return any(
+        base_blocks[start : start + len(blocks)] == blocks
+        for start in range(len(base_blocks) - len(blocks) + 1)
+    )
+
+
 def _apply_one(profile: AgentProfile, mutation: Mutation) -> AgentProfile:
     if isinstance(mutation, AppendInstructions):
         base = profile.instructions or ""
         addition = mutation.text.strip("\n")
         if not addition:
             return profile
-        if addition in base:
+        if _already_appended(base, addition):
             return profile
         merged = f"{base.rstrip()}\n\n{addition}\n" if base.strip() else f"{addition}\n"
         return replace(profile, instructions=merged)
