@@ -20,7 +20,7 @@ from tests.app.tui.screens.main._workflow_support import (
     switch_mode,
     workflow_selection,
 )
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_cancel_preserves_draft_submit_preserves_text_and_chat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus = EventBus()
     requests = []
 
@@ -90,7 +90,7 @@ async def test_cancel_preserves_draft_submit_preserves_text_and_chat(
 async def test_workflow_ignores_hidden_chat_input_and_has_no_command_picker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(140, 40)) as pilot:
         main = app._main_screen
@@ -125,7 +125,7 @@ async def test_workflow_sidebar_keeps_focus_and_paste_does_not_edit_chat(
 
     from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     image = tmp_path / "image.png"
     Image.new("RGB", (2, 2)).save(image)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())

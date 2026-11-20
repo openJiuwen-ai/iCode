@@ -69,11 +69,11 @@ iCode ignores leading and trailing whitespace in this field, including in YAML. 
 | `~/mcp-server` | The `mcp-server` folder inside your home folder |
 | An absolute path, such as `/opt/mcp-server` or `D:\mcp-server` | The specified folder |
 
-For example, with the session's working directory at `/project`, set the server's "Working Directory" to `tools/mcp` and "Command" to `python server.py` to run `/project/tools/mcp/server.py` from `/project/tools/mcp`. That folder and script must already exist, and `python` must be available on `PATH`.
+For example, with the session's working directory at `/work/demo`, set the server's "Working Directory" to `tools/mcp` and "Command" to `python server.py` to run `/work/demo/tools/mcp/server.py` from `/work/demo/tools/mcp`. That folder and script must already exist, and `python` must be available on `PATH`.
 
 Relative paths can use `..` to point outside the session's working directory, for example `../shared-mcp`.
 
-After you change the session's working directory with `/chdir`, a blank Working Directory setting uses the new directory, and relative paths start from it. For example, if you enter `tools/mcp` and switch from project A to project B, the server uses project B's `tools/mcp` folder. Locations specified with `~/` or an absolute path stay the same.
+After you change the session's working directory with `/chdir`, a blank Working Directory setting uses the new directory, and relative paths start from it. For example, if you enter `tools/mcp` and switch from working directory A to working directory B, the server uses working directory B's `tools/mcp` folder. Locations specified with `~/` or an absolute path stay the same.
 
 If the command is a relative path such as `./bin/server`, iCode looks for the program in the server's working directory. If you enter only a program name such as `python`, iCode searches `PATH`.
 

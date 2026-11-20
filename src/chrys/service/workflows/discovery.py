@@ -2,10 +2,10 @@
 
 """Where workflows live and how their bytes are read once.
 
-Three sources, highest precedence first: the project (``<cwd>/.chrys/workflows``),
+Three sources, highest precedence first: the working directory (``<cwd>/.chrys/workflows``),
 the user's global directory (``<config_dir>/workflows``), and the builtin
 templates shipped inside chrys. A workflow is a file ``<id>.py`` or, in the
-project and global directories, a folder ``<id>/`` whose entry is
+working directory and global directories, a folder ``<id>/`` whose entry is
 ``<id>/<id>.py``. For one id the first readable candidate in ``PRECEDENCE``
 wins; one that can't be read is reported and shadows nothing. User files are
 read owner-verified (no links, no foreign owners) and those bytes are the ones
@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal
 
+from chrys.foundation.models.workdir_migration import SOURCE_KIND_WORKDIR as SOURCE_KIND_WORKDIR
 from chrys.foundation.models.workflow_session import WorkflowIdentity
 from chrys.foundation.platform.files import secure_open_owner_verified_binary
 
@@ -35,9 +36,9 @@ logger = logging.getLogger(__name__)
 
 SOURCE_KIND_BUILTIN: Final = "builtin"
 SOURCE_KIND_GLOBAL: Final = "global"
-SOURCE_KIND_PROJECT: Final = "project"
+SOURCE_KINDS: Final = (SOURCE_KIND_BUILTIN, SOURCE_KIND_GLOBAL, SOURCE_KIND_WORKDIR)
 WORKFLOWS_DIR_NAME: Final = "workflows"
-PROJECT_CONFIG_DIR_NAME: Final = ".chrys"
+CHRYS_DIR_NAME: Final = ".chrys"
 BUILTIN_DIR: Final = Path(__file__).resolve().parent / "builtins"
 MAX_SOURCE_BYTES: Final = 4 * 1024 * 1024
 
@@ -46,8 +47,8 @@ LAYOUT_FILE: Final = "file"
 LAYOUT_PACKAGE: Final = "package"
 
 PRECEDENCE: Final[tuple[tuple[str, SourceLayout], ...]] = (
-    (SOURCE_KIND_PROJECT, LAYOUT_PACKAGE),
-    (SOURCE_KIND_PROJECT, LAYOUT_FILE),
+    (SOURCE_KIND_WORKDIR, LAYOUT_PACKAGE),
+    (SOURCE_KIND_WORKDIR, LAYOUT_FILE),
     (SOURCE_KIND_GLOBAL, LAYOUT_PACKAGE),
     (SOURCE_KIND_GLOBAL, LAYOUT_FILE),
     (SOURCE_KIND_BUILTIN, LAYOUT_FILE),
@@ -193,12 +194,12 @@ def global_workflows_dir(config_dir: Path) -> Path:
     return config_dir / WORKFLOWS_DIR_NAME
 
 
-def project_workflows_dir(project_cwd: Path) -> Path:
-    return project_cwd / PROJECT_CONFIG_DIR_NAME / WORKFLOWS_DIR_NAME
+def workdir_workflows_dir(workdir: Path) -> Path:
+    return workdir / CHRYS_DIR_NAME / WORKFLOWS_DIR_NAME
 
 
 def is_global_workflows_dir(directory: Path, config_dir: Path) -> bool:
-    """Whether *directory* is the global workflow folder, as a project's is when iCode runs in the home directory."""
+    """Whether *directory* is the global workflow folder, as a working directory's is when iCode runs in the home directory."""
     root = global_workflows_dir(config_dir)
     try:
         return directory == root or os.path.samefile(directory, root)
@@ -213,19 +214,19 @@ def workflow_entry_path(root: Path, workflow_id: str, layout: SourceLayout) -> P
     return root / f"{workflow_id}.py"
 
 
-def discover_workflows(*, config_dir: Path, project_cwd: Path | None) -> Discovery:
+def discover_workflows(*, config_dir: Path, workdir: Path | None) -> Discovery:
     """Every runnable workflow by id (the first readable candidate in ``PRECEDENCE`` wins), sorted by id."""
     layers: list[tuple[str, Path]] = [
         (SOURCE_KIND_BUILTIN, BUILTIN_DIR),
         (SOURCE_KIND_GLOBAL, global_workflows_dir(config_dir)),
     ]
-    if project_cwd is not None:
-        layers.append((SOURCE_KIND_PROJECT, project_workflows_dir(project_cwd)))
+    if workdir is not None:
+        layers.append((SOURCE_KIND_WORKDIR, workdir_workflows_dir(workdir)))
     skipped: list[SkippedSource] = []
     found: list[tuple[int, WorkflowSource]] = []
     for kind, directory in layers:
         reserves_sdk = kind == SOURCE_KIND_GLOBAL or (
-            kind == SOURCE_KIND_PROJECT and is_global_workflows_dir(directory, config_dir)
+            kind == SOURCE_KIND_WORKDIR and is_global_workflows_dir(directory, config_dir)
         )
         for candidate in _scan(directory, kind, skipped, reserves_sdk=reserves_sdk):
             problem = candidate.problem

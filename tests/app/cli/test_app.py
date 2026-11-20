@@ -14,6 +14,8 @@ import yaml
 from chrys import __version__
 from chrys.app.cli import app as cli_app
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
+from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.files import atomic_write_owner_only_text
 from tests.support.paths import REPO_ROOT
 
 
@@ -308,6 +310,19 @@ def test_chrys_install_dispatches_to_installer(monkeypatch) -> None:
 
     assert cli_app.main() == 0
     assert calls == [True]
+
+
+def test_cancelled_install_leaves_legacy_settings_in_place(monkeypatch) -> None:
+    config = get_platform().config_dir
+    settings = config / "settings.yaml"
+    legacy = "project.hooks_enabled: true\n"
+    atomic_write_owner_only_text(settings, legacy)
+    monkeypatch.setattr("chrys.app.installer.install_to_path", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["icode", "install"])
+
+    assert cli_app.main() == 0
+    assert settings.read_text(encoding="utf-8") == legacy
+    assert not (config / "backups").exists()
 
 
 def test_chrys_install_help_uses_capitalized_help_text(monkeypatch, capsys) -> None:

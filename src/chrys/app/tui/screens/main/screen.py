@@ -453,7 +453,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 start_worker=self._start_worker,
                 debug=self._debug,
                 allow_change=lambda: self._workflow.browser.request_workspace_change(),  # noqa: PLW0108 — constructed later
-                selected_cwd=lambda: self._workflow.project_cwd if self._workflow.workflow_mode else "",
+                selected_cwd=lambda: self._workflow.workdir if self._workflow.workflow_mode else "",
                 apply_workflow_cwd=self._apply_workflow_cwd,
                 workflow_mode=lambda: self._workflow.workflow_mode,
             ),
@@ -2621,7 +2621,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Open the full-screen diff viewer showing file changes per turn."""
         if self._workflow.workflow_mode:
             self._diff_controller.show_workflow_diff(
-                self._workflow.session_id, self._workflow.project_cwd or self._workflow.cwd()
+                self._workflow.session_id, self._workflow.workdir or self._workflow.cwd()
             )
         else:
             self._diff_controller.show_diff()

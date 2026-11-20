@@ -18,7 +18,7 @@ from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.kernel import Message
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_session_modes_and_archived_workflow_restore(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locale: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     bus = EventBus()
     app = make_chrys_app(

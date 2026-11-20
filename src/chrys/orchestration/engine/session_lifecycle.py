@@ -1177,7 +1177,7 @@ class SessionLifecycle:
             old_loaded = self._settings_handle.base
             candidate = await asyncio.to_thread(
                 load_settings,
-                project_root=Path(safe_getcwd()),
+                workdir=Path(safe_getcwd()),
                 eval_context=self._reload_eval_context(),
                 **self._session_pin_overrides(),
             )
@@ -1685,7 +1685,7 @@ class SessionLifecycle:
             old_loaded = self._settings_handle.base
             candidate = await asyncio.to_thread(
                 load_settings,
-                project_root=Path(target_cwd),
+                workdir=Path(target_cwd),
                 eval_context=self._reload_eval_context(),
                 **self._session_pin_overrides(),
             )

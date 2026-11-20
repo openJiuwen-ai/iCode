@@ -22,6 +22,8 @@ from rich.console import Console
 from chrys import __version__
 from chrys.app.cli import serve as serve_cli
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.files import atomic_write_owner_only_text
 from tests.support.waiting import wait_for
 
 
@@ -1014,6 +1016,10 @@ def test_main_reports_a_listen_address_the_os_refuses(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A busy or privileged port is a typed error, not an uncaught traceback."""
+    config = get_platform().config_dir
+    settings = config / "settings.yaml"
+    legacy = "project.hooks_enabled: true\n"
+    atomic_write_owner_only_text(settings, legacy)
 
     class BusyServer(FakeServer):
         def serve(self, *, debug: bool = False) -> None:
@@ -1026,6 +1032,8 @@ def test_main_reports_a_listen_address_the_os_refuses(
 
     assert exc_info.value.code == 1
     assert "Error: cannot listen on localhost:7789: Address already in use" in capsys.readouterr().err
+    assert settings.read_text(encoding="utf-8") == legacy
+    assert not (config / "backups").exists()
 
 
 @pytest.mark.asyncio

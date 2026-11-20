@@ -326,10 +326,12 @@ class ChrysAcpServer:
         *,
         initial_vision: bool,
         permission_timeout_seconds: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+        startup_warnings: tuple[Warning, ...] = (),
     ) -> None:
         if not isfinite(permission_timeout_seconds) or permission_timeout_seconds < 0:
             raise ValueError("permission_timeout_seconds must be finite and non-negative.")
         self._manager = manager
+        self._startup_warnings = startup_warnings
         self._initial_vision = initial_vision
         self._permission_timeout_seconds = permission_timeout_seconds
         self._client: Client | None = None
@@ -360,6 +362,11 @@ class ChrysAcpServer:
         # Only a client that answers a paused sub-agent's sub_agent/retry or
         # sub_agent/abort may be left waiting on one; any other would wait forever.
         self._manager.pause_failed_sub_agents = _declares_sub_agent_pause(client_capabilities)
+        if self._client is not None:
+            startup_warnings, self._startup_warnings = self._startup_warnings, ()
+            for warning in startup_warnings:
+                with contextlib.suppress(Exception):
+                    await self._send_warning(None, warning)
         return acp_schema.InitializeResponse(
             protocolVersion=min(protocol_version, PROTOCOL_VERSION),
             agentInfo=acp_schema.Implementation(name=APP_DISPLAY_NAME, version=__version__),
@@ -452,7 +459,7 @@ class ChrysAcpServer:
         """Create a new Chrys session."""
         _ = kwargs
         # Session creation runs outside any prompt turn, so the settings
-        # warnings its load produced — a denied project key, say — have no
+        # warnings its load produced — a denied working directory key, say — have no
         # forwarder; collect and send them once the session exists.
         warnings: list[Warning] = []
         try:
@@ -1758,7 +1765,7 @@ class ChrysAcpServer:
             update=plan_update_for_todos(items),
         )
 
-    async def _send_warning(self, session_id: str, warning: Warning) -> None:
+    async def _send_warning(self, session_id: str | None, warning: Warning) -> None:
         """Send one ``chrys/warning``, whether it came from a turn or an RPC.
 
         A warning already sent from the other path is not sent again: the copy
@@ -1777,7 +1784,9 @@ class ChrysAcpServer:
             sent.pop(key, None)
 
         sent[key] = weakref.ref(warning, _forget)
-        payload = {"sessionId": session_id, "code": warning.code, "message": warning.message}
+        payload = {"code": warning.code, "message": warning.message}
+        if session_id is not None:
+            payload["sessionId"] = session_id
         if warning.reason:
             payload["reason"] = warning.reason
         await self._client_or_error().ext_notification("chrys/warning", payload)

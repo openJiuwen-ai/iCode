@@ -19,8 +19,8 @@ from chrys.service.approval.reuse import (
     FileKey,
     ReuseContext,
     canonical,
-    project_path,
     simple_argv,
+    workdir_path,
 )
 from chrys.service.approval.safety_classifier import target_may_access_sensitive_data
 from chrys.service.tools.approval_targets import ApprovedTargets
@@ -95,7 +95,7 @@ class ApprovalReuseBinding:
 
     def _candidate(self, context: FunctionInvocationContext, targets: ApprovedTargets) -> Candidate | None:
         args = context.arguments
-        reuse = ReuseContext(self.session_id, project_path(self.runtime.cwd))
+        reuse = ReuseContext(self.session_id, workdir_path(self.runtime.cwd))
         if not isinstance(args, dict) or not reuse.eligible:
             return None
         if targets.files is not None:

@@ -17,7 +17,7 @@ from chrys.app.tui.widgets.welcome import WelcomeWidget
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events import types as events
 from tests.app.tui.screens.main._workflow_support import WorkflowEngine, open_workflow, switch_mode
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import rich_plain
 from tests.support.waiting import wait_for
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_welcome_follows_mode_workspace_and_locale(
     width: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), settings=Settings(locale="en"))
@@ -113,7 +113,7 @@ async def test_welcome_follows_mode_workspace_and_locale(
 
 
 async def test_hidden_chat_rebuild_retains_welcome_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(140, 36)) as pilot:

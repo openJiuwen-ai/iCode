@@ -20,7 +20,7 @@ from chrys.orchestration.workflows.session import WorkflowSessionOwner
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, run, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
@@ -29,7 +29,7 @@ from tests.support.workflow_workers import python_workflow
 async def test_approval_change_does_not_wait_for_the_workflow_owner_to_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "echo", python_workflow("def echo(value):\n    return value\n", "echo"))
     host = make_host(tmp_path, project=project)
     closing, release = asyncio.Event(), asyncio.Event()
@@ -70,7 +70,7 @@ async def test_approval_change_does_not_wait_for_the_workflow_owner_to_close(
 async def test_model_change_is_fenced_only_by_its_own_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_session: bool
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "echo", python_workflow("def echo(value):\n    return value\n", "echo"))
     host = make_host(tmp_path, project=project)
     registry = host.engine.model_registry

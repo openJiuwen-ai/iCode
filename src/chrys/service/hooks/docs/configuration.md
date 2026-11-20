@@ -1,17 +1,17 @@
 # Chrys Hooks — Configuration Reference
 
 Hooks are configured in two places: a global file under your Chrys
-config directory, and an optional project file in the workspace.
+config directory, and an optional working directory file in the workspace.
 
 ```
 <config_dir>/hooks/hooks.yaml       # also .yml or .json   (global)
-<workspace.primary_cwd>/.chrys/hooks/hooks.yaml             (project, optional)
+<workspace.primary_cwd>/.chrys/hooks/hooks.yaml             (working directory, optional)
 ```
 
 On macOS / Linux `<config_dir>` is typically `~/.chrys/`; on Windows it is
 `%APPDATA%\chrys`. The files are optional — if neither is present, the hook
 system is a complete no-op. See
-[Project-level configuration](#project-level-configuration) below for
+[Working directory configuration](#working-directory-configuration) below for
 the merge rules.
 
 This document is the full reference for the file format. For the runtime
@@ -75,55 +75,55 @@ File-level knobs. All fields optional.
 
 ---
 
-## Project-level configuration
+## Working directory configuration
 
 In addition to the global `<config_dir>/hooks/hooks.yaml`, Chrys looks
-for a project-level file at:
+for a working directory file at:
 
 ```
 <workspace.primary_cwd>/.chrys/hooks/hooks.yaml      # .yml / .json also accepted
 ```
 
-The project file uses the exact same schema as the global file. When
+The working directory file uses the exact same schema as the global file. When
 both are present, they are merged:
 
-- **Project hooks run first** (in their YAML order), then **global
+- **Working directory hooks run first** (in their YAML order), then **global
   hooks** (in their YAML order).
 - **`match` clauses** still scope by `profile` / `tool_kind` /
   `tool_name` / `args`; nothing changes about matching.
-- **`modify` (args rewrite) flows project → global**: a project's
+- **`modify` (args rewrite) flows working directory → global**: a working directory's
   `modify` rewrites the envelope, and the global layer sees the
   rewritten args.
 - **`block` short-circuits across sources**: on a gated event, a
-  project block ends the chain — global hooks for the **same event**
+  working directory block ends the chain — global hooks for the **same event**
   are skipped. The action is denied.
 - **Observer events** (`session_*`, `before_turn`, `after_turn`,
   `approval_requested`, `approval_resolved`, `after_tool_call`, `tool_error`, `sub_agent_*`, `pre_compact`,
   `user_interrupt`) ignore block decisions; both layers run.
-- **`settings`** are per-field merged: a project field wins, then
+- **`settings`** are per-field merged: a working directory field wins, then
   the global field, then the default.
 - **`id` collisions** across files are allowed; both hooks run
-  (project first) and a `WARNING` is logged at load time. To
+  (working directory first) and a `WARNING` is logged at load time. To
   suppress a global hook, set `enabled: false` in the global file.
 
 `HookRun.path` is resolved relative to the **file's own directory**:
-a `path: scripts/foo.py` in the project file resolves to
-`<project>/.chrys/hooks/scripts/foo.py`; the same in the global file
+a `path: scripts/foo.py` in the working directory file resolves to
+`<working-directory>/.chrys/hooks/scripts/foo.py`; the same in the global file
 resolves to `<config_dir>/hooks/scripts/foo.py`.
 
-Missing project file is silent and equivalent to no project hooks.
-Malformed project file: a `WARNING` event is published and the
+Missing working directory file is silent and equivalent to no working directory hooks.
+Malformed working directory file: a `WARNING` event is published and the
 global file is unaffected.
 
-Project hook config is loaded for the session's `primary_cwd`. Changing
+Working directory hook config is loaded for the session's `primary_cwd`. Changing
 that cwd rebuilds the hook manager; profile/model switches that keep the
 same cwd reuse the current manager.
 
-Trust model: a project hooks file ships with the repo and runs
+Trust model: a working directory hooks file ships with the repo and runs
 arbitrary subprocesses without tool approval. It loads only while the
-user's own `project.hooks_enabled` setting is on (default off; a
-project file cannot set it). Otherwise the file is never opened, and
-the settings load reports it as a `project_hooks_dormant` warning.
+user's own `workdir.hooks_enabled` setting is on (default off; a
+working directory file cannot set it). Otherwise the file is never opened, and
+the settings load reports it as a `workdir_hooks_dormant` warning.
 
 ---
 
@@ -238,8 +238,8 @@ Supported extensions and interpreters:
 | anything else | falls back to Python |
 
 Relative `path` resolves against the directory containing the hooks
-file. In the global file that is `<config_dir>/hooks/`; in a project
-file it is `<project>/.chrys/hooks/`.
+file. In the global file that is `<config_dir>/hooks/`; in a working directory
+file it is `<working-directory>/.chrys/hooks/`.
 
 ### `type: command`
 
@@ -369,9 +369,9 @@ The loader is strict:
 
 If global loading fails, the engine publishes a
 `Warning(code="hooks_config_invalid")` event and continues with global
-hooks disabled. If project loading fails, it publishes
-`Warning(code="project_hooks_config_invalid")` and continues with
-project hooks disabled. A valid source in the other layer is still used.
+hooks disabled. If working directory loading fails, it publishes
+`Warning(code="workdir_hooks_config_invalid")` and continues with
+working directory hooks disabled. A valid source in the other layer is still used.
 Each hook left out for an invalid regex gets its own
 `Warning(code="hook_skipped")` naming the hook id and file.
 
@@ -433,10 +433,10 @@ Each hook left out for an invalid regex gets its own
     on_error: ignore
 ```
 
-### Append a project reminder to every prompt
+### Append a working directory reminder to every prompt
 
 ```yaml
-- id: project-reminders
+- id: working directory-reminders
   event: user_prompt_submit
   run:
     type: script

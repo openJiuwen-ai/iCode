@@ -270,7 +270,7 @@ class HookManager:
 
         Empty when no source had a path (e.g. a synthetic empty
         config). Populated by :class:`MergedHooksFile` with both
-        project and global paths in load order. Used for log lines
+        working directory and global paths in load order. Used for log lines
         and the future ``/hooks`` TUI screen.
         """
         return list(self._file.sources)
@@ -1003,6 +1003,8 @@ class HookManager:
         max_retries = self._file.settings.outbox_max_retries
         queued = 0
         for job in stale:
+            if self._outbox.skip_pending(job.job_id):
+                continue
             if job.retries >= max_retries:
                 logger.warning(
                     "Outbox job %s (hook=%s) exceeded max_retries=%d; moving to failed/",
@@ -1070,7 +1072,7 @@ class HookManager:
         return matches[0], ""
 
     def _resolve_legacy_recovery_hook_by_source(self, job: OutboxJob) -> HookConfig | None:
-        """Resolve pre-source-path jobs that only recorded project/global."""
+        """Resolve pre-source-path jobs that only recorded working directory/global."""
         matches = [
             hook
             for hook in self._hooks_by_id.get(job.hook_id, [])
@@ -1213,8 +1215,10 @@ class HookManager:
         # fire_and_forget
         if hook.execution.detach:
             try:
-                if job is not None:
-                    self._outbox.mark_started(job)
+                if job is not None and not self._outbox.mark_started(job):
+                    if trace is not None:
+                        trace.finished_soon(outcome=HookOutcome.ABANDONED)
+                    return
                 log_path = await self._runner.spawn_detached(hook, payload, job=job, payload_text=run.payload_text)
             except asyncio.CancelledError:
                 if trace is not None:
@@ -1331,8 +1335,10 @@ class HookManager:
             # took a step only this handler closes it.
             async with self._sem:
                 await self._report(self._take_slot(run))
-                if job is not None:
-                    self._outbox.mark_started(job)
+                if job is not None and not self._outbox.mark_started(job):
+                    if trace is not None:
+                        trace.finished_soon(outcome=HookOutcome.CANCELLED)
+                    return HookResult(hook_id=hook.id, exit_code=None)
                 run.output = HookResult(hook_id=hook.id, exit_code=None)
                 result = await self._runner.run_and_wait(
                     hook, payload, payload_text=run.payload_text, result=run.output
@@ -1397,9 +1403,9 @@ def _build_envelope(event: HookEvent, payload: dict[str, Any]) -> dict[str, Any]
 def _hook_sources(file: MergedHooksFile) -> dict[int, str]:
     """Map hook object identity to its merged configuration layer."""
     sources: dict[int, str] = {}
-    if file.project is not None:
-        for hook in file.project.hooks:
-            sources[id(hook)] = "project"
+    if file.workdir is not None:
+        for hook in file.workdir.hooks:
+            sources[id(hook)] = "workdir"
     if file.global_ is not None:
         for hook in file.global_.hooks:
             sources[id(hook)] = "global"
@@ -1409,9 +1415,9 @@ def _hook_sources(file: MergedHooksFile) -> dict[int, str]:
 def _hook_source_paths(file: MergedHooksFile) -> dict[int, str]:
     """Map hook object identity to the hooks config file that supplied it."""
     sources: dict[int, str] = {}
-    if file.project is not None and file.project.source:
-        for hook in file.project.hooks:
-            sources[id(hook)] = file.project.source
+    if file.workdir is not None and file.workdir.source:
+        for hook in file.workdir.hooks:
+            sources[id(hook)] = file.workdir.source
     if file.global_ is not None and file.global_.source:
         for hook in file.global_.hooks:
             sources[id(hook)] = file.global_.source

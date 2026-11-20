@@ -220,10 +220,10 @@ def _fake_bootstrap(
     """
 
     def _bootstrap(
-        *, configure_stdio: bool, eval_context: EvalContext, project_root: Path | None
+        *, configure_stdio: bool, eval_context: EvalContext, workdir: Path | None
     ) -> startup_module.RuntimeBootstrap:
         assert configure_stdio is True
-        loaded = load_settings(eval_context=eval_context, project_root=project_root)
+        loaded = load_settings(eval_context=eval_context, workdir=workdir)
         return startup_module.RuntimeBootstrap(loaded=loaded, warnings=list(warnings or []))
 
     return _bootstrap
@@ -456,7 +456,7 @@ def test_run_command_task_file_resolves_relative_to_workdir(
     outside_task_dir = tmp_path / "tasks"
     outside_task_dir.mkdir()
     (outside_task_dir / "x.md").write_text("outside", encoding="utf-8")
-    workdir = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     inside_task_dir = workdir / "tasks"
     inside_task_dir.mkdir(parents=True)
     (inside_task_dir / "x.md").write_text("inside", encoding="utf-8")
@@ -484,7 +484,7 @@ def test_run_command_changes_directory_before_bootstrapping(
     tmp_path: Path,
     capsys,
 ) -> None:
-    """Bootstrap reads project settings, so ``-C`` must land before it runs."""
+    """Bootstrap reads workdir settings, so ``-C`` must land before it runs."""
     _patch_host(monkeypatch)
     seen: list[Path] = []
 
@@ -493,7 +493,7 @@ def test_run_command_changes_directory_before_bootstrapping(
         return _prepared_runtime()
 
     monkeypatch.setattr(headless, "prepare_runtime", recording_prepare)
-    workdir = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     workdir.mkdir()
     monkeypatch.chdir(tmp_path)
 
@@ -548,7 +548,7 @@ def test_prepare_runtime_applies_headless_retry_default(monkeypatch: pytest.Monk
     assert settings.effective_max_transient_retries() == 18
 
 
-def test_prepare_runtime_bootstraps_project_free_for_a_session_restore(
+def test_prepare_runtime_bootstraps_workdir_free_for_a_session_restore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A restore's settings come from the saved session's root, not the cwd."""
@@ -558,7 +558,7 @@ def test_prepare_runtime_bootstraps_project_free_for_a_session_restore(
     headless.prepare_runtime(restoring_session=True)
     headless.prepare_runtime()
 
-    assert [call.kwargs["project_root"] for call in bootstrap.call_args_list] == [None, Path.cwd()]
+    assert [call.kwargs["workdir"] for call in bootstrap.call_args_list] == [None, Path.cwd()]
 
 
 def test_run_command_marks_the_runtime_as_restoring_only_with_a_session(
@@ -577,8 +577,8 @@ def test_run_command_marks_the_runtime_as_restoring_only_with_a_session(
     assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc"]) == 0
     assert run_cli.main(["hello", "--agent", "Headless"]) == 0
     # A blank id is "no session" to the host, so it must be one here too —
-    # a project-free bootstrap ahead of a fresh session would silently drop
-    # the working directory's project layer.
+    # a workdir-free bootstrap ahead of a fresh session would silently drop
+    # the working directory's workdir layer.
     assert run_cli.main(["hello", "--agent", "Headless", "-s", "   "]) == 0
     capsys.readouterr()
     assert seen == [True, False, False]
@@ -605,10 +605,10 @@ def test_prepare_runtime_composes_the_same_root_independent_warnings_for_a_resto
     assert [warning.code for warning in fresh.pending_warnings] == expected
 
 
-def _project_rejection() -> SettingsWarning:
+def _workdir_rejection() -> SettingsWarning:
     return SettingsWarning(
         key="approval.default_mode",
-        origin=SettingOrigin(layer=Source.PROJECT, path=Path("/repo/.chrys/settings.yaml")),
+        origin=SettingOrigin(layer=Source.WORKDIR, path=Path("/repo/.chrys/settings.yaml")),
         outcome=invalid("bypass", CoerceReason.LOOSENS_USER_BASELINE),
     )
 
@@ -628,14 +628,14 @@ def test_restore_delta_warnings_reports_only_what_the_bootstrap_could_not_see() 
     restored_loaded = LoadedSettings(
         settings=Settings(),
         provenance={},
-        warnings=(user_warning, retry_env_warning, _project_rejection()),
+        warnings=(user_warning, retry_env_warning, _workdir_rejection()),
     )
     pending = settings_warning_events(bootstrap_loaded)
 
     delta = headless.restore_delta_warnings(restored_loaded, pending)
 
     # The shared user verdict is already printed, and the env-var retry verdict
-    # keeps its compatibility wording in the pending list — only the project
+    # keeps its compatibility wording in the pending list — only the workdir
     # layer's rejection is new.
     assert [warning.code for warning in delta] == ["setting_rejected"]
     assert f"approval.default_mode in {Path('/repo/.chrys/settings.yaml')}" in delta[0].message
@@ -646,7 +646,7 @@ def test_run_command_writes_the_target_roots_warnings_in_text_mode(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _patch_runtime(monkeypatch)
-    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
+    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
     FakeHost.restored_loaded = restored_loaded
 
     rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc"])
@@ -672,7 +672,7 @@ def test_run_command_quiet_restore_writes_only_the_target_roots_warnings(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _patch_runtime(monkeypatch)
-    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
+    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
     FakeHost.restored_loaded = restored_loaded
 
     rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--quiet"])
@@ -689,7 +689,7 @@ def test_run_command_writes_the_target_roots_warnings_in_json_mode(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _patch_runtime(monkeypatch)
-    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
+    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
     FakeHost.restored_loaded = restored_loaded
 
     rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--json"])
@@ -708,7 +708,7 @@ def test_run_command_without_a_session_does_not_drive_an_early_start(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _patch_runtime(monkeypatch)
-    FakeHost.restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
+    FakeHost.restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
 
     rc = run_cli.main(["hello", "--agent", "Headless", "--quiet"])
 
@@ -1009,7 +1009,7 @@ def test_run_command_reports_profile_not_found_with_typed_code(monkeypatch: pyte
 
 
 def test_run_command_changes_working_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
-    workdir = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     workdir.mkdir()
     _patch_runtime(monkeypatch)
     monkeypatch.chdir(tmp_path)
@@ -1024,7 +1024,7 @@ def test_run_command_changes_working_directory(monkeypatch: pytest.MonkeyPatch, 
 
 
 def test_run_command_accepts_short_workdir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
-    workdir = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     workdir.mkdir()
     _patch_runtime(monkeypatch)
     monkeypatch.chdir(tmp_path)

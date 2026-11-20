@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-ReuseChoice = Literal["", "EXACT_SESSION", "EXACT_PROJECT", "PREFIX_SESSION", "PREFIX_PROJECT"]
+ReuseChoice = Literal["", "EXACT_SESSION", "EXACT_WORKDIR", "PREFIX_SESSION", "PREFIX_WORKDIR"]
 
 
 @dataclass(frozen=True)

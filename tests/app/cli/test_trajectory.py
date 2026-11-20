@@ -348,12 +348,12 @@ def test_prepare_runtime_bootstraps_without_telemetry_and_reports_warnings(monke
 
     loaded_settings = Settings(trajectory_verify_commands="proofread")
 
-    def fake_bootstrap_runtime(*, configure_stdio: bool, setup_telemetry: bool, project_root: Path) -> RuntimeBootstrap:
+    def fake_bootstrap_runtime(*, configure_stdio: bool, setup_telemetry: bool, workdir: Path) -> RuntimeBootstrap:
         assert configure_stdio is True
         assert setup_telemetry is False
-        # The working directory's project layer must apply, like the TUI and
-        # ``chrys run``, or project-level verify commands are silently lost.
-        assert project_root == Path(os.getcwd())
+        # The working directory's workdir layer must apply, like the TUI and
+        # ``chrys run``, or workdir-level verify commands are silently lost.
+        assert workdir == Path(os.getcwd())
         return RuntimeBootstrap(
             loaded=LoadedSettings(settings=loaded_settings, provenance={}),
             warnings=[Warning(code="probe", message="probe warning")],

@@ -654,7 +654,7 @@ class RuntimeControls:
     def _reload_eval_context(self) -> EvalContext:
         """The launch mode's retry policy, passed *into* the load.
 
-        An input to the load rather than an override: the project layer's
+        An input to the load rather than an override: the working directory layer's
         tighten/loosen verdicts are evaluated against it, and every re-load must
         use the same one the initial load did.
         """
@@ -662,8 +662,8 @@ class RuntimeControls:
             frontend_default_max_transient_retries=self._settings_handle.settings.frontend_default_max_transient_retries
         )
 
-    def _session_project_root(self) -> Path:
-        """The workspace root whose project trust domain this session lives under."""
+    def _session_workdir(self) -> Path:
+        """The directory that supplies the session's local settings."""
         workspace = self._session.workspace
         return Path(workspace.primary_cwd) if workspace is not None else Path(safe_getcwd())
 
@@ -714,7 +714,7 @@ class RuntimeControls:
             try:
                 # Re-read settings from env (matches TUI behavior, which persists
                 # changes before triggering reload), for this session's workspace
-                # root — the project trust domain is root-derived, so the reload
+                # root — the working directory trust domain is root-derived, so the reload
                 # must re-derive it from where the session actually lives.
                 #
                 # Off-thread because the load reads config files and waits on their
@@ -732,7 +732,7 @@ class RuntimeControls:
                 confirmed = self._settings_handle.confirmed_overrides() if event.manual else {}
                 candidate = await asyncio.to_thread(
                     load_settings,
-                    project_root=self._session_project_root(),
+                    workdir=self._session_workdir(),
                     eval_context=self._reload_eval_context(),
                     **pins,
                 )
@@ -759,7 +759,7 @@ class RuntimeControls:
                         candidate = dataclasses.replace(
                             await asyncio.to_thread(
                                 load_settings,
-                                project_root=self._session_project_root(),
+                                workdir=self._session_workdir(),
                                 eval_context=self._reload_eval_context(),
                                 **unpinned,
                             ),
@@ -838,16 +838,16 @@ class RuntimeControls:
                 if event.manual and profile_for_restart is not None:
                     hooks = await asyncio.to_thread(
                         read_hooks_strict,
-                        project_root=str(self._session_project_root()),
-                        project_hooks_enabled=loaded.settings.project_hooks_enabled,
+                        workdir=str(self._session_workdir()),
+                        workdir_hooks_enabled=loaded.settings.workdir_hooks_enabled,
                     )
                     if hooks.problems:
                         # Rules read under the old trust setting cannot stand in for the new
                         # one, so this reload as a whole changes nothing.
                         rules_in_force = self._session.hook_manager is not None
-                        was_trusted = old_loaded.settings.project_hooks_enabled
-                        if loaded.settings.project_hooks_enabled != was_trusted:
-                            raise ConfigValueError(hook_trust_failure(hooks.problems, project_hooks_loaded=was_trusted))
+                        was_trusted = old_loaded.settings.workdir_hooks_enabled
+                        if loaded.settings.workdir_hooks_enabled != was_trusted:
+                            raise ConfigValueError(hook_trust_failure(hooks.problems, workdir_hooks_loaded=was_trusted))
                         report.append(hooks_kept_report(hooks.problems, rules_in_force=rules_in_force))
                     resources = ReloadResources(hooks)
             except Exception as exc:
@@ -1113,7 +1113,7 @@ class RuntimeControls:
         new_workspace = Workspace.from_cwd(event.primary_cwd)
         starting_without_executor = self._current.loaded is None
         try:
-            # A workspace change is a settings reload in disguise: the project
+            # A workspace change is a settings reload in disguise: the working directory
             # trust domain is root-derived, so the new root's layers must be
             # audited and applied — and the old root's dropped — by the same
             # rebuild that installs the new workspace. Same routing as a reload
@@ -1124,7 +1124,7 @@ class RuntimeControls:
                 old_loaded = self._settings_handle.base
                 candidate = await asyncio.to_thread(
                     load_settings,
-                    project_root=Path(new_workspace.primary_cwd),
+                    workdir=Path(new_workspace.primary_cwd),
                     eval_context=self._reload_eval_context(),
                     **self._session_pin_overrides(),
                 )

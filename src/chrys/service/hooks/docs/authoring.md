@@ -336,17 +336,17 @@ YAML:
     on_error: warn
 ```
 
-### Python: inject project context on new main turns
+### Python: inject working directory context on new main turns
 
 ```python
 #!/usr/bin/env python3
-"""Append a project-specific <system-reminder> to new main-turn prompts."""
+"""Append a working directory-specific <system-reminder> to new main-turn prompts."""
 
 import json
 import os
 
 REMINDER = (
-    "[Project: customer-portal] Follow the conventions in docs/style.md. "
+    "[Working directory: customer-portal] Follow the conventions in docs/style.md. "
     "Run `pnpm test` before claiming any task is done."
 )
 
@@ -364,7 +364,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
 YAML:
 
 ```yaml
-- id: project-reminders
+- id: working directory-reminders
   event: user_prompt_submit
   run:
     type: script
@@ -680,10 +680,10 @@ behaviour the second time.
 
 ---
 
-## Project-level scripts
+## Working directory scripts
 
-A `path:` in a project-level `hooks.yaml` resolves relative to the
-project file's own directory, not the global one. That is,
+A `path:` in a working directory `hooks.yaml` resolves relative to the
+working directory file's own directory, not the global one. That is,
 `path: scripts/foo.py` in `<workspace>/.chrys/hooks/hooks.yaml`
 resolves to `<workspace>/.chrys/hooks/scripts/foo.py`. The same
 `path:` in the global file resolves to
@@ -697,9 +697,9 @@ see [configuration.md](configuration.md#type-script).
 
 Hooks are arbitrary subprocesses and run without an in-process
 approval prompt. This applies equally to the global file and any
-project file. A project file loads only while the user's own
-`project.hooks_enabled` setting is on (default off; a project file
-cannot set it). Once it is on, treat the project file as executable
+working directory file. A working directory file loads only while the user's own
+`workdir.hooks_enabled` setting is on (default off; a working directory file
+cannot set it). Once it is on, treat the working directory file as executable
 code committed to the repo, the same way you would treat a
 `Makefile` or a `.github/workflows/*.yml`. See
-[project-hooks.md](project-hooks.md) for the layered merge rules.
+[workdir-hooks.md](workdir-hooks.md) for the layered merge rules.

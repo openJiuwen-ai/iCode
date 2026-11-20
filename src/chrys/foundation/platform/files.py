@@ -226,9 +226,10 @@ def _rename_file_no_replace(source: Path, target: Path) -> None:
         raise OSError(error, os.strerror(error), os.fspath(source), None, os.fspath(target))
 
 
-def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+def _atomic_write_bytes(path: Path, payload: bytes, *, create_parents: bool = True) -> None:
     """Atomically write *payload* to *path* via temp-file + ``os.replace``."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parents:
+        path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
     tmp_path = Path(tmp_name)
     try:
@@ -244,7 +245,7 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
         raise
 
 
-def atomic_write_text(path: Path, payload: str, *, encoding: str = "utf-8") -> bytes:
+def atomic_write_text(path: Path, payload: str, *, encoding: str = "utf-8", create_parents: bool = True) -> bytes:
     """Atomically write text to *path* with a durable same-directory replace.
 
     ``errors="backslashreplace"`` makes the encode TOTAL: a lone surrogate (an
@@ -263,7 +264,7 @@ def atomic_write_text(path: Path, payload: str, *, encoding: str = "utf-8") -> b
     duplicate the encoding contract above in a second place that can drift.
     """
     encoded = payload.encode(encoding, errors="backslashreplace")
-    _atomic_write_bytes(path, encoded)
+    _atomic_write_bytes(path, encoded, create_parents=create_parents)
     return encoded
 
 
@@ -1289,13 +1290,12 @@ def secure_open_owner_verified_binary(path: Path) -> BinaryIO:
 def secure_open_regular_binary(path: Path) -> BinaryIO:
     """Read a regular file without following its final link, accepting any readable owner/mode.
 
-    For explicit imports of legacy data only: migration may import files an
-    elevated older release created. Only the leaf is opened no-follow; the
+    Used for stores whose writers may use a different owner, including files
+    created by an elevated process. Only the leaf is opened no-follow; the
     parents are traversed as by any open, so a parent alias or an ancestor the
     user may enter but not list still works (the owner-verified reader opens
     every parent and needs read access to each). Open failures are raised as
-    the system reports them: migration shows them as the reason a file stayed
-    behind.
+    the system reports them.
     """
     if _is_windows():
         # The handle's final path must match the requested one, so compare
@@ -1518,6 +1518,12 @@ def surrogate_safe_text(text: str) -> str:
     because every persistence path re-encodes through the same total sink.
     """
     return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def require_writable_file(path: Path) -> None:
+    """Respect a read-only file even when its directory permits atomic replacement."""
+    if not path.stat().st_mode & stat.S_IWUSR or not os.access(path, os.W_OK):
+        raise PermissionError(f"File is read-only: {path}")
 
 
 def atomic_write_owner_only_text(path: Path, payload: str, *, encoding: str = "utf-8") -> None:

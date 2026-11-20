@@ -62,7 +62,7 @@ class UsageCall:
     """The id of the model profile the request went through; empty when the log does not say or the profile is gone."""
     source: str
     """``actor.role``: the main agent, a sub-agent, a workflow node or a side call."""
-    project: str
+    workdir: str
     """The working folder the request ran in; empty when no saved session still names it."""
     new_input: int
     cache_read: int
@@ -141,7 +141,7 @@ class UsageSummary:
     """By model; a model that more than one known profile served in the range, by profile too."""
     profiles: defaultdict[str, UsageTotals] = field(default_factory=lambda: defaultdict(UsageTotals))
     sources: defaultdict[str, UsageTotals] = field(default_factory=lambda: defaultdict(UsageTotals))
-    projects: defaultdict[str, UsageTotals] = field(default_factory=lambda: defaultdict(UsageTotals))
+    workdirs: defaultdict[str, UsageTotals] = field(default_factory=lambda: defaultdict(UsageTotals))
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +176,7 @@ class UsageReport:
             summary.models[UsageModelKey(call.model, call.profile if split else None)].add(call)
             summary.profiles[call.profile].add(call)
             summary.sources[call.source].add(call)
-            summary.projects[call.project].add(call)
+            summary.workdirs[call.workdir].add(call)
         return summary
 
 
@@ -325,7 +325,7 @@ class _SessionUsage:
             if pass_id is not None:
                 self._fingerprint_by_pass[pass_id] = value
 
-    def _project(self, pass_id: str | None) -> str:
+    def _workdir(self, pass_id: str | None) -> str:
         """The folder a request ran in; one outside a pass (a title, a workflow node) takes the latest seen."""
         fingerprint = self._fingerprint_by_pass.get(pass_id or "", self._latest_fingerprint)
         if not fingerprint or not self._cwd_by_fingerprint:
@@ -354,7 +354,7 @@ class _SessionUsage:
             model=model if isinstance(model, str) else "",
             profile=profile if isinstance(profile, str) and profile in self._profile_names else "",
             source=event.actor.role,
-            project=self._project(event.turn_id),
+            workdir=self._workdir(event.turn_id),
             new_input=max(0, (input_total or 0) - cache_read),
             cache_read=cache_read,
             output=output or 0,

@@ -163,14 +163,14 @@ def _completed_build(engine: AgentEngine, staged: StagedBuild, *, engine_service
 
 
 def test_runtime_hook_snapshot_preserves_sources_and_omits_executable_configuration(tmp_path: Path) -> None:
-    project_path = tmp_path / "project" / ".chrys" / "hooks" / "hooks.yaml"
+    workdir_path = tmp_path / "workdir" / ".chrys" / "hooks" / "hooks.yaml"
     global_path = tmp_path / "config" / "hooks" / "hooks.yaml"
-    project_hook = HookConfig(
+    workdir_hook = HookConfig(
         id="shared",
         event=HookEvent.BEFORE_TOOL_CALL,
-        run=HookRun(type="command", argv=["project-secret"], env={"TOKEN": "project-token"}),
+        run=HookRun(type="command", argv=["workdir-secret"], env={"TOKEN": "workdir-token"}),
         execution=HookExecution(mode="blocking"),
-        description="Project guard",
+        description="Workdir guard",
     )
     global_hook = HookConfig(
         id="shared",
@@ -181,7 +181,7 @@ def test_runtime_hook_snapshot_preserves_sources_and_omits_executable_configurat
     )
     manager = HookManager(
         file=merge_hooks_files(
-            project=HooksFile(hooks=[project_hook], source=str(project_path)),
+            workdir=HooksFile(hooks=[workdir_hook], source=str(workdir_path)),
             global_=HooksFile(hooks=[global_hook], source=str(global_path)),
         ),
         hooks_dir=tmp_path / "config" / "hooks",
@@ -189,11 +189,11 @@ def test_runtime_hook_snapshot_preserves_sources_and_omits_executable_configurat
 
     sources = builder._runtime_hook_sources(manager)
 
-    assert [source.scope for source in sources] == ["project", "global"]
-    assert [source.source_path for source in sources] == [str(project_path), str(global_path)]
+    assert [source.scope for source in sources] == ["workdir", "global"]
+    assert [source.source_path for source in sources] == [str(workdir_path), str(global_path)]
     assert [
         (hook.id, hook.event, hook.execution_mode, hook.enabled, hook.description) for hook in sources[0].hooks
-    ] == [("shared", "before_tool_call", "blocking", True, "Project guard")]
+    ] == [("shared", "before_tool_call", "blocking", True, "Workdir guard")]
     assert [
         (hook.id, hook.event, hook.execution_mode, hook.enabled, hook.description) for hook in sources[1].hooks
     ] == [("shared", "after_turn", "fire_and_forget", False, "Global observer")]
@@ -253,10 +253,10 @@ async def test_hook_manager_build_normalizes_missing_global_hooks_to_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_dir = tmp_path / "config"
-    project_root = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     config_dir.mkdir()
-    project_root.mkdir()
-    engine = _Engine(project_root)
+    workdir.mkdir()
+    engine = _Engine(workdir)
     seen: dict[str, HooksFile | None] = {}
 
     def _fake_get_platform() -> SimpleNamespace:
@@ -265,23 +265,23 @@ async def test_hook_manager_build_normalizes_missing_global_hooks_to_none(
     def _fake_load_hooks_dir(_config_dir: Path) -> HooksFile:
         return HooksFile()
 
-    def _fake_load_hooks_project(_project_root: Path) -> None:
+    def _fake_load_hooks_workdir(_workdir_root: Path) -> None:
         return None
 
-    def _fake_merge_hooks_files(*, project: HooksFile | None, global_: HooksFile | None) -> None:
-        seen["project"] = project
+    def _fake_merge_hooks_files(*, workdir: HooksFile | None, global_: HooksFile | None) -> None:
+        seen["workdir"] = workdir
         seen["global_"] = global_
         raise _StopStartup
 
     monkeypatch.setattr(session_hooks, "get_platform", _fake_get_platform)
     monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_dir", _fake_load_hooks_dir)
-    monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_project", _fake_load_hooks_project)
+    monkeypatch.setattr("chrys.service.hooks.loader.load_workdir_hooks", _fake_load_hooks_workdir)
     monkeypatch.setattr("chrys.service.hooks.loader.merge_hooks_files", _fake_merge_hooks_files)
 
     with pytest.raises(_StopStartup):
-        await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
+        await engine.loader.build_hook_manager(workdir=str(workdir), workdir_hooks_enabled=True)
 
-    assert seen["project"] is None
+    assert seen["workdir"] is None
     assert seen["global_"] is None
 
 
@@ -291,10 +291,10 @@ async def test_hook_manager_build_for_settings_only_global_hooks_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_dir = tmp_path / "config"
-    project_root = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     config_dir.mkdir()
-    project_root.mkdir()
-    engine = _Engine(project_root)
+    workdir.mkdir()
+    engine = _Engine(workdir)
 
     def _fake_get_platform() -> SimpleNamespace:
         return SimpleNamespace(config_dir=config_dir)
@@ -306,14 +306,14 @@ async def test_hook_manager_build_for_settings_only_global_hooks_file(
             source=str(config_dir / "hooks" / "hooks.yaml"),
         )
 
-    def _fake_load_hooks_project(_project_root: Path) -> None:
+    def _fake_load_hooks_workdir(_workdir_root: Path) -> None:
         return None
 
     monkeypatch.setattr(session_hooks, "get_platform", _fake_get_platform)
     monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_dir", _fake_load_hooks_dir)
-    monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_project", _fake_load_hooks_project)
+    monkeypatch.setattr("chrys.service.hooks.loader.load_workdir_hooks", _fake_load_hooks_workdir)
 
-    manager = await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
+    manager = await engine.loader.build_hook_manager(workdir=str(workdir), workdir_hooks_enabled=True)
 
     assert manager is not None
     assert manager.file.settings.shutdown_grace_seconds == 9.0
@@ -324,11 +324,11 @@ async def test_hook_manager_build_uses_isolated_global_config_dir(
     tmp_path: Path,
     _isolate_hook_config_dir: Path,
 ) -> None:
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-    engine = _Engine(project_root)
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    engine = _Engine(workdir)
 
-    assert await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True) is None
+    assert await engine.loader.build_hook_manager(workdir=str(workdir), workdir_hooks_enabled=True) is None
 
     hooks_dir = _isolate_hook_config_dir / "hooks"
     hooks_dir.mkdir(parents=True)
@@ -345,7 +345,7 @@ hooks:
         encoding="utf-8",
     )
 
-    manager = await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
+    manager = await engine.loader.build_hook_manager(workdir=str(workdir), workdir_hooks_enabled=True)
 
     assert manager is not None
     assert [hook.id for hook in manager.file.hooks] == ["isolated-global-hook"]
@@ -353,18 +353,18 @@ hooks:
 
 
 @pytest.mark.asyncio
-async def test_hook_manager_build_skips_project_hooks_when_the_setting_is_off(
+async def test_hook_manager_build_skips_workdir_hooks_when_the_setting_is_off(
     tmp_path: Path,
     _isolate_hook_config_dir: Path,
 ) -> None:
-    project_root = tmp_path / "project"
-    project_hooks_dir = project_root / ".chrys" / "hooks"
-    project_hooks_dir.mkdir(parents=True)
-    (project_hooks_dir / "hooks.yaml").write_text(
+    workdir = tmp_path / "workdir"
+    workdir_hooks_dir = workdir / ".chrys" / "hooks"
+    workdir_hooks_dir.mkdir(parents=True)
+    (workdir_hooks_dir / "hooks.yaml").write_text(
         """\
 version: 1
 hooks:
-  - id: project-hook
+  - id: workdir-hook
     event: session_start
     run:
       type: command
@@ -372,43 +372,43 @@ hooks:
 """,
         encoding="utf-8",
     )
-    engine = _Engine(project_root)
+    engine = _Engine(workdir)
 
-    with_project = await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
-    assert with_project is not None
-    assert [hook.id for hook in with_project.file.hooks] == ["project-hook"]
+    with_workdir = await engine.loader.build_hook_manager(workdir=str(workdir), workdir_hooks_enabled=True)
+    assert with_workdir is not None
+    assert [hook.id for hook in with_workdir.file.hooks] == ["workdir-hook"]
 
-    # Off: the project file is not even opened, so no manager without global hooks.
-    assert await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=False) is None
+    # Off: the workdir file is not even opened, so no manager without global hooks.
+    assert await engine.loader.build_hook_manager(workdir=str(workdir), workdir_hooks_enabled=False) is None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["global", "project"])
+@pytest.mark.parametrize("source", ["global", "workdir"])
 async def test_damaged_hook_file_warns_without_aborting_agent_build(
     tmp_path: Path,
     _isolate_hook_config_dir: Path,
     source: str,
 ) -> None:
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-    hooks_dir = _isolate_hook_config_dir / "hooks" if source == "global" else project_root / ".chrys" / "hooks"
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    hooks_dir = _isolate_hook_config_dir / "hooks" if source == "global" else workdir / ".chrys" / "hooks"
     hooks_dir.mkdir(parents=True)
     (hooks_dir / "hooks.yaml").write_bytes(("# 中文配置说明\n" * 20).encode() + b"version: 1\n# damaged \xff\n")
-    engine = _Engine(project_root)
+    engine = _Engine(workdir)
     warnings: list[Warning] = []
 
     async def _capture(event: Warning) -> None:
         warnings.append(event)
 
     await engine.event_bus.subscribe(Warning, _capture)
-    assert await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True) is None
+    assert await engine.loader.build_hook_manager(workdir=str(workdir), workdir_hooks_enabled=True) is None
     assert len(warnings) == 1
-    assert warnings[0].code == ("hooks_config_invalid" if source == "global" else "project_hooks_config_invalid")
+    assert warnings[0].code == ("hooks_config_invalid" if source == "global" else "workdir_hooks_config_invalid")
     assert "Cannot decode hooks config file" in warnings[0].message
 
 
 @pytest.mark.asyncio
-async def test_settings_reload_flipping_project_hooks_rebuilds_the_hook_manager(
+async def test_settings_reload_flipping_workdir_hooks_rebuilds_the_hook_manager(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, engine_services
 ) -> None:
     profile = AgentProfile(name="Code")
@@ -422,8 +422,8 @@ async def test_settings_reload_flipping_project_hooks_rebuilds_the_hook_manager(
     engine.session.hook_manager = old_manager  # type: ignore[assignment]
     builds: list[tuple[str, object]] = []
 
-    async def _fake_build_hook_manager(*, project_root: str, **kwargs: object) -> _FakeHookManager:
-        builds.append((project_root, kwargs.get("project_hooks_enabled")))
+    async def _fake_build_hook_manager(*, workdir: str, **kwargs: object) -> _FakeHookManager:
+        builds.append((workdir, kwargs.get("workdir_hooks_enabled")))
         return new_manager
 
     async def _fake_build_agent(_profile: AgentProfile, staged: StagedBuild, **_kwargs: object) -> CompletedBuild:
@@ -438,7 +438,7 @@ async def test_settings_reload_flipping_project_hooks_rebuilds_the_hook_manager(
     await engine.loader.reload(
         profile,
         operation="settings_reload",
-        staged_loaded=LoadedSettings(settings=Settings(project_hooks_enabled=False), provenance={}),
+        staged_loaded=LoadedSettings(settings=Settings(workdir_hooks_enabled=False), provenance={}),
     )
     assert builds == []
     assert engine.session.hook_manager is old_manager
@@ -446,7 +446,7 @@ async def test_settings_reload_flipping_project_hooks_rebuilds_the_hook_manager(
     await engine.loader.reload(
         profile,
         operation="settings_reload",
-        staged_loaded=LoadedSettings(settings=Settings(project_hooks_enabled=True), provenance={}),
+        staged_loaded=LoadedSettings(settings=Settings(workdir_hooks_enabled=True), provenance={}),
     )
     if engine.session.outbox_recovery_task is not None:
         await engine.session.outbox_recovery_task
@@ -457,7 +457,7 @@ async def test_settings_reload_flipping_project_hooks_rebuilds_the_hook_manager(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_source", ["global", "project"])
+@pytest.mark.parametrize("invalid_source", ["global", "workdir"])
 async def test_hook_manager_config_warning_keeps_legacy_text_and_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -466,10 +466,10 @@ async def test_hook_manager_config_warning_keeps_legacy_text_and_semantics(
     from chrys.service.hooks.loader import HooksConfigError
 
     config_dir = tmp_path / "config"
-    project_root = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     config_dir.mkdir()
-    project_root.mkdir()
-    engine = _Engine(project_root)
+    workdir.mkdir()
+    engine = _Engine(workdir)
     warnings: list[Warning] = []
 
     async def _capture(event: Warning) -> None:
@@ -483,16 +483,16 @@ async def test_hook_manager_config_warning_keeps_legacy_text_and_semantics(
             raise HooksConfigError("invalid global hooks")
         return HooksFile()
 
-    def _load_project(_project_root: Path) -> None:
-        if invalid_source == "project":
-            raise HooksConfigError("invalid project hooks")
+    def _load_workdir(_workdir_root: Path) -> None:
+        if invalid_source == "workdir":
+            raise HooksConfigError("invalid workdir hooks")
 
     await engine.event_bus.subscribe(Warning, _capture)
     monkeypatch.setattr(session_hooks, "get_platform", _fake_get_platform)
     monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_dir", _load_global)
-    monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_project", _load_project)
+    monkeypatch.setattr("chrys.service.hooks.loader.load_workdir_hooks", _load_workdir)
 
-    assert await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True) is None
+    assert await engine.loader.build_hook_manager(workdir=str(workdir), workdir_hooks_enabled=True) is None
 
     assert len(warnings) == 1
     if invalid_source == "global":
@@ -502,12 +502,12 @@ async def test_hook_manager_config_warning_keeps_legacy_text_and_semantics(
         expected_code = "hooks_config_invalid"
     else:
         expected_message = (
-            "Project hooks config could not be loaded: invalid project hooks. "
-            "Project hooks disabled; global hooks unaffected."
+            "Working directory hooks config could not be loaded: invalid workdir hooks. "
+            "Working directory hooks disabled; global hooks unaffected."
         )
-        expected_key = "construction.project_hooks_invalid"
-        expected_detail = "invalid project hooks"
-        expected_code = "project_hooks_config_invalid"
+        expected_key = "construction.workdir_hooks_invalid"
+        expected_detail = "invalid workdir hooks"
+        expected_code = "workdir_hooks_config_invalid"
     assert (warnings[0].code, warnings[0].message, warnings[0].session_id) == (
         expected_code,
         expected_message,
@@ -520,17 +520,17 @@ async def test_hook_manager_config_warning_keeps_legacy_text_and_semantics(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["global", "project"])
+@pytest.mark.parametrize("source", ["global", "workdir"])
 async def test_hook_with_an_invalid_regex_is_skipped_with_a_warning_naming_it_and_its_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     source: str,
 ) -> None:
     config_dir = tmp_path / "config"
-    project_root = tmp_path / "project"
-    hooks_dir = config_dir / "hooks" if source == "global" else project_root / ".chrys" / "hooks"
+    workdir = tmp_path / "workdir"
+    hooks_dir = config_dir / "hooks" if source == "global" else workdir / ".chrys" / "hooks"
     hooks_dir.mkdir(parents=True)
-    project_root.mkdir(exist_ok=True)
+    workdir.mkdir(exist_ok=True)
     hooks_path = hooks_dir / "hooks.yaml"
     hooks_path.write_text(
         "version: 1\n"
@@ -548,7 +548,7 @@ async def test_hook_with_an_invalid_regex_is_skipped_with_a_warning_naming_it_an
     with pytest.raises(re.error) as regex_error:
         re.compile("rm (-rf")
     reason = f"match.args.command.regex is not a valid regular expression: {regex_error.value}"
-    engine = _Engine(project_root)
+    engine = _Engine(workdir)
     warnings: list[Warning] = []
 
     async def _capture(event: Warning) -> None:
@@ -560,7 +560,7 @@ async def test_hook_with_an_invalid_regex_is_skipped_with_a_warning_naming_it_an
     await engine.event_bus.subscribe(Warning, _capture)
     monkeypatch.setattr(session_hooks, "get_platform", _fake_get_platform)
 
-    manager = await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
+    manager = await engine.loader.build_hook_manager(workdir=str(workdir), workdir_hooks_enabled=True)
 
     assert manager is not None
     assert [hook.id for hook in manager.file.hooks] == ["guard-sudo"]
@@ -587,7 +587,7 @@ async def test_start_workspace_change_stages_hook_manager_reload_for_the_retry_r
     monkeypatch: pytest.MonkeyPatch,
     agent_engine,
 ) -> None:
-    """A no-executor workspace-change retry rebuilds project hooks for the new
+    """A no-executor workspace-change retry rebuilds workdir hooks for the new
     root — but as a staged candidate: a build that fails keeps the old manager
     live and drains the candidate instead of installing it.
     """
@@ -599,8 +599,8 @@ async def test_start_workspace_change_stages_hook_manager_reload_for_the_retry_r
     engine.session.hook_manager = old_manager
     loaded_from: list[str] = []
 
-    async def _fake_build_hook_manager(*, project_root: str, **_kwargs: object) -> _FakeHookManager:
-        loaded_from.append(project_root)
+    async def _fake_build_hook_manager(*, workdir: str, **_kwargs: object) -> _FakeHookManager:
+        loaded_from.append(workdir)
         return new_manager
 
     async def _fail_build(_profile: AgentProfile, _staged: StagedBuild, **_kwargs: object) -> None:
@@ -632,7 +632,7 @@ async def test_start_does_not_materialize_session_dir_until_first_write(
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     profile = AgentProfile(name="Code")
 
-    async def _fake_build_hook_manager(*, project_root: str, **_kwargs: object) -> None:
+    async def _fake_build_hook_manager(*, workdir: str, **_kwargs: object) -> None:
         return None
 
     async def _fake_build_agent(_profile: AgentProfile, staged: StagedBuild, **_kwargs: object) -> CompletedBuild:
@@ -663,7 +663,7 @@ async def test_trajectory_activation_warning_keeps_the_bound_session_id(
     async def _capture(event: Warning) -> None:
         warnings.append(event)
 
-    async def _fake_build_hook_manager(*, project_root: str, **_kwargs: object) -> None:
+    async def _fake_build_hook_manager(*, workdir: str, **_kwargs: object) -> None:
         return None
 
     async def _fake_build_agent(_profile: AgentProfile, staged: StagedBuild, **_kwargs: object) -> CompletedBuild:
@@ -696,7 +696,7 @@ async def test_trajectory_activation_warning_keeps_the_bound_session_id(
 
 
 @pytest.mark.asyncio
-async def test_workspace_soft_restart_reloads_project_hook_manager_before_build(
+async def test_workspace_soft_restart_reloads_workdir_hook_manager_before_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, engine_services
 ) -> None:
     profile = AgentProfile(name="Code")
@@ -712,8 +712,8 @@ async def test_workspace_soft_restart_reloads_project_hook_manager_before_build(
     loaded_from: list[str] = []
     build_managers: list[_FakeHookManager | None] = []
 
-    async def _fake_build_hook_manager(*, project_root: str, **_kwargs: object) -> _FakeHookManager:
-        loaded_from.append(project_root)
+    async def _fake_build_hook_manager(*, workdir: str, **_kwargs: object) -> _FakeHookManager:
+        loaded_from.append(workdir)
         return new_manager
 
     async def _fake_build_agent(_profile: AgentProfile, staged: StagedBuild, **_kwargs: object) -> CompletedBuild:
@@ -875,7 +875,7 @@ async def test_workspace_soft_restart_keeps_reloaded_hook_manager_after_post_bui
     install_loaded_agent(engine, bindings=_FakeExecutor())  # type: ignore[assignment]
     engine.session.hook_manager = old_manager  # type: ignore[assignment]
 
-    async def _fake_build_hook_manager(*, project_root: str, **_kwargs: object) -> _FakeHookManager:
+    async def _fake_build_hook_manager(*, workdir: str, **_kwargs: object) -> _FakeHookManager:
         return new_manager
 
     async def _fake_build_agent(_profile: AgentProfile, staged: StagedBuild, **_kwargs: object) -> CompletedBuild:

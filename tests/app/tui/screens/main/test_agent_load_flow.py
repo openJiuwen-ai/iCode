@@ -767,7 +767,7 @@ def test_profile_switched_syncs_model_cache_only_for_active_selection(
         model=RuntimeModelDetails(profile_id="new-model", selection_source=selection_source),
         hook_sources=[
             RuntimeHookSourceDetails(
-                scope="project",
+                scope="workdir",
                 hooks=[RuntimeHookDetails(id="guard", enabled=True)],
             )
         ],

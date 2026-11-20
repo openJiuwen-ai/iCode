@@ -33,7 +33,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     hold_workflow_deadline,
     make_host,
-    make_project,
+    make_workdir,
     run,
     write_workflow,
 )
@@ -49,7 +49,7 @@ from tests.support.workflow_workers import python_workflow
 async def test_blocking_startup_hook_is_cancelled_and_drained(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancellation: str, hook_event: HookEvent
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     node_marker, hook_marker = tmp_path / "node-ran", tmp_path / "hook-pid"
     write_workflow(
         project,
@@ -77,7 +77,7 @@ async def test_blocking_startup_hook_is_cancelled_and_drained(
         execution=HookExecution(mode="blocking", timeout_seconds=3600),
     )
 
-    async def build(factory, *, project_root, project_hooks_enabled, session_id, request_id=""):
+    async def build(factory, *, workdir, workdir_hooks_enabled, session_id, request_id=""):
         return HookManager(file=HooksFile(hooks=[hook]), hooks_dir=tmp_path / "hooks")
 
     monkeypatch.setattr(SessionHookFactory, "__call__", create_autospec(SessionHookFactory.__call__, side_effect=build))
@@ -163,7 +163,7 @@ async def test_blocking_startup_hook_is_cancelled_and_drained(
 async def test_startup_observer_failure_still_publishes_terminal_and_releases_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     real_event = WorkflowSessionHooks.run_event
 
@@ -194,7 +194,7 @@ async def test_immediate_cancellation_keeps_paired_run_lifecycle(
     shutdown: bool,
     blocking_event: HookEvent | None,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     marker = tmp_path / "node-ran"
     write_workflow(
         project,
@@ -216,7 +216,7 @@ async def test_immediate_cancellation_keeps_paired_run_lifecycle(
                 interrupted.append(event)
         return await original_fire(manager, event, payload, **kwargs)
 
-    async def build(factory, *, project_root, project_hooks_enabled, session_id, request_id=""):
+    async def build(factory, *, workdir, workdir_hooks_enabled, session_id, request_id=""):
         return HookManager(file=HooksFile(), hooks_dir=tmp_path / "hooks")
 
     monkeypatch.setattr(HookManager, "fire", create_autospec(original_fire, side_effect=fire))

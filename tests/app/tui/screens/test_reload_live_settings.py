@@ -201,15 +201,15 @@ async def test_a_saved_choice_gives_way_to_a_hand_edit(agent_engine, tmp_path, m
             assert not session.main._settings_persistence()._pending_values, key
 
 
-async def test_a_project_file_that_may_not_set_the_key_does_not_hold_the_saved_choice(
+async def test_a_workdir_file_that_may_not_set_the_key_does_not_hold_the_saved_choice(
     agent_engine, tmp_path, monkeypatch
 ) -> None:
     path = settings_path()
     activate_model_profile(MAIN_MODEL)
-    hand_edit(path, project__config_enabled=True)
-    project = Path.cwd() / ".chrys"
-    project.mkdir()
-    (project / "settings.yaml").write_text("ui.theme: dracula\n", encoding="utf-8")
+    hand_edit(path, workdir__config_enabled=True)
+    workdir = Path.cwd() / ".chrys"
+    workdir.mkdir()
+    (workdir / "settings.yaml").write_text("ui.theme: dracula\n", encoding="utf-8")
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         handle = session.app.settings_handle
         session.main._settings_coordinator().apply_live("ui.theme", "nord")

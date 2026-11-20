@@ -19,7 +19,7 @@ from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.foundation.events import types as events
 from chrys.service.llm.mock import MockChatClient
 from tests.app.tui.screens.main._workflow_support import start_workflow
-from tests.orchestration.workflows._hosting import make_host, make_project, patch_runtime, write_workflow
+from tests.orchestration.workflows._hosting import make_host, make_workdir, patch_runtime, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
@@ -58,7 +58,7 @@ class _AwaitingRetry:
 
 @contextlib.asynccontextmanager
 async def _playground_awaiting_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_AwaitingRetry]:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     source = PLAYGROUND_SOURCE.read_bytes()
     assert source.count(_DEMO_PACE) == 1

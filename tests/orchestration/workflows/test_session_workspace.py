@@ -23,7 +23,7 @@ from chrys.service.state.store import JsonFileStateStore
 from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -37,7 +37,7 @@ async def test_created_session_keeps_its_project_after_chat_changes_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     write_workflow(
@@ -53,7 +53,7 @@ async def test_created_session_keeps_its_project_after_chat_changes_directory(
         await host.start()
         await host.event_bus.publish(WorkspaceChange(primary_cwd=str(elsewhere)), raise_handler_errors=True)
         assert host.engine.workspace is not None and host.engine.workspace.primary_cwd == str(elsewhere)
-        assert host.workflow_catalog.project_cwd == project
+        assert host.workflow_catalog.workdir == project
         second, _ = await run(host, "here")
         assert host.workflow_session_id == session_id
         assert first.outputs[0].value.text == second.outputs[0].value.text == str(project)
@@ -65,7 +65,7 @@ async def test_created_session_keeps_its_project_after_chat_changes_directory(
 async def test_full_workspace_reaches_agents_and_restores_from_another_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     shared = tmp_path / "shared"
     shared.mkdir()
     reference = shared / "guide.md"
@@ -114,7 +114,7 @@ async def test_full_workspace_reaches_agents_and_restores_from_another_host(
     restored = make_host(tmp_path, project=shared)
     try:
         await restored.load_workflow_session(session_id)
-        assert restored.workflow_catalog.project_cwd == project
+        assert restored.workflow_catalog.workdir == project
         third, _ = await run(restored, "agent")
         assert third.outcome.value == "completed"
         assert observed == [expected] * 3
@@ -127,7 +127,7 @@ async def test_existing_session_rejects_explicit_workspace_changes_before_discov
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "here", python_workflow("def check(text):\n    return text\n", "check"))
     host = make_host(tmp_path, project=project)
     store = JsonFileStateStore(tmp_path / "sessions")
@@ -165,7 +165,7 @@ async def test_prepared_draft_keeps_workspace_across_chat_and_browsing_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    first = make_project(tmp_path)
+    first = make_workdir(tmp_path)
     second = tmp_path / "second"
     third = tmp_path / "third"
     second.mkdir()
@@ -201,12 +201,12 @@ async def test_prepared_draft_keeps_workspace_across_chat_and_browsing_changes(
 
 @pytest.mark.parametrize("in_use", [False, True])
 async def test_session_open_failures_have_distinct_rejection_codes(tmp_path: Path, in_use: bool) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     host = make_host(tmp_path, project=project)
     session_id = "0123456789abcdef0123456789abcdef"
     selection = WorkflowSessionSelection(
         session_id,
-        WorkflowIdentity("missing", str(project / ".chrys" / "workflows" / "missing.py"), "project"),
+        WorkflowIdentity("missing", str(project / ".chrys" / "workflows" / "missing.py"), "workdir"),
         WorkspaceSnapshot.capture(Workspace.from_cwd(str(project))),
     )
     guard = ActiveSessionGuard(JsonFileStateStore(tmp_path / "sessions"))

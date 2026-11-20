@@ -39,7 +39,7 @@ from tests.app.tui.screens.main._workflow_support import (
     switch_mode,
     workflow_selection,
 )
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
@@ -51,7 +51,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_workflow_hides_status_bar_through_run_and_restores_chat_details(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine, bus = WorkflowEngine(), EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(140, 36)) as pilot:
@@ -125,7 +125,7 @@ async def test_workflow_hides_status_bar_through_run_and_restores_chat_details(
 
 
 async def test_app_mode_and_workflow_are_separate_menus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(100, 32)) as pilot:
         main = app._main_screen
@@ -184,7 +184,7 @@ async def test_app_mode_and_workflow_are_separate_menus(tmp_path: Path, monkeypa
 
 
 async def test_workflow_frame_and_controls_center_after_resize(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
     write_workflow(
@@ -361,7 +361,7 @@ async def test_workflow_frame_and_controls_center_after_resize(tmp_path: Path, m
 async def test_workflow_sidebar_hides_chat_tabs_and_restores_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chat_tab: str
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 36)) as pilot:
@@ -400,7 +400,7 @@ async def test_workflow_sidebar_hides_chat_tabs_and_restores_selection(
 async def test_slow_source_read_does_not_switch_back_to_code_tab(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "tabs", python_workflow("def fn(value):\n    return value\n", "fn"))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
@@ -437,7 +437,7 @@ async def test_slow_source_read_does_not_switch_back_to_code_tab(
 async def test_a_workflow_title_is_shown_without_terminal_controls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(
         project, "esc", python_workflow("def fn(value):\n    return value\n", "fn", title="Review\x1b[2JInjected")

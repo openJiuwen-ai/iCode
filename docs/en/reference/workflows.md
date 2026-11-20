@@ -36,7 +36,7 @@ A workflow is either a single `.py` file or a workflow folder: a folder holding 
 
 | Location | Source |
 | --- | --- |
-| `.chrys/workflows/` in the current working directory | `project` |
+| `.chrys/workflows/` in the current working directory | `workdir` |
 | Under the iCode configuration directory: `%APPDATA%\chrys\workflows\` on Windows; `~/.chrys/workflows/` on Linux and macOS | `global` |
 | Built-in examples shipped with iCode | `builtin` |
 
@@ -44,13 +44,13 @@ When several workflows have the same ID, the first one that can be read wins, in
 
 | Priority | Workflow |
 | --- | --- |
-| 1 | Project workflow folder |
-| 2 | Project `.py` file |
+| 1 | Working directory workflow folder |
+| 2 | Working directory `.py` file |
 | 3 | Global workflow folder |
 | 4 | Global `.py` file |
 | 5 | Built-in workflow |
 
-Project workflows are discovered only in `.chrys/workflows/` under the current working directory; parent directories are not searched. Each location is scanned only for the `.py` files and workflow folders directly inside it. Names starting with `.` or `_` are ignored. A folder without an entry file of exactly its name, such as `data/` or `venv/`, is not a workflow and is ignored, and so is any folder inside a workflow folder. Built-in workflows are single files only. The global location reserves the folder name `sdk` for iCode's own files.
+Working directory workflows are discovered only in `.chrys/workflows/` under the current working directory; parent directories are not searched. Each location is scanned only for the `.py` files and workflow folders directly inside it. Names starting with `.` or `_` are ignored. A folder without an entry file of exactly its name, such as `data/` or `venv/`, is not a workflow and is ignored, and so is any folder inside a workflow folder. Built-in workflows are single files only. The global location reserves the folder name `sdk` for iCode's own files.
 
 User workflow files cannot be symbolic links, must pass ownership checks, and have a source size limit of 4 MiB. A workflow folder is skipped when the folder or anything in it is a symbolic link or a Windows directory junction, when it holds something other than regular files and folders (such as a named pipe), or when it holds more than 1000 files and folders, more than 512 MiB in total, or is nested more than 16 levels deep. Names starting with `.` (such as `.venv` and `.git`) and the compiled copies Python keeps in `__pycache__` folders (such as `helpers.cpython-312.pyc`) are not checked and do not count toward these limits; every other file does, binaries and data files included. Workflows that cannot be read are skipped with a reported reason, and the next workflow with the same ID is used instead.
 
@@ -79,7 +79,7 @@ Moving `review.py` to `review/review.py` changes the workflow's path, so it must
 Loading a custom workflow for the first time requires trust confirmation:
 
 - **TUI**: Selecting a workflow opens the “Trust workflow” dialog. Review the source and declared execution environment, then click “Trust” to continue or “Cancel” to leave it unloaded.
-- **CLI**: Add `--trust` to `icode workflow run`. For example, run `.chrys/workflows/echo.py` from the project root with:
+- **CLI**: Add `--trust` to `icode workflow run`. For example, run `.chrys/workflows/echo.py` from the working directory with:
 
 ```shell
 icode workflow run echo --trust --input "Hello"
@@ -664,7 +664,7 @@ Retries can repeat file writes, external requests, and other operations, so ensu
 
 By default, workflows use the Python interpreter running iCode. You can instead specify an existing virtual environment or Python executable in the workflow file. Python 3.9 and later are supported.
 
-This example uses an existing `.venv` in the project root, with the workflow file in the project's `.chrys/workflows/` directory:
+This example uses an existing `.venv` in the working directory, with the workflow file in the working directory’s `.chrys/workflows/` directory:
 
 ```python
 # /// script
@@ -673,7 +673,7 @@ This example uses an existing `.venv` in the project root, with the workflow fil
 # ///
 ```
 
-Keep the `#` prefixes and `# ///` markers: iCode reads the configuration from these comments. `[tool.chrys]` is the iCode-specific configuration section. Relative `python` paths are resolved against the directory containing the workflow file. For a workflow folder, that is the folder itself: a `.venv` in the project root is `../../../.venv`, and one inside the folder is `.venv`.
+Keep the `#` prefixes and `# ///` markers: iCode reads the configuration from these comments. `[tool.chrys]` is the iCode-specific configuration section. Relative `python` paths are resolved against the directory containing the workflow file. For a workflow folder, that is the folder itself: a `.venv` in the working directory is `../../../.venv`, and one inside the folder is `.venv`.
 
 `python` can also point directly to a Python executable, such as `"/opt/homebrew/bin/python3.12"`. iCode does not search `PATH` for commands. For an environment created with uv, point to its `.venv`.
 
@@ -710,7 +710,7 @@ The TUI's “Start Workflow” dialog provides “Run Settings”. Whether the w
 | Session and workflow source | Working directory rules |
 | --- | --- |
 | New session with no runs, using a built-in or global workflow | The working directory can be changed in Run Settings |
-| New session with no runs, using a project workflow | Fixed to the project directory where the workflow was discovered: the directory containing `.chrys/workflows/` |
+| New session with no runs, using a working directory workflow | Fixed to the working directory where the workflow was discovered: the directory containing `.chrys/workflows/` |
 | Session with existing runs | The workspace is fixed; create a new session to change directories or workflows |
 
 Run Settings also offers a default model selector when the workflow contains iCode agent nodes.
@@ -782,7 +782,7 @@ List workflows according to the [file discovery](#file-discovery) rules without 
 icode workflow list [--json]
 ```
 
-Text mode shows `ID`, `Source`, `Title`, and `Path`, using `-` for an unknown title; for a workflow folder, `Path` is its entry file. With `--json`, the output is an object with a `workflows` array; each entry contains `id`, `source`, `layout` (`file` for a single `.py` file, `package` for a workflow folder), `title`, and `path` (the entry file), with an empty string for an unknown title. In either mode, warnings about skipped files go to stderr. Use `-h` / `--help` for help.
+Text mode shows `ID`, `Source`, `Title`, and `Path`, using `-` for an unknown title; for a workflow folder, `Path` is its entry file. With `--json`, the output is an object with a `workflows` array; each entry contains `id`, `source` (`builtin`, `global` or `workdir`), `layout` (`file` for a single `.py` file, `package` for a workflow folder), `title`, and `path` (the entry file), with an empty string for an unknown title. In either mode, warnings about skipped files go to stderr. Use `-h` / `--help` for help.
 
 ### `icode workflow validate`
 
@@ -860,7 +860,7 @@ Each item in `diagnostics` contains:
 | --- | --- | --- |
 | `path_not_found` | `resolve` | Nothing exists at the path. If a workflow has that ID, the hint gives its path |
 | `path_is_link` | `resolve` | The workflow, or a folder's entry file, is a link |
-| `path_not_workflow` | `resolve` | The path names no single workflow: it is not a `.py` file or a folder, it is a directory that holds workflows (or the project or `.chrys` folder around one) or a file inside a workflow folder, the folder's entry file is not a regular file, or it is spelled differently from its folder listing |
+| `path_not_workflow` | `resolve` | The path names no single workflow: it is not a `.py` file or a folder, it is a directory that holds workflows (or the working directory or `.chrys` folder around one) or a file inside a workflow folder, the folder's entry file is not a regular file, or it is spelled differently from its folder listing |
 | `name_ignored` | `resolve` | iCode never loads this name, for example one starting with `.` or `_` |
 | `name_reserved` | `resolve` | `sdk` is reserved in the global workflow directory |
 | `entry_missing` | `resolve` | The folder has no entry file with its exact name |

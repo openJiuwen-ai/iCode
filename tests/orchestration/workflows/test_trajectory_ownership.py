@@ -23,7 +23,7 @@ from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.schema import HooksFile
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.trajectory.session import SessionTrajectory, trajectory_events_path
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, run, write_workflow
 from tests.support.trajectory_invariants import assert_trajectory_accounted, assert_trajectory_operation_settlement
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
@@ -31,7 +31,7 @@ from tests.support.workflow_workers import python_workflow
 
 @pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
 async def test_two_open_hosts_can_alternate_runs_without_losing_trajectory(tmp_path: Path, terminal: str) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     body = "raise ValueError('failure')" if terminal == "failed" else "return text"
     write_workflow(project, "review", python_workflow(f"def check(text):\n    {body}\n", "check"))
     first = make_host(tmp_path, project=project)
@@ -84,7 +84,7 @@ async def test_two_open_hosts_can_alternate_runs_without_losing_trajectory(tmp_p
 async def test_run_guard_is_held_until_trajectory_writer_finishes_closing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     host = make_host(tmp_path, project=project)
     closing, release = asyncio.Event(), asyncio.Event()
@@ -127,7 +127,7 @@ async def test_run_guard_is_held_until_trajectory_writer_finishes_closing(
 async def test_idle_host_end_hooks_do_not_acquire_writer_during_another_hosts_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     managers = []
     end_entered, release_end = asyncio.Event(), asyncio.Event()
@@ -135,7 +135,7 @@ async def test_idle_host_end_hooks_do_not_acquire_writer_during_another_hosts_ad
     close_task = None
     real_fire = HookManager.fire
 
-    async def build(factory, *, project_root, project_hooks_enabled, session_id, request_id=""):
+    async def build(factory, *, workdir, workdir_hooks_enabled, session_id, request_id=""):
         manager = HookManager(file=HooksFile(), hooks_dir=tmp_path / "hooks")
         managers.append(manager)
         return manager

@@ -76,7 +76,7 @@ from tests.orchestration.workflows._hosting import (
     hold_workflow_deadline,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -167,7 +167,7 @@ async def test_a_rejected_request_leaves_the_lease_idle_and_no_worker_behind(
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wf", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -190,7 +190,7 @@ async def test_duplicate_request_ids_replay_the_reply_and_start_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     try:
@@ -245,7 +245,7 @@ async def test_the_run_deadline_cancels_the_run_and_the_worker_dies(
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
     expire = hold_workflow_deadline(monkeypatch, 3600)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "stuck", STUCK)
     host = make_host(tmp_path, project=project)
 
@@ -278,7 +278,7 @@ async def test_a_node_timeout_on_a_stuck_body_fails_the_node_and_kills_the_worke
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "stuck", STUCK_SHORT)
     host = make_host(tmp_path, project=project)
     try:
@@ -297,7 +297,7 @@ async def test_a_python_exception_fails_the_run_with_its_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "raises", RAISES)
     host = make_host(tmp_path, project=project)
     try:
@@ -314,7 +314,7 @@ async def test_a_python_exception_fails_the_run_with_its_message(
 
 async def test_a_lost_worker_ends_the_run_as_worker_lost(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "exits", EXITS)
     host = make_host(tmp_path, project=project)
     try:
@@ -333,7 +333,7 @@ async def test_a_worker_lost_while_a_node_awaits_retry_ends_the_run(
     """Nothing is outstanding on the worker while a node awaits a manual retry: the loss must still be noticed."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "raises", RAISES)
     host = make_host(tmp_path, project=project, allow_user_interaction=True)
     awaiting = asyncio.Event()
@@ -362,7 +362,7 @@ async def test_a_worker_lost_under_an_agent_only_run_ends_it_as_worker_lost(
     """An agent pass needs no worker call, yet the run is still bound to its worker: a dead one ends the run."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "agent", _agent_workflow(PROFILE))
     host = make_host(tmp_path, project=project)
     release = asyncio.Event()
@@ -389,7 +389,7 @@ async def test_a_storage_failure_after_acceptance_ends_the_run_as_storage_failed
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     real_append = WorkflowRunStore.append
@@ -423,7 +423,7 @@ async def test_a_storage_failure_after_acceptance_ends_the_run_as_storage_failed
 async def test_a_storage_failure_at_open_rejects_the_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
 
@@ -459,7 +459,7 @@ async def _start_on_the_bus(host: Any, workflow_id: str, request_id: str, events
 
 async def test_the_session_is_frozen_while_a_run_is_active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", SLEEPER)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
@@ -552,7 +552,7 @@ async def test_the_session_is_frozen_while_a_run_is_active(tmp_path: Path, monke
 
 async def test_a_live_turn_rejects_a_workflow_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     try:
@@ -579,7 +579,7 @@ async def test_digest_mismatches_and_an_edited_file_are_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     try:
@@ -619,7 +619,7 @@ async def test_digest_mismatches_and_an_edited_file_are_rejected(
 async def test_shutdown_during_a_run_cancels_it_as_a_shutdown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", SLEEPER)
     host = make_host(tmp_path, project=project)
     await host.start()
@@ -640,7 +640,7 @@ async def test_shutdown_during_a_run_cancels_it_as_a_shutdown(tmp_path: Path, mo
 async def test_abandoning_the_event_iterator_cancels_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", SLEEPER)
     host = make_host(tmp_path, project=project)
     try:
@@ -670,7 +670,7 @@ def _held_agent(clients: int) -> list[MockChatClient]:
 async def test_cancelling_a_run_aborts_the_live_agent_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_runtime(monkeypatch, _held_agent(1))
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "agent", _agent_workflow(PROFILE))
     host = make_host(tmp_path, project=project)
     try:
@@ -712,7 +712,7 @@ async def test_cancelling_a_run_aborts_the_live_agent_node(tmp_path: Path, monke
 async def test_the_run_deadline_aborts_a_live_agent_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_runtime(monkeypatch, _held_agent(1))
     expire = hold_workflow_deadline(monkeypatch, 7200)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "agent", _agent_workflow(PROFILE))
     host = make_host(tmp_path, project=project)
 
@@ -754,7 +754,7 @@ async def test_a_shutdown_behind_a_queued_request_answers_it_and_frees_the_lease
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     entered, _release = _hold_admission(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     await host.start()
@@ -782,7 +782,7 @@ async def test_a_cancel_during_admission_rejects_without_waiting_for_admission(
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
     entered, release = _hold_admission(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     marker = tmp_path / "node-ran"
     write_workflow(
         project,
@@ -838,7 +838,7 @@ async def test_a_shutdown_mid_admission_rejects_the_hosted_caller_as_shutting_do
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     entered, _release = _hold_admission(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     await host.start()
@@ -864,7 +864,7 @@ async def test_cancelling_a_stalled_load_drains_the_worker_and_replies_once(
     """A real module load blocks after confirmation; repeated cancels cannot cut its cleanup or reply short."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     marker = tmp_path / "loading"
     source = (
         "import os, threading\n"
@@ -958,7 +958,7 @@ async def test_a_duplicate_of_an_in_flight_request_is_answered_once(
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     entered, release = _hold_admission(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     try:
@@ -1000,7 +1000,7 @@ async def test_a_refused_hosted_request_leaves_the_active_run_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", SLEEPER)
     host = make_host(tmp_path, project=project)
     try:
@@ -1058,7 +1058,7 @@ async def test_a_prompt_that_finishes_preparing_under_a_held_run_is_refused(
     client = MockChatClient(responses=[MockResponse(text="turn done")])
     patch_runtime(monkeypatch, [client])
     parked, release = _park_the_prompt(monkeypatch, registered=False)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", SLEEPER)
     host = make_host(tmp_path, project=project)
     try:
@@ -1107,7 +1107,7 @@ async def test_a_registered_preparation_refuses_the_workflow_request_as_a_turn(
     client = MockChatClient(responses=[MockResponse(text="turn done")])
     patch_runtime(monkeypatch, [client])
     parked, release = _park_the_prompt(monkeypatch, registered=True)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     try:
@@ -1147,7 +1147,7 @@ async def test_a_cancel_right_after_acceptance_does_not_wait_out_the_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
 
@@ -1173,7 +1173,7 @@ async def test_a_cancel_while_the_agent_shell_opens_still_closes_the_shell(
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "agent", _agent_workflow(PROFILE))
     host = make_host(tmp_path, project=project)
     opening = asyncio.Event()
@@ -1217,7 +1217,7 @@ async def test_a_node_record_lost_in_the_terminal_batch_still_ends_the_run_as_st
     """The loop's output record and the completed terminal come out of one scheduler batch: the loss wins."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "loop", LOOP_ONCE)
     host = make_host(tmp_path, project=project)
     real_write = store_module.atomic_write_owner_only_bytes
@@ -1255,7 +1255,7 @@ async def test_a_cancel_issued_inside_a_run_event_handler_does_not_deadlock_the_
     """Node events are published under the runner's lock: a subscriber cancelling inline must not wait for it."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", SLEEPER)
     host = make_host(tmp_path, project=project)
     cancelled_at: list[str] = []
@@ -1283,7 +1283,7 @@ async def test_a_shutdown_refuses_the_request_queued_behind_the_run_it_drains(
     """Closing is declared before the run is drained: a requester waiting for the lease is refused, not admitted."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", SLEEPER)
     host = make_host(tmp_path, project=project)
     await host.start()
@@ -1318,7 +1318,7 @@ async def test_a_request_during_a_session_restore_is_refused_rather_than_admitte
 ) -> None:
     """The restore's guard holds across its reads: no run slips in to have its live journal reconciled as an orphan."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     entered = asyncio.Event()
@@ -1377,7 +1377,7 @@ async def test_a_replayed_acceptance_for_an_earlier_request_is_not_narrated_as_t
 ) -> None:
     """A retransmitted request id is answered with its original acceptance; the host keeps narrating its own run."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     replies: list[WorkflowRunAccepted] = []
@@ -1422,7 +1422,7 @@ async def test_a_caller_cancelled_while_its_request_is_still_being_published_giv
 ) -> None:
     """A subscriber behind the coordinator holds the publish open after the run was admitted; the cancel still abandons it."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", SLEEPER)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
@@ -1506,7 +1506,7 @@ async def test_a_shutdown_awaited_inside_an_agent_progress_handler_does_not_dead
         [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="LGTM", usage_details=usage)])],
     )
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "agent", _agent_workflow(PROFILE))
     host = make_host(tmp_path, project=project)
     shut_down = asyncio.Event()
@@ -1545,7 +1545,7 @@ async def test_a_shutdown_awaited_inside_a_rejection_handler_still_answers_the_r
 ) -> None:
     """The rejection goes out on the admission task: cancelling that task under its own reply would cut the reply short."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", python_workflow("def fn(text):\n    return text.text + '!'\n", "fn"))
     host = make_host(tmp_path, project=project)
     shut_down = asyncio.Event()
@@ -1594,7 +1594,7 @@ async def test_a_shutdown_awaited_inside_an_agent_tool_event_handler_releases_th
         builtin_tools=True,
     )
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _agent_workflow(PROFILE))
     host = make_host(tmp_path, project=project, profiles=[make_profile(builtins=["filesystem.read"])])
     subscriber_cancelled = asyncio.Event()
@@ -1690,7 +1690,7 @@ async def test_a_shutdown_awaited_inside_a_run_event_handler_does_not_deadlock_t
     """
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", source)
     host = make_host(tmp_path, project=project, allow_user_interaction=interactive)
     shut_down = asyncio.Event()
@@ -1728,7 +1728,7 @@ async def test_an_unconfirmed_file_is_refused_before_its_code_runs(
         f"import pathlib\npathlib.Path({str(marker)!r}).write_text('ran')\ndef fn(text):\n    return text\n", "fn"
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "marker", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -1756,7 +1756,7 @@ async def test_unconfirmed_interpreter_metadata_is_rejected_before_the_probe(
 ) -> None:
     """Both a new file and an edited confirmed file can name executable code through their metadata."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     path = write_workflow(project, "chain", CHAIN)
     candidate = path.with_name("candidate")
     candidate.write_text("unconfirmed interpreter", encoding="utf-8")
@@ -1784,7 +1784,7 @@ async def test_confirmed_bytes_still_require_the_recorded_environment_after_prep
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     workers = _track_workers(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     try:
@@ -1827,7 +1827,7 @@ async def test_a_transient_failure_after_hosted_tool_calls_is_not_retried(
 
     monkeypatch.setattr(client, "_next_response", _failed_after_hosted_work)
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client, MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(
         project,
         "hosted",
@@ -1856,7 +1856,7 @@ async def test_restoring_another_session_during_a_run_is_refused_to_its_requeste
 ) -> None:
     """The refusal names the session the restore asked for, so the headless restore call raises instead of waiting."""
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     write_workflow(project, "sleeper", SLEEPER)
     saved = make_host(tmp_path, project=project)

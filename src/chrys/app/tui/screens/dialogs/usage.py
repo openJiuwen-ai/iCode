@@ -72,7 +72,7 @@ _TREND_PEAK = msg("tui.usage.trend.peak", fallback="peak {value}")
 _GROUP = msg("tui.usage.group", fallback="Group")
 _GROUP_MODEL = msg("tui.usage.group.model", fallback="Model")
 _GROUP_SOURCE = msg("tui.usage.group.source", fallback="Source")
-_GROUP_PROJECT = msg("tui.usage.group.project", fallback="Project")
+_GROUP_WORKDIR = msg("tui.usage.group.workdir", fallback="Working directory")
 _GROUP_PROFILE = msg("tui.usage.group.profile", fallback="Profile")
 _COLUMN_NEW = msg("tui.usage.column.new", fallback="New")
 _COLUMN_HIT = msg("tui.usage.column.hit", fallback="Hit")
@@ -90,7 +90,7 @@ _NOTE_UNREADABLE = msg(
     plural_fallback="{count} logs unreadable",
 )
 _UNKNOWN_MODEL = msg("tui.usage.model.unknown", fallback="Unknown model")
-_OTHER_WORKSPACES = msg("tui.usage.project.other", fallback="Other workspaces")
+_OTHER_WORKDIRS = msg("tui.usage.workdir.other", fallback="Other working directories")
 _OTHER_PROFILES = msg("tui.usage.profile.other", fallback="Other profiles")
 _SOURCE_MAIN = msg("tui.usage.source.main", fallback="Main agent")
 _SOURCE_SUB_AGENT = msg("tui.usage.source.sub_agent", fallback="Sub-agent")
@@ -133,11 +133,11 @@ _RANGE_TODAY_INDEX: Final = 0
 _RANGE_WEEK_INDEX: Final = 1
 _RANGE_MONTH_INDEX: Final = 2
 _RANGE_ALL_INDEX: Final = 4
-_GROUPS: Final = (_GROUP_MODEL, _GROUP_SOURCE, _GROUP_PROJECT, _GROUP_PROFILE)
-_GROUP_BUTTON_IDS: Final = ("usage-group-model", "usage-group-source", "usage-group-project", "usage-group-profile")
+_GROUPS: Final = (_GROUP_MODEL, _GROUP_SOURCE, _GROUP_WORKDIR, _GROUP_PROFILE)
+_GROUP_BUTTON_IDS: Final = ("usage-group-model", "usage-group-source", "usage-group-working-dir", "usage-group-profile")
 _GROUP_MODEL_INDEX: Final = 0
 _GROUP_SOURCE_INDEX: Final = 1
-_GROUP_PROJECT_INDEX: Final = 2
+_GROUP_WORKDIR_INDEX: Final = 2
 _TREND_BUTTON_IDS: Final = ("usage-trend-daily", "usage-trend-weekly")
 _KPI_IDS: Final = ("new", "input", "output", "cached", "hit", "speed", "time", "calls")
 _BAR_GLYPHS: Final = " ▁▂▃▄▅▆▇█"
@@ -374,9 +374,9 @@ def _ranked[K: (str, UsageModelKey)](groups: Mapping[K, UsageTotals]) -> list[tu
     return rows
 
 
-def _project_labels(projects: Iterable[str]) -> dict[str, str]:
+def _workdir_labels(workdirs: Iterable[str]) -> dict[str, str]:
     """A short name for each folder: its base name, with its parent when two share one, else the whole path."""
-    paths = [path for path in set(projects) if path]
+    paths = [path for path in set(workdirs) if path]
     names = [Path(path).name or path for path in paths]
     parents = [Path(path).parent.name for path in paths]
     labels = {}
@@ -748,7 +748,7 @@ class UsageDialog(BaseDialog[None]):
         self._read_failed = False
         self._report: UsageReport | None = None
         self._summaries: dict[tuple[date, date], UsageSummary] = {}
-        self._project_names: dict[str, str] = {}
+        self._workdir_names: dict[str, str] = {}
         self._heat: tuple[int, int, int] = (0, 0, 0)
         self._range = _RANGE_MONTH_INDEX
         self._weekly_trend: bool | None = None
@@ -871,7 +871,7 @@ class UsageDialog(BaseDialog[None]):
 
     def _adopt(self, report: UsageReport) -> None:
         self._report = report
-        self._project_names = _project_labels(call.project for call in report.calls)
+        self._workdir_names = _workdir_labels(call.workdir for call in report.calls)
         self._heat = _heat_thresholds(report)
         self._day = _clamp_day(report.today, report)
 
@@ -1101,8 +1101,8 @@ class UsageDialog(BaseDialog[None]):
             return [(self._model_label(key), totals) for key, totals in _ranked(summary.models)]
         if self._group == _GROUP_SOURCE_INDEX:
             return [(self._source_label(key), totals) for key, totals in _ranked(summary.sources)]
-        if self._group == _GROUP_PROJECT_INDEX:
-            return [(self._project_label(key), totals) for key, totals in _ranked(summary.projects)]
+        if self._group == _GROUP_WORKDIR_INDEX:
+            return [(self._workdir_label(key), totals) for key, totals in _ranked(summary.workdirs)]
         return [(self._profile_label(key), totals) for key, totals in _ranked(summary.profiles)]
 
     def _model_label(self, key: UsageModelKey) -> str:
@@ -1117,9 +1117,9 @@ class UsageDialog(BaseDialog[None]):
         label = _SOURCE_LABELS.get(source)
         return self._render_message(label.bind()) if label is not None else sanitize_legacy_scalar(source)
 
-    def _project_label(self, project: str) -> str:
-        name = self._project_names.get(project, "")
-        return sanitize_legacy_scalar(surrogate_safe_text(name)) or self._render_message(_OTHER_WORKSPACES.bind())
+    def _workdir_label(self, workdir: str) -> str:
+        name = self._workdir_names.get(workdir, "")
+        return sanitize_legacy_scalar(surrogate_safe_text(name)) or self._render_message(_OTHER_WORKDIRS.bind())
 
     def _render_groups(self, summary: UsageSummary) -> None:
         self._select_choice(_GROUP_BUTTON_IDS, self._group)

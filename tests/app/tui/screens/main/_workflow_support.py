@@ -207,7 +207,7 @@ def workflow_selection(main: MainScreen, session_id: str = "workflow-session") -
     identity = (
         WorkflowIdentity(source.workflow_id, source.canonical_path, source.source_kind)
         if source is not None
-        else WorkflowIdentity("test", "/test.py", "project")
+        else WorkflowIdentity("test", "/test.py", "workdir")
     )
     workspace = main._workflow.workspace
     return WorkflowSessionSelection(session_id, identity, workspace)

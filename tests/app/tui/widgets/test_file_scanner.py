@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for the ``@``-menu project file scanner."""
+"""Tests for the ``@``-menu workdir file scanner."""
 
 from __future__ import annotations
 
@@ -17,20 +17,20 @@ from chrys.app.tui.widgets.chrome import file_scanner as file_scanner_module
 from chrys.app.tui.widgets.chrome.file_scanner import (
     DEFAULT_FILE_DISCOVERY_BUDGET,
     DEFAULT_SUGGESTION_BUDGET,
-    ProjectPathScanResult,
-    ProjectPathSuggestion,
+    WorkdirPathScanResult,
+    WorkdirPathSuggestion,
     _append_unseen_dot_entries_from_walk,
     _ChunkedLineReader,
     _is_referenceable_walk_name,
     _probe_ignored_visible_files,
-    _project_path_suggestions,
     _scan_dot_entries,
     _scan_os_walk_files,
     _select_ignored_visible_files,
     _top_level_dot_entries,
     _walk_relative_path,
+    _workdir_path_suggestions,
     fuzzy_filter,
-    scan_project_paths,
+    scan_workdir_paths,
 )
 from chrys.foundation.platform import get_platform
 from tests.support.symlinks import symlink_or_skip
@@ -50,11 +50,11 @@ def _git(repo: Path, *args: str) -> None:
     )
 
 
-def _paths(entries: list[ProjectPathSuggestion]) -> list[str]:
+def _paths(entries: list[WorkdirPathSuggestion]) -> list[str]:
     return [entry.path for entry in entries]
 
 
-def _scan_paths(scan: ProjectPathScanResult) -> list[str]:
+def _scan_paths(scan: WorkdirPathScanResult) -> list[str]:
     return _paths(scan.paths)
 
 
@@ -124,7 +124,7 @@ def repo(tmp_path: Path, git_repo_factory: Callable[[Path], Path]) -> Path:
     return git_repo_factory(tmp_path)
 
 
-class TestScanProjectPaths:
+class TestScanWorkdirPaths:
     def test_missing_root_returns_empty_scan_without_subprocess(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Downloaded sessions can reference a workspace path that does not exist locally."""
         root = "Z:\\Fake\\MissingWorkspace"
@@ -135,9 +135,9 @@ class TestScanProjectPaths:
         monkeypatch.setattr(file_scanner_module.os.path, "isdir", lambda _path: False)
         monkeypatch.setattr(file_scanner_module, "managed_subprocess", fail_subprocess)
 
-        scan = asyncio.run(scan_project_paths(root, file_budget=5, suggestion_budget=7))
+        scan = asyncio.run(scan_workdir_paths(root, file_budget=5, suggestion_budget=7))
 
-        assert scan == ProjectPathScanResult(
+        assert scan == WorkdirPathScanResult(
             root=root,
             paths=[],
             file_count=0,
@@ -180,9 +180,9 @@ class TestScanProjectPaths:
         monkeypatch.setattr(file_scanner_module.os, "walk", missing_walk)
         monkeypatch.setattr(file_scanner_module.os, "listdir", missing_listdir)
 
-        scan = asyncio.run(scan_project_paths(root, file_budget=5, suggestion_budget=7))
+        scan = asyncio.run(scan_workdir_paths(root, file_budget=5, suggestion_budget=7))
 
-        assert scan == ProjectPathScanResult(
+        assert scan == WorkdirPathScanResult(
             root=root,
             paths=[],
             file_count=0,
@@ -201,7 +201,7 @@ class TestScanProjectPaths:
         (repo / "src" / "chrys" / "orchestration" / "engine").mkdir(parents=True)
         (repo / "src" / "chrys" / "orchestration" / "engine" / "engine.py").write_text("py\n")
 
-        scan = asyncio.run(scan_project_paths(str(repo)))
+        scan = asyncio.run(scan_workdir_paths(str(repo)))
         entries = scan.paths
         paths = _paths(entries)
         by_path = {entry.path: entry for entry in entries}
@@ -218,9 +218,9 @@ class TestScanProjectPaths:
 
     def test_backslash_in_posix_filename_is_not_treated_as_separator(self) -> None:
         """Backslash is a valid POSIX filename character, not a path separator."""
-        result = _project_path_suggestions(["notes\\draft.md"], max_paths=10)
+        result = _workdir_path_suggestions(["notes\\draft.md"], max_paths=10)
 
-        assert result.suggestions == [ProjectPathSuggestion(path="notes\\draft.md", kind="file")]
+        assert result.suggestions == [WorkdirPathSuggestion(path="notes\\draft.md", kind="file")]
         assert result.truncated is False
 
     def test_walk_relative_path_is_lexical(self, tmp_path: Path) -> None:
@@ -295,13 +295,13 @@ class TestScanProjectPaths:
 
     def test_derived_directories_preserve_input_tier_order(self) -> None:
         """Supplemental directory parents should not sort ahead of primary files."""
-        result = _project_path_suggestions(["README.md", ".github/workflows/ci.yml"], max_paths=10)
+        result = _workdir_path_suggestions(["README.md", ".github/workflows/ci.yml"], max_paths=10)
 
         assert result.suggestions == [
-            ProjectPathSuggestion(path="README.md", kind="file"),
-            ProjectPathSuggestion(path=".github/", kind="directory"),
-            ProjectPathSuggestion(path=".github/workflows/", kind="directory"),
-            ProjectPathSuggestion(path=".github/workflows/ci.yml", kind="file"),
+            WorkdirPathSuggestion(path="README.md", kind="file"),
+            WorkdirPathSuggestion(path=".github/", kind="directory"),
+            WorkdirPathSuggestion(path=".github/workflows/", kind="directory"),
+            WorkdirPathSuggestion(path=".github/workflows/ci.yml", kind="file"),
         ]
         assert result.truncated is False
 
@@ -312,7 +312,7 @@ class TestScanProjectPaths:
         (repo / ".claude").mkdir()
         (repo / ".claude" / "skill.md").write_text("md\n")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert ".github/workflows/ci.yml" in paths
         assert ".claude/skill.md" in paths
@@ -321,7 +321,7 @@ class TestScanProjectPaths:
 
     def test_git_folder_never_included(self, repo: Path) -> None:
         """``.git/`` internals must never leak into @ suggestions."""
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
         assert not any(p.startswith(".git/") for p in paths), (
             f"unexpected .git/ leak: {[p for p in paths if p.startswith('.git/')]}"
         )
@@ -336,7 +336,7 @@ class TestScanProjectPaths:
         (repo / ".github").mkdir()
         (repo / ".github" / "ok.yml").write_text("ok\n")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert ".github/ok.yml" in paths
         assert not any(p.startswith(".secret/") for p in paths)
@@ -351,7 +351,7 @@ class TestScanProjectPaths:
         (repo / "notes").mkdir()
         (repo / "notes" / "private.md").write_text("notes\n")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert "drafts/proposal.md" in paths
         assert "notes/private.md" in paths
@@ -369,7 +369,7 @@ class TestScanProjectPaths:
         (repo / "drafts" / "brief.pdf").write_bytes(b"%PDF-")
         (repo / "drafts" / "sheet.xlsx").write_bytes(b"PK\x03\x04")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert "drafts/notes.md" in paths
         assert "drafts/diagram.PNG" in paths
@@ -386,7 +386,7 @@ class TestScanProjectPaths:
         (repo / "drafts" / "archive.zip").write_bytes(b"PK\x03\x04")
         (repo / "drafts" / "module.pyc").write_bytes(b"\0\0\0\0")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert "drafts/notes.md" in paths
         assert "drafts/archive.zip" not in paths
@@ -404,7 +404,7 @@ class TestScanProjectPaths:
         (repo / "drafts").mkdir()
         (repo / "drafts" / "keep.md").write_text("keep\n")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert "drafts/keep.md" in paths
         assert not any(p.startswith("node_modules/") for p in paths)
@@ -421,7 +421,7 @@ class TestScanProjectPaths:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("doc\n")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert ".scratch/spec.md" in paths
         assert ".scratch/design/plan.md" in paths
@@ -434,7 +434,7 @@ class TestScanProjectPaths:
         (repo / "docs" / ".scratch").mkdir(parents=True)
         (repo / "docs" / ".scratch" / "spec.md").write_text("spec\n")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert "docs/.scratch/spec.md" in paths
         assert "docs/.scratch/" in paths
@@ -462,7 +462,7 @@ class TestScanProjectPaths:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("x\n")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert ".claude/plan.md" in paths
         assert [path for path in excluded if path in paths] == []
@@ -478,7 +478,7 @@ class TestScanProjectPaths:
         (nested / "src").mkdir()
         (nested / "src" / "app.py").write_text("x\n")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert ".worktrees/notes.md" in paths
         assert [path for path in paths if path.startswith(".worktrees/feature")] == []
@@ -498,7 +498,7 @@ class TestScanProjectPaths:
         _git(repo, "commit", "-q", "-m", "ignore md")
         monkeypatch.setattr(file_scanner_module, "_MAX_SUPPLEMENTAL_IGNORED_FILES", 3)
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=100, suggestion_budget=100))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=100, suggestion_budget=100))
 
         assert {".a/1.md", ".a/2.md", ".b/keep.md"} <= set(_scan_paths(scan))
         assert "ignored_dot" not in scan.source_truncations
@@ -518,7 +518,7 @@ class TestScanProjectPaths:
         (repo / ".notes" / "plan.md").write_text("plan\n")
         monkeypatch.setattr(file_scanner_module, "_MAX_SUPPLEMENTAL_IGNORED_FILES", 2)
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo), file_budget=100, suggestion_budget=100)))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo), file_budget=100, suggestion_budget=100)))
 
         assert ".notes/plan.md" in paths
         assert not any(path.startswith(".cache/") and path.endswith(".md") for path in paths)
@@ -534,7 +534,7 @@ class TestScanProjectPaths:
             (repo / ".scratch" / f"z{index}.bin").write_bytes(b"\0")
         monkeypatch.setattr(file_scanner_module, "_MAX_SUPPLEMENTAL_IGNORED_FILES", 2)
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=100, suggestion_budget=100))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=100, suggestion_budget=100))
 
         assert ".scratch/a/plan.md" in _scan_paths(scan)
         assert scan.source_truncations.get("ignored_dot") is True
@@ -548,7 +548,7 @@ class TestScanProjectPaths:
         (repo / "elsewhere" / "target.md").write_text("x\n")
         symlink_or_skip(repo / ".scratch" / "reference", repo / "elsewhere", target_is_directory=True)
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert ".scratch/spec.md" in paths
         assert ".scratch/reference" in paths
@@ -564,7 +564,7 @@ class TestScanProjectPaths:
         (repo / "drafts" / "keep.md").write_text("keep\n")
         monkeypatch.setattr(file_scanner_module, "_MAX_SUPPLEMENTAL_IGNORED_FILES", 2)
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=100, suggestion_budget=100))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=100, suggestion_budget=100))
         paths = _scan_paths(scan)
 
         assert "drafts/keep.md" in paths
@@ -586,7 +586,7 @@ class TestScanProjectPaths:
         _git(repo, "commit", "-q", "-m", "ignore drafts")
         (repo / "drafts" / "new.md").write_text("new\n")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert paths.count("drafts/old.md") == 1
         assert paths.count("drafts/new.md") == 1
@@ -600,7 +600,7 @@ class TestScanProjectPaths:
         _git(repo, "add", ".ignore", ".rgignore", "kept_by_git.txt", "rg_only.txt")
         _git(repo, "commit", "-q", "-m", "track rg ignored")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert "kept_by_git.txt" in paths
         assert "rg_only.txt" in paths
@@ -613,7 +613,7 @@ class TestScanProjectPaths:
         _git(repo, "add", "src/.env.example", "src/.config/settings.toml")
         _git(repo, "commit", "-q", "-m", "track nested dot paths")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         assert paths.count("src/.env.example") == 1
         assert paths.count("src/.config/settings.toml") == 1
@@ -628,7 +628,7 @@ class TestScanProjectPaths:
         _git(repo, "add", ".gitignore")
         _git(repo, "commit", "-q", "-m", "ignore drafts")
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=1, suggestion_budget=10))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=1, suggestion_budget=10))
 
         assert scan.file_count == 1
         assert scan.truncated is True
@@ -653,7 +653,7 @@ class TestScanProjectPaths:
 
         monkeypatch.setattr(file_scanner_module, "_run_probes", fake_probes)
 
-        scan = asyncio.run(scan_project_paths(str(tmp_path), file_budget=1, suggestion_budget=10))
+        scan = asyncio.run(scan_workdir_paths(str(tmp_path), file_budget=1, suggestion_budget=10))
 
         # A truncated rg result at the budget leaves no capacity for the other tiers.
         assert _paths(scan.paths) == ["README.md"]
@@ -675,7 +675,7 @@ class TestScanProjectPaths:
         _git(repo, "add", ".gitignore")
         _git(repo, "commit", "-q", "-m", "ignore drafts")
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=3, suggestion_budget=10))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=3, suggestion_budget=10))
         paths = _paths(scan.paths)
 
         assert scan.file_count == 3
@@ -689,7 +689,7 @@ class TestScanProjectPaths:
         _git(repo, "add", ".github/ci.yml")
         _git(repo, "commit", "-q", "-m", "ci")
 
-        paths = _scan_paths(asyncio.run(scan_project_paths(str(repo))))
+        paths = _scan_paths(asyncio.run(scan_workdir_paths(str(repo))))
 
         # Appears exactly once regardless of which tier picked it up first.
         assert paths.count(".github/ci.yml") == 1
@@ -703,7 +703,7 @@ class TestScanProjectPaths:
         (repo / ".b").mkdir()
         (repo / ".b" / "new.md").write_text("new\n")
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=3, suggestion_budget=10))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=3, suggestion_budget=10))
         paths = _paths(scan.paths)
 
         assert scan.file_count == 3
@@ -719,7 +719,7 @@ class TestScanProjectPaths:
         for i in range(5):
             (repo / ".github" / f"g{i}.yml").write_text("x\n")
 
-        scan = asyncio.run(scan_project_paths(str(repo), max_paths=3))
+        scan = asyncio.run(scan_workdir_paths(str(repo), max_paths=3))
         paths = _paths(scan.paths)
         assert len(paths) == 3
         assert scan.truncated is True
@@ -733,7 +733,7 @@ class TestScanProjectPaths:
         (repo / "drafts").mkdir()
         (repo / "drafts" / "hidden.md").write_text("hidden\n")
 
-        scan = asyncio.run(scan_project_paths(str(repo), max_paths=1))
+        scan = asyncio.run(scan_workdir_paths(str(repo), max_paths=1))
         paths = _paths(scan.paths)
 
         assert len(paths) == 1
@@ -745,7 +745,7 @@ class TestScanProjectPaths:
         (repo / "src" / "app").mkdir(parents=True)
         (repo / "src" / "app" / "main.py").write_text("py\n")
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=2, suggestion_budget=10))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=2, suggestion_budget=10))
         paths = _paths(scan.paths)
 
         assert scan.file_count == 2
@@ -757,11 +757,11 @@ class TestScanProjectPaths:
 
     def test_suggestion_budget_reports_truncation(self) -> None:
         """Directory generation is bounded separately from file discovery."""
-        result = _project_path_suggestions(["src/chrys/app/tui/input_bar.py"], suggestion_budget=2)
+        result = _workdir_path_suggestions(["src/chrys/app/tui/input_bar.py"], suggestion_budget=2)
 
         assert result.suggestions == [
-            ProjectPathSuggestion(path="src/", kind="directory"),
-            ProjectPathSuggestion(path="src/chrys/", kind="directory"),
+            WorkdirPathSuggestion(path="src/", kind="directory"),
+            WorkdirPathSuggestion(path="src/chrys/", kind="directory"),
         ]
         assert result.truncated is True
 
@@ -769,7 +769,7 @@ class TestScanProjectPaths:
         (repo / "src" / "chrys").mkdir(parents=True)
         (repo / "src" / "chrys" / "app.py").write_text("py\n")
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=10, suggestion_budget=2))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=10, suggestion_budget=2))
 
         assert scan.truncated is True
         assert scan.source_truncations == {"suggestions": True}
@@ -792,7 +792,7 @@ class TestScanProjectPaths:
             1,
         )
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=100, suggestion_budget=100))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=100, suggestion_budget=100))
 
         assert scan.truncated is True
         assert scan.source_truncations["ignored_visible"] is True
@@ -804,7 +804,7 @@ class TestScanProjectPaths:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """CPU-heavy suggestion construction runs off the event loop."""
-        original_project_path_suggestions = file_scanner_module._project_path_suggestions
+        original_workdir_path_suggestions = file_scanner_module._workdir_path_suggestions
         loop_turned = threading.Event()
 
         async def fake_probes(_root: str, *, file_budget: int):
@@ -817,23 +817,23 @@ class TestScanProjectPaths:
                 ignored_dot=file_scanner_module._IgnoredVisibleProbe([]),
             )
 
-        def slow_project_path_suggestions(
+        def slow_workdir_path_suggestions(
             paths: list[str],
             *,
             suggestion_budget: int | None = None,
             max_paths: int | None = None,
         ):
             loop_turned.wait(DEFAULT_WAIT_TIMEOUT)
-            return original_project_path_suggestions(
+            return original_workdir_path_suggestions(
                 paths,
                 suggestion_budget=suggestion_budget,
                 max_paths=max_paths,
             )
 
         monkeypatch.setattr(file_scanner_module, "_run_probes", fake_probes)
-        monkeypatch.setattr(file_scanner_module, "_project_path_suggestions", slow_project_path_suggestions)
+        monkeypatch.setattr(file_scanner_module, "_workdir_path_suggestions", slow_workdir_path_suggestions)
 
-        scan_task = asyncio.create_task(scan_project_paths(str(tmp_path), file_budget=20, suggestion_budget=100))
+        scan_task = asyncio.create_task(scan_workdir_paths(str(tmp_path), file_budget=20, suggestion_budget=100))
         ticks = 0
         # Count event-loop iterations (bare yields), not wall-clock slices, which
         # Windows floors to ~15.6ms. The work waits for the loop's fourth turn, so
@@ -885,7 +885,7 @@ class TestScanProjectPaths:
         monkeypatch.setattr(file_scanner_module, "managed_subprocess", fail_dot_git_ls_files)
         monkeypatch.setattr(file_scanner_module, "_append_unseen_dot_entries_from_walk", slow_dot_walk)
 
-        scan_task = asyncio.create_task(scan_project_paths(str(tmp_path), file_budget=5, suggestion_budget=10))
+        scan_task = asyncio.create_task(scan_workdir_paths(str(tmp_path), file_budget=5, suggestion_budget=10))
         ticks = 0
         # Count event-loop iterations (bare yields), not wall-clock slices, which
         # Windows floors to ~15.6ms. The work waits for the loop's fourth turn, so
@@ -1066,7 +1066,7 @@ class TestParallelProbeScheduling:
         )
 
         scan = await asyncio.wait_for(
-            scan_project_paths(str(tmp_path), file_budget=10, suggestion_budget=10),
+            scan_workdir_paths(str(tmp_path), file_budget=10, suggestion_budget=10),
             DEFAULT_WAIT_TIMEOUT,
         )
 
@@ -1091,7 +1091,7 @@ class TestParallelProbeScheduling:
         monkeypatch.setattr(file_scanner_module, "_scan_git_ls_files", git_unavailable)
         monkeypatch.setattr(file_scanner_module, "_probe_ignored_visible_files", no_ignored_visible)
 
-        scan = asyncio.run(scan_project_paths(str(repo), file_budget=100, suggestion_budget=100))
+        scan = asyncio.run(scan_workdir_paths(str(repo), file_budget=100, suggestion_budget=100))
         paths = _paths(scan.paths)
 
         assert "src/app/main.py" in paths
@@ -1124,7 +1124,7 @@ class TestParallelProbeScheduling:
         (repo / "node_modules" / "pkg" / "index.js").write_text("x\n")
         (repo / "drafts" / "archive.zip").write_bytes(b"PK\x03\x04")
 
-        scan = asyncio.run(scan_project_paths(str(repo)))
+        scan = asyncio.run(scan_workdir_paths(str(repo)))
 
         assert [(entry.path, entry.kind) for entry in scan.paths] == [
             ("README.md", "file"),
@@ -1158,7 +1158,7 @@ class TestDerivedDirectoryReuse:
         """A path-sorted input reuses the previous directory chain instead of re-joining it."""
         paths = ["src/a.py", "src/b.py", "src/pkg/c.py", "src/pkg/d.py", "zzz/e.py"]
 
-        result = _project_path_suggestions(paths, suggestion_budget=1000)
+        result = _workdir_path_suggestions(paths, suggestion_budget=1000)
 
         assert [(entry.path, entry.kind) for entry in result.suggestions] == [
             ("src/", "directory"),
@@ -1176,7 +1176,7 @@ class TestDerivedDirectoryReuse:
         """Input tier order wins over path sorting: later tiers keep their own directory rows."""
         paths = ["README.md", ".github/workflows/ci.yml", "src/app/main.py", "src/app/util.py", ".github/ISSUE.md"]
 
-        result = _project_path_suggestions(paths, suggestion_budget=1000)
+        result = _workdir_path_suggestions(paths, suggestion_budget=1000)
 
         assert [entry.path for entry in result.suggestions] == [
             "README.md",
@@ -1194,7 +1194,7 @@ class TestDerivedDirectoryReuse:
         """The budget still cuts on the row that would have been appended, reused prefix or not."""
         paths = ["a/one.py", "a/two.py", "a/three.py"]
 
-        result = _project_path_suggestions(paths, suggestion_budget=3)
+        result = _workdir_path_suggestions(paths, suggestion_budget=3)
 
         assert [entry.path for entry in result.suggestions] == ["a/", "a/one.py", "a/two.py"]
         assert result.truncated is True
