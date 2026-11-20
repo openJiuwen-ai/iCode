@@ -27,6 +27,7 @@ from jiuwenbox.models.sandbox import (
 )
 from jiuwenbox.server.runtime.errors import SandboxNotFoundError
 from jiuwenbox.server.sandbox_manager import (
+    CreateDelivery,
     SandboxBackgroundExecRequest,
     SandboxExecRequest,
     SandboxListRequest,
@@ -59,26 +60,47 @@ async def _discard_task(task: asyncio.Task[object]) -> None:
             raise
 
 
-class _ClientDisconnect:
-    """Set when the HTTP client drops while a task is still running."""
+async def _client_disconnected(http_request: Request) -> bool:
+    """Wait until the client drops.
 
-    def __init__(self) -> None:
-        self.client_gone = False
+    ``Request.is_disconnected`` cancels its read immediately. On a served
+    app that drops the queued ``http.disconnect``, so a create still
+    starting never notices and is left READY. The ASGI receive blocks
+    until that message arrives. A test double with no receive channel
+    keeps the polling ``is_disconnected`` path.
+    """
+    receive = getattr(http_request, "receive", None)
+    if not callable(receive):
+        return bool(await http_request.is_disconnected())
+    while True:
+        message = await receive()
+        if isinstance(message, dict) and message.get("type") == "http.disconnect":
+            return True
 
 
 async def _cancel_exec_on_http_disconnect(
     http_request: Request,
     exec_task: asyncio.Task[object],
-    disconnect: _ClientDisconnect | None = None,
+    disconnect: CreateDelivery | None = None,
 ) -> None:
     """Cancel ``exec_task`` when the HTTP client drops.
 
     FastAPI does not cancel the endpoint when the client disconnects.
-    ``Request.is_disconnected`` is the ASGI signal. This races that check
-    against the exec so a still-connected client does not delay the response.
+    This waits on the ASGI receive so a still-connected client does not
+    delay the response, and a dropped client is observed while create or
+    exec is still running.
     """
+
+    async def _probe() -> bool:
+        gone = await _client_disconnected(http_request)
+        # Set on this task, before the waiter resumes, so a create that
+        # finishes on the same turn still sees the drop.
+        if gone and disconnect is not None:
+            disconnect.abandoned = True
+        return gone
+
     while not exec_task.done():
-        probe = asyncio.create_task(http_request.is_disconnected())
+        probe = asyncio.create_task(_probe())
         client_gone = False
         try:
             await asyncio.wait(
@@ -96,8 +118,6 @@ async def _cancel_exec_on_http_disconnect(
             if not probe.done():
                 probe.cancel()
             await _discard_task(probe)
-        if client_gone and disconnect is not None:
-            disconnect.client_gone = True
         if exec_task.done():
             return
         if client_gone:
@@ -190,16 +210,17 @@ async def create_sandbox(request: CreateSandboxRequest, http_request: Request):
     spec = SandboxSpec(
         env=request.env, sandbox_id=sandbox_id, sandbox_runtime=request.sandbox_runtime
     )
-    disconnect = _ClientDisconnect()
+    delivery = CreateDelivery()
     create_task = asyncio.create_task(
         _mgr().create_sandbox(
             spec,
             policy_data=request.policy,
             policy_mode=request.policy_mode,
+            delivery=delivery,
         )
     )
     watch_task = asyncio.create_task(
-        _cancel_exec_on_http_disconnect(http_request, create_task, disconnect)
+        _cancel_exec_on_http_disconnect(http_request, create_task, delivery)
     )
     # A response returned to a client that is still connected keeps the
     # sandbox. Every other outcome, including a create that finishes only
@@ -214,7 +235,7 @@ async def create_sandbox(request: CreateSandboxRequest, http_request: Request):
             watch_error = None
             if watch_task.done() and not watch_task.cancelled():
                 watch_error = watch_task.exception()
-            disconnect.client_gone = True
+            delivery.abandoned = True
             create_task.cancel()
             if watch_error is not None:
                 raise watch_error
@@ -224,18 +245,24 @@ async def create_sandbox(request: CreateSandboxRequest, http_request: Request):
             current = asyncio.current_task()
             if current is not None and current.cancelling():
                 raise
-            disconnect.client_gone = True
+            delivery.abandoned = True
             result = None
         except Exception:
-            if disconnect.client_gone:
+            if delivery.abandoned:
                 return Response(status_code=499)
             keep = True
             raise
-        if result is not None and not disconnect.client_gone:
+        # A disconnect already queued on the receive runs before this
+        # create is treated as delivered.
+        if result is not None and not delivery.abandoned:
+            await asyncio.sleep(0)
+        if result is not None and not delivery.abandoned:
             keep = True
             return result
         return Response(status_code=499)
     finally:
+        if not keep:
+            delivery.abandoned = True
         watch_task.cancel()
         if not create_task.done():
             create_task.cancel()

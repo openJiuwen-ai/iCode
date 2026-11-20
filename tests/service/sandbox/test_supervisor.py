@@ -805,6 +805,22 @@ async def test_stop_delivers_sigterm_before_the_kill_backstop(
         await running.closer.aclose()
 
 
+async def test_shutdown_leaves_a_leased_server_until_the_lease_ends(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Engine shutdown must not signal a server a command still holds."""
+    marker, running = await _start_signal_child(monkeypatch, tmp_path, _CATCHES_SIGTERM)
+    try:
+        async with supervisor.leased_server("guarded") as (_url, _token):
+            await supervisor.shutdown()
+            assert running.proc.returncode is None
+            assert marker.read_text(encoding="utf-8") == "ready"
+        _assert_stopped_by_sigterm(marker, running.proc.returncode)
+    finally:
+        await running.closer.aclose()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot ignore SIGTERM")
 async def test_ignored_sigterm_is_killed_within_the_grace(
     monkeypatch: pytest.MonkeyPatch,

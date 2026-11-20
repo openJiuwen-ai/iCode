@@ -112,6 +112,8 @@ async def _exec(manager: object, runtime: _Runtime) -> tuple[object, list[str]]:
         (124, "Command timed out"),
         (1, "daemon IPC transport failure: Connection reset"),
         (1, "daemon IPC unavailable: [Errno 111] Connection refused"),
+        (0, "daemon IPC channel unavailable; the daemon is not running"),
+        (1, "sandbox 'sb-1' daemon IPC channel unavailable; the daemon is not running or its control socket is gone"),
     ],
 )
 async def test_exec_that_may_have_run_is_not_sent_again(
@@ -147,6 +149,7 @@ async def test_channel_unavailable_before_dispatch_retries_once(
             f"sandbox {_SANDBOX_ID!r} daemon IPC channel unavailable; "
             "the daemon is not running or its control socket is gone"
         ),
+        failed_before_dispatch=True,
     )
     recovered = ExecResult(exit_code=0, stdout="ok", stderr="")
     runtime = _Runtime([unavailable, recovered])
@@ -157,6 +160,17 @@ async def test_channel_unavailable_before_dispatch_retries_once(
     assert result is recovered
     assert runtime.calls[0][1].command == _COMMAND  # type: ignore[attr-defined]
     assert runtime.calls[1][1].command == _COMMAND  # type: ignore[attr-defined]
+
+
+async def test_missing_daemon_is_flagged_before_dispatch(jiuwenbox_importable: None) -> None:
+    """The runtime flag, not stderr text, is what a later retry is allowed to trust."""
+    from jiuwenbox.server.runtime.base import RuntimeExecRequest
+    from jiuwenbox.server.runtime.process import ProcessRuntime
+
+    result = await ProcessRuntime().exec("missing", RuntimeExecRequest(command=["true"]))
+    assert result.failed_before_dispatch is True
+    assert result.exit_code == 1
+    assert "failed_before_dispatch" not in result.model_dump()
 
 
 def test_client_read_is_strictly_longer_than_post_kill_drain(jiuwenbox_importable: None) -> None:

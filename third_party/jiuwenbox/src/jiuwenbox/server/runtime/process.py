@@ -3552,6 +3552,7 @@ class ProcessRuntime(RuntimeAdapter):
                     f"sandbox {sandbox_id!r} daemon IPC channel unavailable; "
                     "the daemon is not running or its control socket is gone"
                 ),
+                failed_before_dispatch=True,
             )
 
         loop = asyncio.get_running_loop()

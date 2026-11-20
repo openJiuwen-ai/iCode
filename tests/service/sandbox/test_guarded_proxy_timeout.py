@@ -208,3 +208,122 @@ async def test_unfinished_header_fails_within_the_handshake_timeout() -> None:
     assert data.startswith(b"HTTP/1.1 502 "), (elapsed, data)
     assert worker is not None
     assert not worker.is_alive()
+
+
+def _origin(body: bytes, *, delay: float = 0.0):
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            request = bytearray()
+            while b"\r\n\r\n" not in request:
+                chunk = await reader.read(4096)
+                if not chunk:
+                    return
+                request.extend(chunk)
+            if delay:
+                await asyncio.sleep(delay)
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body)
+            await writer.drain()
+        except OSError:
+            pass
+        finally:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+
+    return handle
+
+
+async def test_one_proxy_connection_dials_each_request_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second plaintext request on the same connection is not answered by the first host."""
+    servers = []
+    client: socket.socket | None = None
+    worker: threading.Thread | None = None
+    try:
+        first = await asyncio.start_server(_origin(b"FROM-A"), "127.0.0.1", 0)
+        second = await asyncio.start_server(_origin(b"FROM-B"), "127.0.0.1", 0)
+        servers.extend((first, second))
+        port_a = int(first.sockets[0].getsockname()[1])  # type: ignore[index]
+        port_b = int(second.sockets[0].getsockname()[1])  # type: ignore[index]
+        create_connection = socket.create_connection
+        dialed: list[object] = []
+
+        def _dial_local(address: object, *args: object, **kwargs: object) -> socket.socket:
+            dialed.append(address)
+            _host, port = address  # type: ignore[misc]
+            return create_connection(("127.0.0.1", port), *args, **kwargs)
+
+        monkeypatch.setattr(guarded_proxy.socket, "create_connection", _dial_local)
+        client, accepted = _connected_pair()
+        worker = threading.Thread(target=guarded_proxy._handle_client, args=(accepted,), daemon=True)
+        worker.start()
+        first_response = await asyncio.to_thread(
+            _round_trip,
+            client,
+            f"GET http://8.8.8.8:{port_a}/a HTTP/1.1\r\nHost: 8.8.8.8:{port_a}\r\n\r\n".encode("ascii"),
+            len(b"FROM-A"),
+        )
+        second_response = await asyncio.to_thread(
+            _round_trip,
+            client,
+            f"GET http://1.1.1.1:{port_b}/b HTTP/1.1\r\nHost: 1.1.1.1:{port_b}\r\n\r\n".encode("ascii"),
+            len(b"FROM-B"),
+        )
+    finally:
+        if client is not None:
+            client.close()
+        for server in servers:
+            server.close()
+            await server.wait_closed()
+        if worker is not None:
+            await asyncio.to_thread(worker.join, 5)
+
+    assert dialed == [("8.8.8.8", port_a), ("1.1.1.1", port_b)]
+    assert first_response.endswith(b"FROM-A")
+    assert second_response.endswith(b"FROM-B")
+    assert worker is not None
+    assert not worker.is_alive()
+
+
+async def test_half_closed_client_receives_a_slow_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shutting the write side does not cut off a response that takes more than two seconds."""
+    body = b"SLOW-AFTER-HALF-CLOSE"
+    delay = 3.0
+    server = await asyncio.start_server(_origin(body, delay=delay), "127.0.0.1", 0)
+    client: socket.socket | None = None
+    worker: threading.Thread | None = None
+    try:
+        listening = server.sockets
+        assert listening
+        port = int(listening[0].getsockname()[1])
+        client, accepted = _connected_pair()
+        create_connection = socket.create_connection
+
+        def _dial_local(address: object, *args: object, **kwargs: object) -> socket.socket:
+            del address
+            return create_connection(("127.0.0.1", port), *args, **kwargs)
+
+        monkeypatch.setattr(guarded_proxy.socket, "create_connection", _dial_local)
+        client.sendall(f"GET http://8.8.8.8:{port}/slow HTTP/1.1\r\nHost: 8.8.8.8:{port}\r\n\r\n".encode("ascii"))
+        client.shutdown(socket.SHUT_WR)
+        worker = threading.Thread(target=guarded_proxy._handle_client, args=(accepted,), daemon=True)
+        started = time.monotonic()
+        worker.start()
+        response = await asyncio.to_thread(_read_response, client, len(body))
+        elapsed = time.monotonic() - started
+    finally:
+        if client is not None:
+            client.close()
+        server.close()
+        await server.wait_closed()
+        if worker is not None:
+            await asyncio.to_thread(worker.join, 5)
+
+    assert response.endswith(body)
+    assert elapsed >= delay - 0.2
+    assert worker is not None
+    assert not worker.is_alive()
+
+
+def _round_trip(client: socket.socket, request: bytes, body_length: int) -> bytes:
+    client.sendall(request)
+    return _read_response(client, body_length)

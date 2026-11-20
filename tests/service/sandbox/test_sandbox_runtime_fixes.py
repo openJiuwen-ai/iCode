@@ -524,3 +524,238 @@ async def test_cancelled_creates_do_not_leave_ready_sandboxes(
     assert [item.id for item in listed] == ["create-ok"]
     assert listed[0].phase == SandboxPhase.READY
     assert set(runtime.cleaned) == {"cancel-raise", "cancel-race"}
+
+
+def test_home_read_only_engine_dir_is_allowed_and_a_direct_mount_is_not(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Starting in the account home may cover ~/.jiuwenbox read-only.
+
+    The same directory mounted on its own, or mounted read-write, stays reserved.
+    """
+    from jiuwenbox.models.policy import BindMount, FilesystemPolicy, SecurityPolicy
+    from jiuwenbox.server import policy_engine as policy_engine_module
+    from jiuwenbox.server.policy_engine import PolicyEngine, PolicyValidationError
+
+    monkeypatch.setattr(policy_engine_module, "JIUWENBOX_HOME", "/home/user/.jiuwenbox")
+    monkeypatch.setattr(policy_engine_module, "SANDBOX_WORKSPACE", "/home/user/.jiuwenbox/workspace")
+    engine = PolicyEngine(policies_dir=tmp_path / "policies")
+    home = "/home/user"
+    engine_home = "/home/user/.jiuwenbox"
+
+    def _bind(path: str, mode: str, sandbox_path: str | None = None) -> BindMount:
+        # Keep the POSIX spelling. ``BindMount`` expands through ``Path``, which
+        # rewrites a leading slash on Windows and would hide the reserved check.
+        return BindMount.model_construct(
+            host_path=path,
+            sandbox_path=path if sandbox_path is None else sandbox_path,
+            mode=mode,
+        )
+
+    covered = SecurityPolicy(
+        filesystem_policy=FilesystemPolicy(bind_mounts=[_bind(home, "rw"), _bind(engine_home, "ro")])
+    )
+    warnings = engine.validate_policy(covered)
+    assert all("reserved" not in item for item in warnings)
+
+    direct = SecurityPolicy(filesystem_policy=FilesystemPolicy(bind_mounts=[_bind(engine_home, "rw")]))
+    with pytest.raises(PolicyValidationError, match="reserved"):
+        engine.validate_policy(direct)
+
+    exposed = SecurityPolicy(filesystem_policy=FilesystemPolicy(bind_mounts=[_bind(engine_home, "ro")]))
+    with pytest.raises(PolicyValidationError, match="reserved"):
+        engine.validate_policy(exposed)
+
+    remapped = SecurityPolicy(
+        filesystem_policy=FilesystemPolicy(
+            bind_mounts=[_bind(home, "rw"), _bind(engine_home, "ro", sandbox_path="/tmp/engine")]
+        )
+    )
+    with pytest.raises(PolicyValidationError, match="reserved"):
+        engine.validate_policy(remapped)
+
+
+def test_clear_persistent_state_leaves_the_other_managers_files(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+) -> None:
+    from jiuwenbox.models.sandbox import SandboxPhase, SandboxRef
+    from jiuwenbox.server.policy_engine import PolicyEngine
+    from jiuwenbox.server.sandbox_manager import SandboxManager
+
+    class _Audit:
+        def log(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    state = tmp_path / "state"
+    policies = tmp_path / "policies"
+
+    def _manager() -> SandboxManager:
+        return SandboxManager(
+            runtime=object(),  # type: ignore[arg-type]
+            policy_engine=PolicyEngine(policies_dir=policies),
+            audit_logger=_Audit(),  # type: ignore[arg-type]
+            state_dir=state,
+            policy_path=tmp_path / "missing-policy.yaml",
+        )
+
+    first = _manager()
+    second = _manager()
+    first._save_state(SandboxRef(id="sandbox-a", phase=SandboxPhase.READY))
+    first._write_policy("sandbox-a", first.policy)
+    second._save_state(SandboxRef(id="sandbox-b", phase=SandboxPhase.READY))
+    second._write_policy("sandbox-b", second.policy)
+
+    first.clear_persistent_state()
+
+    assert not (state / "sandbox-a.json").exists()
+    assert not (policies / "sandbox-a_sandbox_policy.yaml").exists()
+    assert (state / "sandbox-b.json").is_file()
+    assert (policies / "sandbox-b_sandbox_policy.yaml").is_file()
+
+
+async def test_served_create_cancel_does_not_leave_ready_sandboxes(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dropped HTTP client during cold start does not leave a READY sandbox.
+
+    Idle reaping stays off. Two drops and one successful create leave the
+    one sandbox the client received.
+    """
+    import contextlib
+
+    import uvicorn
+    from jiuwenbox.models.sandbox import SandboxPhase
+    from jiuwenbox.server import app as app_module
+    from jiuwenbox.server.policy_engine import PolicyEngine
+    from jiuwenbox.server.sandbox_manager import SandboxManager
+
+    from tests.support.waiting import wait_for
+
+    class _Audit:
+        def log(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    class _Hold:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.swallow = False
+            self.cancelled: list[str] = []
+            self.cleaned: list[str] = []
+
+        async def create(self, *, sandbox_id: str, policy_path: object, env: object) -> int:
+            del policy_path, env
+            self.started.set()
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancelled.append(sandbox_id)
+                if not self.swallow:
+                    raise
+                # A runtime that handles cancellation and still returns a pid.
+                # The next await in the manager must not set READY.
+                task = asyncio.current_task()
+                if task is not None:
+                    while task.uncancel():
+                        pass
+                return 7
+            return 7
+
+        async def cleanup(self, sandbox_id: str) -> None:
+            self.cleaned.append(sandbox_id)
+
+        async def get_sandbox_ip_address(self, sandbox_id: str) -> None:
+            del sandbox_id
+            return
+
+    class _Server(uvicorn.Server):
+        @contextlib.contextmanager
+        def capture_signals(self) -> contextlib.AbstractContextManager[None]:
+            yield
+
+    monkeypatch.setenv("JIUWENBOX_API_TOKEN", "sekret")
+    runtime = _Hold()
+    manager = SandboxManager(
+        runtime=runtime,  # type: ignore[arg-type]
+        policy_engine=PolicyEngine(policies_dir=tmp_path / "policies"),
+        audit_logger=_Audit(),  # type: ignore[arg-type]
+        state_dir=tmp_path / "state",
+        policy_path=tmp_path / "missing-policy.yaml",
+    )
+    previous = app_module._sandbox_manager
+    app_module._sandbox_manager = manager
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    address = listener.getsockname()[:2]
+    server = _Server(uvicorn.Config(app_module.app, lifespan="off", log_config=None, timeout_graceful_shutdown=5))
+    serving = asyncio.create_task(server.serve(sockets=[listener]))
+
+    def _post(sandbox_id: str) -> bytes:
+        body = json.dumps({"sandbox_id": sandbox_id}).encode("utf-8")
+        head = (
+            "POST /api/v1/sandboxes HTTP/1.1\r\n"
+            "Host: jiuwenbox\r\n"
+            "Authorization: Bearer sekret\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "\r\n"
+        )
+        return head.encode("ascii") + body
+
+    async def _drop(sandbox_id: str, *, swallow: bool) -> None:
+        runtime.swallow = swallow
+        runtime.started.clear()
+        runtime.release = asyncio.Event()
+        _reader, writer = await asyncio.open_connection(*address)
+        writer.write(_post(sandbox_id))
+        await writer.drain()
+        await asyncio.wait_for(runtime.started.wait(), timeout=10)
+        writer.close()
+        await writer.wait_closed()
+        await wait_for(
+            lambda: sandbox_id in runtime.cancelled,
+            timeout=10,
+            description=f"{sandbox_id} create cancelled after the client dropped",
+        )
+        await wait_for(
+            lambda: all(item.id != sandbox_id for item in manager._sandboxes.values()),
+            timeout=10,
+            description=f"{sandbox_id} was removed",
+        )
+
+    try:
+        await wait_for(lambda: server.started or serving.done(), description="jiuwenbox app serving")
+        if serving.done():
+            await serving
+        await _drop("drop-raise", swallow=False)
+        await _drop("drop-keep", swallow=True)
+        runtime.swallow = False
+        runtime.started.clear()
+        runtime.release = asyncio.Event()
+        reader, writer = await asyncio.open_connection(*address)
+        try:
+            writer.write(_post("drop-ok"))
+            await writer.drain()
+            await asyncio.wait_for(runtime.started.wait(), timeout=10)
+            runtime.release.set()
+            line = await asyncio.wait_for(reader.readline(), timeout=10)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        assert int(line.split(b" ")[1]) == 201
+        listed = await manager.list_sandboxes()
+        assert [item.id for item in listed] == ["drop-ok"]
+        assert listed[0].phase == SandboxPhase.READY
+    finally:
+        runtime.release.set()
+        app_module._sandbox_manager = previous
+        server.should_exit = True
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(serving, 15)
+        listener.close()

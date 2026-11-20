@@ -18,7 +18,7 @@ import textwrap
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Cap stdout/stderr at this many chars per audit event. Large model
@@ -43,20 +43,27 @@ def _truncate_for_audit(text: str | None, *, limit: int = _AUDIT_OUTPUT_LIMIT) -
     return text[-limit:] + f"\n[truncated, total {len(text)} chars]"
 
 
+class CreateDelivery:
+    """Whether the HTTP client will still accept a create it started.
+
+    The route sets ``abandoned`` when the client drops, including before the
+    runtime has registered the sandbox. ``create_sandbox`` checks it again
+    before publishing READY, so a runtime that finishes after the drop does
+    not leave a sandbox the client never received.
+    """
+
+    def __init__(self) -> None:
+        self.abandoned = False
+
+
 def _exec_failed_before_dispatch(result: ExecResult) -> bool:
     """True only when this exec cannot have reached the daemon.
 
-    ``daemon IPC timeout`` is reported after the request was written, so
-    the command may already have run. Sending it again would run it twice;
-    the failure itself is the safe result. ``daemon IPC channel unavailable``
-    is returned before that write, when the control socket is already gone,
-    so one restart cannot double-execute. Any other failure is not retried:
-    a second exec is allowed only when this returns true.
+    The runtime sets ``failed_before_dispatch`` before the control-socket
+    write. A command that prints the runtime's unavailable text, including
+    one that exits 0, does not set the flag and is not run again.
     """
-    stderr = result.stderr or ""
-    if "daemon IPC timeout" in stderr:
-        return False
-    return "daemon IPC channel unavailable" in stderr
+    return result.failed_before_dispatch
 
 
 def _is_daemon_ipc_file_op_failure(result: RuntimeFileOpResult) -> bool:
@@ -92,16 +99,20 @@ from jiuwenbox.models.sandbox import (
 from jiuwenbox.server.audit_logger import AuditLogger
 from jiuwenbox.server.policy_engine import PolicyEngine, PolicyValidationError
 from jiuwenbox.server.policy_reader import PolicyReader
+from jiuwenbox.server.policy_update_store import PolicyUpdateStore
 from jiuwenbox.server.runtime.base import (
     RuntimeAdapter,
     RuntimeBackgroundExecRequest,
     RuntimeExecRequest,
     RuntimeFileOpResult,
 )
+from jiuwenbox.server.runtime.errors import (
+    SandboxConflictError,
+    SandboxNotFoundError,
+    SandboxStateError,
+)
 from jiuwenbox.server.runtime.process import BackgroundJobNotFoundError, ProcessRuntime
 from jiuwenbox.server.workspace import JIUWENBOX_HOME
-from jiuwenbox.server.policy_update_store import PolicyUpdateStore
-from jiuwenbox.server.runtime.errors import SandboxNotFoundError, SandboxConflictError, SandboxStateError
 
 RUNTIME_PROCESS = "process"
 RUNTIME_CONCH = "conch"
@@ -187,6 +198,10 @@ class SandboxManager:
         self._lock = asyncio.Lock()
         self._sandboxes: dict[str, SandboxRef] = {}
         self._policies: dict[str, SecurityPolicy] = {}
+        # Files this manager wrote. Shutdown unlinks these paths only, so a
+        # second manager using the same directories keeps its own state.
+        self._owned_state_files: set[Path] = set()
+        self._owned_policy_files: set[Path] = set()
         # 空闲沙箱淘汰: 后台 reaper task 句柄 + stop event。``None`` 表示当前没有
         # reaper 在跑 (idle_timeout 未配置 / 已被禁用 / 服务尚未 startup)。
         self._idle_reaper_task: asyncio.Task | None = None
@@ -197,10 +212,8 @@ class SandboxManager:
         # ``create_sandbox`` calls can still persist YAML / JSON during a single
         # process lifetime, but nothing is read back on boot.
         #
-        # On graceful shutdown ``clear_persistent_state`` wipes both dirs so a
-        # subsequent jiuwenbox launch never sees stale sandbox descriptors. This
-        # avoids accidentally "reviving" dead sandboxes whose backing bubblewrap
-        # processes / netns / cgroup state no longer exist.
+        # On graceful shutdown ``clear_persistent_state`` removes the files this
+        # manager wrote. Another manager sharing the directories keeps its own.
 
     def _resolve_effective_policy(
         self,
@@ -242,34 +255,28 @@ class SandboxManager:
                 logger.warning("Failed to load state from %s", state_file, exc_info=True)
 
     def clear_persistent_state(self) -> None:
-        """Remove all sandbox / policy descriptors from disk.
+        """Remove the sandbox state and policy files this manager wrote.
 
-        Called from the FastAPI lifespan shutdown hook so the next boot starts
-        from a clean slate. The directories themselves are preserved (recreated
-        if missing) so other code that grabs ``state_dir`` / ``policies_dir``
-        paths during shutdown won't ``FileNotFoundError``.
+        Called from the FastAPI lifespan shutdown hook. Only paths recorded
+        by this instance are unlinked. Two managers that share a directory
+        do not delete each other's files. The directories themselves are
+        preserved (recreated if missing) so other code that grabs
+        ``state_dir`` / ``policies_dir`` during shutdown won't
+        ``FileNotFoundError``.
 
-        This method is *best-effort*: any single-file removal failure is logged
-        but does not abort the rest of the cleanup. Note that this method only
-        wipes on-disk descriptors; live ``sandbox-daemon.py`` / bubblewrap
-        children are spawned with ``start_new_session=True`` (their own session
-        + pgrp) so they **do not** die automatically when uvicorn exits. To
-        actually tear down running sandboxes during shutdown, call
-        :meth:`shutdown_all_sandboxes` first.
+        This method is best-effort: any single-file removal failure is logged
+        but does not abort the rest of the cleanup. It does not stop live
+        sandboxes; call :meth:`shutdown_all_sandboxes` first for that.
         """
-        for label, directory, pattern in (
-            ("sandbox state", self.state_dir, "*.json"),
-            ("sandbox policy", self.policy_engine.policies_dir, "*.yaml"),
+        for label, paths in (
+            ("sandbox state", self._owned_state_files),
+            ("sandbox policy", self._owned_policy_files),
         ):
-            if not directory.exists():
-                continue
             removed = 0
-            for entry in directory.glob(pattern):
+            for entry in list(paths):
                 try:
-                    entry.unlink()
+                    entry.unlink(missing_ok=True)
                     removed += 1
-                except FileNotFoundError:
-                    continue
                 except OSError as exc:
                     logger.warning(
                         "clear_persistent_state: failed to remove %s %s: %s",
@@ -277,12 +284,8 @@ class SandboxManager:
                         entry,
                         exc,
                     )
-            logger.info(
-                "clear_persistent_state: removed %d %s file(s) under %s",
-                removed,
-                label,
-                directory,
-            )
+            paths.clear()
+            logger.info("clear_persistent_state: removed %d %s file(s)", removed, label)
 
         # Match the docstring: preserve (recreate if missing) so late writers
         # during shutdown cannot FileNotFoundError on state_dir / policies_dir.
@@ -333,7 +336,7 @@ class SandboxManager:
                 # Already deleted between the snapshot above and now; treat
                 # as a clean teardown.
                 continue
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception(
                     "shutdown_all_sandboxes: delete_sandbox(%s) failed",
                     sandbox_id,
@@ -427,14 +430,14 @@ class SandboxManager:
         stop_event.set()
         try:
             await asyncio.wait_for(task, timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("idle reaper did not stop within 5s; cancelling")
             task.cancel()
             try:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("idle reaper raised on shutdown")
         finally:
             self._idle_reaper_task = None
@@ -463,10 +466,10 @@ class SandboxManager:
                 await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
                 # Stop event fired -> exit cleanly.
                 return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             cutoff = now.timestamp() - idle_timeout
             async with self._lock:
                 expired_ids: list[str] = []
@@ -482,7 +485,7 @@ class SandboxManager:
                     if reference_ts.tzinfo is None:
                         # SandboxRef.created_at uses datetime.now() (naive) by
                         # default; coerce to UTC so the comparison is well-defined.
-                        reference_ts = reference_ts.replace(tzinfo=timezone.utc)
+                        reference_ts = reference_ts.replace(tzinfo=UTC)
                     if reference_ts.timestamp() < cutoff:
                         expired_ids.append(sid)
 
@@ -507,7 +510,7 @@ class SandboxManager:
                 except SandboxNotFoundError:
                     # Raced with an external delete; treat as a clean teardown.
                     continue
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception(
                         "idle reaper: delete_sandbox(%s) failed", sid,
                     )
@@ -567,7 +570,8 @@ class SandboxManager:
         # would turn every create into an unhandled FileNotFoundError / HTTP 500.
         self.state_dir.mkdir(parents=True, exist_ok=True)
         path = self.state_dir / f"{sandbox.id}.json"
-        path.write_text(sandbox.model_dump_json(indent=2))
+        path.write_text(sandbox.model_dump_json(indent=2), encoding="utf-8")
+        self._owned_state_files.add(path)
 
     def _delete_state(self, sandbox_id: str) -> None:
         path = self.state_dir / f"{sandbox_id}.json"
@@ -588,13 +592,21 @@ class SandboxManager:
         block, so the timestamp is established before the IO call leaves the
         lock and races with the idle reaper).
         """
-        ref.last_active_at = datetime.now(timezone.utc)
+        ref.last_active_at = datetime.now(UTC)
+
+    def _write_policy(self, sandbox_id: str, policy: SecurityPolicy) -> Path:
+        """Write one sandbox policy and remember the path for this manager."""
+        path = self.policy_engine.write_sandbox_policy(sandbox_id, policy)
+        self._owned_policy_files.add(path)
+        return path
 
     async def create_sandbox(
         self,
         spec: SandboxSpec,
         policy_data: SecurityPolicy | Mapping[str, object] | None = None,
         policy_mode: PolicyMode = PolicyMode.OVERRIDE,
+        *,
+        delivery: CreateDelivery | None = None,
     ) -> SandboxRef:
         """Create a new sandbox."""
         async with self._lock:
@@ -609,6 +621,8 @@ class SandboxManager:
                         f"Sandbox '{spec.sandbox_id}' already exists"
                     )
                 sandbox_id = spec.sandbox_id
+            if delivery is not None and delivery.abandoned:
+                raise asyncio.CancelledError
             runtime_name = normalize_sandbox_runtime(spec.sandbox_runtime)
             policy = self._resolve_effective_policy(policy_data, policy_mode)
             logger.debug("Creating sandbox %s with policy %s", sandbox_id, str(policy))
@@ -628,9 +642,7 @@ class SandboxManager:
                 self._save_state(ref)
                 self.audit.log(AuditEventType.SANDBOX_CREATED, sandbox_id)
                 # Write resolved policy
-                policy_path = self.policy_engine.write_sandbox_policy(
-                    sandbox_id, policy
-                )
+                policy_path = self._write_policy(sandbox_id, policy)
                 self.audit.log(
                     AuditEventType.POLICY_APPLIED,
                     sandbox_id,
@@ -660,13 +672,14 @@ class SandboxManager:
             cleanup_after_create = False
             async with self._lock:
                 current_ref = self._sandboxes.get(sandbox_id)
-                if current_ref is not ref or ref.phase == SandboxPhase.DELETING:
+                client_left = delivery is not None and delivery.abandoned
+                if client_left or current_ref is not ref or ref.phase == SandboxPhase.DELETING:
                     cleanup_after_create = True
                 else:
                     ref.phase = SandboxPhase.READY
                     ref.pid = pid
                     ref.ip_address = ip_address
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
                     ref.started_at = now
                     # 沙箱刚创建即视为最近一次活跃, 避免在第一次 exec 到来之前就被
                     # reaper 当成 idle 误杀 (理论上不会, 但显式初始化更直白)。
@@ -726,7 +739,7 @@ class SandboxManager:
 
         policy_path = self.policy_engine.get_sandbox_policy_path(sandbox_id)
         if policy_path is None:
-            policy_path = self.policy_engine.write_sandbox_policy(sandbox_id, policy)
+            policy_path = self._write_policy(sandbox_id, policy)
 
         try:
             pid = await runtime.create(
@@ -740,7 +753,7 @@ class SandboxManager:
             ref.phase = SandboxPhase.READY
             ref.pid = pid
             ref.ip_address = ip_address
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             ref.started_at = now
             ref.last_active_at = now
             ref.error_message = None
@@ -790,7 +803,7 @@ class SandboxManager:
                     raise SandboxStateError(f"No policy found for sandbox {sandbox_id}")
             policy_path = self.policy_engine.get_sandbox_policy_path(sandbox_id)
             if policy_path is None:
-                policy_path = self.policy_engine.write_sandbox_policy(sandbox_id, policy)
+                policy_path = self._write_policy(sandbox_id, policy)
             env = dict(ref.env)
 
         # Conch has no stop: cold recreate via delete + create with retries.
@@ -817,7 +830,7 @@ class SandboxManager:
                 current.phase = SandboxPhase.READY
                 current.pid = pid
                 current.ip_address = ip_address
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 current.started_at = now
                 current.last_active_at = now
                 current.error_message = None
@@ -2104,7 +2117,7 @@ class SandboxManager:
         sandbox_id: str,
         updated: SecurityPolicy,
     ) -> None:
-        self.policy_engine.write_sandbox_policy(sandbox_id, updated)
+        self._write_policy(sandbox_id, updated)
         self._policies[sandbox_id] = updated
         self.audit.log(
             AuditEventType.POLICY_APPLIED,

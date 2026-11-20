@@ -441,17 +441,17 @@ async def _retire_current() -> None:
 
 
 async def shutdown() -> None:
-    """Stop every retained bundled server, leased or not.
+    """Stop every retained bundled server that no command is leasing.
 
-    Process exit calls this when no other runtime is still live. A replaced
-    server that a command still leases is left running by a network change;
-    the last lease, and this call, both stop it by SIGTERM and then close.
+    Process exit calls this when no other runtime is still live. A server
+    a command still leases is left running, the same way a network change
+    leaves it. The last lease stops it by SIGTERM and then close.
     """
     await _shutdown()
 
 
 async def _shutdown() -> None:
-    """Stop every retained child, leased or not."""
+    """Stop retained children that have no lease. A leased child stays until that lease ends."""
     await finish_close(asyncio.create_task(_shutdown_retained()))
 
 
@@ -460,8 +460,15 @@ async def _shutdown_retained() -> None:
     async with _gate():
         children = [child for child in (_server, *_retired) if child is not None]
         _server = None
-        _retired.clear()
+        stopping: list[_RunningServer] = []
+        still_leased: list[_RunningServer] = []
         for child in children:
+            if child.leases > 0:
+                still_leased.append(child)
+            else:
+                stopping.append(child)
+        _retired[:] = still_leased
+        for child in stopping:
             await _close_retained(child.closer, child.proc)
 
 
@@ -497,9 +504,17 @@ async def leased_server(
     try:
         yield running.url, running.token
     finally:
-        running.leases -= 1
-        if running.leases == 0 and running in _retired:
-            _retired.remove(running)
+        # The same gate as shutdown. A lease that ends while shutdown is
+        # deciding, and a shutdown that retires a server this lease still
+        # holds, cannot each miss the other and leave the child running
+        # or signal it early.
+        stop = False
+        async with _gate():
+            running.leases -= 1
+            stop = running.leases == 0 and running in _retired
+            if stop:
+                _retired.remove(running)
+        if stop:
             await _discard(running.closer, running.proc)
 
 

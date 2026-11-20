@@ -6,6 +6,10 @@ filesystem socket. The proxy dials the destination on the host network and
 refuses loopback, link-local (including the cloud metadata address), private,
 and shared address space. A name is refused when any resolved address is
 refused, so a mixed DNS answer cannot be used to reach the host network.
+
+A plaintext connection may carry more than one request. Each request is
+dialed from its own target. A client that closes only its write side still
+receives the origin's response.
 """
 
 from __future__ import annotations
@@ -162,17 +166,202 @@ class GuardedProxy:
             ).start()
 
 
-def _read_header(client: socket.socket) -> bytes:
-    client.settimeout(_HANDSHAKE_TIMEOUT_SECONDS)
-    data = bytearray()
+_REJECTED = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+_BAD_GATEWAY = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
+
+def _header_value(header: bytes, name: bytes) -> str | None:
+    wanted = name.lower()
+    for line in header.split(b"\r\n")[1:]:
+        if not line:
+            continue
+        key, separator, value = line.partition(b":")
+        if separator and key.strip().lower() == wanted:
+            return value.strip().decode("latin-1", errors="replace")
+    return None
+
+
+def _is_chunked(header: bytes) -> bool:
+    value = _header_value(header, b"transfer-encoding")
+    return value is not None and "chunked" in value.lower()
+
+
+def _content_length(header: bytes) -> int | None:
+    value = _header_value(header, b"content-length")
+    if value is None:
+        return None
+    try:
+        length = int(value)
+    except ValueError:
+        return None
+    if length < 0:
+        return None
+    return length
+
+
+def _requests_close(header: bytes) -> bool:
+    """Whether the client will not send another request on this connection."""
+    value = _header_value(header, b"connection")
+    if value is not None:
+        return "close" in value.lower()
+    version = header.split(b"\r\n", 1)[0].rsplit(b" ", 1)[-1]
+    return version == b"HTTP/1.0"
+
+
+def _status_has_no_body(header: bytes) -> bool:
+    parts = header.split(b"\r\n", 1)[0].split(b" ")
+    if len(parts) < 2:
+        return False
+    try:
+        code = int(parts[1])
+    except ValueError:
+        return False
+    return code < 200 or code in (204, 304)
+
+
+def _take_header(sock: socket.socket, buffered: bytes) -> tuple[bytes, bytes] | tuple[None, bytes]:
+    """Split one HTTP header from ``buffered`` plus further reads.
+
+    ``None`` means the peer closed before a complete header. Bytes after
+    the header stay in the second value so the next request on a kept
+    connection is not treated as part of this one.
+    """
+    data = bytearray(buffered)
     while b"\r\n\r\n" not in data:
         if len(data) > _HEADER_LIMIT:
             raise ValueError("proxy header is too large")
-        chunk = client.recv(4096)
+        chunk = sock.recv(4096)
+        if not chunk:
+            return None, bytes(data)
+        data.extend(chunk)
+    raw = bytes(data)
+    end = raw.find(b"\r\n\r\n")
+    header = raw[: end + 4]
+    if len(header) > _HEADER_LIMIT:
+        raise ValueError("proxy header is too large")
+    return header, raw[end + 4 :]
+
+
+def _take_exact(sock: socket.socket, buffered: bytes, count: int) -> tuple[bytes, bytes]:
+    data = bytearray(buffered)
+    while len(data) < count:
+        chunk = sock.recv(_RELAY_BYTES)
         if not chunk:
             break
         data.extend(chunk)
-    return bytes(data)
+    return bytes(data[:count]), bytes(data[count:])
+
+
+def _take_chunked(sock: socket.socket, buffered: bytes) -> tuple[bytes, bytes]:
+    """Return one chunked body, including its framing, and the unread tail."""
+    raw = bytearray()
+    pending = bytearray(buffered)
+    while True:
+        while b"\r\n" not in pending:
+            chunk = sock.recv(_RELAY_BYTES)
+            if not chunk:
+                return bytes(raw), b""
+            pending.extend(chunk)
+        line, _, rest = bytes(pending).partition(b"\r\n")
+        pending = bytearray(rest)
+        raw.extend(line)
+        raw.extend(b"\r\n")
+        size_token = line.split(b";", 1)[0].strip()
+        try:
+            size = int(size_token, 16)
+        except ValueError:
+            return bytes(raw), bytes(pending)
+        need = size + 2
+        while len(pending) < need:
+            chunk = sock.recv(_RELAY_BYTES)
+            if not chunk:
+                raw.extend(pending)
+                return bytes(raw), b""
+            pending.extend(chunk)
+        raw.extend(pending[:need])
+        del pending[:need]
+        if size != 0:
+            continue
+        while True:
+            while b"\r\n" not in pending:
+                chunk = sock.recv(_RELAY_BYTES)
+                if not chunk:
+                    return bytes(raw), b""
+                pending.extend(chunk)
+            trailer, _, rest = bytes(pending).partition(b"\r\n")
+            pending = bytearray(rest)
+            raw.extend(trailer)
+            raw.extend(b"\r\n")
+            if trailer == b"":
+                return bytes(raw), bytes(pending)
+
+
+def _read_until_close(sock: socket.socket, buffered: bytes) -> bytes:
+    data = bytearray(buffered)
+    while True:
+        chunk = sock.recv(_RELAY_BYTES)
+        if not chunk:
+            return bytes(data)
+        data.extend(chunk)
+
+
+def _take_request_body(sock: socket.socket, header: bytes, buffered: bytes) -> tuple[bytes, bytes]:
+    """The request body, without reading a following request.
+
+    A GET has no body. Waiting for the client to close would swallow the
+    next request on a kept connection, or stall a client that has shut
+    only its write side and is waiting for the response.
+    """
+    if _is_chunked(header):
+        return _take_chunked(sock, buffered)
+    length = _content_length(header)
+    if length is None:
+        return b"", buffered
+    return _take_exact(sock, buffered, length)
+
+
+def _force_upstream_close(header: bytes) -> bytes:
+    """Ask the origin to end the response and close.
+
+    The client connection stays open so its next request can name a
+    different host. The origin connection does not: a kept origin would
+    make the following request on this proxy connection land on the first
+    host.
+    """
+    lines = [header.split(b"\r\n", 1)[0]]
+    for line in header.split(b"\r\n")[1:]:
+        if not line:
+            continue
+        name = line.split(b":", 1)[0].strip().lower()
+        if name in (b"connection", b"proxy-connection"):
+            continue
+        lines.append(line)
+    lines.append(b"Connection: close")
+    return b"\r\n".join(lines) + b"\r\n\r\n"
+
+
+def _read_upstream_response(upstream: socket.socket, method: str) -> bytes:
+    """Read one origin response, however long the body takes to arrive."""
+    header, pending = _take_header(upstream, b"")
+    if header is None:
+        return b""
+    if method == "HEAD" or _status_has_no_body(header):
+        return header
+    if _is_chunked(header):
+        body, _rest = _take_chunked(upstream, pending)
+        return header + body
+    length = _content_length(header)
+    if length is None:
+        return header + _read_until_close(upstream, pending)
+    body, _rest = _take_exact(upstream, pending, length)
+    return header + body
+
+
+def _open_upstream(host: str, port: int) -> socket.socket | None:
+    dial = dial_address(host)
+    if dial is None:
+        return None
+    return socket.create_connection((dial, port), timeout=_HANDSHAKE_TIMEOUT_SECONDS)
 
 
 def _target_of(header: bytes) -> tuple[str, str, int] | None:
@@ -224,28 +413,65 @@ def _split_host_port(method: str, value: str, default_port: int) -> tuple[str, s
 def _handle_client(client: socket.socket) -> None:
     remote: socket.socket | None = None
     try:
-        header = _read_header(client)
-        parsed = _target_of(header)
-        if parsed is None or host_is_blocked(parsed[1]):
-            client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-            return
-        method, host, port = parsed
-        dial = dial_address(host)
-        if dial is None:
-            client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-            return
-        remote = socket.create_connection((dial, port), timeout=_HANDSHAKE_TIMEOUT_SECONDS)
-        if method == "CONNECT":
-            client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        else:
-            remote.sendall(header)
-        # Blocking relay: the handshake deadline must not apply to a download.
-        client.settimeout(None)
-        remote.settimeout(None)
-        _relay(client, remote)
+        client.settimeout(_HANDSHAKE_TIMEOUT_SECONDS)
+        buffered = b""
+        served = False
+        while True:
+            try:
+                header, buffered = _take_header(client, buffered)
+            except TimeoutError:
+                # A kept connection with no further request is finished.
+                # The first header still fails as a bad gateway.
+                if served:
+                    return
+                raise
+            if header is None:
+                return
+            parsed = _target_of(header)
+            if parsed is None or host_is_blocked(parsed[1]):
+                client.sendall(_REJECTED)
+                return
+            method, host, port = parsed
+            if method == "CONNECT":
+                remote = _open_upstream(host, port)
+                if remote is None:
+                    client.sendall(_REJECTED)
+                    return
+                client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                client.settimeout(None)
+                remote.settimeout(None)
+                if buffered:
+                    remote.sendall(buffered)
+                _relay(client, remote)
+                return
+            body, buffered = _take_request_body(client, header, buffered)
+            upstream = _open_upstream(host, port)
+            if upstream is None:
+                client.sendall(_REJECTED)
+                return
+            try:
+                # The origin may take longer than the handshake to answer.
+                # A client that has closed only its write side is still
+                # waiting for that answer.
+                upstream.settimeout(None)
+                upstream.sendall(_force_upstream_close(header) + body)
+                response = _read_upstream_response(upstream, method)
+            finally:
+                try:
+                    upstream.close()
+                except OSError:
+                    pass
+            if not response:
+                client.sendall(_BAD_GATEWAY)
+                return
+            client.sendall(response)
+            served = True
+            if _requests_close(header):
+                return
+            client.settimeout(_HANDSHAKE_TIMEOUT_SECONDS)
     except (OSError, ValueError, UnicodeError):
         try:
-            client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+            client.sendall(_BAD_GATEWAY)
         except OSError:
             pass
     finally:
@@ -279,4 +505,6 @@ def _relay(left: socket.socket, right: socket.socket) -> None:
     worker = threading.Thread(target=pump, args=(right, left), daemon=True)
     worker.start()
     pump(left, right)
-    worker.join(timeout=2)
+    # The side that finishes first has half-closed. The other direction
+    # still has to deliver a slow response; a short join drops it.
+    worker.join()

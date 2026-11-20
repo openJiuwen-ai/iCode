@@ -107,6 +107,10 @@ class ExecResult(BaseModel):
     # True only when the daemon reports error "timeout". Exit code 124
     # alone is not a timeout: other failures reuse that code.
     timed_out: bool = False
+    # True only when the runtime built this result before writing the exec
+    # to the daemon. Command stdout and stderr cannot set it. Left out of
+    # the HTTP body so a client cannot turn a finished command into a retry.
+    failed_before_dispatch: bool = Field(default=False, exclude=True)
 
 
 class BackgroundExecRequest(BaseModel):
