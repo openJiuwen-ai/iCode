@@ -906,6 +906,11 @@ async def _grep_impl(
     base_cwd: str | None = None,
     respect_gitignore: bool = True,
 ) -> str:
+    if type(max_results) is not int or max_results < 1:
+        return tool_error(
+            "invalid_max_results",
+            "max_results must be an integer >= 1 (the maximum number of results to return).",
+        )
     max_results = min(max_results, _MAX_RESULTS_HARD_LIMIT)
     missing_base = missing_base_cwd_error(path, base_cwd)
     if missing_base is not None:
@@ -1084,12 +1089,12 @@ async def grep(
         str | None, "Glob pattern to filter files (e.g. '*.py', '**/*.ts'). Omit to search all files."
     ] = None,
     context_lines: Annotated[int, "Number of context lines before and after each match."] = 2,
-    max_results: Annotated[int, "Maximum number of matches to return."] = _MAX_RESULTS,
+    max_results: Annotated[int, "Maximum number of matches to return (must be at least 1)."] = _MAX_RESULTS,
 ) -> str:
     """Search file contents with a Rust-flavor regex; returns matching lines with context.
 
     Glob filters without '/' match file names at any depth; those with '/' match
-    relative paths. At most 100 matches are returned."""
+    relative paths. At most 100 matches are returned; max_results must be at least 1."""
     return await _grep_impl(
         pattern,
         path=path,
@@ -1112,6 +1117,11 @@ async def _glob_impl(
     base_cwd: str | None = None,
     respect_gitignore: bool = True,
 ) -> str:
+    if type(max_results) is not int or max_results < 1:
+        return tool_error(
+            "invalid_max_results",
+            "max_results must be an integer >= 1 (the maximum number of results to return).",
+        )
     max_results = min(max_results, _MAX_RESULTS_HARD_LIMIT)
     missing_base = missing_base_cwd_error(path, base_cwd)
     if missing_base is not None:
@@ -1160,11 +1170,12 @@ async def _glob_impl(
 async def glob(
     pattern: Annotated[str, "Glob pattern to match file names (e.g. '*.py', 'test_*.py', '**/*.ts')."],
     path: Annotated[str, "Directory to search in."] = ".",
-    max_results: Annotated[int, "Maximum number of results to return."] = _MAX_RESULTS,
+    max_results: Annotated[int, "Maximum number of results to return (must be at least 1)."] = _MAX_RESULTS,
 ) -> str:
     """Find files recursively by gitignore-style glob; returns relative paths, at most 100.
 
-    Patterns without '/' match file names at any depth; those with '/' match relative paths."""
+    Patterns without '/' match file names at any depth; those with '/' match relative paths.
+    max_results must be at least 1."""
     return await _glob_impl(pattern, path=path, max_results=max_results)
 
 
@@ -1206,12 +1217,12 @@ class SearchTools:
             str | None, "Glob pattern to filter files (e.g. '*.py', '**/*.ts'). Omit to search all files."
         ] = None,
         context_lines: Annotated[int, "Number of context lines before and after each match."] = 2,
-        max_results: Annotated[int, "Maximum number of matches to return."] = _MAX_RESULTS,
+        max_results: Annotated[int, "Maximum number of matches to return (must be at least 1)."] = _MAX_RESULTS,
     ) -> str:
         """Search file contents with a Rust-flavor regex; returns matching lines with context.
 
         Glob filters without '/' match file names at any depth; those with '/' match
-        relative paths. At most 100 matches are returned."""
+        relative paths. At most 100 matches are returned; max_results must be at least 1."""
         return await _grep_impl(
             pattern,
             path=path,
@@ -1227,11 +1238,12 @@ class SearchTools:
         self,
         pattern: Annotated[str, "Glob pattern to match file names (e.g. '*.py', 'test_*.py', '**/*.ts')."],
         path: Annotated[str, "Directory to search in."] = ".",
-        max_results: Annotated[int, "Maximum number of results to return."] = _MAX_RESULTS,
+        max_results: Annotated[int, "Maximum number of results to return (must be at least 1)."] = _MAX_RESULTS,
     ) -> str:
         """Find files recursively by gitignore-style glob; returns relative paths, at most 100.
 
-        Patterns without '/' match file names at any depth; those with '/' match relative paths."""
+        Patterns without '/' match file names at any depth; those with '/' match relative paths.
+        max_results must be at least 1."""
         return await _glob_impl(
             pattern,
             path=path,
