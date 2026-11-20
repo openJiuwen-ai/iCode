@@ -345,10 +345,10 @@ async def test_what_belongs_to_the_session_outlasts_a_full_reload_with_the_serve
     monkeypatch.setenv("NO_PROXY", "*")
     served, port_file = client_server
     await wait_for(lambda: port_written(port_file), timeout=ENGINE_TURN_TIMEOUT, description="the server is listening")
-    project = tmp_path / "project"
-    project.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
     response = await acp.server.new_session(
-        cwd=str(project),
+        cwd=str(workdir),
         mcp_servers=[
             acp_schema.HttpMcpServer(
                 name="client-server",
@@ -366,7 +366,7 @@ async def test_what_belongs_to_the_session_outlasts_a_full_reload_with_the_serve
 
     await acp.use_tool(session, "after")
     assert calls(served)[-1].endswith(" after")
-    assert session.host.engine.workspace_primary_cwd == str(project.resolve())
+    assert session.host.engine.workspace_primary_cwd == str(workdir.resolve())
     assert session.host.engine.loaded_settings.settings.ask_user_timeout_seconds is None
     assert session.host.engine.loaded_settings.source_for("tools.ask_user.timeout_seconds").layer is not Source.ENV
 

@@ -25,7 +25,7 @@ from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.approval import reuse as reuse_module
 from chrys.service.approval.policy import ApprovalPolicy
-from chrys.service.approval.reuse import FileCandidate, FileKey, ReuseContext, project_path
+from chrys.service.approval.reuse import FileCandidate, FileKey, ReuseContext, workdir_path
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.tools import approval_targets
@@ -78,7 +78,7 @@ def test_session_grant_binds_execution_context(runtime, monkeypatch, change):
         runtime = replace(runtime, cwd=runtime.cwd + "/other")
     elif change == "case":
         # A case-sensitive directory can hold both as different projects.
-        runtime = replace(runtime, cwd=os.path.join(os.path.dirname(runtime.cwd), "project"))
+        runtime = replace(runtime, cwd=os.path.join(os.path.dirname(runtime.cwd), "workdir"))
     else:
         shell = replace(runtime.platform.shell, **{change: "/other/shell" if change == "path" else ["-l", "-c"]})
         runtime = replace(runtime, platform=replace(runtime.platform, shell=shell))
@@ -133,7 +133,7 @@ async def test_write_through_an_alias_to_credentials_is_never_remembered(runtime
     # Even a grant naming the physical file, as an older build may have saved, is not used.
     physical = file_write_target(args["path"], base_cwd=runtime.cwd).path
     stale = FileCandidate(
-        ReuseContext(binding.session_id, project_path(runtime.cwd)), frozenset({FileKey(path=physical)})
+        ReuseContext(binding.session_id, workdir_path(runtime.cwd)), frozenset({FileKey(path=physical)})
     )
     assert binding.service.remember(stale, "EXACT_SESSION")
     bus, requests = EventBus(), []

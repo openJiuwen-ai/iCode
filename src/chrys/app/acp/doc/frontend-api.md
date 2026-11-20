@@ -650,7 +650,8 @@ Notes:
 - `chrys/error` is `{ sessionId, code, message, recoverable, kind, retryable,
   statusCode, hint }`; see *Failures* for the last four.
 - `chrys/warning` is `{ sessionId, code, message }`, plus `reason` when the code has
-  a machine-readable cause. `trajectory_activation_failed` always carries one, saying
+  a machine-readable cause. Startup migration warnings and notices are sent during
+  initialization without `sessionId`. `trajectory_activation_failed` always carries one, saying
   why the session records no trajectory: `lease_held` (another live writer has it),
   `permission` (the session's files or a folder above them refused this user: the
   wrong owner or mode, an ACL, a link, or a read-only folder), `key_unavailable`,

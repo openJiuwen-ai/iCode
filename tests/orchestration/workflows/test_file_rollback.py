@@ -21,7 +21,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -34,7 +34,7 @@ from tests.support.workflow_history import workflow_state
 async def test_confirmed_rollback_restores_run_boundary_and_rejects_stale_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkpoint_fails: bool
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     target = project / "target.txt"
     target.write_text("before")
     clients = [MockChatClient(responses=[])]
@@ -192,7 +192,7 @@ async def test_rollback_probe_uses_effective_snapshot_policy(tmp_path: Path, mon
     (config / "settings.yaml").write_text("mutations:\n  snapshot:\n    max_file_mb: 1\n")
     fake = replace(platform.get_platform(), config_dir=config)
     monkeypatch.setattr(platform, "get_platform", lambda: fake)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     chat = tmp_path / "chat"
     chat.mkdir()
     freeze_process_env()
@@ -218,7 +218,7 @@ async def test_rollback_probe_uses_effective_snapshot_policy(tmp_path: Path, mon
         return result
 
     monkeypatch.setattr(SnapshotStore, "probe", create_autospec(probe, side_effect=capture))
-    host = make_host(tmp_path, project=chat, loaded_settings=load_settings(project_root=chat))
+    host = make_host(tmp_path, project=chat, loaded_settings=load_settings(workdir=chat))
     try:
         async with capture_event_sequence(host.event_bus, WorkflowRollbackResult) as replies:
             await host.engine.workflows.on_rollback(

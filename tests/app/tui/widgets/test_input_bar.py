@@ -21,7 +21,7 @@ from chrys.app.tui.screens.main.state import MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome import input_bar as input_bar_module
-from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult
+from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult
 from chrys.app.tui.widgets.chrome.input_bar import (
     INPUT_RETRY,
     INPUT_SEND,
@@ -615,7 +615,7 @@ async def test_main_screen_reactive_sources_apply_existing_side_effects() -> Non
         input_bar = app.main_screen.query_one(InputBar)
         suggestions = app.main_screen._suggestions
         file_index = suggestions._file_index_for(suggestions._current_file_root())
-        file_index.install(ProjectPathScanResult.from_suggestions(root=file_index.root, paths=[]))
+        file_index.install(WorkdirPathScanResult.from_suggestions(root=file_index.root, paths=[]))
         app.main_screen._live_diff.call_paths["call"] = "src/app.py"
         app.main_screen._live_diff.file_mutations["src/app.py"] = object()
 

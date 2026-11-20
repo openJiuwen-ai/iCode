@@ -90,23 +90,23 @@ def prepare_runtime(*, restoring_session: bool = False) -> PreparedRuntime:
     """Freeze the startup environment, apply runtime patches, and prepare display state without writing stderr.
 
     A ``--session`` restore loads its settings from the saved session's own
-    root, which need not be the process cwd — bootstrapping project-free keeps
+    root, which need not be the process cwd — bootstrapping without that settings layer keeps
     the pending warnings from describing a repository the run doesn't live in.
     A failed restore aborts the run outright, so no fallback session ever runs
-    on these project-free settings.
+    with these settings.
     """
     bootstrap = bootstrap_runtime(
         configure_stdio=True,
         eval_context=EvalContext(
             frontend_default_max_transient_retries=HEADLESS_DEFAULT_MAX_TRANSIENT_RETRIES,
         ),
-        project_root=None if restoring_session else Path(os.getcwd()),
+        workdir=None if restoring_session else Path(os.getcwd()),
     )
     localizer = Localizer("en")
     # Every warning composed here is root-independent — environment and user
     # layers, plus ``settle_session_root``'s verdict — so the list is right for
     # a restored session too, whatever root it lives in. The target root's own
-    # additions (its project layer) are printed by ``run_command`` after the
+    # additions (the directory settings layer) are printed by ``run_command`` after the
     # restore, as the delta over this list.
     # This one key keeps its own wording, which predates the shared composer and
     # is what headless callers have been parsing; everything else gets the
@@ -187,9 +187,8 @@ def restore_delta_warnings(loaded: LoadedSettings, pending: Iterable[Warning]) -
 
     The two loads share every root-independent layer (environment, user
     document), so their verdicts overlap almost entirely; the delta is what
-    the project-free bootstrap could not see — the target root's project
-    layer and dormant project files. Comparing the composed events keeps the
-    overlap out while leaving the already-printed pending list — with its
+    bootstrap could not see — the target directory's settings layer and dormant files.
+    Comparing the composed events keeps the overlap out while leaving the already-printed pending list — with its
     settle verdict and its compatibility retry wording — untouched.
     """
     already = {(warning.code, warning.message) for warning in pending}

@@ -34,7 +34,7 @@ from tests.orchestration.workflows._hosting import (
     PROFILE,
     confirm,
     make_host,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -91,7 +91,7 @@ async def test_ninth_sync_body_waits_before_its_deadline_and_cancels_without_dis
     width = LIMITS.worker_thread_pool_size
     all_ready, runners = _observe_dispatch(monkeypatch, width + 1)
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wide", _fanout("sync", width + 1))
     host = make_host(tmp_path, project=project, allow_user_interaction=True)
     entered: set[str] = set()
@@ -176,7 +176,7 @@ async def test_wide_async_fanout_queues_at_the_effective_request_limit(
     assert width > max(body_limit, total_limit)
     all_ready, runners = _observe_dispatch(monkeypatch, width)
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wide", _fanout("ask", width))
     host = make_host(tmp_path, project=project, allow_user_interaction=True)
     occupied = asyncio.Event()
@@ -262,7 +262,7 @@ async def test_agent_gate_covers_construction_and_cancellation_does_not_open_a_q
         MockChatClient(responses=[MockResponse(text="done")]) for _ in range(width)
     ]
     patch_runtime(monkeypatch, clients)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wide", _fanout("agent", width))
     host = make_host(tmp_path, project=project)
     occupied = asyncio.Event()

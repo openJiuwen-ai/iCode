@@ -40,7 +40,7 @@ After saving the configuration, verify the connection:
 
 ## Working directories and sessions
 
-When creating or restoring a session, the client can pass the project's working directory to iCode. The directory supplied by the client must be an existing absolute path. If the client does not provide a working directory, iCode uses the directory specified by `--workdir <project-directory>`. If both are provided, the client's working directory takes precedence.
+When creating or restoring a session, the client can pass the project's working directory to iCode. The directory supplied by the client must be an existing absolute path. If the client does not provide a working directory, iCode uses the directory specified by `--workdir <working-directory>`. If both are provided, the client's working directory takes precedence.
 
 iCode checks `--workdir` at startup. The specified directory must exist even if the client will later provide a working directory; otherwise, iCode cannot start.
 

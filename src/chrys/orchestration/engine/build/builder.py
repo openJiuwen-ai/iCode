@@ -152,7 +152,7 @@ def _runtime_api_style(provider: str, api_style: str) -> str:
 
 
 def _runtime_hook_source_details(
-    scope: Literal["project", "global"],
+    scope: Literal["workdir", "global"],
     file: HooksFile,
 ) -> RuntimeHookSourceDetails:
     """Build the non-sensitive runtime view for one hook config source."""
@@ -173,13 +173,13 @@ def _runtime_hook_source_details(
 
 
 def _runtime_hook_sources(hook_manager: HookManager | None) -> list[RuntimeHookSourceDetails]:
-    """Snapshot the live project/global hook manager without executable configuration."""
+    """Snapshot the live working directory and global hook manager without executable configuration."""
     if hook_manager is None:
         return []
     sources: list[RuntimeHookSourceDetails] = []
-    project = hook_manager.file.project
-    if project is not None:
-        sources.append(_runtime_hook_source_details("project", project))
+    workdir = hook_manager.file.workdir
+    if workdir is not None:
+        sources.append(_runtime_hook_source_details("workdir", workdir))
     global_ = hook_manager.file.global_
     if global_ is not None:
         sources.append(_runtime_hook_source_details("global", global_))
@@ -806,7 +806,7 @@ async def build_agent(
             profile.skills,
             runtime=runtime,
             session_dir=effective_session_dir,
-            project_skills_enabled=settings.project_skills_enabled,
+            workdir_skills_enabled=settings.workdir_skills_enabled,
             discovery_scope=initialization.skills,
         )
         if skills_provider is not None:

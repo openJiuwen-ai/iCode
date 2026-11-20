@@ -106,14 +106,14 @@ def _pending_event_stream_tasks() -> list[asyncio.Task[Any]]:
 
 def test_session_host_normalizes_relative_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     base = tmp_path / "base"
-    project = base / "project"
-    project.mkdir(parents=True)
+    workdir = base / "workdir"
+    workdir.mkdir(parents=True)
     monkeypatch.chdir(base)
     settings, model_registry = _make_settings_and_models()
 
     host = ChrysSessionHost(
         profile_name="Headless",
-        cwd="project",
+        cwd="workdir",
         settings=settings,
         agent_registry=_make_agent_registry(_make_profile(approval_default="skip")),
         model_registry=model_registry,
@@ -121,7 +121,7 @@ def test_session_host_normalizes_relative_cwd(monkeypatch: pytest.MonkeyPatch, t
     )
 
     assert host.engine.workspace is not None
-    assert Path(host.engine.workspace.primary_cwd) == project
+    assert Path(host.engine.workspace.primary_cwd) == workdir
 
 
 @pytest.mark.asyncio

@@ -28,7 +28,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     write_workflow,
@@ -122,7 +122,7 @@ async def test_an_unattended_quick_tour_activates_two_agents_and_is_labelled_unr
 ) -> None:
     scan, writer = _client("It is a CLI."), _client("Start at src/sample/cli.py:1.")
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), scan, writer])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     _populate(project)
     before = _tree(project)
     host = _host(tmp_path, project, interactive=False)
@@ -172,7 +172,7 @@ async def test_an_interactive_deep_tour_asks_twice_and_adds_next_steps(
     readers = [_client("reader notes") for _ in READERS]
     writer, steps = _client("The tour."), _client("Read cli.py next.")
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), *readers, writer, steps])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     _populate(project)
     host = _host(tmp_path, project, interactive=True)
     try:
@@ -216,7 +216,7 @@ async def test_a_typed_depth_that_differs_from_the_label_keeps_the_quick_default
 ) -> None:
     scan, writer = _client("notes"), _client("The tour.")
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), scan, writer])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     host = _host(tmp_path, project, interactive=True)
     try:
         result, events, asks = await _run(
@@ -239,7 +239,7 @@ async def test_feedback_reaches_the_second_round_and_an_unaccepted_draft_stays_a
 ) -> None:
     scan, first, second = _client("notes"), _client("Draft one."), _client("Draft two.")
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), scan, first, second])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     host = _host(tmp_path, project, interactive=True)
     try:
         result, events, asks = await _run(
@@ -269,7 +269,7 @@ async def test_the_fail_variant_in_the_loop_comment_ends_the_run_when_the_rounds
     source = DEMO_SOURCE.read_text(encoding="utf-8")
     assert source.count('on_exhausted="continue",') == 1
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), _client("notes"), _client("one"), _client("two")])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(
         project, "demo-fail", source.replace('on_exhausted="continue",', 'on_exhausted="fail",').encode("utf-8")
     )
@@ -292,7 +292,7 @@ async def test_a_headless_run_that_has_to_ask_fails_rather_than_assuming_an_answ
 ) -> None:
     # No agent client is provided: reaching an agent would fail the test on the empty list.
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     host = _host(tmp_path, project, interactive=False)
     try:
         result, events, asks = await _run(host, DEMO, input_text="Where does it start?")

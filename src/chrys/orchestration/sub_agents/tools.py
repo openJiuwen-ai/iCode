@@ -767,7 +767,7 @@ class SubAgentTools:
                 profile.skills,
                 runtime=runtime,
                 session_dir=self._session_dir,
-                project_skills_enabled=settings.project_skills_enabled,
+                workdir_skills_enabled=settings.workdir_skills_enabled,
                 discovery_scope=initialization.skills,
             )
             if on_initialization_progress is not None:

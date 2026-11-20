@@ -4,19 +4,19 @@
 
 ## 启动时选择工作目录
 
-在终端中进入项目目录并启动 iCode：
+在终端中进入工作目录并启动 iCode：
 
 ```shell
-cd <project-directory>
+cd <working-directory>
 icode
 ```
 
 iCode 会将启动时所在的目录作为工作目录。
 
-也可以通过 `-C` 或 `--workdir` 选项指定工作目录，无需先进入项目目录：
+也可以通过 `-C` 或 `--workdir` 选项指定工作目录，无需先进入工作目录：
 
 ```shell
-icode -C <project-directory>
+icode -C <working-directory>
 ```
 
 ## 在会话中切换工作目录
@@ -26,14 +26,14 @@ icode -C <project-directory>
 已知目标路径时，在输入栏中输入以下命令可直接切换：
 
 ```text
-/chdir <project-directory>
+/chdir <working-directory>
 ```
 
-`<project-directory>` 可以是绝对路径，也可以是相对于当前工作目录的路径。如果目标不存在或不是目录，iCode 会提示错误并保留当前工作目录。
+`<working-directory>` 可以是绝对路径，也可以是相对于当前工作目录的路径。如果目标不存在或不是目录，iCode 会提示错误并保留当前工作目录。
 
 切换完成后，对话区底部边框右侧会显示新的工作目录路径。智能体后续的文件读取、命令和其他操作会以新工作目录作为默认位置。
 
-切换工作目录时，iCode 会重新加载当前智能体，并加载新工作目录中的记忆和 Skills（其中的 Skills 仅在勾选“加载项目 Skills”时加载）。具体配置方式参阅[配置记忆](../configuration/memory.md)和[安装和使用 Skills](../extensions/skills.md)。
+切换工作目录时，iCode 会重新加载当前智能体，并加载新工作目录中的记忆和 Skills（其中的 Skills 仅在勾选“加载工作目录 Skills”时加载）。具体配置方式参阅[配置记忆](../configuration/memory.md)和[安装和使用 Skills](../extensions/skills.md)。
 
 切换工作目录不会创建新会话，当前对话历史仍会保留。处理无关项目时，建议先输入 `/new` 创建新会话，再在新会话中切换工作目录，避免在原会话中留下工作目录变更记录或混用不同项目的上下文。
 
@@ -48,4 +48,4 @@ icode -C <project-directory>
 
 恢复的会话所保存的工作目录已不存在时，iCode 会请你选择一个文件夹来打开该会话。取消后不会恢复该会话；如果是通过 `-s` 启动 iCode，则会改为创建新会话。
 
-如果在已不存在的目录中启动 iCode，iCode 会提示错误并退出。请进入一个存在的目录，或使用 `-C` 指定项目目录的完整路径，例如 `icode -C ~/projects/my-app`。
+如果在已不存在的目录中启动 iCode，iCode 会提示错误并退出。请进入一个存在的目录，或使用 `-C` 指定工作目录的完整路径，例如 `icode -C ~/code/my-app`。

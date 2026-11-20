@@ -1219,7 +1219,7 @@ class HookConfirmationRequest(Event):
     """The agent profile that wants the operation."""
     hook_id: str
     hook_source: str = ""
-    """``project`` or ``global``; empty when unknown."""
+    """``workdir`` or ``global``; empty when unknown."""
     reason: str = ""
     """What the hook wrote: plain text, never markup."""
     subject: HookConfirmationSubjectKind
@@ -1349,9 +1349,9 @@ class RuntimeHookDetails:
 
 @dataclass
 class RuntimeHookSourceDetails:
-    """One project or global source contributing runtime hooks."""
+    """One working directory or global source contributing runtime hooks."""
 
-    scope: Literal["project", "global"] = "global"
+    scope: Literal["workdir", "global"] = "global"
     source_path: str = ""
     hooks: list[RuntimeHookDetails] = field(default_factory=list)
 

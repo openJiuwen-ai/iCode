@@ -19,7 +19,7 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.models.invocations import InvocationOrigin
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import title_runs
 from tests.support.waiting import wait_for
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_stop_settles_node_process_and_rejects_late_activity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, detail_open: bool
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(120, 45)) as pilot:

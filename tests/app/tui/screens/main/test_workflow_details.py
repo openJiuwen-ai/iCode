@@ -37,7 +37,7 @@ from chrys.service.workflows.scheduler import AttemptRef
 from chrys.service.workflows.store import DATA_DROPPED_KEY, node_value_path
 from chrys.service.workflows.transcript import NodeTranscript, NodeUsage, read_node_transcript
 from tests.app.tui.screens.main._workflow_support import workflow_selection
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.secure_files import plant_owner_only_bytes
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import BusyWidget, click_when_settled
@@ -203,7 +203,7 @@ async def test_value_tabs_switch_only_their_own_pane_by_click_or_key(tmp_path: P
 async def test_closing_node_details_cancels_record_read_before_widgets_are_removed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     read_started, release_read, read_finished = Event(), Event(), Event()
 
@@ -257,7 +257,7 @@ async def test_shutdown_while_node_tabs_mount(
 
     from chrys.app.tui.widgets.workflow.projector import WorkflowProjector
 
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     original_add = Tabs.add_tab
     stopped = False
@@ -312,7 +312,7 @@ async def test_shutdown_starts_before_node_screen_detaches(tmp_path: Path, monke
 
     from chrys.app.tui.widgets.workflow.projector import WorkflowProjector
 
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     ready, shutting_down, validated = asyncio.Event(), asyncio.Event(), asyncio.Event()
     original_add, original_close = Tabs.add_tab, app._close_all
@@ -372,7 +372,7 @@ async def test_closing_node_details_while_its_tabs_mount(tmp_path: Path, monkeyp
 
     from chrys.app.tui.widgets.workflow.projector import WorkflowProjector
 
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     original_add = Tabs.add_tab
     added = asyncio.Event()
@@ -567,7 +567,7 @@ async def test_large_graph_list_uses_same_keyboard_and_click_details(
 ) -> None:
     from chrys.app.tui.widgets.workflow import graph as graph_module
 
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 45)) as pilot:
         main = app._main_screen
@@ -645,7 +645,7 @@ async def test_large_graph_list_uses_same_keyboard_and_click_details(
 async def test_idle_agent_has_transcript_tab_but_python_and_loop_nodes_do_not(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locale: str
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 45)) as pilot:
         app.locale_controller.switch_locale(locale)
@@ -690,7 +690,7 @@ async def test_node_records_attempts_previous_output_and_transcript(
 
     history_read = create_autospec(workflow_node.latest_node_output, side_effect=workflow_node.latest_node_output)
     monkeypatch.setattr(workflow_node, "latest_node_output", history_read)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "wf", python_workflow("def fn(value):\n    return value\n", "fn"))
     bus, engine = EventBus(), WorkflowEngine()
@@ -912,7 +912,7 @@ async def test_retry_is_latched_across_dialog_reopen_and_new_attempts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     bus, engine = EventBus(), WorkflowEngine()
     retries: list[events.WorkflowNodeRetryRequest] = []
@@ -991,7 +991,7 @@ async def test_retry_is_latched_across_dialog_reopen_and_new_attempts(
 async def test_corrupt_new_attempt_clears_previous_attempt_details(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "records", python_workflow("def fn(value):\n    return value\n", "fn"))
     bus = EventBus()

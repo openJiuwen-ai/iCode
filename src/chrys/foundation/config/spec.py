@@ -4,7 +4,7 @@
 
 ``Settings`` stays a plain dataclass — no registry to keep in sync, no schema
 DSL, and ``ty`` still checks every field's type. Everything the loader, the
-settings panel and the project-layer policy need rides along in
+settings panel and the working directory-layer policy need rides along in
 ``field(metadata=spec(...))``:
 
     theme: str = field(
@@ -46,8 +46,8 @@ class Source(Enum):
     USER = auto()
     """``~/.chrys/settings.yaml`` — the only layer the settings panel writes."""
 
-    PROJECT = auto()
-    """``<root>/.chrys/settings.yaml`` — gated by the project trust domain."""
+    WORKDIR = auto()
+    """``<root>/.chrys/settings.yaml`` — gated by the working directory trust domain."""
 
     ENV = auto()
     """The real process environment, snapshotted before bootstrap."""
@@ -79,7 +79,7 @@ class Source(Enum):
     """
 
 
-FILE_SOURCES = frozenset({Source.USER, Source.PROJECT})
+FILE_SOURCES = frozenset({Source.USER, Source.WORKDIR})
 """The layers backed by a file on disk, which must name it in their origin."""
 
 
@@ -87,7 +87,7 @@ FILE_SOURCES = frozenset({Source.USER, Source.PROJECT})
 class SettingOrigin:
     """Where an effective value actually came from.
 
-    The layer alone cannot answer the panel's question. ``PROJECT`` says "some
+    The layer alone cannot answer the panel's question. ``WORKDIR`` says "some
     ``<root>/.chrys/settings.yaml``", but a session that changed workspace has
     had more than one root; without the path the panel can neither show the
     real file nor offer to remove the right override.
@@ -210,16 +210,16 @@ class InvalidPolicy(Enum):
     """
 
 
-class ProjectMerge(Enum):
+class WorkdirMerge(Enum):
     """Whether, and in which direction, a repository may set this field.
 
-    The project layer may only change *engineering behaviour*, never user
+    The working directory layer may only change *engineering behaviour*, never user
     preference, credentials, storage, telemetry — and never in the direction
     of loosening a safety or cost bound the user already chose.
     """
 
     DENY = auto()
-    """Default. A project value is discarded with a warning."""
+    """Default. A working directory value is discarded with a warning."""
 
     FREE = auto()
     """Any value the coercer accepts."""
@@ -276,7 +276,7 @@ class SettingSpec:
     invalid_policy: InvalidPolicy = InvalidPolicy.FALL_THROUGH
     """Where resolution goes when a layer's value is rejected."""
 
-    project_merge: ProjectMerge = ProjectMerge.DENY
+    workdir_merge: WorkdirMerge = WorkdirMerge.DENY
 
     persist: bool = True
     """``False`` marks a runtime-only field the panel must not render or write."""
@@ -297,7 +297,7 @@ class SettingSpec:
         if self.kind is Kind.ENUM and self.choices is None:
             msg = f"{self.key}: Kind.ENUM requires choices"
             raise ValueError(msg)
-        if self.project_merge is ProjectMerge.TIGHTEN_ONLY and self.semantic_value is None:
+        if self.workdir_merge is WorkdirMerge.TIGHTEN_ONLY and self.semantic_value is None:
             msg = f"{self.key}: TIGHTEN_ONLY requires a semantic_value comparator"
             raise ValueError(msg)
         if self.risk is Risk.DANGEROUS and self.invalid_policy is not InvalidPolicy.SAFE_DEFAULT:
@@ -323,7 +323,7 @@ def spec(
     env_coerce: Coercer | None = None,
     risk: Risk = Risk.SAFE,
     invalid_policy: InvalidPolicy = InvalidPolicy.FALL_THROUGH,
-    project_merge: ProjectMerge = ProjectMerge.DENY,
+    workdir_merge: WorkdirMerge = WorkdirMerge.DENY,
     persist: bool = True,
     choices: tuple[str, ...] | ChoiceProvider | None = None,
     semantic_value: Callable[[Any, EvalContext], Any] | None = None,
@@ -341,7 +341,7 @@ def spec(
             env_coerce=env_coerce,
             risk=risk,
             invalid_policy=invalid_policy,
-            project_merge=project_merge,
+            workdir_merge=workdir_merge,
             persist=persist,
             choices=choices,
             semantic_value=semantic_value,

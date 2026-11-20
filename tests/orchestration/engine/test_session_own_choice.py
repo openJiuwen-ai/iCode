@@ -65,7 +65,7 @@ from tests.orchestration.engine._recovery_helpers import (
 from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -862,9 +862,9 @@ async def test_a_workflow_started_after_a_shortcut_model_switch_runs_on_the_defa
     # A headless host is the harness that runs workflows; the engine it holds handles the switch as the TUI's does.
     # Its default model is the one it started with (§5: workflows read their startup snapshot and the files).
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="done")])])
-    project = make_project(tmp_path)
-    write_workflow(project, "review", _AGENT_WORKFLOW)
-    host = make_host(tmp_path, project=project)
+    workdir = make_workdir(tmp_path)
+    write_workflow(workdir, "review", _AGENT_WORKFLOW)
+    host = make_host(tmp_path, project=workdir)
     registry = host.engine.model_registry
     assert registry is not None
     registry.register(ModelProfile(id="second-model", name="second-model", provider="mock", model_id="second-model"))

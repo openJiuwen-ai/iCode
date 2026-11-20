@@ -918,9 +918,9 @@ async def test_a_durable_hook_is_committed_before_its_span_is_written(hooks_dir:
 
 
 @pytest.mark.asyncio
-async def test_durable_project_hook_persists_source_path(hooks_dir: Path) -> None:
+async def test_durable_workdir_hook_persists_source_path(hooks_dir: Path) -> None:
     source = "/project-a/.chrys/hooks/hooks.yaml"
-    project_hook = _hook(
+    workdir_hook = _hook(
         hook_id="project-durable",
         event=HookEvent.AFTER_TURN,
         mode="async",
@@ -929,8 +929,8 @@ async def test_durable_project_hook_persists_source_path(hooks_dir: Path) -> Non
     )
     mgr = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source=source),
-            hooks=[project_hook],
+            workdir=HooksFile(hooks=[workdir_hook], source=source),
+            hooks=[workdir_hook],
             settings=HookSettings(outbox_retry_age_seconds=0.0),
         ),
         hooks_dir=hooks_dir,
@@ -942,7 +942,7 @@ async def test_durable_project_hook_persists_source_path(hooks_dir: Path) -> Non
         pending_files = list((hooks_dir / "outbox" / "pending").glob("*.json"))
         assert len(pending_files) == 1
         data = json.loads(pending_files[0].read_text(encoding="utf-8"))
-        assert data["hook_source"] == "project"
+        assert data["hook_source"] == "workdir"
         assert data["hook_source_path"] == source
     finally:
         mgr._sem.release()
@@ -1476,6 +1476,29 @@ async def test_durable_async_cancel_stays_pending_for_retry(hooks_dir: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_queued_outbox_retry_skips_a_job_completed_before_acquiring_its_slot(hooks_dir, monkeypatch):
+    hook = _hook(hook_id="archive", event=HookEvent.AFTER_TURN, mode="async", delivery="durable")
+    mgr = HookManager(file=_file(hook, outbox_retry_age_seconds=0.0, max_parallel_hooks=1), hooks_dir=hooks_dir)
+    job = mgr._outbox.write_pending(hook_id=hook.id, event=str(hook.event), payload={})
+    executed = []
+
+    async def run_and_wait(*args, **kwargs):
+        executed.append(hook.id)
+        return HookResult(hook_id=hook.id, exit_code=0)
+
+    monkeypatch.setattr(mgr._runner, "run_and_wait", run_and_wait)
+    async with mgr._sem:
+        assert await mgr.recover_outbox() == 1
+        mgr._outbox.mark_done(job, exit_code=0)
+    await mgr.drain_session()
+
+    assert executed == []
+    terminal = mgr._outbox.root / DONE / f"{job.job_id}.json"
+    assert json.loads(terminal.read_bytes())["retries"] == 0
+    assert not list((mgr._outbox.root / "pending").glob("*.json"))
+
+
+@pytest.mark.asyncio
 async def test_recover_outbox_force_fails_over_retry_cap(hooks_dir: Path) -> None:
     # Pre-create a pending job with retries >= cap by hand.
     from chrys.service.hooks.outbox import Outbox
@@ -1496,13 +1519,13 @@ async def test_recover_outbox_force_fails_over_retry_cap(hooks_dir: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_recover_outbox_uses_source_marker_for_duplicate_project_global_ids(hooks_dir: Path) -> None:
-    project_hook = _hook(
+async def test_recover_outbox_uses_source_marker_for_duplicate_workdir_global_ids(hooks_dir: Path) -> None:
+    workdir_hook = _hook(
         hook_id="dup",
         event=HookEvent.AFTER_TURN,
         mode="async",
         delivery="durable",
-        argv=["project"],
+        argv=["workdir"],
     )
     global_hook = _hook(
         hook_id="dup",
@@ -1513,9 +1536,9 @@ async def test_recover_outbox_uses_source_marker_for_duplicate_project_global_id
     )
     mgr = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source="/project/.chrys/hooks/hooks.yaml"),
+            workdir=HooksFile(hooks=[workdir_hook], source="/project/.chrys/hooks/hooks.yaml"),
             global_=HooksFile(hooks=[global_hook], source="/config/hooks/hooks.yaml"),
-            hooks=[project_hook, global_hook],
+            hooks=[workdir_hook, global_hook],
             settings=HookSettings(outbox_retry_age_seconds=0.0),
         ),
         hooks_dir=hooks_dir,
@@ -1524,7 +1547,7 @@ async def test_recover_outbox_uses_source_marker_for_duplicate_project_global_id
         hook_id="dup",
         event=str(HookEvent.AFTER_TURN),
         payload={"event": str(HookEvent.AFTER_TURN)},
-        hook_source="project",
+        hook_source="workdir",
         hook_source_path="/project/.chrys/hooks/hooks.yaml",
     )
     retried: list[str] = []
@@ -1544,14 +1567,14 @@ async def test_recover_outbox_uses_source_marker_for_duplicate_project_global_id
     queued = await mgr.recover_outbox()
 
     assert queued == 1
-    assert retried == ["project"]
+    assert retried == ["workdir"]
 
 
 @pytest.mark.asyncio
-async def test_recover_outbox_rejects_project_job_from_different_source_path(hooks_dir: Path) -> None:
+async def test_recover_outbox_rejects_workdir_job_from_different_source_path(hooks_dir: Path) -> None:
     active_source = "/project-b/.chrys/hooks/hooks.yaml"
     stale_source = "/project-a/.chrys/hooks/hooks.yaml"
-    project_hook = _hook(
+    workdir_hook = _hook(
         hook_id="same-id",
         event=HookEvent.AFTER_TURN,
         mode="async",
@@ -1560,8 +1583,8 @@ async def test_recover_outbox_rejects_project_job_from_different_source_path(hoo
     )
     mgr = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source=active_source),
-            hooks=[project_hook],
+            workdir=HooksFile(hooks=[workdir_hook], source=active_source),
+            hooks=[workdir_hook],
             settings=HookSettings(outbox_retry_age_seconds=0.0),
         ),
         hooks_dir=hooks_dir,
@@ -1570,7 +1593,7 @@ async def test_recover_outbox_rejects_project_job_from_different_source_path(hoo
         hook_id="same-id",
         event=str(HookEvent.AFTER_TURN),
         payload={"event": str(HookEvent.AFTER_TURN)},
-        hook_source="project",
+        hook_source="workdir",
         hook_source_path=stale_source,
     )
     retried: list[str] = []
@@ -1599,7 +1622,7 @@ async def test_recover_outbox_rejects_project_job_from_different_source_path(hoo
 
 @pytest.mark.asyncio
 async def test_recover_outbox_fails_ambiguous_legacy_duplicate_id(hooks_dir: Path) -> None:
-    project_hook = _hook(
+    workdir_hook = _hook(
         hook_id="dup",
         event=HookEvent.AFTER_TURN,
         mode="async",
@@ -1613,9 +1636,9 @@ async def test_recover_outbox_fails_ambiguous_legacy_duplicate_id(hooks_dir: Pat
     )
     mgr = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source="/project/.chrys/hooks/hooks.yaml"),
+            workdir=HooksFile(hooks=[workdir_hook], source="/project/.chrys/hooks/hooks.yaml"),
             global_=HooksFile(hooks=[global_hook], source="/config/hooks/hooks.yaml"),
-            hooks=[project_hook, global_hook],
+            hooks=[workdir_hook, global_hook],
             settings=HookSettings(outbox_retry_age_seconds=0.0),
         ),
         hooks_dir=hooks_dir,

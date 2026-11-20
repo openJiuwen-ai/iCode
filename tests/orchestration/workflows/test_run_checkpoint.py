@@ -33,7 +33,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     write_workflow,
@@ -50,7 +50,7 @@ async def test_run_terminal_waits_for_session_checkpoint(
     terminal: str,
     save_fails: bool,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     target = project / "target.txt"
     target.write_text("before")
     patch_runtime(

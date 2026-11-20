@@ -38,7 +38,7 @@ from tests.app.tui.screens.main._workflow_support import (
     workflow_notice_text,
     workflow_selecting,
 )
-from tests.orchestration.workflows._hosting import make_host, make_profile, make_project, patch_runtime, write_workflow
+from tests.orchestration.workflows._hosting import make_host, make_profile, make_workdir, patch_runtime, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.platform_fakes import platform_with_config_dir
 from tests.support.tui_app_harness import make_chrys_app
@@ -106,7 +106,7 @@ async def test_chat_selectors_unlock_after_turn_finishes_following_screen_resume
 async def test_preview_becomes_stale_when_catalog_directory_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_directory: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "local", python_workflow("def echo(value):\n    return value\n", "echo"))
     other = tmp_path / "other"
@@ -142,7 +142,7 @@ async def test_preview_becomes_stale_when_catalog_directory_changes(
 async def test_selection_refresh_tracks_source_or_clamps_cursor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     for name in ("first", "last"):
         write_workflow(project, name, python_workflow("def fn(value):\n    return value\n", "fn"))
     monkeypatch.chdir(project)
@@ -180,7 +180,7 @@ async def test_selection_refresh_tracks_source_or_clamps_cursor(
 async def test_reopened_run_keeps_recorded_title(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, history_source: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     source = python_workflow("def echo(value):\n    return value\n", "echo", title="Original title")
     write_workflow(project, "echo", source)
@@ -229,7 +229,7 @@ async def test_reopened_run_keeps_recorded_title(
 async def test_reopened_run_keeps_recorded_loop_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, revision: str, outcome: RunOutcome
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "wf", LOOP_SOURCE)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
@@ -289,7 +289,7 @@ async def test_reopened_run_keeps_recorded_loop_manifest(
 async def test_workflow_agent_question_without_chat_card_stays_answerable_in_modal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(
         project,
@@ -368,7 +368,7 @@ STRUCTURED_ASK_SOURCE = python_workflow(
 async def test_workflow_structured_questions_resolve_the_node_through_the_dialog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "structured", STRUCTURED_ASK_SOURCE)
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
@@ -455,7 +455,7 @@ async def test_workflow_structured_questions_resolve_the_node_through_the_dialog
 async def test_workflow_question_expires_with_its_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, presentation: str, state: str
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     answers: list[events.WorkflowNodeAnswer] = []
 

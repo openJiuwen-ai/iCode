@@ -98,7 +98,8 @@ def confirmation_tool_call(event: HookConfirmationRequest) -> acp_schema.ToolCal
         title = f'{asks} — send your message "{_one_line(event.input_text)}"?'
         kind = "other"
         raw_input = None
-    source = f" ({event.hook_source} hook)" if event.hook_source else ""
+    source_name = "working directory" if event.hook_source == "workdir" else event.hook_source
+    source = f" ({source_name} hook)" if source_name else ""
     body = f"{asks}{source}\n\n{detail}"
     return acp_schema.ToolCallUpdate(
         toolCallId=confirmation_tool_call_id(event.request_id),

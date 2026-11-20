@@ -1,6 +1,6 @@
 # iCode settings file reference
 
-`settings.yaml` stores iCode interface preferences, the default agent, and session and tool settings. This page lists common settings by purpose and explains file locations and format, how to write values, precedence when multiple sources are present, and which settings project files can override.
+`settings.yaml` stores iCode interface preferences, the default agent, and session and tool settings. This page lists common settings by purpose and explains file locations and format, how to write values, precedence when multiple sources are present, and which settings working directory files can override.
 
 For steps to change settings in the terminal user interface (TUI) and when those changes take effect, see [Configure iCode settings](../guides/configuration/settings.md).
 
@@ -9,7 +9,9 @@ For steps to change settings in the terminal user interface (TUI) and when those
 | Configuration source | macOS / Linux | Windows | Purpose |
 | --- | --- | --- | --- |
 | User settings | `~/.chrys/settings.yaml` | `%APPDATA%\chrys\settings.yaml` | Store personal settings; the TUI Settings dialog writes to this file |
-| Project settings | `.chrys/settings.yaml` in the working directory | Same as macOS / Linux | Override some settings for that working directory; not loaded by default |
+| Working directory settings | `.chrys/settings.yaml` in the working directory | Same as macOS / Linux | Override some settings for that working directory; not loaded by default |
+
+Quit all running iCode instances before upgrading. iCode rewrites old names in settings, approval files, and workflow records once, keeping the originals in `<config_dir>/backups/<version>/`. Older versions cannot use rewritten data or data saved in the new format, including pending hook jobs and workflows continued after upgrading. To keep the option of going back, back up the entire configuration directory and any session directory stored elsewhere. Restore files from `backups/<version>/` to their original locations. Restore `backups/<version>/sessions/` to your actual session directory, the `sessions/` subdirectory of `storage.session_root_dir` if set. A `.<sha256>` suffix marks another original of the same file, backed up later. Use the copy without a suffix by default.
 
 iCode looks for `.chrys/settings.yaml` only in the current session's working directory. It does not search parent directories or subdirectories.
 
@@ -64,23 +66,23 @@ Model role keys take the ID or unique name of an existing model profile. `model.
 
 Transient error retries handle recoverable errors such as temporary network failures, request timeouts, and rate limits. Raising the count also increases the wait and number of requests before a final failure. This number is not the total number of model requests for the entire task.
 
-### Approval and project trust
+### Approval and working directory trust
 
 The `approval` keys control approval behavior when an agent requests an operation. For the differences between the three modes and configuration steps, see [Configure approval modes](../guides/configuration/approval.md).
 
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | String; `manual` for manual approval, `auto` for automatic approval, or `bypass` to bypass approval. Setting the default mode does not switch the current session's mode |
-| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` selects **Direct review**; `formal` selects **Individual risk checks**, which ask you to confirm detected risks such as file deletion or code publication. See [Choose how automatic review works](../guides/configuration/approval.md#choose-how-automatic-review-works). Used only in `auto` mode. Close Settings to apply changes made there; after editing the file directly, run `/reload`. Set it in your user settings; projects cannot override it. Invalid values use `direct` |
+| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` selects **Direct review**; `formal` selects **Individual risk checks**, which ask you to confirm detected risks such as file deletion or code publication. See [Choose how automatic review works](../guides/configuration/approval.md#choose-how-automatic-review-works). Used only in `auto` mode. Close Settings to apply changes made there; after editing the file directly, run `/reload`. Set it in your user settings; working directories cannot override it. Invalid values use `direct` |
 | `approval.timeout_seconds` | `CHRYS_APPROVAL_TIMEOUT_SECONDS` | `0` | Integer; seconds to wait for human approval in TUI and ACP. `0` disables the timeout; positive values set a deadline. Negative values are raised to `0`. Timeout rejects the tool call. Restart iCode to apply |
 | `ui.approval.defer_while_judging` | None | `true` | Boolean; in automatic mode, whether the TUI opens the approval dialog only when the approval judge model flags a call or evaluation fails. `false` opens it at once while the call is evaluated. The ACP server and `icode run` ignore it |
-| `project.config_enabled` | None | `false` | Boolean; whether to load project settings for each working directory. Must be enabled in user settings |
-| `project.hooks_enabled` | None | `false` | Boolean; whether to load project hooks from `.chrys/hooks` in the working directory. Must be enabled in user settings. Does not affect user-level hooks |
-| `project.skills_enabled` | None | `false` | Boolean; whether to load project skills from `.agents/skills` in the working directory. Must be enabled in user settings. The agent's own “Load skills from working folder” option must also stay on |
+| `workdir.config_enabled` | None | `false` | Boolean; whether to load working directory settings for each working directory. Must be enabled in user settings |
+| `workdir.hooks_enabled` | None | `false` | Boolean; whether to load working directory hooks from `.chrys/hooks` in the working directory. Must be enabled in user settings. Does not affect user-level hooks |
+| `workdir.skills_enabled` | None | `false` | Boolean; whether to load working directory skills from `.agents/skills` in the working directory. Must be enabled in user settings. The agent's own “Load skills from working folder” option must also stay on |
 
 If you manually set the default approval mode to `bypass` in YAML or an environment variable, approval is bypassed the next time iCode starts with that default. When you switch to `bypass` with `/approval` in the TUI, iCode saves `auto` as the default mode; the TUI Settings dialog does not offer `bypass`.
 
-Project settings, project hooks, and project skills come from the repository you open, so all three are off by default and each is turned on separately: enabling one does not enable the others. When the working directory has any of them that are off, iCode shows a notice naming the setting to turn on. Hooks are external commands that iCode runs on specific events; for authoring and configuration, see [Configure and write hooks](../guides/extensions/hooks.md). For skills, see [Install and use skills](../guides/extensions/skills.md).
+Working directory settings, working directory hooks, and working directory skills come from the repository you open, so all three are off by default and each is turned on separately: enabling one does not enable the others. When the working directory has any of them that are off, iCode shows a notice naming the setting to turn on. Hooks are external commands that iCode runs on specific events; for authoring and configuration, see [Configure and write hooks](../guides/extensions/hooks.md). For skills, see [Install and use skills](../guides/extensions/skills.md).
 
 ### Sessions and file recovery
 
@@ -112,7 +114,7 @@ Tools may also have their own output limits, such as limits on MCP results and s
 
 ### Web tools
 
-These keys configure the `web_search` and `web_fetch` tools, which are off by default and must also be added to an agent. They have no corresponding environment variables and can be set only in user settings; project settings cannot set them. The TUI **Settings** dialog shows the common keys on the **Tools** tab; set the others in the user `settings.yaml`. For how the tools use these values, see [Configure web tools](../guides/configuration/web-tools.md).
+These keys configure the `web_search` and `web_fetch` tools, which are off by default and must also be added to an agent. They have no corresponding environment variables and can be set only in user settings; working directory settings cannot set them. The TUI **Settings** dialog shows the common keys on the **Tools** tab; set the others in the user `settings.yaml`. For how the tools use these values, see [Configure web tools](../guides/configuration/web-tools.md).
 
 Origin lists take exact origins (scheme, host, and optional port, such as `https://docs.example.com`) without paths, queries, credentials, or wildcards. Write a list as a YAML list or as a JSON array string; the TUI saves lists as JSON strings. An empty string is an empty list. In the two mode keys, `true` or an unquoted `on` means `auto` for search and `on` for fetch, and `false` or an unquoted `off` means `off`. Values are checked with the same rules the tools use, and an invalid value is reported, with what is wrong, and ignored.
 
@@ -179,17 +181,17 @@ For data storage locations, collector connections, authentication, and metric qu
 
 ## Source precedence
 
-Each key is resolved independently in the following order, using the first valid value. Project settings must also meet the restrictions under [Project-level settings](#project-level-settings).
+Each key is resolved independently in the following order, using the first valid value. Working directory settings must also meet the restrictions under [Working-directory settings](#working-directory-settings).
 
 | Priority | Source |
 | --- | --- |
 | 1 | Explicit choices in the current session, command-line arguments, or behavior fixed by the launch command |
 | 2 | Environment variables already present when the process starts |
-| 3 | Project settings that are enabled and permitted to apply |
+| 3 | Working directory settings that are enabled and permitted to apply |
 | 4 | User settings |
 | 5 | Built-in defaults |
 
-iCode does not load or migrate `.env` files from the working directory or user configuration directory. Set any variables you still need from those files in the environment that launches iCode, then restart iCode. This includes provider API keys, proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), OpenTelemetry variables (`OTEL_*`), and variables referenced by placeholders such as `{{MCP_API_TOKEN}}` in MCP headers or `{{MY_GATEWAY_TOKEN}}` in model `extra_headers`. Write user settings in the user `settings.yaml`, and project settings in `.chrys/settings.yaml`.
+iCode does not load or migrate `.env` files from the working directory or user configuration directory. Set any variables you still need from those files in the environment that launches iCode, then restart iCode. This includes provider API keys, proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), OpenTelemetry variables (`OTEL_*`), and variables referenced by placeholders such as `{{MCP_API_TOKEN}}` in MCP headers or `{{MY_GATEWAY_TOKEN}}` in model `extra_headers`. Write user settings in the user `settings.yaml`, and working directory settings in `.chrys/settings.yaml`.
 
 ## Value syntax and invalid values
 
@@ -198,26 +200,26 @@ These are the general rules for values in settings files and environment variabl
 - Write booleans as `true` or `false` in YAML. Corresponding environment variables accept `1`, `true`, `yes`, `on` and `0`, `false`, `no`, `off`, case-insensitively. Exceptions where an environment variable has the opposite meaning or accepts only a specific spelling are noted in the relevant row.
 - Write integers as numbers. For keys with stated limits, out-of-range values are adjusted to the boundary; keys that explicitly prohibit negative values reject them. Special meanings of `0` or negative values, such as disabling a feature or removing a limit, follow the relevant row.
 - Omitted keys and empty strings generally do not provide an override. To remove a setting from a file, delete the key. A value from another source may still apply afterward (see [Source precedence](#source-precedence)).
-- Keys whose type is “Integer or `null`” accept `null`, with the meaning described in the relevant row. User settings and project files handle `null` differently; see [Project-level settings](#project-level-settings).
+- Keys whose type is “Integer or `null`” accept `null`, with the meaning described in the relevant row. User settings and working directory files handle `null` differently; see [Working-directory settings](#working-directory-settings).
 - Unknown keys are reported and do not take effect. Most invalid values are ignored and reported, and resolution continues with lower-priority sources. For example, if an environment variable is invalid but user settings contain a valid value, the user setting is used. Six keys behave differently: `approval.default_mode`, `approval.auto_review`, `tools.result.ceiling_tokens`, `log.raw_http_capture`, `otel.sensitive_data`, and `mutations.trace.fsatrace_path`. Once resolution encounters an invalid value for one of these keys, it immediately uses the built-in default and stops, without falling back to lower-priority sources. For example, an unrecognized approval mode uses the default `manual`.
 
-## Project-level settings
+## Working-directory settings
 
-Project settings are not loaded by default. First enable them in the user `settings.yaml`, or turn on “Load project settings” under “Settings → Safety” in the TUI:
+Working directory settings are not loaded by default. First enable them in the user `settings.yaml`, or turn on “Load working directory settings” under “Settings → Safety” in the TUI:
 
 ```yaml
-project:
+workdir:
   config_enabled: true
 ```
 
-Once enabled, project settings apply to the working directories you open. Project files can configure only the keys in the following table.
+Once enabled, working directory settings apply to the working directories you open. Working directory files can configure only the keys in the following table.
 
-For keys with restrictions on the direction of an override, project values are accepted only in the direction listed in the table. The comparison uses the value in user YAML, or the built-in default if the user has not set one. For `llm.retry.max_transient`, an unset or `null` user value uses the default for the launch command as the comparison baseline. Keys without a direction restriction use the project value directly. Environment variables are not part of this comparison, but still take precedence over project settings. A `null` value in a project file does not provide an override.
+For keys with restrictions on the direction of an override, working directory values are accepted only in the direction listed in the table. The comparison uses the value in user YAML, or the built-in default if the user has not set one. For `llm.retry.max_transient`, an unset or `null` user value uses the default for the launch command as the comparison baseline. Keys without a direction restriction use the working directory value directly. Environment variables are not part of this comparison, but still take precedence over working directory settings. A `null` value in a working directory file does not provide an override.
 
-| Key allowed in project settings | Allowed override direction |
+| Key allowed in working directory settings | Allowed override direction |
 | --- | --- |
 | `llm.retry.max_transient` | Can only reduce or maintain the retry count |
-| `tools.result.ceiling_tokens` | Can only lower or maintain the result length limit. `0` means unlimited and is the least restrictive value; a project can use `0` only when the user setting is already `0` |
+| `tools.result.ceiling_tokens` | Can only lower or maintain the result length limit. `0` means unlimited and is the least restrictive value; a working directory can use `0` only when the user setting is already `0` |
 | `session.title.auto` | Can disable automatic titles; cannot re-enable them if the user has disabled them |
 | `mutations.parallel_implicit_tools` | Can disable parallel execution; cannot re-enable it if the user has disabled it |
 | `mutations.coordination.enabled` | Can enable distinguishing changes across sessions; cannot disable it if the user has enabled it |
@@ -226,7 +228,7 @@ For keys with restrictions on the direction of an override, project values are a
 | `context.warn_threshold_pct` | Can override within the range `0`–`1` |
 | `trajectory.verify_commands` | Can replace the verification command list |
 
-Web tool keys (`tools.web_search.*`, `tools.web_fetch.*`, and `tools.web_egress.*`) are not in this table, so a project cannot turn on web search or widen where web tools may connect.
+Web tool keys (`tools.web_search.*`, `tools.web_fetch.*`, and `tools.web_egress.*`) are not in this table, so a working directory cannot turn on web search or widen where web tools may connect.
 
 For example, write the following in `.chrys/settings.yaml` in the working directory:
 
@@ -236,9 +238,9 @@ llm:
     max_transient: 3
 ```
 
-After enabling project settings and reloading, if the user has not set a retry count, the project's `3` retries apply. If user YAML already sets `1`, the project's `3` is rejected and `1` still applies. A valid value in the startup environment always takes precedence.
+After enabling working directory settings and reloading, if the user has not set a retry count, the working directory’s `3` retries apply. If user YAML already sets `1`, the working directory’s `3` is rejected and `1` still applies. A valid value in the startup environment always takes precedence.
 
-iCode reports and ignores disallowed project keys, values that exceed override restrictions, and unknown keys, while continuing to apply other valid settings.
+iCode reports and ignores disallowed working directory keys, values that exceed override restrictions, and unknown keys, while continuing to apply other valid settings.
 
 ## Differences between launch commands
 
@@ -253,5 +255,5 @@ iCode reports and ignores disallowed project keys, values that exceed override r
 
 1. Confirm that the settings file is in the correct location and that you have saved it and run `/reload` (or restarted iCode for settings the summary says need a restart or the next launch).
 2. Check for a higher-priority source. Deleting a key from YAML does not clear values from other sources.
-3. For project settings, confirm that loading is enabled in user settings and that the key and override direction meet the restrictions.
+3. For working directory settings, confirm that loading is enabled in user settings and that the key and override direction meet the restrictions.
 4. Check the messages iCode reports at startup. For how invalid values and unknown keys are handled, see [Value syntax and invalid values](#value-syntax-and-invalid-values); for directory-related messages, check [File locations and format](#file-locations-and-format).

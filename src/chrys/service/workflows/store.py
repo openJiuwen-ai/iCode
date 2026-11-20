@@ -21,11 +21,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
+from chrys.foundation.models.workdir_migration import BackupOriginal, ReportReadError, source_edit
 from chrys.foundation.models.workflow_session import WorkflowModelSelection
 from chrys.foundation.platform.files import (
     atomic_write_basename_budget,
     atomic_write_owner_only_bytes,
     read_owner_verified_bounded,
+    require_writable_file,
     secure_open_owner_only_append,
 )
 from chrys.foundation.trajectory.envelope import EventDraft
@@ -41,6 +43,8 @@ from chrys.foundation.trajectory.writer import (
     WriteBackend,
 )
 from chrys.foundation.util.filenames import bounded_safe_stem
+from chrys.foundation.util.lock import FileLock
+from chrys.service.state._session_files import session_active_lock_path
 from chrys.service.workflows.graph import KIND_JOIN, KIND_PYTHON
 from chrys.service.workflows.layout import (
     EVENTS_FILE,
@@ -51,6 +55,7 @@ from chrys.service.workflows.layout import (
     RUN_OUTPUT_FILE,
     SOURCE_FILE,
     SPEC_FILE,
+    WORKFLOWS_DIR,
 )
 from chrys.service.workflows.protocol import LIMITS
 
@@ -217,7 +222,7 @@ class WorkflowRunStore:
             if len(encoded_input) > MAX_INPUT_BYTES:
                 raise ValueError("Workflow input exceeds the size limit.")
             atomic_write_owner_only_bytes(run_dir / INPUT_FILE, encoded_input)
-            _write_bounded_json(run_dir / HEADER_FILE, header.to_dict(), MAX_HEADER_BYTES)
+            write_run_header(run_dir / HEADER_FILE, header.to_dict())
             handle = secure_open_owner_only_append(run_dir / EVENTS_FILE)
         except (OSError, ValueError, TypeError) as exc:
             raise WorkflowStorageFailed(f"Cannot create the run record under {run_dir}: {exc}") from exc
@@ -432,7 +437,53 @@ def read_run_events(run_dir: Path) -> TrajectoryReadResult:
 
 
 def read_run_header(run_dir: Path) -> dict[str, Any]:
-    return read_json_object(run_dir / HEADER_FILE, MAX_HEADER_BYTES)
+    header = read_json_object(run_dir / HEADER_FILE, MAX_HEADER_BYTES)
+    source_edit(header)
+    return header
+
+
+def write_run_header(path: Path, payload: Mapping[str, Any], *, before_write: Callable[[], None] | None = None) -> None:
+    """Write the bounded run header atomically."""
+    encoded = _bounded_json_bytes(path, payload, MAX_HEADER_BYTES)
+    if before_write is not None:
+        before_write()
+    atomic_write_owner_only_bytes(path, encoded, create_parents=False)
+
+
+def migrate_run_headers(session_dir: Path, *, backup: BackupOriginal, on_read_error: ReportReadError) -> bool:
+    """Rewrite listing headers under the active-session lock held during run creation."""
+
+    def candidate(path: Path) -> tuple[bytes, dict[str, Any]] | None:
+        try:
+            raw, header = _read_json_object(path, MAX_HEADER_BYTES)
+        except (OSError, ValueError, RecursionError) as error:
+            if not isinstance(error, OSError) or error.errno not in {errno.ENOENT, errno.ENOTDIR}:
+                on_read_error(path, error)
+            return None
+        return (raw, header) if source_edit(header) else None
+
+    changed = False
+    for path in (session_dir / WORKFLOWS_DIR).glob(f"*/{HEADER_FILE}"):
+        if candidate(path) is None:
+            continue
+        try:
+            lock = session_active_lock_path(session_dir.parent, session_dir.name)
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            with FileLock(lock, timeout=0):
+                record = candidate(path)
+                if record is None:
+                    continue
+                raw, header = record
+
+                def preserve(path: Path = path, raw: bytes = raw) -> None:
+                    require_writable_file(path)
+                    backup(path, raw)
+
+                write_run_header(path, header, before_write=preserve)
+                changed = True
+        except OSError, ValueError, TypeError, RecursionError:
+            continue
+    return changed
 
 
 def read_run_spec(run_dir: Path) -> dict[str, Any]:
@@ -462,10 +513,15 @@ def node_record_limit(kind: str, *, node_kind: str = "") -> int:
 
 
 def read_json_object(path: Path, max_bytes: int) -> dict[str, Any]:
-    record = json.loads(read_owner_verified_bounded(path, max_bytes=max_bytes))
+    return _read_json_object(path, max_bytes)[1]
+
+
+def _read_json_object(path: Path, max_bytes: int) -> tuple[bytes, dict[str, Any]]:
+    raw = read_owner_verified_bounded(path, max_bytes=max_bytes)
+    record = json.loads(raw)
     if not isinstance(record, dict):
         raise ValueError(f"{path.name} must be a JSON object.")
-    return record
+    return raw, record
 
 
 def _optional_json(path: Path, max_bytes: int) -> dict[str, Any] | None:
@@ -478,10 +534,14 @@ def _optional_json(path: Path, max_bytes: int) -> dict[str, Any] | None:
 
 
 def _write_bounded_json(path: Path, payload: Mapping[str, Any], max_bytes: int) -> None:
+    atomic_write_owner_only_bytes(path, _bounded_json_bytes(path, payload, max_bytes), create_parents=False)
+
+
+def _bounded_json_bytes(path: Path, payload: Mapping[str, Any], max_bytes: int) -> bytes:
     encoded = _json_bytes(payload)
     if len(encoded) > max_bytes:
         raise ValueError(f"{path.name} exceeds the {max_bytes}-byte ceiling")
-    atomic_write_owner_only_bytes(path, encoded, create_parents=False)
+    return encoded
 
 
 def node_stderr_path(run_dir: Path, activation_id: str) -> Path:

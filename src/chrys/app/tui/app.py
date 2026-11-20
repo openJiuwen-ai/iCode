@@ -99,6 +99,7 @@ from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.signals import HANGUP_SIGNALS
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.startup import catalog_load_warning
+from chrys.orchestration.workdir_migration import MIGRATION_NOTICE
 from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import (
@@ -1116,11 +1117,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         if self._gc_freeze.started:
             self._gc_freeze_watchdog = self.set_interval(GC_FREEZE_WATCHDOG_PERIOD_SECONDS, self._gc_freeze.on_tick)
 
-        # MainScreen has now subscribed to ``Warning``; flush any
-        # warnings collected before the bus had listeners.
-        for w in self._startup_warnings:
-            await self._bus.publish(w)
-        self._startup_warnings.clear()
+        # A restore replaces the transcript. Add its startup notice afterwards.
+        await self._publish_startup_warnings(defer_migration_notice=True)
 
         registry = self._agent_registry
         if not registry.list_profiles():
@@ -1134,12 +1132,22 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             # No engine start means no restore either: the bootstrap settings
             # stay in force, so their warnings are due after all.
             await self._flush_deferred_settings_warnings()
+            await self._publish_startup_warnings()
         return screen, profile
 
     async def _start_engine_after_refresh(self, profile: AgentProfile, screen: MainScreen) -> None:
         """Let the main screen paint before agent construction imports its tools."""
         if await self._wait_for_startup_refresh():
             await self._start_engine(profile, screen)
+            await self._publish_startup_warnings()
+
+    async def _publish_startup_warnings(self, *, defer_migration_notice: bool = False) -> None:
+        warnings, self._startup_warnings = self._startup_warnings, []
+        for warning in warnings:
+            if defer_migration_notice and warning.code == MIGRATION_NOTICE:
+                self._startup_warnings.append(warning)
+            else:
+                await self._bus.publish(warning)
 
     async def _wait_for_startup_refresh(self) -> bool:
         """Wait for a paint while tolerating shutdown and a late callback."""
@@ -1520,7 +1528,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
 
         install_log_handler()
 
-        bootstrap = bootstrap_runtime(project_root=Path(os.getcwd()))
+        bootstrap = bootstrap_runtime(workdir=Path(os.getcwd()))
 
         bus = EventBus()
         registry = AgentProfileRegistry()

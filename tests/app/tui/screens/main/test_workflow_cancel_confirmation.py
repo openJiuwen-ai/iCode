@@ -14,7 +14,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_cancel_requires_confirmation_and_dismissal_keeps_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locale: str
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     cancellations: list[events.WorkflowCancelRequest] = []
 
@@ -82,7 +82,7 @@ async def test_cancel_requires_confirmation_and_dismissal_keeps_the_run(
 async def test_stale_cancel_confirmation_never_cancels_a_new_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: str
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     cancellations: list[events.WorkflowCancelRequest] = []
 
@@ -123,7 +123,7 @@ async def test_stale_cancel_confirmation_never_cancels_a_new_run(
 async def test_pending_request_cannot_cancel_an_unrelated_starting_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(120, 40)) as pilot:

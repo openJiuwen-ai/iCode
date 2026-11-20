@@ -75,8 +75,8 @@ from chrys.service.profiles.models.schema import API_STYLE_CHAT_COMPLETIONS, API
 from chrys.service.prompt_shortcuts import (
     global_shortcuts_dir,
     load_prompt_shortcuts,
-    project_shortcuts_dir,
     prompt_shortcut_folders,
+    workdir_shortcuts_dir,
 )
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.trajectory.preparation import PreparationOutcome
@@ -826,7 +826,7 @@ async def test_a_shortcut_the_engine_no_longer_loads_from_its_file_is_refused_un
     started = await _start(agent_engine, monkeypatch, tmp_path, [MockResponse(text="never")])
     engine = started.engine
     if case == "other_working_folder":
-        written = _write_shortcut(project_shortcuts_dir(started.workspace), "go", typed)
+        written = _write_shortcut(workdir_shortcuts_dir(started.workspace), "go", typed)
     else:
         written = _write_shortcut(global_shortcuts_dir(get_platform().config_dir), "go", typed)
     ref = _loaded_ref(engine, "go")
@@ -867,7 +867,7 @@ async def test_a_working_folder_shortcut_the_engine_still_loads_runs_its_command
     marker = tmp_path / "ran"
     typed = f'Go !`echo ran > "{marker}"`!`echo LOADED`'
     started = await _start(agent_engine, monkeypatch, tmp_path, [MockResponse(text="done")])
-    _write_shortcut(project_shortcuts_dir(started.workspace), "go", typed)
+    _write_shortcut(workdir_shortcuts_dir(started.workspace), "go", typed)
     message = _shortcut_message(typed, _loaded_ref(started.engine, "go"))
 
     await _send(started, message)

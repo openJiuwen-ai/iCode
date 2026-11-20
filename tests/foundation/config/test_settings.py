@@ -715,7 +715,7 @@ def test_an_overlay_refuses_a_value_the_field_would_never_accept() -> None:
 def test_an_overlay_refuses_to_impersonate_a_file() -> None:
     """A file layer's origin has to name its file, which an overlay cannot."""
     with pytest.raises(ValueError, match="file"):
-        load_settings(env={}).overlay(Source.PROJECT, model_profile="x")
+        load_settings(env={}).overlay(Source.WORKDIR, model_profile="x")
 
 
 def test_an_overlay_unseals_the_key_it_writes() -> None:

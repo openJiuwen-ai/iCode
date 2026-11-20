@@ -40,6 +40,7 @@ from chrys.foundation.events.types import (
     SettingsReloaded,
     TodoListUpdated,
     UserInjectResult,
+    Warning,
 )
 from chrys.foundation.i18n import DisplayPath, Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
@@ -90,6 +91,20 @@ def test_approval_mode_updated_updates_state_header_and_notification() -> None:
     assert screen.header_approval_mode is ApprovalMode.AUTO
     assert notifications == [("Approval mode: AUTO", "Approval", "information", 2)]
     assert debug_log[-1] == ("ApprovalMode", "AUTO")
+
+
+async def test_startup_migration_uses_one_system_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    handler = make_backend_handler(SimpleNamespace())
+    messages = []
+
+    async def add_system(message: str) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr(handler._ui(), "add_system", add_system)
+    warning = Warning(code="workdir_data_migrated", message="Migrated working directory data.")
+    await handler.on_warning(warning)
+    await handler.on_warning(warning)
+    assert messages == [warning.message]
 
 
 def test_settings_reloaded_reprojects_notification_settings() -> None:

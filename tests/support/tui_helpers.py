@@ -45,7 +45,7 @@ from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
 from chrys.app.tui.widgets.chrome import input_bar as input_bar_module
-from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
+from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult, WorkdirPathSuggestion
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.app.tui.widgets.loading import RunningTitle
@@ -1302,9 +1302,9 @@ def suggestion_values(items: list[object]) -> list[str]:
     return values
 
 
-def scan_result(root: str, paths: list[ProjectPathSuggestion], **kwargs: object) -> ProjectPathScanResult:
-    """Build a project-path scan result for a fake scanner."""
-    return ProjectPathScanResult.from_suggestions(root=root, paths=paths, **kwargs)
+def scan_result(root: str, paths: list[WorkdirPathSuggestion], **kwargs: object) -> WorkdirPathScanResult:
+    """Build a workdir-path scan result for a fake scanner."""
+    return WorkdirPathScanResult.from_suggestions(root=root, paths=paths, **kwargs)
 
 
 async def wait_for_file_query(handler: SuggestionHandler) -> None:

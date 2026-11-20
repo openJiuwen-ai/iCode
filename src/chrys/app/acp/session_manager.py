@@ -1552,7 +1552,7 @@ class AcpSessionManager:
     def _session_loaded_settings(self, cwd: str) -> LoadedSettings:
         """Derive one session's settings under its own project trust domain.
 
-        The manager's base settings are deliberately project-free — a
+        The manager's base settings are deliberately workdir-free — a
         manager-level project layer would leak one session's trust decisions
         into every other — so each session re-loads with its resolved cwd as
         the project root. Everything process-wide still flows from the base:
@@ -1566,7 +1566,7 @@ class AcpSessionManager:
         with self._global_settings_lock:
             base = self._loaded_settings
             candidate = load_settings(
-                project_root=Path(cwd),
+                workdir=Path(cwd),
                 eval_context=EvalContext(
                     frontend_default_max_transient_retries=base.settings.frontend_default_max_transient_retries
                 ),

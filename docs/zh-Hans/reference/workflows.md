@@ -36,7 +36,7 @@ workflow = wf.build()          # 校验并构建，赋给模块顶层的 workflo
 
 | 位置 | 来源 |
 | --- | --- |
-| 当前工作目录的 `.chrys/workflows/` | `project` |
+| 当前工作目录的 `.chrys/workflows/` | `workdir` |
 | iCode 配置目录下：Windows 为 `%APPDATA%\chrys\workflows\`；Linux、macOS 为 `~/.chrys/workflows/` | `global` |
 | 随 iCode 提供的内置示例 | `builtin` |
 
@@ -44,13 +44,13 @@ workflow = wf.build()          # 校验并构建，赋给模块顶层的 workflo
 
 | 优先级 | 工作流 |
 | --- | --- |
-| 1 | 项目工作流文件夹 |
-| 2 | 项目 `.py` 文件 |
+| 1 | 工作目录工作流文件夹 |
+| 2 | 工作目录 `.py` 文件 |
 | 3 | 全局工作流文件夹 |
 | 4 | 全局 `.py` 文件 |
 | 5 | 内置工作流 |
 
-项目工作流只从当前工作目录的 `.chrys/workflows/` 发现，不向父目录查找。各位置只发现直接包含的 `.py` 文件和工作流文件夹，忽略以 `.` 或 `_` 开头的名称。没有同名入口文件的文件夹（如 `data/`、`venv/`）不是工作流，会被忽略；工作流文件夹里的子文件夹也不是工作流。内置工作流只有单文件。全局位置保留文件夹名 `sdk` 给 iCode 自用。
+工作目录工作流只从当前工作目录的 `.chrys/workflows/` 发现，不向父目录查找。各位置只发现直接包含的 `.py` 文件和工作流文件夹，忽略以 `.` 或 `_` 开头的名称。没有同名入口文件的文件夹（如 `data/`、`venv/`）不是工作流，会被忽略；工作流文件夹里的子文件夹也不是工作流。内置工作流只有单文件。全局位置保留文件夹名 `sdk` 给 iCode 自用。
 
 用户工作流文件不能是符号链接，需要通过文件所有权检查，源码大小上限为 4 MiB。以下情况的工作流文件夹会被跳过：文件夹本身或其中任何项是符号链接或 Windows 目录联接；其中有普通文件和文件夹以外的项（如命名管道）；文件和文件夹总数超过 1000 个、总大小超过 512 MiB，或嵌套超过 16 层。以 `.` 开头的名称（如 `.venv`、`.git`）和 Python 在 `__pycache__` 文件夹中保存的编译副本（如 `helpers.cpython-312.pyc`）不检查，也不计入上限；其他文件都计入，包括二进制文件和数据文件。无法读取的工作流会被跳过并报告原因，改用下一个同 ID 的工作流。
 
@@ -79,7 +79,7 @@ workflow = wf.build()          # 校验并构建，赋给模块顶层的 workflo
 首次加载自定义工作流时，需要确认信任：
 
 - **TUI**：选择工作流后会弹出“信任工作流”对话框，检查源码及所声明的执行环境后，点击“信任”继续；点击“取消”则不加载。
-- **CLI**：在 `icode workflow run` 命令中添加 `--trust`。例如，在项目根目录运行 `.chrys/workflows/echo.py`：
+- **CLI**：在 `icode workflow run` 命令中添加 `--trust`。例如，在工作目录根目录运行 `.chrys/workflows/echo.py`：
 
 ```shell
 icode workflow run echo --trust --input "Hello"
@@ -664,7 +664,7 @@ CLI 不支持手动重试。节点失败且无法继续自动重试时，整个�
 
 工作流默认使用运行 iCode 的 Python 解释器，也可在工作流文件中指定已有的虚拟环境或 Python 可执行文件，支持 Python 3.9 及以上版本。
 
-下面的例子使用项目根目录下已有的 `.venv`，工作流文件位于项目 `.chrys/workflows/`：
+下面的例子使用工作目录根目录下已有的 `.venv`，工作流文件位于工作目录 `.chrys/workflows/`：
 
 ```python
 # /// script
@@ -673,7 +673,7 @@ CLI 不支持手动重试。节点失败且无法继续自动重试时，整个�
 # ///
 ```
 
-保留示例中的 `#` 前缀和 `# ///` 标记，iCode 会读取这段注释中的配置。`[tool.chrys]` 是 iCode 专用配置区，`python` 的相对路径以工作流文件所在目录为基准。工作流文件夹的基准就是文件夹本身：项目根目录下的 `.venv` 写作 `../../../.venv`，文件夹中的写作 `.venv`。
+保留示例中的 `#` 前缀和 `# ///` 标记，iCode 会读取这段注释中的配置。`[tool.chrys]` 是 iCode 专用配置区，`python` 的相对路径以工作流文件所在目录为基准。工作流文件夹的基准就是文件夹本身：工作目录根目录下的 `.venv` 写作 `../../../.venv`，文件夹中的写作 `.venv`。
 
 `python` 也可直接填写 Python 可执行文件的路径，如 `"/opt/homebrew/bin/python3.12"`。iCode 不会通过 `PATH` 查找命令。使用 uv 创建的环境时，指向其 `.venv`。
 
@@ -710,7 +710,7 @@ TUI 的“启动工作流”对话框提供“运行设置”。工作目录能�
 | 会话与工作流来源 | 工作目录规则 |
 | --- | --- |
 | 尚未运行的新会话，使用内置或全局工作流 | 可以在运行设置中更改工作目录 |
-| 尚未运行的新会话，使用项目工作流 | 固定为发现该工作流的项目目录，即包含 `.chrys/workflows/` 的目录 |
+| 尚未运行的新会话，使用工作目录工作流 | 固定为发现该工作流的工作目录，即包含 `.chrys/workflows/` 的目录 |
 | 已有运行的会话 | 工作区固定；更换目录或工作流需新建会话 |
 
 包含 iCode 智能体节点时，运行设置还提供默认模型选择。
@@ -782,7 +782,7 @@ icode trajectory export --session <session-id> --format perfetto --out workflow.
 icode workflow list [--json]
 ```
 
-默认以文本模式显示 `ID`、`Source`、`Title`、`Path`，未知标题显示为 `-`；工作流文件夹的 `Path` 是其入口文件。添加 `--json` 后输出一个对象，其 `workflows` 数组每项包含 `id`、`source`、`layout`（单个 `.py` 文件为 `file`，工作流文件夹为 `package`）、`title`、`path`（入口文件）；未知标题为空字符串。两种输出模式下，跳过文件的警告均写入 stderr。使用 `-h` / `--help` 查看帮助。
+默认以文本模式显示 `ID`、`Source`、`Title`、`Path`，未知标题显示为 `-`；工作流文件夹的 `Path` 是其入口文件。添加 `--json` 后输出一个对象，其 `workflows` 数组每项包含 `id`、`source`（`builtin`、`global` 或 `workdir`）、`layout`（单个 `.py` 文件为 `file`，工作流文件夹为 `package`）、`title`、`path`（入口文件）；未知标题为空字符串。两种输出模式下，跳过文件的警告均写入 stderr。使用 `-h` / `--help` 查看帮助。
 
 ### `icode workflow validate`
 
@@ -860,7 +860,7 @@ FAIL code-review (package): 1 error
 | --- | --- | --- |
 | `path_not_found` | `resolve` | 路径不存在。若有工作流使用该 ID，提示中会给出其路径 |
 | `path_is_link` | `resolve` | 工作流或文件夹的入口文件是链接 |
-| `path_not_workflow` | `resolve` | 路径不指向单个工作流：不是 `.py` 文件或文件夹，是存放工作流的目录（或包含它的项目文件夹、`.chrys` 文件夹）或工作流文件夹中的文件，文件夹的入口文件不是普通文件，或与所在文件夹列出的拼写不同 |
+| `path_not_workflow` | `resolve` | 路径不指向单个工作流：不是 `.py` 文件或文件夹，是存放工作流的目录（或包含它的工作目录文件夹、`.chrys` 文件夹）或工作流文件夹中的文件，文件夹的入口文件不是普通文件，或与所在文件夹列出的拼写不同 |
 | `name_ignored` | `resolve` | iCode 从不加载该名称，例如以 `.` 或 `_` 开头的名称 |
 | `name_reserved` | `resolve` | `sdk` 在全局工作流文件夹中是保留名称 |
 | `entry_missing` | `resolve` | 文件夹中没有与其同名的入口文件 |

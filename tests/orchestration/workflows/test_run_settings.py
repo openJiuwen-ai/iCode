@@ -18,7 +18,7 @@ from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.config.spec import Source
 from chrys.orchestration.workflows.session import WorkflowSessionOwner
 from chrys.service.workflows.outcomes import RunOutcome
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, run, write_workflow
 from tests.support.workflow_workers import python_workflow
 
 
@@ -32,7 +32,7 @@ async def test_restored_run_loads_its_project_and_preserves_explicit_choices(
     (config / "settings.yaml").write_text("project:\n  config_enabled: true\n", encoding="utf-8")
     fake = replace(platform.get_platform(), config_dir=config)
     monkeypatch.setattr(platform, "get_platform", lambda: fake)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     (project / ".chrys" / "settings.yaml").write_text("llm:\n  retry:\n    max_transient: 0\n", encoding="utf-8")
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     original = make_host(tmp_path, project=project)
@@ -51,7 +51,7 @@ async def test_restored_run_loads_its_project_and_preserves_explicit_choices(
         )
     freeze_process_env()
     loaded = load_settings(
-        project_root=chat_project, eval_context=EvalContext(frontend_default_max_transient_retries=15)
+        workdir=chat_project, eval_context=EvalContext(frontend_default_max_transient_retries=15)
     ).overlay(Source.SESSION, model_profile="mock-profile", ask_user_timeout_seconds=77)
     if retry_pin is not None:
         loaded = loaded.overlay(Source.SESSION, max_transient_retries=retry_pin)

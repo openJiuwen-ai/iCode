@@ -77,7 +77,7 @@ class WorkflowController:
         return selection.session_id if selection is not None else ""
 
     @property
-    def project_cwd(self) -> str:
+    def workdir(self) -> str:
         return self.workspace.primary_cwd
 
     @property
@@ -201,7 +201,7 @@ class WorkflowController:
         self.session_view.refresh_detail()
         run = self.session_view.view_run()
         title = run.started.title if run is not None else panel.definition.manifest.get("title", "")
-        cwd = self.project_cwd or self.cwd()
+        cwd = self.workdir or self.cwd()
         panel.set_header(title, session_id=self.session_id, cwd=cwd)
         self.sync_terminal_title(
             self.run_control.terminal_tab(title or panel.definition.workflow_id, cwd) if self.workflow_mode else None

@@ -282,7 +282,7 @@ icode rsi delete rsi-<id>
 | 路径 | 作用 |
 |------|------|
 | `dataset.json` | `chrys-rsi.dataset.v1`，单个 case（`complex-calc`）；prompt 要求实现名为 `complex_calc` 的 Cargo 二进制 |
-| `seed/` | 空目录（`from: "seed"`，`strategy: "copy"`）。`create` 时会快照；agent 必须从零写出项目 |
+| `seed/` | 空目录（`from: "seed"`，`strategy: "copy"`）。`create` 时会快照；智能体必须从零写出项目 |
 | `check.py` | 可信判分：`cargo build`，再跑多组算式与非法输入退出。**期望值只写在这里**，不进 prompt / seed |
 
 需要 `PATH` 上有 `cargo`。可信脚本超时 300s（覆盖冷编译）。跑 case 的 `--timeout` 建议至少约 600s，以便容纳构建与工具循环。

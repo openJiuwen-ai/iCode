@@ -12,11 +12,23 @@ be mistaken for settings.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final
 
+from chrys.foundation.config.coercion import bool_coercer
+from chrys.foundation.config.yaml_store import backup_path_for, migrate_yaml_doc
+from chrys.foundation.models.workdir_migration import BackupOriginal
+from chrys.foundation.platform.files import require_writable_file, secure_open_regular_binary
+
 SCHEMA_VERSION: Final = 1
+
+_OLD_TRUST_KEYS = {
+    "project.config_enabled": "workdir.config_enabled",
+    "project.hooks_enabled": "workdir.hooks_enabled",
+    "project.skills_enabled": "workdir.skills_enabled",
+}
+_TRUST_BOOL = bool_coercer()
 
 RESERVED_DOC_KEYS: Final = frozenset({"schema_version", "migrations"})
 """Top-level housekeeping keys: never settings, never "unknown"."""
@@ -26,8 +38,7 @@ RETIRED_SETTING_KEYS: Final = frozenset(
 )
 """Settings that no longer exist and replace nothing: a saved value is skipped, never "unknown".
 
-The document is left as it is: rewriting it only to drop the line would turn a
-symlinked ``settings.yaml`` into a plain copy.
+The document is left as it is.
 """
 
 
@@ -94,9 +105,15 @@ def apply_settings_patch(
     A patched or removed key also sheds its rival spellings: the flattener
     accepts a known key written as a dotted literal at any depth, and a
     surviving ``ui.theme: dark`` line would keep answering for a setting the
-    patch just moved elsewhere.
+    patch just moved elsewhere. Explicit trust edits also remove retired spellings.
     """
     doc.setdefault("schema_version", SCHEMA_VERSION)
+    remove = tuple(remove)
+    edited = values.keys() | set(remove)
+    old_keys = {old for old, new in _OLD_TRUST_KEYS.items() if new in edited}
+    if old_keys and isinstance(workdir := doc.get("workdir"), dict):
+        # A YAML alias can share this mapping with unrelated settings.
+        doc["workdir"] = workdir.copy()
     for dotted, value in values.items():
         node = doc
         parts = dotted.split(".")
@@ -112,7 +129,89 @@ def apply_settings_patch(
         parts = dotted.split(".")
         _remove_dotted(doc, parts)
         _prune_dotted_spellings(doc, parts)
+    _remove_legacy_trust_keys(doc, old_keys)
     return doc
+
+
+def settings_edit(doc: dict[str, Any], *, on_conflict: Callable[[str], None] | None = None) -> dict[str, Any] | None:
+    """Move the previous trust settings to their current keys in place."""
+    existing, _ = flatten_user_doc(doc, frozenset((*_OLD_TRUST_KEYS, *_OLD_TRUST_KEYS.values())))
+    old_keys = existing.keys() & _OLD_TRUST_KEYS.keys()
+    if not old_keys:
+        return None
+    writes: dict[str, Any] = {}
+    for old, new in _OLD_TRUST_KEYS.items():
+        if old not in old_keys:
+            continue
+        value = existing[old]
+        if new not in existing:
+            writes[new] = value
+        elif _TRUST_BOOL(value).value != _TRUST_BOOL(existing[new]).value:
+            writes[new] = False
+            if on_conflict is not None:
+                on_conflict(new)
+    if writes:
+        workdir = doc.get("workdir", {})
+        if isinstance(workdir, dict):
+            doc["workdir"] = {**workdir, **{key.split(".", 1)[1]: value for key, value in writes.items()}}
+            for key in writes:
+                doc.pop(key, None)
+        else:
+            doc.update(writes)
+    _remove_legacy_trust_keys(doc, old_keys)
+    return doc
+
+
+def migrate_trust_settings(path: Path, backup: BackupOriginal) -> tuple[bool, list[str]]:
+    """Rewrite the trust keys, preserving the bytes of both affected settings files."""
+    changed = False
+    conflicts: list[str] = []
+
+    def preserve(target: Path, raw: bytes | None) -> None:
+        if raw is not None:
+            require_writable_file(target)
+            backup(path, raw)
+        sibling = backup_path_for(path)
+        try:
+            with secure_open_regular_binary(sibling.resolve()) as stream:
+                previous = stream.read()
+        except FileNotFoundError:
+            return
+        require_writable_file(sibling)
+        backup(sibling, previous)
+
+    def committed() -> None:
+        nonlocal changed
+        changed = True
+
+    try:
+        migrate_yaml_doc(
+            path,
+            lambda doc: settings_edit(doc, on_conflict=conflicts.append),
+            needs_edit=lambda doc: settings_edit(doc) is not None,
+            before_write=preserve,
+            committed=committed,
+        )
+    except OSError, ValueError, TypeError, RecursionError:
+        # The normal settings load reports read errors and any surviving conflict.
+        return False, []
+    return changed, conflicts
+
+
+def _remove_legacy_trust_keys(doc: dict[str, Any], old_keys: set[str]) -> None:
+    if not old_keys:
+        return
+    legacy_section = "project"
+    old_trust = doc.get(legacy_section)
+    if isinstance(old_trust, dict):
+        retained = {key: value for key, value in old_trust.items() if f"{legacy_section}.{key}" not in old_keys}
+        if len(retained) != len(old_trust):
+            if retained:
+                doc[legacy_section] = retained
+            else:
+                del doc[legacy_section]
+    for old in old_keys:
+        doc.pop(old, None)
 
 
 def _remove_dotted(node: dict[str, Any], parts: list[str]) -> None:
@@ -133,9 +232,8 @@ def _prune_dotted_spellings(node: dict[str, Any], parts: list[str], start: int =
 
     ``flatten_user_doc`` reads ``ui.theme: dark`` at the top level — or
     ``ui: {"editor.keymap": ...}`` halfway down — as the same setting as the
-    nested shape, and in a sorted document the literal flattens *after* the
-    nested value, so a stale spelling left behind by a patch would win every
-    load. Emptied parents are pruned like removal does.
+    nested shape. A stale spelling left behind by a patch could win over the
+    patched value. Emptied parents are pruned like removal does.
     """
     for end in range(start + 1, len(parts) + 1):
         name = ".".join(parts[start:end])

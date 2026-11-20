@@ -46,8 +46,8 @@ from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolCall, ToolGroup
-from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex, WorkspacePathIndex
-from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
+from chrys.app.tui.widgets.chrome.file_index import WorkdirPathIndex, WorkspacePathIndex
+from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult, WorkdirPathSuggestion
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import open_process_for
 from tests.support.waiting import wait_for
@@ -681,12 +681,12 @@ def test_suggestion_participant_blocks_popup_without_releasing_warm_cache() -> N
     assert handler.gc_freeze_block_reason() is None
 
 
-def test_frozen_project_path_index_dies_by_refcount_without_unfreeze() -> None:
-    scan = ProjectPathScanResult.from_suggestions(
+def test_frozen_workdir_path_index_dies_by_refcount_without_unfreeze() -> None:
+    scan = WorkdirPathScanResult.from_suggestions(
         root="/repo",
-        paths=[ProjectPathSuggestion("src/chrys/app.py", "file")],
+        paths=[WorkdirPathSuggestion("src/chrys/app.py", "file")],
     )
-    index = ProjectPathIndex.build(scan)
+    index = WorkdirPathIndex.build(scan)
     index_ref = weakref.ref(index)
 
     gc.collect()
@@ -701,11 +701,11 @@ def test_frozen_project_path_index_dies_by_refcount_without_unfreeze() -> None:
 
 @pytest.mark.asyncio
 async def test_cancelled_inflight_index_to_thread_drops_payload_while_frozen() -> None:
-    scan = ProjectPathScanResult.from_suggestions(
+    scan = WorkdirPathScanResult.from_suggestions(
         root="/repo",
-        paths=[ProjectPathSuggestion(f"src/file_{path_number}.py", "file") for path_number in range(1_000)],
+        paths=[WorkdirPathSuggestion(f"src/file_{path_number}.py", "file") for path_number in range(1_000)],
     )
-    index = ProjectPathIndex.build(scan)
+    index = WorkdirPathIndex.build(scan)
     index_ref = weakref.ref(index)
     payload_box = [index]
     del index
@@ -714,7 +714,7 @@ async def test_cancelled_inflight_index_to_thread_drops_payload_while_frozen() -
     started = asyncio.Event()
     release = Event()
 
-    def _return_index() -> ProjectPathIndex:
+    def _return_index() -> WorkdirPathIndex:
         # Read before it is released: the box is cleared once the call is cancelled, and it may resume after that.
         value = payload_box[0]
         loop.call_soon_threadsafe(started.set)

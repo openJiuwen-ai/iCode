@@ -14,7 +14,7 @@ from chrys.orchestration.workflows.preview import WorkflowPreviewError
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.workflows.artifacts import session_runs
 from chrys.service.workflows.store import read_node_diagnostics
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, patch_runtime, run, write_workflow
 from tests.support.workflow_workers import python_workflow
 
 BASE = """
@@ -65,7 +65,7 @@ workflow = wf.build()
         ).encode()
         node = "join:c" if kind == "combine" else "a"
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "diagnostics", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -104,7 +104,7 @@ async def test_diagnostics_write_failure_does_not_change_run_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fails: bool
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     end = "raise ValueError('boom')" if fails else "return 'done'"
     write_workflow(project, "diag", python_workflow(f"def fn(text):\n    print('hello')\n    {end}\n", "fn"))
     original = store_module.atomic_write_owner_only_bytes
@@ -126,7 +126,7 @@ async def test_diagnostics_write_failure_does_not_change_run_outcome(
 
 
 async def test_preview_error_keeps_load_output_and_traceback(tmp_path: Path) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "broken", b"print('loading')\nraise ValueError('load broke')\n")
     host = make_host(tmp_path, project=project)
     try:

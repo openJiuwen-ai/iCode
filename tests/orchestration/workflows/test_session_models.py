@@ -32,7 +32,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -50,7 +50,7 @@ async def test_model_defaults_are_isolated_and_preserved_per_run(
         monkeypatch,
         [MockChatClient(responses=[]), *[MockChatClient(responses=[MockResponse(text="done")]) for _ in range(6)]],
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(
         project,
         "review",
@@ -124,7 +124,7 @@ async def test_model_defaults_are_isolated_and_preserved_per_run(
 
 
 async def test_running_workflow_rejects_model_change(tmp_path: Path) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "check", python_workflow("def check(text):\n    return text\n", "check"))
     host = make_host(tmp_path, project=project)
     try:
@@ -154,7 +154,7 @@ async def test_model_checkpoint_gates_start_and_acknowledgement(
     monkeypatch: pytest.MonkeyPatch,
     fail_save: bool,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "check", python_workflow("def check(text):\n    return text\n", "check"))
     host = make_host(tmp_path, project=project)
     registry = host.engine.model_registry
@@ -211,7 +211,7 @@ async def test_unselected_bad_default_does_not_block_python_workflow(tmp_path: P
     from chrys.foundation.config.settings_store import load_settings
     from chrys.foundation.config.spec import Source
 
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "check", python_workflow("def check(text):\n    return text\n", "check"))
     loaded = load_settings(env={}).overlay(Source.SESSION, model_profile="removed-default")
     host = make_host(tmp_path, project=project, loaded_settings=loaded)
@@ -231,7 +231,7 @@ async def test_removed_unused_default_does_not_block_saved_workflow(
         monkeypatch,
         [MockChatClient(responses=[]), *[MockChatClient(responses=[MockResponse(text="done")]) for _ in range(2)]],
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     profile = make_profile()
     if binding == "python":
         source = python_workflow("def check(text):\n    return text\n", "check")
@@ -277,7 +277,7 @@ async def test_cancelled_model_save_holds_guard_until_checkpoint_finishes(
     from chrys.orchestration.workflows.session import WorkflowSessionOwner
     from tests.support.waiting import wait_until
 
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "check", python_workflow("def check(text):\n    return text\n", "check"))
     host = make_host(tmp_path, project=project)
     registry = host.engine.model_registry
@@ -335,7 +335,7 @@ async def test_cancelled_model_save_holds_guard_until_checkpoint_finishes(
 
 
 async def test_restored_session_without_model_pins_the_resolved_default(tmp_path: Path) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "echo", python_workflow("def echo(value):\n    return value\n", "echo"))
     host = make_host(tmp_path, project=project)
     store = JsonFileStateStore(tmp_path / "sessions")
@@ -377,7 +377,7 @@ async def test_a_judge_without_a_model_of_its_own_runs_on_its_nodes_model(
     )
     evaluate = create_autospec(ApprovalJudge.evaluate, return_value=JudgeVerdict(approved=True, reason="in scope"))
     monkeypatch.setattr(ApprovalJudge, "evaluate", evaluate)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     profile = make_profile(builtins=["filesystem.read"])
     if binding == "agent_profile":
         profile = replace(profile, model=ModelConfig(profile_id="bound-model"))

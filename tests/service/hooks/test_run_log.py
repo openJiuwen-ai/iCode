@@ -707,13 +707,13 @@ async def test_the_detail_carries_the_configured_run_but_only_env_names(hooks_di
 
 
 async def test_the_detail_names_the_source_of_each_hook(hooks_dir: Path) -> None:
-    project_hook = _hook("from-project", HookEvent.AFTER_TURN)
+    workdir_hook = _hook("from-workdir", HookEvent.AFTER_TURN)
     global_hook = _hook("from-global", HookEvent.AFTER_TURN)
     manager = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source="/project/.chrys/hooks/hooks.yaml"),
+            workdir=HooksFile(hooks=[workdir_hook], source="/workdir/.chrys/hooks/hooks.yaml"),
             global_=HooksFile(hooks=[global_hook], source="/config/hooks/hooks.yaml"),
-            hooks=[project_hook, global_hook],
+            hooks=[workdir_hook, global_hook],
         ),
         hooks_dir=hooks_dir,
     )
@@ -721,9 +721,9 @@ async def test_the_detail_names_the_source_of_each_hook(hooks_dir: Path) -> None
     manager.record_runs(log, session_id=_SESSION)
     await manager.fire(HookEvent.AFTER_TURN, {"turn": 1})
     by_id = {record.hook_id: log.detail(record.run_id) for record in log.records()}
-    project, global_ = by_id["from-project"], by_id["from-global"]
-    assert project is not None and global_ is not None
-    assert (project.source, project.source_path) == ("project", "/project/.chrys/hooks/hooks.yaml")
+    workdir, global_ = by_id["from-workdir"], by_id["from-global"]
+    assert workdir is not None and global_ is not None
+    assert (workdir.source, workdir.source_path) == ("workdir", "/workdir/.chrys/hooks/hooks.yaml")
     assert (global_.source, global_.source_path) == ("global", "/config/hooks/hooks.yaml")
 
 
