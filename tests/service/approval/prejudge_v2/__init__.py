@@ -1,0 +1,1 @@
+"""Structured pre-judge tests."""

@@ -22,6 +22,8 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentProfileSwitch,
     ApprovalModeUpdated,
+    ApprovalRequest,
+    ApprovalResponse,
     Error,
     ModelProfileSwitched,
     ProfileSwitched,
@@ -34,6 +36,10 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import DisplayPath
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.platform import get_platform
+from chrys.foundation.tool_kinds import KIND_SHELL, set_tool_kind
+from chrys.kernel.middleware import FunctionInvocationContext
+from chrys.kernel.tools import FunctionTool
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.state import lifecycle_permits
 from chrys.orchestration.sub_agents.tools import SubAgentTools
@@ -381,6 +387,63 @@ async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass_as_
     assert persisted == ["bypass"]
     assert engine.settings.default_approval_mode == "auto"
     assert [(event.mode, event.session_id) for event in events] == [("bypass", "sid")]
+
+
+@pytest.mark.parametrize("mode", [ApprovalMode.MANUAL, ApprovalMode.AUTO])
+async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation(
+    monkeypatch: pytest.MonkeyPatch, mode: ApprovalMode
+) -> None:
+    config = get_platform().config_dir / "prejudge.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('mode: "enforce"\nrules: [\n', encoding="utf-8")
+    bus = EventBus()
+    engine = assemble_agent_engine(bus, settings=Settings(), initial_approval_mode=ApprovalMode.BYPASS)
+    tool = FunctionTool(name="bash")
+    set_tool_kind(tool, KIND_SHELL)
+    policy = ApprovalPolicy(ApprovalConfig(default="require"), tools=[tool])
+    main = ApprovalMiddleware(policy, bus, approval_mode=ApprovalMode.BYPASS)
+    child = ApprovalMiddleware(policy, bus, approval_mode=ApprovalMode.BYPASS)
+    sub_agents = SubAgentTools(event_bus=bus, approval_mode=ApprovalMode.BYPASS)
+    sub_agents._live_approvals.append(child)
+    install_loaded_agent(engine, sub_agent_tools=sub_agents)
+    engine.current.require_loaded().bindings.approval = main
+    workflow_nodes = create_autospec(engine.workflows.set_approval_mode)
+    monkeypatch.setattr(engine.workflows, "set_approval_mode", workflow_nodes)
+    updates: list[ApprovalModeUpdated] = []
+    requests: list[ApprovalRequest] = []
+
+    async def updated(event: ApprovalModeUpdated) -> None:
+        updates.append(event)
+
+    async def reject(request: ApprovalRequest) -> None:
+        requests.append(request)
+        await bus.publish(ApprovalResponse(request_id=request.request_id, approved=False))
+
+    async def execute() -> None:
+        pytest.fail("A failed policy load must not retain BYPASS or enable the readonly shortcut")
+
+    await bus.subscribe(SetApprovalMode, engine._on_set_approval_mode)
+    await bus.subscribe(ApprovalModeUpdated, updated)
+    await bus.subscribe(ApprovalRequest, reject)
+    try:
+        # EventBus swallows handler errors: verify every target and a real
+        # approval request, rather than just that publish() returned.
+        await bus.publish(SetApprovalMode(mode=mode.value, persist=False))
+        assert engine.session.approval_mode is mode
+        assert main.approval_mode is mode
+        assert child.approval_mode is mode
+        assert sub_agents._approval_mode is mode
+        workflow_nodes.assert_called_once_with(mode)
+        assert [event.mode for event in updates] == [mode.value]
+        for middleware in (main, child):
+            await middleware.process(FunctionInvocationContext(tool, {"command": "ls"}), execute)
+        assert len(requests) == 2
+    finally:
+        await main.close()
+        await child.close()
+        await bus.unsubscribe(SetApprovalMode, engine._on_set_approval_mode)
+        await bus.unsubscribe(ApprovalModeUpdated, updated)
+        await bus.unsubscribe(ApprovalRequest, reject)
 
 
 async def test_setting_the_approval_mode_moves_its_provenance_with_the_value(
