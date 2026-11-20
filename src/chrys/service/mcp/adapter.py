@@ -109,12 +109,13 @@ _SEVERED_ENTITY_TAIL_RE = re.compile(r"&[#0-9A-Za-z]{0,9}$")
 class MCPTestReport:
     """What a successful one-shot connection test learned about a server.
 
-    Every string field is server-controlled: renderers must sanitize each
+    String fields may be server-controlled: renderers must sanitize each
     one against markup/structure injection before display. ``capabilities``
     holds dotted feature names the server advertised (``tools``,
     ``tools.listChanged``, …) flattened from ``ServerCapabilities``.
     ``initial_tool_names`` is the progressive-disclosure starting surface,
-    or ``None`` when progressive disclosure is off.
+    or ``None`` when progressive disclosure is off. ``effective_cwd`` is the
+    resolved stdio process launch directory, or ``None`` for HTTP.
     """
 
     server_name: str | None
@@ -126,6 +127,7 @@ class MCPTestReport:
     tools: tuple[tuple[str, str], ...]
     prompts: tuple[tuple[str, str], ...]
     initial_tool_names: tuple[str, ...] | None
+    effective_cwd: str | None = None
 
 
 # Standard MCP server capability groups (the spec's named feature sets).
@@ -778,7 +780,7 @@ class MCPAdapter:
                     initial_tool_names = tuple(tool.name for tool in exposure.initial_tools)
                 else:
                     self._validate_server_namespace(config, catalog, set())
-                return self._build_test_report(mcp_tool, catalog, initial_tool_names)
+                return self._build_test_report(mcp_tool, catalog, initial_tool_names, effective_cwd=stdio_cwd)
             except MCPConnectionError:
                 raise
             except Exception as exc:
@@ -810,6 +812,8 @@ class MCPAdapter:
         mcp_tool: Any,
         catalog: list[FunctionTool],
         initial_tool_names: tuple[str, ...] | None,
+        *,
+        effective_cwd: str | None = None,
     ) -> MCPTestReport:
         """Snapshot server-advertised state before the test connection closes."""
         server_info = getattr(mcp_tool, "_server_info", None)
@@ -828,6 +832,7 @@ class MCPAdapter:
             tools=tuple(tools),
             prompts=tuple(prompts),
             initial_tool_names=initial_tool_names,
+            effective_cwd=effective_cwd,
         )
 
     async def connect_all(

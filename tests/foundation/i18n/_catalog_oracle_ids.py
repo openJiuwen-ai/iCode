@@ -9,6 +9,7 @@ from tests.foundation.i18n._buddy_catalog_oracle_ids import BUDDY_MESSAGE_IDS
 from tests.foundation.i18n._error_catalog_oracle_ids import ERROR_MESSAGE_IDS
 from tests.foundation.i18n._help_catalog_oracle_ids import HELP_MESSAGE_IDS
 from tests.foundation.i18n._hook_panel_catalog_oracle_ids import HOOK_PANEL_MESSAGE_IDS
+from tests.foundation.i18n._mcp_import_catalog_oracle_ids import MCP_IMPORT_MESSAGE_IDS
 from tests.foundation.i18n._profile_config_catalog_oracle_ids import PROFILE_CONFIG_MESSAGE_IDS
 from tests.foundation.i18n._prompt_catalog_oracle_ids import PROMPT_MESSAGE_IDS
 from tests.foundation.i18n._settings_catalog_oracle_ids import SETTINGS_MESSAGE_IDS
@@ -1097,6 +1098,7 @@ _message_ids.update(
         "tui.mcp.connection_report.prompt_loading_disabled",
         ("tui.mcp.connection_report.prompts_exposed", "tui.mcp.connection_report.prompts_exposed#plural"),
         ("tui.mcp.connection_report.tools_exposed", "tui.mcp.connection_report.tools_exposed#plural"),
+        "tui.mcp.connection_report.working_directory",
         "tui.mcp.connection_test.error.cancelled",
         "tui.mcp.connection_test.error.configuration_conflict",
         "tui.mcp.connection_test.error.failed",
@@ -1272,6 +1274,7 @@ EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
     | HELP_MESSAGE_IDS
     | WEB_MESSAGE_IDS
     | HOOK_PANEL_MESSAGE_IDS
+    | MCP_IMPORT_MESSAGE_IDS
     | ERROR_MESSAGE_IDS
     | SETTINGS_MESSAGE_IDS
     | TOOL_CARD_MESSAGE_IDS

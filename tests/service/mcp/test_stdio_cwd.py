@@ -34,7 +34,11 @@ from chrys.service.mcp.cache import (
     resolve_stdio_cwd,
 )
 from chrys.service.mcp.errors import MCPConnectionError, mcp_failure_diagnostic
-from chrys.service.profiles.agents.schema import MCPServerConfig
+from chrys.service.mcp.importers import ImportContext
+from chrys.service.mcp.importers.pi import PiSource
+from chrys.service.profiles.agents.loader import load_profile_from_yaml
+from chrys.service.profiles.agents.schema import AgentProfile, MCPServerConfig, ToolsConfig
+from chrys.service.profiles.agents.serializer import save_profile
 from tests.service.mcp._helpers import block_import
 from tests.support.symlinks import symlink_or_skip
 from tests.support.waiting import ENGINE_TURN_TIMEOUT
@@ -92,7 +96,8 @@ async def _reported_cwd(config: MCPServerConfig, workspace: Path) -> str:
     adapter = MCPAdapter(cache=cache, stdio_cwd=str(workspace))
     try:
         tools = await asyncio.wait_for(adapter.connect(config), timeout=ENGINE_TURN_TIMEOUT)
-        tool = next(tool for tool in tools if tool.name == "get_cwd")
+        name = f"{config.tool_name_prefix}_get_cwd" if config.tool_name_prefix else "get_cwd"
+        tool = next(tool for tool in tools if tool.name == name)
         result = await asyncio.wait_for(tool.invoke(arguments={}), timeout=ENGINE_TURN_TIMEOUT)
         return "\n".join(content.text for content in result)
     finally:
@@ -570,6 +575,47 @@ async def test_a_relative_command_without_cwd_is_found_from_the_workspace(tmp_pa
 # ── The connection test (Test button) ───────────────────────────────
 
 
+async def test_import_save_reload_and_launch_preserve_cwd(tmp_path: Path) -> None:
+    import json
+
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+
+    def prepare() -> MCPServerConfig:
+        (workspace / "tools" / "server").mkdir(parents=True)
+        source = home / ".pi" / "agent" / "mcp.json"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "cwd": {
+                            "command": sys.executable,
+                            "args": [str(CWD_SERVER)],
+                            "cwd": "tools/server",
+                            "exposure": "direct",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (candidate,) = PiSource().discover(ImportContext(str(workspace), home, {})).candidates
+        assert candidate.config is not None
+        profile = AgentProfile(name="Imported", tools=ToolsConfig(mcp=[candidate.config]))
+        saved = save_profile(profile, target_dir=tmp_path / "profiles")
+        (reloaded,) = load_profile_from_yaml(saved).tools.mcp
+        assert reloaded.cwd == os.path.normpath("tools/server")
+        return reloaded
+
+    config = await asyncio.to_thread(prepare)
+    assert os.path.samefile(await _reported_cwd(config, workspace), workspace / "tools" / "server")
+    report = await asyncio.wait_for(
+        MCPAdapter(stdio_cwd=str(workspace)).test_connection(config), timeout=ENGINE_TURN_TIMEOUT
+    )
+    assert "cwd_get_cwd" in [name for name, _description in report.tools]
+    assert report.effective_cwd == str(workspace / "tools" / "server")
+
+
 async def test_the_connection_test_starts_where_the_agent_would(tmp_path: Path) -> None:
     # A relative cwd and a command relative to it only both resolve from the server's own folder.
     workspace = tmp_path / "workspace"
@@ -586,6 +632,7 @@ async def test_the_connection_test_starts_where_the_agent_would(tmp_path: Path) 
     report = await asyncio.wait_for(adapter.test_connection(config), timeout=ENGINE_TURN_TIMEOUT)
 
     assert "get_cwd" in [name for name, _description in report.tools]
+    assert report.effective_cwd == str(workspace / "srv")
 
 
 # ── Stock stdio client fallback ──────────────────────────────────────

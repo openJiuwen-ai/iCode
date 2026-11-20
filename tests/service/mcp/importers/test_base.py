@@ -1,0 +1,411 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""The shared conversion every importer goes through."""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+import sys
+from typing import TYPE_CHECKING, Any
+
+import pytest
+
+from chrys.service.mcp.importers.base import (
+    MAX_REQUEST_TIMEOUT_SECONDS,
+    FieldUse,
+    ImportWarning,
+    Problem,
+    SourceErrorKind,
+    SourceReadError,
+    SourceServer,
+    ValueReason,
+    Var,
+    WarningKind,
+    by_name,
+    convert,
+    linked_common_dir,
+    main_checkout,
+    merge_entries,
+    merge_warnings,
+    parse_json_object,
+    read_text,
+    render,
+)
+from tests.support.symlinks import symlink_or_skip
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def _stdio(**fields: object) -> SourceServer:
+    return SourceServer("srv", "/cfg.json", "stdio", command="run", env_path="servers.srv.env", **fields)
+
+
+def _http(**fields: object) -> SourceServer:
+    return SourceServer("srv", "/cfg.json", "http", url="https://x", headers_path="servers.srv.headers", **fields)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (("plain",), "plain"),
+        (("Bearer ", Var("TOKEN")), "Bearer {{TOKEN}}"),
+        (("{{literal}} ", Var("V")), "{{{{literal}}}} {{V}}"),
+        (("{{", Var("V")), "{{{{{{V}}"),
+        (("{", Var("V")), None),
+        ((Var("V"), "}}"), None),
+    ],
+    ids=["literal", "variable", "escaped-braces", "even-braces-before", "odd-brace-before", "braces-after"],
+)
+def test_render_escapes_literal_braces_and_refuses_ambiguous_ones(value: tuple, expected: str | None) -> None:
+    assert render(value) == expected
+
+
+def test_convert_builds_the_server_with_a_tool_prefix_and_rounded_timeout() -> None:
+    server = _stdio(
+        args=("-y", "pkg"),
+        env={"TOKEN": ("x-", Var("SECRET"))},
+        enabled=False,
+        description="from source",
+        timeout_seconds=1.2,
+        allowed_tools=("a",),
+        progressive=True,
+        always_load=("a",),
+        cwd=(Var("ROOT"), "/server"),
+        cwd_path="servers.srv.cwd",
+    )
+
+    candidate = convert(server)
+
+    assert candidate.problem is None
+    config = candidate.config
+    assert config is not None
+    assert (config.command, config.args, config.env) == ("run", ["-y", "pkg"], {"TOKEN": "x-{{SECRET}}"})
+    assert (config.enabled, config.description, config.request_timeout) == (False, "from source", 2)
+    assert (config.allowed_tools, config.use_progressive_disclosure, config.always_load) == (["a"], True, ["a"])
+    assert config.tool_name_prefix == "srv"
+    assert config.cwd == "{{ROOT}}/server"
+
+
+def test_convert_caps_an_unbounded_timeout() -> None:
+    config = convert(_stdio(timeout_seconds=math.inf)).config
+    assert config is not None
+    assert config.request_timeout == MAX_REQUEST_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
+def test_convert_refuses_argument_separators_the_command_editor_rewrites(separator: str) -> None:
+    candidate = convert(_stdio(args=(f"a{separator}b",), arg_paths=("servers.srv.args[0]",)))
+
+    assert candidate.config is None
+    assert candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert candidate.reason is ValueReason.LINE_ENDINGS
+    assert candidate.field_use is FieldUse.ARGUMENT
+    assert candidate.problem_field == "servers.srv.args[0]"
+
+
+@pytest.mark.parametrize("field", ["allowed_tools", "always_load"])
+@pytest.mark.parametrize(
+    ("names", "reason"),
+    [
+        (("read,delete",), ValueReason.CHARACTERS),
+        ((" read",), ValueReason.WHITESPACE),
+        (("read ",), ValueReason.WHITESPACE),
+        (("",), ValueReason.EMPTY),
+        ((" \t",), ValueReason.EMPTY),
+        (("read", "read"), ValueReason.INVALID),
+    ],
+)
+def test_convert_refuses_tool_lists_the_editor_cannot_preserve(field, names, reason) -> None:
+    server = _stdio(**{field: names, f"{field}_path": "servers.srv.tool_policy"})
+
+    candidate = convert(server)
+
+    assert candidate.config is None
+    assert candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert candidate.problem_field == "servers.srv.tool_policy"
+    assert candidate.reason is reason
+
+
+@pytest.mark.parametrize("allowed", [None, (), ("read", "delete"), ("read file", "工具")])
+def test_convert_keeps_representable_tool_scope(allowed) -> None:
+    config = convert(_stdio(allowed_tools=allowed)).config
+
+    assert config is not None
+    assert config.allowed_tools == (None if allowed is None else list(allowed))
+
+
+@pytest.mark.parametrize(
+    ("key", "reason"),
+    [
+        ("", ValueReason.EMPTY),
+        (" \t", ValueReason.EMPTY),
+        (" TOKEN", ValueReason.WHITESPACE),
+        ("TOKEN ", ValueReason.WHITESPACE),
+        ("\tTOKEN", ValueReason.WHITESPACE),
+        ("TOKEN\t", ValueReason.WHITESPACE),
+        ("\u00a0TOKEN", ValueReason.WHITESPACE),
+        ("TOKEN\u3000", ValueReason.WHITESPACE),
+    ],
+)
+def test_convert_refuses_env_names_the_editor_cannot_preserve(key: str, reason: ValueReason) -> None:
+    candidate = convert(_stdio(env={"TOKEN": ("original",), key: ("private-source-value",)}))
+
+    assert candidate.config is None
+    assert candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert candidate.field_use is FieldUse.ENV_NAME
+    assert candidate.reason is reason
+    assert candidate.problem_field.startswith("servers.srv.env[")
+    assert json.loads(candidate.problem_field.removeprefix("servers.srv.env[").removesuffix("]")) == key
+    assert "private-source-value" not in candidate.problem_field
+
+
+@pytest.mark.parametrize("key", ["TOKEN", "A B", "A-B"])
+def test_convert_keeps_representable_env_names(key: str) -> None:
+    config = convert(_stdio(env={key: ("value",)})).config
+
+    assert config is not None
+    assert config.env == {key: "value"}
+
+
+@pytest.mark.parametrize(
+    ("server", "problem", "field"),
+    [
+        (SourceServer("srv", "/cfg.json", "sse"), Problem.UNSUPPORTED_CONNECTION, ""),
+        (_http(blocked_field="servers.srv.url"), Problem.VALUE_NOT_REPRESENTABLE, "servers.srv.url"),
+        (
+            _http(blocked_field="servers.srv.url", blocked_problem=Problem.VARIABLE_NOT_SUPPORTED),
+            Problem.VARIABLE_NOT_SUPPORTED,
+            "servers.srv.url",
+        ),
+        (_stdio(env={"A": ("",)}), Problem.VALUE_NOT_REPRESENTABLE, "servers.srv.env.A"),
+        (_stdio(env={"A": (" padded ",)}), Problem.VALUE_NOT_REPRESENTABLE, "servers.srv.env.A"),
+        (_stdio(env={"A": ("{", Var("V"))}), Problem.VALUE_NOT_REPRESENTABLE, "servers.srv.env.A"),
+        (_http(headers={"X": ("  ",)}), Problem.VALUE_NOT_REPRESENTABLE, "servers.srv.headers.X"),
+        (_http(headers={"X": ("café",)}), Problem.VALUE_NOT_REPRESENTABLE, "servers.srv.headers.X"),
+        (_http(headers={"X": ("a\x01b",)}), Problem.VALUE_NOT_REPRESENTABLE, "servers.srv.headers.X"),
+        (_http(headers={"X": ("a\r\nb",)}), Problem.VALUE_NOT_REPRESENTABLE, "servers.srv.headers.X"),
+        (_http(headers={"X Key": ("v",)}), Problem.VALUE_NOT_REPRESENTABLE, "servers.srv.headers.X Key"),
+    ],
+    ids=[
+        "transport",
+        "blocked",
+        "blocked-with-reason",
+        "empty-env",
+        "env-whitespace",
+        "env-brace",
+        "empty-header",
+        "non-ascii-header",
+        "control-character-header",
+        "line-break-in-header",
+        "invalid-header-name",
+    ],
+)
+def test_convert_refuses_values_icode_cannot_hold(server: SourceServer, problem: Problem, field: str) -> None:
+    candidate = convert(server)
+
+    assert (candidate.config, candidate.problem, candidate.problem_field) == (None, problem, field)
+    assert candidate.transport == ("sse" if problem is Problem.UNSUPPORTED_CONNECTION else "")
+
+
+def test_convert_trims_header_whitespace_and_ignores_env_of_http_servers() -> None:
+    # As fetch trims them, which the other applications send with.
+    config = convert(_http(headers={"X": (" v\t",), "Y": ("w\r\n",)}, env={" IGNORED ": ("",)})).config
+
+    assert config is not None
+    assert (config.headers, config.env) == ({"X": "v", "Y": "w"}, {})
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://x/mcp", "https://x/mcp"),
+        ("  https://x/mcp", "https://x/mcp"),
+        ("https://x/mcp  ", "https://x/mcp"),
+        ("  https://x/mcp  ", "https://x/mcp"),
+        ("\t\r\nhttps://x/mcp\r\n\t", "https://x/mcp"),
+        ("\u00a0https://x/mcp\u3000", "https://x/mcp"),
+        (" https://x/a b?key=a b ", "https://x/a b?key=a b"),
+        (" https://x/mcp%20?key=%20 ", "https://x/mcp%20?key=%20"),
+        (" HTTPS://X/Path?Key=HTTP:Value ", "https://X/Path?Key=HTTP:Value"),
+        ("Example.COM/HTTP:x", "Example.COM/HTTP:x"),
+    ],
+    ids=[
+        "unchanged",
+        "leading",
+        "trailing",
+        "both",
+        "ascii-whitespace",
+        "unicode-whitespace",
+        "internal",
+        "encoded",
+        "scheme-case",
+        "no-scheme",
+    ],
+)
+def test_convert_trims_only_surrounding_url_whitespace(url: str, expected: str) -> None:
+    candidate = convert(SourceServer("srv", "/cfg.json", "http", url=url))
+
+    assert candidate.problem is None
+    assert candidate.config is not None
+    assert candidate.config.url == expected
+
+
+def test_convert_keeps_only_the_settings_of_the_servers_own_transport() -> None:
+    http = convert(_http(command="run", args=("-x",), cwd=("bad\0path",))).config
+    stdio = convert(_stdio(args=("-x",), url="https://x")).config
+
+    assert http is not None and stdio is not None
+    assert (http.command, http.args, http.url) == ("", [], "https://x")
+    assert http.cwd == ""
+    assert (stdio.command, stdio.args, stdio.url) == ("run", ["-x"], "")
+
+
+def test_merge_entries_merges_nesting_deeper_than_the_recursion_limit() -> None:
+    base = {"a": {"b": 1}}
+    deep: dict[str, Any] = {}
+    for _ in range(sys.getrecursionlimit() * 2):
+        deep = {"a": deep}
+
+    merged = merge_entries(base, deep)
+
+    assert merged["a"]["b"] == 1
+    assert merged["a"]["a"] is deep["a"]["a"]
+    assert base == {"a": {"b": 1}}
+
+
+def test_read_text_reads_utf8_only(tmp_path: Path) -> None:
+    bom, gbk = tmp_path / "bom.json", tmp_path / "gbk.json"
+    bom.write_bytes(b'\xef\xbb\xbf{"a": 1}')
+    gbk.write_bytes('{"a": "中文"}'.encode("gbk"))
+
+    assert read_text(bom) == '{"a": 1}'
+    # Guessing another encoding would import other text than the source application reads.
+    with pytest.raises(SourceReadError) as caught:
+        read_text(gbk)
+    assert caught.value.kind is SourceErrorKind.UNPARSABLE
+
+
+def test_warnings_merge_one_per_kind_with_each_item_once() -> None:
+    merged = merge_warnings(
+        [
+            ImportWarning(WarningKind.NOT_IMPORTED, ("a", "b")),
+            ImportWarning(WarningKind.AUTH_NOT_IMPORTED),
+            ImportWarning(WarningKind.NOT_IMPORTED, ("b", "c")),
+        ]
+    )
+
+    assert merged == (
+        ImportWarning(WarningKind.NOT_IMPORTED, ("a", "b", "c")),
+        ImportWarning(WarningKind.AUTH_NOT_IMPORTED),
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "prefix"),
+    [
+        ("github", r"github"),
+        (" github ", r"github"),
+        ("\tgithub\t", r"github"),
+        ("\u00a0github\u00a0", r"github"),
+        ("my server.v2", r"my_server_v2-[0-9a-f]{6}"),
+        ("github-", r"github-[0-9a-f]{6}"),
+        ("--", r"mcp_[0-9a-f]{6}"),
+        ("a" * 40, r"a{17}-[0-9a-f]{6}"),
+    ],
+    ids=[
+        "plain",
+        "surrounding-spaces",
+        "surrounding-tabs",
+        "surrounding-nonbreaking-spaces",
+        "unsafe-characters",
+        "trimmed",
+        "nothing-left",
+        "too-long",
+    ],
+)
+def test_prefix_is_made_from_the_server_name(name: str, prefix: str) -> None:
+    config = convert(SourceServer(name, "/cfg.json", "stdio", command="run")).config
+
+    assert config is not None
+    assert config.name == name.strip()
+    assert re.fullmatch(prefix, config.tool_name_prefix)
+
+
+@pytest.mark.parametrize(
+    "names",
+    [("a" * 30 + "1", "a" * 30 + "2"), ("github", "github-"), ("docs.mcp", "docs_mcp")],
+    ids=["same-start", "trimmed", "replaced"],
+)
+def test_names_that_end_up_alike_get_different_prefixes(names: tuple[str, str]) -> None:
+    configs = [convert(SourceServer(name, "/c", "stdio", command="run")).config for name in names]
+
+    assert all(configs)
+    assert len({config.tool_name_prefix for config in configs if config}) == 2
+
+
+def test_a_later_same_named_server_replaces_the_whole_earlier_one() -> None:
+    low = _stdio(env={"A": ("1",)})
+    other = SourceServer("other", "/cfg.json", "stdio", command="x")
+    high = SourceServer("srv", "/p.json", "stdio", command="y")
+
+    assert by_name([low, other, high]) == [other, high]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("", {}), ("  \n", {}), ('﻿{"a": 1}', {"a": 1})],
+    ids=["empty", "blank", "bom"],
+)
+def test_parse_json_object_reads_blank_and_bom_files(text: str, expected: dict) -> None:
+    assert parse_json_object(text) == expected
+
+
+def test_parse_json_object_reports_where_it_failed() -> None:
+    with pytest.raises(SourceReadError) as caught:
+        parse_json_object('{\n  "a": ,\n}')
+
+    assert (caught.value.kind, caught.value.line, caught.value.column) == (SourceErrorKind.UNPARSABLE, 2, 8)
+
+
+def test_parse_json_object_refuses_a_document_that_is_not_an_object() -> None:
+    with pytest.raises(SourceReadError) as caught:
+        parse_json_object("[]")
+
+    assert caught.value.kind is SourceErrorKind.INVALID
+
+
+def test_a_commondir_reaching_its_folder_by_another_name_is_not_followed(tmp_path: Path) -> None:
+    owner, worktree = tmp_path / "owner", tmp_path / "wt"
+    admin = owner / ".git" / "worktrees" / "wt"
+    admin.mkdir(parents=True)
+    worktree.mkdir()
+    (owner / "child").mkdir()
+    (tmp_path / "trusted").mkdir()
+    # Through links (where they resolve before ".."), commondir names owner/.git; spelled out, tmp/trusted.
+    symlink_or_skip(tmp_path / "link", owner / "child", target_is_directory=True)
+    symlink_or_skip(owner / "trusted", owner / ".git", target_is_directory=True)
+    (admin / "commondir").write_text(f"{tmp_path / 'link' / '..' / 'trusted'}\n", encoding="utf-8")
+    (admin / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+    (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+
+    assert (linked_common_dir(str(worktree)), main_checkout(str(worktree))) == (None, None)
+
+
+def test_a_git_file_reaching_the_worktrees_folder_by_another_name_is_not_followed(tmp_path: Path) -> None:
+    repo, worktree = tmp_path / "repo", tmp_path / "wt"
+    admin = repo / ".git" / "worktrees" / "wt"
+    admin.mkdir(parents=True)
+    worktree.mkdir()
+    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+    (admin / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+    # Spelled through the link, "../.." from the worktree's Git folder names repo, not repo/.git.
+    symlink_or_skip(repo / "alias", repo / ".git" / "worktrees", target_is_directory=True)
+    (worktree / ".git").write_text(f"gitdir: {repo / 'alias' / 'wt'}\n", encoding="utf-8")
+
+    assert (linked_common_dir(str(worktree)), main_checkout(str(worktree))) == (None, None)
+    # The same worktree, its Git file as Git writes it.
+    (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+    assert (linked_common_dir(str(worktree)), main_checkout(str(worktree))) == (str(repo / ".git"), str(repo))

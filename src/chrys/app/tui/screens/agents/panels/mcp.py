@@ -82,7 +82,7 @@ from chrys.app.tui.widgets import EnhancedInput as Input
 from chrys.app.tui.widgets.config_card import CardListChanged, CollapsibleConfigCard
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar, sanitize_terminal_block
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.command_line import join_windows_command_line, split_windows_command_line
 from chrys.service.mcp.adapter import (
@@ -102,6 +102,15 @@ _MCP_SERVER_SUBJECT = msg("tui.mcp.connection_test.subject", fallback="MCP Serve
 _WAIT_BEFORE_ADDING = msg(
     "tui.mcp.wait_before_adding",
     fallback="Wait for MCP connection tests to finish before adding servers.",
+)
+_WAIT_BEFORE_IMPORTING = msg(
+    "tui.mcp.wait_before_importing",
+    fallback="Wait for MCP connection tests to finish before importing servers.",
+)
+_IMPORTED = msg(
+    "tui.mcp.imported",
+    fallback="Imported {count} MCP server. Review it, then click Save.",
+    plural_fallback="Imported {count} MCP servers. Review them, then click Save.",
 )
 _WAIT_BEFORE_REMOVING = msg(
     "tui.mcp.wait_before_removing",
@@ -233,6 +242,7 @@ _WORKING_DIRECTORY_PLACEHOLDER = msg(
 _HTTP_OPTIONS = msg("tui.mcp.http_options", fallback="HTTP Options")
 _STDIO_OPTIONS = msg("tui.mcp.stdio_options", fallback="STDIO Options")
 _ADD = msg("tui.mcp.add", fallback="+ Add")
+_IMPORT = msg("tui.mcp.import", fallback="Import from Other Apps")
 _SERVERS = msg("tui.mcp.servers", fallback="MCP Servers")
 _SERVERS_DESCRIPTION = msg(
     "tui.mcp.servers_description",
@@ -291,6 +301,10 @@ _NO_URL_CONFIGURED = msg(
 _CONNECTED_VIA = msg(
     "tui.mcp.connection_report.connected_via",
     fallback="Connected via {transport}: {target}",
+)
+_REPORT_WORKING_DIRECTORY = msg(
+    "tui.mcp.connection_report.working_directory",
+    fallback="Working directory: {cwd}",
 )
 _TOOLS_EXPOSED = msg(
     "tui.mcp.connection_report.tools_exposed",
@@ -806,14 +820,21 @@ class MCPConnectionCard(CollapsibleConfigCard):
         return parsed
 
     def compose(self) -> ComposeResult:
-        cfg = self._config
-        localizer = widget_localizer(self)
+        yield from self.compose_title_row()
+        yield from self.compose_fields()
+
+    def compose_title_row(self) -> ComposeResult:
+        """The header row: all a folded card shows."""
         yield from self.compose_header(
-            self._header_title(cfg.name),
+            self._header_title(self._config.name),
             row_class="mcp-header-row",
             title_class="mcp-title",
         )
 
+    def compose_fields(self) -> ComposeResult:
+        """The foldable body with every field of the server."""
+        cfg = self._config
+        localizer = widget_localizer(self)
         with self.card_body():
             with Vertical(classes="mcp-field"):
                 yield Label(render_str(localizer, _TRANSPORT.bind()), classes="mcp-label")
@@ -1643,7 +1664,7 @@ class MCPConnectionCard(CollapsibleConfigCard):
         return errors
 
     def _render_message(self, reference: MessageRef) -> str:
-        return render_str(widget_localizer(self), reference)
+        return sanitize_terminal_block(render_str(widget_localizer(self), reference))
 
     def _render_context_error(self, context: str, reference: MessageRef) -> str:
         return self._render_message(
@@ -1739,10 +1760,16 @@ class MCPConfigPanel(VerticalScroll):
         height: auto;
         margin: 0 1 0 0;
     }
-    MCPConfigPanel #mcp-add-btn {
+    MCPConfigPanel #mcp-add-btn, MCPConfigPanel #mcp-import-btn {
         min-width: 10;
         height: 1;
         margin: 0;
+    }
+    MCPConfigPanel #mcp-import-btn {
+        margin: 0 0 0 2;
+    }
+    MCPConfigPanel .mcp-header-actions {
+        height: auto;
     }
     MCPConfigPanel .mcp-header-bar {
         height: auto;
@@ -1774,6 +1801,7 @@ class MCPConfigPanel(VerticalScroll):
             for index, server in enumerate(servers)
         ]
         self._read_only = read_only
+        self._workspace_cwd = workspace_cwd or None
         self._additional_reserved_tool_names = additional_reserved_tool_names
         self._reuse_choices = reuse_choices
         self._testing: set[int] = set()
@@ -1784,7 +1812,7 @@ class MCPConfigPanel(VerticalScroll):
         super().__init__()
 
     def _render_message(self, reference: MessageRef) -> str:
-        return render_str(widget_localizer(self), reference)
+        return sanitize_terminal_block(render_str(widget_localizer(self), reference))
 
     def _current_reserved_tool_names(self) -> set[str]:
         names = chrys_reserved_tool_names()
@@ -1802,10 +1830,14 @@ class MCPConfigPanel(VerticalScroll):
         with Vertical(classes="mcp-header-bar"), Vertical(classes="mcp-field"):
             yield Label(render_str(localizer, _SERVERS.bind()), classes="mcp-section-title")
             yield Label(render_str(localizer, _SERVERS_DESCRIPTION.bind()), classes="mcp-section-desc")
-            add_button = ConfigAddButton(render_str(localizer, _ADD.bind()), id="mcp-add-btn")
-            add_button.disabled = self._read_only
-            add_button.display = not self._read_only
-            yield add_button
+            with Horizontal(classes="mcp-header-actions"):
+                for button in (
+                    ConfigAddButton(render_str(localizer, _ADD.bind()), id="mcp-add-btn"),
+                    ConfigAddButton(render_str(localizer, _IMPORT.bind()), id="mcp-import-btn"),
+                ):
+                    button.disabled = self._read_only
+                    button.display = not self._read_only
+                    yield button
         yield Vertical(id="mcp-cards")
 
     async def on_mount(self) -> None:
@@ -1888,6 +1920,45 @@ class MCPConfigPanel(VerticalScroll):
         self.scroll_home(animate=False)
         self.post_message(CardListChanged())
 
+    @on(Button.Pressed, "#mcp-import-btn")
+    def _on_import(self, _event: Button.Pressed) -> None:
+        if self._read_only or self._refuse_while_testing(_WAIT_BEFORE_IMPORTING):
+            return
+        # A second press queued behind the first would open a second dialog over it.
+        if self.screen is not self.app.screen:
+            return
+        from chrys.app.tui.screens.agents.import_mcp_dialog import ImportMcpServersDialog
+
+        existing = [row.config for row in self._snapshot_rows(preserve_blank_names=True)]
+        dialog = ImportMcpServersDialog(
+            workspace_cwd=self._workspace_cwd,
+            existing=existing,
+            locale_controller=widget_locale_controller(self),
+        )
+        self.app.push_screen(dialog, callback=self._import_selected)
+
+    async def _import_selected(self, configs: list[MCPServerConfig] | None) -> None:
+        if not configs or self._read_only:
+            return
+        if not self.is_attached or self._pruning or self._closing:
+            return
+        if not composed_live(self.screen) or self.screen is not self.app.screen:
+            return
+        if self._refuse_while_testing(_WAIT_BEFORE_IMPORTING):
+            return
+        self._rows = self._snapshot_rows(preserve_blank_names=True)
+        self._rows[0:0] = [_MCPServerRow(config, collapsed=False) for config in configs]
+        await self._rebuild_cards()
+        self.scroll_home(animate=False)
+        self.post_message(CardListChanged())
+        # Closing the window discards unsaved servers, imported ones included.
+        localizer = widget_localizer(self)
+        self.notify(
+            render_str(localizer, _IMPORTED.bind(count=len(configs))),
+            title=render_str(localizer, _MCP_TITLE.bind()),
+            markup=False,
+        )
+
     def _refuse_while_testing(self, reason: MessageDef) -> bool:
         """Tell the user why the card list can't change yet; tests hold card indexes until they finish."""
         if not self._testing:
@@ -1946,7 +2017,9 @@ class MCPConfigPanel(VerticalScroll):
         with contextlib.suppress(Exception):
             server_name = card.query_one(f"#mcp-name-{index}", Input).value.strip()
 
-        dialog = ConnectionTestDialog(server_name=server_name, subject_label=_MCP_SERVER_SUBJECT.bind())
+        dialog = ConnectionTestDialog(
+            server_name=sanitize_legacy_scalar(server_name), subject_label=_MCP_SERVER_SUBJECT.bind()
+        )
         self.app.push_screen(dialog)
 
         try:
@@ -2076,7 +2149,7 @@ class MCPConfigPanel(VerticalScroll):
         else:
             friendly = render_message(_CONNECTION_FAILED.bind())
 
-        return f"{friendly}\n\n{raw}"
+        return sanitize_terminal_block(f"{friendly}\n\n{raw}")
 
     def _shows(self, card: MCPConnectionCard) -> bool:
         """Whether *card* is one of the mounted cards; a rebuild replaces them all, and re-indexes the new ones."""
@@ -2198,15 +2271,21 @@ def _format_mcp_report(
     sections = [
         _server_heading(report, render_message),
         _connection_caption(config, render_message),
-        f"### {render_message(_CAPABILITIES_HEADING.bind())}",
-        _mcp_capabilities_section(report.capabilities, render_message),
-        f"### {render_message(_INSTRUCTIONS_HEADING.bind())}",
-        _instructions_section(report.instructions, render_message),
-        f"### {render_message(_TOOLS_HEADING.bind())}",
-        _tools_section(report, render_message),
-        f"### {render_message(_PROMPTS_HEADING.bind())}",
-        _prompts_section(config, report, render_message),
     ]
+    if config.transport == "stdio" and report.effective_cwd is not None:
+        sections.append(render_message(_REPORT_WORKING_DIRECTORY.bind(cwd=code_span(report.effective_cwd))))
+    sections.extend(
+        [
+            f"### {render_message(_CAPABILITIES_HEADING.bind())}",
+            _mcp_capabilities_section(report.capabilities, render_message),
+            f"### {render_message(_INSTRUCTIONS_HEADING.bind())}",
+            _instructions_section(report.instructions, render_message),
+            f"### {render_message(_TOOLS_HEADING.bind())}",
+            _tools_section(report, render_message),
+            f"### {render_message(_PROMPTS_HEADING.bind())}",
+            _prompts_section(config, report, render_message),
+        ]
+    )
     if report.initial_tool_names is not None:
         sections.extend(
             (
