@@ -1,0 +1,128 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
+
+:root {
+  color-scheme: light dark;
+  font: 13px system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  padding: 14px;
+  min-width: 340px;
+  background: Canvas;
+  color: CanvasText;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.hint {
+  margin: 0 0 12px;
+  color: GrayText;
+  line-height: 1.4;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+}
+
+.origin {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.badge.allow {
+  background: #d9f5df;
+  color: #0a6b2d;
+}
+
+.badge.ask {
+  background: #fff1cc;
+  color: #7a5a00;
+}
+
+.badge.block {
+  background: #ffd9d9;
+  color: #8a1010;
+}
+
+.actions {
+  display: flex;
+  gap: 4px;
+}
+
+.add {
+  display: flex;
+  gap: 4px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+}
+
+.add input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, CanvasText 35%, transparent);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.manage {
+  width: 100%;
+  margin-top: 10px;
+}
+
+button {
+  border: 1px solid color-mix(in srgb, CanvasText 35%, transparent);
+  border-radius: 5px;
+  padding: 3px 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.active {
+  border-color: #2b6cb0;
+  color: #2b6cb0;
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  .badge.allow {
+    background: #123d20;
+    color: #9be7b0;
+  }
+
+  .badge.ask {
+    background: #3d3212;
+    color: #f2d27a;
+  }
+
+  .badge.block {
+    background: #461616;
+    color: #f3a0a0;
+  }
+
+  button.active {
+    border-color: #7aa7d9;
+    color: #9cc4f0;
+  }
+}

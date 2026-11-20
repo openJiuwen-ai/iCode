@@ -1,0 +1,134 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
+
+body {
+  max-width: 720px;
+  min-width: 0;
+  margin: 28px auto;
+}
+
+.hero {
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 10px;
+}
+
+.hero h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.hero p {
+  margin: 0 0 12px;
+  color: GrayText;
+  line-height: 1.5;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.status.wait {
+  background: #fff1cc;
+  color: #7a5a00;
+}
+
+.status.ok {
+  background: #d9f5df;
+  color: #0a6b2d;
+}
+
+.steps {
+  margin: 18px 0;
+  padding-left: 22px;
+  line-height: 1.6;
+}
+
+.steps li {
+  margin: 10px 0;
+}
+
+.steps code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, CanvasText 10%, transparent);
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.task {
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 10px;
+}
+
+.task h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+#sample-prompt {
+  margin: 0 0 10px;
+  padding: 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, CanvasText 8%, transparent);
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.checklist {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.checklist li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 5px 0;
+  color: GrayText;
+}
+
+.checklist .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: color-mix(in srgb, CanvasText 25%, transparent);
+}
+
+.checklist li.done {
+  color: inherit;
+}
+
+.checklist li.done .dot {
+  background: #2f855a;
+}
+
+.note {
+  color: GrayText;
+  line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  .status.wait {
+    background: #3d3212;
+    color: #f2d27a;
+  }
+
+  .status.ok {
+    background: #123d20;
+    color: #9be7b0;
+  }
+}
