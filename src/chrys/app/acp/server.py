@@ -879,6 +879,9 @@ class ChrysAcpServer:
                         sessionUpdate="current_mode_update", currentModeId=result.mode or mode_id
                     ),
                 )
+            if result.prejudge_warning is not None:
+                with contextlib.suppress(Exception):
+                    await self._send_warning(session_id, result.prejudge_warning)
         return acp_schema.SetSessionModeResponse()
 
     async def set_session_model(

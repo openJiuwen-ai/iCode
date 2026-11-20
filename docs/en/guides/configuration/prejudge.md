@@ -2,7 +2,7 @@
 
 iCode can optionally inspect Bash commands using Tree-sitter and literal YAML rules before ordinary tool approval. It is **off by default** and returns only **ALLOW** or **DEFER**. ALLOW offers an automatic-approval shortcut; DEFER continues through existing approval. Pre-Judge does not deny commands. Existing Hooks, approval policy, the read-only shortcut, DAA (the existing authorization-reuse mechanism), remembered grants, and the **pre-execution** Shell Command Filter retain their existing behavior.
 
-Place `prejudge.yaml` in iCode's trusted user configuration directory (`~/.chrys/prejudge.yaml` on macOS/Linux). Workspace files do not provide rules.
+Place `prejudge.yaml` in iCode's trusted user configuration directory (`~/.chrys/prejudge.yaml` on macOS/Linux). The user policy applies across profiles and workspaces using that configuration directory.
 
 ```yaml
 schema_version: 1
@@ -40,7 +40,23 @@ Use `mode: "off"`, `mode: "shadow"`, or `mode: "enforce"`. Unquoted `mode: off` 
 
 The **AST matchers** support only Bash / Git Bash. Unsupported shells (zsh, sh, dash, PowerShell, cmd.exe), redirections, dynamic expansions, globs, and most control-flow constructs DEFER. The unsupported-dialect warning states that structured ALLOW is inactive and that the existing read-only shortcut still applies. For example, zsh `ls` and PowerShell `Get-ChildItem` retain their existing read-only approval. Matching uses literal command words without normalizing executable paths: a rule for `rm` does not match `/bin/rm`. Opaque wrappers such as `command`, `env` and `time` also DEFER to existing approval. Pre-Judge is an approval shortcut, not a shell security boundary.
 
-**Dependencies:** enabled configurations require the optional Tree-sitter parser packages `tree-sitter==0.25.1` and `tree-sitter-bash==0.25.1`. The packages must be installed for the running Python/platform; the normal `off` mode does not import them. The dependency lock and Linux offline-bundle verification are separate release gates.
+### Install the optional parser
+
+Install the pinned packages into the Python 3.14 environment that runs iCode. The standard wheel and offline binary omit the optional parsers. Off mode works without them.
+
+| Installation | Command |
+| --- | --- |
+| Source checkout | `uv sync --locked`, then `uv run icode` |
+| uv tool | `uv tool install --reinstall --python 3.14 --with tree-sitter==0.25.1 --with tree-sitter-bash==0.25.1 iCode-TUI` |
+| pipx, after installing iCode-TUI | `pipx inject iCode-TUI "tree-sitter==0.25.1" "tree-sitter-bash==0.25.1"` |
+
+To verify the pins, run `python -c "from importlib.metadata import version; print(version('tree-sitter'), version('tree-sitter-bash'))"` in that environment. In a source checkout use `uv run python`. For a uv tool installation, `uv tool dir` locates the `icode-tui` environment. For pipx use `pipx runpip iCode-TUI show tree-sitter tree-sitter-bash`. For a wheel installation, install the parser pins into the same environment as the wheel. Use a managed Python installation when an offline binary has no supported way to install the parsers.
+
+### Isolated launch
+
+An eligible Bash or Git Bash call runs the original command in the configured shell with `--noprofile --norc`. The child environment drops `BASH_ENV`, `ENV`, and all `BASH_FUNC_*` entries. iCode checks the original text and decoded arguments for sensitive targets. A bare command or a supported pipeline or compound statement can qualify when every command matches a rule.
+
+Ordinary approval and BYPASS retain their normal launch settings. A command using an inherited Bash function or startup script can behave differently when the structured shortcut is used. The shortcut trusts system startup state and the user-supplied environment and executables, including `PATH`. Relative lookup entries and executable locations inside the known workspace DEFER. Keep trusted programs and search directories outside locations the agent can change. Inherited state and external programs can change independently of the tool call. Opaque carriers such as `open`, `osascript`, and shell builtins that change execution state DEFER even if a broad rule matches.
 
 ### Approval and execution boundaries
 
@@ -48,13 +64,13 @@ The **AST matchers** support only Bash / Git Bash. Unsupported shells (zsh, sh, 
 - **BYPASS skips structured Pre-Judge entirely, including shadow logging.** Both `icode run` and `icode workflow run` use BYPASS; `prejudge.yaml` does not change their approval behavior, and a BYPASS invocation does not validate the file.
 - **Human-edited approvals are not re-evaluated.** When a person edits and approves a command, the new command is not evaluated again by Pre-Judge or LLM Judge. The edited command still goes through `before_tool_call` Hooks and the configured Shell Command Filter.
 - **The Shell Command Filter checks the final command after approval and before the process starts.** BYPASS or human approval does not override it. However, this filter matches literal command names only and is **not a sandbox**: a blacklist of `[rm]` does not block every way to invoke `rm` (for example, `$'rm'`, `/bin/rm`, or `env rm`).
-- **DEFER does not guarantee a human dialog.** Profile overrides, remembered authorization grants, and the AUTO LLM judge may still approve and execute the tool call.
+- **Approval order.** Mandatory sensitive-data checks take precedence. An eligible structured ALLOW or legacy read-only shortcut can satisfy a profile's `shell: require` before remembered authorization (DAA), the AUTO judge or manual approval. After DEFER, these existing paths can still approve the call. See [Configure approvals](./approval.md).
 
 **Policy lifetime:** Approval middleware sharing an EventBus uses one trusted policy snapshot. In the TUI, this lasts for the entire iCode process: `/new`, restoring a chat, or switching agents does not reload `prejudge.yaml`. Exit and restart iCode to apply edits. Main-agent, sub-agent, and workflow middleware use the same snapshot. If iCode begins in BYPASS, the snapshot is taken only after switching to MANUAL/AUTO.
 
-If that first switch fails to load the policy, the requested MANUAL/AUTO mode still takes effect. The error is logged, and structured ALLOW and the read-only shortcut stay disabled for that EventBus lifetime; ordinary approval decides subsequent calls. Fix the configuration or parser installation and restart iCode to retry loading. Invalid enabled policies at ordinary startup still raise a path-qualified error.
+If that first switch fails to load the policy, the requested MANUAL/AUTO mode still takes effect. The TUI or ACP client receives a warning with the configuration path. Structured ALLOW stays disabled for this policy snapshot and ordinary approval, including the read-only shortcut, continues. Fix the YAML or parser installation and restart iCode to retry loading. Invalid enabled policies at ordinary startup raise a path-qualified error.
 
-**Shadow diagnostics:** At INFO level, Shadow logs the decision, reason, policy/rule IDs, matched spans, and a one-line representation of the command (truncated to 512 characters). Command text can include secrets; restrict access to these logs and avoid passing sensitive literal tokens.
+**Shadow diagnostics.** Shadow uses the same eligibility calculation as enforce mode and leaves approval unchanged. In the TUI, look for `shadow route=` in `logs/debug.log` under the iCode configuration directory. ACP keeps INFO off stderr. To observe ACP Shadow decisions, opt in with `CHRYS_OTEL=true` and leave the telemetry endpoint and sensitive-data collection unset. With local telemetry, look in the session's `otel/logs.jsonl`. INFO includes the decision, reason, policy/rule IDs and matched spans. DEBUG can include an escaped command preview of up to 512 characters. The headless CLI uses BYPASS.
 
 ### Compatibility and limitations
 

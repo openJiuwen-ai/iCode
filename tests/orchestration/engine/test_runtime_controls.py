@@ -390,12 +390,24 @@ async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass_as_
 
 
 @pytest.mark.parametrize("mode", [ApprovalMode.MANUAL, ApprovalMode.AUTO])
+@pytest.mark.parametrize("failure", ["yaml", "rule", "grammar"])
 async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation(
-    monkeypatch: pytest.MonkeyPatch, mode: ApprovalMode
+    monkeypatch: pytest.MonkeyPatch, mode: ApprovalMode, failure: str
 ) -> None:
+    from chrys.service.approval import prejudge_v2
+
+    def missing_grammar() -> None:
+        raise RuntimeError("Missing Tree-sitter grammar")
+
     config = get_platform().config_dir / "prejudge.yaml"
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text('mode: "enforce"\nrules: [\n', encoding="utf-8")
+    content = "schema_version: 1\nmode: enforce\npolicy_id: sample\n"
+    if failure == "grammar":
+        monkeypatch.setattr(prejudge_v2, "_ensure_bash_parser", missing_grammar)
+    config.write_text(
+        content + {"yaml": "rules: [", "rule": "rules: [{id: incomplete}]", "grammar": "rules: []"}[failure],
+        encoding="utf-8",
+    )
     bus = EventBus()
     engine = assemble_agent_engine(bus, settings=Settings(), initial_approval_mode=ApprovalMode.BYPASS)
     tool = FunctionTool(name="bash")
@@ -420,7 +432,7 @@ async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation
         await bus.publish(ApprovalResponse(request_id=request.request_id, approved=False))
 
     async def execute() -> None:
-        pytest.fail("A failed policy load must not retain BYPASS or enable the readonly shortcut")
+        pytest.fail("A failed policy load must not retain BYPASS")
 
     await bus.subscribe(SetApprovalMode, engine._on_set_approval_mode)
     await bus.subscribe(ApprovalModeUpdated, updated)
@@ -435,8 +447,12 @@ async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation
         assert sub_agents._approval_mode is mode
         workflow_nodes.assert_called_once_with(mode)
         assert [event.mode for event in updates] == [mode.value]
+        warning = updates[0].prejudge_warning
+        assert warning is not None
+        assert warning.code == "prejudge_unavailable"
+        assert str(config) in warning.message and "restart iCode" in warning.message
         for middleware in (main, child):
-            await middleware.process(FunctionInvocationContext(tool, {"command": "ls"}), execute)
+            await middleware.process(FunctionInvocationContext(tool, {"command": "unconfigured_tool"}), execute)
         assert len(requests) == 2
     finally:
         await main.close()

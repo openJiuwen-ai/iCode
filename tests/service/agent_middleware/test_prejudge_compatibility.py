@@ -21,6 +21,7 @@ from chrys.service.approval import prejudge_v2
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.tools.builtins import shell_filter
+from tests.support.prejudge import require_grammars
 
 
 def _write_policy() -> Path:
@@ -37,8 +38,7 @@ def _write_policy() -> Path:
 
 @pytest.fixture
 def allow_policy() -> Path:
-    pytest.importorskip("tree_sitter")
-    pytest.importorskip("tree_sitter_bash")
+    require_grammars("tree_sitter", "tree_sitter_bash")
     return _write_policy()
 
 
@@ -198,16 +198,22 @@ async def test_leaving_bypass_with_bad_policy_requires_ordinary_approval(
 
     try:
         with caplog.at_level(logging.ERROR, logger=approval_module.__name__ + ".prejudge"):
-            first.set_approval_mode(mode)
+            assert first.set_approval_mode(mode) == path
         assert first.approval_mode is mode
         assert str(path) in caplog.text
-        second.set_approval_mode(mode)
+        assert second.set_approval_mode(mode) is None
         middlewares.append(ApprovalMiddleware(policy, bus, approval_mode=mode))
+        readonly_calls = []
+
+        async def readonly() -> None:
+            readonly_calls.append("ls")
+
         for middleware in middlewares:
             assert middleware.approval_mode is mode
-            for command in ("ls", "rm -rf build"):
-                await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
-        assert len(requests) == 6
+            await middleware.process(FunctionInvocationContext(tool, {"command": "ls"}), readonly)
+            await middleware.process(FunctionInvocationContext(tool, {"command": "unconfigured_tool"}), execute)
+        assert readonly_calls == ["ls", "ls", "ls"]
+        assert len(requests) == 3
     finally:
         for middleware in middlewares:
             await middleware.close()

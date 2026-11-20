@@ -56,6 +56,7 @@ from chrys.service.approval.arbitration import ApprovalDecisionArbiter, Approval
 from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.approval.prejudge_v2 import Policy, Route, load_policy, route
+from chrys.service.approval.prejudge_v2.execution import isolated_shell_call, prepare_shell
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedReuse
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
@@ -79,7 +80,6 @@ _prejudge_logger = logging.getLogger(__name__ + ".prejudge")
 @dataclass(frozen=True, slots=True)
 class _PrejudgeSnapshot:
     policy: Policy
-    available: bool = True
 
 
 # Main, sub-agent and workflow middleware sharing an EventBus use one
@@ -88,21 +88,37 @@ class _PrejudgeSnapshot:
 _session_prejudge_policies: WeakKeyDictionary[EventBus, _PrejudgeSnapshot] = WeakKeyDictionary()
 
 
-def _session_prejudge_policy(event_bus: EventBus, mode: ApprovalMode) -> _PrejudgeSnapshot:
+def _session_prejudge_policy(
+    event_bus: EventBus, mode: ApprovalMode, *, report_shadow_failure: bool = False
+) -> _PrejudgeSnapshot:
     if mode is ApprovalMode.BYPASS:
         # No policy validation, imports or shadow observation in BYPASS.
         # Delay the first snapshot until the session enters MANUAL/AUTO.
         return _PrejudgeSnapshot(Policy("off", "", ()))
     cached = _session_prejudge_policies.get(event_bus)
     if cached is None:
-        cached = _PrejudgeSnapshot(load_policy(get_platform().config_dir / "prejudge.yaml"))
+        path = get_platform().config_dir / "prejudge.yaml"
+        policy = load_policy(path, report_shadow_failure=True) if report_shadow_failure else load_policy(path)
+        cached = _PrejudgeSnapshot(policy)
         _session_prejudge_policies[event_bus] = cached
     return cached
 
 
 def _shadow_command_preview(command: str) -> str:
     """One-line, bounded command text for local shadow diagnostics."""
-    return repr(command[:512]) + (" [truncated]" if len(command) > 512 else "")
+    limit = 512
+    preview = ascii(command[:limit])
+    suffix = " [truncated]"
+    if len(preview) <= limit and len(command) <= limit:
+        return preview
+    left, right = 0, min(len(command), limit)
+    while left < right:
+        mid = (left + right + 1) // 2
+        if len(ascii(command[:mid])) <= limit - len(suffix):
+            left = mid
+        else:
+            right = mid - 1
+    return ascii(command[:left]) + suffix
 
 
 if TYPE_CHECKING:
@@ -371,7 +387,7 @@ class ApprovalMiddleware(FunctionMiddleware):
     def _user_messages(self) -> list[str]:
         return self._turn_context.user_messages
 
-    def set_approval_mode(self, mode: ApprovalMode) -> None:
+    def set_approval_mode(self, mode: ApprovalMode) -> Path | None:
         """Update the active approval mode.
 
         Only affects subsequent tool calls — in-flight requests keep the
@@ -381,17 +397,21 @@ class ApprovalMiddleware(FunctionMiddleware):
         self._approval_mode = mode
         if previous is ApprovalMode.BYPASS and mode is not ApprovalMode.BYPASS:
             # A policy error must never retain BYPASS or prevent propagation
-            # to child/workflow middleware. Cache the failed snapshot too,
-            # so later middleware uses ordinary approval without shortcuts.
+            # to child/workflow middleware. Cache a disabled structured
+            # policy and keep the independent ordinary approval path.
             try:
-                self._prejudge_snapshot = _session_prejudge_policy(self._bus, mode)
-            except Exception:
-                self._prejudge_snapshot = _PrejudgeSnapshot(Policy("off", "", ()), available=False)
+                self._prejudge_snapshot = _session_prejudge_policy(self._bus, mode, report_shadow_failure=True)
+            except Exception as exc:
+                self._prejudge_snapshot = _PrejudgeSnapshot(Policy("off", "", ()))
                 _session_prejudge_policies[self._bus] = self._prejudge_snapshot
-                _prejudge_logger.exception(
-                    "Cannot load structured Pre-Judge while leaving BYPASS; "
-                    "ordinary approval applies with structured and readonly shortcuts disabled"
+                path = get_platform().config_dir / "prejudge.yaml"
+                _prejudge_logger.error(
+                    "Cannot load Pre-Judge policy at %s (%s). Check its YAML and parser installation, then restart iCode.",
+                    path,
+                    type(exc).__name__,
                 )
+                return path
+        return None
 
     @property
     def _prejudge(self) -> Policy:
@@ -428,55 +448,57 @@ class ApprovalMiddleware(FunctionMiddleware):
         policy_requires_approval = self._policy.should_require_approval(
             tool_name, tool_kind, tool_requires_approval=declares_requires_approval(context.function)
         )
-        pre_route = None
+        prepared_shell = None
         prejudge_scoped = (
             tool_kind == KIND_SHELL and self._prejudge.mode != "off" and self._approval_mode != ApprovalMode.BYPASS
         )
         if prejudge_scoped:
             cmd = _shell_command_text(context.arguments)
-            if not cmd and self._prejudge.mode == "enforce":
-                # Without command text no structured ALLOW is possible;
-                # record the deferral to ordinary approval.
-                _prejudge_logger.info(
-                    "enforce route=defer reason=no_command_text policy=%s",
-                    self._prejudge.policy_id,
-                )
+            mode = self._prejudge.mode
             if cmd:
                 # ShellTools assigns the actual launched shell's name to its
                 # FunctionTool, including a deliberately selected Git Bash.
                 # The user's $SHELL is not necessarily the executed dialect.
-                if self._prejudge.mode == "shadow":
-                    try:
-                        observed = route(cmd, tool_name, self._prejudge)
-                        _prejudge_logger.info(
-                            "shadow route=%s reason=%s policy=%s digest=%s rules=%s spans=%s command=%s",
-                            observed.route,
-                            observed.reason_code,
-                            observed.policy_id,
-                            observed.analysis_digest,
-                            observed.matched_rule_ids,
-                            observed.matched_node_spans,
-                            _shadow_command_preview(cmd),
+                try:
+                    observed = route(cmd, tool_name, self._prejudge)
+                    sensitive = sensitive_shell or observed.sensitive
+                    if mode == "enforce":
+                        sensitive_shell = sensitive
+                    reason = observed.reason_code
+                    if sensitive:
+                        reason = "sensitive_target"
+                    elif observed.route is Route.ALLOW:
+                        if not policy_requires_approval or dev_sub_agent_review:
+                            reason = "ordinary_policy"
+                        elif not isinstance(context.arguments, dict):
+                            reason = "unsupported_arguments"
+                        else:
+                            prepared_shell = prepare_shell(
+                                tool_name, cmd, observed.executables, tuple(self._workspace_roots)
+                            )
+                            if prepared_shell is None:
+                                reason = "untrusted_launch_context"
+                    _prejudge_logger.info(
+                        "%s route=%s reason=%s policy=%s digest=%s rules=%s spans=%s",
+                        mode,
+                        Route.ALLOW if prepared_shell is not None else Route.DEFER,
+                        reason,
+                        observed.policy_id,
+                        observed.analysis_digest,
+                        observed.matched_rule_ids,
+                        observed.matched_node_spans,
+                    )
+                    if mode == "shadow" and _prejudge_logger.isEnabledFor(logging.DEBUG):
+                        _prejudge_logger.debug(
+                            "shadow digest=%s command=%s", observed.analysis_digest, _shadow_command_preview(cmd)
                         )
-                    except Exception:
-                        _prejudge_logger.exception("shadow pre-judge evaluation failed")
-                else:
-                    try:
-                        pre_route = route(cmd, tool_name, self._prejudge)
-                    except Exception:
-                        # A runtime failure is UNKNOWN, never a successful
-                        # allow. Invalid/missing configured dependencies are
-                        # rejected at policy initialization, not here.
-                        _prejudge_logger.exception("enforce pre-judge evaluation failed; deferring")
-                    if pre_route is not None:
-                        _prejudge_logger.info(
-                            "enforce route=%s reason=%s policy=%s digest=%s rules=%s",
-                            pre_route.route,
-                            pre_route.reason_code,
-                            pre_route.policy_id,
-                            pre_route.analysis_digest,
-                            pre_route.matched_rule_ids,
-                        )
+                except Exception:
+                    prepared_shell = None
+                    _prejudge_logger.exception("%s pre-judge evaluation failed; deferring", mode)
+            else:
+                _prejudge_logger.info("%s route=defer reason=no_command_text policy=%s", mode, self._prejudge.policy_id)
+            if mode == "shadow":
+                prepared_shell = None
         if (
             not policy_requires_approval
             and not dev_sub_agent_review
@@ -487,19 +509,7 @@ class ApprovalMiddleware(FunctionMiddleware):
             await call_next()
             return
 
-        # Structured ALLOW is an additional shortcut after ordinary policy
-        # and mandatory context checks. DEFER retains the existing flow.
-        if (
-            pre_route is not None
-            and pre_route.route is Route.ALLOW
-            and not dev_sub_agent_review
-            and not sensitive_shell
-            and isinstance(context.arguments, dict)
-            and not shell_command_may_access_sensitive_data(
-                context.arguments.get("command", ""),
-                shell_name=tool_name,
-            )
-        ):
+        if prepared_shell is not None:
             self._decisions.append(
                 _decision(
                     request_id="",
@@ -509,12 +519,17 @@ class ApprovalMiddleware(FunctionMiddleware):
                     tool_order=tool_order,
                 )
             )
-            await call_next()
+            token = isolated_shell_call.set(prepared_shell)
+            try:
+                await call_next()
+            finally:
+                prepared_shell.active = False
+                isolated_shell_call.reset(token)
             return
 
         # Auto-approve safe read-only shell commands (e.g. ls, cat, grep)
         # without showing the approval dialog.
-        if tool_kind == KIND_SHELL and self._prejudge_snapshot.available:
+        if tool_kind == KIND_SHELL and not sensitive_shell:
             raw = context.arguments
             cmd = raw.get("command", "") if isinstance(raw, dict) else ""
             if cmd:

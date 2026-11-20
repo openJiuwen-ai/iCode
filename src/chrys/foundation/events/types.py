@@ -992,6 +992,7 @@ class ApprovalModeUpdated(Event):
     """
 
     mode: str = ""  # "manual" | "auto" | "bypass"
+    prejudge_warning: Warning | None = None
 
 
 @dataclass

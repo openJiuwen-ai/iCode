@@ -128,6 +128,8 @@ The following operations usually run without an approval dialog:
 
 Shell commands and file reads or writes that access sensitive targets such as `.env` files, credentials, and private keys still go through approval, even for read-only operations or writes within a Git working directory. This protection applies in manual and automatic modes. Bypass mode skips these approval protections.
 
+An optional [Structured Shell Pre-Judge](./prejudge.md) user policy applies across profiles and workspaces. Its eligible shortcuts and the legacy read-only shortcut can satisfy `approval.overrides.shell: require` before iCode looks for remembered grants or calls the AUTO judge. Mandatory sensitive-target checks and the independent Shell Command Filter still apply. After a Pre-Judge DEFER, existing approval paths can still approve the call.
+
 Skill scripts run locally with the current user's permissions, without sandbox isolation, so they request approval by default. When the session uses bypass mode, skill scripts run without asking. Before installing or running a third-party skill, review its `SKILL.md`, scripts, and related files to make sure they are trustworthy.
 
 Web tools send requests to outside services, so the `web_search` and `web_fetch` kinds also request approval by default, even when the agent's `approval.default` is `auto`. Explicit `approval.overrides` rules for these kinds or tool names still take precedence. In automatic mode the approval judge model may approve them, and in bypass mode they run without asking. Provider-run search, such as DeepSeek's server-side `web_search`, happens on the provider's side and is not covered by these approval rules. See [Configure web tools](./web-tools.md#approve-web-tool-calls).

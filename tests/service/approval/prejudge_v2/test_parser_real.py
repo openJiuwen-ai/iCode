@@ -3,21 +3,12 @@
 
 from __future__ import annotations
 
-import importlib.util
-import os
-
 import pytest
 
 from chrys.service.approval.prejudge_v2 import Route, analyze, load_policy, route
+from tests.support.prejudge import require_grammars
 
-# These tests are a release gate, not an optional smoke test, on CI.
-# Local development without native parser packages may still skip the module.
-if os.environ.get("CI") and (
-    importlib.util.find_spec("tree_sitter") is None or importlib.util.find_spec("tree_sitter_bash") is None
-):
-    raise RuntimeError("CI requires the pinned Tree-sitter dependencies; real-parser tests must not skip")
-pytest.importorskip("tree_sitter")
-pytest.importorskip("tree_sitter_bash")
+require_grammars("tree_sitter", "tree_sitter_bash")
 
 
 @pytest.mark.parametrize(
@@ -62,7 +53,7 @@ def test_unsupported_commands_cannot_be_fully_allowed(cmd):
     assert not result.coverage_complete
 
 
-@pytest.mark.parametrize("dialect", ["zsh", "pwsh", "cmd", "dash"])
+@pytest.mark.parametrize("dialect", ["cmd", "dash", "fish", "sh"])
 def test_unsupported_shell_dialect_is_explicit_defer(dialect):
     result = analyze("git status", dialect=dialect)
     assert "unsupported_dialect" in result.unsupported

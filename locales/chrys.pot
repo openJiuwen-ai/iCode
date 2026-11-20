@@ -185,6 +185,13 @@ msgstr ""
 msgid "controls.no_registry"
 msgstr ""
 
+#. English: Structured Pre-Judge is disabled. Check the YAML at {path} and the
+#. parser installation, then restart iCode.
+#. chrys-meta={"fingerprint":"9c0b7075c60845652446644c3d50b96d5011368efe7d7de5f55735f4630e00fa","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.prejudge_unavailable"
+msgstr ""
+
 #. English: Profile '{profile_name}' not found
 #. chrys-meta={"fingerprint":"0c6f503382f9dadc03c5be8a54d14d2a0afd859daed9573268b8e29010830f85","multiline":false,"placeholders":["profile_name"]}
 #: src/chrys/orchestration/engine/state/controls.py

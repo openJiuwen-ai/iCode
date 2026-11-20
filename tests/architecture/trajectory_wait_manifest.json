@@ -1875,7 +1875,8 @@
       ],
       "RuntimeControls.on_set_approval_mode": [
         ["awaitable", "await self._bus.publish(Warning(code='approval_default_save_failed', message=str(exc), display_message=exc.display if isinstance(exc, ConfigError) else None, session_id=self._session.session_id))", "unresolved"],
-        ["awaitable", "await self._bus.publish(ApprovalModeUpdated(mode=mode.value, session_id=self._session.session_id))", "unresolved"]
+        ["awaitable", "await self._bus.publish(prejudge_warning)", "unresolved"],
+        ["awaitable", "await self._bus.publish(ApprovalModeUpdated(mode=mode.value, session_id=self._session.session_id, prejudge_warning=prejudge_warning))", "unresolved"]
       ],
       "RuntimeControls.on_set_model_profile": [
         ["awaitable", "await self._bus.publish(Error(code='runtime_mutation_not_ready', message='No active agent \u2014 cannot switch model', display_message=_CONTROLS_MODEL_SWITCH_NOT_READY.bind(), session_id=self._session.session_id))", "unresolved"],

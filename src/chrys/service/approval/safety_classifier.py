@@ -506,6 +506,19 @@ def shell_command_may_access_sensitive_data(command: str, *, shell_name: str = "
     return _shell_command_may_access_sensitive_data(command, shell_name=shell_name, depth=0)
 
 
+def shell_argv_may_access_sensitive_data(argv: tuple[str, ...], *, shell_name: str) -> bool:
+    """Inspect decoded argv in addition to the original shell source."""
+    for token in argv:
+        if target_may_access_sensitive_data(token):
+            return True
+        if shell_name in {"powershell", "pwsh", "git_bash"}:
+            # A drive prefix, provider qualifier or stream suffix may border a path component.
+            normalized = "/".join(part.rstrip(" .") for part in re.split(r"[/:\\]", token))
+            if target_may_access_sensitive_data(normalized):
+                return True
+    return shell_command_may_access_sensitive_data(" ".join(argv), shell_name=shell_name)
+
+
 def _parsed_args(raw_args: Any) -> dict[str, Any]:
     """Return dict-like tool arguments when possible."""
     if isinstance(raw_args, dict):

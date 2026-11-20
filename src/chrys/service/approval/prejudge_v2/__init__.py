@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -17,6 +18,15 @@ from typing import Any, Literal
 
 import yaml
 from yaml.resolver import BaseResolver
+
+from chrys.service.approval.safety_classifier import (
+    shell_argv_may_access_sensitive_data,
+    shell_command_may_access_sensitive_data,
+)
+
+from ._analysis import Analysis as Analysis
+from ._analysis import CommandNode as CommandNode
+from ._analysis import covered
 
 logger = logging.getLogger(__name__)
 
@@ -47,22 +57,6 @@ class Route(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class CommandNode:
-    source_span: tuple[int, int]
-    argv: tuple[str, ...] | None
-    prefix: tuple[str, ...]
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class Analysis:
-    syntax_valid: bool
-    coverage_complete: bool
-    executable_nodes: tuple[CommandNode, ...]
-    unsupported: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class PreJudgeResult:
     route: Route
     reason_code: str
@@ -70,6 +64,8 @@ class PreJudgeResult:
     matched_node_spans: tuple[tuple[int, int], ...]
     policy_id: str
     analysis_digest: str
+    executables: tuple[str, ...] = ()
+    sensitive: bool = False
 
 
 MatcherField = Literal["argv_exact", "argv_first"]
@@ -106,48 +102,56 @@ def _warn_unsupported_dialect(dialect: str) -> None:
     )
 
 
+_BASH_DIALECTS = frozenset({"bash", "git_bash"})
 _OPAQUE = frozenset(
     {
         ".",
+        "[",
+        "alias",
         "bash",
         "builtin",
+        "cd",
         "chrt",
         "command",
         "dash",
         "doas",
+        "declare",
+        "enable",
         "env",
         "eval",
         "exec",
+        "export",
         "find",
+        "getopts",
+        "hash",
+        "history",
         "ionice",
+        "let",
+        "mapfile",
         "nice",
         "nohup",
+        "open",
+        "osascript",
+        "popd",
+        "pushd",
+        "read",
+        "readarray",
+        "readonly",
+        "set",
         "sh",
+        "shopt",
         "source",
         "stdbuf",
         "su",
         "sudo",
+        "test",
         "time",
         "timeout",
         "trap",
+        "typeset",
+        "unalias",
+        "unset",
         "xargs",
-    }
-)
-_DYNAMIC = frozenset(
-    {
-        "brace_expression",
-        "glob_pattern",
-        "extglob_pattern",
-        "word_expansion",
-        "expansion",
-        "simple_expansion",
-        "command_substitution",
-        "process_substitution",
-        "arithmetic_expansion",
-        "variable_assignment",
-        "heredoc_redirect",
-        "heredoc_body",
-        "here_string",
     }
 )
 _CONTAINERS = frozenset(
@@ -160,6 +164,17 @@ _CONTAINERS = frozenset(
     }
 )
 _QUOTED = frozenset({"string", "raw_string", "ansi_c_string", "word", "number", "concatenation", "command_name"})
+_HORIZONTAL = b" \t"
+_LAYOUT = b" \t\n"
+_CONTROL = re.compile(rb"[^\x20-\x7e\t\n]")
+_ESCAPED_LAYOUT = re.compile(rb"\\[ \t\n]")
+_CONTAINER_PUNCTUATION = {
+    "program": {b";"},
+    "list": {b"&&", b"||"},
+    "pipeline": {b"|"},
+    "compound_statement": {b"{", b";", b"}"},
+    "subshell": {b"(", b";", b")"},
+}
 
 
 def _digest(command: str, dialect: str) -> str:
@@ -286,17 +301,37 @@ def _literal_word(raw: str) -> str | None:
             continue
         if ch in ("$", chr(96), "*", "?", "[", "{", "}", "~", ";", "&", "|", "(", ")", "<", ">"):
             return None
-        if ch.isspace():
+        if ch in " \t\n#":
             return None
         result.append(ch)
         i += 1
     return "".join(result)
 
 
-def _dynamic(node: Any) -> bool:
-    if node.type in _DYNAMIC or node.type in {"ERROR", "MISSING"} or node.is_missing:
-        return True
-    return any(_dynamic(child) for child in node.named_children)
+def _bash_word_shape(node: Any, data: bytes) -> bool:
+    """Accept only literal subtrees, including their anonymous delimiters."""
+    pending = [node]
+    while pending:
+        part = pending.pop()
+        children = part.children
+        if part.type in {"word", "number", "raw_string", "ansi_c_string", "string_content"}:
+            if children:
+                return False
+        elif part.type in {"command_name", "concatenation"}:
+            if not children or not covered(part, data, b"") or any(not child.is_named for child in children):
+                return False
+            pending.extend(children)
+        elif part.type == "string":
+            if (
+                len(children) < 2
+                or children[0].type != '"'
+                or children[-1].type != '"'
+                or any(child.type != "string_content" or child.children for child in children[1:-1])
+            ):
+                return False
+        else:
+            return False
+    return True
 
 
 def _parse_command(node: Any, data: bytes) -> CommandNode:
@@ -304,30 +339,25 @@ def _parse_command(node: Any, data: bytes) -> CommandNode:
     head = node.child_by_field_name("name")
     if head is None:
         return CommandNode((node.start_byte, node.end_byte), None, (), text)
-    words = [head]
-    # Assignments and redirects are not argv.
-    for child in node.named_children:
-        if child.id == head.id:
-            continue
-        if child.type in _QUOTED:
-            words.append(child)
+    children = node.children
+    complete = bool(children and children[0].id == head.id and covered(node, data, _HORIZONTAL))
     prefix: list[str] = []
-    prefix_reliable = True
-    # Assignment prefixes and redirections prevent certifying complete argv.
-    # Retain the static head to identify opaque command wrappers.
-    complete = all(child.type in _QUOTED or child.id == head.id for child in node.named_children)
-    for word in words:
-        raw = data[word.start_byte : word.end_byte].decode("utf-8")
-        if _dynamic(word):
+    for index, word in enumerate(children):
+        field = "name" if word.id == head.id else "argument"
+        if (
+            not word.is_named
+            or word.type not in _QUOTED
+            or node.field_name_for_child(index) != field
+            or (index and word.start_byte <= children[index - 1].end_byte)
+            or not _bash_word_shape(word, data)
+        ):
             complete = False
-            prefix_reliable = False
             continue
+        raw = data[word.start_byte : word.end_byte].decode("ascii")
         token = _literal_word(raw)
         if token is None:
             complete = False
-            prefix_reliable = False
-            continue
-        if prefix_reliable:
+        elif (field == "name" and not prefix) or complete:
             prefix.append(token)
     return CommandNode(
         (node.start_byte, node.end_byte),
@@ -346,7 +376,7 @@ def _language() -> Any:
 
 
 def analyze(command: str, *, dialect: str = "bash") -> Analysis:
-    if dialect not in {"bash", "git_bash"}:
+    if dialect not in _BASH_DIALECTS:
         return Analysis(False, False, (), ("unsupported_dialect",))
     try:
         data = command.encode("utf-8")
@@ -354,7 +384,12 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
         return Analysis(False, False, (), ("parse_error",))
     if len(data) > 65536:
         return Analysis(False, False, (), ("limit_exceeded",))
-    contains_line_continuation = b"\\\n" in data
+    if _CONTROL.search(data):
+        return Analysis(False, False, (), ("unsupported_input",))
+    if _ESCAPED_LAYOUT.search(data):
+        return Analysis(False, False, (), ("line_continuation",))
+    if b'$"' in data:
+        return Analysis(False, False, (), ("locale_translation",))
     try:
         from tree_sitter import Parser
     except ImportError as exc:
@@ -365,8 +400,8 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
         return Analysis(False, False, (), ("parse_error",))
     nodes: list[CommandNode] = []
     unsupported: list[str] = []
-    if contains_line_continuation:
-        unsupported.append("line_continuation")
+    if (data[: root.start_byte] + data[root.end_byte :]).strip(_LAYOUT):
+        unsupported.append("unaccounted_source")
     pending = [(root, 0)]
     count = 0
     while pending:
@@ -382,24 +417,23 @@ def analyze(command: str, *, dialect: str = "bash") -> Analysis:
                 unsupported.append("parse_error")
                 continue
             nodes.append(_parse_command(node, data))
-            if any(c.type not in _QUOTED and c.type != "command_name" for c in node.named_children):
-                unsupported.append("unsupported_construct")
-            # Substitutions make the whole command ineligible for ALLOW.
-            for child in reversed(node.named_children):
-                if _dynamic(child):
-                    unsupported.append("dynamic_word")
-                    pending.extend((c, depth + 1) for c in reversed(child.named_children))
             continue
-        if node.type not in _CONTAINERS and node.type != "comment":
+        if node.type not in _CONTAINERS:
             unsupported.append(node.type)
-        # Keep unsupported constructs visible in the analysis.
-        pending.extend((child, depth + 1) for child in reversed(node.named_children))
+        elif not covered(node, data, _LAYOUT):
+            unsupported.append("unaccounted_source")
+        allowed = _CONTAINER_PUNCTUATION.get(node.type, ())
+        for child in reversed(node.children):
+            if child.is_named:
+                pending.append((child, depth + 1))
+            elif data[child.start_byte : child.end_byte] not in allowed:
+                unsupported.append("unsupported_punctuation")
     nodes.sort(key=lambda item: item.source_span)
     if not nodes:
         unsupported.append("no_commands")
     if any(n.argv is None for n in nodes):
         unsupported.append("dynamic_word")
-    if any(n.prefix and n.prefix[0] in _OPAQUE for n in nodes):
+    if any(_opaque(n.prefix) for n in nodes):
         unsupported.append("opaque_carrier")
     return Analysis(not root.has_error, not unsupported, tuple(nodes), tuple(dict.fromkeys(unsupported)))
 
@@ -471,7 +505,7 @@ def _matches(matcher: Matcher, node: CommandNode) -> bool:
     return node.argv == matcher.tokens
 
 
-def load_policy(path: Path) -> Policy:
+def load_policy(path: Path, *, report_shadow_failure: bool = False) -> Policy:
     """Load the trusted policy; never require a parser to turn it off."""
     if not path.exists():
         return Policy("off", "", ())
@@ -494,7 +528,7 @@ def load_policy(path: Path) -> Policy:
         return _compile_enabled_policy(content, mode)
     except Exception as exc:
         message = f"Pre-Judge policy {path}: {exc}"
-        if isinstance(content, dict) and content.get("mode") == "shadow":
+        if not report_shadow_failure and isinstance(content, dict) and content.get("mode") == "shadow":
             logger.warning("%s; disabling shadow observation", message, exc_info=True)
             return Policy("off", "", ())
         if isinstance(exc, RuntimeError):
@@ -502,16 +536,27 @@ def load_policy(path: Path) -> Policy:
         raise ValueError(message) from exc
 
 
+def _opaque(argv: tuple[str, ...]) -> bool:
+    if not argv:
+        return False
+    head = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    return head in _OPAQUE or (
+        head == "printf" and (argv[1:2] == ("-v",) or any(re.search(r"%[-+ #'0-9.*]*n", arg) for arg in argv[1:]))
+    )
+
+
 def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
     digest = _digest(command, dialect)
     if policy.mode == "off":
         return PreJudgeResult(Route.DEFER, "off", (), (), policy.policy_id, digest)
     analysis = analyze(command, dialect=dialect)
-    if dialect not in {"bash", "git_bash"}:
+    if dialect not in _BASH_DIALECTS:
         _warn_unsupported_dialect(dialect)
     matched: list[str] = []
     spans: list[tuple[int, int]] = []
     all_allowed = analysis.coverage_complete
+    reason = analysis.unsupported[0] if analysis.unsupported else "unmatched_unit"
+    sensitive = shell_command_may_access_sensitive_data(command, shell_name=dialect)
     for node in analysis.executable_nodes:
         allowed = False
         for rule in policy.rules:
@@ -522,13 +567,18 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
                 allowed = True
         if not allowed:
             all_allowed = False
-    if all_allowed:
-        return PreJudgeResult(Route.ALLOW, "all_units_allowed", tuple(matched), tuple(spans), policy.policy_id, digest)
+        if node.argv is not None and shell_argv_may_access_sensitive_data(node.argv, shell_name=dialect):
+            sensitive = True
+    if sensitive:
+        all_allowed = False
+        reason = "sensitive_target"
     return PreJudgeResult(
-        Route.DEFER,
-        analysis.unsupported[0] if analysis.unsupported else "unmatched_unit",
+        Route.ALLOW if all_allowed else Route.DEFER,
+        "all_units_allowed" if all_allowed else reason,
         tuple(matched),
         tuple(spans),
         policy.policy_id,
         digest,
+        tuple(node.argv[0] for node in analysis.executable_nodes if node.argv) if all_allowed else (),
+        sensitive,
     )

@@ -122,6 +122,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "controls.reload_shutdown",
     "controls.reload_superseded",
     "controls.reload_unavailable_model",
+    "controls.prejudge_unavailable",
     "controls.reload_done",
     "controls.reload_hooks_kept",
     "controls.reload_hooks_partly_loaded",
