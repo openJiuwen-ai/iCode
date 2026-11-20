@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for ACP config-option get/set, settings scoping, and project-settings warnings."""
+"""Tests for ACP config-option get/set, settings scoping, and workdir-settings warnings."""
 
 from __future__ import annotations
 
@@ -32,12 +32,12 @@ from tests.app.acp._session_manager_fakes import (
 )
 
 
-def _dormant_project(tmp_path) -> Path:
-    """A project dir holding a settings file that only a trusted project would apply."""
-    project = tmp_path / "project"
-    (project / ".chrys").mkdir(parents=True)
-    (project / ".chrys" / "settings.yaml").write_text("session:\n  title:\n    auto: false\n", encoding="utf-8")
-    return project
+def _dormant_workdir(tmp_path) -> Path:
+    """A workdir dir holding a settings file that only a trusted workdir would apply."""
+    workdir = tmp_path / "workdir"
+    (workdir / ".chrys").mkdir(parents=True)
+    (workdir / ".chrys" / "settings.yaml").write_text("session:\n  title:\n    auto: false\n", encoding="utf-8")
+    return workdir
 
 
 def test_set_config_option_stores_newline_value_without_injection(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -116,16 +116,16 @@ def test_two_concurrent_config_writes_both_reach_the_base_settings(monkeypatch: 
     assert (base["theme"], base["default_agent"]) == ("dark", "Reviewer")
 
 
-def test_session_loaded_settings_derives_each_sessions_own_project_root(
+def test_session_loaded_settings_derives_each_sessions_own_workdir_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """Two sessions in two roots each get their own project trust domain,
-    and neither leaks into the manager's deliberately project-free base."""
+    """Two sessions in two roots each get their own workdir trust domain,
+    and neither leaks into the manager's deliberately workdir-free base."""
     manager = _manager(None, _StaticListStore([]))
     _redirect_config_dir(monkeypatch, tmp_path / "config")
     monkeypatch.delenv("CHRYS_SESSION_TITLE_AUTO", raising=False)
     (tmp_path / "config").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "config" / "settings.yaml").write_text("project:\n  config_enabled: true\n", encoding="utf-8")
+    (tmp_path / "config" / "settings.yaml").write_text("workdir:\n  config_enabled: true\n", encoding="utf-8")
     quiet = tmp_path / "quiet"
     (quiet / ".chrys").mkdir(parents=True)
     (quiet / ".chrys" / "settings.yaml").write_text("session:\n  title:\n    auto: false\n", encoding="utf-8")
@@ -137,7 +137,7 @@ def test_session_loaded_settings_derives_each_sessions_own_project_root(
     loud_loaded = manager._session_loaded_settings(str(loud))
 
     assert quiet_loaded.settings.session_title_auto is False
-    assert quiet_loaded.source_for("session.title.auto").layer is Source.PROJECT
+    assert quiet_loaded.source_for("session.title.auto").layer is Source.WORKDIR
     assert loud_loaded.settings.session_title_auto is True
     assert manager._loaded_settings.settings.session_title_auto is True
     # The launch-time timeout stays the CLI layer's, not a re-read's.
@@ -145,35 +145,35 @@ def test_session_loaded_settings_derives_each_sessions_own_project_root(
 
 
 @pytest.mark.asyncio
-async def test_new_session_collects_project_settings_warnings(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_new_session_collects_workdir_settings_warnings(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """Session creation runs outside any prompt turn, so the load's verdicts
-    reach the caller through the collector — here, a dormant project file."""
+    reach the caller through the collector — here, a dormant workdir file."""
     _redirect_config_dir(monkeypatch, tmp_path / "config")
-    project = _dormant_project(tmp_path)
+    workdir = _dormant_workdir(tmp_path)
     freeze_process_env()
     manager = _manager(None, JsonFileStateStore(tmp_path / "sessions"))
     _StartedHost.instances = []
     monkeypatch.setattr(session_manager_module, "ChrysSessionHost", _StartedHost)
     warnings: list[Warning] = []
 
-    await manager.new_session(cwd=str(project), mcp_servers=None, warnings=warnings)
+    await manager.new_session(cwd=str(workdir), mcp_servers=None, warnings=warnings)
 
-    assert [event.code for event in warnings] == ["project_config_dormant"]
+    assert [event.code for event in warnings] == ["workdir_config_dormant"]
 
 
 @pytest.mark.asyncio
-async def test_load_session_collects_project_settings_warnings(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_load_session_collects_workdir_settings_warnings(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """The committed restore load's verdicts reach the caller through the
     same collector new_session uses."""
     _redirect_config_dir(monkeypatch, tmp_path / "config")
-    project = _dormant_project(tmp_path)
+    workdir = _dormant_workdir(tmp_path)
     freeze_process_env()
     store = JsonFileStateStore(tmp_path / "sessions")
     await store.save_session(
-        "project-session",
-        {"messages": [Message("user", ["hello project"])]},
+        "workdir-session",
+        {"messages": [Message("user", ["hello workdir"])]},
         agent_profile="Code",
-        primary_cwd=str(project),
+        primary_cwd=str(workdir),
     )
     manager = _manager(None, store)
     _StartedHost.instances = []
@@ -181,11 +181,11 @@ async def test_load_session_collects_project_settings_warnings(monkeypatch: pyte
     warnings: list[Warning] = []
 
     loaded = await manager.load_session(
-        cwd=str(project), session_id="project-session", mcp_servers=None, warnings=warnings
+        cwd=str(workdir), session_id="workdir-session", mcp_servers=None, warnings=warnings
     )
 
     assert loaded.reused_existing is False
-    assert [event.code for event in warnings] == ["project_config_dormant"]
+    assert [event.code for event in warnings] == ["workdir_config_dormant"]
 
 
 @pytest.mark.asyncio
@@ -196,14 +196,14 @@ async def test_load_session_reports_the_committed_restore_loads_warnings(
     pre-restore snapshot and that committed load must be reported as the
     session will actually run — the committed verdicts, not the snapshot's."""
     _redirect_config_dir(monkeypatch, tmp_path / "config")
-    project = _dormant_project(tmp_path)
+    workdir = _dormant_workdir(tmp_path)
     freeze_process_env()
     store = JsonFileStateStore(tmp_path / "sessions")
     await store.save_session(
-        "project-session",
-        {"messages": [Message("user", ["hello project"])]},
+        "workdir-session",
+        {"messages": [Message("user", ["hello workdir"])]},
         agent_profile="Code",
-        primary_cwd=str(project),
+        primary_cwd=str(workdir),
     )
     manager = _manager(None, store)
     _StartedHost.instances = []
@@ -218,9 +218,9 @@ async def test_load_session_reports_the_committed_restore_loads_warnings(
     monkeypatch.setattr(session_manager_module, "ChrysSessionHost", _RestoringHost)
     warnings: list[Warning] = []
 
-    await manager.load_session(cwd=str(project), session_id="project-session", mcp_servers=None, warnings=warnings)
+    await manager.load_session(cwd=str(workdir), session_id="workdir-session", mcp_servers=None, warnings=warnings)
 
-    assert [event.code for event in warnings] == ["setting_unknown_keys", "project_config_dormant"]
+    assert [event.code for event in warnings] == ["setting_unknown_keys", "workdir_config_dormant"]
 
 
 def test_two_concurrent_model_writes_leave_the_pointer_agreeing_with_the_document(

@@ -29,7 +29,7 @@ from chrys.service.acp_client.client import AcpAgentClient
 from chrys.service.acp_client.errors import AcpConnectError
 from chrys.service.profiles.agents.schema import AcpAgentConfig, AgentProfile
 from chrys.service.trajectory.session import trajectory_events_path
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, run, write_workflow
 from tests.support.acp_fixtures import STUB_SCRIPT
 from tests.support.trajectory_invariants import assert_trajectory_accounted, assert_trajectory_operation_settlement
 from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT
@@ -39,7 +39,7 @@ from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT
 async def test_acp_waits_rebind_to_each_attempt_after_successful_body_and_failed_edge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     external = AgentProfile(
         name="External",
         acp=AcpAgentConfig(

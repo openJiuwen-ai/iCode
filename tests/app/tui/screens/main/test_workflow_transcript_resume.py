@@ -23,7 +23,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -42,7 +42,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_resume_replays_node_progress_without_live_state_or_workflow_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     target = project / "input.txt"
     target.write_text("Archived tool result [literal]")

@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from chrys.foundation.models.session_surface import SessionSurface, parse_session_surface
+from chrys.foundation.models.workdir_migration import source_edit
 from chrys.foundation.models.workflow_session import (
     WorkflowIdentity,
     WorkflowModelSelection,
@@ -16,6 +17,7 @@ from chrys.foundation.models.workflow_session import (
     WorkspaceSnapshot,
 )
 from chrys.service.session.runtime_metadata import SessionUsageMetadata
+from chrys.service.workflows.discovery import SOURCE_KINDS
 
 
 def _mapping(value: Any, name: str) -> dict[str, Any]:
@@ -76,11 +78,12 @@ class WorkflowSessionState:
     @classmethod
     def decode(cls, value: Any) -> WorkflowSessionState:
         data = _mapping(value, "state")
-        identity_data = _mapping(data.get("identity"), "identity")
+        identity_data = _mapping(data.get("identity"), "identity").copy()
         workspace = _mapping(data.get("workspace"), "workspace")
         summary = _mapping(data.get("summary"), "summary")
+        source_edit(identity_data)
         source_kind = _text(identity_data.get("source_kind"), "source_kind")
-        if source_kind not in {"builtin", "global", "project"}:
+        if source_kind not in SOURCE_KINDS:
             raise ValueError("Invalid workflow state: unknown source_kind.")
         identity = WorkflowIdentity(
             _text(identity_data.get("workflow_id"), "workflow_id", nonblank=True),

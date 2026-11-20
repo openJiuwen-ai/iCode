@@ -106,18 +106,18 @@ icode uninstall
 
 iCode 的数据保存在 `~/.chrys`（Windows 上是 `%APPDATA%\chrys`），包括设置、API 密钥、模型配置、智能体、Skill 和会话等。卸载时会保留这个文件夹。如需连同其中的全部内容一并删除，请运行 `icode uninstall --purge`；如果把会话保存在了其他文件夹，那里的 `sessions` 文件夹也会删除。用 uv 安装的，请在运行 `uv tool uninstall` 之前执行，那时 `icode` 命令还在。加上 `--yes` 可跳过确认。
 
-## 2. 在项目中启动 iCode
+## 2. 在工作目录中启动 iCode
 
 建议在使用 Git 管理或能够安全恢复的项目中开始本教程。在让智能体修改文件前，请先保存尚未写入磁盘的内容，并使用 Git commit 记录已有变更，以便区分智能体所做的修改，并在需要时恢复到修改前的状态。
 
-在终端中进入要处理的项目目录并启动 iCode：
+在终端中进入要处理的工作目录并启动 iCode：
 
 ```shell
-cd <project-directory>
+cd <working-directory>
 icode
 ```
 
-将 `<project-directory>` 替换为项目目录的实际路径。启动后如需切换目录，请参阅[工作目录](../guides/daily-use/workspaces.md)。
+将 `<working-directory>` 替换为工作目录的实际路径。启动后如需切换目录，请参阅[工作目录](../guides/daily-use/workspaces.md)。
 
 iCode 会先显示 `Starting iCode...`，并在准备期间显示加载界面。进入主界面后，主界面会继续显示加载状态，直到智能体准备就绪。
 

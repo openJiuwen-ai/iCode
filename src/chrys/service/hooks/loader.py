@@ -149,65 +149,65 @@ def load_hooks_dir(config_dir: Path) -> HooksFile:
     return load_hooks_file(candidates[0]) if candidates else HooksFile()
 
 
-def load_hooks_project(project_root: Path) -> HooksFile | None:
-    """Load ``<project_root>/.chrys/hooks/hooks.{yaml,yml,json}`` if present.
+def load_workdir_hooks(workdir: Path) -> HooksFile | None:
+    """Load ``<workdir>/.chrys/hooks/hooks.{yaml,yml,json}`` if present.
 
-    Mirrors :func:`load_hooks_dir` for the project tree. Returns ``None``
-    when no project file is found. Per-file parse and IO errors raise
+    Mirrors :func:`load_hooks_dir` for the working directory tree. Returns ``None``
+    when no working directory file is found. Per-file parse and IO errors raise
     so the caller (the engine start path) can decide whether to warn-
     and-continue or fail hard.
 
     The file-naming precedence matches :func:`load_hooks_dir`:
     ``hooks.yaml`` > ``hooks.yml`` > ``hooks.json``.
     """
-    candidates = hooks_file_candidates(project_hooks_dir(project_root))
+    candidates = hooks_file_candidates(workdir_hooks_dir(workdir))
     return load_hooks_file(candidates[0]) if candidates else None
 
 
-def project_hooks_dir(project_root: Path) -> Path:
-    """The folder a session started in *project_root* reads project hooks from."""
-    return project_root / ".chrys" / "hooks"
+def workdir_hooks_dir(workdir: Path) -> Path:
+    """The folder a session started in *workdir* reads working directory hooks from."""
+    return workdir / ".chrys" / "hooks"
 
 
 def merge_hooks_files(
-    project: HooksFile | None,
+    workdir: HooksFile | None,
     global_: HooksFile | None,
 ) -> MergedHooksFile:
-    """Combine a project-level and a global-level :class:`HooksFile`.
+    """Combine a working-directory and a global-level :class:`HooksFile`.
 
     Rules:
 
-    - ``hooks`` ordering: project entries first (in project YAML order),
+    - ``hooks`` ordering: working directory entries first (in working directory YAML order),
       then global entries (in global YAML order). No id-based dedup
       across files; a same-id collision is allowed and both hooks run
-      (project first), with a ``WARNING`` logged at load time.
-    - ``settings``: per-field merge. A field set in the project file
+      (working directory first), with a ``WARNING`` logged at load time.
+    - ``settings``: per-field merge. A field set in the working directory file
       wins; otherwise the global field; otherwise the dataclass default.
     - ``sources``: list of included source paths in load order.
     - Either input may be ``None`` (file not found). The result is still
       a valid :class:`MergedHooksFile`.
 
     The "first block short-circuits" rule applies to the combined
-    ``hooks`` list as a single chain, so a project block ends the
+    ``hooks`` list as a single chain, so a working directory block ends the
     chain before any global hook runs.
     """
-    if _same_source_file(project, global_):
-        project = None
+    if _same_source_file(workdir, global_):
+        workdir = None
 
-    settings = _merge_settings(project, global_)
+    settings = _merge_settings(workdir, global_)
     hooks: list[HookConfig] = []
-    if project is not None:
-        hooks.extend(project.hooks)
+    if workdir is not None:
+        hooks.extend(workdir.hooks)
     if global_ is not None:
         hooks.extend(global_.hooks)
     sources: list[str] = []
-    if project is not None and project.source:
-        sources.append(project.source)
+    if workdir is not None and workdir.source:
+        sources.append(workdir.source)
     if global_ is not None and global_.source:
         sources.append(global_.source)
-    _warn_on_id_collisions(project, global_)
+    _warn_on_id_collisions(workdir, global_)
     return MergedHooksFile(
-        project=project,
+        workdir=workdir,
         global_=global_,
         settings=settings,
         hooks=hooks,
@@ -215,11 +215,11 @@ def merge_hooks_files(
     )
 
 
-def _same_source_file(project: HooksFile | None, global_: HooksFile | None) -> bool:
-    """Return True when project/global inputs came from the same hooks file."""
-    if project is None or global_ is None or not project.source or not global_.source:
+def _same_source_file(workdir: HooksFile | None, global_: HooksFile | None) -> bool:
+    """Return True when working directory/global inputs came from the same hooks file."""
+    if workdir is None or global_ is None or not workdir.source or not global_.source:
         return False
-    return same_hooks_file(Path(project.source), Path(global_.source))
+    return same_hooks_file(Path(workdir.source), Path(global_.source))
 
 
 def same_hooks_file(first: Path, second: Path) -> bool:
@@ -231,8 +231,8 @@ def same_hooks_file(first: Path, second: Path) -> bool:
         return first.resolve() == second.resolve()
 
 
-def _merge_settings(project: HooksFile | None, global_: HooksFile | None) -> HookSettings:
-    """Per-field merge: project wins, then global, then defaults.
+def _merge_settings(workdir: HooksFile | None, global_: HooksFile | None) -> HookSettings:
+    """Per-field merge: working directory wins, then global, then defaults.
 
     Only settings explicitly present in each source file participate in the
     merge; implicit dataclass defaults from an omitted ``settings`` block must
@@ -241,8 +241,8 @@ def _merge_settings(project: HooksFile | None, global_: HooksFile | None) -> Hoo
     base = HookSettings()
     if global_ is not None:
         base = _apply_explicit_settings(base, global_.settings, global_.settings_overrides)
-    if project is not None:
-        base = _apply_explicit_settings(base, project.settings, project.settings_overrides)
+    if workdir is not None:
+        base = _apply_explicit_settings(base, workdir.settings, workdir.settings_overrides)
     return base
 
 
@@ -255,7 +255,7 @@ def _apply_explicit_settings(base: HookSettings, settings: HookSettings, explici
 
 
 def _warn_on_id_collisions(
-    project: HooksFile | None,
+    workdir: HooksFile | None,
     global_: HooksFile | None,
 ) -> None:
     """Emit a WARNING for each id that appears in both files.
@@ -264,22 +264,22 @@ def _warn_on_id_collisions(
     this warning is purely informational. To suppress a global hook,
     set ``enabled: false`` in the global file.
     """
-    if project is None or global_ is None:
+    if workdir is None or global_ is None:
         return
-    project_ids = {h.id for h in project.hooks if h.id}
+    workdir_ids = {h.id for h in workdir.hooks if h.id}
     global_ids = {h.id for h in global_.hooks if h.id}
-    collisions = project_ids & global_ids
+    collisions = workdir_ids & global_ids
     if not collisions:
         return
     for hook_id in sorted(collisions):
-        logger.warning("Hook id %r is %s", hook_id, id_collision_warning(project.source, global_.source))
+        logger.warning("Hook id %r is %s", hook_id, id_collision_warning(workdir.source, global_.source))
 
 
-def id_collision_warning(project_source: str, global_source: str) -> str:
-    """What a hook id defined in both the project and the global file means."""
+def id_collision_warning(workdir_source: str, global_source: str) -> str:
+    """What a hook id defined in both the working directory and the global file means."""
     return (
-        f"defined in both project ({project_source}) and global ({global_source}) hooks configs. Both will run, "
-        "project first. To suppress the global hook, set 'enabled: false' in the global file."
+        f"defined in both working directory ({workdir_source}) and global ({global_source}) hooks configs. Both will run, "
+        "working directory first. To suppress the global hook, set 'enabled: false' in the global file."
     )
 
 

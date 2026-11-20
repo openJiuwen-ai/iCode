@@ -1,6 +1,6 @@
 # iCode 设置文件参考
 
-`settings.yaml` 保存 iCode 的界面偏好、默认智能体、会话和工具设置。本文按用途列出常用设置键，并说明文件位置与格式、值的写法、多个来源并存时的优先级，以及项目文件可以覆盖的范围。
+`settings.yaml` 保存 iCode 的界面偏好、默认智能体、会话和工具设置。本文按用途列出常用设置键，并说明文件位置与格式、值的写法、多个来源并存时的优先级，以及工作目录文件可以覆盖的范围。
 
 在终端用户界面（Terminal User Interface，TUI）中修改设置的步骤和生效时间，见[配置 iCode 设置](../guides/configuration/settings.md)。
 
@@ -9,7 +9,9 @@
 | 配置来源 | macOS / Linux | Windows | 用途 |
 | --- | --- | --- | --- |
 | 用户设置 | `~/.chrys/settings.yaml` | `%APPDATA%\chrys\settings.yaml` | 保存个人设置；TUI 设置窗口写入此文件 |
-| 项目设置 | 工作目录下的 `.chrys/settings.yaml` | 同左 | 覆盖该工作目录的部分设置，默认不加载 |
+| 工作目录设置 | 工作目录下的 `.chrys/settings.yaml` | 同左 | 覆盖该工作目录的部分设置，默认不加载 |
+
+升级前请退出所有正在运行的 iCode 实例。iCode 会一次性改写设置、审批文件和工作流记录中的旧名称，并将原文件保存在 `<config_dir>/backups/<version>/`。旧版无法使用改写后的数据或新版保存的数据，包括待执行的钩子任务和升级后继续运行的工作流。如可能退回旧版，请先备份整个配置目录，以及存放在其他位置的会话目录。还原时，将 `backups/<version>/` 中的文件复制回原位置。将 `backups/<version>/sessions/` 还原到实际会话目录，设置了 `storage.session_root_dir` 时即其下的 `sessions/`。带 `.<sha256>` 后缀的是同一文件之后又备份的另一份原件，默认使用不带后缀的那份。
 
 iCode 仅在当前会话的工作目录下查找 `.chrys/settings.yaml`，不向父目录或子目录查找。
 
@@ -64,23 +66,23 @@ llm:
 
 瞬时错误重试用于临时网络故障、请求超时、限流等可恢复错误。提高次数也会增加最终失败前的等待时间和请求次数；该数字不等于整个任务的模型请求总数。
 
-### 审批与项目信任
+### 审批与工作目录信任
 
 `approval` 相关键控制智能体请求执行操作时的审批行为；三种模式的差别与配置步骤见[配置审批模式](../guides/configuration/approval.md)。
 
 | YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | 字符串；`manual` 手动审批、`auto` 自动审批、`bypass` 跳过审批。设置默认模式不会切换当前会话 |
-| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` 为“直接审查”；`formal` 为“逐项风险检查”，发现删除文件、发布代码等风险时会请你确认。用法见[选择自动审查方式](../guides/configuration/approval.md#选择自动审查方式)。只在 `auto` 模式下生效。在设置窗口中修改后，关闭窗口即可生效；手动编辑文件后可执行 `/reload` 生效。请写在用户设置中，项目不能覆盖；无效值使用 `direct` |
+| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` 为“直接审查”；`formal` 为“逐项风险检查”，发现删除文件、发布代码等风险时会请你确认。用法见[选择自动审查方式](../guides/configuration/approval.md#选择自动审查方式)。只在 `auto` 模式下生效。在设置窗口中修改后，关闭窗口即可生效；手动编辑文件后可执行 `/reload` 生效。请写在用户设置中，工作目录不能覆盖；无效值使用 `direct` |
 | `approval.timeout_seconds` | `CHRYS_APPROVAL_TIMEOUT_SECONDS` | `0` | 整数；TUI 和 ACP 等待人工审批的秒数，`0` 表示不超时，正数表示等待时限，负数调整为 `0`。超时后拒绝本次工具调用。重启 iCode 后生效 |
 | `ui.approval.defer_while_judging` | 无 | `true` | 布尔值；自动模式下，TUI 是否只在审批裁判模型标记调用或评估失败时才弹出审批对话框。`false` 表示评估期间立即弹出。ACP 服务器和 `icode run` 不受影响 |
-| `project.config_enabled` | 无 | `false` | 布尔值；是否加载各工作目录的项目设置，必须在用户设置中启用 |
-| `project.hooks_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.chrys/hooks` 中的项目 Hooks，必须在用户设置中启用，不影响用户级 Hooks |
-| `project.skills_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.agents/skills` 中的项目 Skills，必须在用户设置中启用；智能体自身的“从工作文件夹加载 Skills”选项也需保持开启 |
+| `workdir.config_enabled` | 无 | `false` | 布尔值；是否加载各会话主工作目录的 `.chrys/settings.yaml`，必须在用户设置中启用 |
+| `workdir.hooks_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.chrys/hooks` 中的 Hooks，必须在用户设置中启用，不影响用户级 Hooks |
+| `workdir.skills_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.agents/skills` 中的 Skills，必须在用户设置中启用；智能体自身的“从工作文件夹加载 Skills”选项也需保持开启 |
 
 手动在 YAML 或环境变量中将默认审批模式设为 `bypass`，下次按此默认值启动时就会跳过审批。在 TUI 中通过 `/approval` 切换到 `bypass` 时，iCode 会将默认模式保存为 `auto`；TUI 设置窗口不提供 `bypass`。
 
-项目设置、项目 Hooks 和项目 Skills 都随你打开的仓库而来，因此默认都不加载，并且分别开启：开启其中一项不会开启其他项。工作目录中有未开启的项时，iCode 会弹出提示，说明需要开启哪个设置。Hooks 是 iCode 在特定事件时运行的外部命令，编写与配置见[配置和编写 Hooks](../guides/extensions/hooks.md)；Skills 见[安装和使用 Skills](../guides/extensions/skills.md)。
+这三项是用户级开关，分别控制各会话主工作目录中的设置、Hooks 和 Skills 是否加载，默认均关闭。工作目录中有未开启的项时，iCode 会弹出提示，说明需要开启哪个设置。Hooks 是 iCode 在特定事件时运行的外部命令，编写与配置见[配置和编写 Hooks](../guides/extensions/hooks.md)；Skills 见[安装和使用 Skills](../guides/extensions/skills.md)。
 
 ### 会话与文件恢复
 
@@ -112,7 +114,7 @@ llm:
 
 ### 网络工具
 
-以下键用于配置 `web_search` 和 `web_fetch` 工具。这两个工具默认关闭，还需要加入智能体才能使用。这些键没有对应环境变量，只能在用户设置中配置，项目设置不能配置。TUI 的“设置”窗口在“工具”标签页中提供常用的键，其余的键需在用户 `settings.yaml` 中设置。工具如何使用这些值，参阅[配置网络工具](../guides/configuration/web-tools.md)。
+以下键用于配置 `web_search` 和 `web_fetch` 工具。这两个工具默认关闭，还需要加入智能体才能使用。这些键没有对应环境变量，只能在用户设置中配置，工作目录设置不能配置。TUI 的“设置”窗口在“工具”标签页中提供常用的键，其余的键需在用户 `settings.yaml` 中设置。工具如何使用这些值，参阅[配置网络工具](../guides/configuration/web-tools.md)。
 
 来源列表的每一项都是确切的来源（协议、主机和可选端口，例如 `https://docs.example.com`），不能包含路径、查询参数、凭据或通配符。列表可以写成 YAML 列表，也可以写成 JSON 数组字符串；TUI 保存时使用 JSON 字符串。空字符串表示空列表。两个模式键中，`true` 或不加引号的 `on` 对网络搜索表示 `auto`、对网页读取表示 `on`；`false` 或不加引号的 `off` 表示 `off`。这些值按工具使用的同一套规则检查，无效值会被报告（并说明错在哪里）然后忽略。
 
@@ -179,17 +181,17 @@ llm:
 
 ## 来源优先级
 
-每个键独立按以下优先级取值，使用靠前的有效值。项目设置还必须符合[项目级设置](#项目级设置)的限制。
+每个键独立按以下优先级取值，使用靠前的有效值。工作目录设置还必须符合[工作目录级设置](#工作目录级设置)的限制。
 
 | 优先级 | 来源 |
 | --- | --- |
 | 1 | 当前会话中的明确选择、命令行参数或入口固定行为 |
 | 2 | 启动进程时已有的环境变量 |
-| 3 | 已启用且允许应用的项目设置 |
+| 3 | 已启用且允许应用的工作目录设置 |
 | 4 | 用户设置 |
 | 5 | 内置默认值 |
 
-iCode 不读取或迁移工作目录和用户配置目录中的 `.env` 文件。如果仍需使用原先由这些文件提供的环境变量，请在用于启动 iCode 的环境中设置它们，然后重启 iCode。这包括服务提供方的 API 密钥、代理变量（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`）、OpenTelemetry 变量（`OTEL_*`），以及占位符引用的变量，例如 MCP 请求头中的 `{{MCP_API_TOKEN}}` 和模型 `extra_headers` 中的 `{{MY_GATEWAY_TOKEN}}`。个人设置应写入用户 `settings.yaml`，项目设置应写入 `.chrys/settings.yaml`。
+iCode 不读取或迁移工作目录和用户配置目录中的 `.env` 文件。如果仍需使用原先由这些文件提供的环境变量，请在用于启动 iCode 的环境中设置它们，然后重启 iCode。这包括服务提供方的 API 密钥、代理变量（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`）、OpenTelemetry 变量（`OTEL_*`），以及占位符引用的变量，例如 MCP 请求头中的 `{{MCP_API_TOKEN}}` 和模型 `extra_headers` 中的 `{{MY_GATEWAY_TOKEN}}`。个人设置应写入用户 `settings.yaml`，工作目录设置应写入 `.chrys/settings.yaml`。
 
 ## 值的写法与无效值
 
@@ -198,26 +200,26 @@ iCode 不读取或迁移工作目录和用户配置目录中的 `.env` 文件。
 - 布尔值在 YAML 中写 `true` 或 `false`。对应的环境变量接受 `1`、`true`、`yes`、`on` 和 `0`、`false`、`no`、`off`，不区分大小写。个别环境变量的含义与名称相反或只接受特定拼写，已在对应键行注明。
 - 整数直接写数字。标明上下限的键，超界值会被调整到边界；明确禁止负数的键会拒绝负值。`0` 或负数的特殊含义（禁用、取消限制等）以各键行说明为准。
 - 未填写的键和空字符串通常不提供覆盖。要撤销某个文件中的设置，删除该键；删除后仍可能使用其他来源的值（见[来源优先级](#来源优先级)）。
-- 类型列为“整数或 `null`”的键可写 `null`，其含义已在对应键行说明；用户设置与项目文件对 `null` 的处理不同，见[项目级设置](#项目级设置)。
+- 类型列为“整数或 `null`”的键可写 `null`，其含义已在对应键行说明；用户设置与工作目录文件对 `null` 的处理不同，见[工作目录级设置](#工作目录级设置)。
 - 未知键会被报告且不生效。多数无效值会被忽略并报告，取值继续向较低优先级查找——例如，环境变量中的值无效而用户设置中已有有效值时，使用用户设置的值。`approval.default_mode`、`approval.auto_review`、`tools.result.ceiling_tokens`、`log.raw_http_capture`、`otel.sensitive_data`、`mutations.trace.fsatrace_path` 六个键不同：一旦在查找中遇到无效值，就直接采用内置默认值并停止查找，不回退到较低优先级。例如，无法识别的审批模式会采用默认值 `manual`。
 
-## 项目级设置
+## 工作目录级设置
 
-项目设置默认不加载。先在用户 `settings.yaml` 中启用，或在 TUI 的“设置 → 安全管控”中打开“加载项目设置”：
+工作目录设置默认不加载。先在用户 `settings.yaml` 中启用，或在 TUI 的“设置 → 安全管控”中打开“加载工作目录设置”：
 
 ```yaml
-project:
+workdir:
   config_enabled: true
 ```
 
-启用后适用于所打开的工作目录。项目文件只能配置下表中的键。
+启用后适用于所打开的工作目录。工作目录文件只能配置下表中的键。
 
-有覆盖方向限制的键只接受表中“允许的覆盖方向”内的项目值，比较时以用户 YAML 中的值为基准；用户未设置时以内置默认值为基准。`llm.retry.max_transient` 在用户未设置或设为 `null` 时，按当前启动入口的默认值比较。没有方向限制的键直接采用项目值。环境变量不参与比较，但仍优先于项目设置。项目文件写入 `null` 不提供覆盖。
+有覆盖方向限制的键只接受表中“允许的覆盖方向”内的工作目录值，比较时以用户 YAML 中的值为基准；用户未设置时以内置默认值为基准。`llm.retry.max_transient` 在用户未设置或设为 `null` 时，按当前启动入口的默认值比较。没有方向限制的键直接采用工作目录值。环境变量不参与比较，但仍优先于工作目录设置。工作目录文件写入 `null` 不提供覆盖。
 
-| 项目可配置的键 | 允许的覆盖方向 |
+| 工作目录可配置的键 | 允许的覆盖方向 |
 | --- | --- |
 | `llm.retry.max_transient` | 只能减少或保持重试次数 |
-| `tools.result.ceiling_tokens` | 只能降低或保持结果长度上限；`0` 表示无限制，是最宽松的值，仅当用户设置本身就是 `0` 时项目才能写 `0` |
+| `tools.result.ceiling_tokens` | 只能降低或保持结果长度上限；`0` 表示无限制，是最宽松的值，仅当用户设置本身就是 `0` 时工作目录才能写 `0` |
 | `session.title.auto` | 可以关闭；不能重新开启用户已关闭的自动标题 |
 | `mutations.parallel_implicit_tools` | 可以关闭；不能重新开启用户已关闭的并行执行 |
 | `mutations.coordination.enabled` | 可以开启；不能关闭用户已开启的跨会话改动区分 |
@@ -226,7 +228,7 @@ project:
 | `context.warn_threshold_pct` | 可在 `0`–`1` 范围内覆盖 |
 | `trajectory.verify_commands` | 可替换验证命令列表 |
 
-网络工具相关的键（`tools.web_search.*`、`tools.web_fetch.*` 和 `tools.web_egress.*`）不在此表中，因此项目无法开启网络搜索，也无法扩大网络工具可连接的范围。
+网络工具相关的键（`tools.web_search.*`、`tools.web_fetch.*` 和 `tools.web_egress.*`）不在此表中，因此工作目录无法开启网络搜索，也无法扩大网络工具可连接的范围。
 
 例如，在工作目录的 `.chrys/settings.yaml` 中写入：
 
@@ -236,9 +238,9 @@ llm:
     max_transient: 3
 ```
 
-启用项目设置并刷新后，若用户未设置重试次数，则使用项目的 `3` 次；若用户 YAML 已设为 `1`，项目中的 `3` 会被拒绝，仍使用 `1`。启动环境中的有效值始终优先。
+启用工作目录设置并刷新后，若用户未设置重试次数，则使用工作目录的 `3` 次；若用户 YAML 已设为 `1`，工作目录中的 `3` 会被拒绝，仍使用 `1`。启动环境中的有效值始终优先。
 
-iCode 会提示并忽略项目中不允许的键、超出覆盖限制的值和未知键，继续应用其他有效设置。
+iCode 会提示并忽略工作目录中不允许的键、超出覆盖限制的值和未知键，继续应用其他有效设置。
 
 ## 启动入口的差异
 
@@ -253,5 +255,5 @@ iCode 会提示并忽略项目中不允许的键、超出覆盖限制的值和�
 
 1. 确认设置文件的位置正确。保存后在 TUI 中执行 `/reload`；提示下次启动或需要重启的设置请重启 iCode。
 2. 检查是否存在更高优先级的来源；删除 YAML 中的键不会清除其他来源的值。
-3. 对项目设置，确认用户已启用加载，且键名和覆盖方向符合限制。
+3. 对工作目录设置，确认用户已启用加载，且键名和覆盖方向符合限制。
 4. 查看 iCode 启动时报告的消息：无效值或未知键的处理规则见[值的写法与无效值](#值的写法与无效值)；目录相关提示对照[文件位置与格式](#文件位置与格式)检查。

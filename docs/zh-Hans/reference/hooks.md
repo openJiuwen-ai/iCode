@@ -4,7 +4,7 @@
 
 > **安全提示**
 >
-> 钩子直接使用当前用户的权限运行，不经过工具审批，也不受安全沙箱限制。启用项目自带的钩子前，请检查其配置文件以及运行的脚本和命令。
+> 钩子直接使用当前用户的权限运行，不经过工具审批，也不受安全沙箱限制。启用工作目录自带的钩子前，请检查其配置文件以及运行的脚本和命令。
 >
 > 钩子可能接收对话内容、工具参数和工具运行结果。若钩子会将这些数据发送到外部服务，请注意检查其中是否包含敏感信息。
 
@@ -31,7 +31,7 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | 范围 | macOS 和 Linux | Windows |
 | --- | --- | --- |
 | 全局 | `~/.chrys/hooks/hooks.yaml` | `%APPDATA%\chrys\hooks\hooks.yaml` |
-| 项目 | `<working-directory>/.chrys/hooks/hooks.yaml` | `<working-directory>\.chrys\hooks\hooks.yaml` |
+| 工作目录 | `<working-directory>/.chrys/hooks/hooks.yaml` | `<working-directory>\.chrys\hooks\hooks.yaml` |
 
 两处都可以改用 `hooks.yml` 或 `hooks.json`。同一目录存在多个候选文件时，iCode 按 `hooks.yaml`、`hooks.yml`、`hooks.json` 的顺序只加载第一个。
 
@@ -39,15 +39,15 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 
 文件无法按检测到的编码解码时，iCode 会报告配置警告并禁用该文件中的钩子，不会替换命令或其他配置值中的字符。
 
-`<working-directory>` 是会话的工作目录。对于项目配置，iCode 只检查 `<working-directory>/.chrys/hooks/`，不会在工作目录的父目录或子目录中查找。
+`<working-directory>` 是会话的工作目录。对于工作目录配置，iCode 只检查 `<working-directory>/.chrys/hooks/`，不会在工作目录的父目录或子目录中查找。
 
 ## 加载配置文件
 
-项目钩子随你打开的仓库而来，因此默认不加载。如需加载，在终端用户界面（Terminal User Interface，TUI）中按 **F10** 打开“设置”，在“安全管控”-“项目信任”区域勾选“加载项目钩子”（`project.hooks_enabled`）。工作目录中有未加载的项目钩子时，iCode 会弹出提示。全局钩子始终加载。
+工作目录钩子随你打开的仓库而来，因此默认不加载。如需加载，在终端用户界面（Terminal User Interface，TUI）中按 **F10** 打开“设置”，在“安全管控”-“工作目录信任”区域勾选“加载工作目录钩子”（`workdir.hooks_enabled`）。工作目录中有未加载的工作目录钩子时，iCode 会弹出提示。全局钩子始终加载。
 
 在磁盘上编辑钩子配置文件不会实时生效。修改后，需要在空闲时执行 `/reload`、切换会话或重启 iCode，让 iCode 重新加载配置。仅修改钩子脚本则不需要重新加载；脚本会在下次触发钩子时使用新内容。
 
-在 TUI 中输入 `/runtime`，打开“钩子”标签页，可以查看当前加载的项目钩子和全局钩子。在终端中，[`icode hook list`](#icode-hook-list) 显示在当前目录启动的会话会加载哪些钩子，[`icode hook validate`](#icode-hook-validate) 检查配置文件。
+在 TUI 中输入 `/runtime`，打开“钩子”标签页，可以查看当前加载的工作目录钩子和全局钩子。在终端中，[`icode hook list`](#icode-hook-list) 显示在当前目录启动的会话会加载哪些钩子，[`icode hook validate`](#icode-hook-validate) 检查配置文件。
 
 ## 配置文件结构
 
@@ -74,7 +74,7 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | `outbox_retry_age_seconds` | 数值（>= `0`） | `60.0` | 仅用于持久投递钩子。iCode 启动后，会重试因上次退出或崩溃而未记录为完成的钩子任务。此设置指定重试前至少等待的秒数，从任务上次开始执行时算起；任务从未执行过时，则从创建时算起。 |
 | `outbox_max_retries` | 整数（>= `0`） | `3` | 仅用于持久投递钩子。每个钩子任务最多启动的次数，包括首次执行。使用默认值 `3` 时，中断的任务最多重试两次；设为 `1` 时不重试；设为 `0` 时，从未启动的任务也会被记录为失败。 |
 
-同时存在项目和全局配置时，`settings` 按字段合并：项目文件中的值优先，其次使用全局文件中的值，两个文件均未设置时使用默认值。
+同时存在工作目录和全局配置时，`settings` 按字段合并：工作目录文件中的值优先，其次使用全局文件中的值，两个文件均未设置时使用默认值。
 
 ### 定义钩子
 
@@ -90,7 +90,7 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 | `enabled` | 布尔值 | `true` | 设为 `false` 可停用该钩子而不删除配置。 |
 | `description` | 字符串 | `""` | 该钩子的说明，便于识别；不改变运行行为。 |
 
-`id` 可以包含中文、空格和特殊符号，但不能包含换行符、制表符或其他无法正常显示的字符。`id` 包含空格或特殊符号时，应使用引号包住整个值。项目配置和全局配置可以使用相同的 `id`，两条钩子都会运行。
+`id` 可以包含中文、空格和特殊符号，但不能包含换行符、制表符或其他无法正常显示的字符。`id` 包含空格或特殊符号时，应使用引号包住整个值。工作目录配置和全局配置可以使用相同的 `id`，两条钩子都会运行。
 
 ## 事件
 
@@ -637,10 +637,10 @@ iCode 随即暂停这次操作并询问你，显示钩子、原因，以及工�
 
 ### 执行顺序
 
-同时加载项目配置和全局配置时，执行模式决定钩子在哪个阶段运行，配置来源决定每个阶段内的顺序。对于同一次事件，iCode 按以下两个阶段处理钩子：
+同时加载工作目录配置和全局配置时，执行模式决定钩子在哪个阶段运行，配置来源决定每个阶段内的顺序。对于同一次事件，iCode 按以下两个阶段处理钩子：
 
-1. 依次检查并运行匹配的阻塞式钩子：先检查项目钩子，再检查全局钩子，各自保持配置文件中的定义顺序。
-2. 如果没有钩子拒绝操作，iCode 再启动匹配的异步和即发即弃钩子：先按项目配置中的定义顺序启动，再按全局配置中的定义顺序启动。这些非阻塞钩子可能并发运行，因此完成顺序不一定与启动顺序相同。
+1. 依次检查并运行匹配的阻塞式钩子：先检查工作目录钩子，再检查全局钩子，各自保持配置文件中的定义顺序。
+2. 如果没有钩子拒绝操作，iCode 再启动匹配的异步和即发即弃钩子：先按工作目录配置中的定义顺序启动，再按全局配置中的定义顺序启动。这些非阻塞钩子可能并发运行，因此完成顺序不一定与启动顺序相同。
 
 阻塞式钩子返回的操作决定按以下规则组合：
 
@@ -654,17 +654,17 @@ iCode 随即暂停这次操作并询问你，显示钩子、原因，以及工�
 
 对于 `user_prompt_submit` 和 `before_tool_call`，阻塞式钩子失败且配置了 `on_error: block` 时，同样会拒绝当前操作并停止当前事件的剩余钩子。
 
-因此，项目钩子修改工具参数后，后续全局钩子会看到修改后的参数；项目钩子拒绝操作后，当前事件的全局钩子不会运行。
+因此，工作目录钩子修改工具参数后，后续全局钩子会看到修改后的参数；工作目录钩子拒绝操作后，当前事件的全局钩子不会运行。
 
 ### 同名 ID 不会覆盖钩子
 
-项目配置和全局配置可以定义相同的 `id`。两个钩子都会保留，iCode 同时会记录重名警告。
+工作目录配置和全局配置可以定义相同的 `id`。两个钩子都会保留，iCode 同时会记录重名警告。
 
-同一配置文件内不能出现重复的 `id`，否则该配置文件加载失败。`id` 只用于标识钩子，不是覆盖键；在项目配置中定义同名钩子，不能覆盖或停用全局钩子。需要停用全局钩子时，应编辑全局配置，将该钩子的 `enabled` 设为 `false`，或者删除该钩子定义。
+同一配置文件内不能出现重复的 `id`，否则该配置文件加载失败。`id` 只用于标识钩子，不是覆盖键；在工作目录配置中定义同名钩子，不能覆盖或停用全局钩子。需要停用全局钩子时，应编辑全局配置，将该钩子的 `enabled` 设为 `false`，或者删除该钩子定义。
 
 ### 设置合并与加载失败
 
-项目配置和全局配置中的 `settings` 按字段合并：项目配置中明确设置的值优先，其次使用全局配置中的值；两处都没有设置时使用默认值。
+工作目录配置和全局配置中的 `settings` 按字段合并：工作目录配置中明确设置的值优先，其次使用全局配置中的值；两处都没有设置时使用默认值。
 
 任一配置文件无效时，iCode 会显示警告，并停用该文件定义的所有钩子；另一处有效配置文件仍然生效。未找到配置文件不会产生警告。如需查看文件中的全部问题，运行 [`icode hook validate`](#icode-hook-validate)。
 
@@ -678,18 +678,18 @@ iCode 随即暂停这次操作并询问你，显示钩子、原因，以及工�
 icode hook list [--json]
 ```
 
-命令依次列出找到的每个配置文件，先列项目配置文件，再列全局配置文件。每个文件的第一行显示其路径和以下状态之一：
+命令依次列出找到的每个配置文件，先列工作目录配置文件，再列全局配置文件。每个文件的第一行显示其路径和以下状态之一：
 
 | 状态 | 含义 |
 | --- | --- |
 | `loaded` | 在此目录启动的会话会运行该文件中的钩子 |
-| `not loaded` | 项目钩子未开启，参见[加载配置文件](#加载配置文件)。如果文件同时有错误，也会显示第一个错误 |
+| `not loaded` | 工作目录钩子未开启，参见[加载配置文件](#加载配置文件)。如果文件同时有错误，也会显示第一个错误 |
 | `invalid, not loaded` | 文件有错误，会话不会运行其中任何钩子。此处只显示第一个错误；运行 `icode hook validate` 可查看全部错误 |
 
 随后按顺序列出该文件中的钩子。每个钩子先显示 ID，括号中为事件和运行模式，`enabled` 为 `false` 时另加 `turned off`。有匹配条件时，下一行 `match:` 列出匹配条件；之后的 `run:` 行为 `script` 加脚本路径、`command` 加程序名，或 `shell`。命令参数、环境变量的值和 Shell 片段不会显示，因为其中可能含有密码或令牌。只有从运行命令的文件夹能找到脚本路径和程序时（文件存在，或程序在 `PATH` 中），才会显示它们；否则显示 `…`，因为其中可能还写了别的内容，例如 `"notify --token abc"`。只能通过钩子自己的 `cwd` 或 `PATH` 设置找到的程序，也显示为 `…`。`icode hook validate` 会报告它能确定不存在的脚本和程序。因匹配条件中的正则表达式无效而被跳过的钩子，显示在 `skipped` 行中。
 
 ```text
-Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
+Working directory hooks: ./.chrys/hooks/hooks.yaml (loaded)
   record-turn (after_turn, fire_and_forget)
     run: script scripts/record_turn.py
   protect-env (before_tool_call, blocking)
@@ -699,7 +699,7 @@ Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
 
 即使有文件无效，该命令的退出码也为 0；如需检查文件，请使用 `icode hook validate`。
 
-添加 `--json` 后，stdout 输出一个对象：`version`（当前为 `1`）、`files` 和 `searched`（查找过的文件夹）。`files` 中每项包含 `scope`（`project` 或 `global`）、`path`、`state`（`loaded`、`not_loaded` 或 `invalid`；项目钩子未开启时总是 `not_loaded`）、`error`（使会话不加载该文件的错误，格式与 `validate` 的诊断项相同，没有时为 `null`；其他错误，例如脚本不存在，只由 `validate` 报告）、`hooks`，以及 `skipped`（每项包含 `id` 和 `reason`）。每个钩子包含 `id`、`event`、`enabled`、`description`、`execution`、`match` 和 `run`；`run` 中的 `type` 为 `script`、`command` 或 `shell`，`path` 为脚本路径，`program` 为命令的程序；钩子为其他类型或列表中显示为 `…` 时为 `null`。
+添加 `--json` 后，stdout 输出一个对象：`version`（当前为 `1`）、`files` 和 `searched`（查找过的文件夹）。`files` 中每项包含 `scope`（`workdir` 或 `global`）、`path`、`state`（`loaded`、`not_loaded` 或 `invalid`；工作目录钩子未开启时总是 `not_loaded`）、`error`（使会话不加载该文件的错误，格式与 `validate` 的诊断项相同，没有时为 `null`；其他错误，例如脚本不存在，只由 `validate` 报告）、`hooks`，以及 `skipped`（每项包含 `id` 和 `reason`）。每个钩子包含 `id`、`event`、`enabled`、`description`、`execution`、`match` 和 `run`；`run` 中的 `type` 为 `script`、`command` 或 `shell`，`path` 为脚本路径，`program` 为命令的程序；钩子为其他类型或列表中显示为 `…` 时为 `null`。
 
 ### `icode hook validate`
 
@@ -709,7 +709,7 @@ Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
 icode hook validate [<path>] [--json]
 ```
 
-不指定 `<path>` 时，命令检查当前目录的项目配置文件和全局配置文件；即使项目钩子未开启，也会检查项目配置文件。`<path>` 可以是钩子配置文件（文件名和位置不限），也可以是文件夹；指定文件夹时，检查会话会在该文件夹中读取的那个文件。
+不指定 `<path>` 时，命令检查当前目录的工作目录配置文件和全局配置文件；即使工作目录钩子未开启，也会检查工作目录配置文件。`<path>` 可以是钩子配置文件（文件名和位置不限），也可以是文件夹；指定文件夹时，检查会话会在该文件夹中读取的那个文件。
 
 会话遇到第一个错误就停止，并忽略整个文件；校验则会继续，报告每个有问题的钩子。对于能被接受、但很可能达不到预期效果的配置，校验也会给出警告。
 
@@ -749,7 +749,7 @@ FAIL 1 file · 2 hooks: 1 error, 1 warning
 | `durable_blocking` | 为阻塞式钩子设置了 `delivery: durable`，阻塞式钩子不使用该设置 |
 | `broad_before_tool_call` | `before_tool_call` 钩子没有匹配条件，会在每次工具调用时运行 |
 | `retired_shell_arg` | `match.args` 使用了 shell 参数的旧名：`working_dir`，或在 `tool_kind: shell` 下的 `max_tokens`；目前仍会匹配 shell 调用。参见[已改名的 shell 参数](#已改名的-shell-参数) |
-| `duplicate_id_across_files` | 项目和全局配置文件都定义了该 `id`，两个钩子都会运行 |
+| `duplicate_id_across_files` | 工作目录和全局配置文件都定义了该 `id`，两个钩子都会运行 |
 | `shadowed_file` | 文件夹中有多个钩子配置文件，只读取第一个（参见[配置文件位置](#配置文件位置)） |
 | `program_not_found` | 在 `PATH` 中找不到运行已启用钩子的命令或脚本所需的程序，或者在 Windows 上找到的只是提示从 Microsoft Store 获取 Python 的占位程序 |
 | `unknown_template_var` | `run.cwd` 或 `run.env` 使用了 iCode 不会替换的 `${...}` 变量，或者 `run.argv` 或 `run.args` 使用了任何 `${...}` 变量（iCode 只替换 `cwd` 和 `env` 值中的变量），该变量会按原样传递 |
@@ -762,6 +762,6 @@ FAIL 1 file · 2 hooks: 1 error, 1 warning
 | --- | --- |
 | `version` | 整数：报告格式版本，当前为 `1` |
 | `status` | 字符串：`pass` 或 `fail` |
-| `files` | 对象数组：检查过的每个文件，包含 `scope`（`project`、`global`，或在命令行中指定的文件为 `path`）、`path`、`loaded`（在此目录启动的会话是否加载该文件；`path` 时为 `null`）和 `hook_count`（钩子条目数） |
+| `files` | 对象数组：检查过的每个文件，包含 `scope`（`workdir`、`global`，或在命令行中指定的文件为 `path`）、`path`、`loaded`（在此目录启动的会话是否加载该文件；`path` 时为 `null`）和 `hook_count`（钩子条目数） |
 | `searched` | 字符串数组：命令查找过的文件夹或路径 |
 | `diagnostics` | 对象数组：每个问题的 `severity`（`error` 或 `warning`）、`code`、`message`、`file`、`line` 和 `column`（从 1 开始）、`hook_id`，以及 `entry`（钩子在 `hooks` 中的位置，从 0 开始） |

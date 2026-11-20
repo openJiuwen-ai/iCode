@@ -67,7 +67,7 @@ def _input_operation() -> HookOperation:
 
 async def _ask(service: HookConfirmationService, operation: HookOperation) -> HookConfirmationResult:
     return await service.ask(
-        operation, run_id="run-1", hook_id="prod-guard", hook_source="project", reason="changes production"
+        operation, run_id="run-1", hook_id="prod-guard", hook_source="workdir", reason="changes production"
     )
 
 
@@ -98,7 +98,7 @@ async def test_a_tool_question_is_its_own_permission_request_and_says_it_all() -
     assert "prod-guard" in call.title and "changes production" in call.title and "edit_file" in call.title
     body = _text(call.content)
     assert "prod-guard" in body and "changes production" in body and "deploy/prod.yaml" in body
-    assert "project hook" in body
+    assert "working directory hook" in body
     assert [option.kind for option in request.options] == ["allow_once", "reject_once"]
 
 
@@ -453,7 +453,7 @@ async def test_a_session_set_up_again_on_a_new_bus_shows_its_questions() -> None
 
     first = _FakeHost(event_bus=EventBus())
     manager = _FakeManager(first)
-    manager.session_warnings.append(Warning(code="project_config_dormant", message="Project settings found but idle"))
+    manager.session_warnings.append(Warning(code="workdir_config_dormant", message="Workdir settings found but idle"))
     client = _FirstWarningFails()
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(client)  # type: ignore[arg-type]

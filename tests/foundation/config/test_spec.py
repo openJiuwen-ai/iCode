@@ -18,11 +18,11 @@ from chrys.foundation.config.spec import (
     ChoiceProvider,
     InvalidPolicy,
     Kind,
-    ProjectMerge,
     Risk,
     SettingOrigin,
     SettingSpec,
     Source,
+    WorkdirMerge,
     field_names_by_key,
     kind_accepts,
     spec,
@@ -61,7 +61,7 @@ class Sample:
             group="llm",
             kind=Kind.INT,
             label=_RETRIES_LABEL,
-            project_merge=ProjectMerge.TIGHTEN_ONLY,
+            workdir_merge=WorkdirMerge.TIGHTEN_ONLY,
             semantic_value=lambda settings, ctx: settings.retries or ctx.frontend_default_max_transient_retries,
         ),
     )
@@ -87,7 +87,7 @@ def test_defaults_stay_conservative() -> None:
     found = specs_by_field(Sample)["theme"]
 
     assert found.risk.name == "SAFE"
-    assert found.project_merge is ProjectMerge.DENY
+    assert found.workdir_merge is WorkdirMerge.DENY
     assert found.persist is True
     assert found.invalid_policy is InvalidPolicy.FALL_THROUGH
 
@@ -125,7 +125,7 @@ def test_tighten_only_without_a_comparator_is_rejected_at_construction() -> None
             group="llm",
             kind=Kind.INT,
             label=_PLAIN_LABEL,
-            project_merge=ProjectMerge.TIGHTEN_ONLY,
+            workdir_merge=WorkdirMerge.TIGHTEN_ONLY,
         )
 
 
@@ -191,16 +191,16 @@ def test_directional_merges_need_no_comparator() -> None:
         group="workspace",
         kind=Kind.BOOL,
         label=_PLAIN_LABEL,
-        project_merge=ProjectMerge.ENABLE_ONLY,
+        workdir_merge=WorkdirMerge.ENABLE_ONLY,
     )
 
     assert found.semantic_value is None
 
 
 def test_origin_carries_the_file_a_value_came_from() -> None:
-    """A layer alone cannot answer it: one session can have several project roots."""
-    first = SettingOrigin(layer=Source.PROJECT, path=Path("/repo/a/.chrys/settings.yaml"))
-    second = SettingOrigin(layer=Source.PROJECT, path=Path("/repo/b/.chrys/settings.yaml"))
+    """A layer alone cannot answer it: one session can have several workdir roots."""
+    first = SettingOrigin(layer=Source.WORKDIR, path=Path("/repo/a/.chrys/settings.yaml"))
+    second = SettingOrigin(layer=Source.WORKDIR, path=Path("/repo/b/.chrys/settings.yaml"))
 
     assert first != second
     assert SettingOrigin(layer=Source.DEFAULT).path is None
@@ -208,7 +208,7 @@ def test_origin_carries_the_file_a_value_came_from() -> None:
 
 def test_a_file_layer_origin_must_name_its_file() -> None:
     """Otherwise it silently degrades into the bare layer this type replaces."""
-    for layer in (Source.USER, Source.PROJECT):
+    for layer in (Source.USER, Source.WORKDIR):
         with pytest.raises(ValueError, match="must name the file"):
             SettingOrigin(layer=layer)
 
@@ -223,7 +223,7 @@ def test_source_ordering_is_low_to_high_precedence() -> None:
     order = [
         Source.DEFAULT,
         Source.USER,
-        Source.PROJECT,
+        Source.WORKDIR,
         Source.ENV,
         Source.CLI,
         Source.PROCESS_RUNTIME,

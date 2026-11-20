@@ -47,6 +47,7 @@ from chrys.service.state._session_files import _ensure_lock_parent as _ensure_lo
 from chrys.service.state._session_files import _is_string_keyed_dict as _is_string_keyed_dict
 from chrys.service.state._session_files import _session_short_id as _session_short_id
 from chrys.service.state._session_files import atomic_copy_file as atomic_copy_file
+from chrys.service.state._session_files import dump_session_envelope, read_session_envelope
 from chrys.service.state._session_files import legacy_session_files as legacy_session_files
 from chrys.service.state._session_files import make_junction_dropping_ignore as make_junction_dropping_ignore
 from chrys.service.state._session_files import parse_snapshot_turn as parse_snapshot_turn
@@ -440,13 +441,13 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
     def _read_json_file(path: Path) -> dict[str, Any] | None:
         """Read a JSON object from *path*, returning ``None`` on invalid input."""
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            _, envelope = read_session_envelope(path)
         except json.JSONDecodeError:
             logger.warning("Invalid JSON in session file %s", path)
             return None
         except OSError:
             return None
-        return raw if isinstance(raw, dict) else None
+        return envelope
 
     def _snapshot_recovery_files(self, session_id: str) -> list[Path]:
         """Return rollback snapshots newest-first for last-ditch session recovery."""
@@ -875,7 +876,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         successful write, but is itself updated atomically when it succeeds.
         Returns the checkpoint identity of the bytes written.
         """
-        payload = json.dumps(data, indent=2, ensure_ascii=False)
+        payload = dump_session_envelope(data)
         written = _atomic_write_text(self._session_file(session_id), payload)
         self._delete_recovery_session_unlocked(session_id)
         try:

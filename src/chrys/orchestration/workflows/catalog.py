@@ -39,7 +39,7 @@ from chrys.service.workflows.discovery import (
     RESERVED_GLOBAL_NAME,
     SOURCE_KIND_BUILTIN,
     SOURCE_KIND_GLOBAL,
-    SOURCE_KIND_PROJECT,
+    SOURCE_KIND_WORKDIR,
     Discovery,
     WorkflowSource,
     discover_workflows,
@@ -48,9 +48,9 @@ from chrys.service.workflows.discovery import (
     is_link_stat,
     package_signature,
     precedence,
-    project_workflows_dir,
     read_builtin_manifest,
     read_entry_bytes,
+    workdir_workflows_dir,
     workflow_entry_path,
 )
 from chrys.service.workflows.ledger import ConfirmationLedger, ledger_path
@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from chrys.service.workflows.environment import PreparedEnvironment
 
 
-_DELETE_SCOPE = "Only workflows directly in a global or project workflow directory can be deleted."
+_DELETE_SCOPE = "Only workflows directly in a global or working directory workflow directory can be deleted."
 
 type _PathState = tuple[int, ...] | None
 
@@ -78,16 +78,16 @@ class _Observed:
 
 
 class WorkflowCatalog:
-    """Operations scoped to the session's config directory and current project."""
+    """Operations scoped to the session's config directory and current working directory."""
 
-    def __init__(self, *, config_dir: Path, project_cwd: Path, bus: EventBus | None = None) -> None:
+    def __init__(self, *, config_dir: Path, workdir: Path, bus: EventBus | None = None) -> None:
         self.config_dir = config_dir
-        self.project_cwd = project_cwd
+        self.workdir = workdir
         self._bus = bus
         self._previews: dict[str, _Observed] = {}
 
     def discover(self) -> Discovery:
-        return discover_workflows(config_dir=self.config_dir, project_cwd=self.project_cwd)
+        return discover_workflows(config_dir=self.config_dir, workdir=self.workdir)
 
     def ledger(self) -> ConfirmationLedger:
         return ConfirmationLedger(ledger_path(self.config_dir))
@@ -194,7 +194,7 @@ class WorkflowCatalog:
             preview = await preview_workflow(
                 source,
                 sdk=sdk,
-                workspace=self.project_cwd,
+                workspace=self.workdir,
                 bytecode_cache=worker_bytecode_cache_dir(self.config_dir),
                 on_environment_ready=environment_ready,
             )
@@ -260,7 +260,7 @@ class WorkflowCatalog:
         path = Path(canonical_path)
         roots = {
             global_workflows_dir(self.config_dir).resolve(),
-            project_workflows_dir(self.project_cwd).resolve(),
+            workdir_workflows_dir(self.workdir).resolve(),
         }
         if not path.is_absolute() or path.is_relative_to(discovery_module.BUILTIN_DIR.resolve()):
             raise ValueError(_DELETE_SCOPE)
@@ -299,7 +299,7 @@ class WorkflowCatalog:
         """Every place above *source* in ``PRECEDENCE`` where the same id could appear (a folder and its entry)."""
         roots = {
             SOURCE_KIND_GLOBAL: global_workflows_dir(self.config_dir),
-            SOURCE_KIND_PROJECT: project_workflows_dir(self.project_cwd),
+            SOURCE_KIND_WORKDIR: workdir_workflows_dir(self.workdir),
         }
         paths: list[Path] = []
         for kind, layout in PRECEDENCE[: precedence(source.source_kind, source.layout)]:

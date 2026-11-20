@@ -28,7 +28,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -84,7 +84,7 @@ async def test_approvals_keep_the_original_request_across_retries_and_replace_it
     )
     evaluate = create_autospec(ApprovalJudge.evaluate, return_value=JudgeVerdict(approved=True, reason="in scope"))
     monkeypatch.setattr(ApprovalJudge, "evaluate", evaluate)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow())
     # No in-place request retry: the timeout fails the pass, and the node's next attempt resumes it.
     host = make_host(
@@ -141,7 +141,7 @@ async def test_node_usage_across_calls_retries_and_nodes_is_persisted_without_ch
 ) -> None:
     # The timeout is retried in place; its production backoff would only add seconds.
     monkeypatch.setattr(agent_node_build_module, "RETRY_BACKOFF_SCHEDULE", (0,))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")
     write_workflow(project, "review", _workflow(second=True))

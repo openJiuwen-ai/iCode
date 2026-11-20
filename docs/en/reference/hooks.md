@@ -4,7 +4,7 @@ Hooks let iCode automatically run local scripts or commands at specified points.
 
 > **Security notice**
 >
-> Hooks run directly with the current user's permissions, without tool approval or sandbox restrictions. Before enabling hooks supplied by a project, inspect their configuration files and the scripts and commands they run.
+> Hooks run directly with the current user's permissions, without tool approval or sandbox restrictions. Before enabling hooks supplied by a working directory, inspect their configuration files and the scripts and commands they run.
 >
 > Hooks may receive conversation content, tool arguments, and tool results. If a hook sends this data to an external service, check whether it contains sensitive information.
 
@@ -31,7 +31,7 @@ iCode can load one hook configuration file from each of the global configuration
 | Scope | macOS and Linux | Windows |
 | --- | --- | --- |
 | Global | `~/.chrys/hooks/hooks.yaml` | `%APPDATA%\chrys\hooks\hooks.yaml` |
-| Project | `<working-directory>/.chrys/hooks/hooks.yaml` | `<working-directory>\.chrys\hooks\hooks.yaml` |
+| Working directory | `<working-directory>/.chrys/hooks/hooks.yaml` | `<working-directory>\.chrys\hooks\hooks.yaml` |
 
 Either location can use `hooks.yml` or `hooks.json` instead. If a directory contains multiple candidates, iCode loads only the first one, in the order `hooks.yaml`, `hooks.yml`, `hooks.json`.
 
@@ -39,15 +39,15 @@ UTF-8 is recommended for hook configuration files. iCode also detects common leg
 
 If a file cannot be decoded using the detected encoding, iCode reports a configuration warning and disables the hooks from that file. It does not substitute characters in commands or other values.
 
-`<working-directory>` is the session's working directory. For project configuration, iCode checks only `<working-directory>/.chrys/hooks/`; it does not search parent or child directories of the working directory.
+`<working-directory>` is the session's working directory. For working directory configuration, iCode checks only `<working-directory>/.chrys/hooks/`; it does not search parent or child directories of the working directory.
 
 ## Loading configuration files
 
-Project hooks are not loaded by default, because they come with the repository you open. To load them, press **F10** in the terminal user interface (TUI) to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Safety** (`project.hooks_enabled`). When the working directory has project hooks that are not loaded, iCode shows a notice. Global hooks are always loaded.
+Working directory hooks are not loaded by default, because they come with the repository you open. To load them, press **F10** in the terminal user interface (TUI) to open **Settings**, then turn on **Load working directory hooks** in the **Working directory trust** section of **Safety** (`workdir.hooks_enabled`). When the working directory has working directory hooks that are not loaded, iCode shows a notice. Global hooks are always loaded.
 
 Editing a hook configuration file on disk does not take effect immediately. After editing, run `/reload` while idle, switch sessions, or restart iCode to load the configuration. Changes to hook scripts alone do not require a reload; the next time the hook is triggered, it uses the new script content.
 
-Enter `/runtime` in the TUI and open the **Hooks** tab to view the currently loaded project and global hooks. In a terminal, [`icode hook list`](#icode-hook-list) shows the hooks a session started in the current directory loads, and [`icode hook validate`](#icode-hook-validate) checks the configuration files.
+Enter `/runtime` in the TUI and open the **Hooks** tab to view the currently loaded working directory and global hooks. In a terminal, [`icode hook list`](#icode-hook-list) shows the hooks a session started in the current directory loads, and [`icode hook validate`](#icode-hook-validate) checks the configuration files.
 
 ## Configuration file structure
 
@@ -74,7 +74,7 @@ Configure `settings` when you need to adjust concurrency, shutdown wait time, or
 | `outbox_retry_age_seconds` | Number (>= `0`) | `60.0` | Used only for durable delivery hooks. After starting, iCode retries hook tasks that were not recorded as complete because of a previous exit or crash. This setting specifies the minimum delay in seconds before a retry, measured from the task's last execution start, or from its creation if it has never run. |
 | `outbox_max_retries` | Integer (>= `0`) | `3` | Used only for durable delivery hooks. Maximum number of times a hook task may be started, including its first run. With the default `3`, an interrupted task is retried at most twice; `1` disables retries; `0` also marks tasks that never started as failed. |
 
-When both project and global configuration exist, `settings` are merged field by field: values in the project file take precedence, followed by values in the global file, with defaults used for fields set in neither file.
+When both working directory and global configuration exist, `settings` are merged field by field: values in the working directory file take precedence, followed by values in the global file, with defaults used for fields set in neither file.
 
 ### Defining hooks
 
@@ -90,7 +90,7 @@ Each entry in the `hooks` list defines one hook and supports the following field
 | `enabled` | Boolean | `true` | Set to `false` to disable the hook without deleting its configuration. |
 | `description` | String | `""` | A description to help identify the hook; does not change its behavior. |
 
-An `id` can contain Chinese characters, spaces, and special symbols, but not newlines, tabs, or other characters that cannot be displayed normally. If an `id` contains spaces or special symbols, enclose the entire value in quotes. Project and global configurations may use the same `id`; both hooks will run.
+An `id` can contain Chinese characters, spaces, and special symbols, but not newlines, tabs, or other characters that cannot be displayed normally. If an `id` contains spaces or special symbols, enclose the entire value in quotes. Working directory and global configurations may use the same `id`; both hooks will run.
 
 ## Events
 
@@ -637,10 +637,10 @@ The time you take doesn't count toward the hook's `timeout_seconds`. Your answer
 
 ### Execution order
 
-When both project and global configuration are loaded, execution mode determines the phase in which a hook runs, and configuration source determines the order within each phase. For a single event, iCode processes hooks in two phases:
+When both working directory and global configuration are loaded, execution mode determines the phase in which a hook runs, and configuration source determines the order within each phase. For a single event, iCode processes hooks in two phases:
 
-1. It checks and runs matching blocking hooks one by one: project hooks first, then global hooks, preserving definition order within each configuration file.
-2. If no hook rejects the operation, iCode starts matching async and fire-and-forget hooks: first in project configuration order, then in global configuration order. These non-blocking hooks may run concurrently, so they may finish in a different order from the one in which they started.
+1. It checks and runs matching blocking hooks one by one: working directory hooks first, then global hooks, preserving definition order within each configuration file.
+2. If no hook rejects the operation, iCode starts matching async and fire-and-forget hooks: first in working directory configuration order, then in global configuration order. These non-blocking hooks may run concurrently, so they may finish in a different order from the one in which they started.
 
 Decisions returned by blocking hooks are combined as follows:
 
@@ -654,17 +654,17 @@ Decisions returned by blocking hooks are combined as follows:
 
 For `user_prompt_submit` and `before_tool_call`, a blocking hook that fails with `on_error: block` also rejects the current operation and stops the remaining hooks for that event.
 
-As a result, after a project hook modifies tool arguments, subsequent global hooks see the modified arguments. After a project hook rejects an operation, global hooks for that event do not run.
+As a result, after a working directory hook modifies tool arguments, subsequent global hooks see the modified arguments. After a working directory hook rejects an operation, global hooks for that event do not run.
 
 ### Duplicate IDs do not override hooks
 
-Project and global configurations may define the same `id`. Both hooks are retained, and iCode logs a duplicate-name warning.
+Working directory and global configurations may define the same `id`. Both hooks are retained, and iCode logs a duplicate-name warning.
 
-Duplicate `id` values within one configuration file cause that file to fail to load. An `id` identifies a hook; it is not an override key. Defining a hook with the same name in project configuration cannot override or disable a global hook. To disable a global hook, edit the global configuration and set that hook's `enabled` to `false`, or delete its definition.
+Duplicate `id` values within one configuration file cause that file to fail to load. An `id` identifies a hook; it is not an override key. Defining a hook with the same name in working directory configuration cannot override or disable a global hook. To disable a global hook, edit the global configuration and set that hook's `enabled` to `false`, or delete its definition.
 
 ### Settings merging and load failures
 
-`settings` in project and global configurations are merged field by field: explicitly set project values take precedence, followed by global values, with defaults used when neither file sets a field.
+`settings` in working directory and global configurations are merged field by field: explicitly set working directory values take precedence, followed by global values, with defaults used when neither file sets a field.
 
 If either configuration file is invalid, iCode displays a warning and disables all hooks defined in that file; a valid configuration file in the other location still takes effect. No warning is issued when a configuration file is not found. To see every problem in a file, run [`icode hook validate`](#icode-hook-validate).
 
@@ -678,18 +678,18 @@ List the hooks a session started in the current directory loads, without running
 icode hook list [--json]
 ```
 
-Each configuration file found is listed, the project file first, then the global one. Its first line gives its path and one of these states:
+Each configuration file found is listed, the working directory file first, then the global one. Its first line gives its path and one of these states:
 
 | State | Meaning |
 | --- | --- |
 | `loaded` | A session started here runs the hooks in this file |
-| `not loaded` | Project hooks are turned off; see [Loading configuration files](#loading-configuration-files). If the file also has an error, the first one is shown too |
+| `not loaded` | Working directory hooks are turned off; see [Loading configuration files](#loading-configuration-files). If the file also has an error, the first one is shown too |
 | `invalid, not loaded` | The file has an error, so a session runs none of its hooks. The first error is shown; run `icode hook validate` to see them all |
 
 The file's hooks follow in order. Each starts with its ID and, in parentheses, its event and run mode, plus `turned off` when its `enabled` is `false`. A `match:` line follows with its match conditions, when it has any, then a `run:` line: `script` and the script path, `command` and the program, or `shell`. Command arguments, environment variable values and shell snippets are not shown, because they can contain passwords or tokens. The script path and the program are shown only when they can be found from the folder you run the command in: a file that exists, or a program on `PATH`. Otherwise `…` stands in for them, because what was written there may hold more, as in `"notify --token abc"`. A program found only through the hook's own `cwd` or `PATH` setting also shows `…`. `icode hook validate` reports the scripts and programs it can tell are missing. A hook left out because a regular expression in its match conditions is invalid is shown on a `skipped` line.
 
 ```text
-Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
+Working directory hooks: ./.chrys/hooks/hooks.yaml (loaded)
   record-turn (after_turn, fire_and_forget)
     run: script scripts/record_turn.py
   protect-env (before_tool_call, blocking)
@@ -699,7 +699,7 @@ Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
 
 The command exits with code 0 even when a file is invalid; to check files, use `icode hook validate`.
 
-With `--json`, stdout holds one object: `version` (currently `1`), `files`, and `searched` (the folders looked in). Each item in `files` contains `scope` (`project` or `global`), `path`, `state` (`loaded`, `not_loaded`, or `invalid`; `not_loaded` whenever project hooks are turned off), `error` (the error that keeps a session from loading the file, in the form of a `validate` diagnostic, or `null`; other errors, such as a missing script, are reported only by `validate`), `hooks`, and `skipped` (each with `id` and `reason`). Each hook contains `id`, `event`, `enabled`, `description`, `execution`, `match`, and `run`; in `run`, `type` is `script`, `command`, or `shell`, and `path` is the script path and `program` the command's program, each `null` for the other types of hook or when the listing shows `…`.
+With `--json`, stdout holds one object: `version` (currently `1`), `files`, and `searched` (the folders looked in). Each item in `files` contains `scope` (`workdir` or `global`), `path`, `state` (`loaded`, `not_loaded`, or `invalid`; `not_loaded` whenever working directory hooks are turned off), `error` (the error that keeps a session from loading the file, in the form of a `validate` diagnostic, or `null`; other errors, such as a missing script, are reported only by `validate`), `hooks`, and `skipped` (each with `id` and `reason`). Each hook contains `id`, `event`, `enabled`, `description`, `execution`, `match`, and `run`; in `run`, `type` is `script`, `command`, or `shell`, and `path` is the script path and `program` the command's program, each `null` for the other types of hook or when the listing shows `…`.
 
 ### `icode hook validate`
 
@@ -709,7 +709,7 @@ Check hook configuration files the way a session loads them, and report every pr
 icode hook validate [<path>] [--json]
 ```
 
-Without `<path>`, the command checks the project file of the current directory and the global file. It checks the project file even when project hooks are turned off. `<path>` is a hook configuration file, which can have any name and be anywhere, or a folder; for a folder, it checks the file a session would read there.
+Without `<path>`, the command checks the working directory file of the current directory and the global file. It checks the working directory file even when working directory hooks are turned off. `<path>` is a hook configuration file, which can have any name and be anywhere, or a folder; for a folder, it checks the file a session would read there.
 
 A session stops at the first error and ignores the whole file. Validation goes on and reports every hook with a problem. It also warns about settings that are accepted but probably do not do what you meant.
 
@@ -749,7 +749,7 @@ These problems are warnings:
 | `durable_blocking` | `delivery: durable` is set on a blocking hook, which does not use it |
 | `broad_before_tool_call` | A `before_tool_call` hook has no match conditions, so it runs for every tool call |
 | `retired_shell_arg` | `match.args` uses an old shell argument name: `working_dir`, or `max_tokens` with `tool_kind: shell`; it still matches shell calls for now. See [Renamed shell arguments](#renamed-shell-arguments) |
-| `duplicate_id_across_files` | The project and global files both define this `id`; both hooks run |
+| `duplicate_id_across_files` | The working directory and global files both define this `id`; both hooks run |
 | `shadowed_file` | The folder holds more than one hook configuration file; only the first is read (see [Configuration file locations](#configuration-file-locations)) |
 | `program_not_found` | The program that runs an enabled hook's command or script is not found on `PATH`, or on Windows is only the placeholder that offers Python from the Microsoft Store |
 | `unknown_template_var` | `run.cwd` or `run.env` uses a `${...}` variable that iCode does not fill in, or `run.argv` or `run.args` uses any `${...}` variable (iCode fills in variables only in `cwd` and `env` values), so it is passed on as written |
@@ -762,6 +762,6 @@ With `--json`, stdout holds one object. Every field is always present; unknown v
 | --- | --- |
 | `version` | Integer: report format version, currently `1` |
 | `status` | String: `pass` or `fail` |
-| `files` | Array of objects: each file checked, with its `scope` (`project`, `global`, or `path` for a file named on the command line), `path`, `loaded` (whether a session started here loads it; `null` for `path`), and `hook_count` (the number of hook entries) |
+| `files` | Array of objects: each file checked, with its `scope` (`workdir`, `global`, or `path` for a file named on the command line), `path`, `loaded` (whether a session started here loads it; `null` for `path`), and `hook_count` (the number of hook entries) |
 | `searched` | Array of strings: the folders, or the path, the command looked in |
 | `diagnostics` | Array of objects: each problem's `severity` (`error` or `warning`), `code`, `message`, `file`, `line` and `column` (starting at 1), `hook_id`, and `entry` (the hook's position in `hooks`, starting at 0) |

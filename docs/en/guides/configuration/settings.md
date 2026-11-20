@@ -22,7 +22,7 @@ You can also open a tab directly with `/settings <tab>`:
 | --- | --- | --- |
 | General | `general` | Appearance, input and updates |
 | Models & Agents | `models` | Default agent, model roles, and request retries |
-| Safety | `safety` | Approval, project trust, credentials, diagnostics, and telemetry |
+| Safety | `safety` | Approval, working directory trust, credentials, diagnostics, and telemetry |
 | Sessions | `sessions` | Session titles, storage, and rollback snapshots |
 | Tools | `tools` | File search, images, web tools, agent questions, tool detail display, and workspace notices |
 | Notifications | `notifications` | Notification toggles, delivery methods, and events |
@@ -110,15 +110,17 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 | Human approval timeout (seconds) | Defaults to `0` (no timeout); positive values set a deadline in seconds. Negative values are adjusted to `0`. Applies to TUI and ACP human approvals. Timeout rejects the call. | After restarting iCode |
 | Show the approval dialog only when Auto-Review flags a call | On by default. In automatic mode, no dialog opens while the approval judge model evaluates a call, and calls it judges safe run without one; the dialog opens only for flagged calls or when evaluation fails. When disabled, the dialog opens at once and shows **Evaluating**, so you can decide before evaluation finishes. Requests already waiting keep the behavior they started with. See [Handle approval requests in the TUI](./approval.md#handle-approval-requests-in-the-tui). | Immediately |
 
-#### Project trust
+#### Working directory trust
 
-Project settings, hooks, and skills come with the repository you open, so all three are off by default. When the working directory has any of them that are not loaded, iCode shows a notice naming the setting to turn on.
+These user-level switches control what iCode loads from each session’s primary working directory. All three are off by default. When a switch keeps a source unloaded, iCode shows a notice identifying the switch.
+
+If iCode cannot save a backup during upgrade, it leaves the older trust keys in place and reads them at startup. The notification, theme, and Buddy settings can still be upgraded. If the older and renamed keys for a switch disagree, iCode turns the switch off and names it in a warning.
 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
-| Load project settings | Reads `.chrys/settings.yaml` in the current working directory and applies its project settings, such as request retries, automatic session titles, and working directory notices. See [Project-level settings](../../reference/settings.md#project-level-settings) for allowed keys and override restrictions. | On close |
-| Load project hooks | Controls whether iCode loads hooks from `.chrys/hooks` in the current working directory; it does not affect user-level hooks. To create and validate hooks, see [Configure and write hooks](../extensions/hooks.md). For the complete configuration fields, see the [Hooks configuration reference](../../reference/hooks.md). | On close |
-| Load project skills | Controls whether iCode loads skills from `.agents/skills` in the current working directory; it does not affect your own skills directories. See [Install and use skills](../extensions/skills.md). | On close |
+| Load working directory settings | Reads `.chrys/settings.yaml` in the current working directory and applies supported settings such as request retries, automatic session titles, and working directory notices. See [Working-directory settings](../../reference/settings.md#working-directory-settings) for allowed keys and override restrictions. | On close |
+| Load working directory hooks | Controls whether iCode loads hooks from `.chrys/hooks` in the current working directory; it does not affect user-level hooks. To create and validate hooks, see [Configure and write hooks](../extensions/hooks.md). For the complete configuration fields, see the [Hooks configuration reference](../../reference/hooks.md). | On close |
+| Load working directory skills | Controls whether iCode loads skills from `.agents/skills` in the current working directory; it does not affect your own skills directories. See [Install and use skills](../extensions/skills.md). | On close |
 
 #### Credentials
 
@@ -195,7 +197,7 @@ For telemetry data types, storage locations, endpoint precedence, and collector 
 
 #### Web search
 
-These settings apply to agents that include the web tools, which are off by default. See [Configure web tools](./web-tools.md). An agent profile that sets its own mode, result count, or timeout overrides these values for that agent. Project settings cannot change them.
+These settings apply to agents that include the web tools, which are off by default. See [Configure web tools](./web-tools.md). An agent profile that sets its own mode, result count, or timeout overrides these values for that agent. Working directory settings cannot change them.
 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |

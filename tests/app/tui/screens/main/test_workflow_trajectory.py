@@ -21,7 +21,7 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.models.invocations import InvocationOrigin
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import wait_for
 
@@ -41,7 +41,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_f12_waits_for_completion_and_lease_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workflow: bool
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine, bus = WorkflowEngine(), EventBus()
     requests: list[events.WorkflowRunRequest] = []
 
@@ -140,7 +140,7 @@ async def test_f12_waits_for_completion_and_lease_release(
 async def test_agent_loading_hides_f12_and_its_end_restores_the_footer_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(140, 45)) as pilot:
         main = app._main_screen
@@ -162,7 +162,7 @@ async def test_agent_loading_hides_f12_and_its_end_restores_the_footer_key(
 async def test_workflow_hides_f12_and_switching_back_to_chat_restores_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(140, 45)) as pilot:
         main = app._main_screen

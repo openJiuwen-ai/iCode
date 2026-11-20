@@ -385,22 +385,22 @@ def test_approval_timeout_preserves_explicit_zero_and_positive_values(config_dir
 def test_settings_reload_ignores_legacy_files(config_dir, tmp_path, monkeypatch, yaml_theme) -> None:
     _clear_theme(monkeypatch)
     freeze_process_env()
-    project = tmp_path / "workspace"
-    project.mkdir()
+    workdir = tmp_path / "workspace"
+    workdir.mkdir()
     if yaml_theme is not None:
         _write_user_yaml(config_dir, f"ui:\n  theme: {yaml_theme}\n")
     user_env = _write_user_env(config_dir, "CHRYS_THEME=solar\n")
-    project_env = project / ".env"
-    project_env.write_text("CHRYS_THEME=solar\n", encoding="utf-8")
+    workdir_env = workdir / ".env"
+    workdir_env.write_text("CHRYS_THEME=solar\n", encoding="utf-8")
 
     for changed in ("solar", "midnight"):
-        for path in (user_env, project_env):
+        for path in (user_env, workdir_env):
             path.write_text(f"CHRYS_THEME={changed}\n", encoding="utf-8")
-        loaded = load_settings(project_root=project)
+        loaded = load_settings(workdir=workdir)
         assert loaded.settings.theme == (yaml_theme or Settings().theme)
         assert loaded.source_for("ui.theme").layer is (Source.USER if yaml_theme else Source.DEFAULT)
         assert loaded.warnings == ()
-        for path in (user_env, project_env):
+        for path in (user_env, workdir_env):
             assert path.read_text(encoding="utf-8") == f"CHRYS_THEME={changed}\n"
 
 
@@ -464,7 +464,7 @@ def test_bad_edit_keeps_last_document_across_readers_and_refuses_writes(config_d
     with pytest.raises(ConfigDocumentError, match="line 1"):
         load_settings(manual_reload=True)
     assert get_global_default_profile_id() == "A"
-    loaded = load_settings(project_root=config_dir.parent)
+    loaded = load_settings(workdir=config_dir.parent)
     assert loaded.document_error
     assert loaded.settings.ask_user_timeout_seconds == 65
     assert isinstance(persist_theme("chrys"), ConfigDocumentError)

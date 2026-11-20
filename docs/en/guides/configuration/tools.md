@@ -16,9 +16,9 @@ Each option corresponds to a kind of built-in tool. Enable the kinds the agent n
 
 | Tool kind | Available operations | When to enable |
 | --- | --- | --- |
-| Filesystem Read | Read files and view images (PNG, JPEG, or WebP) | Enable when the agent needs to analyze project files; the agent can use the image viewing tool only if the selected model supports image input |
+| Filesystem Read | Read files and view images (PNG, JPEG, or WebP) | Enable when the agent needs to analyze working directory files; the agent can use the image viewing tool only if the selected model supports image input |
 | Filesystem Write | Create, overwrite, and precisely edit files | Enable only when the agent needs to modify files |
-| File search | Search file contents or find files by name pattern | Enable when the agent needs to locate code and files in a project |
+| File search | Search file contents or find files by name pattern | Enable when the agent needs to locate code and files in a working directory |
 | Web search | Find online URLs and summaries; uses Exa (exa.ai) unless the agent profile names other providers | Enable when the agent needs current external information, such as documentation or release details. Queries go to that outside service and can carry details from your conversation, so mind your data and privacy |
 | Web fetch | Read the text of a page by URL | Enable when the agent needs to read pages it finds or that you point it to |
 | Shell | Execute terminal commands in a subprocess | Enable when the agent needs to run builds, tests, or other commands |
@@ -52,7 +52,7 @@ For example:
 
 - An agent that only analyzes code can enable "Filesystem Read" and "File search" without enabling "Filesystem Write" or Shell.
 - An agent that modifies code and runs tests typically needs "Filesystem Read", "Filesystem Write", "File search", and Shell.
-- When working with an untrusted project, use caution when enabling Shell and "Filesystem Write".
+- When working with an untrusted working directory, use caution when enabling Shell and "Filesystem Write".
 
 Enabling a tool only makes that capability available to the agent; operations that require approval are still handled according to the current approval mode. For details on approval requests and how to confirm them, see [Configure approval modes](./approval.md).
 

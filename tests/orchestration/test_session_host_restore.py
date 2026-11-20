@@ -21,7 +21,7 @@ import pytest
 
 import chrys.orchestration.engine.build.builder as builder_module
 import chrys.orchestration.session_host as session_host_module
-from chrys.foundation.config.settings_store import DormantProjectConfig, LoadedSettings, load_settings
+from chrys.foundation.config.settings_store import DormantWorkdirConfig, LoadedSettings, load_settings
 from chrys.foundation.events.types import (
     AgentLoadFailed,
     AgentLoadFinished,
@@ -129,7 +129,7 @@ async def test_session_host_restores_existing_session(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_session_host_restore_publishes_project_settings_warnings(
+async def test_session_host_restore_publishes_workdir_settings_warnings(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     """The restore re-derives settings for the target root and must report
@@ -156,17 +156,17 @@ async def test_session_host_restore_publishes_project_settings_warnings(
 
     real_load_settings = load_settings
 
-    def load_with_dormant_project(**kwargs: Any) -> LoadedSettings:
+    def load_with_dormant_workdir(**kwargs: Any) -> LoadedSettings:
         # Tests never freeze the process env, so the real load reads no files;
-        # graft the verdict a project document at the target root would earn.
+        # graft the verdict a workdir document at the target root would earn.
         loaded = real_load_settings(**kwargs)
-        dormant_path = Path(kwargs["project_root"]) / ".chrys" / "settings.yaml"
+        dormant_path = Path(kwargs["workdir"]) / ".chrys" / "settings.yaml"
         return replace(
             loaded,
-            dormant_project=(DormantProjectConfig(path=dormant_path, keys=("tools.result.ceiling_tokens",)),),
+            dormant_workdir=(DormantWorkdirConfig(path=dormant_path, keys=("tools.result.ceiling_tokens",)),),
         )
 
-    monkeypatch.setattr("chrys.orchestration.engine.session_lifecycle.load_settings", load_with_dormant_project)
+    monkeypatch.setattr("chrys.orchestration.engine.session_lifecycle.load_settings", load_with_dormant_workdir)
     second = ChrysSessionHost(
         profile_name="Headless",
         session_id=session_id,
@@ -187,7 +187,7 @@ async def test_session_host_restore_publishes_project_settings_warnings(
         await second.shutdown()
 
     assert second_result.session_id == session_id
-    dormant = [event for event in warnings if event.code == "project_config_dormant"]
+    dormant = [event for event in warnings if event.code == "workdir_config_dormant"]
     assert [event.session_id for event in dormant] == [session_id]
 
 

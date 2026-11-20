@@ -23,7 +23,7 @@ from tests.orchestration.workflows._hosting import (
     PROFILE,
     confirm,
     make_host,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -98,7 +98,7 @@ async def test_unexpected_task_failure_commits_one_terminal_and_releases_the_lea
 
     failure = close_then_fail if method is WorkflowAgentShell.close else RuntimeError("injected task defect")
     monkeypatch.setattr(owner, method.__name__, create_autospec(method, side_effect=failure))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wf", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -127,7 +127,7 @@ async def test_agent_cancel_and_storage_failure_settle_the_run(
         else create_autospec(original, return_value=AgentAttemptResult(kind="cancelled"))
     )
     monkeypatch.setattr(WorkflowAgentShell, "run", replacement)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wf", AGENT)
     host = make_host(tmp_path, project=project)
     try:
@@ -157,7 +157,7 @@ async def test_first_cancel_wins_while_the_scheduler_lock_is_held(
             tasks.append(task)
 
     monkeypatch.setattr(WorkflowRunner, "_on_state", create_autospec(original, side_effect=state))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wf", SIMPLE)
     host = make_host(tmp_path, project=project)
     try:
@@ -181,7 +181,7 @@ async def test_diagnostics_retain_body_conditions_and_each_loop_iteration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: bytes, node: str, expected: list[tuple[str, int, str]]
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wf", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -212,7 +212,7 @@ async def test_node_timeout_persists_the_terminal_stdout(
     )
     source = python_workflow(body, "fn").replace(b"wf.python('fn', fn)", b"wf.python('fn', fn, timeout=1)")
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wf", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -242,7 +242,7 @@ async def test_worker_loss_and_decode_errors_keep_their_reason_in_the_terminal(
         else create_autospec(original, side_effect=WorkerLostError("worker exited with status 7: native failure"))
     )
     monkeypatch.setattr(WorkflowWorkerClient, "_evaluate", replacement)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wf", LOOP)
     host = make_host(tmp_path, project=project)
     try:
@@ -263,7 +263,7 @@ async def test_abandoned_startup_keeps_elapsed_duration(tmp_path: Path, monkeypa
     import chrys.orchestration.workflows.runner as runner_module
 
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "wf", SIMPLE)
     host = make_host(tmp_path, project=project)
     clock = [10.0]

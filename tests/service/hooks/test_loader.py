@@ -15,7 +15,7 @@ from chrys.service.hooks.loader import (
     HooksConfigError,
     load_hooks_dir,
     load_hooks_file,
-    load_hooks_project,
+    load_workdir_hooks,
     merge_hooks_files,
     parse_hooks_dict,
 )
@@ -574,11 +574,11 @@ def test_blocking_durable_hook_warns(caplog: pytest.LogCaptureFixture) -> None:
     assert "blocking hooks are awaited inline" in caplog.text
 
 
-def test_load_hooks_project_no_file_returns_none(tmp_path: Path) -> None:
-    assert load_hooks_project(tmp_path) is None
+def test_load_workdir_hooks_no_file_returns_none(tmp_path: Path) -> None:
+    assert load_workdir_hooks(tmp_path) is None
 
 
-def test_load_hooks_project_yaml(tmp_path: Path) -> None:
+def test_load_workdir_hooks_yaml(tmp_path: Path) -> None:
     hooks_dir = tmp_path / ".chrys" / "hooks"
     hooks_dir.mkdir(parents=True)
     (hooks_dir / "hooks.yaml").write_text(
@@ -591,48 +591,48 @@ hooks:
 """,
         encoding="utf-8",
     )
-    file = load_hooks_project(tmp_path)
+    file = load_workdir_hooks(tmp_path)
     assert file is not None
     assert file.source == str(hooks_dir / "hooks.yaml")
     assert len(file.hooks) == 1
     assert file.hooks[0].id == "project-hook"
 
 
-def test_load_hooks_project_yml_extension(tmp_path: Path) -> None:
+def test_load_workdir_hooks_yml_extension(tmp_path: Path) -> None:
     hooks_dir = tmp_path / ".chrys" / "hooks"
     hooks_dir.mkdir(parents=True)
     (hooks_dir / "hooks.yml").write_text("version: 1\nhooks: []\n", encoding="utf-8")
-    file = load_hooks_project(tmp_path)
+    file = load_workdir_hooks(tmp_path)
     assert file is not None
     assert file.source.endswith("hooks.yml")
 
 
-def test_load_hooks_project_json_extension(tmp_path: Path) -> None:
+def test_load_workdir_hooks_json_extension(tmp_path: Path) -> None:
     hooks_dir = tmp_path / ".chrys" / "hooks"
     hooks_dir.mkdir(parents=True)
     (hooks_dir / "hooks.json").write_text('{"version": 1, "hooks": []}', encoding="utf-8")
-    file = load_hooks_project(tmp_path)
+    file = load_workdir_hooks(tmp_path)
     assert file is not None
     assert file.source.endswith("hooks.json")
 
 
-def test_load_hooks_project_yaml_wins_over_others(tmp_path: Path) -> None:
+def test_load_workdir_hooks_yaml_wins_over_others(tmp_path: Path) -> None:
     hooks_dir = tmp_path / ".chrys" / "hooks"
     hooks_dir.mkdir(parents=True)
     (hooks_dir / "hooks.yaml").write_text("version: 1\nhooks: []\n", encoding="utf-8")
     (hooks_dir / "hooks.yml").write_text("version: 1\nhooks: []\n", encoding="utf-8")
     (hooks_dir / "hooks.json").write_text('{"version": 1, "hooks": []}', encoding="utf-8")
-    file = load_hooks_project(tmp_path)
+    file = load_workdir_hooks(tmp_path)
     assert file is not None
     assert file.source.endswith("hooks.yaml")
 
 
-def test_load_hooks_project_parse_error_raises(tmp_path: Path) -> None:
+def test_load_workdir_hooks_parse_error_raises(tmp_path: Path) -> None:
     hooks_dir = tmp_path / ".chrys" / "hooks"
     hooks_dir.mkdir(parents=True)
     (hooks_dir / "hooks.yaml").write_text(": invalid: yaml: :", encoding="utf-8")
     with pytest.raises(HooksConfigError):
-        load_hooks_project(tmp_path)
+        load_workdir_hooks(tmp_path)
 
 
 def _hook(*, id_: str, event: str = "before_tool_call") -> HookConfig:
@@ -654,15 +654,15 @@ def test_merge_both_none_returns_empty() -> None:
     merged = merge_hooks_files(None, None)
     assert isinstance(merged, MergedHooksFile)
     assert merged.hooks == []
-    assert merged.project is None
+    assert merged.workdir is None
     assert merged.global_ is None
     assert merged.settings == HookSettings()
 
 
-def test_merge_project_only() -> None:
+def test_merge_workdir_only() -> None:
     project = HooksFile(hooks=[_hook(id_="p1")], source="/proj/hooks.yaml")
     merged = merge_hooks_files(project, None)
-    assert merged.project is project
+    assert merged.workdir is project
     assert merged.global_ is None
     assert [h.id for h in merged.hooks] == ["p1"]
     assert merged.sources == ["/proj/hooks.yaml"]
@@ -671,36 +671,36 @@ def test_merge_project_only() -> None:
 def test_merge_global_only() -> None:
     global_ = HooksFile(hooks=[_hook(id_="g1")], source="/cfg/hooks.yaml")
     merged = merge_hooks_files(None, global_)
-    assert merged.project is None
+    assert merged.workdir is None
     assert merged.global_ is global_
     assert [h.id for h in merged.hooks] == ["g1"]
     assert merged.sources == ["/cfg/hooks.yaml"]
 
 
-@pytest.mark.parametrize("project_spelling", ["home", "HOME"])
+@pytest.mark.parametrize("workdir_spelling", ["home", "HOME"])
 def test_merge_same_source_file_uses_global_once(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, project_spelling: str
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, workdir_spelling: str
 ) -> None:
     source = tmp_path / "home" / ".chrys" / "hooks" / "hooks.yaml"
     source.parent.mkdir(parents=True)
     source.write_text("version: 1\nhooks: []\n", encoding="utf-8")
-    project_source = tmp_path / project_spelling / ".chrys" / "hooks" / "hooks.yaml"
-    if not project_source.exists():
+    workdir_source = tmp_path / workdir_spelling / ".chrys" / "hooks" / "hooks.yaml"
+    if not workdir_source.exists():
         pytest.skip("Case-sensitive filesystem: the other spelling is another file")
-    project = HooksFile(hooks=[_hook(id_="same")], source=str(project_source))
+    project = HooksFile(hooks=[_hook(id_="same")], source=str(workdir_source))
     global_ = HooksFile(hooks=[_hook(id_="same")], source=str(source))
 
     with caplog.at_level("WARNING", logger="chrys.service.hooks.loader"):
         merged = merge_hooks_files(project, global_)
 
-    assert merged.project is None
+    assert merged.workdir is None
     assert merged.global_ is global_
     assert [h.id for h in merged.hooks] == ["same"]
     assert merged.sources == [str(source)]
     assert not caplog.records
 
 
-def test_merge_both_preserves_project_first_ordering() -> None:
+def test_merge_both_preserves_workdir_first_ordering() -> None:
     project = HooksFile(
         hooks=[_hook(id_="p1"), _hook(id_="p2"), _hook(id_="p3")],
         source="/proj/hooks.yaml",
@@ -729,7 +729,7 @@ def test_merge_same_id_emits_warning(tmp_path: Path, caplog: pytest.LogCaptureFi
     assert any("lint" in record.message and "/proj/hooks.yaml" in record.message for record in caplog.records)
 
 
-def test_merge_settings_project_wins() -> None:
+def test_merge_settings_workdir_wins() -> None:
     project = HooksFile(
         hooks=[],
         source="/proj/hooks.yaml",
@@ -758,7 +758,7 @@ def test_merge_settings_global_fallback() -> None:
     assert merged.settings.shutdown_grace_seconds == 5.0
 
 
-def test_merge_settings_project_explicit_default_overrides_global() -> None:
+def test_merge_settings_workdir_explicit_default_overrides_global() -> None:
     project = HooksFile(
         hooks=[],
         source="/proj/hooks.yaml",

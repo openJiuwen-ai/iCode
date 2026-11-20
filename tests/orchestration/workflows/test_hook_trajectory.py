@@ -19,7 +19,7 @@ from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookRun, HooksFile
 from chrys.service.trajectory.session import trajectory_events_path
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, run, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.trajectory_invariants import assert_trajectory_accounted, assert_trajectory_operation_settlement
 from tests.support.workflow_workers import python_workflow
@@ -29,7 +29,7 @@ from tests.support.workflow_workers import python_workflow
 async def test_lifecycle_hooks_have_session_or_run_parent_and_finish_before_recorder_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     hook_events = (
         HookEvent.SESSION_START,
@@ -50,7 +50,7 @@ async def test_lifecycle_hooks_have_session_or_run_parent_and_finish_before_reco
         ]
     )
 
-    async def build(factory, *, project_root, project_hooks_enabled, session_id, request_id=""):
+    async def build(factory, *, workdir, workdir_hooks_enabled, session_id, request_id=""):
         return HookManager(file=config, hooks_dir=tmp_path / "hooks")
 
     monkeypatch.setattr(SessionHookFactory, "__call__", create_autospec(SessionHookFactory.__call__, side_effect=build))
@@ -110,7 +110,7 @@ async def test_lifecycle_hooks_have_session_or_run_parent_and_finish_before_reco
 async def test_deleted_session_end_hook_does_not_recreate_its_trajectory_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     marker = tmp_path / "session-ended"
     config = HooksFile(
@@ -127,7 +127,7 @@ async def test_deleted_session_end_hook_does_not_recreate_its_trajectory_directo
         ]
     )
 
-    async def build(factory, *, project_root, project_hooks_enabled, session_id, request_id=""):
+    async def build(factory, *, workdir, workdir_hooks_enabled, session_id, request_id=""):
         return HookManager(file=config, hooks_dir=tmp_path / "hooks")
 
     monkeypatch.setattr(SessionHookFactory, "__call__", create_autospec(SessionHookFactory.__call__, side_effect=build))

@@ -56,7 +56,7 @@ from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.workflows.discovery import (
     SOURCE_KIND_BUILTIN,
-    SOURCE_KIND_PROJECT,
+    SOURCE_KIND_WORKDIR,
     Discovery,
     SkippedSource,
     WorkflowSource,
@@ -73,7 +73,7 @@ from tests.orchestration.workflows._hosting import (
     hold_workflow_deadline,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -202,7 +202,7 @@ def test_list_prints_one_row_per_workflow(monkeypatch: pytest.MonkeyPatch, capsy
         monkeypatch,
         Discovery(
             sources=(
-                _source("chain", SOURCE_KIND_PROJECT, "/proj/.chrys/workflows/chain.py"),
+                _source("chain", SOURCE_KIND_WORKDIR, "/proj/.chrys/workflows/chain.py"),
                 _source("demo-workflow", SOURCE_KIND_BUILTIN, "/lib/builtins/demo-workflow.py"),
             ),
             skipped=(SkippedSource("/proj/.chrys/workflows/huge.py", "too large"),),
@@ -214,10 +214,10 @@ def test_list_prints_one_row_per_workflow(monkeypatch: pytest.MonkeyPatch, capsy
     captured = capsys.readouterr()
     lines = [line.split() for line in captured.out.splitlines() if line.strip()]
     assert lines[0][:3] == ["ID", "Source", "Title"]
-    assert lines[1] == ["chain", "project", "-", "/proj/.chrys/workflows/chain.py"]
+    assert lines[1] == ["chain", "workdir", "-", "/proj/.chrys/workflows/chain.py"]
     assert lines[2] == ["demo-workflow", "builtin", *TITLE.split(), "/lib/builtins/demo-workflow.py"]
     assert captured.err == "Warning: Skipped /proj/.chrys/workflows/huge.py: too large\n"
-    assert calls == [{"config_dir": calls[0]["config_dir"], "project_cwd": Path.cwd()}]
+    assert calls == [{"config_dir": calls[0]["config_dir"], "workdir": Path.cwd()}]
 
 
 def test_list_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -248,7 +248,7 @@ def test_list_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixtur
 def test_list_shows_a_workflow_folder_by_its_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     entry = write_workflow_package(project, "packaged", CHAIN, {"helpers.py": b"VALUE = 1\n"})
     write_workflow(project, "single", CHAIN)
@@ -259,7 +259,7 @@ def test_list_shows_a_workflow_folder_by_its_entry(
     rows = {row["id"]: row for row in json.loads(captured.out)["workflows"]}
     assert rows["packaged"] == {
         "id": "packaged",
-        "source": "project",
+        "source": "workdir",
         "layout": "package",
         "title": "",
         "path": str(entry.resolve()),
@@ -275,7 +275,7 @@ def test_list_shows_names_without_terminal_controls(
     _patch_discovery(
         monkeypatch,
         Discovery(
-            sources=(_source("a\x1b[2Jb", SOURCE_KIND_PROJECT, "/proj/.chrys/workflows/a\x1b[2Jb\udcff.py"),),
+            sources=(_source("a\x1b[2Jb", SOURCE_KIND_WORKDIR, "/proj/.chrys/workflows/a\x1b[2Jb\udcff.py"),),
             skipped=(),
         ),
     )
@@ -370,7 +370,7 @@ class FakeHost:
             run_id="run-1",
             selection=WorkflowSessionSelection(
                 self.workflow_session_id,
-                WorkflowIdentity("review", "/review.py", "project"),
+                WorkflowIdentity("review", "/review.py", "workdir"),
                 WorkspaceSnapshot("/project"),
             ),
         )
@@ -700,7 +700,7 @@ def test_the_headless_loop_lists_confirms_runs_and_prints_outputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[]) for _ in range(4)])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     write_workflow(project, "emits", EMITS)
     monkeypatch.chdir(project)
@@ -708,9 +708,9 @@ def test_the_headless_loop_lists_confirms_runs_and_prints_outputs(
     assert workflow_cli.main(["list", "--json"]) == 0
     listing = json.loads(capsys.readouterr().out)
     assert [(w["id"], w["source"]) for w in listing["workflows"]] == [
-        ("chain", SOURCE_KIND_PROJECT),
+        ("chain", SOURCE_KIND_WORKDIR),
         ("demo-workflow", SOURCE_KIND_BUILTIN),
-        ("emits", SOURCE_KIND_PROJECT),
+        ("emits", SOURCE_KIND_WORKDIR),
     ]
 
     hosts = _real_hosts(tmp_path, project, monkeypatch)
@@ -760,7 +760,7 @@ def test_the_headless_loop_lists_confirms_runs_and_prints_outputs(
 def test_explicit_session_rejects_another_workflow_without_creating_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     write_workflow(project, "emits", EMITS)
     hosts = _real_hosts(tmp_path, project, monkeypatch)
@@ -792,7 +792,7 @@ def test_explicit_session_rejects_another_workflow_without_creating_history(
 async def test_cli_restored_workflow_bypasses_tool_approval_whatever_the_interactive_launch_chose(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interactive_mode: ApprovalMode
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("workflow reference contents", encoding="utf-8")
     profile = make_profile(builtins=["filesystem.read"])
@@ -869,7 +869,7 @@ def test_the_builtin_demo_runs_unattended_to_a_tour(
     scan = MockChatClient(responses=[MockResponse(text="It is a CLI.")])
     writer = MockChatClient(responses=[MockResponse(text="Start at cli.py.")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), scan, writer])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     hosts = _real_hosts(tmp_path, project, monkeypatch, profiles=[make_profile(), make_profile("QA")])
 
     # A builtin needs no confirmation. Nobody can answer a headless run, so the demo's own input line says so.
@@ -895,7 +895,7 @@ def test_the_builtin_demo_fails_a_headless_run_that_would_have_to_ask(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     _real_hosts(tmp_path, project, monkeypatch, profiles=[make_profile(), make_profile("QA")])
 
     assert workflow_cli.main(["run", "demo-workflow", "--json"]) == 1
@@ -919,7 +919,7 @@ async def test_the_text_cli_keeps_data_boundary_notices_in_events_but_omits_them
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="read")])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "tagged", DATA_INTO_AGENT)
     host = make_host(tmp_path, project=project)
     monkeypatch.setattr(workflow_cli, "ChrysSessionHost", create_autospec(ChrysSessionHost, return_value=host))
@@ -954,7 +954,7 @@ async def test_timeout_cancels_the_run_with_exit_code_124(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "sleeper", SLEEPER)
     host = make_host(tmp_path, project=project)
     monkeypatch.setattr(workflow_cli, "ChrysSessionHost", create_autospec(ChrysSessionHost, return_value=host))
@@ -991,7 +991,7 @@ async def test_trust_preview_timeout_kills_a_blocked_worker_without_confirming(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     marker = tmp_path / "loading"
     write_workflow(
         project,
@@ -1076,7 +1076,7 @@ async def test_trust_preview_consumes_the_same_deadline_budget_as_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     monkeypatch.setattr(workflow_cli, "ChrysSessionHost", create_autospec(ChrysSessionHost, return_value=host))
@@ -1119,7 +1119,7 @@ def test_workflow_command_uses_headless_retry_policy(
     loaded = fake_host.instances[0].kwargs["loaded_settings"]
     assert loaded.settings.frontend_default_max_transient_retries == 18
     assert loaded.settings.effective_max_transient_retries() == expected
-    assert bootstrap.call_args.kwargs["project_root"] == (None if restoring else Path.cwd())
+    assert bootstrap.call_args.kwargs["workdir"] == (None if restoring else Path.cwd())
     captured = capsys.readouterr()
     if raw in ("bad", "999"):
         warning = json.loads(captured.err)
@@ -1137,7 +1137,7 @@ def test_trust_displays_manifest_warnings_and_list_reuses_confirmed_title(
     as_json: bool,
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "conditional", CONDITIONAL_LOOP_WORKFLOW)
     monkeypatch.chdir(project)
     _real_hosts(tmp_path, project, monkeypatch)

@@ -123,7 +123,7 @@ class HookRun:
     """Path to the script file.  Required when ``type == 'script'``.
 
     When loaded from disk, relative paths are resolved against the
-    directory containing the hooks file, so both global and project
+    directory containing the hooks file, so both global and working directory
     hook files can keep scripts next to ``hooks.yaml``. Interpreter is
     inferred from the extension (see ``chrys/service/skills/runner.py``).
     """
@@ -200,7 +200,7 @@ class HookConfig:
     id: str
     """Stable identifier used in logs and durable outbox job metadata.
 
-    IDs must be unique within one file. Same-id hooks across project and
+    IDs must be unique within one file. Same-id hooks across working directory and
     global files are allowed by the merged loader and both hooks run.
     """
 
@@ -364,22 +364,22 @@ class HookDecision:
 
 @dataclass
 class MergedHooksFile:
-    """Combined view of a project-level and a global-level :class:`HooksFile`.
+    """Combined view of a working-directory and a global-level :class:`HooksFile`.
 
     Produced by :func:`chrys.service.hooks.loader.merge_hooks_files`. Exposes the
     same ``hooks`` and ``settings`` attributes as :class:`HooksFile` so the
     existing :class:`HookManager` consumes it without code changes (duck
-    typing). The ``project`` and ``global_`` fields are kept for logging,
+    typing). The ``workdir`` and ``global_`` fields are kept for logging,
     debugging, and the future ``/hooks`` TUI screen.
 
-    Ordering: ``hooks`` is project entries first (in project YAML order),
+    Ordering: ``hooks`` is working directory entries first (in working directory YAML order),
     then global entries (in global YAML order). The "first block
     short-circuits" rule applies to this combined list as a single chain,
-    so a project block ends the chain before any global hook runs.
+    so a working directory block ends the chain before any global hook runs.
     """
 
-    project: HooksFile | None = None
-    """The project-side :class:`HooksFile`, or ``None`` if no project file
+    workdir: HooksFile | None = None
+    """The working directory-side :class:`HooksFile`, or ``None`` if no working directory file
     was found or it failed to load."""
 
     global_: HooksFile | None = None
@@ -387,10 +387,10 @@ class MergedHooksFile:
     was found (the existing single-source case)."""
 
     settings: HookSettings = field(default_factory=HookSettings)
-    """Per-field merge: project wins, then global, then defaults."""
+    """Per-field merge: working directory wins, then global, then defaults."""
 
     hooks: list[HookConfig] = field(default_factory=list)
-    """Combined hook list, project first then global. Empty when both
+    """Combined hook list, working directory first then global. Empty when both
     sources are absent."""
 
     sources: list[str] = field(default_factory=list)
@@ -399,18 +399,18 @@ class MergedHooksFile:
     for any decision logic."""
 
     @classmethod
-    def from_single(cls, file: HooksFile, *, as_project: bool = False) -> MergedHooksFile:
+    def from_single(cls, file: HooksFile, *, as_workdir: bool = False) -> MergedHooksFile:
         """Wrap a single :class:`HooksFile` as a :class:`MergedHooksFile`.
 
         Used by the manager to normalize the single-source case (legacy
         global-only setups) into the merged view, so the manager never
-        has to branch on input type. ``as_project=True`` treats the file
-        as the project side; default treats it as the global side.
+        has to branch on input type. ``as_workdir=True`` treats the file
+        as the working directory side; default treats it as the global side.
         """
         wrapped: HooksFile | None = file
         return cls(
-            project=wrapped if as_project else None,
-            global_=None if as_project else wrapped,
+            workdir=wrapped if as_workdir else None,
+            global_=None if as_workdir else wrapped,
             settings=file.settings,
             hooks=list(file.hooks),
             sources=[file.source] if file.source else [],
@@ -419,7 +419,7 @@ class MergedHooksFile:
     @property
     def source(self) -> str:
         """Synthetic source label for compatibility with the manager's
-        logging helpers. Format: ``"<project> + <global>"``, ``"<project>"``,
+        logging helpers. Format: ``"<working directory> + <global>"``, ``"<working directory>"``,
         ``"<global>"``, or ``""`` when neither source is present."""
-        parts = [p.source for p in (self.project, self.global_) if p is not None and p.source]
+        parts = [p.source for p in (self.workdir, self.global_) if p is not None and p.source]
         return " + ".join(parts)

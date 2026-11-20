@@ -87,7 +87,7 @@ async def test_session_approved_command_requires_approval_with_working_dir(setup
         await bus.unsubscribe(ApprovalRequest, respond)
 
 
-@pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_PROJECT", "PREFIX_SESSION", "PREFIX_PROJECT"])
+@pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_WORKDIR", "PREFIX_SESSION", "PREFIX_WORKDIR"])
 async def test_explicit_working_dir_approval_never_mints_reuse(setup, choice):
     runtime, tool, binding, bus, policy = setup
     middleware = ApprovalMiddleware(

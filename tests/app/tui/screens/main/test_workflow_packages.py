@@ -17,8 +17,8 @@ from chrys.app.tui.widgets.workflow.info import WorkflowInfo
 from chrys.app.tui.widgets.workflow.selection import WorkflowList
 from chrys.app.tui.widgets.workflow.source import WorkflowSourceSyntax
 from chrys.foundation.platform.files import atomic_write_owner_only_bytes
-from chrys.service.workflows.discovery import SkippedSource, WorkflowSource, project_workflows_dir
-from tests.orchestration.workflows._hosting import make_project, write_workflow, write_workflow_package
+from chrys.service.workflows.discovery import SkippedSource, WorkflowSource, workdir_workflows_dir
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow, write_workflow_package
 from tests.support.symlinks import symlink_or_skip
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
@@ -42,7 +42,7 @@ FILES = {"helpers.py": b"VALUE = 1\n", "data/name.txt": b"world\n"}
 async def test_a_folder_workflow_shows_its_file_count_and_its_source_page_reads_only_the_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     entry = write_workflow_package(project, "pkg", SOURCE, FILES)
     reads: list[Path] = []
@@ -88,7 +88,7 @@ async def test_a_folder_workflow_shows_its_file_count_and_its_source_page_reads_
 async def test_deleting_a_folder_workflow_says_what_stays_and_removes_only_its_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, listing: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     entry = write_workflow_package(project, "pkg", SOURCE, FILES)
     if listing == "skipped":
@@ -136,7 +136,7 @@ async def test_deleting_a_folder_workflow_says_what_stays_and_removes_only_its_e
 async def test_an_edit_deep_in_a_folder_is_noticed_when_the_source_page_opens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     entry = write_workflow_package(project, "pkg", SOURCE, FILES)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
@@ -160,7 +160,7 @@ async def test_an_edit_deep_in_a_folder_is_noticed_when_the_source_page_opens(
 async def test_names_from_workflow_files_reach_the_browser_without_terminal_controls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     entry = write_workflow_package(project, "kit", SOURCE, FILES)
     (tmp_path / "outside.py").write_bytes(b"")
@@ -188,13 +188,13 @@ async def test_names_from_workflow_files_reach_the_browser_without_terminal_cont
 async def test_a_refused_delete_is_explained_before_any_confirmation_without_terminal_controls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     name = "e\x1b[2Jx"
     real = tmp_path / "elsewhere" / name
     real.mkdir(parents=True)
     atomic_write_owner_only_bytes(real / f"{name}.py", SOURCE)
-    link = project_workflows_dir(project) / name
+    link = workdir_workflows_dir(project) / name
     symlink_or_skip(link, real, target_is_directory=True)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:

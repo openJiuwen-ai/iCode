@@ -43,7 +43,7 @@ from tests.app.tui.screens.main._workflow_support import (
     workflow_selecting,
     workflow_selection,
 )
-from tests.orchestration.workflows._hosting import make_host, make_profile, make_project, patch_runtime, write_workflow
+from tests.orchestration.workflows._hosting import make_host, make_profile, make_workdir, patch_runtime, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -53,7 +53,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 
 async def test_mode_drafts_selection_confirmation_and_keyboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "first", python_workflow("def fn(value):\n    return value\n", "fn", title="A [workflow]"))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
@@ -130,7 +130,7 @@ async def test_mode_drafts_selection_confirmation_and_keyboard(tmp_path: Path, m
         )
         option = picker.get_option_at_index(index)
         assert option.disabled
-        assert str(option.prompt) == "◦ A [workflow]\n  - first · project"
+        assert str(option.prompt) == "◦ A [workflow]\n  - first · working directory"
         picker.highlighted = index
         await pilot.press("enter")
         assert isinstance(app.screen, WorkflowPickerDialog)
@@ -148,7 +148,7 @@ async def test_mode_drafts_selection_confirmation_and_keyboard(tmp_path: Path, m
 async def test_start_latch_reply_correlation_covered_projection_and_transcripts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     bus = EventBus()
     engine = WorkflowEngine()
@@ -277,7 +277,7 @@ async def test_start_latch_reply_correlation_covered_projection_and_transcripts(
 async def test_builtin_demo_runs_from_selection_to_persisted_outputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     tour_text = "Start at the entry point. " * 60
     agents = [MockChatClient(responses=[MockResponse(text=text)]) for text in ("Reader notes", tour_text)]
@@ -349,7 +349,7 @@ async def test_shadowed_sources_warnings_and_preview_errors(tmp_path: Path, monk
     from chrys.foundation.platform import get_platform
     from chrys.service.workflows.discovery import global_workflows_dir
 
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "demo-workflow", b'print("load output")\nraise RuntimeError("broken preview")\n')
     global_dir = global_workflows_dir(get_platform().config_dir)
@@ -416,7 +416,7 @@ async def test_preview_cancellation_waits_for_cleanup_and_cannot_open_a_late_vie
 ) -> None:
     from chrys.orchestration.workflows.preview import WorkflowPreview
 
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     ready, cancelling, release, cleaned = (asyncio.Event() for _ in range(4))
     real_preview = WorkflowCatalog.preview
@@ -472,7 +472,7 @@ async def test_preview_deadline_and_confirmation_cancel_stay_in_selection(
 ) -> None:
     from chrys.orchestration.workflows.preview import WorkflowPreview
 
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "slow", b"import time\ntime.sleep(60)\n")
     real_preview = WorkflowCatalog.preview
@@ -550,7 +550,7 @@ async def test_empty_workflow_input_lease_guards_and_escape_cancel(
     from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
     from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     engine = WorkflowEngine()
     bus = EventBus()
@@ -634,7 +634,7 @@ async def test_empty_workflow_input_lease_guards_and_escape_cancel(
 async def test_late_acceptance_stays_with_its_source_and_frames_keep_all_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "other", python_workflow("def fn(value):\n    return value\n", "fn"))
     bus = EventBus()
@@ -755,7 +755,7 @@ async def test_manifest_warning_is_visible_after_trusted_source_is_loaded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "conditional", CONDITIONAL_LOOP_WORKFLOW)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())

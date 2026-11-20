@@ -106,18 +106,18 @@ If you installed with uv, the command only shows what to run: `uv tool uninstall
 
 iCode keeps its data in `~/.chrys` (`%APPDATA%\chrys` on Windows): your settings, API keys, model profiles, agents, skills, sessions and more. Uninstalling keeps this folder. To delete it and everything in it as well, run `icode uninstall --purge`; if you save sessions in another folder, the `sessions` folder there is deleted too. If you installed with uv, do this before `uv tool uninstall`, while the `icode` command still exists. Add `--yes` to skip the confirmation.
 
-## 2. Start iCode in a project
+## 2. Start iCode in a working directory
 
 Start this tutorial in a project managed with Git or one that you can safely restore. Before asking an agent to modify files, save any unsaved content and record existing changes with a Git commit. This lets you distinguish the agent's changes and restore the previous state if needed.
 
-In a terminal, go to the project directory and start iCode:
+In a terminal, go to the working directory and start iCode:
 
 ```shell
-cd <project-directory>
+cd <working-directory>
 icode
 ```
 
-Replace `<project-directory>` with the actual path to your project. To switch directories after startup, see [Working directory](../guides/daily-use/workspaces.md).
+Replace `<working-directory>` with the actual path to your project. To switch directories after startup, see [Working directory](../guides/daily-use/workspaces.md).
 
 iCode first prints `Starting iCode...` and shows a loading screen while it gets ready. When the main screen appears, it keeps showing that it is loading until the agent is ready.
 

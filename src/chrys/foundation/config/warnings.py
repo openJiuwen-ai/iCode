@@ -93,39 +93,44 @@ _UNKNOWN_KEYS = msg(
     "settings.unknown_keys",
     fallback="Ignoring unknown settings keys in {path}: {keys}.",
 )
-_REJECTED_PROJECT_KEY = msg(
-    "settings.rejected.project_key",
-    fallback="Ignoring {source}: projects may not set this key.",
+MIGRATION_TRUST_CONFLICT = "workdir_trust_conflict"
+_TRUST_CONFLICT = msg(
+    "startup.workdir_trust_conflict",
+    fallback="Disabled conflicting working directory trust settings ({keys}).",
 )
-_REJECTED_PROJECT_LOOSENS = msg(
-    "settings.rejected.project_loosens",
-    fallback="Ignoring {source}={raw}: a project may only tighten this setting, not loosen it.",
+_REJECTED_WORKDIR_KEY = msg(
+    "settings.rejected.workdir_key",
+    fallback="Ignoring {source}: working directories may not set this key.",
 )
-_PROJECT_CONFIG_DORMANT = msg(
-    "settings.project_config_dormant",
+_REJECTED_WORKDIR_LOOSENS = msg(
+    "settings.rejected.workdir_loosens",
+    fallback="Ignoring {source}={raw}: a working directory may only tighten this setting, not loosen it.",
+)
+_WORKDIR_CONFIG_DORMANT = msg(
+    "settings.workdir_config_dormant",
     fallback=(
-        "Found project settings in {path} ({keys}), but they are not loaded. To apply them, turn on "
-        "Load project settings under Settings → Safety → Project trust (project.config_enabled)."
+        "Found working directory settings in {path} ({keys}), but they are not loaded. To apply them, turn on "
+        "Load working directory settings under Settings → Safety → Working directory trust (workdir.config_enabled)."
     ),
 )
-_PROJECT_HOOKS_DORMANT = msg(
-    "settings.project_hooks_dormant",
+_WORKDIR_HOOKS_DORMANT = msg(
+    "settings.workdir_hooks_dormant",
     fallback=(
-        "Found project hooks in {path}, but they are not loaded. To run them, turn on "
-        "Load project hooks under Settings → Safety → Project trust (project.hooks_enabled)."
+        "Found working directory hooks in {path}, but they are not loaded. To run them, turn on "
+        "Load working directory hooks under Settings → Safety → Working directory trust (workdir.hooks_enabled)."
     ),
 )
-_PROJECT_SKILLS_DORMANT = msg(
-    "settings.project_skills_dormant",
+_WORKDIR_SKILLS_DORMANT = msg(
+    "settings.workdir_skills_dormant",
     fallback=(
-        "Found project skills in {path}. They are not loaded automatically; to load them, turn on "
-        "Load project skills under Settings → Safety → Project trust (project.skills_enabled) and keep the "
+        "Found working directory skills in {path}. They are not loaded automatically; to load them, turn on "
+        "Load working directory skills under Settings → Safety → Working directory trust (workdir.skills_enabled) and keep the "
         "agent's Load skills from working folder option on."
     ),
 )
 _DORMANT_SOURCE_MESSAGES: Mapping[str, tuple[str, MessageDef]] = {
-    "project.hooks_enabled": ("project_hooks_dormant", _PROJECT_HOOKS_DORMANT),
-    "project.skills_enabled": ("project_skills_dormant", _PROJECT_SKILLS_DORMANT),
+    "workdir.hooks_enabled": ("workdir_hooks_dormant", _WORKDIR_HOOKS_DORMANT),
+    "workdir.skills_enabled": ("workdir_skills_dormant", _WORKDIR_SKILLS_DORMANT),
 }
 
 _REASON_MESSAGES: Mapping[CoerceReason, MessageDef] = {
@@ -142,8 +147,8 @@ _REASON_MESSAGES: Mapping[CoerceReason, MessageDef] = {
     CoerceReason.NOT_A_DIRECTORY: _REJECTED_DIRECTORY,
     CoerceReason.BELOW_MINIMUM: _CLAMPED_MINIMUM,
     CoerceReason.ABOVE_MAXIMUM: _CLAMPED_MAXIMUM,
-    CoerceReason.NOT_ALLOWED_IN_PROJECT: _REJECTED_PROJECT_KEY,
-    CoerceReason.LOOSENS_USER_BASELINE: _REJECTED_PROJECT_LOOSENS,
+    CoerceReason.NOT_ALLOWED_IN_WORKDIR: _REJECTED_WORKDIR_KEY,
+    CoerceReason.LOOSENS_USER_BASELINE: _REJECTED_WORKDIR_LOOSENS,
 }
 """Every reason, so the composer is total and a new one cannot ship unsayable."""
 
@@ -187,7 +192,7 @@ def warning_display_message(warning: SettingsWarning) -> MessageRef:
         return definition.bind(source=source, raw=outcome.raw, choices=DisplaySequence(outcome.choices))
     if reason in (CoerceReason.BELOW_MINIMUM, CoerceReason.ABOVE_MAXIMUM):
         return definition.bind(source=source, raw=outcome.raw, limit=_render_limit(outcome.limit))
-    if reason is CoerceReason.NOT_ALLOWED_IN_PROJECT:
+    if reason is CoerceReason.NOT_ALLOWED_IN_WORKDIR:
         # The key is the problem, not its value — echoing what a repository
         # tried to set would only lend it column inches.
         return definition.bind(source=source)
@@ -198,6 +203,11 @@ def _verdict_event(warning: SettingsWarning) -> Warning:
     display_message = warning_display_message(warning)
     code = "setting_rejected" if warning.rejected else "setting_clamped"
     return Warning(code=code, message=format_message(display_message), display_message=display_message)
+
+
+def trust_conflict_warning(keys: tuple[str, ...] | list[str]) -> Warning:
+    display = _TRUST_CONFLICT.bind(keys=", ".join(keys))
+    return Warning(code=MIGRATION_TRUST_CONFLICT, message=format_message(display), display_message=display)
 
 
 def settings_warning_events(
@@ -217,6 +227,8 @@ def settings_warning_events(
     events: list[Warning] = [
         _verdict_event(warning) for warning in loaded.warnings if skip is None or not skip(warning)
     ]
+    if loaded.trust_conflicts:
+        events.append(trust_conflict_warning(loaded.trust_conflicts))
     if loaded.document_error:
         display_message = _DOCUMENT_ERROR.bind()
         events.append(
@@ -241,21 +253,21 @@ def settings_warning_events(
                 display_message=display_message,
             )
         )
-    for dormant in loaded.dormant_project:
-        # Also one per file: enabling the project layer is one decision, and
+    for dormant in loaded.dormant_workdir:
+        # Also one per file: enabling the working directory layer is one decision, and
         # the keys ride along so the user knows what saying yes would apply.
-        display_message = _PROJECT_CONFIG_DORMANT.bind(
+        display_message = _WORKDIR_CONFIG_DORMANT.bind(
             path=str(dormant.path),
             keys=DisplaySequence(dormant.keys),
         )
         events.append(
             Warning(
-                code="project_config_dormant",
+                code="workdir_config_dormant",
                 message=format_message(display_message),
                 display_message=display_message,
             )
         )
-    for source in loaded.dormant_project_sources:
+    for source in loaded.dormant_workdir_sources:
         code, message = _DORMANT_SOURCE_MESSAGES[source.key]
         display_message = message.bind(path=str(source.path))
         events.append(Warning(code=code, message=format_message(display_message), display_message=display_message))

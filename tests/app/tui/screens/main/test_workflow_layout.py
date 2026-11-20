@@ -18,7 +18,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
@@ -34,7 +34,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_layout_button_preserves_live_state_and_retry_controls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locale: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(
         project,

@@ -15,7 +15,7 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from tests.app.tui.screens.main._workflow_support import start_workflow
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_app_mode_is_locked_until_pending_and_execution_work_finishes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workflow: bool
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine, bus = WorkflowEngine(), EventBus()
     requests: list[events.WorkflowRunRequest] = []
 
@@ -130,7 +130,7 @@ async def test_app_mode_is_locked_until_pending_and_execution_work_finishes(
 async def test_mode_picker_rechecks_execution_when_its_selection_returns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workflow: bool
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine = WorkflowEngine()
     app = make_chrys_app(tmp_path / "sessions", engine=engine)
     async with app.run_test(size=(120, 45)) as pilot:

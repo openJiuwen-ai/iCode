@@ -239,6 +239,19 @@ async def test_written_values_project_until_the_live_settings_catch_up(monkeypat
     assert h.coordinator.projected_value(_RELOAD_KEY) is False
 
 
+async def test_trust_switch_shows_the_effective_value_after_reload(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = "workdir.hooks_enabled"
+    h = _Harness(monkeypatch)
+    await h.install_engine(reinstall=Settings(workdir_hooks_enabled=False))
+    h.coordinator.on_written(_written(**{key: True}))
+    assert h.coordinator.projected_value(key) is True
+
+    await h.close_and_settle()
+
+    assert h.reloads == 1
+    assert h.coordinator.projected_value(key) is False
+
+
 async def test_search_ignore_setting_reloads_on_dialog_close(monkeypatch: pytest.MonkeyPatch) -> None:
     key = "tools.search.respect_gitignore"
     h = _Harness(monkeypatch)
@@ -396,13 +409,13 @@ async def test_a_reclose_during_finalize_reloads_again_when_more_edits_landed(mo
     await asyncio.sleep(0.05)
     # The dialog was reopened and closed again with a second reload edit while
     # the first close still waited on the turn: still one finalize task.
-    h.coordinator.schedule_persist({"project.config_enabled": True})
+    h.coordinator.schedule_persist({"workdir.config_enabled": True})
     h.coordinator.on_dialog_closed()
     assert h.coordinator._finalize_task is finalize
 
     release.set()
     await finalize
-    assert h.recorder.calls == [({_RELOAD_KEY: False}, ()), ({"project.config_enabled": True}, ())]
+    assert h.recorder.calls == [({_RELOAD_KEY: False}, ()), ({"workdir.config_enabled": True}, ())]
     # Both edits were flushed before the reload, so one reload covered them.
     assert h.reloads == 1
     assert h.coordinator.reload_dirty() is False
@@ -447,7 +460,7 @@ async def test_reopening_during_the_turn_defers_the_reload_to_the_next_close(mon
     await asyncio.sleep(0.05)
     # Reopened while the turn still runs, and edited again.
     h.coordinator.attach_dialog(h.dialog)
-    h.coordinator.schedule_persist({"project.config_enabled": True})
+    h.coordinator.schedule_persist({"workdir.config_enabled": True})
 
     release.set()
     await finalize
@@ -458,7 +471,7 @@ async def test_reopening_during_the_turn_defers_the_reload_to_the_next_close(mon
 
     # Closing the reopened panel reloads once, covering both edits.
     await h.close_and_settle()
-    assert h.recorder.calls == [({_RELOAD_KEY: False}, ()), ({"project.config_enabled": True}, ())]
+    assert h.recorder.calls == [({_RELOAD_KEY: False}, ()), ({"workdir.config_enabled": True}, ())]
     assert h.reloads == 1
     assert h.coordinator.reload_dirty() is False
 

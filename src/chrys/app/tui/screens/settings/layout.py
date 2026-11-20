@@ -33,7 +33,7 @@ _SECTION_AGENT = msg("tui.settings.section.agent", fallback="Agent")
 _SECTION_MODEL_ROLES = msg("tui.settings.section.model_roles", fallback="Model roles")
 _SECTION_LLM = msg("tui.settings.section.llm", fallback="LLM")
 _SECTION_APPROVAL = msg("tui.settings.section.approval", fallback="Approval")
-_SECTION_PROJECT_TRUST = msg("tui.settings.section.project_trust", fallback="Project trust")
+_SECTION_WORKDIR_TRUST = msg("tui.settings.section.workdir_trust", fallback="Working directory trust")
 _SECTION_CREDENTIALS = msg("tui.settings.section.credentials", fallback="Credentials")
 _SECTION_DIAGNOSTICS = msg("tui.settings.section.diagnostics", fallback="Diagnostics")
 _SECTION_TELEMETRY = msg("tui.settings.section.telemetry", fallback="Telemetry")
@@ -126,22 +126,22 @@ _HINT_APPROVAL_DEFER_WHILE_JUDGING = msg(
         "is flagged or cannot be evaluated. Turn this off to see each call while it is evaluated and decide first."
     ),
 )
-_HINT_PROJECT_CONFIG_ENABLED = msg(
-    "tui.settings.hint.project.config_enabled",
-    fallback="Let <workspace>/.chrys/settings.yaml adjust engineering settings for that workspace.",
+_HINT_WORKDIR_CONFIG_ENABLED = msg(
+    "tui.settings.hint.workdir.config_enabled",
+    fallback="Load settings from .chrys/settings.yaml in each session's primary working directory.",
 )
-_HINT_PROJECT_HOOKS_ENABLED = msg(
-    "tui.settings.hint.project.hooks_enabled",
-    fallback="Run the hooks defined in <workspace>/.chrys/hooks alongside your global hooks.",
+_HINT_WORKDIR_HOOKS_ENABLED = msg(
+    "tui.settings.hint.workdir.hooks_enabled",
+    fallback="Load hooks from .chrys/hooks in each session's primary working directory, alongside your global hooks.",
 )
-_HINT_PROJECT_SKILLS_ENABLED = msg(
-    "tui.settings.hint.project.skills_enabled",
-    fallback="Load the skills in <workspace>/.agents/skills alongside your own.",
+_HINT_WORKDIR_SKILLS_ENABLED = msg(
+    "tui.settings.hint.workdir.skills_enabled",
+    fallback="Allow agents to load skills from .agents/skills in each session's primary working directory.",
 )
-HINT_PROJECT_CONFIG_DORMANT = msg(
-    "tui.settings.hint.project.config_dormant",
-    fallback="Project settings found ({count} key) — enable to apply them.",
-    plural_fallback="Project settings found ({count} keys) — enable to apply them.",
+HINT_WORKDIR_CONFIG_DORMANT = msg(
+    "tui.settings.hint.workdir.config_dormant",
+    fallback="Working directory settings found ({count} key) — enable to apply them.",
+    plural_fallback="Working directory settings found ({count} keys) — enable to apply them.",
 )
 _HINT_LOG_RAW_HTTP_CAPTURE = msg(
     "tui.settings.hint.log.raw_http_capture",
@@ -249,8 +249,8 @@ class RowKind(Enum):
     """The one path row: input + folder browser + migration entry point."""
 
 
-PROJECT_CONFIG_KEY = "project.config_enabled"
-"""The row whose hint swaps to :data:`HINT_PROJECT_CONFIG_DORMANT` while it is off and a project file waits."""
+WORKDIR_CONFIG_KEY = "workdir.config_enabled"
+"""The row whose hint swaps to :data:`HINT_WORKDIR_CONFIG_DORMANT` while it is off and a working directory file waits."""
 
 
 class HintArgs(Enum):
@@ -392,11 +392,11 @@ TABS: tuple[SettingsTab, ...] = (
                 ),
             ),
             SettingsSection(
-                _SECTION_PROJECT_TRUST,
+                _SECTION_WORKDIR_TRUST,
                 (
-                    SettingRowSpec(PROJECT_CONFIG_KEY, hint=_HINT_PROJECT_CONFIG_ENABLED),
-                    SettingRowSpec("project.hooks_enabled", hint=_HINT_PROJECT_HOOKS_ENABLED),
-                    SettingRowSpec("project.skills_enabled", hint=_HINT_PROJECT_SKILLS_ENABLED),
+                    SettingRowSpec(WORKDIR_CONFIG_KEY, hint=_HINT_WORKDIR_CONFIG_ENABLED),
+                    SettingRowSpec("workdir.hooks_enabled", hint=_HINT_WORKDIR_HOOKS_ENABLED),
+                    SettingRowSpec("workdir.skills_enabled", hint=_HINT_WORKDIR_SKILLS_ENABLED),
                 ),
             ),
             SettingsSection(

@@ -813,3 +813,132 @@ async def test_a_checkpoint_digests_the_bytes_that_reached_the_file(tmp_path: Pa
     )
     on_disk = (tmp_path / "s1" / "session.json").read_bytes()
     assert checkpoint.content_hash == hashlib.sha256(on_disk).hexdigest()
+
+
+@pytest.mark.parametrize("name", ["session.json", "session.json.bak"])
+def test_restore_and_migration_share_the_normal_session_reader(tmp_path, monkeypatch, name):
+    from chrys.service.state import _session_files
+
+    store = JsonFileStateStore(tmp_path)
+    session_dir = store.session_dir("session-a")
+    session_dir.mkdir()
+    path = session_dir / name
+    original = b'{"meta":{"kind":"workflow"},"state":{"identity":{"source_kind":"project"}}}'
+    path.write_bytes(original)
+    opened = []
+    read_bytes = Path.read_bytes
+
+    def ordinary_read(source):
+        if source == path:
+            opened.append(source)
+        return read_bytes(source)
+
+    monkeypatch.setattr(Path, "read_bytes", ordinary_read)
+    copies = {}
+    assert store._read_json_file(path) == json.loads(original)
+    assert _session_files.migrate_session_envelopes(
+        session_dir, backup=copies.__setitem__, on_read_error=lambda *_: pytest.fail("read error")
+    )
+    assert copies == {path: original}
+    assert opened.count(path) == 3  # normal restore, migration probe and locked re-read
+    assert store._read_json_file(path)["state"]["identity"]["source_kind"] == "workdir"
+
+
+@pytest.mark.parametrize("blocked", ["read-only", "lock", "re-read", "chat"])
+def test_session_migration_uses_the_normal_write_lock_after_probing(tmp_path, monkeypatch, blocked):
+    from chrys.service.state._session_files import migrate_session_envelopes, session_write_lock_path
+
+    session_dir = tmp_path / "session-a"
+    session_dir.mkdir()
+    path = session_dir / "session.json"
+    old = {"meta": {"kind": "workflow"}, "state": {"identity": {"source_kind": "project"}}}
+    if blocked == "chat":
+        old["meta"]["kind"] = "chat"
+    original = json.dumps(old).encode()
+    path.write_bytes(original)
+    updated = json.dumps({**old, "state": {"identity": {"source_kind": "workdir"}}}).encode()
+    acquire = FileLock.acquire
+    write_lock = session_write_lock_path(tmp_path, session_dir.name)
+
+    def acquire_after_other_writer(lock):
+        assert lock._path == write_lock
+        if blocked == "chat":
+            pytest.fail("A chat envelope needs no write lock")
+        if blocked == "lock":
+            raise TimeoutError("busy")
+        if blocked == "re-read":
+            path.write_bytes(updated)
+        acquire(lock)
+
+    monkeypatch.setattr(FileLock, "acquire", acquire_after_other_writer)
+    if blocked == "read-only":
+        path.chmod(0o400)
+    try:
+        assert not migrate_session_envelopes(
+            session_dir, backup=lambda *_: pytest.fail("skipped"), on_read_error=lambda *_: pytest.fail("read error")
+        )
+    finally:
+        if blocked == "read-only":
+            path.chmod(0o600)
+    assert path.read_bytes() == (updated if blocked == "re-read" else original)
+
+
+async def test_session_load_follows_a_symlinked_checkpoint(tmp_path):
+    from tests.support.symlinks import symlink_or_skip
+
+    store = JsonFileStateStore(tmp_path / "sessions")
+    await store.save_session("s1", {"messages": [Message("user", ["hello"])], "compressed_msgs": []})
+    directory = store.session_dir("s1")
+    path = directory / "session.json"
+    target = tmp_path / "external.json"
+    path.rename(target)
+    (directory / "session.json.bak").unlink()
+    symlink_or_skip(path, target)
+
+    restored = await store.load_session("s1")
+    assert restored is not None
+    assert len(restored["messages"]) == 1
+    assert restored["messages"][0].role == "user"
+    assert path.is_symlink()
+
+
+def test_session_migration_skips_parsing_without_legacy_source_markers(tmp_path, monkeypatch):
+    from chrys.service.state import _session_files
+
+    path = tmp_path / "session.json"
+    path.write_bytes(b'{"meta":{"kind":"chat"},"state":{"content":"project"}}')
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Noncandidate checkpoints should not be parsed")
+
+    monkeypatch.setattr(_session_files.json, "loads", unexpected)
+    assert not _session_files.migrate_session_envelopes(tmp_path, backup=unexpected, on_read_error=unexpected)
+
+
+def test_session_migration_reads_escaped_legacy_source_markers(tmp_path):
+    from chrys.service.state._session_files import migrate_session_envelopes
+
+    path = tmp_path / "session.json"
+    path.write_bytes(rb'{"meta":{"kind":"workflow"},"state":{"identity":{"sourc\u0065_kind":"pr\u006fject"}}}')
+
+    assert migrate_session_envelopes(tmp_path, backup=lambda *_: None, on_read_error=lambda *_: pytest.fail("invalid"))
+    assert json.loads(path.read_bytes())["state"]["identity"]["source_kind"] == "workdir"
+
+
+def test_session_migration_does_not_recreate_a_moved_session(tmp_path):
+    from chrys.service.state._session_files import migrate_session_envelopes
+
+    session = tmp_path / "session-a"
+    session.mkdir()
+    path = session / "session.json"
+    raw = b'{"meta":{"kind":"workflow"},"state":{"identity":{"source_kind":"project"}}}'
+    path.write_bytes(raw)
+    moved = tmp_path / "moved"
+
+    def move_session(_path, original):
+        assert original == raw
+        session.rename(moved)
+
+    assert not migrate_session_envelopes(session, backup=move_session, on_read_error=lambda *_: None)
+    assert not session.exists()
+    assert (moved / path.name).read_bytes() == raw

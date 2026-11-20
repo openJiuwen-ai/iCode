@@ -110,7 +110,7 @@ def _call(**overrides: Any) -> UsageCall:
         "model": "model-a",
         "profile": "",
         "source": "main",
-        "project": "/w/a",
+        "workdir": "/w/a",
         "new_input": 0,
         "cache_read": 0,
         "output": 0,
@@ -441,7 +441,7 @@ def test_a_call_belongs_to_the_folder_its_pass_ran_in(tmp_path: Path) -> None:
 
     calls = _scan(tmp_path, session_cwds={"moved": "/w/second", "other": "/w/first"}).calls
 
-    assert {call.model: call.project for call in calls} == {
+    assert {call.model: call.workdir for call in calls} == {
         "in-first": "/w/first",
         "in-second": "/w/second",
         "late-in-first": "/w/first",
@@ -464,20 +464,20 @@ def test_a_call_outside_any_pass_takes_the_latest_folder_seen(tmp_path: Path) ->
 
     calls = _scan(tmp_path, session_cwds={"one": "/w/first", "other": "/w/second"}).calls
 
-    assert {call.model: call.project for call in calls} == {
+    assert {call.model: call.workdir for call in calls} == {
         "after-start": "/w/first",
         "after-pass": "/w/second",
         "unknown-pass": "/w/second",
     }
 
 
-def test_a_fingerprint_no_saved_session_names_has_no_project(tmp_path: Path) -> None:
+def test_a_fingerprint_no_saved_session_names_has_no_workdir(tmp_path: Path) -> None:
     log = EventLog()
     _pass_started(log, TURN_ID, "/w/gone")
     _exchange(log)
     _write_session(tmp_path, "one", log)
 
-    assert _scan(tmp_path, session_cwds={"one": "/w/here"}).calls[0].project == ""
+    assert _scan(tmp_path, session_cwds={"one": "/w/here"}).calls[0].workdir == ""
 
 
 @pytest.mark.parametrize("fingerprint_key", [_KEY, None], ids=["key", "no-key"])
@@ -490,7 +490,7 @@ def test_a_log_without_a_fingerprint_or_a_key_uses_the_sessions_folder(
 
     report = _scan(tmp_path, session_cwds={"one": "/w/here"}, fingerprint_key=fingerprint_key)
 
-    assert report.calls[0].project == "/w/here"
+    assert report.calls[0].workdir == "/w/here"
 
 
 def test_no_key_uses_the_sessions_folder_even_with_a_fingerprint(tmp_path: Path) -> None:
@@ -501,7 +501,7 @@ def test_no_key_uses_the_sessions_folder_even_with_a_fingerprint(tmp_path: Path)
 
     report = _scan(tmp_path, session_cwds={"one": "/w/here"}, fingerprint_key=None)
 
-    assert report.calls[0].project == "/w/here"
+    assert report.calls[0].workdir == "/w/here"
 
 
 def test_load_usage_report_reads_the_stores_sessions_and_their_folders(tmp_path: Path) -> None:
@@ -575,7 +575,7 @@ def test_a_report_summarizes_only_the_days_in_range() -> None:
     report = UsageReport(
         calls=(
             _call(day=date(2026, 10, 1), new_input=1),
-            _call(day=date(2026, 10, 2), new_input=2, model="model-b", source="sub_agent", project="/w/b"),
+            _call(day=date(2026, 10, 2), new_input=2, model="model-b", source="sub_agent", workdir="/w/b"),
             _call(day=date(2026, 10, 3), new_input=4),
         ),
         today=date(2026, 10, 3),
@@ -590,7 +590,7 @@ def test_a_report_summarizes_only_the_days_in_range() -> None:
     }
     assert {key: totals.new_input for key, totals in summary.profiles.items()} == {"": 6}
     assert {key: totals.new_input for key, totals in summary.sources.items()} == {"main": 4, "sub_agent": 2}
-    assert {key: totals.new_input for key, totals in summary.projects.items()} == {"/w/a": 4, "/w/b": 2}
+    assert {key: totals.new_input for key, totals in summary.workdirs.items()} == {"/w/a": 4, "/w/b": 2}
 
 
 def test_a_model_is_split_by_profile_only_where_more_than_one_served_it() -> None:
