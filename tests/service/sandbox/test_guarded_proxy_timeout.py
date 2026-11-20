@@ -5,19 +5,26 @@
 A quiet client still receives a body that takes longer than the header and
 upstream handshake deadline. A client that never finishes the header fails
 on that same deadline. The origin is a local listener: the suite does not
-open a public connection.
+open a public connection. The sandbox forwarder keeps the same half-close
+rule: a client that shuts its write side still receives a slow body.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import shutil
 import socket
+import tempfile
 import threading
 import time
 
 import jiuwenbox.supervisor.guarded_proxy as guarded_proxy
+import jiuwenbox.supervisor.sandbox_daemon as sandbox_daemon
 import pytest
+
+from tests.support.waiting import wait_for
 
 _PIECE_COUNT = 14
 _PIECE_GAP_SECONDS = 1.0
@@ -327,3 +334,59 @@ async def test_half_closed_client_receives_a_slow_response(monkeypatch: pytest.M
 def _round_trip(client: socket.socket, request: bytes, body_length: int) -> bytes:
     client.sendall(request)
     return _read_response(client, body_length)
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="AF_UNIX is unavailable, so the sandbox forwarder cannot dial the guarded proxy socket",
+)
+async def test_sandbox_forwarder_half_closed_client_receives_a_slow_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A half-closed sandbox client still receives a response that arrives after two seconds."""
+    body = b"SLOW-AFTER-HALF-CLOSE"
+    delay = 3.0
+    directory = tempfile.mkdtemp(prefix="gbf")
+    sock_path = os.path.join(directory, "p.sock")
+    server: asyncio.Server | None = None
+    client: socket.socket | None = None
+    worker: threading.Thread | None = None
+    try:
+        try:
+            server = await asyncio.start_unix_server(_origin(body, delay=delay), path=sock_path)
+        except (AttributeError, OSError, NotImplementedError) as exc:
+            pytest.skip(f"the bridge Unix socket path cannot be set up ({sock_path}): {exc}")
+        await wait_for(
+            lambda: bool(server.sockets),
+            description="local guarded-proxy stand-in is listening",
+        )
+        monkeypatch.setattr(sandbox_daemon, "_GUARDED_PROXY_SOCKET", sock_path)
+        client, accepted = _connected_pair()
+        client.sendall(b"GET http://127.0.0.1/slow HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        client.shutdown(socket.SHUT_WR)
+        worker = threading.Thread(
+            target=sandbox_daemon._bridge_guarded_client,
+            args=(accepted,),
+            name="sandbox-forwarder-slow-response",
+            daemon=True,
+        )
+        started = time.monotonic()
+        worker.start()
+        response = await asyncio.to_thread(_read_response, client, len(body))
+        elapsed = time.monotonic() - started
+    finally:
+        if client is not None:
+            client.close()
+        if server is not None:
+            server.close()
+            await server.wait_closed()
+        if worker is not None:
+            await asyncio.to_thread(worker.join, 5)
+        shutil.rmtree(directory, ignore_errors=True)
+
+    _header, separator, received = response.partition(b"\r\n\r\n")
+    assert separator == b"\r\n\r\n"
+    assert received == body
+    assert elapsed > 2.5
+    assert worker is not None
+    assert not worker.is_alive()

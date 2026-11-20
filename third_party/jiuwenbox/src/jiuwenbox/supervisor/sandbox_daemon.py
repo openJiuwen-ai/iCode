@@ -698,7 +698,9 @@ def _bridge_guarded_client(client: socket.socket) -> None:
         worker = threading.Thread(target=pump, args=(remote, client), daemon=True)
         worker.start()
         pump(client, remote)
-        worker.join(timeout=2)
+        # The side that finishes first has half-closed. The other direction
+        # still has to deliver a slow response; a short join drops it.
+        worker.join()
     finally:
         remote.close()
         client.close()
