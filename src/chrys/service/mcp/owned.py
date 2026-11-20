@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import re
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from contextlib import AsyncExitStack
@@ -46,6 +45,7 @@ from chrys.service.mcp.result_limits import (
     sanitize_mcp_result_binary,
     truncate_mcp_error,
 )
+from chrys.service.mcp.validation import _build_prefixed_mcp_name, _normalize_mcp_name
 from chrys.service.trajectory.waits import WaitOutcome, WaitTrace
 
 if TYPE_CHECKING:
@@ -126,23 +126,6 @@ def _get_input_model_from_mcp_prompt(prompt: types.Prompt) -> dict[str, Any]:
     if required:
         schema["required"] = required
     return schema
-
-
-def _normalize_mcp_name(name: str) -> str:
-    # Keep the exposed name portable across model providers. MCP servers may
-    # advertise a broader character set, but OpenAI-compatible function tools
-    # reject periods and other punctuation before the first model response.
-    return re.sub(r"[^A-Za-z0-9_-]", "-", name)
-
-
-def _build_prefixed_mcp_name(normalized_name: str, tool_name_prefix: str | None) -> str:
-    if not tool_name_prefix:
-        return normalized_name
-    normalized_prefix = _normalize_mcp_name(tool_name_prefix).rstrip("_.-")
-    if not normalized_prefix:
-        return normalized_name
-    trimmed_name = normalized_name.lstrip("_.-")
-    return f"{normalized_prefix}_{trimmed_name}" if trimmed_name else normalized_prefix
 
 
 def _normalize_additional_tool_argument_names(

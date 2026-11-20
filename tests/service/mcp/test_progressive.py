@@ -118,6 +118,42 @@ async def test_always_load_name_selecting_two_tools_fails_connection() -> None:
     await adapter.disconnect_all()
 
 
+@pytest.mark.parametrize(
+    ("remote_name", "allowed_tools", "always_load"),
+    [
+        ("search", ["gh_search"], ["search"]),
+        ("search", ["search"], ["gh_search"]),
+        # A leading ``_`` or ``-`` is trimmed from the exposed name, so the
+        # original cannot be recovered by stripping the prefix.
+        ("_search", ["gh_search"], ["_search"]),
+        ("_search", ["_search"], ["gh_search"]),
+        ("-search", ["gh_search"], ["-search"]),
+        ("-search", ["-search"], ["gh_search"]),
+    ],
+    ids=[
+        "prefixed-permitted-original-visible",
+        "original-permitted-prefixed-visible",
+        "trimmed-original-visible",
+        "trimmed-prefixed-visible",
+        "dashed-original-visible",
+        "dashed-prefixed-visible",
+    ],
+)
+async def test_loading_policy_accepts_either_spelling_of_one_tool(
+    remote_name: str,
+    allowed_tools: list[str],
+    always_load: list[str],
+) -> None:
+    # Remote ``search`` is exposed as ``gh_search``; either spelling may be written in either list.
+    adapter, _fake, tools = await _connected(
+        _function("gh_search", remote_name=remote_name),
+        config=_config(tool_name_prefix="gh", allowed_tools=allowed_tools, always_load=always_load),
+    )
+
+    assert "gh_search" in {tool.name for tool in tools}
+    await adapter.disconnect_all()
+
+
 async def test_ambiguity_error_says_when_no_name_selects_a_tool_alone() -> None:
     # Under prefix ``gh``, ``gh_a`` names ``a`` (prefixed) and ``gh_a`` (original);
     # ``gh_gh_a``, the other name of ``gh_a``, is the original name of a third tool.
@@ -161,6 +197,10 @@ async def test_connect_all_fails_closed_for_programmatic_invalid_prefix() -> Non
         (_config(allowed_tools=[]), "progressive disclosure requires at least one permitted tool"),
         (
             _config(allowed_tools=["search"], always_load=["write"]),
+            "always_load tools must also appear in allowed_tools: write",
+        ),
+        (
+            _config(tool_name_prefix="gh", allowed_tools=["gh_search"], always_load=["write"]),
             "always_load tools must also appear in allowed_tools: write",
         ),
     ],
