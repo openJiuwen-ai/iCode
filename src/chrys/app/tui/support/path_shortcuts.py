@@ -13,8 +13,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from chrys.app.tui.util.paths import middle_cut_path
+
 PATH_DISPLAY_MAX = 28
-"""Max visible characters for a recent directory path label."""
+"""Max visible cells for a recent directory path label."""
 
 
 def get_default_favorites() -> list[tuple[str, str]]:
@@ -38,13 +40,26 @@ def get_default_favorite_paths() -> set[str]:
     return {os.path.normcase(os.path.normpath(path)) for _, path in get_default_favorites()}
 
 
+def _without_trailing_separator(path: str) -> str:
+    """*path* without the separator a directory may end in, keeping a bare root as written."""
+    trimmed = path.rstrip("/\\")
+    if not trimmed or trimmed.endswith(":"):
+        return path
+    return trimmed
+
+
 def format_recent_path_label(path: str) -> str:
-    """Return a compact display label for a recently used directory."""
-    display = path
-    if len(display) > PATH_DISPLAY_MAX:
-        parts = Path(path).parts
-        short = "…/" + os.path.join(*parts[-2:]) if len(parts) >= 2 else "…" + display[-(PATH_DISPLAY_MAX - 1) :]
-        if len(short) > PATH_DISPLAY_MAX:
-            short = "…" + display[-(PATH_DISPLAY_MAX - 1) :]
-        display = short
-    return display
+    """Return a compact display label for a recently used directory.
+
+    ``PATH_DISPLAY_MAX`` is a budget in cells, not in characters: a CJK folder
+    name is two cells a character, so counting characters lets a label of 26
+    characters occupy 40 cells and push the column out of shape.  The separator
+    is whatever the path itself uses, since ``…/a\\b`` would read as one level of
+    a path that has two.
+
+    A trailing separator is dropped first.  ``normpath`` keeps it on a network
+    share's root, and left in place it makes the last component empty: the share
+    name becomes a folder the budget cannot fit, so ``\\\\server\\<share>\\``
+    truncated to ``\\\\server\\…\\`` and every share of that server read the same.
+    """
+    return middle_cut_path(_without_trailing_separator(path), PATH_DISPLAY_MAX)
