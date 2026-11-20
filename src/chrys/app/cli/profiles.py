@@ -9,10 +9,10 @@ import json
 import sys
 from dataclasses import dataclass
 
-from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from chrys.app.cli import display
 from chrys.app.tui.util.formatting import format_compact_count
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE, Settings
@@ -223,7 +223,7 @@ def _model_payload(row: _ModelRow) -> dict[str, object]:
 
 
 def _print_agents(rows: list[_AgentRow]) -> None:
-    console = Console(file=sys.stdout, highlight=False)
+    console = display.stdout_console()
     if not rows:
         console.print(Text("No agent profiles found."))
         return
@@ -251,7 +251,7 @@ def _print_agents(rows: list[_AgentRow]) -> None:
 
 
 def _print_models(rows: list[_ModelRow]) -> None:
-    console = Console(file=sys.stdout, highlight=False)
+    console = display.stdout_console()
     if not rows:
         console.print(Text("No model profiles found."))
         return
