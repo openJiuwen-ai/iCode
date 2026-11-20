@@ -125,6 +125,9 @@ def load_candidate(store: RsiTaskStore, task_id: str, candidate_id: str) -> Cand
     profile_name = str(meta.get("profile_name") or "").strip()
     if not profile_name:
         raise RsiBadRequest(f"candidate {candidate_id}: missing profile_name")
+    if Path(profile_name).name != profile_name or "\\" in profile_name:
+        # meta.json is on-disk state: a name with a separator would read a profile outside the candidate.
+        raise RsiBadRequest(f"candidate {candidate_id}: invalid profile_name: {profile_name!r}")
     profile_path = directory / f"{profile_name}.yaml"
     if not profile_path.is_file():
         raise RsiNotFound(f"candidate {candidate_id}: profile YAML missing")
