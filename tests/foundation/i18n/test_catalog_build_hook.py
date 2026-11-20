@@ -55,12 +55,15 @@ def hook_module(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 
 
 def _project(tmp_path: Path) -> tuple[Path, bytes]:
-    """A tree the hook builds from: a small translated PO and the real compiler."""
+    """A tree the hook builds from: a small translated PO, the compiler and the vendored engine."""
     _source_root, _pot_path, po_path, mo_path = _prepare_translated_catalog(tmp_path)
     if po_path != tmp_path / i18n_mo.PO_PATH:
         raise AssertionError(f"the catalog helper wrote the PO at {po_path}, not the build's PO path")
     (tmp_path / "scripts").mkdir()
     shutil.copy(REPO_ROOT / "scripts" / "i18n_mo.py", tmp_path / "scripts" / "i18n_mo.py")
+    package = tmp_path / "third_party" / "jiuwenbox" / "src" / "jiuwenbox"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
     return tmp_path, mo_path.read_bytes()
 
 
@@ -73,11 +76,16 @@ def test_editable_build_writes_the_copy_the_editable_install_reads(tmp_path: Pat
     root, compiled = _project(tmp_path)
     app = _App()
     build_data: dict[str, Any] = {"force_include": {}}
+    hook = hook_module.CatalogBuildHook(root, app)
 
-    hook_module.CatalogBuildHook(root, app).initialize("editable", build_data)
+    hook.initialize("editable", build_data)
 
     assert (root / i18n_mo.SOURCE_MO_PATH).read_bytes() == compiled
-    assert build_data == {"force_include": {}}
+    [(source, target)] = build_data["force_include"].items()
+    assert target == hook_module._ENGINE_PATH_NAME
+    assert Path(source).read_text(encoding="utf-8") == f"{root / 'third_party' / 'jiuwenbox' / 'src'}\n"
+    hook.finalize("editable", build_data, str(tmp_path / "artifact.whl"))
+    assert not Path(source).parent.exists()
     assert app.warnings == []
 
 
@@ -92,12 +100,14 @@ def test_editable_build_keeps_the_previous_catalog_when_the_po_cannot_compile(
     source_mo.write_bytes(b"previous catalog")
     _break_po(root)
     app = _App()
+    hook = hook_module.CatalogBuildHook(root, app)
 
-    hook_module.CatalogBuildHook(root, app).initialize("editable", {"force_include": {}})
+    hook.initialize("editable", {"force_include": {}})
 
     assert source_mo.read_bytes() == b"previous catalog"
     assert len(app.warnings) == 1
     assert "may be stale" in app.warnings[0]
+    hook.finalize("editable", {"force_include": {}}, str(tmp_path / "artifact.whl"))
 
 
 def test_wheel_build_force_includes_a_scratch_copy_and_removes_it(tmp_path: Path, hook_module: ModuleType) -> None:
@@ -107,12 +117,17 @@ def test_wheel_build_force_includes_a_scratch_copy_and_removes_it(tmp_path: Path
 
     hook.initialize("standard", build_data)
 
-    [(source, target)] = build_data["force_include"].items()
-    assert target == i18n_mo.PACKAGE_MO_PATH
+    included = build_data["force_include"]
+    mo_sources = [source for source, target in included.items() if target == i18n_mo.PACKAGE_MO_PATH]
+    assert len(mo_sources) == 1
+    source = mo_sources[0]
     assert Path(source).read_bytes() == compiled
     assert not (root / i18n_mo.SOURCE_MO_PATH).exists()
+    engine = [path for path, target in included.items() if target == hook_module._ENGINE_DISTRIBUTION_PATH]
+    assert engine == [str(root / "third_party" / "jiuwenbox" / "src" / "jiuwenbox")]
     hook.finalize("standard", build_data, str(tmp_path / "artifact.whl"))
     assert not Path(source).parent.exists()
+    assert (root / "third_party" / "jiuwenbox" / "src" / "jiuwenbox" / "__init__.py").is_file()
 
 
 def test_wheel_build_fails_rather_than_ship_without_translations(

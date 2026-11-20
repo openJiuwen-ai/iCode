@@ -12,7 +12,8 @@ environment, resolving its dependencies from the index as a user's install
 does — ``uv.lock`` plays no part — and the installed ``icode`` and its
 interpreter are probed: the version, every command's help, the TUI and
 optional-feature imports, the bundled guide, the zh-Hans translations the
-build compiled into it (the MO is generated, not tracked) and the bundled
+build compiled into it (the MO is generated, not tracked), the vendored
+sandbox engine (``jiuwenbox``, including its policy YAML) and the bundled
 ripgrep.
 ``--all-ripgrep`` requires the ripgrep of every platform the wheel serves
 (the release wheel, built after ``fetch_rg.sh --all``).
@@ -26,6 +27,7 @@ import argparse
 import configparser
 import email.parser
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -37,6 +39,9 @@ WHEEL_PREFIX = "icode_tui-"
 BUNDLED_DOCS_PREFIX = "chrys/app/tui/screens/guides/_docs/"
 # Compiled from locales/ by hatch_build.py; scripts/i18n_mo.py::PACKAGE_MO_PATH.
 ZH_HANS_CATALOG = "chrys/foundation/i18n/_catalogs/zh-Hans/LC_MESSAGES/chrys.mo"
+# hatch_build.py force-includes third_party/jiuwenbox/src/jiuwenbox at this prefix.
+VENDORED_ENGINE_SOURCE = "third_party/jiuwenbox/src/"
+VENDORED_ENGINE_POLICY = "jiuwenbox/configs/code-agent-policy.yaml"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # The one command the wheel installs.
 COMMAND = "icode"
@@ -82,9 +87,21 @@ import opentelemetry.exporter.otlp.proto.grpc.trace_exporter
 import opentelemetry.instrumentation.logging.handler
 import opentelemetry.sdk._logs.export, opentelemetry.sdk.metrics.export, opentelemetry.sdk.trace.export
 import PIL.Image, psutil, textual_serve.server, watchdog.observers
+import fastapi, uvicorn
+import jiuwenbox
+import jiuwenbox.server.launcher
+from importlib.resources import as_file, files
 
 package = Path(chrys.__file__).resolve().parent
 problems = []
+engine = Path(jiuwenbox.__file__).resolve().parent
+launcher = Path(jiuwenbox.server.launcher.__file__).resolve()
+if not launcher.is_relative_to(engine):
+    problems.append(f"jiuwenbox.server.launcher resolves to {launcher}, not the package at {engine}")
+with as_file(files(jiuwenbox).joinpath("configs", "code-agent-policy.yaml")) as policy_path:
+    policy = policy_path.resolve()
+    if not policy.is_file() or not policy.is_relative_to(engine):
+        problems.append(f"the sandbox policy resolves to {policy}, not the copy bundled under {engine}")
 if chrys.__version__ != sys.argv[1]:
     problems.append(f"chrys.__version__ is {chrys.__version__}, expected {sys.argv[1]}")
 docs = resolve_docs_root()
@@ -110,7 +127,30 @@ if problems:
 print(f"    chrys {chrys.__version__} at {package}")
 print(f"    guide {docs}")
 print(f"    rg    {rg}")
+print(f"    engine {engine}")
+print(f"    policy {policy}")
 """
+
+
+def _requirement_name(requirement: str) -> str:
+    """Distribution name from one Requires-Dist value, without extras or markers."""
+    name = requirement.split(";", 1)[0].strip()
+    name = re.split(r"[\[<>=!~\s@]", name, maxsplit=1)[0]
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _git_paths(prefix: str) -> set[str]:
+    """Tracked files under ``prefix``, as wheel member names (forward slashes, no prefix)."""
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", prefix],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        stdin=subprocess.DEVNULL,
+    )
+    root = prefix.rstrip("/") + "/"
+    return {path.removeprefix(root) for path in listed.stdout.split("\0") if path.startswith(root)}
 
 
 def _wheel_version(wheel: Path) -> str:
@@ -137,6 +177,9 @@ def check_archive(wheel: Path, version: str) -> None:
         problems.append(f"METADATA declares extras {extras}; every dependency belongs to the base install")
     if metadata["Description-Content-Type"] != "text/markdown" or not str(metadata.get_payload()).strip():
         problems.append("METADATA carries no Markdown project description")
+    vendored = [item for item in (metadata.get_all("Requires-Dist") or []) if _requirement_name(item) == "jiuwenbox"]
+    if vendored:
+        problems.append("METADATA Requires-Dist includes jiuwenbox; the engine ships inside the wheel")
     commands = sorted(entry_points["console_scripts"]) if entry_points.has_section("console_scripts") else []
     if commands != [COMMAND]:
         problems.append(f"the wheel installs the commands {commands}, not only {COMMAND}")
@@ -157,10 +200,18 @@ def check_archive(wheel: Path, version: str) -> None:
     catalogs = names.count(ZH_HANS_CATALOG)
     if catalogs != 1:
         problems.append(f"the wheel carries {catalogs} copies of {ZH_HANS_CATALOG}, not one")
+    engine_tracked = _git_paths(VENDORED_ENGINE_SOURCE.rstrip("/"))
+    engine_bundled = {name for name in names if name.startswith("jiuwenbox/") and not name.endswith("/")}
+    engine_missing = sorted(engine_tracked - engine_bundled)
+    if engine_missing:
+        problems.append(f"the wheel is missing vendored engine files: {engine_missing}")
+    if VENDORED_ENGINE_POLICY not in engine_bundled:
+        problems.append(f"the wheel is missing {VENDORED_ENGINE_POLICY}")
     if problems:
         sys.exit("\n".join(problems))
     print(
-        f"==> {wheel.name}: metadata, all {len(tracked)} user-guide files and the zh-Hans catalog present",
+        f"==> {wheel.name}: metadata, all {len(tracked)} user-guide files, "
+        f"all {len(engine_tracked)} vendored engine files and the zh-Hans catalog present",
         flush=True,
     )
 
