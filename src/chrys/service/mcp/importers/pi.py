@@ -4,14 +4,16 @@
 
 Read: ``mcp.json`` in pi's agent folder (``$PI_CODING_AGENT_DIR``, default
 ``~/.pi/agent``), then ``.pi/mcp.json`` in the workspace once the user trusts
-it, as pi does: the nearest of the workspace and the folders above it that
-``trust.json`` in the agent folder decides, else ``defaultProjectTrust:
-"always"`` in the agent folder's ``settings.json`` (pi otherwise asks, so an
-undecided project is not read). A project server replaces the global one of
-the same name; a project entry with none of ``command``, ``url`` and ``type``
-only changes the ``enabled``, ``exposure`` and ``toolExposure`` of the global
-server it names. Basic fields are checked before replacing an earlier definition;
-an invalid project entry reports an error and leaves the global server intact.
+it, as pi does: the nearest of the workspace's real folder and the folders
+above it that ``trust.json`` in the agent folder decides, else
+``defaultProjectTrust: "always"`` in the agent folder's ``settings.json`` (pi
+otherwise asks, so an undecided project is not read). A relative
+``$PI_CODING_AGENT_DIR`` is found from the workspace. A project server replaces
+the global one of the same name; a project entry with none of ``command``,
+``url`` and ``type`` only changes the ``enabled``, ``exposure`` and
+``toolExposure`` of the global server it names. Basic fields are checked
+before replacing an earlier definition; an invalid project entry reports an
+error and leaves the global server intact.
 OAuth options and URL details beyond an ``http``/``https`` scheme are not
 validated: they are copied as written.
 
@@ -19,8 +21,8 @@ Values in ``env`` and ``headers`` may reference ``$NAME`` or ``${NAME}``; ``$$``
 and ``$!`` are a literal ``$`` and ``!``. A value starting with ``!`` runs a
 command in pi, which the import does not translate: such servers are listed
 for manual setup. Home expansion in ``command`` and ``args`` uses Node's lexical
-path normalization, without following symlinks. HTTP servers without ``auth``
-or an Authorization header default to OAuth, whose sign-in cannot be imported.
+path normalization, without following symlinks. Pi can negotiate OAuth when
+an HTTP server requests it. Import warns about explicit sign-in settings.
 
 ``exposure`` maps to iCode's loading: ``direct`` loads every tool,
 ``codemode`` and ``deferred`` load on demand, ``hidden`` offers none.
@@ -31,7 +33,7 @@ can; a rule hiding tools iCode can't express imports the server with no tools.
 Checked against https://github.com/earendil-works/pi tag ``v1.5.2`` (commit
 b4afdddf44), read 2026-11-12; paths are under ``packages/coding-agent/src``:
 the files and project overrides (``extensions/mcp/config.ts``), trust
-(``core/trust-manager.ts``, ``core/project-trust.ts``), the
+(``core/trust-manager.ts``, ``core/project-trust.ts``, ``utils/paths.ts``), the
 variables and ``!`` commands (``core/resolve-config-value.ts``), the server
 fields and exposure (``core/mcp-servers.ts``, delegating shared validation to
 ``packages/mcp/src/config.ts:165-173``) and ``~`` expansion
@@ -46,11 +48,12 @@ that session folder. Remaining tildes are shielded from iCode's expansion.
 from __future__ import annotations
 
 import ntpath
+import os
 import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from chrys.foundation.platform import get_platform
 from chrys.service.mcp.importers.base import (
@@ -68,19 +71,18 @@ from chrys.service.mcp.importers.base import (
     Var,
     WarningKind,
     convert,
-    folders_down_to,
     is_str_list,
     is_str_mapping,
     lexical_cwd,
     literal,
+    located,
     missing_fields,
-    path_matches,
     positive_number,
     read_json_object,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
     from pathlib import PurePath
 
 _NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
@@ -104,6 +106,13 @@ _READ = (
 )
 _READ_EXPOSURE = (*_READ, "exposure", "toolExposure")
 
+
+class _Read(Protocol):
+    def __call__(self, path: Path, *, strict: bool = False) -> dict[str, Any] | None:
+        """The object in *path*, ``{}`` when it is missing, ``None`` when unusable (the error is listed)."""
+        ...
+
+
 _FULL, _ON_DEMAND, _HIDDEN = "full", "on_demand", "hidden"
 _EXPOSURES = {
     "direct": _FULL,
@@ -124,17 +133,16 @@ class PiSource:
         return "Pi"
 
     def detect(self, ctx: ImportContext) -> bool:
-        agent = _agent_folder(ctx)
-        return (agent / "mcp.json").is_file() or (
+        return (_agent_folder(ctx) / "mcp.json").is_file() or (
             ctx.workspace_cwd is not None and (Path(ctx.workspace_cwd) / ".pi" / "mcp.json").is_file()
         )
 
     def discover(self, ctx: ImportContext) -> McpImportResult:
         errors: list[McpSourceError] = []
 
-        def read(path: Path) -> dict[str, Any] | None:
+        def read(path: Path, *, strict: bool = False) -> dict[str, Any] | None:
             try:
-                return read_json_object(path) or {}
+                return read_json_object(path, strict=strict) or {}
             except SourceReadError as exc:
                 errors.append(exc.at(path))
                 return None
@@ -142,7 +150,7 @@ class PiSource:
         agent = _agent_folder(ctx)
         files = [agent / "mcp.json"]
         project = Path(ctx.workspace_cwd) / ".pi" / "mcp.json" if ctx.workspace_cwd else None
-        if project is not None and project.is_file() and _trusted(ctx.workspace_cwd or "", agent, read):
+        if project is not None and project.is_file() and _trusted(ctx.workspace_cwd or "", agent, read, errors):
             files.append(project)
         entries: dict[str, tuple[dict[str, Any], SourceServer]] = {}
         for position, path in enumerate(files):
@@ -183,23 +191,45 @@ class PiSource:
 
 def _agent_folder(ctx: ImportContext) -> Path:
     folder = ctx.environ.get("PI_CODING_AGENT_DIR")
-    agent = Path(_expand_home(folder, ctx.home)) if folder else ctx.home / ".pi" / "agent"
-    if not agent.is_absolute() and ctx.workspace_cwd:
-        agent = Path(ctx.workspace_cwd) / agent
-    return agent
+    return located(_expand_home(folder, ctx.home), ctx) if folder else ctx.home / ".pi" / "agent"
 
 
-def _trusted(workspace_cwd: str, agent: Path, read: Callable[[Path], dict[str, Any] | None]) -> bool:
-    """Whether pi loads the workspace's project files without asking."""
-    decisions = read(agent / "trust.json") or {}
-    for folder in reversed(folders_down_to(workspace_cwd, None)):
-        decision = next(
-            (value for key, value in decisions.items() if isinstance(value, bool) and path_matches(key, str(folder))),
-            None,
-        )
+def _trusted(workspace_cwd: str, agent: Path, read: _Read, errors: list[McpSourceError]) -> bool:
+    """Whether pi loads the workspace's project files without asking.
+
+    As pi looks it up: from the workspace's real folder up, each folder decided by
+    the first entry in the file naming it as a path that is true or false.
+    """
+    store = agent / "trust.json"
+    decisions = read(store, strict=True)
+    # A store that can't be read, or that pi refuses for a value other than true, false or null,
+    # trusts nothing, whatever the default says; the error is listed so the user can repair it.
+    if decisions is None:
+        return False
+    invalid = [key for key, value in decisions.items() if value is not None and not isinstance(value, bool)]
+    if invalid:
+        errors.extend(McpSourceError(str(store), SourceErrorKind.INVALID, field=key) for key in invalid)
+        return False
+    try:
+        folder = os.path.realpath(workspace_cwd)
+    except OSError, ValueError:
+        folder = workspace_cwd
+    path = ntpath if get_platform().is_windows else posixpath
+    keyed = [(_comparison_key(key), value) for key, value in decisions.items() if value is not None]
+    while True:
+        name = _comparison_key(folder)
+        decision = next((value for key, value in keyed if key == name), None)
         if decision is not None:
             return decision
-    return (read(agent / "settings.json") or {}).get("defaultProjectTrust") == "always"
+        parent = path.dirname(folder)
+        if parent == folder:
+            return (read(agent / "settings.json") or {}).get("defaultProjectTrust") == "always"
+        folder = parent
+
+
+def _comparison_key(path: str) -> str:
+    """*path* as pi compares the absolute paths it writes: normalized, lower-cased on Windows."""
+    return ntpath.normpath(path).lower() if get_platform().is_windows else posixpath.normpath(path)
 
 
 def _expand_home(text: str, home: PurePath) -> str:
@@ -269,7 +299,7 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
     known = (*_READ_EXPOSURE, "cwd") if transport == "stdio" else _READ_EXPOSURE
     warnings: list[ImportWarning | None] = [*access.warnings, missing_fields(entry, known, prefix)]
     authorized = any(key.lower() == "authorization" for key in texts)
-    if transport == "http" and (entry.get("auth") or not authorized):
+    if transport == "http" and ("auth" in entry or ("oauth" in entry and not authorized)):
         warnings.append(ImportWarning(WarningKind.AUTH_NOT_IMPORTED))
     return SourceServer(
         name,
@@ -283,6 +313,7 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         else (),
         env=values if transport == "stdio" else {},
         url=entry.get("url", ""),
+        url_path=f"{prefix}.url",
         headers=values if transport == "http" else {},
         enabled=entry.get("enabled", True),
         description=entry.get("description", ""),

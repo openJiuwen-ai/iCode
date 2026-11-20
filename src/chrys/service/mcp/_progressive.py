@@ -26,10 +26,13 @@ from chrys.kernel.tools import FunctionTool, declared_tool_name, normalize_tools
 from chrys.service.mcp.cache import clone_mcp_function_tool
 from chrys.service.mcp.owned import (
     _MCP_REMOTE_NAME_KEY,
-    _build_prefixed_mcp_name,
     _mcp_config_names_for,
 )
-from chrys.service.mcp.validation import MAX_MCP_EXPOSED_TOOL_NAME_LENGTH, MCP_PROGRESSIVE_CONTROL_TOOL_NAMES
+from chrys.service.mcp.validation import (
+    MAX_MCP_EXPOSED_TOOL_NAME_LENGTH,
+    MCP_PROGRESSIVE_CONTROL_TOOL_NAMES,
+    build_prefixed_mcp_name,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -265,9 +268,9 @@ class _ProgressiveMCPExposure:
         return [tool for tool in ctx.tools if isinstance(tool, FunctionTool) and self._is_owned_catalog_tool(tool)]
 
     def _create_control_tools(self) -> list[FunctionTool]:
-        list_name = _build_prefixed_mcp_name(_MCP_PROGRESSIVE_LIST_TOOL_NAME, self._control_prefix)
-        load_name = _build_prefixed_mcp_name(_MCP_PROGRESSIVE_LOAD_TOOL_NAME, self._control_prefix)
-        unload_name = _build_prefixed_mcp_name(_MCP_PROGRESSIVE_UNLOAD_TOOL_NAME, self._control_prefix)
+        list_name = build_prefixed_mcp_name(_MCP_PROGRESSIVE_LIST_TOOL_NAME, self._control_prefix)
+        load_name = build_prefixed_mcp_name(_MCP_PROGRESSIVE_LOAD_TOOL_NAME, self._control_prefix)
+        unload_name = build_prefixed_mcp_name(_MCP_PROGRESSIVE_UNLOAD_TOOL_NAME, self._control_prefix)
 
         async def _list(ctx: FunctionInvocationContext) -> list[dict[str, Any]]:
             loaded_names = self._live_tool_names(ctx)

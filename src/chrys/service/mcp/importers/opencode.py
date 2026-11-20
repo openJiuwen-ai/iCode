@@ -13,6 +13,7 @@ Read (https://opencode.ai/docs/config/), lowest precedence first:
   same folders, the workspace's first (so a folder above it wins, as in
   opencode), then in ``~/.opencode`` and in ``$OPENCODE_CONFIG_DIR``.
 
+A relative folder or file in a variable is found from the workspace.
 ``OPENCODE_DISABLE_PROJECT_CONFIG`` (``true`` or ``1``) skips the files of the
 Git root and the folders below it. ``OPENCODE_CONFIG_CONTENT`` and managed
 settings are not read.
@@ -77,6 +78,7 @@ from chrys.service.mcp.importers.base import (
     is_str_list,
     is_str_mapping,
     lexical_cwd,
+    located,
     merge_entries,
     missing_fields,
     parse_json_object,
@@ -99,7 +101,7 @@ _REMOTE_FIELDS = ("type", "url", "headers", "enabled", "timeout", "oauth")
 
 # A string, or a comment, in JSONC; and a comma before a closing bracket, outside strings. An unclosed
 # string or block comment runs to the end of the text, so no position is scanned twice.
-_COMMENT_RE = re.compile(r'("(?:\\.|[^"\\])*"?)|//[^\n]*|/\*.*?(?:\*/|\Z)', re.DOTALL)
+_COMMENT_RE = re.compile(r'("(?:\\.|[^"\\])*"?)|//[^\r\n]*|/\*.*?(?:\*/|\Z)', re.DOTALL)
 _TRAILING_COMMA_RE = re.compile(r'("(?:\\.|[^"\\])*"?)|,(?=\s*[}\]])', re.DOTALL)
 
 
@@ -137,6 +139,13 @@ class OpenCodeSource:
             for name, entry in table.items():
                 if not isinstance(entry, dict):
                     continue
+                if not _whole_server(entry):
+                    # opencode checks each file before merging: an entry is a whole server, else an
+                    # ``enabled`` switch read without its other keys, else the file is invalid.
+                    if not isinstance(entry.get("enabled"), bool):
+                        errors.append(McpSourceError(str(path), SourceErrorKind.INVALID, field=f"mcp.{name}"))
+                        continue
+                    entry = {"enabled": entry["enabled"]}
                 base, base_path = entries.get(name, ({}, str(path)))
                 if "type" in entry:
                     base_path = str(path)
@@ -145,16 +154,41 @@ class OpenCodeSource:
         return McpImportResult(tuple(convert(server) for server in found if server is not None), tuple(errors))
 
 
+def _whole_server(entry: dict[str, Any]) -> bool:
+    """Whether *entry*, as one file writes it, passes opencode's local or remote server schema."""
+    kind = entry.get("type")
+    if kind == "local":
+        required, optional = is_str_list(entry.get("command")), {"cwd": str, "environment": dict}
+    elif kind == "remote":
+        required, optional = isinstance(entry.get("url"), str), {"headers": dict, "oauth": (dict, bool)}
+    else:
+        return False
+    return (
+        required
+        and all(isinstance(entry[key], kinds) for key, kinds in optional.items() if key in entry)
+        and all(is_str_mapping(entry[key]) for key in ("environment", "headers") if key in entry)
+        and entry.get("oauth", False) is not True
+        and all(isinstance(entry[key], bool) for key in ("enabled", "codemode") if key in entry)
+        and ("timeout" not in entry or _positive_int(entry["timeout"]))
+    )
+
+
+def _positive_int(value: object) -> bool:
+    number = positive_number(value)
+    return number is not None and number.is_integer()
+
+
 def _files(ctx: ImportContext) -> list[Path]:
     environ = ctx.environ
-    global_folder = Path(environ.get("XDG_CONFIG_HOME") or ctx.home / ".config") / "opencode"
     names = ("opencode.json", "opencode.jsonc")
-    files = [global_folder / name for name in ("config.json", *names)]
+    # Folders keep opencode's spelling, which it compares and orders by; each is found only to be read.
+    global_folder = str(Path(environ.get("XDG_CONFIG_HOME") or ctx.home / ".config") / "opencode")
+    files = [located(global_folder, ctx) / name for name in ("config.json", *names)]
     if custom := environ.get("OPENCODE_CONFIG"):
-        files.append(_absolute(custom, ctx))
+        files.append(located(custom, ctx))
     # Folders in opencode's order, each kept where it first appears, compared as opencode compares
     # them, as text: the global folder first, so OPENCODE_CONFIG_DIR spelling it is read there.
-    folders = [str(global_folder)]
+    folders = [global_folder]
     if ctx.workspace_cwd and environ.get("OPENCODE_DISABLE_PROJECT_CONFIG", "").lower() not in ("true", "1"):
         chain = folders_down_to(ctx.workspace_cwd, git_root(ctx.workspace_cwd))
         files += [folder / name for folder in chain for name in names]
@@ -164,12 +198,7 @@ def _files(ctx: ImportContext) -> list[Path]:
     if config_dir is not None:
         folders.append(config_dir)
     read = [folder for folder in dict.fromkeys(folders) if folder.endswith(".opencode") or folder == config_dir]
-    return files + [_absolute(folder, ctx) / name for folder in read for name in names]
-
-
-def _absolute(path: str, ctx: ImportContext) -> Path:
-    """*path* as opencode, started in the workspace, reads it."""
-    return Path(ctx.workspace_cwd or "") / path if not Path(path).is_absolute() else Path(path)
+    return files + [located(folder, ctx) / name for folder in read for name in names]
 
 
 def strip_jsonc(text: str) -> str:
@@ -271,16 +300,15 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             or ("", Problem.VALUE_NOT_REPRESENTABLE, ValueReason.INVALID, FieldUse.VALUE)
         )
         warnings = [missing_fields(entry, _REMOTE_FIELDS, prefix)]
-        # opencode signs in with OAuth whenever the server asks, unless ``oauth`` is false; so warn
-        # unless headers authenticate.
         oauth = entry.get("oauth")
-        if oauth is not False and (oauth is not None or not values):
+        if oauth is not None and oauth is not False:
             warnings.append(ImportWarning(WarningKind.AUTH_NOT_IMPORTED))
         return SourceServer(
             name,
             path,
             "http",
             url=url,
+            url_path=f"{prefix}.url",
             headers=values,
             enabled=enabled,
             timeout_seconds=timeout,

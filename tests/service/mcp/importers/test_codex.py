@@ -72,6 +72,15 @@ def test_http_cwd_is_reported_as_not_imported(tmp_path: Path) -> None:
     assert candidate.warnings == (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.cwd",)),)
 
 
+@pytest.mark.parametrize("scopes", ['["read"]', "[]", '"read"'])
+def test_scopes_alone_are_reported_as_not_imported(tmp_path: Path, scopes: str) -> None:
+    candidate = _only(tmp_path, f'url = "https://x"\nscopes = {scopes}\n')
+
+    assert candidate.config is not None
+    assert candidate.config.url == "https://x"
+    assert candidate.warnings == (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.scopes",)),)
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
@@ -118,8 +127,12 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
             {"headers": {"X-Token": "{{TOKEN}}"}},
         ),
         ('url = "https://x"\nauth = "chatgpt"\n', (ImportWarning(Kind.AUTH_NOT_IMPORTED),), {}),
-        # A `codex mcp login` sign-in lives outside the file.
-        ('url = "https://x"\n', (ImportWarning(Kind.AUTH_NOT_IMPORTED),), {}),
+        (
+            'url = "https://x"\nauth = "oauth"\nscopes = ["read"]\n',
+            (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.scopes",)), ImportWarning(Kind.AUTH_NOT_IMPORTED)),
+            {},
+        ),
+        ('url = "https://x"\n', (), {}),
         # iCode passes on its whole environment but these two, so they must be set.
         (
             'command = "run"\nenv_vars = ["PATH", "PYTHONPATH", { name = "PYTHONHOME", source = "local" }]\n',
@@ -149,6 +162,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
     ids=[
         "optional-variable",
         "provider-auth",
+        "explicit-oauth-with-scopes",
         "no-headers",
         "passed-variables",
         "passed-variable-set",

@@ -15,6 +15,27 @@ _PROVIDER_SAFE_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _TOOL_NAME_PREFIX_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$")
 
 
+def normalize_mcp_name(name: str) -> str:
+    """*name* with every character other than letters, digits, ``_`` and ``-`` as ``-``.
+
+    Keeps the exposed name portable across model providers: MCP servers may advertise a broader
+    character set, but OpenAI-compatible function tools reject periods and other punctuation
+    before the first model response.
+    """
+    return re.sub(r"[^A-Za-z0-9_-]", "-", name)
+
+
+def build_prefixed_mcp_name(normalized_name: str, tool_name_prefix: str | None) -> str:
+    """The name iCode exposes for a tool or prompt whose normalized name is *normalized_name*."""
+    if not tool_name_prefix:
+        return normalized_name
+    normalized_prefix = normalize_mcp_name(tool_name_prefix).rstrip("_.-")
+    if not normalized_prefix:
+        return normalized_name
+    trimmed_name = normalized_name.lstrip("_.-")
+    return f"{normalized_prefix}_{trimmed_name}" if trimmed_name else normalized_prefix
+
+
 def is_windows_drive_relative_path(path: str) -> bool:
     """Whether Windows resolves *path* from a drive's current folder (for example ``C:tools``)."""
     return bool(ntpath.splitdrive(path)[0]) and not ntpath.isabs(path)

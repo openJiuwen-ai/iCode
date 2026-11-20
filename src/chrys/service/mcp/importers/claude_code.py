@@ -6,11 +6,13 @@ Read (https://code.claude.com/docs/en/mcp, "MCP installation scopes"), lowest
 precedence first, a same-named server replacing an earlier one:
 
 - ``user``: top-level ``mcpServers`` of ``~/.claude.json`` (or
-  ``$CLAUDE_CONFIG_DIR/.claude.json``);
+  ``$CLAUDE_CONFIG_DIR/.claude.json``; a relative folder is found from the
+  workspace);
 - ``project``: ``mcpServers`` of ``.mcp.json`` in the Git root, then in the workspace;
 - ``local``: ``projects[<project>].mcpServers`` of the same ``.claude.json``, where
   the project is the workspace's Git root (for a linked worktree, the main
-  checkout every worktree shares, or the bare repository), else the workspace.
+  checkout every worktree shares, or the bare repository), else the workspace,
+  looked up as Claude Code keys it: in NFC Unicode form, with ``/`` on Windows.
 
 Values in ``env`` and ``headers`` may reference ``${VAR}`` or ``${VAR:-default}``;
 iCode has no default syntax, so the default is dropped. Missing or empty
@@ -43,7 +45,8 @@ The public repository was checked again on 2026-11-12: latest tag v2.1.322
 (commit 6e1e44f643), main at 927b66497b. Its changelog reports MCP OAuth
 redirect hardening, but it does not contain the full configuration loader.
 The bundle checks above remain
-the basis for project keys, credential variables and trust.
+the basis for project keys, credential variables and trust; the NFC form of the
+project key was read from the Claude Code 2.1.330 binary on 2026-11-23.
 Recheck those when Claude Code changes where it keeps servers or how it turns
 them off.
 """
@@ -52,10 +55,12 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.platform import get_platform
 from chrys.service.mcp.importers.base import (
     FieldUse,
     ImportContext,
@@ -74,6 +79,7 @@ from chrys.service.mcp.importers.base import (
     is_str_list,
     is_str_mapping,
     linked_common_dir,
+    located,
     missing_fields,
     path_matches,
     positive_number,
@@ -143,7 +149,8 @@ class ClaudeCodeSource:
         return "Claude Code"
 
     def detect(self, ctx: ImportContext) -> bool:
-        return _config_file(ctx).is_file() or any(path.is_file() for path in _project_files(ctx))
+        config_path, _ = _user_files(ctx)
+        return config_path.is_file() or any(path.is_file() for path in _project_files(ctx))
 
     def discover(self, ctx: ImportContext) -> McpImportResult:
         errors: list[McpSourceError] = []
@@ -155,73 +162,75 @@ class ClaudeCodeSource:
                 errors.append(exc.at(path))
                 return {}
 
-        config_path = _config_file(ctx)
+        config_path, settings_path = _user_files(ctx)
         config = read(config_path)
         key, project = _project_entry(config, ctx.workspace_cwd) if ctx.workspace_cwd else ("", {})
         user = list(_servers(config.get("mcpServers"), config_path))
         shared = [server for path in _project_files(ctx) for server in _servers(read(path).get("mcpServers"), path)]
         local = list(_servers(project.get("mcpServers"), config_path))
-        user_settings, repo_settings = _settings_files(ctx, key)
+        repo_settings = _repo_settings_files(ctx, key)
         trusted = project.get("hasTrustDialogAccepted") is True
         rejected = _mcpjson_names(project.get("disabledMcpjsonServers"))
         # Older Claude Code kept approvals in the project's entry; it now moves them to the local
         # settings, which count only in a trusted project.
-        approved = _approved(project) if trusted else set()
-        for path in user_settings:
-            settings = read(path)
-            rejected |= _mcpjson_names(settings.get("disabledMcpjsonServers"))
-            approved |= _approved(settings)
+        approved: set[str] = set()
+        # ``enableAllProjectMcpServers``, kept apart from the names so no listed name can stand for it.
+        approve_all = False
+
+        def approve(settings: Mapping[str, Any]) -> None:
+            nonlocal approve_all
+            approved.update(_mcpjson_names(settings.get("enabledMcpjsonServers")))
+            approve_all = approve_all or settings.get("enableAllProjectMcpServers") is True
+
+        if trusted:
+            approve(project)
+        user_settings = read(settings_path)
+        rejected |= _mcpjson_names(user_settings.get("disabledMcpjsonServers"))
+        approve(user_settings)
         for path in repo_settings:
             settings = read(path)
             rejected |= _mcpjson_names(settings.get("disabledMcpjsonServers"))
             # A repository's own files can approve its servers only once the user trusts its folder.
             if trusted:
-                approved |= _approved(settings)
+                approve(settings)
         disabled = _names(project.get("disabledMcpServers"))
 
         def off(server: SourceServer, from_mcp_json: bool) -> bool:
             if server.name in disabled:
                 return True
             name = _mcpjson_name(server.name)
-            return from_mcp_json and (name in rejected or not (_ALL in approved or name in approved))
+            return from_mcp_json and (name in rejected or not (approve_all or name in approved))
 
         layers = ((user, False), (shared, True), (local, False))
         servers = (replace(s, enabled=False) if off(s, mcp_json) else s for group, mcp_json in layers for s in group)
         return McpImportResult(tuple(convert(server) for server in by_name(servers)), tuple(errors))
 
 
-def _config_folder(ctx: ImportContext) -> Path | None:
-    """``$CLAUDE_CONFIG_DIR``, if set; Claude Code keeps its files there instead of the home folder."""
+def _user_files(ctx: ImportContext) -> tuple[Path, Path]:
+    """The user's ``.claude.json`` and settings file: in ``$CLAUDE_CONFIG_DIR`` if set, else in the home folder."""
     folder = ctx.environ.get("CLAUDE_CONFIG_DIR")
     if not folder:
-        return None
-    path = Path(folder)
-    if not path.is_absolute() and ctx.workspace_cwd:
-        path = Path(ctx.workspace_cwd) / path
-    return path
-
-
-def _config_file(ctx: ImportContext) -> Path:
-    return (_config_folder(ctx) or ctx.home) / ".claude.json"
+        return ctx.home / ".claude.json", ctx.home / ".claude" / "settings.json"
+    path = located(folder, ctx)
+    return path / ".claude.json", path / "settings.json"
 
 
 def _project_files(ctx: ImportContext) -> list[Path]:
     return [folder / ".mcp.json" for folder in project_folders(ctx.workspace_cwd)]
 
 
-def _settings_files(ctx: ImportContext, key: str) -> tuple[list[Path], list[Path]]:
-    """The settings files that approve or reject ``.mcp.json`` servers: the user's, then the repository's.
+def _repo_settings_files(ctx: ImportContext, key: str) -> list[Path]:
+    """The repository's settings files that approve or reject ``.mcp.json`` servers.
 
-    The repository's are the workspace's shared one and its local ones, which Claude Code keeps in the
-    project's folder (the main checkout for a linked worktree; in the workspace before 2.1.211).
+    The workspace's shared one and its local ones, which Claude Code keeps in the project's folder
+    (the main checkout for a linked worktree; in the workspace before 2.1.211).
     """
-    user = [(_config_folder(ctx) or ctx.home / ".claude") / "settings.json"]
     if not ctx.workspace_cwd:
-        return user, []
+        return []
     repo = [Path(ctx.workspace_cwd) / ".claude" / "settings.json"]
     folders = [*project_folders(ctx.workspace_cwd), *([Path(key)] if key else [])]
     repo += [folder / ".claude" / "settings.local.json" for folder in dict.fromkeys(folders)]
-    return user, repo
+    return repo
 
 
 def _project_key(workspace_cwd: str) -> str:
@@ -248,7 +257,9 @@ def _project_key(workspace_cwd: str) -> str:
 def _project_entry(config: Mapping[str, Any], workspace_cwd: str) -> tuple[str, dict[str, Any]]:
     """The project's folder and what Claude Code keeps for it in ``projects``."""
     key = _project_key(workspace_cwd)
-    project = _entry(config, key)
+    # Claude Code NFC-normalizes the folder it starts in before keying the project by it; the key
+    # stays as found for the files read from that folder.
+    project = _entry(config, unicodedata.normalize("NFC", key))
     return key, project if project is not None else {}
 
 
@@ -256,19 +267,21 @@ def _entry(config: Mapping[str, Any], folder: str) -> dict[str, Any] | None:
     projects = config.get("projects")
     if not isinstance(projects, dict):
         return None
-    project = projects.get(folder)
+    # Claude Code writes a Windows key with ``/`` and looks it up exactly, letter case included: after a
+    # folder's case changed, its old key may still be there, ahead of the current one.
+    windows = get_platform().is_windows
+    spelled = folder.replace("\\", "/") if windows else folder
+    project = projects.get(spelled)
+    if project is None and windows:
+        # The drive letter's case follows how each app was started (``c:`` or ``C:``); the rest is the folder's.
+        project = next((value for key, value in projects.items() if _drive_folded(key) == _drive_folded(spelled)), None)
     if project is None:
         project = next((value for key, value in projects.items() if path_matches(key, folder)), None)
     return project if isinstance(project, dict) else None
 
 
-# Stands for every server in ``approved``: ``enableAllProjectMcpServers``. Not a valid server name.
-_ALL = ""
-
-
-def _approved(settings: Mapping[str, Any]) -> set[str]:
-    approved = _mcpjson_names(settings.get("enabledMcpjsonServers"))
-    return approved | {_ALL} if settings.get("enableAllProjectMcpServers") is True else approved
+def _drive_folded(path: str) -> str:
+    return path[0].lower() + path[1:] if path[1:2] == ":" else path
 
 
 def _mcpjson_names(value: object) -> set[str]:
@@ -361,8 +374,7 @@ def _http(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
             values[key] = value
     warnings = [
         ImportWarning(WarningKind.AUTH_HEADERS, tuple(dropped)) if dropped else None,
-        # Claude Code signs in with OAuth whenever the server asks, so warn unless headers authenticate.
-        ImportWarning(WarningKind.AUTH_NOT_IMPORTED) if "oauth" in entry or not values else None,
+        ImportWarning(WarningKind.AUTH_NOT_IMPORTED) if "oauth" in entry else None,
         missing_fields(entry, _HTTP_FIELDS, prefix),
     ]
     return SourceServer(
@@ -370,6 +382,7 @@ def _http(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         path,
         "http",
         url=url,
+        url_path=f"{prefix}.url",
         headers=values,
         timeout_seconds=_timeout(entry),
         warnings=tuple(warning for warning in warnings if warning is not None),

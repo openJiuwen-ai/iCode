@@ -6,15 +6,20 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import sys
+import unicodedata
 from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 
 import pytest
 
+from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.importers.base import (
     MAX_REQUEST_TIMEOUT_SECONDS,
     FieldUse,
+    ImportContext,
     ImportWarning,
     Problem,
     SourceErrorKind,
@@ -30,13 +35,23 @@ from chrys.service.mcp.importers.base import (
     merge_entries,
     merge_warnings,
     parse_json_object,
+    path_matches,
     read_text,
     render,
 )
+from chrys.service.mcp.importers.claude_code import ClaudeCodeSource
+from chrys.service.mcp.importers.codex import CodexSource
+from chrys.service.mcp.importers.opencode import OpenCodeSource
+from chrys.service.mcp.importers.pi import PiSource
+from chrys.service.mcp.owned import MCPTool
+from chrys.service.mcp.validation import MAX_MCP_EXPOSED_TOOL_NAME_LENGTH, build_prefixed_mcp_name, normalize_mcp_name
+from tests.service.mcp._helpers import _FakeConnectionTool, _load_fake_remote_tools, _mcp_remote_tool
 from tests.support.symlinks import symlink_or_skip
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from chrys.service.mcp.importers.base import McpImportSource
 
 
 def _stdio(**fields: object) -> SourceServer:
@@ -210,6 +225,64 @@ def test_convert_refuses_values_icode_cannot_hold(server: SourceServer, problem:
     assert candidate.transport == ("sse" if problem is Problem.UNSUPPORTED_CONNECTION else "")
 
 
+@pytest.mark.parametrize(
+    ("server", "field", "use"),
+    [
+        (SourceServer("s\x1brv", "/cfg.json", "stdio", command="run"), "", FieldUse.NAME),
+        (
+            SourceServer("srv", "/cfg.json", "stdio", command="r\x1b[2Jun", command_path="servers.srv.command"),
+            "servers.srv.command",
+            FieldUse.COMMAND,
+        ),
+        (
+            _stdio(args=("-x", "a\x00b"), arg_paths=("servers.srv.args[0]", "servers.srv.args[1]")),
+            "servers.srv.args[1]",
+            FieldUse.ARGUMENT,
+        ),
+        (_stdio(env={"A\x07": ("v",)}), 'servers.srv.env["A\\u0007"]', FieldUse.ENV_NAME),
+        (_stdio(env={"A": ("a\x9bb",)}), "servers.srv.env.A", FieldUse.ENV_VALUE),
+        (
+            SourceServer("srv", "/cfg.json", "http", url="https://x/\x1b]8;;", url_path="servers.srv.url"),
+            "servers.srv.url",
+            FieldUse.URL,
+        ),
+        (
+            _stdio(allowed_tools=("re\x7fad",), allowed_tools_path="servers.srv.tools"),
+            "servers.srv.tools",
+            FieldUse.VALUE,
+        ),
+    ],
+    ids=["name", "command", "argument", "env-name", "env-value-c1", "url", "tool-name"],
+)
+def test_convert_refuses_control_characters_the_fields_would_draw_raw(
+    server: SourceServer, field: str, use: FieldUse
+) -> None:
+    candidate = convert(server)
+
+    assert (candidate.config, candidate.problem) == (None, Problem.VALUE_NOT_REPRESENTABLE)
+    assert (candidate.problem_field, candidate.reason, candidate.field_use) == (field, ValueReason.CHARACTERS, use)
+
+
+@pytest.mark.parametrize("url", ["https://a\n.example/x", "https://a/\tx", "https://a/\rx"], ids=["lf", "tab", "cr"])
+def test_convert_refuses_a_line_break_or_tab_within_a_url(url: str) -> None:
+    candidate = convert(SourceServer("srv", "/cfg.json", "http", url=url, url_path="servers.srv.url"))
+
+    assert (candidate.config, candidate.problem_field, candidate.reason) == (
+        None,
+        "servers.srv.url",
+        ValueReason.CHARACTERS,
+    )
+
+
+def test_convert_keeps_tabs_and_line_breaks_and_draws_the_description_safely() -> None:
+    candidate = convert(_stdio(args=("a\tb", "line\nbreak"), description="note\x1b[31m\r\nmore\tend"))
+
+    assert candidate.config is not None
+    assert candidate.config.args == ["a\tb", "line\nbreak"]
+    assert "\x1b" not in candidate.config.description and "\r" not in candidate.config.description
+    assert candidate.config.description.endswith("\nmore\tend")
+
+
 def test_convert_trims_header_whitespace_and_ignores_env_of_http_servers() -> None:
     # As fetch trims them, which the other applications send with.
     config = convert(_http(headers={"X": (" v\t",), "Y": ("w\r\n",)}, env={" IGNORED ": ("",)})).config
@@ -346,6 +419,114 @@ def test_names_that_end_up_alike_get_different_prefixes(names: tuple[str, str]) 
     assert len({config.tool_name_prefix for config in configs if config}) == 2
 
 
+@pytest.mark.parametrize(
+    ("fields", "prefix"),
+    [
+        ({"allowed_tools": ("read", "filesystem_read")}, r"files"),
+        ({"allowed_tools": ("files_read",)}, r"files-[0-9a-f]{6}"),
+        ({"progressive": True, "always_load": ("files_read",)}, r"files-[0-9a-f]{6}"),
+        ({"allowed_tools": ("files",)}, r"files-[0-9a-f]{6}"),
+        ({"allowed_tools": ("files_" + "x" * 46,)}, r"file-[0-9a-f]{6}"),
+        ({"allowed_tools": ("x" * 60,)}, r""),
+        # iCode drops the leading ``_`` from the exposed name, so the plain prefix fits.
+        ({"allowed_tools": ("__" + "a" * 58,)}, r"files"),
+    ],
+    ids=[
+        "unrelated-names",
+        "allowed-name-starts-with-prefix",
+        "always-load-only",
+        "allowed-name-is-prefix",
+        "shortened-to-fit-a-long-name",
+        "no-prefix-fits",
+        "leading-underscores-dropped",
+    ],
+)
+def test_a_prefix_never_spells_a_configured_tool_name_and_keeps_it_within_the_limit(
+    fields: dict[str, Any], prefix: str
+) -> None:
+    # iCode would also read the source's remote name ``files_read`` as the prefixed name of a tool ``read``,
+    # and a remote name made only of ``_``/``-`` as the prefix itself.
+    config = convert(SourceServer("files", "/cfg.json", "stdio", command="run", **fields)).config
+
+    assert config is not None
+    assert re.fullmatch(prefix, config.tool_name_prefix)
+    named = (*(config.allowed_tools or ()), *config.always_load)
+    exposed = [build_prefixed_mcp_name(normalize_mcp_name(name), config.tool_name_prefix) for name in named]
+    assert all(len(name) <= MAX_MCP_EXPOSED_TOOL_NAME_LENGTH for name in exposed)
+
+
+def test_a_hashed_prefix_that_spells_a_configured_tool_name_is_replaced() -> None:
+    first = convert(SourceServer("my server", "/c", "stdio", command="run")).config
+    assert first is not None
+    allowed = (f"{first.tool_name_prefix}_read",)
+
+    config = convert(SourceServer("my server", "/c", "stdio", command="run", allowed_tools=allowed)).config
+
+    assert config is not None
+    assert config.tool_name_prefix != first.tool_name_prefix
+    assert re.fullmatch(r"my_server-[0-9a-f]{6}", config.tool_name_prefix)
+
+
+async def test_an_imported_allowlist_connects_with_only_the_remote_tool_it_names() -> None:
+    # A ``files`` server allowing only ``files_read``: its remote ``read`` must not pass as that name.
+    config = convert(SourceServer("files", "/cfg.json", "stdio", command="run", allowed_tools=("files_read",))).config
+    assert config is not None
+    tool = MCPTool(name=config.name, tool_name_prefix=config.tool_name_prefix, allowed_tools=config.allowed_tools)
+    await _load_fake_remote_tools(tool, _mcp_remote_tool("read"), _mcp_remote_tool("files_read"))
+    adapter = MCPAdapter()
+    try:
+        fake = _FakeConnectionTool(functions=tool.functions)
+        with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake):
+            tools = await adapter.connect(config)
+
+        assert [tool.name for tool in tools] == [f"{config.tool_name_prefix}_files_read"]
+    finally:
+        await adapter.disconnect_all()
+
+
+def test_a_stored_path_names_a_folder_only_as_spelled(tmp_path: Path) -> None:
+    folder = str(tmp_path / "caf\u00e9")
+
+    # Claude Code writes Windows keys with ``/``.
+    assert path_matches(folder.replace(os.sep, "/"), folder)
+    # Where the filesystem tells the spellings apart, they are two folders.
+    assert not path_matches(unicodedata.normalize("NFD", folder), folder)
+    # Through a link, ``..`` can lead elsewhere than its lexical collapse.
+    assert not path_matches(str(tmp_path / "other" / ".." / "caf\u00e9"), folder)
+
+
+_RELATIVE_SOURCES = [
+    (ClaudeCodeSource, "CLAUDE_CONFIG_DIR", ".claude.json", '{"mcpServers": {"NAME": {"command": "run"}}}'),
+    (CodexSource, "CODEX_HOME", "config.toml", '[mcp_servers.NAME]\ncommand = "run"\n'),
+    (PiSource, "PI_CODING_AGENT_DIR", "mcp.json", '{"mcpServers": {"NAME": {"command": "run"}}}'),
+    (
+        OpenCodeSource,
+        "XDG_CONFIG_HOME",
+        "opencode/opencode.json",
+        '{"mcp": {"NAME": {"type": "local", "command": ["run"]}}}',
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "variable", "file", "text"), _RELATIVE_SOURCES, ids=["claude-code", "codex", "pi", "opencode"]
+)
+def test_a_relative_folder_variable_is_found_from_the_workspace_never_the_process_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: type[McpImportSource], variable: str, file: str, text: str
+) -> None:
+    for folder in ("process", "ws"):
+        (tmp_path / folder / "rel" / file).parent.mkdir(parents=True)
+        (tmp_path / folder / "rel" / file).write_text(text.replace("NAME", folder), encoding="utf-8")
+    monkeypatch.chdir(tmp_path / "process")
+    ctx = ImportContext(str(tmp_path / "ws"), tmp_path / "home", {variable: "rel"})
+
+    result = source().discover(ctx)
+
+    assert source().detect(ctx)
+    assert [candidate.name for candidate in result.candidates] == ["ws"]
+    assert result.source_errors == ()
+
+
 def test_a_later_same_named_server_replaces_the_whole_earlier_one() -> None:
     low = _stdio(env={"A": ("1",)})
     other = SourceServer("other", "/cfg.json", "stdio", command="x")
@@ -354,13 +535,16 @@ def test_a_later_same_named_server_replaces_the_whole_earlier_one() -> None:
     assert by_name([low, other, high]) == [other, high]
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [("", {}), ("  \n", {}), ('﻿{"a": 1}', {"a": 1})],
-    ids=["empty", "blank", "bom"],
-)
-def test_parse_json_object_reads_blank_and_bom_files(text: str, expected: dict) -> None:
-    assert parse_json_object(text) == expected
+@pytest.mark.parametrize("text", ["", "  \n"], ids=["empty", "blank"])
+def test_parse_json_object_reads_blank_files(text: str) -> None:
+    assert parse_json_object(text) == {}
+
+
+def test_a_bom_left_after_read_text_skipped_one_is_unparsable() -> None:
+    with pytest.raises(SourceReadError) as caught:
+        parse_json_object('\ufeff{"a": 1}')
+
+    assert caught.value.kind is SourceErrorKind.UNPARSABLE
 
 
 def test_parse_json_object_reports_where_it_failed() -> None:
@@ -409,3 +593,27 @@ def test_a_git_file_reaching_the_worktrees_folder_by_another_name_is_not_followe
     # The same worktree, its Git file as Git writes it.
     (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
     assert (linked_common_dir(str(worktree)), main_checkout(str(worktree))) == (str(repo / ".git"), str(repo))
+
+
+@pytest.mark.parametrize("planted", ["oversized", "link", "fifo"])
+def test_a_git_file_git_would_not_write_is_not_followed(tmp_path: Path, planted: str) -> None:
+    repo, worktree = tmp_path / "repo", tmp_path / "wt"
+    admin = repo / ".git" / "worktrees" / "wt"
+    admin.mkdir(parents=True)
+    worktree.mkdir()
+    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+    (admin / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+    pointer = f"gitdir: {admin}\n"
+    if planted == "oversized":
+        # Valid once stripped: only the size limit refuses it.
+        (worktree / ".git").write_text(pointer + " " * (64 * 1024), encoding="utf-8")
+    elif planted == "link":
+        (tmp_path / "pointer").write_text(pointer, encoding="utf-8")
+        symlink_or_skip(worktree / ".git", tmp_path / "pointer")
+    else:
+        if sys.platform == "win32":
+            pytest.skip("FIFOs are POSIX only")
+        # Opened for reading, a FIFO with no writer would block discovery.
+        os.mkfifo(worktree / ".git")
+
+    assert (linked_common_dir(str(worktree)), main_checkout(str(worktree))) == (None, None)

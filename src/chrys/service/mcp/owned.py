@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import re
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from contextlib import AsyncExitStack
@@ -46,6 +45,7 @@ from chrys.service.mcp.result_limits import (
     sanitize_mcp_result_binary,
     truncate_mcp_error,
 )
+from chrys.service.mcp.validation import build_prefixed_mcp_name, normalize_mcp_name
 from chrys.service.trajectory.waits import WaitOutcome, WaitTrace
 
 if TYPE_CHECKING:
@@ -126,23 +126,6 @@ def _get_input_model_from_mcp_prompt(prompt: types.Prompt) -> dict[str, Any]:
     if required:
         schema["required"] = required
     return schema
-
-
-def _normalize_mcp_name(name: str) -> str:
-    # Keep the exposed name portable across model providers. MCP servers may
-    # advertise a broader character set, but OpenAI-compatible function tools
-    # reject periods and other punctuation before the first model response.
-    return re.sub(r"[^A-Za-z0-9_-]", "-", name)
-
-
-def _build_prefixed_mcp_name(normalized_name: str, tool_name_prefix: str | None) -> str:
-    if not tool_name_prefix:
-        return normalized_name
-    normalized_prefix = _normalize_mcp_name(tool_name_prefix).rstrip("_.-")
-    if not normalized_prefix:
-        return normalized_name
-    trimmed_name = normalized_name.lstrip("_.-")
-    return f"{normalized_prefix}_{trimmed_name}" if trimmed_name else normalized_prefix
 
 
 def _normalize_additional_tool_argument_names(
@@ -318,7 +301,7 @@ class MCPTool:
         self.name = name
         self.description = description or ""
         self.allowed_tools = allowed_tools
-        self.tool_name_prefix = _normalize_mcp_name(tool_name_prefix).rstrip("_.-") if tool_name_prefix else None
+        self.tool_name_prefix = normalize_mcp_name(tool_name_prefix).rstrip("_.-") if tool_name_prefix else None
         self.additional_properties = additional_properties
         self.load_tools_flag = load_tools
         self.parse_tool_results = parse_tool_results
@@ -814,10 +797,10 @@ class MCPTool:
             if prompt.name in listed:
                 continue
             listed.add(prompt.name)
-            normalized_name = _normalize_mcp_name(prompt.name)
+            normalized_name = normalize_mcp_name(prompt.name)
             func = FunctionTool(
                 func=partial(self.get_prompt, prompt.name),
-                name=_build_prefixed_mcp_name(normalized_name, self.tool_name_prefix),
+                name=build_prefixed_mcp_name(normalized_name, self.tool_name_prefix),
                 description=prompt.description or "",
                 input_model=_get_input_model_from_mcp_prompt(prompt),
                 additional_properties={
@@ -974,10 +957,10 @@ class MCPTool:
                 set(cast(dict[str, Any], properties)) if isinstance(properties, dict) else set()
             )
 
-            normalized_name = _normalize_mcp_name(tool.name)
+            normalized_name = normalize_mcp_name(tool.name)
             func = FunctionTool(
                 func=self._make_remote_tool_call(tool.name),
-                name=_build_prefixed_mcp_name(normalized_name, self.tool_name_prefix),
+                name=build_prefixed_mcp_name(normalized_name, self.tool_name_prefix),
                 description=tool.description or "",
                 input_model=input_schema,
                 additional_properties={

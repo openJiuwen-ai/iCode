@@ -58,6 +58,8 @@ HTTP redirects must keep the request method and stay on the same origin (scheme,
 
 An STDIO connection starts the specified program on the local machine. If the startup command downloads or runs third-party packages or scripts, confirm that their sources are trustworthy and review the relevant content first.
 
+The program also receives most of the environment variables iCode was started with, such as `PATH`, proxy settings and any tokens set in that terminal. If a server must not see a credential, start iCode without that variable.
+
 #### Choose a working directory
 
 iCode ignores leading and trailing whitespace in this field, including in YAML. A value containing only whitespace is treated as blank.
@@ -93,8 +95,6 @@ The "ChatGPT" import entry reads the local MCP configuration shared by the ChatG
 4. Review the server list in the confirmation window. Click "Import" to confirm, or "Back" to change your selection.
 5. Check the newly added cards, fill in or adjust settings as the warnings suggest, click "Test", then "Save". Importing alone does not connect to a server or save anything.
 
-Cards you have expanded stay open when you switch applications or change the interface language, so you can continue checking them.
-
 The mark after a server's name shows its status and tells you what to check. Servers you cannot select have no checkbox; you can still click their names to expand the cards and read the details.
 
 | Mark | Meaning and action |
@@ -110,21 +110,18 @@ The same HTTP URL, or the same STDIO command and arguments, can trigger "Connect
 
 ### Check before use
 
-- **Server names**: Import removes leading and trailing whitespace from server names before generating the tool name prefix. For example, `" github "` becomes `github` with the prefix `github`. Preview, confirmation and saving use the same name and prefix.
-- **HTTP URLs**: Import removes leading and trailing whitespace from the URL. Spaces within the URL and encoded characters such as `%20` are preserved.
-- **Warnings (⚠)**: Read the warnings in the card's "Description" first. They may ask you to add authentication details or choose tools again. Warnings about specific settings list the original configuration fields before the explanation and instructions, so you can find those settings in the other application's file. Warnings are separated by blank lines; when a warning covers several fields, each field is listed on its own line. Configuration fields not recognized during import are not copied, so check that the features you need are still available. You can delete warnings from "Description" once you have addressed them.
+- **Warnings (⚠)**: Read the warnings in the card's "Description" first. They may ask you to add authentication details or choose tools again, and they name the original settings they concern, so you can find them in the other application's file. Settings that import does not recognize are not copied, so check that the features you need are still available. You can delete the warnings from "Description" once you have dealt with them.
 - **Enabled**: Servers disabled in the other application still have "Enabled" unchecked after import. The same applies to Claude Code project servers you rejected or have not approved yet. To use one, check its settings and select "Enabled".
 - **Scope**: Imported servers are available in every project that uses this agent, even if you originally used them in just one project. For STDIO servers, also check the [working directory](#check-imported-working-directories).
-- **Credentials**: Tokens written directly in the other application's configuration are copied into the agent's file. Sign-in done in the other application, such as OAuth, is not copied. iCode does not yet support MCP OAuth sign-in. If the server supports token authentication, configure “Headers” as its documentation describes; header values can also [come from a command](../configuration/models.md#get-an-api-key-from-a-command). If the server only supports OAuth sign-in, it cannot currently be used in iCode. When importing from Claude Code, headers that reference its authentication variables are not copied, and the card shows a separate warning. If the MCP server requires authentication, configure the required credentials as its documentation describes.
-- **Environment variables**: Imported `{{ENV_VAR}}` references work the same way as manually added ones: they are resolved when you test or load the server, without checking whether the variables are set when you save. A missing or empty variable causes a connection error that names the variable and where it is used. Set the variable and restart iCode, then test again.
+- **Credentials**: For a public HTTP server that allows anonymous access, leave “Headers” blank and click “Test”. Tokens written directly in the original configuration are copied into the agent's file. If you signed in through the other application, that sign-in does not carry over. If the server accepts a token, follow its instructions to set “Headers”. Header values can also [come from a command](../configuration/models.md#get-an-api-key-from-a-command). Servers that require OAuth sign-in cannot currently be used in iCode.
+- **Environment variables**: Imported `{{ENV_VAR}}` references are read when you test or load the server. Unlike some applications, iCode does not fill in a default or an empty value: if a variable is not set or is empty, the connection fails and names the variable. Set it, restart iCode, then test again. If the configuration uses `CLAUDE_PROJECT_DIR`, which Claude Code sets for you, set it yourself before starting iCode.
+- **ChatGPT STDIO servers**: In Codex, an STDIO server sees only a few basic environment variables and those listed in `env_vars`. In iCode it sees most of the variables iCode was started with (see [Connect over STDIO](#connect-over-stdio)), so when you test it or an agent connects to it, it may read credentials Codex kept from it. If that matters, start iCode without those variables.
 - **Available tools**: Check "Available Tool Scope" and select only the tools you need. Settings that apply to all servers in the other application, such as OpenCode's global `tools`, are not imported. If a warning says a tool restriction could not be copied, the server is set to "No tools" until you choose again.
 - **Loading**: If you see a loading warning after importing from Pi, check "Loading Strategy" and "Initially Visible Tools". See [Tool loading](#tool-loading) to choose suitable settings.
-- **Timeouts**: After importing from ChatGPT, "MCP Request Timeout" uses the original tool timeout. iCode requires a timeout greater than `0` seconds, so an original value of `0` is replaced with iCode's default. This setting limits how long both connections and tool calls can wait. If "Test" reports a connection timeout, increase "MCP Request Timeout (seconds)" and retry. Increasing this value also increases the tool call timeout.
+- **Timeouts**: After importing from ChatGPT, "MCP Request Timeout" uses the original tool timeout; an original `0` becomes iCode's default. This setting limits both connecting and tool calls. If "Test" reports a connection timeout, increase "MCP Request Timeout (seconds)" and retry.
 - **Approval**: Approval rules from the other application do not carry over. Imported tools follow iCode's current approval mode and the agent's approval rules. Use `/approval` to choose the current mode; see [approval modes](../configuration/approval.md).
 
-Some applications allow configurations to reference unset environment variables: Claude Code's `${VAR:-default}` can use a default value, OpenCode replaces unset variables with empty strings, and ChatGPT omits headers that reference unset variables. After import, iCode keeps only the variable references and fails to connect if the variables are unset. If the configuration references `CLAUDE_PROJECT_DIR`, which Claude Code provides automatically, set it yourself before starting iCode.
-
-Pi can sign in to HTTP servers with OAuth even when the configuration has no `oauth` setting, so those without an `Authorization` header show a sign-in warning after import. A public server may work without authentication; if yours requires sign-in, configure a supported token before testing.
+If a ChatGPT import lists `scopes` among the settings not imported, these are the permissions Codex would request when signing in. You can still test the connection.
 
 Pi's `~/...` paths in commands and arguments appear as full paths after import. Check that they point to the program and data you want to use.
 
@@ -132,19 +129,13 @@ Pi's `~/...` paths in commands and arguments appear as full paths after import. 
 
 Before saving, make sure "Working Directory" points to the folder the server needs. A blank value uses the current session folder; a relative path such as `tools/mcp` also follows that folder when it changes. To keep using the original folder, the most direct option is to enter its full path without `~` or `..`, for example `/home/me/mcp-server` or `C:\tools\mcp-server`.
 
-After clicking "Test", check the folder and the tools you need as well as the connection result. A successful STDIO report shows "Working directory" below the connection command. On a directory error, look for the path after `Working directory:` in the connection report. Connection errors during agent loading are also available with **F6**. See [Test and save](#test-and-save).
+After clicking "Test", check the "Working directory" shown in the report, as well as the connection result and the tools you need. Connection errors during agent loading are also available with **F6**. See [Test and save](#test-and-save).
 
-#### Working directory compatibility details
+Check these cases in particular:
 
-After importing from ChatGPT, OpenCode V1 or Pi, review the copied path in the card's "Working Directory" field. Check these cases in particular:
-
-- **Paths starting with `~`**: Pi's `~` appears as your home folder after import. ChatGPT and OpenCode V1 paths such as `~/server` appear as `./~/server`, pointing to an ordinary folder named `~`. If you want your home folder instead, enter the intended folder's full path.
-- **OpenCode environment variables**: `{env:VAR}` appears as `{{VAR}}` after import. Set the variable before starting iCode. If its value contains `~`, or uses symbolic links and `..` on macOS or Linux, it may point to a different folder after import; use the intended folder's full path. A path such as `{env:ROOT}/../srv` cannot be imported. Add the server manually with the full path.
-- **Windows paths**: Use a full path such as `C:\tools`. A path such as `C:tools` or `C:` cannot be imported. If you use an environment variable, check that its value is a full path too.
-
-**Take extra care with relative paths imported from ChatGPT.** For example, run `codex -C /project` from `/launch` in Codex CLI. The `-C /project` option sets the project folder to `/project`, but `cwd = "tools"` still starts from the launch folder `/launch`, giving `/launch/tools`.
-
-If the current iCode session's working directory is `/project`, the imported `cwd = "tools"` points to `/project/tools`. To keep running the server in `/launch/tools`, set "Working Directory" to `/launch/tools`. Check `cwd = "."` too: in this example, Codex CLI uses `/launch`, while iCode uses `/project`.
+- **Paths starting with `~`**: From ChatGPT and OpenCode, a path such as `~/server` becomes `./~/server`, a folder named `~` inside the session folder. If you meant your home folder, enter the full path.
+- **OpenCode environment variables**: `{env:VAR}` becomes `{{VAR}}`. Set the variable before starting iCode, and make sure its value is a full path.
+- **Relative paths from ChatGPT**: Codex CLI starts them from the folder you launched it in, even with `-C`; iCode starts them from the session folder. For example, with `codex -C /project` run from `/launch`, `cwd = "tools"` is `/launch/tools` in Codex but `/project/tools` in iCode. To keep the original folder, enter its full path.
 
 ### Where servers are found
 
@@ -168,7 +159,7 @@ Servers that are not saved in the files above and are provided dynamically only 
 
 ### When a server cannot be imported
 
-Expand a server marked "Can't import" and read "Notes" for the reason. For issues with specific settings, it lists the original configuration field's location before the explanation and instructions, with the configuration source below. Some configurations are valid but cannot be preserved as written in iCode. Use this table to decide what to do.
+Expand a server marked "Can't import" and read "Notes" for the reason and the original setting it concerns. Some configurations are valid in the other application but cannot be kept as written in iCode. Use this table to decide what to do.
 
 | Cause | What to do |
 | --- | --- |
@@ -177,13 +168,14 @@ Expand a server marked "Can't import" and read "Notes" for the reason. For issue
 | A file reference in a setting, such as OpenCode's `{file:...}` | Add the server manually and fill in the needed content. Environment variable values and header values can also [come from a command](../configuration/models.md#get-an-api-key-from-a-command) or reference an environment variable with `{{ENV_VAR}}`. Working Directory supports only a path or an environment variable reference. |
 | A value Pi gets by running a command (starting with `!`) | Add the server manually and [get the value from a command](../configuration/models.md#get-an-api-key-from-a-command) in iCode, or enter it directly. |
 | A missing value | Fill in the required content and reopen import, or add the server manually. |
-| A working directory or environment variable value with leading or trailing whitespace | iCode trims whitespace from working directories, and the configuration editor trims it from environment variable values, so these settings cannot be imported as written. These characters may be part of the path or value; check their purpose before changing them. |
-| An empty environment variable name, or one with leading or trailing whitespace | The editor cannot preserve this name as written, so the server cannot be imported. The setting path shows the name in quotes, with tabs and other invisible whitespace escaped. |
-| Incompatible line endings in a startup command or argument | This server configuration cannot be imported unchanged. For example, a single argument value may mix CR, LF and CRLF, or different argument values may use different line endings. Import is supported when the startup command and all argument values use the same line ending: LF, CRLF or CR. **Note:** This restriction applies only to line breaks within the startup command and argument values; it does not affect the configuration file's own line endings. |
+| A working directory or environment variable value with spaces at the start or end | iCode cannot keep these spaces. Check whether the path or value needs them; if not, remove them in the original configuration and reopen import. |
+| An empty environment variable name, or one with spaces at the start or end | Correct the name in the original configuration, then reopen import. |
+| Different kinds of line breaks (CR, LF, CRLF) inside a startup command or its arguments | Use one kind of line break throughout the startup command and its arguments, then reopen import. |
 | A tool list with empty entries, duplicate names, spaces around names, or a comma within a name | Remove empty entries and duplicates and trim spaces around names in the original configuration, then import again. Lists containing a tool name with a comma cannot currently be imported. |
 | A ChatGPT working directory written as `cwd = ""` | Remove that line to use the session folder, or fill in the folder the server needs, then import again. |
-| An OpenCode Working Directory combining an environment variable and `..`, such as `{env:ROOT}/../srv` | Add the server manually with the intended folder's full path, without `~` or `..`, to avoid using a different folder. |
+| An OpenCode Working Directory combining an environment variable and `..`, such as `{env:ROOT}/../srv` | Add the server manually with the intended folder's full path. |
 | A Windows working directory written as `C:tools` or `C:` | Use a full path such as `C:\tools`, with a slash after the drive letter's colon. |
+| A name, startup command, argument, URL, environment variable or tool name containing invisible control characters | Remove those characters from the original configuration file, then reopen import. |
 | A Working Directory containing line breaks or invisible special characters | Retype the folder path in the original configuration file, then reopen import, or add the server manually and enter the path. |
 | An incorrect header name, a value containing unsupported characters such as Chinese text or line breaks, or different values entered for the same header | Check the headers in the original configuration file against the server instructions, then reopen import. Keep one entry per header; names that differ only in case count as the same name. |
 

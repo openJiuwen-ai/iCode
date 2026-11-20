@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import json
+import os
+import unicodedata
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind
+from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind, claude_code
 from chrys.service.mcp.importers import WarningKind as Kind
 from chrys.service.mcp.importers.claude_code import ClaudeCodeSource
 from tests.support.symlinks import symlink_or_skip
@@ -89,8 +92,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
             {"command": "run", "alwaysLoad": True, "cwd": "/x"},
             (ImportWarning(Kind.NOT_IMPORTED, ("mcpServers.srv.cwd",)),),
         ),
-        # Claude Code signs in with OAuth whenever such a server asks.
-        ({"type": "http", "url": "https://x"}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),)),
+        ({"type": "http", "url": "https://x"}, ()),
     ],
     ids=["required-variables", "auth-and-helper", "credential-header", "unknown-field", "no-headers"],
 )
@@ -312,6 +314,51 @@ def test_trust_kept_under_another_path_to_the_project_does_not_count(tmp_path: P
     assert candidate.config.enabled is False
 
 
+@pytest.mark.parametrize("spelling", ["exact", "other-unicode-form"])
+def test_trust_kept_under_another_unicode_spelling_does_not_count(tmp_path: Path, spelling: str) -> None:
+    home, repo = tmp_path / "home", tmp_path / "caf\u00e9"
+    (repo / ".git").mkdir(parents=True)
+    # Where the filesystem tells the spellings apart, the other one is another folder.
+    key = str(repo) if spelling == "exact" else unicodedata.normalize("NFD", str(repo))
+    _write(home / ".claude.json", {"projects": {key: {"hasTrustDialogAccepted": True}}})
+    _write(repo / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}}})
+    _write(repo / ".claude" / "settings.json", {"enabledMcpjsonServers": ["srv"]})
+
+    (candidate,) = _discover(home, repo).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.enabled is (spelling == "exact")
+
+
+def test_a_decomposed_folder_name_is_looked_up_in_the_nfc_form_claude_code_keys_it_by(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", tmp_path / unicodedata.normalize("NFD", "caf\u00e9")
+    (repo / ".git").mkdir(parents=True)
+    # Claude Code NFC-normalizes the folder it starts in, on every platform, before keying the project.
+    key = unicodedata.normalize("NFC", os.path.realpath(repo))
+    _write(
+        home / ".claude.json",
+        {"mcpServers": {"user": {"command": "run"}}, "projects": {key: {"disabledMcpServers": ["user"]}}},
+    )
+
+    (candidate,) = _discover(home, repo).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.enabled is False
+
+
+@pytest.mark.parametrize("drive", ["C", "c"], ids=["same-drive-case", "other-drive-case"])
+def test_on_windows_the_key_spelled_as_claude_code_writes_it_wins_over_another_case(
+    monkeypatch: pytest.MonkeyPatch, drive: str
+) -> None:
+    monkeypatch.setattr(claude_code, "get_platform", lambda: SimpleNamespace(is_windows=True))
+    # The folder was renamed from ``Repo`` to ``repo``; Claude Code kept the old key, ahead of the new one,
+    # with the drive letter as Claude Code was started.
+    old, current = f"{drive}:/Work/Repo", f"{drive}:/Work/repo"
+    config = {"projects": {old: {"disabledMcpServers": []}, current: {"disabledMcpServers": ["a"]}}}
+
+    assert claude_code._entry(config, "C:\\Work\\repo") == {"disabledMcpServers": ["a"]}
+
+
 def test_an_untrusted_repository_cannot_approve_all_its_servers(tmp_path: Path) -> None:
     home, repo = tmp_path / "home", tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
@@ -322,6 +369,17 @@ def test_an_untrusted_repository_cannot_approve_all_its_servers(tmp_path: Path) 
 
     assert candidate.config is not None
     assert candidate.config.enabled is False
+
+
+def test_an_empty_approved_name_does_not_approve_every_server(tmp_path: Path) -> None:
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _write(repo / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}, "ok": {"command": "run"}}})
+    _write(home / ".claude" / "settings.json", {"enabledMcpjsonServers": ["", "ok"]})
+
+    enabled = {c.name: c.config.enabled for c in _discover(home, repo).candidates if c.config}
+
+    assert enabled == {"srv": False, "ok": True}
 
 
 def _linked_worktree(main: Path, worktree: Path, *, backlink: Path | None = None) -> None:

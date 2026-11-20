@@ -47,6 +47,13 @@ def test_jsonc_comments_and_trailing_commas_are_read_but_strings_are_kept() -> N
     assert strip_jsonc(text).count("\n") == text.count("\n")
 
 
+def test_a_line_comment_ends_at_a_carriage_return() -> None:
+    text = '{\r  // note\r  "a": 1\r}'
+
+    assert json.loads(strip_jsonc(text)) == {"a": 1}
+    assert strip_jsonc(text).count("\r") == text.count("\r")
+
+
 @pytest.mark.parametrize("text", ['{"a": 1} /* note', "{} /*/"], ids=["unclosed", "slash-star-slash"])
 def test_an_unclosed_block_comment_is_unparsable(text: str) -> None:
     with pytest.raises(SourceReadError) as caught:
@@ -109,8 +116,7 @@ def test_the_experimental_timeout_applies_to_servers_without_their_own(tmp_path:
     ("entry", "warnings"),
     [
         ({"type": "remote", "url": "https://x", "oauth": {}}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),)),
-        # opencode signs in with OAuth whenever the server asks, unless told not to.
-        ({"type": "remote", "url": "https://x"}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),)),
+        ({"type": "remote", "url": "https://x"}, ()),
         ({"type": "remote", "url": "https://x", "oauth": False}, ()),
         (
             {"type": "local", "command": ["run"], "cwd": "/x"},
@@ -125,7 +131,7 @@ def test_the_experimental_timeout_applies_to_servers_without_their_own(tmp_path:
             (),
         ),
     ],
-    ids=["oauth", "oauth-by-default", "oauth-off", "cwd-imported", "environment-variables", "header-variable"],
+    ids=["oauth", "no-auth-settings", "oauth-off", "cwd-imported", "environment-variables", "header-variable"],
 )
 def test_what_the_import_leaves_out_is_reported(
     tmp_path: Path, entry: dict[str, Any], warnings: tuple[ImportWarning, ...]
@@ -208,10 +214,12 @@ def test_every_folder_from_the_git_root_down_to_the_workspace_is_read(tmp_path: 
     remote = {"type": "remote", "headers": {"X": "1"}}
     _write(_global(home), {"mcp": {"api": {**remote, "url": "https://prod"}, "b": {**remote, "url": "https://g"}}})
     _write(tmp_path / "opencode.json", {"mcp": {"above": {**remote, "url": "https://above"}}})
-    _write(repo / "a" / "opencode.json", {"mcp": {"api": {"url": "https://dev"}}})
+    _write(repo / "a" / "opencode.json", {"mcp": {"api": {"type": "remote", "url": "https://dev"}}})
     # .opencode folders are read nearest first, so the one higher up wins, as in opencode.
-    _write(repo / ".opencode" / "opencode.json", {"mcp": {"b": {"url": "https://root-folder"}}})
-    _write(workspace / ".opencode" / "opencode.json", {"mcp": {"b": {"url": "https://workspace-folder"}}})
+    _write(repo / ".opencode" / "opencode.json", {"mcp": {"b": {"type": "remote", "url": "https://root-folder"}}})
+    _write(
+        workspace / ".opencode" / "opencode.json", {"mcp": {"b": {"type": "remote", "url": "https://workspace-folder"}}}
+    )
 
     urls = {c.name: c.config.url for c in _discover(home, workspace).candidates if c.config}
 
@@ -280,6 +288,57 @@ def test_later_files_merge_into_same_named_servers(tmp_path: Path) -> None:
     assert not off.enabled
     assert candidates["off"].source_path == str(_global(home))
     assert "unknown" not in candidates
+
+
+def test_an_entry_without_a_type_only_switches_the_server_on_or_off(tmp_path: Path) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "ws"
+    remote = {"type": "remote", "url": "https://real", "headers": {"Authorization": "Bearer {env:KEY}"}}
+    _write(_global(home), {"mcp": {"srv": {**remote, "enabled": False}, "api": remote}})
+    # opencode reads an entry without a type as its enabled switch alone, and refuses one without it.
+    project = {"srv": {"url": "https://elsewhere", "enabled": True}, "api": {"url": "https://elsewhere"}}
+    _write(workspace / "opencode.json", {"mcp": project})
+
+    result = _discover(home, workspace)
+
+    found = {c.name: c for c in result.candidates}
+    srv, api = found["srv"].config, found["api"].config
+    assert srv is not None and api is not None
+    assert (srv.url, srv.enabled, found["srv"].source_path) == ("https://real", True, str(_global(home)))
+    assert (api.url, api.enabled, found["api"].source_path) == ("https://real", True, str(_global(home)))
+    assert [(e.path, e.kind, e.field) for e in result.source_errors] == [
+        (str(workspace / "opencode.json"), SourceErrorKind.INVALID, "mcp.api")
+    ]
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        {"type": "local", "environment": {"NODE_OPTIONS": "--require ./x.js"}},
+        {"type": "local", "command": ["other"], "timeout": "slow"},
+        {"type": "local", "command": ["other"], "environment": {"N": 1}},
+        {"type": "remote", "headers": {"X": "1"}},
+        {"type": "sse", "url": "https://elsewhere"},
+    ],
+    ids=["no-command", "invalid-timeout", "invalid-environment", "no-url", "unknown-type"],
+)
+@pytest.mark.parametrize("enabled", [None, True])
+def test_an_entry_that_is_no_whole_server_in_its_own_file_is_not_merged(
+    tmp_path: Path, partial: dict[str, Any], enabled: bool | None
+) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "ws"
+    _write(_global(home), {"mcp": {"srv": {"type": "local", "command": ["node", "srv.js"], "enabled": False}}})
+    entry = partial if enabled is None else {**partial, "enabled": enabled}
+    _write(workspace / "opencode.json", {"mcp": {"srv": entry}})
+
+    result = _discover(home, workspace)
+
+    # As opencode decodes each file: a failed server falls back to its enabled switch, else the file is invalid.
+    (candidate,) = result.candidates
+    assert candidate.config is not None
+    assert (candidate.config.command, candidate.config.args, candidate.config.env) == ("node", ["srv.js"], {})
+    assert (candidate.config.enabled, candidate.source_path) == (enabled is True, str(_global(home)))
+    errors = [(e.path, e.kind, e.field) for e in result.source_errors]
+    assert errors == ([] if enabled else [(str(workspace / "opencode.json"), SourceErrorKind.INVALID, "mcp.srv")])
 
 
 def test_the_last_experimental_timeout_applies_to_servers_from_every_file(tmp_path: Path) -> None:

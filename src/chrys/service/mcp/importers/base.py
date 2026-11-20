@@ -14,6 +14,7 @@ Results carry codes, never prose, so the UI localizes them.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import ntpath
@@ -27,18 +28,22 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from chrys.foundation.i18n.formatting import sanitize_terminal_block
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import secure_open_regular_binary
 from chrys.foundation.util.header_charset import header_name_charset_error, header_value_charset_error
 from chrys.service.mcp.validation import (
+    MAX_MCP_EXPOSED_TOOL_NAME_LENGTH,
     MCP_PROGRESSIVE_CONTROL_TOOL_NAMES,
+    build_prefixed_mcp_name,
     is_windows_drive_relative_path,
+    normalize_mcp_name,
     validate_mcp_tool_name_prefix,
 )
 from chrys.service.profiles.agents.schema import MCPServerConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 # Generous: an application's config file may also hold per-project state. It only stops an
 # unbounded read of something that is not a config file.
@@ -194,6 +199,7 @@ class SourceServer:
     always_load_path: str = ""
     command_path: str = ""
     arg_paths: tuple[str, ...] = ()
+    url_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,10 +294,14 @@ def read_text(path: Path) -> str | None:
         raise SourceReadError(SourceErrorKind.UNPARSABLE) from exc
 
 
-def parse_json_object(text: str) -> dict[str, Any]:
-    """The JSON object *text* holds; a blank file holds nothing. Raises :class:`SourceReadError` otherwise."""
-    text = text.removeprefix("\ufeff")
-    if not text.strip():
+def parse_json_object(text: str, *, strict: bool = False) -> dict[str, Any]:
+    """The JSON object *text* holds; a blank file holds nothing. Raises :class:`SourceReadError` otherwise.
+
+    *text* comes from :func:`read_text`, which skipped one leading BOM: like the source
+    applications, a second one is not skipped. *strict* parses as ``JSON.parse`` does, to which
+    a blank file is no JSON.
+    """
+    if not text.strip() and not strict:
         return {}
     try:
         document = json.loads(text)
@@ -304,9 +314,9 @@ def parse_json_object(text: str) -> dict[str, Any]:
     return document
 
 
-def read_json_object(path: Path) -> dict[str, Any] | None:
+def read_json_object(path: Path, *, strict: bool = False) -> dict[str, Any] | None:
     text = read_text(path)
-    return None if text is None else parse_json_object(text)
+    return None if text is None else parse_json_object(text, strict=strict)
 
 
 def git_root(path: str) -> str | None:
@@ -353,12 +363,17 @@ _MAX_GIT_POINTER_BYTES = 64 * 1024
 
 
 def _git_pointer(path: str) -> str | None:
-    """The stripped text of a small regular file Git writes (not a link), else ``None``."""
+    """The stripped text of a small regular file Git writes (not a link), else ``None``.
+
+    Checked and read through one handle, so a file swapped in between can't be read instead,
+    and a FIFO can't block discovery.
+    """
     try:
-        if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > _MAX_GIT_POINTER_BYTES:
+        with secure_open_regular_binary(Path(path)) as handle:
+            raw = handle.read(_MAX_GIT_POINTER_BYTES + 1)
+        if len(raw) > _MAX_GIT_POINTER_BYTES:
             return None
-        with open(path, encoding="utf-8") as handle:
-            return handle.read().strip() or None
+        return raw.decode("utf-8").strip() or None
     except OSError, UnicodeDecodeError, ValueError:
         return None
 
@@ -449,7 +464,16 @@ def path_matches(key: str, folder: str) -> bool:
 
 
 def _path_key(path: str) -> str:
-    return os.path.normcase(unicodedata.normalize("NFC", os.path.normpath(path)))
+    # Only what Windows itself ignores: letter case and ``/`` for ``\`` (Claude Code writes Windows keys
+    # with ``/``). Nothing else is rewritten: no ``..`` collapsed, which could name another folder, and
+    # no Unicode normalization, since where the filesystem tells the spellings apart they are two folders.
+    return os.path.normcase(path)
+
+
+def located(path: str, ctx: ImportContext) -> Path:
+    """*path* from a variable, as the application started in the workspace finds it."""
+    found = Path(path)
+    return Path(ctx.workspace_cwd) / found if ctx.workspace_cwd and not found.is_absolute() else found
 
 
 def by_name(servers: Iterable[SourceServer]) -> list[SourceServer]:
@@ -527,6 +551,15 @@ def _unsafe_cwd(text: str) -> bool:
     )
 
 
+def _has_controls(text: str, *, allowed: str = "\t\n\r") -> bool:
+    """Whether *text* holds a control character other than those *allowed* (by default tabs and line breaks).
+
+    The configuration fields draw their values on the terminal as written, so
+    these would reach it raw; none can be typed into a field either.
+    """
+    return any(char not in allowed and unicodedata.category(char) == "Cc" for char in text)
+
+
 def lexical_cwd(text: str) -> str:
     """Normalize a static Node path.resolve input without binding it to an import-time folder.
 
@@ -567,6 +600,9 @@ def convert(server: SourceServer) -> McpImportCandidate:
         return replace(refuse(Problem.UNSUPPORTED_CONNECTION), transport=server.transport)
     if server.blocked_field:
         return refuse(server.blocked_problem, server.blocked_field, server.blocked_reason, server.blocked_use)
+    characters = ValueReason.CHARACTERS
+    if _has_controls(server.name):
+        return refuse(Problem.VALUE_NOT_REPRESENTABLE, "", characters, FieldUse.NAME)
     if server.transport == "stdio":
         changed = _changed_command_part((server.command, *server.args))
         if changed is not None:
@@ -575,6 +611,12 @@ def convert(server: SourceServer) -> McpImportCandidate:
                 path = server.arg_paths[changed - 1] if server.arg_paths else ""
             use = FieldUse.COMMAND if changed == 0 else FieldUse.ARGUMENT
             return refuse(Problem.VALUE_NOT_REPRESENTABLE, path, ValueReason.LINE_ENDINGS, use)
+        if _has_controls(server.command):
+            return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.command_path, characters, FieldUse.COMMAND)
+        for index, arg in enumerate(server.args):
+            if _has_controls(arg):
+                path = server.arg_paths[index] if index < len(server.arg_paths) else ""
+                return refuse(Problem.VALUE_NOT_REPRESENTABLE, path, characters, FieldUse.ARGUMENT)
     for names, path in (
         (server.allowed_tools, server.allowed_tools_path),
         (server.always_load, server.always_load_path),
@@ -585,6 +627,8 @@ def convert(server: SourceServer) -> McpImportCandidate:
         for name in names:
             if not name.strip() or name != name.strip() or "," in name:
                 return refuse(Problem.VALUE_NOT_REPRESENTABLE, path, value_reason(name))
+            if _has_controls(name):
+                return refuse(Problem.VALUE_NOT_REPRESENTABLE, path, characters)
         if len(set(names)) != len(names):
             return refuse(Problem.VALUE_NOT_REPRESENTABLE, path)
     stdio = server.transport == "stdio"
@@ -602,7 +646,7 @@ def convert(server: SourceServer) -> McpImportCandidate:
             cwd = text
         for key, value in server.env.items():
             # The editor strips names too; refuse rather than rename a variable.
-            if not key.strip() or key != key.strip():
+            if not key.strip() or key != key.strip() or _has_controls(key):
                 return refuse(
                     Problem.VALUE_NOT_REPRESENTABLE,
                     f"{server.env_path}[{json.dumps(key)}]",
@@ -611,12 +655,15 @@ def convert(server: SourceServer) -> McpImportCandidate:
                 )
             text = render(value)
             # The configuration editor trims values and refuses empty ones.
-            if text is None or not text.strip() or text != text.strip():
+            if text is None or not text.strip() or text != text.strip() or _has_controls(text):
                 return refuse(
                     Problem.VALUE_NOT_REPRESENTABLE, f"{server.env_path}.{key}", value_reason(text), FieldUse.ENV_VALUE
                 )
             env[key] = text
     else:
+        # A one-line field: its surrounding whitespace is trimmed below, but nothing within may break the line.
+        if _has_controls(server.url.strip(), allowed=""):
+            return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.url_path, characters, FieldUse.URL)
         for key, value in server.headers.items():
             text = render(value)
             if text is not None:
@@ -639,7 +686,8 @@ def convert(server: SourceServer) -> McpImportCandidate:
         url="" if stdio else _URL_SCHEME_RE.sub(lambda m: m[0].lower(), server.url.strip(), count=1),
         headers=headers,
         enabled=server.enabled,
-        description=server.description,
+        # Shown, never run: drawn safely rather than refusing the server for it.
+        description=sanitize_terminal_block(server.description),
         allowed_tools=None if server.allowed_tools is None else list(server.allowed_tools),
         use_progressive_disclosure=server.progressive,
         always_load=list(server.always_load),
@@ -759,15 +807,48 @@ def with_tool_name_prefix(config: MCPServerConfig) -> MCPServerConfig:
     the clash. A name that can't be used as it is (characters replaced or
     trimmed, or too long) gets a hash of the name, so two names that end up
     alike still differ. A prefix iCode would refuse is not set.
+
+    iCode matches a configured tool name against both a tool's remote name and
+    its prefixed name, while the source's names are remote ones: a prefix that
+    could spell one of them as a prefixed name would select another tool, so
+    the next candidate is taken. A prefix is also kept short enough that each
+    named tool's prefixed name fits iCode's limit; when none can be, the
+    server gets no prefix.
     """
     if config.tool_name_prefix:
         return config
-    prefix = _TOOL_NAME_UNSAFE_RE.sub("_", config.name).strip("_-")
-    if prefix != config.name or len(prefix) > _MAX_PREFIX_LENGTH:
-        digest = hashlib.sha256(config.name.encode("utf-8", "surrogatepass")).hexdigest()[:_HASH_LENGTH]
-        prefix = prefix[: _MAX_PREFIX_LENGTH - _HASH_LENGTH - 1].rstrip("_-")
-        prefix = f"{prefix}-{digest}" if prefix else f"mcp_{digest}"
+    configured = (*(config.allowed_tools or ()), *config.always_load)
+    # What each named tool adds to a prefix in its exposed name, by iCode's own rule.
+    added = (len(build_prefixed_mcp_name(normalize_mcp_name(name), "x")) - 1 for name in configured)
+    limit = min((MAX_MCP_EXPOSED_TOOL_NAME_LENGTH - length for length in added), default=_MAX_PREFIX_LENGTH)
+    prefix = next(
+        (
+            candidate
+            for candidate in _prefix_candidates(config.name, min(limit, _MAX_PREFIX_LENGTH))
+            if not any(name == candidate or name.startswith(f"{candidate}_") for name in configured)
+        ),
+        None,
+    )
+    if prefix is None:
+        return config
     generated = MCP_PROGRESSIVE_CONTROL_TOOL_NAMES if config.use_progressive_disclosure else ()
     if validate_mcp_tool_name_prefix(prefix, generated_suffixes=generated) is not None:
         return config
     return replace(config, tool_name_prefix=prefix)
+
+
+def _prefix_candidates(name: str, limit: int) -> Iterator[str]:
+    """The prefixes of at most *limit* characters for server *name*, in the order tried.
+
+    The name itself when usable, then hashed ones; none when even a hashed one is too long.
+    """
+    prefix = _TOOL_NAME_UNSAFE_RE.sub("_", name).strip("_-")
+    if prefix == name and len(prefix) <= limit:
+        yield prefix
+    stem = prefix[: max(limit - _HASH_LENGTH - 1, 0)].rstrip("_-")
+    if not stem and limit < len("mcp_") + _HASH_LENGTH:
+        return
+    for attempt in itertools.count():
+        salted = name if attempt == 0 else f"{name}\0{attempt}"
+        digest = hashlib.sha256(salted.encode("utf-8", "surrogatepass")).hexdigest()[:_HASH_LENGTH]
+        yield f"{stem}-{digest}" if stem else f"mcp_{digest}"

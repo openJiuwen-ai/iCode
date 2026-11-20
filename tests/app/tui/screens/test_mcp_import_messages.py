@@ -241,7 +241,7 @@ def test_unknown_settings_name_the_location_without_promising_support(tmp_path, 
 @pytest.mark.parametrize("locale", ["en", "zh-Hans"])
 def test_oauth_advice_is_conditional_and_survives_import(tmp_path, source, locale) -> None:
     entry = (
-        'url = "https://example.com"\n'
+        'url = "https://example.com"\nauth = "oauth"\n'
         if source == "codex"
         else {
             "url": "https://example.com",

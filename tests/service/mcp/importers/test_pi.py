@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -13,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from chrys.foundation.util.env_templates import resolve_env_templates
-from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind, pi
+from chrys.service.mcp.importers import ImportContext, ImportWarning, McpSourceError, Problem, SourceErrorKind, pi
 from chrys.service.mcp.importers import WarningKind as Kind
 from chrys.service.mcp.importers.pi import PiSource
 from tests.support.symlinks import symlink_or_skip
@@ -129,12 +130,6 @@ def test_what_the_import_changes_is_reported(
     assert candidate.config.allowed_tools == allowed
 
 
-def test_oauth_metadata_beside_an_authorization_header_needs_no_warning(tmp_path: Path) -> None:
-    candidate = _only(tmp_path, {"url": "https://x", "oauth": {}, "headers": {"authorization": "Bearer $T"}})
-
-    assert candidate.warnings == ()
-
-
 def test_http_cwd_is_reported_as_not_imported(tmp_path: Path) -> None:
     candidate = _only(tmp_path, {"url": "https://x", "cwd": "/unused", "headers": {"Authorization": "token"}})
     assert candidate.config is not None
@@ -243,6 +238,109 @@ def test_the_project_file_is_read_only_once_the_user_trusts_it(
     commands = {c.name: c.config.command for c in _discover(home, workspace).candidates if c.config}
 
     assert commands == ({"a": "project", "b": "run"} if read else {"a": "global"})
+
+
+@pytest.mark.parametrize(
+    "store",
+    ["{not json", "[]", "", " \n", "\ufeff", "\ufeff\ufeff{}"],
+    ids=["unparsable", "not-an-object", "empty", "blank", "only-a-bom", "two-boms"],
+)
+def test_a_trust_store_that_cannot_be_read_trusts_no_project(tmp_path: Path, store: str) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "ws"
+    (home / ".pi" / "agent").mkdir(parents=True)
+    (home / ".pi" / "agent" / "trust.json").write_text(store, encoding="utf-8")
+    _write(home / ".pi" / "agent" / "settings.json", {"defaultProjectTrust": "always"})
+    _write(_global(home), {"mcpServers": {"a": {"command": "global"}}})
+    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"a": {"command": "project"}, "b": {"command": "run"}}})
+
+    result = _discover(home, workspace)
+
+    assert {c.name: c.config.command for c in result.candidates if c.config} == {"a": "global"}
+    assert [e.path for e in result.source_errors] == [str(home / ".pi" / "agent" / "trust.json")]
+
+
+def _project_read(home: Path, workspace: Path, trust: dict[str, object]) -> bool:
+    _write(home / ".pi" / "agent" / "trust.json", trust)
+    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"b": {"command": "run"}}})
+    return [c.name for c in _discover(home, workspace).candidates] == ["b"]
+
+
+def test_a_trust_store_is_read_past_one_bom(tmp_path: Path) -> None:
+    # Pi skips one BOM; a second is refused (``two-boms`` above).
+    home, workspace = tmp_path / "home", tmp_path / "ws"
+    (home / ".pi" / "agent").mkdir(parents=True)
+    trust = "\ufeff" + json.dumps({os.path.realpath(tmp_path) + os.sep + "ws": True})
+    (home / ".pi" / "agent" / "trust.json").write_text(trust, encoding="utf-8")
+    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"b": {"command": "run"}}})
+
+    assert [c.name for c in _discover(home, workspace).candidates] == ["b"]
+
+
+def test_a_missing_trust_store_leaves_the_decision_to_the_default(tmp_path: Path) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "ws"
+    _write(home / ".pi" / "agent" / "settings.json", {"defaultProjectTrust": "always"})
+    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"b": {"command": "run"}}})
+
+    result = _discover(home, workspace)
+
+    assert [c.name for c in result.candidates] == ["b"]
+    assert result.source_errors == ()
+
+
+def test_a_value_pi_refuses_in_the_trust_store_trusts_no_project_and_is_reported(tmp_path: Path) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "ws"
+    store = home / ".pi" / "agent" / "trust.json"
+    _write(store, {str(workspace): True, "other": 1})
+    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"b": {"command": "run"}}})
+
+    result = _discover(home, workspace)
+
+    assert result.candidates == ()
+    assert result.source_errors == (McpSourceError(str(store), SourceErrorKind.INVALID, field="other"),)
+
+
+@pytest.mark.parametrize(
+    ("entries", "read"),
+    [
+        ([("exact", True)], True),
+        ([("other-unicode-form", True)], False),
+        ([("other-unicode-form", True), ("exact", False)], False),
+        ([("exact", False), ("parent", True)], False),
+        ([("parent", True), ("exact", False)], False),
+    ],
+    ids=[
+        "exact",
+        "other-unicode-form",
+        "other-form-listed-first",
+        "denial-listed-first",
+        "parent-listed-first",
+    ],
+)
+def test_trust_is_looked_up_by_the_workspace_path_pi_computes(
+    tmp_path: Path, entries: list[tuple[str, bool]], read: bool
+) -> None:
+    workspace = tmp_path / "parent" / "caf\u00e9"
+    workspace.mkdir(parents=True)
+    real = os.path.realpath(workspace)
+    keys = {
+        "exact": real,
+        "other-unicode-form": unicodedata.normalize("NFD", real),
+        "parent": os.path.dirname(real),
+    }
+
+    assert _project_read(tmp_path / "home", workspace, {keys[key]: value for key, value in entries}) is read
+
+
+@pytest.mark.parametrize("first", [True, False])
+def test_on_windows_the_first_of_keys_differing_in_case_decides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: bool
+) -> None:
+    monkeypatch.setattr(pi, "get_platform", lambda: SimpleNamespace(is_windows=True))
+    workspace = tmp_path / "Ws"
+    workspace.mkdir()
+    real = os.path.realpath(workspace)
+
+    assert _project_read(tmp_path / "home", workspace, {real.upper(): first, real.lower(): not first}) is first
 
 
 def test_an_http_server_ignores_settings_only_a_command_reads(tmp_path: Path) -> None:
@@ -427,15 +525,13 @@ def test_valid_but_unrepresentable_project_entries_still_replace_global_servers(
 @pytest.mark.parametrize(
     ("fields", "warn"),
     [
-        ({}, True),
-        ({"headers": {"X-Client": "Pi"}}, True),
-        ({"headers": {"Authorization": "token"}}, False),
-        ({"headers": {"aUtHoRiZaTiOn": "token"}}, False),
-        ({"oauth": {}, "headers": {"authorization": "token"}}, False),
+        ({}, False),
+        ({"headers": {"X-Client": "Pi"}}, False),
+        ({"oauth": {}, "headers": {"aUtHoRiZaTiOn": "Bearer $T"}}, False),
         ({"auth": {"provider": "github"}, "headers": {"Authorization": "token"}}, True),
     ],
 )
-def test_authentication_warnings_follow_pi_defaults(tmp_path: Path, fields: dict[str, Any], warn: bool) -> None:
+def test_authentication_warnings_follow_explicit_settings(tmp_path: Path, fields: dict[str, Any], warn: bool) -> None:
     candidate = _only(tmp_path, {"url": "https://x", **fields})
 
     assert candidate.config is not None

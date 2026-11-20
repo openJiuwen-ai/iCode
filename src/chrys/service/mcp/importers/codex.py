@@ -3,7 +3,8 @@
 """Import MCP servers configured in Codex.
 
 Read (https://developers.openai.com/codex/mcp), lowest precedence first:
-``config.toml`` in ``$CODEX_HOME`` (default ``~/.codex``), then
+``config.toml`` in ``$CODEX_HOME`` (default ``~/.codex``; a relative folder is
+found from the workspace), then
 ``.codex/config.toml`` in every folder from the project root (the nearest
 folder holding one of ``project_root_markers``, default ``.git``) down to the
 workspace. As in Codex, a project file is read only from a folder the user
@@ -78,6 +79,7 @@ from chrys.service.mcp.importers.base import (
     is_str_list,
     is_str_mapping,
     literal,
+    located,
     main_checkout,
     merge_entries,
     missing_fields,
@@ -157,10 +159,9 @@ class CodexSource:
 
 
 def _user_file(ctx: ImportContext) -> Path:
-    home = Path(ctx.environ.get("CODEX_HOME") or ctx.home / ".codex")
-    if not home.is_absolute() and ctx.workspace_cwd:
-        home = Path(ctx.workspace_cwd) / home
-    return home / "config.toml"
+    """``config.toml`` in ``$CODEX_HOME``, default ``~/.codex``."""
+    folder = ctx.environ.get("CODEX_HOME")
+    return (located(folder, ctx) if folder else ctx.home / ".codex") / "config.toml"
 
 
 def _project_files(ctx: ImportContext, user: dict[str, Any], user_path: Path) -> list[Path]:
@@ -284,13 +285,8 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         explicit = {key.upper() if windows else key for key in env}
         passed = [name for name in passed if (name.upper() if windows else name) not in explicit]
         env |= {name: (Var(name),) for name in passed}
-    else:
-        # Codex keeps a ``codex mcp login`` sign-in outside the file, so warn unless headers authenticate.
-        signs_in = (
-            entry.get("auth") in ("oauth", "chatgpt", "ema_auth") or "oauth" in entry or "oauth_resource" in entry
-        )
-        if signs_in or not headers:
-            warnings.append(ImportWarning(WarningKind.AUTH_NOT_IMPORTED))
+    elif entry.get("auth") in ("oauth", "chatgpt", "ema_auth") or "oauth" in entry or "oauth_resource" in entry:
+        warnings.append(ImportWarning(WarningKind.AUTH_NOT_IMPORTED))
     allowed: tuple[str, ...] | None = None
     enabled_tools, disabled_tools = entry.get("enabled_tools"), entry.get("disabled_tools", [])
     if enabled_tools is not None:
@@ -311,6 +307,7 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         arg_paths=tuple(f"{prefix}.args[{i}]" for i in range(len(entry.get("args", [])))),
         env=env,
         url=entry.get("url", ""),
+        url_path=f"{prefix}.url",
         headers=headers,
         enabled=entry.get("enabled", True),
         timeout_seconds=positive_number(timeout),
