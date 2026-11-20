@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""JSON search APIs: the official Tavily, Brave and Exa adapters, keyless Keenable and declarative custom_http."""
+"""JSON search APIs: the official Tavily, Brave and Exa adapters, keyless Keenable and You.com and declarative custom_http."""
 
 from __future__ import annotations
 
@@ -212,6 +212,14 @@ class JsonApiProvider:
                 {"X-Keenable-Title": APP_DISPLAY_NAME},
                 body={"query": request.query, "max_results": request.limit},
                 mapping={**_DEFAULT_MAPPING, "snippet_pointer": "/snippet"},
+            )
+        if cfg.type == "youcom":
+            # The keyless endpoint takes no credentials; results are web hits with a description.
+            return _WireRequest(
+                "GET",
+                {"User-Agent": "youdotcom-integration/openJiuwen-ai-iCode"},
+                params={"query": request.query, "count": request.limit},
+                mapping={**_DEFAULT_MAPPING, "results_pointer": "/results/web", "snippet_pointer": "/description"},
             )
         inputs = {
             "query": request.query,
