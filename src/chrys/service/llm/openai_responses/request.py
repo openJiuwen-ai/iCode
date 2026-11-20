@@ -27,6 +27,7 @@ from chrys.service.llm._structured_outputs import (
     _sanitize_response_format_name,
     _strictify_response_schema,
 )
+from chrys.service.llm.output_cap import fold_output_cap_options
 from chrys.service.profiles.models.options import PROMPT_CACHE_KEY_OPTION
 
 from .replay import encode_input
@@ -69,6 +70,7 @@ def build_request(
     origin: ReasoningOrigin | None = None,
 ) -> dict[str, Any]:
     """The create request for *messages* under validated chat *options*, sent to the endpoint *origin*."""
+    options = fold_output_cap_options(options)
     if variant.stateless:
         options = stateless_view(options)
     service_side = continues_stored_response(options)

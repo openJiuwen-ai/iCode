@@ -26,6 +26,7 @@ from chrys.service.llm._structured_outputs import (
     _sanitize_response_format_name,
     _strictify_response_schema,
 )
+from chrys.service.llm.output_cap import fold_output_cap_options
 from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_OPTION
 
 from .history import encode_messages
@@ -53,6 +54,7 @@ def build_request(
     origin: ReasoningOrigin | None = None,
 ) -> dict[str, Any]:
     """The keyword arguments of one ``chat.completions.create`` call to the endpoint *origin*, before the headers are stamped."""
+    options = fold_output_cap_options(options)
     _require_single_choice(options)
     if instructions := options.get("instructions"):
         messages = prepend_instructions_to_messages(list(messages), instructions, role="system")
