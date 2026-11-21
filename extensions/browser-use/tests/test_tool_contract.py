@@ -89,10 +89,12 @@ def test_native_contract_compares_semantics_not_whole_schemas(native):
         assert set(props) == (set(definition.params) - CORE_ONLY_PARAMS.get(name, set())) | {"browser_id"}
         required = set(schema.get("required", ()))
         expected = {key for key, spec in definition.params.items() if spec.get("required")}
-        if name != "browser_action_status":
-            expected.add("browser_id")
-        else:
+        if name == "browser_action_status":
             assert props["browser_id"]["default"] is None
+        elif name == "browser_navigate":
+            assert props["browser_id"]["default"] == ""
+        else:
+            expected.add("browser_id")
         assert required == expected
         assert "ctx" not in props  # Host injects ToolContext, never advertises it.
         for key, spec in definition.params.items():
@@ -161,7 +163,11 @@ def test_native_invoke_parses_and_projects_defaults(native, monkeypatch):
                 ("browser_download_cancel", {"guid": "g-1"}, {"guid": "g-1"}),
                 ("browser_scroll", {"target": None, "to_text": None}, {"direction": "down", "amount": 3}),
                 ("browser_extract", {"query": None}, {"format": "text", "max_chars": 7000}),
-                ("browser_extract", {"query": None, "offset": 7000}, {"format": "text", "max_chars": 7000, "offset": 7000}),
+                (
+                    "browser_extract",
+                    {"query": None, "offset": 7000},
+                    {"format": "text", "max_chars": 7000, "offset": 7000},
+                ),
                 ("browser_screenshot", {"target": None}, {"full_page": False}),
             ):
                 assert (
@@ -174,12 +180,21 @@ def test_native_invoke_parses_and_projects_defaults(native, monkeypatch):
                 elif name == "browser_extract":
                     # offset is only forwarded for paged reads; the core still defaults it to 0.
                     assert calls[-1][2] == {"offset": 0} | expected
+                elif name == "browser_click":
+                    assert calls[-1][2] == expected | {
+                        "expect_condition": "",
+                        "expect_target": "",
+                        "expect_value": "",
+                        "expect_timeout_ms": 5000,
+                        "expect_return": "none",
+                    }
+                elif name == "browser_wait_for":
+                    assert calls[-1][2] == expected | {"return_mode": "none", "max_chars": 2000}
                 else:
                     assert calls[-1][2] == expected
             count = len(calls)
             for name, arguments in (
                 ("browser_navigate", {"browser_id": browser_id}),
-                ("browser_navigate", {"url": "https://www.iana.org/"}),
                 ("browser_click", {"browser_id": browser_id, "target": "link", "button": "invalid"}),
                 ("browser_screenshot", {"browser_id": browser_id, "annotate": False}),
             ):

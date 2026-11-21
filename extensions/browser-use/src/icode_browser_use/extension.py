@@ -764,10 +764,21 @@ async def browser_navigate(
         "Public sites work by default. ICODE_BROWSER_ALLOWED_DOMAINS and ICODE_BROWSER_ALLOWED_ORIGINS "
         "restrict destinations when configured. Local origins require explicit access.",
     ],
-    browser_id: Annotated[str, "Browser id returned by browser_open"],
+    browser_id: Annotated[
+        str,
+        "Existing browser id from browser_open; omit to open a new browser and navigate in one step",
+    ] = "",
 ) -> str:
-    """Navigate an explicit browser and return its fresh element snapshot."""
-    browser = _get(ctx, browser_id)
+    """Navigate an existing browser, or allocate a new one and navigate in a single step, returning its fresh snapshot."""
+    if browser_id.strip():
+        browser = _get(ctx, browser_id)
+    else:
+        if len(_mine(ctx)) > 1:
+            raise ToolError(
+                "Several browsers are open; pass browser_id to choose which one to navigate.",
+                code="browser_id_required",
+            )
+        browser = _open(ctx)
     text = await _run(browser, "browser_navigate", {"url": url})
     return f"browser_id: {browser.id}\n{text}"
 
@@ -859,6 +870,17 @@ async def browser_click(
         "ref was reported all-occluded (status=blocked, nothing sent) or, for a non-submit target, "
         "effect=none",
     ] = "mouse",
+    expect_condition: Annotated[
+        Literal["", "visible", "hidden", "editable", "text", "url", "text_changed", "stable", "count"],
+        "Optional bounded read-only condition to verify immediately after this single click (never retries the click)",
+    ] = "",
+    expect_target: Annotated[str, "Optional target for expect_condition"] = "",
+    expect_value: Annotated[str, "Optional value for expect_condition"] = "",
+    expect_timeout_ms: Annotated[int, "Read-only expect wait budget in ms (100-60000)"] = 5000,
+    expect_return: Annotated[
+        Literal["none", "ref", "snapshot", "text"],
+        "Optional payload to return when expect_condition succeeds",
+    ] = "none",
 ) -> str:
     """Click an element by ref or text; a stale ref fails and asks for a new snapshot.
 
@@ -867,19 +889,31 @@ async def browser_click(
     (status=blocked), and when a hit test cannot be answered nothing is sent either
     (status=uncertain). The result reports effect=navigation|dom|dom_elsewhere|focus|none|unknown;
     verified=control_state means the same control changed its accessibility state or label.
-    There is never an automatic JS second click. On effect=none or status=uncertain do not retry
-    the action: verify the expected state with browser_find(fresh=true) or a scoped snapshot, and for a text
-    field use browser_fill with submit=true. dispatch=dom is enforced to one try per ref in a
-    document: once any record for that ref carries the dom label it is refused, and it is otherwise
-    refused unless the newest mouse click on that ref was all-occluded, or effect=none on a
-    non-submit target.
+    There is never an automatic JS second click. Pass expect_condition (and optionally
+    expect_return='ref'|'snapshot'|'text') to run a single read-only verification right after
+    the click (taking text_changed baseline before dispatch) instead of extra find/snapshot calls.
+    On effect=none or status=uncertain do not retry the action: verify the expected state with
+    browser_find(fresh=true) or a scoped snapshot, and for a text field use browser_fill with
+    submit=true. dispatch=dom is enforced to one try per ref in a document.
     """
     browser = _get(ctx, browser_id)
-    return await _run(
-        browser,
-        "browser_click",
-        {"target": target, "button": button, "click_count": click_count, "dispatch": dispatch},
-    )
+    arguments: dict[str, object] = {
+        "target": target,
+        "button": button,
+        "click_count": click_count,
+        "dispatch": dispatch,
+    }
+    if expect_condition:
+        arguments.update(
+            {
+                "expect_condition": expect_condition,
+                "expect_target": expect_target,
+                "expect_value": expect_value,
+                "expect_timeout_ms": expect_timeout_ms,
+                "expect_return": expect_return,
+            }
+        )
+    return await _run(browser, "browser_click", arguments)
 
 
 @_tool(requires_approval=False)
@@ -902,26 +936,45 @@ async def browser_fill(
     clear: Annotated[bool, "Clear the field first"] = True,
     submit: Annotated[bool, "Press Enter after typing"] = False,
     keypress_fallback: Annotated[bool, "Type character by character if insertText fails"] = False,
+    expect_condition: Annotated[
+        Literal["", "visible", "hidden", "editable", "text", "url", "text_changed", "stable", "count"],
+        "Optional bounded read-only condition to verify immediately after this single fill/submit (never retries)",
+    ] = "",
+    expect_target: Annotated[str, "Optional target for expect_condition"] = "",
+    expect_value: Annotated[str, "Optional value for expect_condition"] = "",
+    expect_timeout_ms: Annotated[int, "Read-only expect wait budget in ms (100-60000)"] = 5000,
+    expect_return: Annotated[
+        Literal["none", "ref", "snapshot", "text"],
+        "Optional payload to return when expect_condition succeeds",
+    ] = "none",
 ) -> str:
     """Type into a field with real input events; returns what the page reports.
 
     submit=true sends a real Enter and reports submitted only when the editor cleared or the
     page navigated; a page that merely updated is reported as unconfirmed. For chat-style SPAs
     (composer + send button) prefer submit=true first, over a separate browser_press_key or a
-    click on the send button.
+    click on the send button. Pass expect_condition (and optionally expect_return='text'|'ref'|'snapshot')
+    to verify the post-submit result in the same call with a pre-write baseline.
     """
     browser = _get(ctx, browser_id)
-    return await _run(
-        browser,
-        "browser_fill",
-        {
-            "target": target,
-            "text": text,
-            "clear": clear,
-            "submit": submit,
-            "keypress_fallback": keypress_fallback,
-        },
-    )
+    arguments: dict[str, object] = {
+        "target": target,
+        "text": text,
+        "clear": clear,
+        "submit": submit,
+        "keypress_fallback": keypress_fallback,
+    }
+    if expect_condition:
+        arguments.update(
+            {
+                "expect_condition": expect_condition,
+                "expect_target": expect_target,
+                "expect_value": expect_value,
+                "expect_timeout_ms": expect_timeout_ms,
+                "expect_return": expect_return,
+            }
+        )
+    return await _run(browser, "browser_fill", arguments)
 
 
 @_tool(requires_approval=True)
@@ -974,21 +1027,32 @@ async def browser_wait_for(
         "a comparison such as '>3' or '=2' for count",
     ] = "",
     timeout_ms: Annotated[int, "Wait budget in milliseconds (100-180000)"] = 5000,
+    return_mode: Annotated[
+        Literal["none", "ref", "snapshot", "text"],
+        "Optional content to return immediately when the wait settles (ref, scoped snapshot, or bounded text)",
+    ] = "none",
+    max_chars: Annotated[int, "Maximum characters for return_mode='text' or 'snapshot' (200-7000)"] = 2000,
 ) -> str:
-    """Wait for a page condition with a hard deadline; on timeout it reports what it last saw.
+    """Wait for a page condition with a hard deadline; optionally return ref, snapshot, or bounded text in one call.
 
     text_changed succeeds on the first difference from the text seen when the wait started and
     returns the new text; stable succeeds once no DOM mutation happened for value ms (not network
-    idle); count compares the number of browser_find matches. After sending a chat message use
-    wait_for(hidden, 'Stop generating') or wait_for(stable, target=<last message ref>) instead
-    of sleeping.
+    idle; marks completion=inferred_stable); count compares the number of browser_find matches.
+    Set return_mode='text'|'ref'|'snapshot' to avoid follow-up find/extract loops; on timeout with
+    return_mode='text', partial observed text and character progress are included.
     """
     browser = _get(ctx, browser_id)
-    return await _run(
-        browser,
-        "browser_wait_for",
-        {"condition": condition, "target": target, "value": value, "timeout_ms": timeout_ms},
-    )
+    arguments: dict[str, object] = {
+        "condition": condition,
+        "target": target,
+        "value": value,
+        "timeout_ms": timeout_ms,
+    }
+    if return_mode != "none":
+        arguments["return_mode"] = return_mode
+    if max_chars != 2000:
+        arguments["max_chars"] = max_chars
+    return await _run(browser, "browser_wait_for", arguments)
 
 
 @_tool(requires_approval=True)

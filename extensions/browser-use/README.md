@@ -140,6 +140,14 @@ This writes `<config_dir>/agents/Browser.yaml` with `extensions: [browser]` and 
 
 On `browser_close`, the plugin runtime appends a `[BROWSER_SESSION_FACTS]` block summarizing observed `visited_origins` (query/tokens stripped), `blocked_origins`, `write_actions`, and saved `screenshots` paths so the parent agent can cross-check the sub-agent's narrative against runtime facts.
 
+## Step-compression primitives (fewer round-trips)
+
+To avoid `open → navigate` and `click/fill → wait → extract → sleep → extract` loops while preserving the strict **at-most-one-write-per-call** invariant:
+
+- **One-step navigate**: call `browser_navigate(url=...)` without `browser_id` to allocate a new handle and navigate in a single call and single approval (returning `browser_id` + compact snapshot). Pass an existing `browser_id` to reuse a handle, or use `browser_open` when managing lifecycle explicitly.
+- **Wait-and-deliver**: `browser_wait_for(..., return_mode="ref" | "snapshot" | "text", max_chars=2000)` returns the matched `@eN#epoch` ref, scoped snapshot, or bounded text immediately when the condition settles. `condition="stable"` explicitly marks `completion=inferred_stable`, and timeouts with `return_mode="text"` return `partial_text` and `observed_chars` progress.
+- **Post-write read-only `expect`**: `browser_click` and `browser_fill` accept optional `expect_condition`, `expect_target`, `expect_value`, `expect_timeout_ms`, and `expect_return`. When `expect_condition="text_changed"`, the read-only baseline is captured *before* dispatch; the write action is still dispatched at most once and never auto-retried, and blocked/unconfirmed writes skip `expect` cleanly.
+
 ## Diagnostics
 
 ```bash

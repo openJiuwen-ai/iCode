@@ -48,14 +48,14 @@ DESCRIPTION = (
     "containing value, text_changed (the target's or page's text differs from "
     "when the wait started; returns the new text), stable (no DOM mutation in "
     "the page or target for value ms, default 1500, max 5000; not network idle — "
-    "always pass target on pages with video/ads), or count (the number of browser_find "
+    "always pass target on pages with video/ads; marks completion=inferred_stable), or count (the number of browser_find "
     "matches for target satisfies value such as '>3' or '=2'). Polls DOM state until "
-    "timeout_ms (100-180000), then reports exactly what was last observed. After sending "
-    "a chat message prefer wait_for(hidden, 'Stop generating') or wait_for(stable, "
-    "target=<last message ref>) over sleeping; never poll with sleep. Free-text targets are "
-    "looked up in the current snapshot and refreshed while waiting, so delayed "
-    "elements are found; hidden succeeds when the node is gone, invisible, or not "
-    "found at all (basis= says which); a stale @ref fails fast instead of waiting."
+    "timeout_ms (100-180000), then reports exactly what was last observed. Set return_mode="
+    "'ref'|'snapshot'|'text' (bounded by max_chars) to deliver the matched ref, scoped snapshot, "
+    "or text in the same call instead of following up with browser_find/browser_extract; on timeout "
+    "with return_mode='text', partial observed text and progress are included. After sending "
+    "a chat message prefer wait_for(hidden, 'Stop generating', return_mode='text') or "
+    "wait_for(stable, target=<last message ref>, return_mode='text') over sleeping."
 )
 
 PARAMS: dict[str, Any] = {
@@ -67,6 +67,20 @@ PARAMS: dict[str, Any] = {
     "target": {"type": "string", "default": ""},
     "value": {"type": "string", "default": ""},
     "timeout_ms": {"type": "integer", "min": 100, "max": 180000, "default": 5000},
+    "return_mode": {"type": "string", "enum": ["none", "ref", "snapshot", "text"], "default": "none"},
+    "max_chars": {"type": "integer", "min": 200, "max": 7000, "default": 2000},
+}
+
+EXPECT_PARAMS: dict[str, Any] = {
+    "expect_condition": {
+        "type": "string",
+        "enum": ["", "visible", "hidden", "editable", "text", "url", "text_changed", "stable", "count"],
+        "default": "",
+    },
+    "expect_target": {"type": "string", "default": ""},
+    "expect_value": {"type": "string", "default": ""},
+    "expect_timeout_ms": {"type": "integer", "min": 100, "max": 60000, "default": 5000},
+    "expect_return": {"type": "string", "enum": ["none", "ref", "snapshot", "text"], "default": "none"},
 }
 
 _POLL_SECONDS = 0.15
@@ -161,6 +175,7 @@ def _shadow_text_hit(nodes: list[Any], value: str) -> bool:
         if needle in name.casefold() or needle in hint.casefold():
             return True
     return False
+
 
 _GONE_RE = re.compile(r"could not find (?:node|object)|no node with given id|node .*detached", re.IGNORECASE)
 _COUNT_RE = re.compile(r"^\s*(>=|<=|==|=|>|<)?\s*(\d+)\s*$")
@@ -373,11 +388,169 @@ def _changed_text(text: str) -> str:
     return f"text={excerpt!r}" + ("…" if len(text) > _CHANGED_TEXT_CHARS else "")
 
 
+def _format_bounded_text(text: str, max_chars: int, *, label: str = "content") -> str:
+    cleaned = sanitize_text(text).strip()
+    total = len(cleaned)
+    clipped = cleaned[:max_chars]
+    suffix = f"\n…(truncated, {total} total chars)" if total > max_chars else ""
+    return f"observed_chars={total}\n{label}:\n{clipped}{suffix}"
+
+
+def _format_ref_entry(entry: Any) -> str:
+    ref = getattr(entry, "ref", None)
+    epoch = getattr(entry, "epoch", None)
+    name = sanitize_text(str(getattr(entry, "name", "") or "")).replace("\n", " ")[:120]
+    if ref and epoch:
+        return f"matched_ref=@e{ref}#{epoch} name={name!r}"
+    return f"matched_ref=unavailable name={name!r}"
+
+
+async def _collect_return_payload(
+    session: Any,
+    *,
+    return_mode: str,
+    max_chars: int,
+    condition: str,
+    target: str,
+    entry: Any,
+    object_id: str,
+    observed_text: str | None,
+) -> str:
+    """Deliver ref, scoped snapshot, or bounded text alongside a settled wait."""
+    if return_mode == "none":
+        return ""
+    tail_deadline = time.monotonic() + 2.0
+    if return_mode == "ref":
+        if entry is not None:
+            return _format_ref_entry(entry)
+        if target and condition == "count":
+            matches = matching_nodes(list(session.snapshot.nodes), target)
+            if matches:
+                refs = " ".join(f"@e{n.ref}#{n.epoch}" for n in matches[:10] if getattr(n, "ref", None))
+                return f"matched_refs={refs}" if refs else ""
+        if target and condition != "hidden":
+            try:
+                resolved = session.resolve_target(target)
+                return _format_ref_entry(resolved)
+            except Exception:
+                return ""
+        return ""
+    if return_mode == "snapshot":
+        from . import snapshot as snapshot_action
+
+        snap_target = target if (target and condition not in {"hidden", "count"}) else ""
+        try:
+            blocks = await snapshot_action.run(
+                session,
+                {"scope": "viewport", "interactive_only": False, "target": snap_target, "since": 0},
+            )
+            rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+        except Exception:
+            try:
+                blocks = await snapshot_action.run(
+                    session,
+                    {"scope": "viewport", "interactive_only": False, "target": "", "since": 0},
+                )
+                rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+            except Exception:
+                return ""
+        if len(rendered) > max_chars:
+            rendered = rendered[:max_chars] + f"\n…(snapshot truncated at {max_chars} chars)"
+        return f"snapshot:\n{rendered}" if rendered else ""
+    if return_mode == "text":
+        text_val = observed_text
+        if text_val is None:
+            try:
+                if target and object_id and condition != "hidden":
+                    probe = await _probe_node(
+                        session,
+                        object_id,
+                        entry.cdp_session_id if entry else None,
+                        tail_deadline,
+                    )
+                    text_val = str(probe.get("text", ""))
+                else:
+                    text_val = str(await _evaluate(session, _PAGE_TEXT_EXPR, tail_deadline) or "")
+            except Exception:
+                text_val = ""
+        return _format_bounded_text(text_val, max_chars, label="content")
+    return ""
+
+
+async def read_text_baseline(session: Any, target: str = "") -> str | None:
+    """Capture a read-only text baseline before a write action for ``expect_condition='text_changed'``."""
+    deadline = time.monotonic() + 1.5
+    try:
+        if not target:
+            return str(await _evaluate(session, _PAGE_TEXT_EXPR, deadline) or "")
+        entry = session.resolve_target(target)
+        if entry is None:
+            return None
+        object_id = await _resolve_node(session, entry, deadline)
+        if not object_id:
+            return None
+        probe = await _probe_node(session, object_id, entry.cdp_session_id, deadline)
+        return str(probe.get("text", "")) if probe.get("present") else None
+    except Exception:
+        return None
+
+
+async def prepare_expect_baseline(session: Any, arguments: dict[str, Any]) -> str | None:
+    """Take a pre-write read-only baseline when ``expect_condition='text_changed'`` is requested."""
+    if str(arguments.get("expect_condition") or "") != "text_changed":
+        return None
+    return await read_text_baseline(session, str(arguments.get("expect_target") or ""))
+
+
+async def run_post_write_expect(
+    session: Any,
+    arguments: dict[str, Any],
+    *,
+    baseline: str | None,
+    action_blocks: list[ToolBlock],
+) -> list[ToolBlock]:
+    """Attach bounded read-only verification after a single write action without ever re-dispatching it."""
+    condition = str(arguments.get("expect_condition") or "")
+    if not condition:
+        return action_blocks
+    action_text = "\n".join(str(b.get("text", "")) for b in action_blocks if b.get("type") == "text")
+    if any(marker in action_text for marker in ("status=blocked", "status=failed", "status=uncertain")):
+        return [text_block(f"{action_text}\nexpect_status=skipped reason=write_not_confirmed")]
+    expect_args = {
+        "condition": condition,
+        "target": str(arguments.get("expect_target") or ""),
+        "value": str(arguments.get("expect_value") or ""),
+        "timeout_ms": int(arguments.get("expect_timeout_ms") or 5000),
+        "return_mode": str(arguments.get("expect_return") or "none"),
+        "max_chars": 2000,
+    }
+    try:
+        wait_blocks = await run_with_baseline(session, expect_args, baseline=baseline)
+    except ConnectionClosed:
+        raise
+    except BrowserError as exc:
+        return [text_block(f"{action_text}\nexpect_status=error expect_error={exc.code}: {exc}")]
+    wait_text = "\n".join(str(b.get("text", "")) for b in wait_blocks if b.get("type") == "text")
+    expect_status = "matched" if "status=succeeded" in wait_text else "timeout"
+    return [text_block(f"{action_text}\n[EXPECT]\nexpect_status={expect_status}\n{wait_text}")]
+
+
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
+    return await run_with_baseline(session, arguments, baseline=None)
+
+
+async def run_with_baseline(
+    session: Any,
+    arguments: dict[str, Any],
+    *,
+    baseline: str | None = None,
+) -> list[ToolBlock]:
     condition = arguments["condition"]
     target = arguments["target"]
     value = arguments["value"]
     timeout_ms = arguments["timeout_ms"]
+    return_mode = str(arguments.get("return_mode") or "none")
+    max_chars = int(arguments.get("max_chars") or 2000)
     if condition in {"visible", "hidden", "editable", "count"} and not target:
         raise BadRequest(f"{condition} 条件需要 target（@eN 引用或自由文本）")
     if condition in {"text", "url", "count"} and not value:
@@ -399,10 +572,10 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     if ref_spec:
         entry = session.resolve_target(target)
     refresh_at = started - _REFRESH_MIN_SECONDS
-    baseline: str | None = None
 
     last = "尚未观测"
     detail = ""
+    observed_text: str | None = None
     count_epoch: int | None = None
     refresh_failed = False
     try:
@@ -417,6 +590,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                     last = f"url={href[:300]}"
                 elif condition == "text" and not target:
                     body = str(await _evaluate(session, _PAGE_TEXT_EXPR, deadline) or "")
+                    observed_text = body
                     ok = value in body
                     basis = "text_match"
                     last = f"page_text_hit={ok}"
@@ -438,6 +612,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                                     last = "page_text_hit=True (shadow_snapshot)"
                 elif condition == "text_changed" and not target:
                     body = str(await _evaluate(session, _PAGE_TEXT_EXPR, deadline) or "")
+                    observed_text = body
                     if baseline is None:
                         baseline = body
                     ok = body != baseline
@@ -453,7 +628,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                     basis = "mutations_quiet"
                     last = f"page quiet_ms={int(quiet)} mutations={probe.get('n', '?')}"
                     if ok:
-                        detail = last
+                        detail = f"{last} completion=inferred_stable"
                 elif condition == "count":
                     due = time.monotonic() - refresh_at >= _REFRESH_MIN_SECONDS
                     can_capture = _remaining(deadline) > _REFRESH_FLOOR_SECONDS
@@ -533,9 +708,10 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                             basis = "mutations_quiet"
                             last = f"target={target} quiet_ms={int(quiet)} mutations={probe.get('n', '?')}"
                             if ok:
-                                detail = last
+                                detail = f"{last} completion=inferred_stable"
                         elif condition == "text_changed":
                             text = str(probe.get("text", ""))
+                            observed_text = text
                             if baseline is None:
                                 baseline = text
                             ok = text != baseline
@@ -545,6 +721,8 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                                 detail = _changed_text(text)
                         else:
                             visible = bool(probe.get("visible"))
+                            if "text" in probe:
+                                observed_text = str(probe.get("text", ""))
                             last = f"target={target} visible={visible}"
                             if condition == "visible":
                                 ok, basis = visible, "visible"
@@ -582,6 +760,18 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 ok = False
 
             if ok:
+                payload = await _collect_return_payload(
+                    session,
+                    return_mode=return_mode,
+                    max_chars=max_chars,
+                    condition=condition,
+                    target=target,
+                    entry=entry,
+                    object_id=object_id,
+                    observed_text=observed_text,
+                )
+                if payload:
+                    detail = f"{detail}\n{payload}" if detail else payload
                 return _success(session, condition, target, value, started, basis, detail)
             remaining = _remaining(deadline)
             if remaining <= 0:
@@ -590,6 +780,21 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                     f"等待超时：{condition} {_subject(condition, target, value)} 在 {timeout_ms} ms 内未满足",
                     f"last={last}",
                 ]
+                if return_mode == "text":
+                    partial = await _collect_return_payload(
+                        session,
+                        return_mode="text",
+                        max_chars=max_chars,
+                        condition=condition,
+                        target=target,
+                        entry=entry,
+                        object_id=object_id,
+                        observed_text=observed_text,
+                    )
+                    if partial:
+                        lines.append(partial.replace("\ncontent:\n", "\npartial_text:\n", 1))
+                elif observed_text:
+                    lines.append(_format_bounded_text(observed_text, min(max_chars, 800), label="partial_text"))
                 if timeout_ms > _LONG_WAIT_MS:
                     lines.append(
                         f"elapsed_ms={int((time.monotonic() - started) * 1000)}（长等待已用尽，请改变条件或先 snapshot）"

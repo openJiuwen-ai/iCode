@@ -573,6 +573,11 @@ def test_tool_signatures_match_core_contracts() -> None:
         "clear",
         "submit",
         "keypress_fallback",
+        "expect_condition",
+        "expect_target",
+        "expect_value",
+        "expect_timeout_ms",
+        "expect_return",
     ]
     assert list(by_name["browser_press_key"].signature.parameters) == ["browser_id", "key", "target"]
     assert list(by_name["browser_select_option"].signature.parameters) == ["browser_id", "target", "values"]
@@ -582,6 +587,8 @@ def test_tool_signatures_match_core_contracts() -> None:
         "target",
         "value",
         "timeout_ms",
+        "return_mode",
+        "max_chars",
     ]
     assert list(by_name["browser_scroll"].signature.parameters) == [
         "browser_id",
@@ -1014,8 +1021,9 @@ def test_navigate_uses_browser_open_handle(tmp_path, monkeypatch: pytest.MonkeyP
 def test_navigate_with_several_browsers_requires_an_id(tmp_path) -> None:
     add_browser(browser_id="b1", slot=0)
     add_browser(browser_id="b2", slot=1)
-    with pytest.raises(TypeError):
+    with pytest.raises(ToolError) as info:
         asyncio.run(ext.browser_navigate(ctx(tmp_path), "https://example.com"))
+    assert info.value.code == "browser_id_required"
 
 
 def test_context_hides_query_tokens(tmp_path) -> None:

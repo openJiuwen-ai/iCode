@@ -23,6 +23,7 @@ from .actionability import (
     record_action,
     submit_verdict,
 )
+from .wait_for import EXPECT_PARAMS, prepare_expect_baseline, run_post_write_expect
 
 NAME = "browser_fill"
 
@@ -43,6 +44,7 @@ PARAMS: dict[str, Any] = {
     "clear": {"type": "boolean", "default": True},
     "submit": {"type": "boolean", "default": False},
     "keypress_fallback": {"type": "boolean", "default": False},
+    **EXPECT_PARAMS,
 }
 
 _CLEAR_FN = (
@@ -220,6 +222,12 @@ def _blocked_dialog_fill(session: Any, entry: Any, info: Any, action_id: str) ->
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
+    baseline = await prepare_expect_baseline(session, arguments)
+    blocks = await _run_fill(session, arguments)
+    return await run_post_write_expect(session, arguments, baseline=baseline, action_blocks=blocks)
+
+
+async def _run_fill(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     target = arguments["target"]
     text = arguments["text"]
     clear = arguments["clear"]

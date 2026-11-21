@@ -27,6 +27,7 @@ from .actionability import (
     target_disabled,
     target_facts,
 )
+from .wait_for import EXPECT_PARAMS, prepare_expect_baseline, run_post_write_expect
 
 NAME = "browser_click"
 
@@ -47,6 +48,7 @@ PARAMS: dict[str, Any] = {
     "button": {"enum": ["left", "middle", "right"], "default": "left"},
     "click_count": {"type": "integer", "min": 1, "max": 3, "default": 1},
     "dispatch": {"enum": ["mouse", "dom"], "default": "mouse"},
+    **EXPECT_PARAMS,
 }
 
 _BUTTON_MASK = {"left": 1, "middle": 4, "right": 2}
@@ -526,6 +528,12 @@ async def _dispatch_click(session: Any, x: float, y: float, button: str, count: 
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
+    baseline = await prepare_expect_baseline(session, arguments)
+    blocks = await _run_click(session, arguments)
+    return await run_post_write_expect(session, arguments, baseline=baseline, action_blocks=blocks)
+
+
+async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     target = arguments["target"]
     button = arguments["button"]
     count = arguments["click_count"]
@@ -674,10 +682,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             elif (
                 orig_effect == "dom"
                 and str(facts.get("tag") or "").lower() == "input"
-                and (
-                    after_facts.get("disabled") != facts.get("disabled")
-                    or _target_changed(facts, after_facts)
-                )
+                and (after_facts.get("disabled") != facts.get("disabled") or _target_changed(facts, after_facts))
             ):
                 effect = "dom"
     elif effect == "dom":
