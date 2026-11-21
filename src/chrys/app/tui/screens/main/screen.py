@@ -196,11 +196,12 @@ if TYPE_CHECKING:
     from chrys.service.prompt_shortcuts import PromptShortcut
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
     from chrys.service.state.store import StateStore
+    from chrys.service.workspaces.registry import RegistrySnapshot
 
 
 logger = logging.getLogger(__name__)
 
-type StartupRestore = Literal["restored", "declined", "failed"]
+type StartupRestore = Literal["restored", "declined", "missing", "failed"]
 """Startup restore result; ``declined`` means the user chose no folder for a session whose folder is gone."""
 
 _SHORTCUTS_LOADING = msg(
@@ -456,6 +457,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 selected_cwd=lambda: self._workflow.workdir if self._workflow.workflow_mode else "",
                 apply_workflow_cwd=self._apply_workflow_cwd,
                 workflow_mode=lambda: self._workflow.workflow_mode,
+                start_new_session=lambda event, check: self._sessions.create_new_session(
+                    event, confirmation_is_current=check
+                ),
             ),
             locale_controller=self._locale_controller,
         )
@@ -549,7 +553,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 refresh_diff_preview=self._refresh_diff_preview,
                 reset_rollback_request=self._rollback_controller.reset_pending,
                 choose_missing_working_dir=partial(self._workspace_actions.choose_replacement_dir, reason="restore"),
+                confirm_workspace_leave=self._workspace_actions.confirm_workspace_leave,
                 confirm_stopping_background_tasks=self._confirm_stopping_background_tasks,
+                workflow_mode=lambda: self._workflow.workflow_mode,
             ),
             agent_load=self._events,
             runtime_info=self._runtime_info,
@@ -1136,22 +1142,51 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             except Exception:
                 logger.exception("Failed to restore GC-freeze participant %s", type(participant).__name__)
 
-    async def restore_startup_session(self, session_id: str) -> StartupRestore:
+    async def restore_startup_session(
+        self,
+        session_id: str,
+        *,
+        workspace_id: str | None = None,
+        workspace_snapshot: RegistrySnapshot | None = None,
+        primary_cwd: str = "",
+    ) -> StartupRestore:
         """Restore at startup and confirm the matching backend success event."""
         restored = False
+        missing = False
 
         async def observe_restored(event: SessionRestored) -> None:
             nonlocal restored
             if event.session_id == session_id:
                 restored = True
 
+        async def observe_missing(event: Error) -> None:
+            nonlocal missing
+            if event.session_id == session_id and event.code == "session_not_found":
+                missing = True
+
         await self._services.bus.subscribe(SessionRestored, observe_restored)
+        if workspace_id is not None:
+            await self._services.bus.subscribe(Error, observe_missing)
         try:
-            request = await self._sessions.do_session_restore(session_id, allow_while_loading=True)
+            request = (
+                await self._sessions.do_session_restore(
+                    session_id,
+                    allow_while_loading=True,
+                    workspace_id=workspace_id,
+                    workspace_snapshot=workspace_snapshot,
+                    primary_cwd=primary_cwd,
+                )
+                if workspace_id is not None
+                else await self._sessions.do_session_restore(session_id, allow_while_loading=True)
+            )
         finally:
             await self._services.bus.unsubscribe(SessionRestored, observe_restored)
+            if workspace_id is not None:
+                await self._services.bus.unsubscribe(Error, observe_missing)
         if restored:
             return "restored"
+        if missing:
+            return "missing"
         return "declined" if request is RestoreRequest.DECLINED else "failed"
 
     def cancel_startup_session_restore(self) -> None:
@@ -3119,6 +3154,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return event.session_id is None or event.session_id == self.chat_session_id
 
     def _route_session_error(self, event: Error) -> bool:
+        if self._sessions.capture_restore_missing_cwd(event):
+            return True
         if not event.session_id or event.session_id != self._workflow.session_id:
             return False
         self._workflow.feedback.notify(event.display_message or event.message)

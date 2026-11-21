@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 from chrys.app.tui.screens.main.ports import (
@@ -164,6 +165,12 @@ class MainScreenPresenter:
 
     async def change_shell_directory(self, cwd: str) -> None:
         await self._view.change_shell_directory(cwd)
+
+    async def sync_workspace_cwd(self, cwd: str, *, change_shell: bool = True) -> None:
+        self.set_input_paste_cwd(cwd)
+        self.set_chat_workspace_cwd(cwd)
+        if change_shell and os.path.isdir(cwd):
+            await self.change_shell_directory(cwd)
 
     def reset_context_usage(self, max_context_tokens: int = 0) -> None:
         self._view.reset_context_usage(max_context_tokens)

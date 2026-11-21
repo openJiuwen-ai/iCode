@@ -14,9 +14,9 @@ from chrys.foundation.events.types import (
     UserInjectResult,
 )
 from chrys.foundation.models.session_surface import SessionSurface
-from chrys.foundation.models.workspace import Workspace
 from chrys.orchestration.engine.build.builder import AgentBuildResult
 from chrys.orchestration.engine.build.loaded import AgentManifest, CompletedBuild, LoadedAgent
+from chrys.orchestration.engine.workspaces import WorkspacePlan
 from chrys.orchestration.invoker.resources import rollback_resources
 from chrys.orchestration.invoker.runtime import restore_phase4_state
 from chrys.service.agent_middleware import ResponseBatchCounter
@@ -83,7 +83,7 @@ class StagedBuild:
     would save — and later restore — as something it is not.
     """
 
-    workspace: Workspace | None
+    workspace_plan: WorkspacePlan
     hook_manager: HookManager | None
     mutation_coordinator: MutationCoordinator | None
     """The coordinator the new build runs with — a *candidate*, not installed.
@@ -93,6 +93,10 @@ class StagedBuild:
     turn it on. The old instance is closed only after the commit; a failed
     build closes the candidate instead (see :func:`build_agent`).
     """
+
+    restore_session: ActiveSession | None = None
+    restore_tracker: WorkspaceChangeTracker | None = None
+    workspace_transaction: bool = False
 
     @property
     def loaded(self) -> LoadedSettings:
@@ -106,8 +110,11 @@ def stage_build(
     persistence: SessionPersistence,
     prepared: PreparedSettings,
     agent_profile: AgentProfile,
-    workspace: Workspace | None,
+    workspace_plan: WorkspacePlan,
     hook_manager: HookManager | None,
+    restore_session: ActiveSession | None = None,
+    restore_tracker: WorkspaceChangeTracker | None = None,
+    workspace_transaction: bool = False,
 ) -> StagedBuild:
     """Assemble a rebuild's staged input, deriving the coordinator target.
 
@@ -117,25 +124,35 @@ def stage_build(
     exists and settings say on → keep it; none exists and the session can
     host one → stage a fresh candidate, which stays uninstalled until the
     build commits.
+
+    The departure line follows the same rule: entering a workspace clears it,
+    a plan that leaves or loses one names it, and any other rebuild keeps the
+    one the session already shows. A restore hands its plan's departure in,
+    computed before the previous runtime was torn down, so this never depends
+    on the order the restored session's fields were installed in.
     """
-    coordinator = session.mutation_coordinator
+    target = restore_session or session
+    coordinator = target.mutation_coordinator
     if not prepared.effective.settings.mutation_coordination:
         coordinator = None
     elif coordinator is None:
-        session_dir = session.session_dir if persistence.state_store is not None else None
-        if session_dir is not None and session.session_id:
+        session_dir = target.session_dir if persistence.state_store is not None else None
+        if session_dir is not None and target.session_id:
             # Registry root sits beside the session dirs so tests with a
             # relocated state store stay sandboxed automatically.
             coordinator = MutationCoordinator(
                 registry_root=session_dir.parent / ATTRIBUTION_DIR_NAME,
-                session_id=session.session_id,
+                session_id=target.session_id,
             )
     return StagedBuild(
         prepared=prepared,
         agent_profile=agent_profile,
-        workspace=workspace,
+        workspace_plan=workspace_plan,
         hook_manager=hook_manager,
         mutation_coordinator=coordinator,
+        restore_session=restore_session,
+        restore_tracker=restore_tracker,
+        workspace_transaction=workspace_transaction,
     )
 
 
@@ -262,8 +279,9 @@ async def build_agent(
 
     injection.set_on_consumed_batch(_on_injection_batch_consumed)
 
-    session_dir = session.session_dir if persistence.state_store is not None else None
-    mutation_tracker = session.mutation_tracker
+    target = staged.restore_session or session
+    session_dir = target.session_dir if persistence.state_store is not None else None
+    mutation_tracker = target.mutation_tracker
     if mutation_tracker is None and session_dir is not None:
         mutation_tracker = MutationTracker(
             SnapshotStore(session_dir, policy=SnapshotPolicy.from_settings(staged.loaded.settings))
@@ -271,7 +289,7 @@ async def build_agent(
     # Profile-independent (unlike the tool/middleware wiring in build_agent):
     # a conditional tracker would drop ``chrys_todos`` on the first save after
     # switching to a todo-less profile. Restore pre-hydrates; respect it.
-    todo_tracker = session.todo_tracker
+    todo_tracker = target.todo_tracker
     if todo_tracker is None:
         todo_tracker = TodoTracker()
 
@@ -285,7 +303,7 @@ async def build_agent(
     judge_fallback = resolve_for_agent(model_registry, staged.loaded.settings, profile)
     judge_profile = resolve_judge_profile(model_registry, staged.loaded.settings, judge_fallback)
     judge_session_id = derive_llm_route_session_id(
-        session.session_id,
+        target.session_id,
         route_kind="approval-judge",
         model_profile=judge_profile,
     )
@@ -293,19 +311,21 @@ async def build_agent(
         judge_profile,
         auto_review=staged.loaded.settings.approval_auto_review,
         session_id=judge_session_id,
-        parent_session_id=session.session_id,
+        parent_session_id=target.session_id,
         session_dir=session_dir,
     )
 
-    old_coordinator = session.mutation_coordinator
+    old_coordinator = target.mutation_coordinator
+    runtime_workspace = staged.workspace_plan.workspace
     result: AgentBuildResult | None = None
     try:
         result = await build_agent_fn(
             profile=profile,
             settings=staged.loaded.settings,
             model_registry=model_registry,
-            workspace=staged.workspace,
-            session_id=session.session_id,
+            workspace=runtime_workspace,
+            departed_workspace=staged.workspace_plan.departure,
+            session_id=target.session_id,
             bus=bus,
             agent_registry=agent_registry,
             injection=injection,
@@ -328,8 +348,8 @@ async def build_agent(
             session_dir=session_dir,
             mcp_cache=mcp_cache,
             hook_manager=staged.hook_manager,
-            spill_quota=session.spill_quota,
-            background_tasks=session.background_tasks,
+            spill_quota=target.spill_quota,
+            background_tasks=target.background_tasks,
             persist_recovery_now=checkpoints.persist_now,
             turn_context=turn_context,
             allow_user_interaction=allow_user_interaction,
@@ -358,14 +378,31 @@ async def build_agent(
         stamp_history_item_ids(result.bindings.backend.history_state)
         manifest = AgentManifest.from_build(result)
         if result.compaction_strategy is not None:
-            session.runtime_meta.restore_context_calibration(
+            target.runtime_meta.restore_context_calibration(
                 result.compaction_strategy,
                 model_profile_fingerprint=manifest.model_profile_fingerprint,
                 agent_profile_fingerprint=manifest.agent_profile_fingerprint,
             )
-        workspace_retarget = workspace_change_tracker.resolve_retarget(
-            staged.workspace, resolve_scope=settings.effective.settings.workspace_change_notice
-        )
+        resolve_scope = settings.effective.settings.workspace_change_notice
+        if (
+            runtime_workspace.id
+            or target.workspace_id
+            or staged.workspace_transaction
+            or staged.restore_tracker is not None
+        ):
+            tracker = staged.restore_tracker or workspace_change_tracker
+            if resolve_scope:
+                workspace_retarget = await asyncio.to_thread(
+                    tracker.resolve_retarget, runtime_workspace, freeze_baseline=True
+                )
+            else:
+                workspace_retarget = tracker.resolve_retarget(
+                    runtime_workspace, resolve_scope=False, freeze_baseline=True
+                )
+        else:
+            workspace_retarget = workspace_change_tracker.resolve_retarget(
+                runtime_workspace, resolve_scope=resolve_scope
+            )
         return CompletedBuild(
             staged=staged,
             loaded=LoadedAgent(

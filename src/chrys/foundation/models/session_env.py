@@ -14,10 +14,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from chrys.foundation.models.workspace import control_chars_as_spaces
 from chrys.foundation.platform import PlatformInfo, get_platform
 
 if TYPE_CHECKING:
-    from chrys.foundation.models.workspace import WorkingDir, Workspace
+    from chrys.foundation.models.workspace import WorkingDir, Workspace, WorkspaceDeparture
 
 
 @dataclass(frozen=True)
@@ -48,12 +49,20 @@ class SessionEnvironment:
 
     # Working directories from Workspace
     working_dirs: tuple[WorkingDir, ...] = ()  # tuple for frozen dataclass
+    workspace_name: str = ""
+    workspace_index: tuple[str, ...] = ()
+    """The workspace section's lines, computed at build time from the loaded memory files."""
+    departed_workspace: WorkspaceDeparture | None = None
+    """The workspace this session just left, until it enters another one."""
 
     @classmethod
     def capture(
         cls,
         session_id: str = "",
         workspace: Workspace | None = None,
+        *,
+        workspace_index: tuple[str, ...] = (),
+        departed_workspace: WorkspaceDeparture | None = None,
     ) -> SessionEnvironment:
         """Capture current environment into an immutable context.
 
@@ -78,6 +87,9 @@ class SessionEnvironment:
             utc_time=now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
             env=_safe_env_snapshot(),
             working_dirs=working_dirs,
+            workspace_name=control_chars_as_spaces(workspace.name) if workspace is not None else "",
+            workspace_index=workspace_index,
+            departed_workspace=departed_workspace,
         )
 
 

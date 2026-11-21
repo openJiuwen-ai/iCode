@@ -19,6 +19,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.workspace import session_workdirs, workspace_scope_fingerprint
 from chrys.foundation.util.env_templates import resolve_env_templates
 from chrys.kernel import Message
 from chrys.service.context.providers.history import CompressedBlock
@@ -31,9 +32,16 @@ if TYPE_CHECKING:
     from chrys.foundation.models.workspace import Workspace
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.schema import ModelProfile
-    from chrys.service.state.store import SessionCheckpoint, StateStore
+    from chrys.service.state.store import JsonFileStateStore, SessionCheckpoint, StateStore
 
 logger = logging.getLogger(__name__)
+
+
+def open_active_session_store() -> JsonFileStateStore:
+    """Open the configured sessions directory paired with its workspace registry."""
+    from chrys.service.state.store import JsonFileStateStore
+
+    return JsonFileStateStore()
 
 
 @runtime_checkable
@@ -241,7 +249,7 @@ class SessionPersistence:
             primary_cwd = ""
             if workspace is not None:
                 primary_cwd = workspace.primary_cwd
-                working_dirs = [d.path for d in workspace.working_dirs]
+                working_dirs = [d.path for d in session_workdirs(workspace)]
 
             # Strip the model profile down to the non-sensitive identification
             # fields we persist.  Anything else on the ``ModelProfile``
@@ -287,6 +295,9 @@ class SessionPersistence:
                 model_base_url=model_base_url,
                 model_profile_fingerprint=model_profile_fingerprint,
                 service_session_id=service_session_id,
+                service_session_workspace_fingerprint=workspace_scope_fingerprint(workspace)
+                if service_session_id
+                else "",
                 last_surface=last_surface,
             )
             self._last_checkpoint = (session_id, checkpoint) if checkpoint is not None else None
@@ -361,7 +372,7 @@ class SessionPersistence:
         primary_cwd = ""
         if workspace is not None:
             primary_cwd = workspace.primary_cwd
-            working_dirs = [d.path for d in workspace.working_dirs]
+            working_dirs = [d.path for d in session_workdirs(workspace)]
 
         model_provider = model_profile.provider if model_profile is not None else ""
         model_api_style = _model_api_style_for_persistence(model_profile)

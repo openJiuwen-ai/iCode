@@ -85,6 +85,7 @@ class ReminderInputs(TypedDict):
     automatic_compaction: NotRequired[bool]
     sub_agent_names: NotRequired[list[str] | None]
     shell_tool_enabled: NotRequired[bool]
+    workspace_section: NotRequired[bool]
     tool_names: NotRequired[list[str] | None]
     session_root: NotRequired[Path | None]
     file_read_available: NotRequired[bool]

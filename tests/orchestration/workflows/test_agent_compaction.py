@@ -51,7 +51,7 @@ async def test_parallel_node_compactions_archive_reduce_context_and_publish_node
 ) -> None:
     bus = EventBus()
     session = ActiveSession(
-        persistence=SessionPersistence(None, bus), workspace=None, approval_mode=ApprovalMode.BYPASS
+        persistence=SessionPersistence(None, bus), workspace_plan=None, approval_mode=ApprovalMode.BYPASS
     )
     session.session_id = "session"
     session.agent_profile = AgentProfile(name="Code")

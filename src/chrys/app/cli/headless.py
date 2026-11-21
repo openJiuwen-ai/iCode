@@ -86,28 +86,25 @@ def retry_warning_ref(warning: SettingsWarning) -> MessageRef:
     )
 
 
-def prepare_runtime(*, restoring_session: bool = False) -> PreparedRuntime:
+def prepare_runtime(*, restoring_session: bool = False, workspace_cwd: str = "") -> PreparedRuntime:
     """Freeze the startup environment, apply runtime patches, and prepare display state without writing stderr.
 
-    A ``--session`` restore loads its settings from the saved session's own
-    root, which need not be the process cwd — bootstrapping without that settings layer keeps
-    the pending warnings from describing a repository the run doesn't live in.
-    A failed restore aborts the run outright, so no fallback session ever runs
-    with these settings.
+    A restore without an explicit workspace loads settings from the saved
+    session's root. Bootstrapping without that layer keeps warnings from
+    describing the launch directory. Explicit workspace launches bootstrap
+    from the selected primary folder, which also serves a new session when
+    the requested session is missing.
     """
     bootstrap = bootstrap_runtime(
         configure_stdio=True,
         eval_context=EvalContext(
             frontend_default_max_transient_retries=HEADLESS_DEFAULT_MAX_TRANSIENT_RETRIES,
         ),
-        workdir=None if restoring_session else Path(os.getcwd()),
+        workdir=None if restoring_session else Path(workspace_cwd or os.getcwd()),
     )
     localizer = Localizer("en")
-    # Every warning composed here is root-independent — environment and user
-    # layers, plus ``settle_session_root``'s verdict — so the list is right for
-    # a restored session too, whatever root it lives in. The target root's own
-    # additions (the directory settings layer) are printed by ``run_command`` after the
-    # restore, as the delta over this list.
+    # After a restore, ``run_command`` prints the target root's settings warnings
+    # that were absent from this bootstrap list.
     # This one key keeps its own wording, which predates the shared composer and
     # is what headless callers have been parsing; everything else gets the
     # generic message rather than being dropped.

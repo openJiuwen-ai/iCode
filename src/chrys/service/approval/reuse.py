@@ -19,7 +19,8 @@ from chrys.service.approval.command_identity import normalize_simple_command
 from chrys.service.approval.grant_store import ApprovalGrantStore
 
 LOCAL_ENVIRONMENT_ID = "local"
-Scope = Literal["SESSION", "WORKDIR"]
+SharedScope = Literal["WORKSPACE", "WORKDIR"]
+Scope = Literal["SESSION", "WORKSPACE", "WORKDIR"]
 _LITERAL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./,:@%+- ")
 
 
@@ -89,6 +90,13 @@ class FileKey(_Key):
 class ReuseContext:
     session_id: str
     workdir: str
+    workspace_id: str | None = None
+
+    @property
+    def shared_scope(self) -> tuple[SharedScope, str]:
+        if self.workspace_id:
+            return "WORKSPACE", self.workspace_id
+        return "WORKDIR", self.workdir
 
     @property
     def eligible(self) -> bool:
@@ -107,6 +115,7 @@ class CommandCandidate:
             "command",
             (shlex.join(command) if isinstance(command, tuple) else command,),
             prefix=self.prefix is not None,
+            workspace=bool(self.context.workspace_id),
         )
 
 
@@ -116,7 +125,9 @@ class FileCandidate:
     keys: frozenset[FileKey]
 
     def offer(self) -> ApprovalReuseOffer:
-        return ApprovalReuseOffer("files", tuple(sorted(key.path for key in self.keys)))
+        return ApprovalReuseOffer(
+            "files", tuple(sorted(key.path for key in self.keys)), workspace=bool(self.context.workspace_id)
+        )
 
 
 Candidate = CommandCandidate | FileCandidate
@@ -144,11 +155,11 @@ class ApprovalReuseService:
 
     def rules(self) -> list[ApprovalGrant]:
         result = []
-        for store, scope in ((self.store, "WORKDIR"), (self.session_store, "SESSION")):
+        for store, scopes in ((self.store, {"WORKSPACE", "WORKDIR"}), (self.session_store, {"SESSION"})):
             for payload in store.load():
                 try:
                     rule = _GRANT.validate_python(payload)
-                    if rule.scope == scope and (not rule.prefix or isinstance(rule.key, CommandKey)):
+                    if rule.scope in scopes and (not rule.prefix or isinstance(rule.key, CommandKey)):
                         result.append(rule)
                 except ValueError, TypeError, RecursionError:
                     continue
@@ -162,7 +173,7 @@ class ApprovalReuseService:
         context = candidate.context
         for scope, scope_id, workdir in (
             ("SESSION", context.session_id, context.workdir),
-            ("WORKDIR", context.workdir, None),
+            (*context.shared_scope, None),
         ):
             rules = [
                 rule for rule in available if (rule.scope, rule.scope_id, rule.workdir) == (scope, scope_id, workdir)
@@ -190,16 +201,16 @@ class ApprovalReuseService:
     def remember(self, candidate: Candidate, choice: ReuseChoice) -> bool:
         if not candidate.context.eligible or choice not in {
             "EXACT_SESSION",
-            "EXACT_WORKDIR",
+            "EXACT_WORKSPACE",
             "PREFIX_SESSION",
-            "PREFIX_WORKDIR",
+            "PREFIX_WORKSPACE",
         }:
             return False
         prefix = choice.startswith("PREFIX_")
         session = choice.endswith("_SESSION")
         context = candidate.context
         scope: Scope
-        scope, scope_id = ("SESSION", context.session_id) if session else ("WORKDIR", context.workdir)
+        scope, scope_id = ("SESSION", context.session_id) if session else context.shared_scope
         if isinstance(candidate, FileCandidate):
             if prefix or not candidate.keys:
                 return False

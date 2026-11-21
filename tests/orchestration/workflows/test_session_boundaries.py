@@ -22,7 +22,14 @@ from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.schema import HooksFile
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.workflows.discovery import global_workflows_dir
-from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import (
+    confirm,
+    make_host,
+    make_workdir,
+    patch_runtime,
+    run,
+    write_workflow,
+)
 from tests.support.workflow_workers import python_workflow
 
 SOURCE = python_workflow("def check(text):\n    return text\n", "check")

@@ -81,7 +81,7 @@ def test_no_retired_directory_vocabulary_in_source_docs_or_catalogs() -> None:
                 if path.suffix == ".po" and line.startswith("#~"):
                     continue
                 if relative == "src/chrys/app/cli/approvals.py" and line.strip() == (
-                    'parser.add_argument("--project", dest="workdir", help=argparse.SUPPRESS)'
+                    'workspace_flags.add_argument("--project", dest="workdir", help=argparse.SUPPRESS)'
                 ):
                     continue
                 if relative == "src/chrys/service/state/_session_files.py":
@@ -135,5 +135,5 @@ def test_cli_help_uses_current_directory_vocabulary() -> None:
 
     for module in (acp, app, approvals, hooks, rsi, run, serve, trajectory, workflow):
         assert not retired_words(_help(module.build_parser()))
-    assert "--workdir" in approvals.build_parser().format_help()
+    assert "--workspace" in approvals.build_parser().format_help()
     assert approvals.build_parser().parse_args(["--project", "."]).workdir == "."

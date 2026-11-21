@@ -45,7 +45,7 @@ def files(*paths):
     return FileCandidate(ReuseContext("session-a", "/project"), frozenset(FileKey(path=path) for path in paths))
 
 
-@pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_WORKDIR", "PREFIX_SESSION", "PREFIX_WORKDIR"])
+@pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_WORKSPACE", "PREFIX_SESSION", "PREFIX_WORKSPACE"])
 @pytest.mark.parametrize(
     "change,value",
     [
@@ -63,7 +63,7 @@ def test_command_grants_bind_execution_fields(service, choice, change, value):
     assert not service.match(command(**{change: value}))
 
 
-@pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_WORKDIR"])
+@pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_WORKSPACE"])
 def test_exact_command_arguments_cannot_expand(service, choice):
     assert service.remember(command(), choice)
     assert not service.match(command(("git", "push", "origin", "main", "--force")))
@@ -72,11 +72,11 @@ def test_exact_command_arguments_cannot_expand(service, choice):
 
 def test_prefix_risk_remains_explicitly_deferred(service):
     # This is a known limitation, not a claim that appended flags are safe.
-    assert service.remember(command(), "PREFIX_WORKDIR")
+    assert service.remember(command(), "PREFIX_WORKSPACE")
     assert service.match(command(("git", "push", "origin", "main", "--force")))
 
 
-@pytest.mark.parametrize("scope", ["SESSION", "WORKDIR"])
+@pytest.mark.parametrize("scope", ["SESSION", "WORKSPACE"])
 def test_files_are_individual_scoped_grants(service, scope):
     original = files("/a", "/b")
     assert service.remember(original, f"EXACT_{scope}")
@@ -86,13 +86,13 @@ def test_files_are_individual_scoped_grants(service, scope):
     assert not service.match(files())
     assert not service.remember(files(), f"EXACT_{scope}")
     other = replace(original, context=ReuseContext("session-b", "/project"))
-    assert bool(service.match(other)) == (scope == "WORKDIR")
+    assert bool(service.match(other)) == (scope == "WORKSPACE")
     assert not service.match(replace(original, context=ReuseContext("session-a", "/other")))
 
 
 def test_files_need_complete_coverage_in_one_scope(service):
     assert service.remember(files("/a"), "EXACT_SESSION")
-    assert service.remember(files("/b"), "EXACT_WORKDIR")
+    assert service.remember(files("/b"), "EXACT_WORKSPACE")
     assert not service.match(files("/a", "/b"))
 
 
@@ -141,7 +141,7 @@ def test_simple_normalization_preserves_all_ordered_tokens(shell):
 
 def test_revocation_and_clear_are_visible_without_rebuild(service):
     candidate = command()
-    assert service.remember(candidate, "EXACT_WORKDIR")
+    assert service.remember(candidate, "EXACT_WORKSPACE")
     other = ApprovalReuseService(service.store, service.session_store)
     (grant_id,) = other.match(candidate)
     assert service.store.revoke(grant_id)
@@ -157,7 +157,7 @@ def test_revocation_and_clear_are_visible_without_rebuild(service):
 )
 def test_invalid_records_never_allow(service, mutation):
     candidate = command()
-    assert service.remember(candidate, "EXACT_WORKDIR")
+    assert service.remember(candidate, "EXACT_WORKSPACE")
     rule = service.store.load()[0]
     if mutation == "missing_key":
         del rule["key"]
@@ -180,27 +180,27 @@ def test_invalid_records_never_allow(service, mutation):
 def test_bad_store_does_not_allow_or_get_overwritten(service, data):
     atomic_write_owner_only_text(service.store.path, data)
     assert not service.match(command())
-    assert not service.remember(command(), "EXACT_WORKDIR")
+    assert not service.remember(command(), "EXACT_WORKSPACE")
     assert service.store.path.read_text(encoding="utf-8") == data
 
 
 def test_store_refuses_symlink_and_writes_owner_only(service, tmp_path):
     candidate = command()
-    assert service.remember(candidate, "EXACT_WORKDIR")
+    assert service.remember(candidate, "EXACT_WORKSPACE")
     if os.name != "nt":
         assert service.store.path.stat().st_mode & 0o777 == 0o600
     target = tmp_path / "other.json"
     service.store.path.rename(target)
     symlink_or_skip(service.store.path, target)
     assert not service.match(candidate)
-    assert not service.remember(candidate, "EXACT_WORKDIR")
+    assert not service.remember(candidate, "EXACT_WORKSPACE")
     assert not service.store.clear()
     assert target.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 def test_world_readable_grants_are_not_trusted(service):
-    assert service.remember(command(), "EXACT_WORKDIR")
+    assert service.remember(command(), "EXACT_WORKSPACE")
     service.store.path.chmod(0o644)
     assert not service.match(command())
 
@@ -208,22 +208,22 @@ def test_world_readable_grants_are_not_trusted(service):
 def test_two_writers_preserve_grants(service):
     other = ApprovalReuseService(service.store, service.session_store)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(service.remember, command(), "EXACT_WORKDIR")
-        second = pool.submit(other.remember, command(("npm", "test")), "EXACT_WORKDIR")
+        first = pool.submit(service.remember, command(), "EXACT_WORKSPACE")
+        second = pool.submit(other.remember, command(("npm", "test")), "EXACT_WORKSPACE")
         assert first.result() and second.result()
     assert service.match(command())
     assert service.match(command(("npm", "test")))
 
 
 def test_atomic_write_failure_preserves_previous_grants(service, monkeypatch):
-    assert service.remember(files("/old"), "EXACT_WORKDIR")
+    assert service.remember(files("/old"), "EXACT_WORKSPACE")
     import chrys.service.approval.grant_store as store_module
 
     def fail(path, payload):
         raise OSError("disk full")
 
     monkeypatch.setattr(store_module, "atomic_write_owner_only_bytes", fail)
-    assert not service.remember(files("/a", "/b"), "EXACT_WORKDIR")
+    assert not service.remember(files("/a", "/b"), "EXACT_WORKSPACE")
     assert service.match(files("/old"))
     assert not service.match(files("/a"))
 
@@ -232,10 +232,10 @@ def test_store_bound_and_duplicate_replacement(service, monkeypatch):
     import chrys.service.approval.grant_store as store_module
 
     monkeypatch.setattr(store_module, "MAX_GRANTS", 1)
-    assert service.remember(command(), "EXACT_WORKDIR")
-    assert service.remember(command(), "EXACT_WORKDIR")
+    assert service.remember(command(), "EXACT_WORKSPACE")
+    assert service.remember(command(), "EXACT_WORKSPACE")
     assert len(service.rules()) == 1
-    assert not service.remember(command(("npm", "test")), "EXACT_WORKDIR")
+    assert not service.remember(command(("npm", "test")), "EXACT_WORKSPACE")
     assert service.match(command())
 
 
@@ -254,7 +254,7 @@ def test_session_grants_in_different_workdirs_are_kept_apart(service):
 @pytest.mark.parametrize("blocked", ["read-only", "lock", "re-read"])
 def test_grant_migration_uses_the_store_write_lock_and_respects_permissions(service, tmp_path, monkeypatch, blocked):
     store = service.store
-    assert service.remember(files("/existing"), "EXACT_WORKDIR")
+    assert service.remember(files("/existing"), "EXACT_WORKSPACE")
     current = store.load()[0]
     current["scope_id"] = str(tmp_path.resolve())
     legacy = {**current, "scope": "PROJECT", "project": current["scope_id"]}
@@ -287,3 +287,16 @@ def test_grant_migration_uses_the_store_write_lock_and_respects_permissions(serv
         monkeypatch.setattr(FileLock, "acquire", acquire_after_other_writer)
         assert store.migrate(backup=unexpected, on_read_error=unexpected) == (False, 0)
     assert store.path.read_text(encoding="utf-8") == expected
+
+
+def test_workspace_file_grant_follows_id_across_primary_edits_and_stops_after_leaving(service):
+    workspace_id = "ws_" + "a" * 32
+    original = files("/shared/file")
+    candidate = replace(original, context=replace(original.context, workspace_id=workspace_id))
+    assert service.remember(candidate, "EXACT_WORKSPACE")
+    [grant] = service.rules()
+    assert (grant.scope, grant.scope_id, grant.workdir) == ("WORKSPACE", workspace_id, None)
+    assert service.match(candidate)
+    assert service.match(replace(candidate, context=ReuseContext("session-b", "/different-primary", workspace_id)))
+    assert not service.match(replace(candidate, context=ReuseContext("session-b", "/project", "ws_" + "b" * 32)))
+    assert not service.match(original)

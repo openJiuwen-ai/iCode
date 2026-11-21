@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
+from chrys.orchestration.engine.workspaces import WorkspacePlan
 from chrys.orchestration.session_resources import SessionResources
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
@@ -64,7 +65,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         self,
         *,
         persistence: SessionPersistence,
-        workspace: Workspace | None,
+        workspace_plan: WorkspacePlan | None,
         approval_mode: ApprovalMode | None,
         surface: SessionSurface | None = None,
         pause_failed_sub_agents: bool = True,
@@ -72,7 +73,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         super().__init__(
             persistence=persistence,
             runtime_meta=SessionRuntimeMetadata(),
-            workspace=workspace,
+            workspace=None,
         )
         # Launch policy survives session resets and is never restored from checkpoints.
         self.approval_mode = approval_mode or ApprovalMode.MANUAL
@@ -84,6 +85,9 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         # sub-agent's Retry/Abort. An ACP client says so in its handshake; a
         # frontend that can't would leave the paused child waiting forever.
         self.pause_failed_sub_agents = pause_failed_sub_agents
+        self.workspace_plan: WorkspacePlan | None = None
+        if workspace_plan is not None:
+            self.install_workspace(workspace_plan)
         self.agent_profile: AgentProfile | None = None
         # The agent a new session starts on: the launch profile, then the user's
         # own pick (``#``). Survives /new and restore, like the approval mode; a
@@ -106,6 +110,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         # preserves the live value instead of reverting to the env default; TUI/CLI
         # leave it False so a changed CHRYS_ASK_USER_TIMEOUT_SECONDS takes effect.
         self.ask_user_timeout_pinned: bool = False
+        self._restored_membership_id: str | None = None
         self.recovered_from_sidecar: bool = False
         # When True, ``_save_current_session`` is a no-op.  Set by the
         # rollback handler immediately before it calls the session
@@ -122,15 +127,36 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         # weak-refs tasks created via ``create_task``).
         self.outbox_recovery_task: asyncio.Task[int] | None = None
 
-    def begin(self, *, agent_profile: AgentProfile, workspace: Workspace | None) -> None:
+    @property
+    def workspace(self) -> Workspace | None:
+        return self.workspace_plan.workspace if self.workspace_plan is not None else None
+
+    @property
+    def workspace_id(self) -> str | None:
+        return self.workspace_plan.workspace_id if self.workspace_plan is not None else None
+
+    def owns_runtime_id(self, session_id: str) -> bool:
+        """Match the live id first, then any alias held by the persistent lock."""
+        return session_id == self.session_id or self.guard.owns(session_id)
+
+    @property
+    def membership_session_id(self) -> str | None:
+        """Use the persisted id for registry writes while preserving the restore request identity."""
+        return self._restored_membership_id or self.session_id
+
+    @property
+    def session_workspace(self) -> Workspace | None:
+        return self.workspace if self.workspace_id is not None else None
+
+    def install_workspace(self, plan: WorkspacePlan) -> None:
+        if not isinstance(plan, WorkspacePlan):
+            raise TypeError("A workspace can only be installed with a WorkspacePlan.")
+        self.workspace_plan = plan
+
+    def begin(self, *, agent_profile: AgentProfile) -> None:
         """Initialize the identity and defaults for a session start."""
         self.session_end_fired = False
         self.agent_profile = agent_profile
-        if self.workspace is None and workspace is None:
-            # A fresh default, not a candidate: with no live workspace there is
-            # nothing a failed build could corrupt, and error paths after such a
-            # failure have always been able to read the ambient root from here.
-            self.workspace = Workspace.from_cwd()
         if self.session_id is None:
             from uuid import uuid4
 
@@ -141,7 +167,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
     ) -> None:
         """Install the session fields belonging to a completed build."""
         self.agent_profile = staged.agent_profile
-        self.workspace = staged.workspace
+        self.install_workspace(staged.workspace_plan)
         self.hook_manager = staged.hook_manager
         self.mutation_coordinator = staged.mutation_coordinator
         if mutation_tracker is not None:
@@ -149,11 +175,11 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         if todo_tracker is not None:
             self.todo_tracker = todo_tracker
 
-    def reset(self, *, session_id: str | None, workspace: Workspace | None) -> None:
+    def reset(self, *, session_id: str | None) -> None:
         """Reset session identity and bookkeeping before a fresh start."""
         self.shutting_down = False
-        self.workspace = workspace or Workspace.from_cwd()
         self.session_id = session_id
+        self._restored_membership_id = None
         self._surface_mark = None
         self.reset_spill_quota()
         self.turn_number = 0
@@ -163,10 +189,13 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         self.todo_tracker = None
         self.recovered_from_sidecar = False
 
-    def adopt_restore_identity(self, *, session_id: str, recovered_from_sidecar: bool) -> None:
+    def adopt_restore_identity(
+        self, *, session_id: str, recovered_from_sidecar: bool, membership_session_id: str | None = None
+    ) -> None:
         """Adopt the restore identity before hydrating its state."""
         self.shutting_down = False
         self.session_id = session_id
+        self._restored_membership_id = membership_session_id
         # Reopening is not a turn, even of the session last marked here:
         # another launch may have worked in it meanwhile.
         self._surface_mark = None

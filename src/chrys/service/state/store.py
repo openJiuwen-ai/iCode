@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import os as os
+import stat
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -19,7 +20,9 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
+from chrys.foundation.config.errors import ConfigValueError
 from chrys.foundation.config.settings import resolve_sessions_dir
+from chrys.foundation.i18n import msg
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.platform.files import atomic_write_text as _common_atomic_write_text
@@ -85,13 +88,21 @@ from chrys.service.state.session_listing import (
     SessionPage,
     page_slice,
 )
-from chrys.service.state.session_mru import SessionMruEntry, SessionMruIndex, coerce_utc, sort_entries
+from chrys.service.state.session_mru import (
+    SESSION_MRU_FILE_NAME,
+    SessionMruEntry,
+    SessionMruIndex,
+    coerce_utc,
+    sort_entries,
+)
 from chrys.service.state.workflow import WorkflowSessionState
 from chrys.service.trajectory.state import TurnRecord, turn_records
 from chrys.service.workflows.history import read_workflow_meta, read_workflow_run
 from chrys.service.workflows.layout import EVENTS_FILE, HEADER_FILE, run_dir
+from chrys.service.workspaces.registry import WorkspaceRegistry, WorkspaceRegistryError
 
 logger = logging.getLogger(__name__)
+_CHAT_SESSION_REQUIRED = msg("restore.chat_session_required", fallback="Chat loading requires a Chat session.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +133,8 @@ class StateStore(Protocol):
 
     @property
     def sessions_root(self) -> Path: ...
+    @property
+    def workspace_registry(self) -> WorkspaceRegistry: ...
     def session_folder_cwds(self) -> dict[str, str]: ...
     def session_dir(self, session_id: str) -> Path: ...
     async def save_side_question(
@@ -152,6 +165,7 @@ class StateStore(Protocol):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
+        service_session_workspace_fingerprint: str = "",
         parent_session_id: str = "",
         last_surface: SessionSurface | None = None,
     ) -> SessionCheckpoint | None: ...
@@ -185,6 +199,10 @@ class StateStore(Protocol):
     async def load_recovery_session_meta(self, session_id: str) -> SessionMeta | None: ...
     def delete_recovery_session(self, session_id: str) -> None: ...
     async def recovery_session_wins(self, session_id: str) -> bool: ...
+    async def read_chat_restore(
+        self, session_id: str, *, prefer_recovery: bool
+    ) -> tuple[dict[str, Any] | None, SessionMeta | None, bool]: ...
+    async def repair_chat_restore(self, session_id: str, *, prefer_recovery: bool) -> None: ...
     async def load_workflow_session(self, session_id: str) -> WorkflowSessionState | None: ...
     async def load_session(self, session_id: str, *, prefer_recovery: bool = False) -> dict[str, Any] | None: ...
     async def load_session_raw(
@@ -200,10 +218,12 @@ class StateStore(Protocol):
         prefer_recovery: bool = False,
     ) -> SessionTranscript | None: ...
     async def load_session_meta(
-        self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False
+        self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False, repair: bool = True
     ) -> SessionMeta | None: ...
 
-    async def list_sessions(self, *, kind: Literal["chat", "workflow"] | None = None) -> list[SessionMeta]: ...
+    async def list_sessions(
+        self, *, kind: Literal["chat", "workflow"] | None = None, repair: bool = True
+    ) -> list[SessionMeta]: ...
     async def load_latest_session_id(self, *, chat_only: bool = False) -> str | None: ...
     async def open_session_listing(self, *, kind: Literal["chat", "workflow"]) -> SessionListing: ...
     async def load_session_page(
@@ -266,10 +286,22 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
 
     Stores sessions as ``{short_session_id}/session.json`` folders with a
     sidecar backup and root-level locks for cross-process coordination.
+    The configured sessions directory uses the global registry. Any other
+    directory has its own registry unless the caller supplies the one it is paired with.
     """
 
-    def __init__(self, directory: str | Path | None = None) -> None:
+    def __init__(
+        self, directory: str | Path | None = None, *, workspace_registry: WorkspaceRegistry | None = None
+    ) -> None:
         self._dir = resolve_sessions_dir() if directory is None else Path(directory)
+        if workspace_registry is None:
+            # Only a directory other than the configured one has its own registry, kept out of
+            # both the session directory scan and the legacy flat JSON scan.
+            own = directory is not None and self._dir.resolve() != resolve_sessions_dir(create=False).resolve()
+            workspace_registry = WorkspaceRegistry(
+                self._dir / ".workspace-registry" / "workspaces.json" if own else None
+            )
+        self._workspace_registry = workspace_registry
         self._dir.mkdir(parents=True, exist_ok=True)
         # Custom titles set before a session's first save.  A never-saved
         # session must not be materialized on disk just for its title (it
@@ -442,72 +474,76 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """Read a JSON object from *path*, returning ``None`` on invalid input."""
         try:
             _, envelope = read_session_envelope(path)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError, UnicodeDecodeError:
             logger.warning("Invalid JSON in session file %s", path)
             return None
         except OSError:
             return None
         return envelope
 
-    def _snapshot_recovery_files(self, session_id: str) -> list[Path]:
+    @staticmethod
+    def _snapshot_recovery_files(session_dir: Path) -> list[Path]:
         """Return rollback snapshots newest-first for last-ditch session recovery."""
-        snap_dir = self._session_dir(session_id) / "snapshots"
-        if not snap_dir.is_dir():
+        try:
+            return sorted(
+                (
+                    path
+                    for path in (session_dir / "snapshots").iterdir()
+                    if path.match("*.json") and parse_snapshot_turn(path) >= 1
+                ),
+                key=parse_snapshot_turn,
+                reverse=True,
+            )
+        except FileNotFoundError, NotADirectoryError:
             return []
 
-        return sorted(
-            (p for p in snap_dir.glob("*.json") if parse_snapshot_turn(p) >= 1),
-            key=parse_snapshot_turn,
-            reverse=True,
-        )
-
-    def _read_session_envelope(
+    def _read_checkpoint_with_source(
         self,
-        session_id: str,
+        session_dir: Path,
+        primary: Path,
         *,
-        heal: bool = True,
-        migrate: bool = True,
+        prefer_recovery: bool = False,
         include_snapshots: bool = True,
-    ) -> dict[str, Any] | None:
-        """Read a session envelope, falling back to backup/snapshots if needed."""
-        envelope, _source = self._read_session_envelope_with_source(
-            session_id, heal=heal, migrate=migrate, include_snapshots=include_snapshots
-        )
-        return envelope
+        repair_session_id: str | None = None,
+        read: Callable[[Path], dict[str, Any] | None] | None = None,
+    ) -> tuple[dict[str, Any] | None, Literal["recovery", "primary", "backup", "snapshot"]]:
+        """Read the effective checkpoint, deferring disk maintenance for staged restores."""
+        read_file = read if read is not None else self._read_json_file
+        primary_envelope = None
+        if prefer_recovery:
+            recovery_path = session_dir / SESSION_RECOVERY_FILE_NAME
+            recovery = read_file(recovery_path)
+            if recovery is not None:
+                primary_envelope = read_file(primary)
+                recovery_time = self._envelope_updated_at(recovery)
+                primary_time = self._envelope_updated_at(primary_envelope)
+                if primary_envelope is None or (
+                    recovery_time is not None and (primary_time is None or recovery_time > primary_time)
+                ):
+                    return recovery, "recovery"
+                if repair_session_id is not None:
+                    self._delete_recovery_session_if_not_newer(repair_session_id, primary_updated_at=primary_time)
+            elif repair_session_id is not None and recovery_path.exists():
+                self._delete_recovery_session_if_not_newer(repair_session_id, primary_updated_at=None)
 
-    def _read_session_envelope_with_source(
-        self,
-        session_id: str,
-        *,
-        heal: bool = True,
-        migrate: bool = True,
-        include_snapshots: bool = True,
-    ) -> tuple[dict[str, Any] | None, Literal["primary", "backup", "snapshot"]]:
-        """Read a session envelope and name the file it came from."""
-        if migrate:
-            path = self._resolve_session_file(session_id)
-        else:
-            session_file = self._session_file(session_id)
-            path = session_file if session_file.exists() else None
-        backup = self._backup_file(session_id)
+        if primary_envelope is None:
+            primary_envelope = read_file(primary)
+        if primary_envelope is not None:
+            return primary_envelope, "primary"
 
-        candidates: list[tuple[Path, Literal["primary", "backup", "snapshot"]]] = []
-        if path is not None:
-            candidates.append((path, "primary"))
-        if backup.exists():
-            candidates.append((backup, "backup"))
+        backup = session_dir / SESSION_BACKUP_FILE_NAME
+        if (envelope := read_file(backup)) is not None:
+            if repair_session_id is not None:
+                self._heal_session_file_from_candidate(repair_session_id, primary, envelope, backup)
+            return envelope, "backup"
+
         if include_snapshots:
-            candidates.extend((snapshot, "snapshot") for snapshot in self._snapshot_recovery_files(session_id))
-        if not candidates:
-            return None, "primary"
-
-        for candidate, source in candidates:
-            envelope = self._read_json_file(candidate)
-            if envelope is None:
-                continue
-            if heal and candidate != path:
-                self._heal_session_file_from_candidate(session_id, self._session_file(session_id), envelope, candidate)
-            return envelope, source
+            with contextlib.suppress(OSError):
+                for snapshot in self._snapshot_recovery_files(session_dir):
+                    if (read is not None or snapshot.is_file()) and (envelope := read_file(snapshot)) is not None:
+                        if repair_session_id is not None:
+                            self._heal_session_file_from_candidate(repair_session_id, primary, envelope, snapshot)
+                        return envelope, "snapshot"
         return None, "primary"
 
     def _heal_session_file_from_candidate(
@@ -564,7 +600,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
     ) -> tuple[dict[str, Any], str | None, bool]:
         """Return live metadata, creation time, and whether primary supplied the meta.
 
-        This is deliberately separate from ``_read_session_envelope``: save
+        This is deliberately separate from ``_read_checkpoint_with_source``: save
         inheritance must continue past a parseable but malformed primary to a
         healthy backup, while a timestamp defect repairs only that field. The
         immutable creation time may come from the backup when the selected
@@ -696,6 +732,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
+        service_session_workspace_fingerprint: str = "",
         parent_session_id: str = "",
         last_surface: SessionSurface | None = None,
         kind: Literal["chat", "workflow"] = "chat",
@@ -795,6 +832,16 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             "generated_title": carry_generated_title,
         }
         if kind == "chat":
+            saved_service_session_id = (
+                service_session_id if service_session_id is not None else existing_meta.get("service_session_id", "")
+            )
+            workspace_fingerprint = (
+                existing_meta.get("service_session_workspace_fingerprint")
+                if service_session_id is None
+                else service_session_workspace_fingerprint
+            )
+            if saved_service_session_id and workspace_fingerprint:
+                meta["service_session_workspace_fingerprint"] = workspace_fingerprint
             meta.update(
                 {
                     "model_provider": model_provider or existing_meta.get("model_provider", ""),
@@ -807,9 +854,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                     "model_profile_fingerprint": model_profile_fingerprint
                     if model_profile_fingerprint is not None
                     else existing_meta.get("model_profile_fingerprint", ""),
-                    "service_session_id": service_session_id
-                    if service_session_id is not None
-                    else existing_meta.get("service_session_id", ""),
+                    "service_session_id": saved_service_session_id,
                     "agent_profile": agent_profile or existing_meta.get("agent_profile", ""),
                     "agent_display_name": agent_display_name
                     or existing_meta.get("agent_display_name")
@@ -905,6 +950,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
+        service_session_workspace_fingerprint: str = "",
         parent_session_id: str = "",
         last_surface: SessionSurface | None = None,
         kind: Literal["chat", "workflow"] = "chat",
@@ -936,6 +982,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 model_base_url=model_base_url,
                 model_profile_fingerprint=model_profile_fingerprint,
                 service_session_id=service_session_id,
+                service_session_workspace_fingerprint=service_session_workspace_fingerprint,
                 parent_session_id=parent_session_id,
                 last_surface=last_surface,
                 kind=kind,
@@ -971,6 +1018,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
+        service_session_workspace_fingerprint: str = "",
         parent_session_id: str = "",
         last_surface: SessionSurface | None = None,
     ) -> SessionCheckpoint:
@@ -997,6 +1045,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             model_base_url=model_base_url,
             model_profile_fingerprint=model_profile_fingerprint,
             service_session_id=service_session_id,
+            service_session_workspace_fingerprint=service_session_workspace_fingerprint,
             parent_session_id=parent_session_id,
             last_surface=last_surface,
         )
@@ -1134,27 +1183,20 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         session_id: str,
         *,
         prefer_recovery: bool = False,
+        repair: bool = True,
     ) -> tuple[dict[str, Any] | None, Literal["recovery", "primary", "backup", "snapshot"]]:
-        """Return the effective envelope and the file it came from, without healing recovery into primary."""
-        self._migrate_if_needed(session_id)
-        recovery_path = self._recovery_file(session_id)
-        if prefer_recovery and recovery_path.exists():
-            recovery = self._read_json_file(recovery_path)
-            if recovery is not None:
-                primary_path = self._session_file(session_id)
-                primary = self._read_json_file(primary_path) if primary_path.exists() else None
-                recovery_updated_at = self._envelope_updated_at(recovery)
-                primary_updated_at = self._envelope_updated_at(primary)
-                if primary is None:
-                    return recovery, "recovery"
-                if recovery_updated_at is not None and (
-                    primary_updated_at is None or recovery_updated_at > primary_updated_at
-                ):
-                    return recovery, "recovery"
-                self._delete_recovery_session_if_not_newer(session_id, primary_updated_at=primary_updated_at)
-            else:
-                self._delete_recovery_session_if_not_newer(session_id, primary_updated_at=None)
-        return self._read_session_envelope_with_source(session_id)
+        """Read the effective envelope. A staged restore defers all disk maintenance."""
+        if repair:
+            self._migrate_if_needed(session_id)
+        primary = self._session_file(session_id)
+        if not repair and not primary.exists():
+            primary = self._legacy_path(session_id)
+        return self._read_checkpoint_with_source(
+            self._session_dir(session_id),
+            primary,
+            prefer_recovery=prefer_recovery,
+            repair_session_id=session_id if repair else None,
+        )
 
     def _resolve_effective_envelope(
         self,
@@ -1195,9 +1237,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             raw = self._read_json_file(self._recovery_file(session_id))
             if raw is None:
                 return None
-            if resolve_session_kind(raw["meta"]) != "chat":
-                raise ValueError("Chat loading requires a Chat session.")
-            return deserialize_state(raw.get("state", {}))
+            return self._decode_chat_state(raw)
         except KeyError:
             return None
 
@@ -1240,15 +1280,49 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """Validate the envelope once, then return typed workflow state directly."""
         return await asyncio.to_thread(self._load_workflow_session_sync, session_id)
 
+    def _read_chat_restore_sync(
+        self, session_id: str, *, prefer_recovery: bool
+    ) -> tuple[dict[str, Any] | None, SessionMeta | None, bool]:
+        raw, source = self._resolve_effective_envelope_with_source(
+            session_id, prefer_recovery=prefer_recovery, repair=False
+        )
+        if raw is None or "meta" not in raw:
+            return None, None, False
+        state = self._decode_chat_state(raw)
+        try:
+            meta = self._session_meta_from_envelope(raw, size_bytes=_dir_size(self._session_dir(session_id)))
+        except KeyError, OSError, ValueError, TypeError:
+            meta = None
+        return state, meta, source == "recovery"
+
+    async def read_chat_restore(
+        self, session_id: str, *, prefer_recovery: bool
+    ) -> tuple[dict[str, Any] | None, SessionMeta | None, bool]:
+        """Read state, metadata and recovery status from one envelope without touching the files."""
+        return await asyncio.to_thread(self._read_chat_restore_sync, session_id, prefer_recovery=prefer_recovery)
+
+    async def repair_chat_restore(self, session_id: str, *, prefer_recovery: bool) -> None:
+        """Apply normal read-time repairs after the outgoing session has stopped."""
+        try:
+            await asyncio.to_thread(
+                self._resolve_effective_envelope_with_source, session_id, prefer_recovery=prefer_recovery
+            )
+        except OSError:
+            logger.warning("Could not repair restored session %s", session_id, exc_info=True)
+
+    @staticmethod
+    def _decode_chat_state(raw: dict[str, Any]) -> dict[str, Any]:
+        if resolve_session_kind(raw["meta"]) != "chat":
+            raise ConfigValueError(_CHAT_SESSION_REQUIRED.bind())
+        return deserialize_state(raw.get("state", {}))
+
     def _load_session_sync(self, session_id: str, *, prefer_recovery: bool = False) -> dict[str, Any] | None:
         """Sync implementation of session load (runs in a thread)."""
         try:
             raw = self._resolve_effective_envelope(session_id, prefer_recovery=prefer_recovery)
             if raw is None:
                 return None
-            if resolve_session_kind(raw["meta"]) != "chat":
-                raise ValueError("Chat loading requires a Chat session.")
-            return deserialize_state(raw.get("state", {}))
+            return self._decode_chat_state(raw)
         except KeyError:
             return None
 
@@ -1279,12 +1353,12 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             # the messages it replaced. Compressed blocks keep their own
             # archived copy and render it separately.
             result = []
-            for msg in messages:
-                ap = msg.get("additional_properties", {})
+            for message in messages:
+                ap = message.get("additional_properties", {})
                 if ap.get("_excluded", False):
                     continue
                 contents = []
-                for c in msg.get("contents", []):
+                for c in message.get("contents", []):
                     if isinstance(c, str):
                         # Legacy plain-string format
                         if c.startswith("Content(type="):
@@ -1293,9 +1367,9 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                             contents.append({"type": "text", "text": c})
                     elif isinstance(c, dict):
                         contents.append(c)
-                entry: dict[str, Any] = {"role": msg.get("role", ""), "contents": contents}
-                if msg.get("additional_properties"):
-                    entry["additional_properties"] = msg["additional_properties"]
+                entry: dict[str, Any] = {"role": message.get("role", ""), "contents": contents}
+                if ap:
+                    entry["additional_properties"] = ap
                 result.append(entry)
             return SessionTranscript(messages=result, turns=turn_records(state))
         except KeyError:
@@ -1328,11 +1402,13 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         return None if transcript is None else transcript.messages
 
     def _load_session_meta_sync(
-        self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False
+        self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False, repair: bool = True
     ) -> SessionMeta | None:
         """Sync implementation of single-session meta load (runs in a thread)."""
         try:
-            raw = self._resolve_effective_envelope(session_id, prefer_recovery=prefer_recovery)
+            raw, _ = self._resolve_effective_envelope_with_source(
+                session_id, prefer_recovery=prefer_recovery, repair=repair
+            )
             if raw is None:
                 if strict and session_dir_has_artifacts(self._session_dir(session_id)):
                     raise ValueError(f"Session {session_id!r} has no readable checkpoint.")
@@ -1350,7 +1426,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             return None
 
     async def load_session_meta(
-        self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False
+        self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False, repair: bool = True
     ) -> SessionMeta | None:
         """Load metadata for one specific session by id.
 
@@ -1362,9 +1438,10 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         Explicit restore can request strict validation: missing sessions return
         None, while unreadable checkpoints and invalid state retain their error.
         Lists and legacy Chat callers keep their tolerant behavior.
+        A staged restore can defer file repairs with ``repair=False``.
         """
         return await asyncio.to_thread(
-            self._load_session_meta_sync, session_id, prefer_recovery=prefer_recovery, strict=strict
+            self._load_session_meta_sync, session_id, prefer_recovery=prefer_recovery, strict=strict, repair=repair
         )
 
     def _patch_recovery_titles_unlocked(
@@ -1406,11 +1483,8 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         session_file = self._session_file(session_id)
         with FileLock(self._write_lock_path(session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
             self._migrate_if_needed_unlocked(session_id)
-            envelope = self._read_session_envelope(
-                session_id,
-                heal=False,
-                migrate=False,
-                include_snapshots=False,
+            envelope, _source = self._read_checkpoint_with_source(
+                session_file.parent, session_file, include_snapshots=False
             )
             meta = self._title_patch_meta(session_id, envelope)
             if envelope is None or meta is None:
@@ -1565,9 +1639,16 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             return (-1, -1)
         return (stat.st_mtime_ns, stat.st_size)
 
-    def _meta_for_session_dir(self, session_dir: Path) -> SessionMeta | None:
+    def _meta_for_session_dir(self, session_dir: Path, *, repair: bool = True) -> SessionMeta | None:
         """One folder-format session's listing meta (``size_bytes`` unset), via the listing caches."""
         try:
+            if not repair:
+                # ID lookup includes readable recovery candidates. Restore
+                # checks ownership and chooses the authoritative source later.
+                raw, _ = self._resolve_effective_envelope_with_source(
+                    session_dir.name, prefer_recovery=True, repair=False
+                )
+                return self._session_meta_from_envelope(raw, size_bytes=0) if raw is not None else None
             resolved = self._listing_meta(session_dir)
         except KeyError, ValueError, TypeError, OSError:
             return None
@@ -1837,19 +1918,25 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         self._evict_stale_meta_cache_sync()
         self._commit_catalog()
 
-    def _folder_metas(self) -> list[tuple[Path, SessionMeta]]:
+    def _folder_metas(self, *, repair: bool = True) -> list[tuple[Path, SessionMeta]]:
         """Every session folder's listing meta, without size or run status."""
-        self._refresh_catalog()
+        if repair:
+            self._refresh_catalog()
         return [
             (session_dir, meta)
             for session_dir in self._session_dir_candidates()
-            if (meta := self._meta_for_session_dir(session_dir)) is not None
+            if (meta := self._meta_for_session_dir(session_dir, repair=repair)) is not None
         ]
 
     @property
     def sessions_root(self) -> Path:
         """The directory holding the session folders."""
         return self._dir
+
+    @property
+    def workspace_registry(self) -> WorkspaceRegistry:
+        """The registry holding workspace definitions and membership for this store."""
+        return self._workspace_registry
 
     def session_folder_cwds(self) -> dict[str, str]:
         """Each listed session folder's name and primary working folder; blocking, so it runs off the event loop."""
@@ -1865,9 +1952,11 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         self._settle_listing_caches()
         return sessions
 
-    def _list_sessions_sync(self, *, kind: Literal["chat", "workflow"] | None = None) -> list[SessionMeta]:
+    def _list_sessions_sync(
+        self, *, kind: Literal["chat", "workflow"] | None = None, repair: bool = True
+    ) -> list[SessionMeta]:
         """Sync implementation of session listing (runs in a thread)."""
-        folders = self._folder_metas()
+        folders = self._folder_metas(repair=repair)
         sessions = [
             replace(meta, size_bytes=_dir_size(session_dir))
             for session_dir, meta in folders
@@ -1875,12 +1964,131 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         ]
         legacy = self._legacy_session_metas({meta.session_id for _session_dir, meta in folders})
         sessions.extend(meta for meta in legacy if kind is None or meta.kind == kind)
+        if not repair:
+            return sessions
         self._settle_listing_caches()
         return [self._with_workflow_status(meta) for meta in sessions]
 
-    async def list_sessions(self, *, kind: Literal["chat", "workflow"] | None = None) -> list[SessionMeta]:
-        """List all saved sessions with metadata."""
-        return await asyncio.to_thread(self._list_sessions_sync, kind=kind)
+    async def read_session_selector_candidates(self, short_id: str) -> tuple[list[SessionMeta], bool]:
+        """Read matching envelopes and report whether any candidate could not be identified."""
+        return await asyncio.to_thread(self._read_session_selector_candidates_sync, short_id)
+
+    def _read_session_selector_candidates_sync(self, short_id: str) -> tuple[list[SessionMeta], bool]:
+        from chrys.service.trajectory.tombstone import INTENT_SUFFIX, tombstones_dir
+
+        if not short_id or short_id.startswith(".") or "/" in short_id or "\\" in short_id:
+            return [], False
+        matches: list[SessionMeta] = []
+        seen: set[tuple[str, str]] = set()
+        unreadable = False
+
+        def mode(path: Path) -> int:
+            # pathlib's exists/is_file and glob can hide permission errors.
+            try:
+                mode = path.stat(follow_symlinks=False).st_mode
+            except FileNotFoundError, NotADirectoryError:
+                return 0
+            if stat.S_ISLNK(mode):
+                try:
+                    return path.stat().st_mode
+                except FileNotFoundError, NotADirectoryError:
+                    pass
+            return mode
+
+        def record(meta: SessionMeta | None, spelling: str) -> None:
+            nonlocal unreadable
+            if meta is None or not isinstance(meta.session_id, str) or not meta.session_id:
+                unreadable = True
+            elif (spelling, meta.session_id) not in seen:
+                seen.add((spelling, meta.session_id))
+                matches.append(meta)
+
+        def envelope_meta(envelope: dict[str, Any] | None) -> SessionMeta | None:
+            if envelope is None:
+                return None
+            try:
+                return self._session_meta_from_envelope(envelope, size_bytes=0)
+            except KeyError, ValueError, TypeError:
+                return None
+
+        readable_folders: set[str] = set()
+
+        def read_legacy(path: Path) -> None:
+            if path.name != SESSION_MRU_FILE_NAME and (value := mode(path)):
+                meta = envelope_meta(self._read_json_file(path)) if stat.S_ISREG(value) else None
+                # A modern primary shadows a broken legacy file. Keep scanning
+                # valid legacy entries so they can still make the selector ambiguous.
+                if meta is not None or path.stem not in readable_folders:
+                    record(meta, path.stem)
+
+        def read_folder(path: Path) -> None:
+            intent = tombstones_dir(self._dir) / f"{path.name}{INTENT_SUFFIX}"
+            if stat.S_ISREG(mode(intent)):
+                return
+            modern = path / SESSION_FILE_NAME
+            primary = modern
+            try:
+                primary_mode = mode(modern)
+            except OSError:
+                # Try the other checkpoints even when the primary's metadata is inaccessible.
+                found = True
+            else:
+                found = bool(primary_mode)
+                if not primary_mode or stat.S_ISLNK(primary_mode):
+                    primary = path.parent / f"{path.name}.json"
+            blocking_checkpoint = False
+
+            def read(file: Path) -> dict[str, Any] | None:
+                nonlocal found, blocking_checkpoint
+                try:
+                    value = mode(file)
+                    found |= bool(value)
+                    if file.parent != path / "snapshots" and (
+                        stat.S_ISFIFO(value) or stat.S_ISCHR(value) or stat.S_ISBLK(value)
+                    ):
+                        # Restore skips nonregular snapshots but would try to open this checkpoint.
+                        blocking_checkpoint = True
+                    return self._read_json_file(file) if stat.S_ISREG(value) else None
+                except OSError:
+                    found = True
+                    return None
+
+            envelope, _source = self._read_checkpoint_with_source(path, primary, prefer_recovery=True, read=read)
+            if blocking_checkpoint:
+                record(None, path.name)
+            elif envelope is not None or found:
+                meta = envelope_meta(envelope)
+                if meta is not None and primary == modern:
+                    readable_folders.add(path.name)
+                record(meta, path.name)
+
+        enumeration_denied = False
+        try:
+            # Scan even after a canonical hit. On a case-insensitive volume the
+            # directory listing still supplies each spelling on disk just once.
+            try:
+                paths = sorted(self._dir.iterdir())
+            except FileNotFoundError:
+                paths = []
+            except OSError:
+                paths = []
+                enumeration_denied = True
+            folders = [path for path in paths if path.name.lower() == short_id]
+            legacy_files = [path for path in paths if path.suffix == ".json" and path.stem.lower() == short_id]
+            # Direct paths also cover a new checkpoint that isn't visible to enumeration yet.
+            for folder in folders or [self._session_dir(short_id)]:
+                read_folder(folder)
+            for legacy in legacy_files or [self._legacy_path(short_id)]:
+                read_legacy(legacy)
+        except OSError:
+            unreadable = True
+        return matches, unreadable or (enumeration_denied and not matches)
+
+    async def list_sessions(
+        self, *, kind: Literal["chat", "workflow"] | None = None, repair: bool = True
+    ) -> list[SessionMeta]:
+        """List saved sessions without disk maintenance or run-status probes when ``repair=False``."""
+        return await asyncio.to_thread(self._list_sessions_sync, kind=kind, repair=repair)
 
     # ------------------------------------------------------------------ #
     # Latest-session lookup via the MRU index
@@ -2197,6 +2405,14 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """
         return await asyncio.to_thread(self._load_session_page_sync, listing, surfaces, page, page_size)
 
+    def forget_workspace_membership(self, session_id: str) -> None:
+        """Remove membership for a deleted session from this store's paired registry."""
+        if not self._legacy_path(session_id).exists():
+            try:
+                self._workspace_registry.remove_session_workspace(session_id)
+            except WorkspaceRegistryError, OSError:
+                logger.warning("Could not remove workspace membership for %s", session_id, exc_info=True)
+
     def _delete_session_sync(self, session_id: str, *, allow_active: bool = False) -> None:
         """Sync implementation of session delete (runs in a thread)."""
         session_dir = self._session_dir(session_id)
@@ -2237,6 +2453,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 self._forget_catalog_entry(session_id)
                 self._pending_custom_titles.pop(session_id, None)
                 self._written_recovery_meta.pop(_session_short_id(session_id), None)
+                self.forget_workspace_membership(session_id)
         finally:
             if active_lock is not None:
                 active_lock.release()

@@ -148,7 +148,11 @@ def test_a_broken_folder_is_reported_and_the_next_candidate_wins(tmp_path: Path)
     [winner] = found.sources
     assert (winner.layout, winner.source) == (LAYOUT_FILE, b"# workdir file\n")
     [skipped] = found.skipped
-    assert (skipped.path, skipped.workflow_id, skipped.source_kind) == (str(folder.resolve()), "x", SOURCE_KIND_WORKDIR)
+    assert (skipped.path, skipped.workflow_id, skipped.source_kind) == (
+        str(folder.resolve()),
+        "x",
+        SOURCE_KIND_WORKDIR,
+    )
     assert skipped.reason == "the entry x.py must be a regular file, not a folder"
     assert found.shadowed == ()
 

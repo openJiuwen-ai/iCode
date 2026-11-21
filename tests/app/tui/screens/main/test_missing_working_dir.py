@@ -26,15 +26,21 @@ from chrys.app.tui.screens.main.workspace_actions import MissingDirReason, Works
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import Error, SessionRestore, WorkspaceChange
+from chrys.foundation.events.types import Error, SessionRestore, SessionRestored, WorkspaceChange
 from chrys.foundation.i18n import DisplayPath, MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.kernel import Message
 from chrys.orchestration.engine.run.working_dir import WORKING_DIR_MISSING_CODE
+from chrys.orchestration.engine.session_lifecycle import _RESTORE_SESSION_CWD_MISSING
 from chrys.service.state.store import JsonFileStateStore
+from chrys.service.workspaces.registry import WorkspaceRegistry
+from tests.support.async_tasks import wait_for_started
 from tests.support.event_capture import collect_events
+from tests.support.symlinks import symlink_or_skip
 from tests.support.tui_helpers import main_screen_state_at, make_backend_handler, make_session_handler
 from tests.support.waiting import wait_for, wait_until
+from tests.support.workspace_engine import start_workspace_engine
+from tests.support.workspace_registry import make_workdir_alias
 
 # ──────────── workspace controller ─────────────────────────────────────
 
@@ -181,15 +187,16 @@ def _held_lifecycle(*, fail: bool = False) -> tuple[asyncio.Task[None], asyncio.
             "tui.workspace.missing.message_restore",
             "The folder of this session, {path}, was deleted or moved. Choose a folder to open the session in.",
         ),
+        ("restore", "tui.workspace.missing.workspace_restore", None),
     ],
 )
 async def test_declining_the_missing_folder_dialog_opens_no_picker(
-    tmp_path: Path, reason: MissingDirReason, key: str, text: str
+    tmp_path: Path, reason: MissingDirReason, key: str, text: str | None
 ) -> None:
     missing, _parent, _replacement = _layout(tmp_path)
     h = await _harness(missing)
 
-    task = asyncio.create_task(h.controller.choose_replacement_dir(str(missing), reason=reason))
+    task = asyncio.create_task(h.controller.choose_replacement_dir(str(missing), text is None, reason=reason))
     confirm = await h.dialog(1, task)
 
     dialog = confirm.screen
@@ -198,7 +205,12 @@ async def test_declining_the_missing_folder_dialog_opens_no_picker(
     assert dialog._confirm_label == "Choose Folder…"
     assert _message_key(dialog) == key
     assert _message_path(dialog) == str(missing)
-    assert dialog._message == text.format(path=missing)
+    if text is None:
+        assert "Restore it at its original path." in dialog._message
+        assert "create a new workspace" not in dialog._message
+        assert "Choosing another folder will open this session there and leave the workspace." in dialog._message
+    else:
+        assert dialog._message == text.format(path=missing)
     assert h.controller._missing_prompt_active is True
 
     confirm.answer(False)
@@ -264,6 +276,37 @@ async def test_picker_without_an_existing_folder_returns_none(tmp_path: Path, an
     assert h.controller._missing_prompt_active is False
 
 
+@pytest.mark.parametrize("wait_at", ["confirmation", "picker"])
+async def test_missing_folder_choice_expires_when_the_active_session_changes(tmp_path: Path, wait_at: str) -> None:
+    missing, _parent, replacement = _layout(tmp_path)
+    h = await _harness(missing)
+    h.controller.prompt_missing_working_dir("submit")
+    task = h.run_started()
+    confirmation = await h.dialog(1, task)
+    if wait_at == "confirmation":
+        h.engine.session_generation += 1
+        confirmation.answer(True)
+        await h.finish(task, screens=1)
+    else:
+        confirmation.answer(True)
+        picker = await h.dialog(2, task)
+        h.engine.session_generation += 1
+        picker.answer(str(replacement))
+        await h.finish(task, screens=2)
+    assert h.changes == []
+
+
+async def test_subtitle_directory_picker_cannot_change_a_newer_session(tmp_path: Path) -> None:
+    _missing, parent, replacement = _layout(tmp_path)
+    h = await _harness(parent)
+    h.controller.open_working_dir_picker()
+    (picker,) = h.view.pushed
+    h.engine.session_generation += 1
+    picker.answer(str(replacement))
+    assert h.started == []
+    assert h.changes == []
+
+
 async def test_a_second_prompt_while_one_is_open_does_not_stack(tmp_path: Path) -> None:
     missing, _parent, replacement = _layout(tmp_path)
     h = await _harness(missing)
@@ -317,9 +360,64 @@ async def test_prompt_missing_working_dir_does_nothing_while_the_folder_exists(t
     assert h.started == []
 
 
-async def test_prompt_missing_working_dir_makes_the_chosen_folder_the_workspace(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "change",
+    [
+        "none",
+        "session_generation",
+        "run_generation",
+        "agent_running",
+        "agent_loading",
+        "workflow_mode",
+        "workflow_callback",
+        "shell_mode",
+        "workspace_empty",
+        "workspace_confirm",
+        "workspace_alias",
+        "workspace_cancel",
+        "workspace_session",
+    ],
+)
+async def test_prompt_missing_working_dir_makes_the_chosen_folder_the_workspace(tmp_path: Path, change: str) -> None:
     missing, parent, replacement = _layout(tmp_path)
     h = await _harness(missing)
+    registry = WorkspaceRegistry(tmp_path / "workspaces.json")
+    chosen = replacement
+    if change != "none":
+        missing.mkdir(parents=True)
+        workspace = registry.create("App", str(missing))
+        missing.rmdir()
+        missing.parent.rmdir()
+        h.state.workspace.workspace_id = workspace.id
+        h.state.workspace.workspace_name = workspace.name
+        h.state.run.has_messages = change != "workspace_empty"
+        if change == "workspace_alias":
+            chosen = parent / "chosen-link"
+            symlink_or_skip(chosen, replacement, target_is_directory=True)
+    entered, release = asyncio.Event(), asyncio.Event()
+    races_with_workflow_check = change in {
+        "session_generation",
+        "run_generation",
+        "agent_running",
+        "agent_loading",
+        "workflow_mode",
+        "shell_mode",
+    }
+
+    async def held_workflow_check(_cwd: str) -> bool:
+        entered.set()
+        await release.wait()
+        return False
+
+    if races_with_workflow_check:
+        h.controller._callbacks = dataclasses.replace(h.controller._callbacks, apply_workflow_cwd=held_workflow_check)
+    if change == "workflow_callback":
+
+        async def apply_workflow(_cwd: str) -> bool:
+            h.flags.workflow_mode = True
+            return False
+
+        h.controller._callbacks = dataclasses.replace(h.controller._callbacks, apply_workflow_cwd=apply_workflow)
 
     h.controller.prompt_missing_working_dir("submit")
     worker = h.run_started()
@@ -329,10 +427,37 @@ async def test_prompt_missing_working_dir_makes_the_chosen_folder_the_workspace(
     picked = await h.dialog(2, worker)
     assert isinstance(picked.screen, FilePicker)
     assert picked.screen._initial_path == str(parent)
-    picked.answer(str(replacement))
+    picked.answer(str(chosen))
+    if change == "workflow_callback":
+        await worker
+        assert h.changes == []
+        return
+    if races_with_workflow_check:
+        await wait_for_started(entered, worker, description="the workflow-directory check")
+    if change == "session_generation":
+        h.engine.session_generation += 1
+    elif change == "run_generation":
+        h.state.run.generation += 1
+    elif change in {"agent_running", "agent_loading"}:
+        setattr(h.state.run, change, True)
+    elif change == "workflow_mode":
+        h.flags.workflow_mode = True
+    elif change == "shell_mode":
+        h.state.shell.active = True
+    release.set()
+    if change.startswith("workspace_") and change != "workspace_empty":
+        leave = await h.dialog(3, worker)
+        if change == "workspace_session":
+            h.engine.session_generation += 1
+        leave.answer(change != "workspace_cancel")
+    elif change == "workspace_empty":
+        await h.finish(worker, screens=2)
     await worker
 
-    assert [change.primary_cwd for change in h.changes] == [str(replacement)]
+    accepted = change in {"none", "workspace_empty", "workspace_confirm", "workspace_alias"}
+    assert [event.primary_cwd for event in h.changes] == ([str(chosen)] if accepted else [])
+    if change in {"workspace_confirm", "workspace_alias"}:
+        assert h.changes[0].confirmation.resolved_cwd == str(replacement.resolve())
 
 
 async def test_prompt_worker_skips_a_folder_that_came_back_before_it_ran(tmp_path: Path) -> None:
@@ -651,7 +776,7 @@ async def _restore_probe(store: JsonFileStateStore, choice: str | None) -> _Rest
     async def publish(event: object) -> None:
         published.append(event)
 
-    async def choose(missing: str) -> str | None:
+    async def choose(missing: str, _workspace_restore: bool) -> str | None:
         # What the screen looks like while the user is asked.
         calls.append(("choose", (missing, state.run.agent_loading, state.session.restoring_session)))
         return choice
@@ -676,20 +801,135 @@ async def _saved_store(tmp_path: Path, session_id: str, primary_cwd: Path) -> Js
     return store
 
 
-async def test_restore_with_a_missing_saved_folder_restores_in_the_chosen_one(tmp_path: Path) -> None:
+@pytest.mark.parametrize("change", ["none", "alias", "picker_owner", "background_owner"])
+async def test_restore_with_a_missing_saved_folder_restores_in_the_chosen_one(tmp_path: Path, change: str) -> None:
     missing, _parent, replacement = _layout(tmp_path)
     store = await _saved_store(tmp_path, "saved", missing)
-    probe = await _restore_probe(store, str(replacement))
+    chosen = replacement
+    if change == "alias":
+        chosen = replacement.parent / "chosen-link"
+        symlink_or_skip(chosen, replacement, target_is_directory=True)
+    probe = await _restore_probe(store, str(chosen))
+    if change != "none":
+        missing.mkdir(parents=True)
+        registry = store.workspace_registry
+        workspace = registry.create("Team", str(missing))
+        registry.set_session_workspace("saved", workspace.id)
+        missing.rmdir()
+
+        choose = probe.handler._callbacks.choose_missing_working_dir
+
+        async def choose_folder(path: str, workspace_restore: bool) -> str | None:
+            result = await choose(path, workspace_restore)
+            if change == "picker_owner":
+                probe.state.runtime.main_usage_source_id = "other-session"
+            return result
+
+        async def stop_background() -> bool:
+            if change == "background_owner":
+                probe.state.runtime.main_usage_source_id = "other-session"
+            return True
+
+        probe.handler._callbacks = dataclasses.replace(
+            probe.handler._callbacks,
+            choose_missing_working_dir=choose_folder,
+            confirm_stopping_background_tasks=stop_background,
+        )
 
     result = await probe.handler.do_session_restore("saved")
 
+    if change in {"picker_owner", "background_owner"}:
+        assert result is RestoreRequest.DECLINED
+        assert probe.published == []
+        assert not probe.state.run.agent_loading
+        assert not probe.state.session.restoring_session
+        return
     assert result is RestoreRequest.REQUESTED
     assert probe.calls == [("choose", (str(missing), False, False)), ("loading_ui", "saved")]
     (restore,) = probe.published
     assert isinstance(restore, SessionRestore)
     assert restore.session_id == "saved"
-    assert restore.primary_cwd == str(replacement)
+    assert restore.primary_cwd == str(chosen)
+    if change == "alias":
+        assert restore.confirmation.resolved_cwd == str(replacement.resolve())
     assert probe.state.session.restoring_session is True
+
+
+@pytest.mark.parametrize("has_workspace", [False, True], ids=["unspecified", "workspace"])
+async def test_restore_stops_if_another_session_opens_while_its_loading_dialog_mounts(
+    tmp_path: Path, has_workspace: bool, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing, _parent, replacement = _layout(tmp_path)
+    missing.mkdir(parents=True)
+    store = await _saved_store(tmp_path, "saved", missing)
+    await store.save_session("newer", {"messages": [Message("user", ["newer history"])]}, primary_cwd=str(replacement))
+    registry = store.workspace_registry
+    workspace_id = registry.create("Team", str(missing)).id if has_workspace else None
+    if workspace_id is not None:
+        registry.set_session_workspace("saved", workspace_id)
+    missing.rmdir()
+    probe = await _restore_probe(store, str(replacement))
+    engine = await start_workspace_engine(agent_engine, monkeypatch, replacement, store=store)
+    bus = engine.event_bus
+    probe.handler._services = dataclasses.replace(probe.handler._services, bus=bus, engine_provider=lambda: engine)
+    probe.state.runtime.main_usage_source_id = engine.session_id or ""
+    restored: list[str | None] = []
+
+    async def project_restored(event: SessionRestored) -> None:
+        restored.append(event.session_id)
+        probe.state.runtime.main_usage_source_id = event.session_id or ""
+
+    await bus.subscribe(SessionRestored, project_restored)
+    await bus.subscribe(SessionRestore, lambda event: collect_events(probe.published, event))
+    begin = probe.handler._agent_load.begin_session_restore_load
+
+    async def begin_load(session_id: str) -> None:
+        await begin(session_id)
+        await bus.publish(SessionRestore(session_id="newer"), raise_handler_errors=True)
+        assert engine.session_id == "newer"
+        assert registry.snapshot().workspace_id_for_session("saved") == workspace_id
+
+    monkeypatch.setattr(probe.handler._agent_load, "begin_session_restore_load", begin_load)
+
+    assert await probe.handler.do_session_restore("saved") is RestoreRequest.DECLINED
+    assert [event.session_id for event in probe.published] == ["newer"]
+    assert restored == ["newer"]
+    assert registry.snapshot().workspace_id_for_session("saved") == workspace_id
+    assert engine.session_id == "newer"
+    assert engine.workspace.primary_cwd == str(replacement)
+    assert [message.text for message in engine.history_messages if message.role == "user"] == ["newer history"]
+
+
+@pytest.mark.parametrize("owner_changes", [False, True], ids=["current", "stale"])
+async def test_restore_missing_folder_error_asks_only_if_the_session_is_current(
+    tmp_path: Path, owner_changes: bool
+) -> None:
+    missing, _parent, _replacement = _layout(tmp_path)
+    missing.mkdir(parents=True)
+    store = await _saved_store(tmp_path, "saved", missing)
+    probe = await _restore_probe(store, None)
+
+    async def publish(event):
+        probe.published.append(event)
+        missing.rmdir()
+        error = Error(
+            code="session_cwd_missing",
+            session_id="saved",
+            display_message=_RESTORE_SESSION_CWD_MISSING.bind(path=DisplayPath(missing)),
+        )
+        assert probe.handler.capture_restore_missing_cwd(error)
+        if owner_changes:
+            probe.state.runtime.main_usage_source_id = "other-session"
+
+    probe.handler._services = dataclasses.replace(probe.handler._services, bus=SimpleNamespace(publish=publish))
+
+    assert await probe.handler.do_session_restore("saved") is RestoreRequest.DECLINED
+    expected = [("loading_ui", "saved"), ("cancel_loading_ui", None)]
+    if not owner_changes:
+        expected.append(("choose", (str(missing), False, False)))
+    assert probe.calls == expected
+    assert not probe.state.run.agent_loading
+    assert not probe.state.session.restoring_session
 
 
 async def test_declining_a_missing_saved_folder_keeps_the_current_session(tmp_path: Path) -> None:
@@ -736,6 +976,27 @@ async def test_declined_resume_leaves_the_screen_idle(tmp_path: Path) -> None:
     assert probe.state.session.restoring_session is False
 
 
+async def test_resume_cancels_its_lookup_dialog_when_the_user_keeps_background_tasks(tmp_path: Path) -> None:
+    store = await _saved_store(tmp_path, "saved", tmp_path)
+    probe = await _restore_probe(store, None)
+
+    async def keep_background_tasks() -> bool:
+        assert probe.state.run.agent_loading
+        assert probe.state.session.restoring_session
+        probe.calls.append(("keep_background_tasks", None))
+        return False
+
+    probe.handler._callbacks = dataclasses.replace(
+        probe.handler._callbacks, confirm_stopping_background_tasks=keep_background_tasks
+    )
+    await probe.handler.resume_last_session()
+
+    assert probe.calls == [("loading_ui", ""), ("keep_background_tasks", None), ("cancel_loading_ui", None)]
+    assert probe.published == []
+    assert not probe.state.run.agent_loading
+    assert not probe.state.session.restoring_session
+
+
 async def test_restore_with_an_existing_saved_folder_does_not_ask(tmp_path: Path) -> None:
     store = await _saved_store(tmp_path, "saved", tmp_path)
     probe = await _restore_probe(store, None)
@@ -746,6 +1007,30 @@ async def test_restore_with_an_existing_saved_folder_does_not_ask(tmp_path: Path
     (restore,) = probe.published
     assert isinstance(restore, SessionRestore)
     assert restore.primary_cwd == ""
+
+
+async def test_reopening_current_workspace_session_checks_snapshot_primary_after_symlink_moves(tmp_path: Path) -> None:
+    installed, moved, link = make_workdir_alias(tmp_path, "installed", "moved", "link")
+    store = await _saved_store(tmp_path, "saved", installed)
+    registry = store.workspace_registry
+    workspace = registry.create("Team", str(link))
+    registry.set_session_workspace("saved", workspace.id)
+    probe = await _restore_probe(store, None)
+    probe.state.runtime.main_usage_source_id = "saved"
+    probe.state.workspace.current_cwd = str(installed)
+    probe.state.workspace.workspace_id = workspace.id
+    link.unlink()
+    installed.rmdir()
+    symlink_or_skip(link, moved, target_is_directory=True)
+
+    assert await probe.handler.do_session_restore("saved") is RestoreRequest.REQUESTED
+    assert probe.calls == [("loading_ui", "saved")]
+    (restore,) = probe.published
+    assert isinstance(restore, SessionRestore)
+    assert restore.workspace_snapshot.session_workspace("saved") == workspace
+    assert restore.opened_cwd == str(moved)
+    assert restore.primary_cwd == ""
+    assert restore.confirmation is None
 
 
 async def test_restore_in_a_given_folder_does_not_look_at_the_saved_one(tmp_path: Path) -> None:

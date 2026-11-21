@@ -15,7 +15,12 @@ import pytest
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, PreparedSettings, SettingsHandle
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import AgentRuntimeDetails, ApprovalAutoFulfillBlocked
+from chrys.foundation.events.types import (
+    AgentRuntimeDetails,
+    ApprovalAutoFulfillBlocked,
+    WorkspaceChange,
+    WorkspaceUpdated,
+)
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.orchestration.engine.build import construction as agent_lifecycle
@@ -38,7 +43,10 @@ from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker, Wo
 from chrys.service.profiles.agents.schema import AgentProfile, ApprovalConfig
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
+from tests.support.components import plan_workspace
 from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent, make_manifest
+from tests.support.waiting import ENGINE_TURN_TIMEOUT
+from tests.support.workspace_engine import WorkspaceBoundary, start_workspace_engine
 
 
 def _approval_context() -> MagicMock:
@@ -137,6 +145,14 @@ class _FakeUsagePublisher:
 
 
 class _BuildSession(SimpleNamespace):
+    workspace_id = None
+    session_workspace = None
+    workspace_plan = None
+
+    def install_workspace(self, plan):
+        self.workspace_plan = plan
+        self.workspace = plan.workspace
+
     install_build = ActiveSession.install_build
 
 
@@ -249,7 +265,7 @@ def _stage(engine: _LoaderFixture) -> agent_lifecycle.StagedBuild:
         persistence=engine.persistence,
         prepared=engine.settings_handle.prepare(engine.settings_handle.base),
         agent_profile=AgentProfile(name="Code"),
-        workspace=engine.session.workspace,
+        workspace_plan=engine.session.workspace_plan or plan_workspace(Workspace.from_cwd()),
         hook_manager=engine.session.hook_manager,
     )
 
@@ -348,7 +364,7 @@ async def test_agent_rebuild_retargets_workspace_after_install_before_awaited_cl
     old_approval = _fresh_approval(bus)
     old_executor = _FakeExecutor(old_approval)
     engine = _LoaderFixture(bus, old_executor)
-    engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
     order: list[str] = []
 
     resolved: list[WorkspaceRetarget] = []
@@ -357,7 +373,12 @@ async def test_agent_rebuild_retargets_workspace_after_install_before_awaited_cl
         def take_pending_notice(self) -> None:
             return None
 
-        def resolve_retarget(self, workspace: Workspace | None, *, resolve_scope: bool = True) -> WorkspaceRetarget:
+        def resolve_retarget(
+            self,
+            workspace: Workspace | None,
+            *,
+            resolve_scope: bool = True,
+        ) -> WorkspaceRetarget:
             resolved.append(super().resolve_retarget(workspace, resolve_scope=resolve_scope))
             return resolved[-1]
 
@@ -395,7 +416,7 @@ async def test_agent_build_retargets_with_the_installed_notice_setting(tmp_path:
     notice off the tracker is told not to probe the roots at all."""
     bus = EventBus()
     engine = _LoaderFixture(bus, _FakeExecutor(_fresh_approval(bus)))
-    engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
     engine.settings_handle.install(
         LoadedSettings(settings=Settings(workspace_change_notice=notice_enabled), provenance={})
     )
@@ -532,7 +553,7 @@ async def test_a_failed_build_leaves_the_live_state_untouched_and_drains_the_can
     old_approval = _fresh_approval(bus)
     old_executor = _FakeExecutor(old_approval)
     engine = _LoaderFixture(bus, old_executor)
-    engine.session.workspace = Workspace.from_cwd(str(tmp_path / "old"))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path / "old"))))
     old_loaded = engine.loaded_settings
     old_workspace = engine.session.workspace
     old_hook_manager = MagicMock()
@@ -544,7 +565,7 @@ async def test_a_failed_build_leaves_the_live_state_untouched_and_drains_the_can
     staged = agent_lifecycle.StagedBuild(
         prepared=_prepared(LoadedSettings(settings=Settings(default_approval_mode="auto"), provenance={})),
         agent_profile=AgentProfile(name="Code"),
-        workspace=Workspace.from_cwd(str(tmp_path / "new")),
+        workspace_plan=plan_workspace(Workspace.from_cwd(str(tmp_path / "new"))),
         hook_manager=MagicMock(),
         mutation_coordinator=staged_coordinator,
     )
@@ -575,14 +596,14 @@ async def test_the_build_commit_installs_the_staged_state_together(tmp_path: Pat
     await _drive_auto_approval(old_approval)
     old_executor = _FakeExecutor(old_approval)
     engine = _LoaderFixture(bus, old_executor)
-    engine.session.workspace = Workspace.from_cwd(str(tmp_path / "old"))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path / "old"))))
     old_coordinator = MagicMock()
     engine.session.mutation_coordinator = old_coordinator
 
     staged = agent_lifecycle.StagedBuild(
         prepared=_prepared(LoadedSettings(settings=Settings(default_approval_mode="auto"), provenance={})),
         agent_profile=AgentProfile(name="Code"),
-        workspace=Workspace.from_cwd(str(tmp_path / "new")),
+        workspace_plan=plan_workspace(Workspace.from_cwd(str(tmp_path / "new"))),
         hook_manager=MagicMock(),
         mutation_coordinator=MagicMock(),
     )
@@ -598,13 +619,13 @@ async def test_the_build_commit_installs_the_staged_state_together(tmp_path: Pat
 
     # The build read staged inputs, never the live fields it replaced.
     assert captured["settings"] is staged.loaded.settings
-    assert captured["workspace"] is staged.workspace
+    assert captured["workspace"] is staged.workspace_plan.workspace
     assert captured["hook_manager"] is staged.hook_manager
     assert captured["mutation_coordinator"] is staged.mutation_coordinator
     # The commit installed the same staged state, whole.
     assert engine.loaded_settings is staged.loaded
     assert engine.session.agent_profile is staged.agent_profile
-    assert engine.session.workspace is staged.workspace
+    assert engine.session.workspace is staged.workspace_plan.workspace
     assert engine.session.hook_manager is staged.hook_manager
     assert engine.session.mutation_coordinator is staged.mutation_coordinator
     assert engine.current.loaded.bindings is not old_executor
@@ -641,7 +662,7 @@ async def test_a_cancelled_post_commit_cleanup_still_leaves_the_committed_profil
     staged = agent_lifecycle.StagedBuild(
         prepared=_prepared(LoadedSettings(settings=Settings(), provenance={})),
         agent_profile=AgentProfile(name="Explore"),
-        workspace=None,
+        workspace_plan=plan_workspace(Workspace.from_cwd()),
         hook_manager=None,
         mutation_coordinator=None,
     )
@@ -681,7 +702,7 @@ async def test_a_cancelled_post_commit_cleanup_still_carries_the_preserved_histo
     staged = agent_lifecycle.StagedBuild(
         prepared=_prepared(LoadedSettings(settings=Settings(), provenance={})),
         agent_profile=AgentProfile(name="Explore"),
-        workspace=None,
+        workspace_plan=plan_workspace(Workspace.from_cwd()),
         hook_manager=None,
         mutation_coordinator=None,
     )
@@ -816,3 +837,26 @@ async def test_intermediate_capture_continues_numbering_across_passes() -> None:
         9: "second text",
     }
     assert captured["batch_counter"].batch_id == 2 * len(sequence)
+
+
+async def test_unassigned_reload_keeps_the_existing_cancel_boundary(agent_engine, monkeypatch, tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    engine = await start_workspace_engine(agent_engine, monkeypatch, tmp_path)
+    gate = WorkspaceBoundary()
+
+    async def hold(_event):
+        await gate.wait()
+
+    await engine.event_bus.subscribe(WorkspaceUpdated, hold)
+    pending = asyncio.create_task(engine.controls.on_workspace_change(WorkspaceChange(primary_cwd=str(target))))
+    try:
+        await asyncio.wait_for(gate.entered.wait(), ENGINE_TURN_TIMEOUT)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+    finally:
+        gate.open()
+        await asyncio.gather(pending, return_exceptions=True)
+    assert engine.workspace.primary_cwd == str(target)
+    assert not engine.turns.turn_state.lease.prompt_admission_closed

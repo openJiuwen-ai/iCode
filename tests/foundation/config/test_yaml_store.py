@@ -53,6 +53,13 @@ def test_detected_encoding_preserves_primary_and_unrelated_values(tmp_path: Path
     assert yaml.safe_load(path.read_text(encoding="utf-8")) == committed
 
 
+def test_normal_writes_sort_settings_keys(tmp_path: Path) -> None:
+    path = tmp_path / "settings.yaml"
+    path.write_text("zeta: 1\nalpha:\n  foo: true\n  bar: false\n", encoding="utf-8")
+    update_yaml_doc(path, lambda doc: {**doc, "middle": 2})
+    assert path.read_text(encoding="utf-8") == "alpha:\n  bar: false\n  foo: true\nmiddle: 2\nzeta: 1\n"
+
+
 def test_update_merges_disjoint_keys_and_last_writer_wins_on_the_same_key(tmp_path: Path) -> None:
     path = tmp_path / "settings.yaml"
 

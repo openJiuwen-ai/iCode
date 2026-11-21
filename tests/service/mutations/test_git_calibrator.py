@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import subprocess
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -787,6 +788,7 @@ async def _finalize_opaque_shell(
     mutate: Callable[[], None],
     *,
     call_id: str = "opaque-shell",
+    command: str = "opaque-generator",
 ) -> MutationResult:
     """Run the mutation pipeline around an opaque command's filesystem effects."""
     from chrys.service.mutations.pipeline import finalize_mutation_tracking, prepare_mutation_tracking
@@ -794,7 +796,7 @@ async def _finalize_opaque_shell(
     context = await prepare_mutation_tracking(
         tracker,
         "shell",
-        {"command": "opaque-generator", "workdir": str(repo)},
+        {"command": command, "workdir": str(repo)},
         call_id,
         True,
         str(repo),
@@ -804,30 +806,41 @@ async def _finalize_opaque_shell(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_target", [False, True], ids=["opaque", "explicit-target"])
 async def test_pipeline_detects_clean_to_clean_commit_and_preserves_rollback(
     tmp_path: Path,
     git_repo_factory: Callable[[Path], Path],
+    explicit_target: bool,
 ) -> None:
-    _init_git_repo(tmp_path, git_repo_factory)
-    target = tmp_path / "README.md"
+    repo = git_repo_factory(tmp_path / "repo")
+    related = git_repo_factory(tmp_path / "related")
+    target = repo / "README.md"
+    other = related / "README.md"
     tracker = MutationTracker(SnapshotStore(tmp_path / "session"))
     tracker.start_turn(1)
 
     def _commit() -> None:
         target.write_text("committed by generator", encoding="utf-8")
-        subprocess.run(["git", "add", "README.md"], cwd=tmp_path, capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "generated"], cwd=tmp_path, capture_output=True, check=True)
+        other.write_text("outside command repository", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "generated"], cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, check=True
+        )
 
-    result = await _finalize_opaque_shell(tracker, tmp_path, _commit)
+    quoted_target = subprocess.list2cmdline([str(other)]) if get_platform().is_windows else shlex.quote(str(other))
+    command = f"opaque-generator > {quoted_target}" if explicit_target else "opaque-generator"
+    result = await _finalize_opaque_shell(tracker, repo, _commit, command=command)
     summary = tracker.get_turn_file_summary(1)[str(target)]
     assert summary.before == SnapshotStore.content_hash(b"committed content")
     assert summary.after == SnapshotStore.content_hash(b"committed by generator")
     assert result.shell_snapshots is not None
     assert str(target) in result.shell_snapshots
+    assert tracker.get_changed_files_set() == ({str(target), str(other)} if explicit_target else {str(target)})
 
     restored = tracker.rollback_turns({1})
     assert restored[0].changed is True
     assert target.read_bytes() == b"committed content"
+    assert other.read_bytes() == (b"committed content" if explicit_target else b"outside command repository")
 
 
 @pytest.mark.asyncio

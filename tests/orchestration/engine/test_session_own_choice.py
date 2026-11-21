@@ -32,6 +32,7 @@ from chrys.foundation.events.types import (
     AgentLoadFailed,
     AgentLoadStarted,
     AgentProfileSwitch,
+    Error,
     Event,
     ModelProfileSwitched,
     RollbackResult,
@@ -46,6 +47,7 @@ from chrys.foundation.events.types import (
     UserRollback,
     WorkflowRunStarted,
     WorkspaceChange,
+    WorkspaceOperation,
 )
 from chrys.foundation.models.workspace import Workspace
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -789,8 +791,48 @@ async def test_a_failed_startup_restore_drops_the_session_model_even_when_its_te
 
     # The fallback start that follows is a new session, so it starts on the default model.
     assert failed == [True]
+    assert engine.session_id is None
+    assert engine.current.loaded is None
     assert _session_model(engine) == ""
     assert engine.settings.model_profile == DEFAULT_MODEL
+
+
+@pytest.mark.parametrize("rebuild", ["workspace", "chdir", "model"])
+async def test_rebuild_after_failed_restore_starts_a_new_session(agent_engine, monkeypatch, tmp_path, rebuild):
+    started = await _start(agent_engine, monkeypatch, tmp_path)
+    engine, store = started.engine, started.store
+    registry = store.workspace_registry
+    target = registry.create("Target", str(started.workspace))
+    await _seed_restorable_session(
+        store, text="original target history", agent_profile=_CODE.name, primary_cwd=str(started.workspace)
+    )
+    registry.set_session_workspace("restore_me", target.id)
+    saved = store.session_dir("restore_me") / "session.json"
+    before = saved.read_bytes()
+    started.clients.fail_builds = 1
+
+    async with capture_event_sequence(engine.event_bus, Error) as errors:
+        await engine.event_bus.publish(SessionRestore(session_id="restore_me"))
+    assert [(error.code, error.session_id) for error in errors] == [("session_restore_failed", "restore_me")]
+    assert engine.session_id is None
+    assert engine.current.loaded is None
+    assert engine.history_messages == []
+    assert not engine.session.guard.owns("restore_me")
+
+    if rebuild == "workspace":
+        await _publish(engine, WorkspaceChange(workspace_operation=WorkspaceOperation.SELECT, workspace_id=target.id))
+        assert engine.session.workspace_id == target.id
+    elif rebuild == "model":
+        await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+        assert _model(engine) == OTHER_MODEL
+    else:
+        destination = tmp_path / "new-directory"
+        destination.mkdir()
+        await _publish(engine, WorkspaceChange(primary_cwd=str(destination)))
+        assert engine.workspace.primary_cwd == str(destination)
+    await _complete_turn(engine, "turn after failed restore")
+    assert engine.session_id is not None and engine.session_id != "restore_me"
+    assert saved.read_bytes() == before
 
 
 async def test_a_default_agent_made_sub_agent_only_is_skipped_at_a_new_session(

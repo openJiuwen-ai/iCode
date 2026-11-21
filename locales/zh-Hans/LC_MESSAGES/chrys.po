@@ -410,11 +410,29 @@ msgstr "此会话中没有可用的主题“{theme}”。"
 msgid "controls.settings_restart_required"
 msgstr "以下设置需重启后生效：{keys}。"
 
+#. English: Workspace change was cancelled.
+#. chrys-meta={"fingerprint":"5188e6445d9035f8732fe00d3d9094526ab8e0c8f45b72cf5a2a5b7b35c45144","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.workspace_change_cancelled"
+msgstr "已取消更改工作区。"
+
+#. English: Could not change workspace: {detail}
+#. chrys-meta={"fingerprint":"1cd5ac046b3ee9653c6218b84d18c5166b1cf48a2802b3e8c34d73b6d5d71775","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.workspace_change_failed"
+msgstr "无法更改工作区：{detail}"
+
 #. English: Cannot change the working directory: {path} does not exist.
 #. chrys-meta={"fingerprint":"a65947fbb2a1685469d4e7b418c5bd3b11d44b21ae07cfec374c9afcd4b5e9c8","multiline":false,"placeholders":["path"]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.workspace_missing"
 msgstr "无法切换工作目录：{path} 不存在。"
+
+#. English: The active session changed.
+#. chrys-meta={"fingerprint":"0cda8c8892f4893f8eb1df9ff6dc74f330855416baa0148bea138ab5702cb486","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.workspace_session_changed"
+msgstr "当前会话已更改。"
 
 #. English: No active agent — cannot change workspace
 #. chrys-meta={"fingerprint":"88d664d319b260319f23708d3336d6eb7df69dc9773816d14e8ce597e6e29f96","multiline":false,"placeholders":[]}
@@ -472,6 +490,12 @@ msgstr "会运行命令的快捷指令提示词不会加入正在运行的任务
 #: src/chrys/orchestration/engine/run/shortcut_commands.py
 msgid "coordinator.prompt_shortcut_unavailable"
 msgstr "/{name} 已不是这个工作目录中的快捷指令，它的命令没有运行，消息未发送。"
+
+#. English: Could not clear the session: {detail}
+#. chrys-meta={"fingerprint":"453bf6e94aafd423f7e06f2f241972db9c8f1847bf23d2b13cba4eea3666e096","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.clear_session_failed"
+msgstr "无法清空会话：{detail}"
 
 #. English: Cannot fork while the agent is still loading.
 #. chrys-meta={"fingerprint":"58707a7fdc91fb94c1d0a6b41ca778e9dd23734a19936db26b4b12b62962e20e","multiline":false,"placeholders":[]}
@@ -545,6 +569,31 @@ msgstr "未配置状态存储。"
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "engine.fork_turn_active"
 msgstr "轮次进行中无法派生会话。"
+
+#. English: Start an Unspecified session to choose a working directory.
+#. chrys-meta={"fingerprint":"4781ccefdb90f537ceb12600751a746c110e556494fafc80358a3b92906f903e","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.new_session_choose_cwd"
+msgstr "请新建工作区为“未指定”的会话，再选择工作目录。"
+
+#. English: Choose a workspace or Unspecified. With Unspecified, you can choose
+#. a working directory.
+#. chrys-meta={"fingerprint":"eb24d0b66829bc361e2cbb7f9fa9d84e5cc5d9d6a8d8e1d8807eefcd6505b363","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.new_session_choose_workspace"
+msgstr "请选择一个工作区或“未指定”。选择“未指定”后，可以指定工作目录。"
+
+#. English: Could not start a new session: {detail}
+#. chrys-meta={"fingerprint":"45c92ba736217a4bfdcdefec9f181a6715ae432bf80ae363e69cdea5e21d13fd","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.new_session_failed"
+msgstr "无法开始新会话：{detail}"
+
+#. English: Cannot start a new session without an active agent.
+#. chrys-meta={"fingerprint":"607c7241abc5bbaf471172fe73c86aba6501cc2923a32cf5ee62444d81c34ee1","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.new_session_no_agent"
+msgstr "当前没有活动的智能体，无法开始新会话。"
 
 #. English: Cannot discard while a workflow run is active. Cancel the workflow
 #. run first.
@@ -929,6 +978,24 @@ msgstr "无法唯一解析已保存的 Agent 配置 {saved}。会话恢复已停
 msgid "restore.agent_profile_unresolved_using_current"
 msgstr "无法唯一解析已保存的 Agent 配置 {saved}。将继续使用当前 Agent {current}。"
 
+#. English: Chat loading requires a Chat session.
+#. chrys-meta={"fingerprint":"37774809f5ec875fb5297498ea2486fa596ab16200b499069ebead512c1e9c77","multiline":false,"placeholders":[]}
+#: src/chrys/service/state/store.py
+msgid "restore.chat_session_required"
+msgstr "此会话不是聊天会话，无法在聊天模式中加载。"
+
+#. English: Could not restore the session: {detail}
+#. chrys-meta={"fingerprint":"66706b7aa1222c968db3337d2f79d62770e9c88ce5aad216f3208bed9b185d7f","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "restore.failed"
+msgstr "无法恢复会话：{detail}"
+
+#. English: Session {session_id} has no readable chat checkpoint.
+#. chrys-meta={"fingerprint":"cb55c78c1bed4a8191a0ff50b172698e83cccafefcf7d71180cf48da1a2b3871","multiline":false,"placeholders":["session_id"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "restore.no_checkpoint"
+msgstr "会话 {session_id} 没有可读取的聊天记录存档。"
+
 #. English: The requested agent profile {profile} could not be found. Session
 #. restore was stopped.
 #. chrys-meta={"fingerprint":"c7a2db17096ca8688da2dc421c8db221e6e34d4f6d3de0f392bacc43fdab1ef6","multiline":false,"placeholders":["profile"]}
@@ -943,6 +1010,13 @@ msgstr "找不到请求的 Agent 配置 {profile}。会话恢复已停止。"
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "restore.service_session_incompatible"
 msgstr "此会话保存时使用了 OpenAI Responses 服务会话。当前智能体/模型配置、工作区、服务地址或存储模式与其不兼容，{app} 将仅从本地历史继续。"
+
+#. English: Cannot restore because the active session changed before
+#. installation.
+#. chrys-meta={"fingerprint":"20d28fe846ebe1e72479865204619f269fe570257a2b7822604ee70b087b7740","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "restore.session_changed"
+msgstr "加载完成前当前会话已更改，无法恢复会话。"
 
 #. English: The working directory of this session no longer exists: {path}
 #. chrys-meta={"fingerprint":"94c6df5e3ae85fa40fa98e0ab4ebf38e05b12dea94539053017b4cc6f08543bb","multiline":false,"placeholders":["path"]}
@@ -1146,6 +1220,12 @@ msgstr "智能体在无界面模式下请求用户输入：{detail}"
 #: src/chrys/orchestration/session_host.py
 msgid "session_host.no_final_response"
 msgstr "智能体运行结束，但未产生最终响应。"
+
+#. English: Session {session_id} has no readable checkpoint.
+#. chrys-meta={"fingerprint":"dc3391d6995a6a4ff27e2fbdd45ad6363d0b2f4bcc0e711bdc658b41cdbe67c4","multiline":false,"placeholders":["session_id"]}
+#: src/chrys/orchestration/session_host.py
+msgid "session_host.session_checkpoint_unreadable"
+msgstr "会话 {session_id} 没有可读取的存档。"
 
 #. English: Session id '{session_id}' is ambiguous.
 #. chrys-meta={"fingerprint":"7a4b38c8e36f7b43409958f620a82031a04f677667fcbd35dbc80e38f1a414cd","multiline":false,"placeholders":["session_id"]}
@@ -4407,11 +4487,24 @@ msgstr "记住审批"
 msgid "tui.approval.reuse.workdir"
 msgstr "此工作目录"
 
-#. English: Also applies in other sessions in this working directory.
-#. chrys-meta={"fingerprint":"49bb89c7a881534e18d057af5bd18567bc711a5bbc43f394ecb98d29ab3407b9","multiline":false,"placeholders":[]}
+#. English: Also applies in other Unspecified sessions in this working
+#. directory.
+#. chrys-meta={"fingerprint":"ea2a38927f3b7f8af494949a3fa1421612cee0c192a6cdaacf3df7e302cca17e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.workdir_hint"
-msgstr "同一工作目录中的其他会话也可复用。"
+msgstr "在此工作目录的其他 Unspecified 会话中也生效。"
+
+#. English: This workspace
+#. chrys-meta={"fingerprint":"1e973b8eeb43da401c88b8fd3b2f38f2e7d1e44567da3e698ab18a9110c9364d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.workspace"
+msgstr "此工作区"
+
+#. English: Also applies in other sessions in this workspace.
+#. chrys-meta={"fingerprint":"4070bea18d5c3d431186a8fd9d5f3bb84d2a19dad8d8ddf461c7911afdf7c655","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.workspace_hint"
+msgstr "在此工作区的其他会话中也生效。"
 
 #. English: The risk definitions could not be loaded.
 #. chrys-meta={"fingerprint":"1bb7592ee2026f1ec271d16fd198cb4be1e1677c0077172fdf0ebb09bfb07d96","multiline":false,"placeholders":[]}
@@ -12926,6 +13019,26 @@ msgstr "无法恢复会话 {session_id}：{error}"
 msgid "tui.startup.session.restore_fallback"
 msgstr "无法恢复会话 {session_id}；已改为启动新会话。"
 
+#. English: Session restore was cancelled.
+#. chrys-meta={"fingerprint":"b291a894d32359cae26b36ba7303a44bcd5a4d52e6c3af2155c4d7ad33410982","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.workspace_restore_declined"
+msgstr "已取消恢复会话。"
+
+#. English: Could not restore session {session_id}.
+#. chrys-meta={"fingerprint":"eb4e2b5902c7499b1c942e49f011af7ea6f1da19459de556495a9c962a6dba1f","multiline":false,"placeholders":["session_id"]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.workspace_restore_failed"
+msgstr "无法恢复会话 {session_id}。"
+
+#. English: If the workspace's primary folder is missing, restore it, then
+#. start again with --workspace and -s. To choose another folder, start with -s
+#. alone.
+#. chrys-meta={"fingerprint":"7a71d6e8e453dc451889d28b79cbaf38f2bca19d221af395e3e5cf089eb65c5e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.workspace_restore_restart"
+msgstr "如果工作区的主文件夹不存在，请先恢复该文件夹，再用 --workspace 和 -s 重新启动。要选择其他文件夹，请仅用 -s 启动。"
+
 #. English: Agent startup failed
 #. chrys-meta={"fingerprint":"3bd4c9e143fe48c4f75c90bcd4af9c333a90c23175eda1c33d12642d2407de4c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/app.py
@@ -12937,6 +13050,13 @@ msgstr "智能体启动失败"
 #: src/chrys/app/tui/app.py
 msgid "tui.startup.title.session"
 msgstr "会话"
+
+#. English: Restore the workspace's primary folder, then start again with
+#. --workspace.
+#. chrys-meta={"fingerprint":"b6e6d5ba8604c5df1642925c0dda5757bac2692fd624694d546fc3de51a1f699","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.workspace.restart"
+msgstr "请恢复工作区的主文件夹，再用 --workspace 重新启动。"
 
 #. English: Agent load failed: {message}
 #. chrys-meta={"fingerprint":"ef05d8ee8d4371b25a24ba4dc30fede4d67194fcca455cf716cf61d2e2d93b5d","multiline":false,"placeholders":["message"]}
@@ -17570,6 +17690,49 @@ msgstr "智能体运行时无法更改目录"
 msgid "tui.workspace.invalid_directory"
 msgstr "不是有效目录：{path}"
 
+#. English: Switch to {path}?  Move: This session leaves workspace “{name}” and
+#. opens in the selected folder. New session: This session stays in the
+#. workspace. A new Unspecified session opens in the selected folder. Cancel:
+#. Keep working in this session.
+#. chrys-meta={"fingerprint":"4ebe3d57425086612c18da27cc3a1766d3e71cf35b94b44c3d85d61b6f1c4f33","multiline":true,"placeholders":["name","path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.choices"
+msgstr ""
+"切换到\n"
+"{path}？\n"
+"\n"
+"移动：此会话离开工作区“{name}”，并在所选文件夹中打开。\n"
+"新会话：此会话留在工作区，在所选文件夹中打开新会话，其工作区为“未指定”。\n"
+"取消：继续使用当前会话。"
+
+#. English: Switch to {path}?  This session will leave workspace “{name}”.
+#. chrys-meta={"fingerprint":"c3fbb1df1ad084630ca83c510ed0ae14e67ad0673ffc37c591e026222a0e438a","multiline":true,"placeholders":["name","path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.message"
+msgstr ""
+"切换到\n"
+"{path}？\n"
+"\n"
+"此会话将离开工作区“{name}”。"
+
+#. English: New session
+#. chrys-meta={"fingerprint":"9131b5c344492c08b08bbf6a49f91c895f10bcff24befb5b52732f32a07cb299","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.new"
+msgstr "新会话"
+
+#. English: Move
+#. chrys-meta={"fingerprint":"caa4e97314afab58a626e01110ad4aac02e343a3738dca6749007df925eccde9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.switch"
+msgstr "移动"
+
+#. English: Leave workspace?
+#. chrys-meta={"fingerprint":"32622679321e54e0c529c9b949ed6a459642af8121d3964ad000ce19330671c9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.title"
+msgstr "离开工作区？"
+
 #. English: Choose Folder…
 #. chrys-meta={"fingerprint":"6ed767badd06759198c1333a77ae9d7ed112831b73c05fdb083e1ec53cb2d04e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/workspace_actions.py
@@ -17602,6 +17765,14 @@ msgstr "{path} 已被删除或移动。请选择一个文件夹后再继续。�
 msgid "tui.workspace.missing.title"
 msgstr "工作文件夹不存在"
 
+#. English: The workspace's primary folder, {path}, no longer exists. Restore
+#. it at its original path. Choosing another folder will open this session
+#. there and leave the workspace.
+#. chrys-meta={"fingerprint":"c4cf69a638b2c29bfab8a784110bf34ec94cbea160eba6484d8a41af451fe534","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.workspace_restore"
+msgstr "工作区的主文件夹 {path} 已不存在。请将它恢复到原路径。选择其他文件夹会在那里打开此会话，并离开当前工作区。"
+
 #. English: Busy
 #. chrys-meta={"fingerprint":"a9c58612686934ef18a443da044d7a0d81b9c35390dfc9ef9acc91d62a95c5fb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/workspace_actions.py
@@ -17619,6 +17790,176 @@ msgstr "路径无效"
 #: src/chrys/orchestration/engine/run/turn_hooks.py
 msgid "turn_hooks.prompt_blocked"
 msgstr "提示已被钩子阻止。"
+
+#. English: Workspace folders must use absolute paths.
+#. chrys-meta={"fingerprint":"eed9410aa1099e29ad9a20bac35d27cc55e4e47cf1e262f7181605940d9d507b","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.folder_invalid"
+msgstr "工作区文件夹必须使用绝对路径。"
+
+#. English: The forked session could not be added to workspace “{name}”; it
+#. opens as Unspecified.
+#. chrys-meta={"fingerprint":"e898edf48fb946062178b9bb2eabe5b7ed6da16933cf616a9ebfc3b23c2386c8","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.fork_membership_write_failed"
+msgstr "分支会话未能加入工作区“{name}”，打开后工作区为“未指定”。"
+
+#. English: Workspace “{name}” was deleted. The new session is Unspecified.
+#. chrys-meta={"fingerprint":"608760cd625ad1185c068bfaa90c5cf3e7ef01e0718cb0379fa481cf4d64333d","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.inherited_workspace_missing"
+msgstr "工作区“{name}”已删除。新会话的工作区为“未指定”。"
+
+#. English: The workspace changed. Confirm leaving it again.
+#. chrys-meta={"fingerprint":"43aca0fb2bf36c183b4ad4c8ae865e8461b9a92e27ae1721e4c7fff0e734e9da","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.leave_confirmation_required"
+msgstr "工作区已变化，请重新确认离开。"
+
+#. English: This session is now Unspecified, but leaving workspace “{name}”
+#. could not be saved; reopened later, it is back in the workspace.
+#. chrys-meta={"fingerprint":"c41bac887ff7b06241242878372c78778cbc9c2b7ee8fd033cdf0e30e93ab159","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.leave_membership_write_failed"
+msgstr "此会话的工作区现为“未指定”，但离开工作区“{name}”未能保存；之后重新打开时仍属于该工作区。"
+
+#. English: Left workspace “{name}”; this session is now Unspecified.
+#. chrys-meta={"fingerprint":"c03c5186ed5d4cccbf8ab616d77c8b42c6eec8caa9b0c0ed0eea59f2b218c615","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.left"
+msgstr "已离开工作区“{name}”，当前会话的工作区现为“未指定”。"
+
+#. English: Workspace membership was cleared. There is no active session in
+#. this run. The session reopens as Unspecified in its saved directory. Opening
+#. failed: {detail}
+#. chrys-meta={"fingerprint":"95885d998416dda4835514b54d8b7021cb960d401996416a131b11688a1dcc14","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.membership_cleared_no_runtime"
+msgstr "已取消工作区归属。本次运行当前没有活动会话。重新打开时会使用会话保存的目录，工作区为“未指定”。打开失败：{detail}"
+
+#. English: Workspace membership was cleared. This run is at {running}. The
+#. session reopens as Unspecified in its saved directory. Opening failed:
+#. {detail}
+#. chrys-meta={"fingerprint":"a6b1ff243d040fcc96f5c186b436f5b339df15d8f443e58b69c4e9ebaad39e5a","multiline":false,"placeholders":["detail","running"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.membership_cleared_open_failed"
+msgstr "已取消工作区归属。本次运行位于 {running}。重新打开时会使用会话保存的目录，工作区为“未指定”。打开失败：{detail}"
+
+#. English: Membership was saved for {target}. There is no active session in
+#. this run. Reopening uses {target}. Opening failed: {detail}
+#. chrys-meta={"fingerprint":"5f19d5c5f2b7e979a4d8bae942c035c977b6cb49bed35951b5cb4024cdc691a4","multiline":false,"placeholders":["detail","target"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.membership_saved_no_runtime"
+msgstr "归属已保存到 {target}。本次运行当前没有活动会话。重新打开将进入 {target}。打开失败：{detail}"
+
+#. English: Membership was saved for {target}. This run is at {running}.
+#. Reopening uses {target}. Opening failed: {detail}
+#. chrys-meta={"fingerprint":"4b4b0321f52b2220b4b1ebc9dc57b9e2328ac4506ffaa3d2838bdc29558373ba","multiline":false,"placeholders":["detail","running","target"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.membership_saved_open_failed"
+msgstr "归属已保存到 {target}。本次运行位于 {running}。重新打开将进入 {target}。打开失败：{detail}"
+
+#. English: A workspace name can't contain control characters.
+#. chrys-meta={"fingerprint":"f9f5e530d09c194f87ffb9f30a33812c9b9fe35d37a522fbfdc33eb87e7fea03","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.name_control_char"
+msgstr "工作区名称不能包含控制字符。"
+
+#. English: Enter a workspace name.
+#. chrys-meta={"fingerprint":"d8d9ee7871a057a99edebcfd69f82419f44b1e5a5ef42a6b76c89a52529a8645","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.name_empty"
+msgstr "请输入工作区名称。"
+
+#. English: A workspace with the name {name} already exists.
+#. chrys-meta={"fingerprint":"7323a92e30aee81f3edd398cf5da48d45f66cc5e34f829c509f0134883d0a185","multiline":false,"placeholders":["name"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.name_exists"
+msgstr "已存在名为 {name} 的工作区。"
+
+#. English: This session stays in workspace “{name}”, but its membership could
+#. not be saved; it will reopen as Unspecified.
+#. chrys-meta={"fingerprint":"ac4fa34e5e51f955d3eaa7ec7e27b90333b70cd0af85de21e4695e7a3340c56b","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.new_membership_write_failed"
+msgstr "此会话本次仍属于工作区“{name}”，但归属未能保存；重新打开时工作区为“未指定”。"
+
+#. English: This workspace no longer exists.
+#. chrys-meta={"fingerprint":"276cbf85c751318fdb35bc8096028dc8ce4b4179b877b45c468da12b0d0c4f1d","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.not_found"
+msgstr "该工作区已不存在。"
+
+#. English: Overlaps with {path}
+#. chrys-meta={"fingerprint":"c1d53dce8144ce44a89280dfb4d6bad3532b50e792489ed2d6a64b4bf5157681","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.overlap"
+msgstr "与 {path} 重叠"
+
+#. English: The primary folder cannot be changed. Create a new workspace to use
+#. a different primary folder.
+#. chrys-meta={"fingerprint":"13a5907d937db44b3e4e3afacc4963eba70c6c294ebd1fc21cb5ee48e6a9f935","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.primary_immutable"
+msgstr "主文件夹不能修改。要使用其他主文件夹，请新建工作区。"
+
+#. English: Primary folder does not exist: {path}.
+#. chrys-meta={"fingerprint":"654b76c77173a002570571dd6d7560630523d9b4a12b57dbfea3ae8c8833d5a8","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/workspaces/paths.py
+msgid "workspaces.primary_missing"
+msgstr "主文件夹不存在：{path}。"
+
+#. English: The workspace list was written by a newer version of {app}: {path}
+#. chrys-meta={"fingerprint":"16d5593b1d36f43a2bc3b65476e4c105d8b55d0237047c1414e6c16e6235c5dd","multiline":false,"placeholders":["app","path"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_newer_version"
+msgstr "此工作区列表由更高版本的 {app} 写入：{path}"
+
+#. English: Cannot read the workspace list: {path}
+#. chrys-meta={"fingerprint":"0e442b6acffa1dbc4a8622974408acd79976f6503326ba030249ecd61283d8b9","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_unreadable"
+msgstr "工作区列表无法读取：{path}"
+
+#. English: The workspace's primary folder, {path}, no longer exists. Restore
+#. the folder at its original path before rolling back, or reopen the session
+#. in another folder to leave the workspace.
+#. chrys-meta={"fingerprint":"e4c7b4798fa8414de8bb7fa363025cba5ecafe2d92ef53b61beb5b6b6e3c80a7","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/engine/rollback.py
+msgid "workspaces.rollback_primary_missing"
+msgstr "工作区的主文件夹 {path} 已不存在。请先将文件夹恢复到原路径再回滚，或在其他文件夹中重新打开会话以离开该工作区。"
+
+#. English: Moved this session from workspace “{previous}” to workspace
+#. “{selected}”.
+#. chrys-meta={"fingerprint":"c630fc82f3c62161bf80cfb44013b947e2e9be6b092447373a6f5fff75ab246f","multiline":false,"placeholders":["previous","selected"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.selected_from_other"
+msgstr "已将此会话从工作区“{previous}”移至工作区“{selected}”。"
+
+#. English: The workspace changed. Try again.
+#. chrys-meta={"fingerprint":"848086fd841e8ad3eeb65ad6b4d75470899e52872ffe9bd64a4b69de70e585cc","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.selection_changed"
+msgstr "工作区已变化，请重试。"
+
+#. English: Workspace selector is ambiguous: {selector}
+#. chrys-meta={"fingerprint":"b90c19721a0b60c1b06329e3fb39756d59343fdda9e34d55063ce553e991a2b5","multiline":false,"placeholders":["selector"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.selector_ambiguous"
+msgstr "工作区选择条件匹配多个工作区：{selector}"
+
+#. English: The working directory does not exist. Choose a replacement
+#. directory first.
+#. chrys-meta={"fingerprint":"7fc013672f7cef5d1d62ee241cf3d1cdf8c6894ec4145c0343e56abd26ff4420","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.working_dir_missing"
+msgstr "工作目录不存在，先选一个替代目录。"
+
+#. English: Workspace list could not be saved: {reason}
+#. chrys-meta={"fingerprint":"93d267f0d0bd69af4c5d7596eba0e82b374090ce9b7b244606283c83595ab746","multiline":false,"placeholders":["reason"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.write_failed"
+msgstr "工作区列表无法保存：{reason}"
 
 #~ msgid "attachments.retry_history_image_unsupported"
 #~ msgstr ""
@@ -18258,9 +18599,6 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.workflow.confirmation.needed"
 #~ msgstr "需要确认"
-
-#~ msgid "tui.workflow.copy"
-#~ msgstr "复制到项目"
 
 #~ msgid "tui.workflow.digests"
 #~ msgstr ""

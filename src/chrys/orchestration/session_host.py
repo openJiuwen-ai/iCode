@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Collection
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
@@ -83,7 +84,8 @@ from chrys.foundation.models.workflow_session import (
     WorkflowTarget,
     WorkspaceSnapshot,
 )
-from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.models.workspace import Workspace, session_workdirs
+from chrys.foundation.models.workspace_operations import WorkspaceOperation
 from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.util.session_ids import SESSION_SHORT_ID_LEN, session_short_id
@@ -96,9 +98,11 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile, MCPServerConfig
 from chrys.service.profiles.models.registry import ModelProfileRegistry
+from chrys.service.session.persistence import open_active_session_store
 from chrys.service.state.store import JsonFileStateStore, StateStore
 from chrys.service.workflows.discovery import Discovery
 from chrys.service.workflows.outcomes import REASON_DEADLINE_EXCEEDED
+from chrys.service.workspaces.registry import RegistrySnapshot
 
 _AGENT_PROFILE_NOT_FOUND = msg(
     "session_host.agent_profile_not_found",
@@ -119,6 +123,9 @@ _SESSION_NOT_FOUND_WITH_RECENT = msg(
 _SESSION_ID_AMBIGUOUS = msg(
     "session_host.session_id_ambiguous",
     fallback="Session id '{session_id}' is ambiguous.",
+)
+_SESSION_CHECKPOINT_UNREADABLE = msg(
+    "session_host.session_checkpoint_unreadable", fallback="Session {session_id} has no readable checkpoint."
 )
 _NO_FINAL_RESPONSE = msg(
     "session_host.no_final_response",
@@ -190,6 +197,28 @@ _InvocationProse = (
     | InvocationAnswerWithdrawn
 )
 """Model output a sub-agent keeps private: only its own invocation's stream shows it."""
+
+WORKSPACE_WARNING_CODES: frozenset[str] = frozenset(
+    {"workspace_registry_unreadable", "workspace_membership_write_failed", "workspace_selected"}
+)
+"""Workspace notices a frontend reports before its prompt event stream exists."""
+
+
+@asynccontextmanager
+async def collect_workspace_warnings(
+    bus: EventBus, codes: Collection[str], warnings: list[Warning]
+) -> AsyncGenerator[None]:
+    """Append the workspace warnings published while the context is open to *warnings*."""
+
+    async def collect_workspace_warning(event: Warning) -> None:
+        if event.code in codes:
+            warnings.append(event)
+
+    await bus.subscribe(Warning, collect_workspace_warning)
+    try:
+        yield
+    finally:
+        await bus.unsubscribe(Warning, collect_workspace_warning)
 
 
 def allows_headless_event(event: Event) -> bool:
@@ -322,6 +351,8 @@ class ChrysSessionHost:
     need startup/restore events should use ``iter_run_events()``, which
     auto-starts before publishing the user turn.  ``run_until_final()`` is only
     a convenience wrapper over that streaming primitive.
+
+    Callers pass a validated absolute ``cwd`` or omit it.
     """
 
     def __init__(
@@ -338,6 +369,8 @@ class ChrysSessionHost:
         approval_mode: ApprovalMode | None = ApprovalMode.BYPASS,
         cwd: str | None = None,
         workspace: Workspace | None = None,
+        workspace_id: str | None = None,
+        workspace_snapshot: RegistrySnapshot | None = None,
         mcp_overlay: list[MCPServerConfig] | None = None,
         allow_user_interaction: bool = False,
         on_successful_turn: Callable[[], None] | None = None,
@@ -353,11 +386,13 @@ class ChrysSessionHost:
         self._bus = event_bus or EventBus()
         self._agent_registry = agent_registry or AgentProfileRegistry()
         self._model_registry = model_registry or ModelProfileRegistry()
-        self._state_store = state_store or JsonFileStateStore()
+        self._state_store = state_store or open_active_session_store()
         self._cwd = _normalize_cwd(cwd)
         self._workflow_catalog: WorkflowCatalog | None = None
         self._workflow_selection: WorkflowSessionSelection | None = None
         self._workspace = workspace
+        self._workspace_id = workspace_id
+        self._workspace_snapshot = workspace_snapshot
         self._mcp_overlay = list(mcp_overlay or [])
         self._allow_user_interaction = allow_user_interaction
         self._started = False
@@ -373,7 +408,7 @@ class ChrysSessionHost:
             state_store=self._state_store,
             initial_approval_mode=approval_mode,
             mcp_overlay=self._mcp_overlay,
-            initial_workspace=workspace or (Workspace.from_cwd(self._cwd) if self._cwd else None),
+            initial_workspace=self._launch_workspace(),
             on_successful_turn=on_successful_turn,
             on_turn_started=on_turn_started,
             allow_user_interaction=allow_user_interaction,
@@ -433,6 +468,9 @@ class ChrysSessionHost:
         """Structured outcome for the most recently completed streamed turn."""
         return self._last_turn_outcome
 
+    def _launch_workspace(self) -> Workspace | None:
+        return self._workspace or (Workspace(primary_cwd=self._cwd) if self._cwd else None)
+
     async def start(self) -> None:
         """Start a fresh session or restore the configured existing session.
 
@@ -445,14 +483,22 @@ class ChrysSessionHost:
         self._load_registries_if_needed()
         if self._restore_session_id:
             await self.restore_session(self._restore_session_id)
-        else:
-            if not self._profile_name:
-                error_message = "profile_name is required to start a new session."
-                raise ValueError(error_message)
-            profile = self._resolve_profile(self._profile_name)
-            self._profile_name = profile.name
-            await self._engine.start(profile)
-            self._started = True
+            return
+        if not self._profile_name:
+            error_message = "profile_name is required to start a new session."
+            raise ValueError(error_message)
+        profile = self._resolve_profile(self._profile_name)
+        self._profile_name = profile.name
+        if self._engine.session_id is not None:
+            # An earlier fresh start may have allocated an ID before its build failed.
+            await self._engine.reset_after_failed_startup_restore(reload_settings=False)
+        await self._engine.start(
+            profile,
+            workspace_id=self._workspace_id,
+            workspace=self._launch_workspace(),
+            workspace_snapshot=self._workspace_snapshot,
+        )
+        self._finish_startup()
 
     async def restore_session(self, session_id: str) -> None:
         """Restore a saved session into this host."""
@@ -477,22 +523,25 @@ class ChrysSessionHost:
             if event.session_id == target_session_id and not restored.done():
                 restored.set_exception(HeadlessRunError(event))
 
+        request = SessionRestore(
+            session_id=target_session_id,
+            require_leave_confirmation=False,
+            workspace_snapshot=self._workspace_snapshot,
+            primary_cwd=self._cwd,
+            workspace_id=self._workspace_id,
+            workspace_operation=WorkspaceOperation.SELECT if self._workspace_id else WorkspaceOperation.NONE,
+            profile_name=self._profile_name,
+            working_dirs=(
+                [d.path for d in session_workdirs(self._workspace) if not d.is_primary]
+                if self._workspace is not None
+                else None
+            ),
+        )
+
         await self._bus.subscribe(SessionRestored, _on_restored)
         await self._bus.subscribe(Error, _on_error)
         try:
-            await self._bus.publish(
-                SessionRestore(
-                    session_id=target_session_id,
-                    primary_cwd=self._cwd,
-                    profile_name=self._profile_name,
-                    working_dirs=(
-                        [d.path for d in self._workspace.working_dirs if not d.is_primary]
-                        if self._workspace is not None
-                        else None
-                    ),
-                ),
-                raise_handler_errors=True,
-            )
+            await self._bus.publish(request, raise_handler_errors=True)
             await restored
         finally:
             await self._bus.unsubscribe(SessionRestored, _on_restored)
@@ -502,6 +551,17 @@ class ChrysSessionHost:
                 # the publish above, so the future's copy of the failure goes
                 # unawaited; retrieve it or asyncio logs it as never-retrieved.
                 restored.exception()
+        self._finish_startup()
+
+    def _finish_startup(self) -> None:
+        """Consume the one-shot inputs from the startup request."""
+        if self._started:
+            return
+        workspace = self._engine.workspace
+        if self._workspace_id is not None or (workspace is not None and workspace.id):
+            self._cwd = ""
+        self._workspace_id = None
+        self._workspace_snapshot = None
         self._started = True
 
     async def iter_run_events(self, message: str | UserMessage) -> AsyncIterator[Event]:
@@ -709,7 +769,7 @@ class ChrysSessionHost:
 
     def _workflow_origin(self) -> Workspace:
         """The workspace inherited by a new workflow session, copied at admission."""
-        return self._engine.workspace or self._workspace or Workspace.from_cwd(self._cwd)
+        return self._engine.workspace or self._launch_workspace() or Workspace.from_cwd()
 
     @property
     def workflow_session_id(self) -> str:
@@ -941,7 +1001,10 @@ class ChrysSessionHost:
 
     def _load_registries_if_needed(self) -> None:
         if not self._agent_registry.list_names():
-            self._agent_registry.load_all()
+            if self._workspace_id is not None:
+                self._agent_registry.load_all_readonly()
+            else:
+                self._agent_registry.load_all()
         if not self._model_registry.list_ids():
             self._model_registry.load_all()
 
@@ -963,39 +1026,7 @@ class ChrysSessionHost:
         raise AgentProfileNotFoundError(error_message, display_message=display_message)
 
     async def _resolve_restore_session_id(self, session_id: str) -> str:
-        raw = (session_id or "").strip()
-        if not raw:
-            return ""
-        sessions = await self._state_store.list_sessions()
-        normalized = raw.replace("-", "").lower()
-        if len(normalized) <= SESSION_SHORT_ID_LEN:
-            matches = [meta.session_id for meta in sessions if session_short_id(meta.session_id).lower() == normalized]
-        else:
-            matches = [
-                meta.session_id
-                for meta in sessions
-                if meta.session_id == raw or meta.session_id.replace("-", "").lower() == normalized
-            ]
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            error_message = f"Session id '{raw}' is ambiguous."
-            raise AmbiguousSessionIdError(
-                error_message,
-                display_message=_SESSION_ID_AMBIGUOUS.bind(session_id=raw),
-            )
-        recent_ids = [session_short_id(meta.session_id) for meta in sessions[:5]]
-        recent = ", ".join(recent_ids)
-        error_message = f"Session not found: {raw}"
-        if recent_ids:
-            error_message = f"{error_message}. Recent sessions: {recent}"
-            display_message = _SESSION_NOT_FOUND_WITH_RECENT.bind(
-                session_id=raw,
-                recent=DisplaySequence(recent_ids),
-            )
-        else:
-            display_message = _SESSION_NOT_FOUND.bind(session_id=raw)
-        raise SessionNotFoundError(error_message, display_message=display_message)
+        return await resolve_restore_session_id(session_id, self._state_store, repair=self._workspace_id is None)
 
     @staticmethod
     def _event_belongs_to_session(
@@ -1079,3 +1110,51 @@ class ChrysSessionHost:
             display_message=_HEADLESS_INTERACTION_REQUIRED.bind(detail=DisplayBlock(detail)),
             session_id=event.session_id,
         )
+
+
+async def resolve_restore_session_id(session_id: str, state_store: StateStore, *, repair: bool = True) -> str:
+    """Resolve a canonical chat session id by the host's full and short selector rules."""
+    raw = (session_id or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.replace("-", "").lower()
+
+    def matches_selector(candidate: str) -> bool:
+        if len(normalized) <= SESSION_SHORT_ID_LEN:
+            return session_short_id(candidate).lower() == normalized
+        return candidate == raw or candidate.replace("-", "").lower() == normalized
+
+    unreadable = False
+    if not repair and isinstance(state_store, JsonFileStateStore):
+        sessions, unreadable = await state_store.read_session_selector_candidates(session_short_id(normalized))
+    else:
+        sessions = await state_store.list_sessions() if repair else await state_store.list_sessions(repair=False)
+    if unreadable:
+        raise HeadlessRunError(
+            Error(
+                code="session_restore_failed",
+                message=f"Session {raw!r} has no readable checkpoint.",
+                display_message=_SESSION_CHECKPOINT_UNREADABLE.bind(session_id=repr(raw)),
+            )
+        )
+    matches = [meta.session_id for meta in sessions if matches_selector(meta.session_id)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        error_message = f"Session id '{raw}' is ambiguous."
+        raise AmbiguousSessionIdError(
+            error_message,
+            display_message=_SESSION_ID_AMBIGUOUS.bind(session_id=raw),
+        )
+    recent_ids = [session_short_id(meta.session_id) for meta in sessions[:5]]
+    recent = ", ".join(recent_ids)
+    error_message = f"Session not found: {raw}"
+    if recent_ids:
+        error_message = f"{error_message}. Recent sessions: {recent}"
+        display_message = _SESSION_NOT_FOUND_WITH_RECENT.bind(
+            session_id=raw,
+            recent=DisplaySequence(recent_ids),
+        )
+    else:
+        display_message = _SESSION_NOT_FOUND.bind(session_id=raw)
+    raise SessionNotFoundError(error_message, display_message=display_message)

@@ -736,3 +736,45 @@ async def test_session_delete_completes_when_post_delete_cleanup_raises(
     assert engine.session.session_id is None
     assert not engine.session.guard.owns("current")
     assert await store.load_session("current") is None
+
+
+async def test_cancelled_ordinary_restore_releases_a_late_active_lock(tmp_path, monkeypatch, agent_engine):
+    import asyncio
+    import threading
+
+    store = JsonFileStateStore(tmp_path)
+    engine = agent_engine(EventBus(), settings=Settings(), state_store=store)
+    session_id = "target"
+    entered = asyncio.Event()
+    released = asyncio.Event()
+    proceed = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    class LateLock(FileLock):
+        def release(self):
+            super().release()
+            loop.call_soon_threadsafe(released.set)
+
+    def acquire_late(target, *, timeout):
+        assert target == session_id
+        loop.call_soon_threadsafe(entered.set)
+        if not proceed.wait(5):
+            raise RuntimeError("Restore did not release the test probe")
+        lock = LateLock(store.active_lock_path(target), timeout=timeout)
+        lock.acquire()
+        return lock
+
+    monkeypatch.setattr(engine.session.guard, "acquire_for_restore", acquire_late)
+    request = asyncio.create_task(engine.on_session_restore(SessionRestore(session_id=session_id)))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+    finally:
+        proceed.set()
+    await asyncio.wait_for(released.wait(), timeout=5)
+
+    assert engine.session_id is None
+    with FileLock(store.active_lock_path(session_id), timeout=0):
+        pass

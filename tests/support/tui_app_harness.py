@@ -73,6 +73,7 @@ def make_chrys_app(
     agent_registry: object | None = None,
     gc_freeze_enabled: bool | None = False,
     event_bus: EventBus | None = None,
+    state_store: JsonFileStateStore | None = None,
     **kwargs: object,
 ) -> ChrysApp:
     """Build a ``ChrysApp`` over inert doubles with its state store under *state_root*.
@@ -85,7 +86,7 @@ def make_chrys_app(
         event_bus if event_bus is not None else EventBus(),
         engine if engine is not None else ShutdownOnlyEngine(),  # type: ignore[arg-type]
         settings=settings if settings is not None else Settings(),
-        state_store=JsonFileStateStore(state_root),
+        state_store=state_store if state_store is not None else JsonFileStateStore(state_root),
         agent_registry=agent_registry if agent_registry is not None else EmptyAgentRegistry(),  # type: ignore[arg-type]
         gc_freeze_enabled=gc_freeze_enabled,
         **kwargs,  # type: ignore[misc]

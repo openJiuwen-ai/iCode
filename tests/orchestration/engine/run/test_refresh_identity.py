@@ -32,7 +32,7 @@ from chrys.service.skills.model import SkillProviderWarning
 from chrys.service.state.store import JsonFileStateStore
 from tests.orchestration.engine.run._engine_run_helpers import _PROFILE
 from tests.orchestration.engine.run.test_lifecycle_hooks import _StagedSkillsProvider
-from tests.support.components import make_current, make_permits, make_session, make_turn_state
+from tests.support.components import make_current, make_permits, make_session, make_turn_state, plan_workspace
 from tests.support.loaded_agents import SkillRefreshLoader, install_loaded_agent, make_loaded_agent, make_manifest
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -57,7 +57,8 @@ async def refresh_components(tmp_path):
     current = make_current()
     state = make_turn_state()
     session = make_session(persistence=SessionPersistence(None, bus), workspace=None, approval_mode=None)
-    session.reset(session_id="original", workspace=Workspace.from_cwd(str(tmp_path)))
+    session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
+    session.reset(session_id="original")
     permits = make_permits(turn_state=state, session=session)
     fsm = EngineStateMachine()
     fsm.transition(Trigger.START)
@@ -303,7 +304,7 @@ async def test_committed_manifest_and_session_survive_warning_await(refresh_comp
     try:
         await wait_for(entered.is_set, description="committed refresh warning pauses")
         replacement = _replace_build(current)
-        session.reset(session_id="replacement", workspace=session.workspace)
+        session.reset(session_id="replacement")
         release.set()
         await task
         assert current.manifest is replacement
