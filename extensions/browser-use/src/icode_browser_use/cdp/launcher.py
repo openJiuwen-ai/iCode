@@ -28,12 +28,13 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, Final
+from typing import Any, BinaryIO, Final
 
 from .._proc import windows_hidden_kwargs
 from ..config import CHROME_READY_TIMEOUT, BrowserConfig
@@ -247,146 +248,95 @@ def chrome_argv(exe: str, profile: Path, *, headless: bool) -> list[str]:
 
 # ------------------------------------------------------------- win32 ctypes
 
+# Win32 ABI constants for JobObject kill-on-close & suspended-thread resume:
+# JOBOBJECT_EXTENDED_LIMIT_INFORMATION is 144 bytes on 64-bit Windows (112 on 32-bit),
+# with LimitFlags (uint32) at offset 16. THREADENTRY32 is 28 bytes on both architectures,
+# with dwSize at offset 0, th32ThreadID at offset 8, and th32OwnerProcessID at offset 12.
+_WIN_KILL_ON_CLOSE: Final = 0x2000
+_WIN_EXTENDED_LIMIT_CLASS: Final = 9
+_WIN_EXTENDED_LIMIT_BYTES: Final = 144 if ctypes.sizeof(ctypes.c_void_p) == 8 else 112
+_WIN_LIMIT_FLAGS_OFFSET: Final = 16
+_WIN_THREAD_ENTRY_BYTES: Final = 28
+_WIN_INVALID_HANDLE: Final = ctypes.c_void_p(-1).value
 
-class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-    _fields_ = [
-        ("PerProcessUserTimeLimit", ctypes.c_int64),
-        ("PerJobUserTimeLimit", ctypes.c_int64),
-        ("LimitFlags", ctypes.c_uint32),
-        ("MinimumWorkingSetSize", ctypes.c_size_t),
-        ("MaximumWorkingSetSize", ctypes.c_size_t),
-        ("ActiveProcessLimit", ctypes.c_uint32),
-        ("Affinity", ctypes.c_size_t),
-        ("PriorityClass", ctypes.c_uint32),
-        ("SchedulingClass", ctypes.c_uint32),
-    ]
-
-
-class _IO_COUNTERS(ctypes.Structure):
-    _fields_ = [
-        ("ReadOperationCount", ctypes.c_uint64),
-        ("WriteOperationCount", ctypes.c_uint64),
-        ("OtherOperationCount", ctypes.c_uint64),
-        ("ReadTransferCount", ctypes.c_uint64),
-        ("WriteTransferCount", ctypes.c_uint64),
-        ("OtherTransferCount", ctypes.c_uint64),
-    ]
-
-
-class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-    _fields_ = [
-        ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
-        ("IoInfo", _IO_COUNTERS),
-        ("ProcessMemoryLimit", ctypes.c_size_t),
-        ("JobMemoryLimit", ctypes.c_size_t),
-        ("PeakProcessMemoryUsed", ctypes.c_size_t),
-        ("PeakJobMemoryUsed", ctypes.c_size_t),
-    ]
+_WIN_KERNEL32_SPECS: Final[tuple[tuple[str, list[Any], Any], ...]] = (
+    ("OpenProcess", [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32], ctypes.c_void_p),
+    ("GetExitCodeProcess", [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)], ctypes.c_int),
+    ("CreateJobObjectW", [ctypes.c_void_p, ctypes.c_wchar_p], ctypes.c_void_p),
+    ("SetInformationJobObject", [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32], ctypes.c_int),
+    ("AssignProcessToJobObject", [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int),
+    ("TerminateJobObject", [ctypes.c_void_p, ctypes.c_uint32], ctypes.c_int),
+    ("TerminateProcess", [ctypes.c_void_p, ctypes.c_uint32], ctypes.c_int),
+    ("CloseHandle", [ctypes.c_void_p], ctypes.c_int),
+    ("CreateToolhelp32Snapshot", [ctypes.c_uint32, ctypes.c_uint32], ctypes.c_void_p),
+    ("Thread32First", [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int),
+    ("Thread32Next", [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int),
+    ("OpenThread", [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32], ctypes.c_void_p),
+    ("ResumeThread", [ctypes.c_void_p], ctypes.c_uint32),
+)
 
 
-class _THREADENTRY32(ctypes.Structure):
-    _fields_ = [
-        ("dwSize", ctypes.c_uint32),
-        ("cntUsage", ctypes.c_uint32),
-        ("th32ThreadID", ctypes.c_uint32),
-        ("th32OwnerProcessID", ctypes.c_uint32),
-        ("tpBasePri", ctypes.c_int32),
-        ("tpDeltaPri", ctypes.c_int32),
-        ("dwFlags", ctypes.c_uint32),
-    ]
-
-
-_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: Final = 0x00002000
-_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: Final = 9
-_INVALID_HANDLE_VALUE: Final = ctypes.c_void_p(-1).value
-
-
-def _kernel32() -> object:
-    """Load kernel32 with correct handle-typed signatures (Windows only)."""
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-    kernel32.OpenProcess.restype = ctypes.c_void_p
-    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-    kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
-    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
-    kernel32.SetInformationJobObject.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-    ]
-    kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    kernel32.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
-    kernel32.CreateToolhelp32Snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
-    kernel32.Thread32First.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    kernel32.Thread32Next.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    kernel32.OpenThread.restype = ctypes.c_void_p
-    kernel32.OpenThread.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-    kernel32.ResumeThread.argtypes = [ctypes.c_void_p]
-    return kernel32
+def _kernel32() -> Any:
+    """Bind required Win32 kernel32 APIs with explicit pointer-width signatures."""
+    dll = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    for fn_name, argtypes, restype in _WIN_KERNEL32_SPECS:
+        fn = getattr(dll, fn_name)
+        fn.argtypes = argtypes
+        fn.restype = restype
+    return dll
 
 
 def _win_create_kill_job() -> int | None:
-    """Create a Job object that kills its members when the last handle closes."""
-    kernel32 = _kernel32()
-    job = kernel32.CreateJobObjectW(None, None)
-    if not job:
+    """Allocate a Win32 Job object configured to terminate member processes on close."""
+    dll = _kernel32()
+    job_handle = dll.CreateJobObjectW(None, None)
+    if not job_handle:
         return None
-    info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    ok = kernel32.SetInformationJobObject(
-        job,
-        _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
-        ctypes.byref(info),
-        ctypes.sizeof(info),
-    )
-    if not ok:
-        kernel32.CloseHandle(job)
+    buf = ctypes.create_string_buffer(_WIN_EXTENDED_LIMIT_BYTES)
+    struct.pack_into("<I", buf, _WIN_LIMIT_FLAGS_OFFSET, _WIN_KILL_ON_CLOSE)
+    applied = dll.SetInformationJobObject(job_handle, _WIN_EXTENDED_LIMIT_CLASS, buf, len(buf))
+    if not applied:
+        dll.CloseHandle(job_handle)
         return None
-    return int(job)
+    return int(job_handle)
 
 
 def _win_assign_to_job(job: int, pid: int) -> bool:
-    """Attach the process to *job* (needs PROCESS_SET_QUOTA|PROCESS_TERMINATE)."""
-    kernel32 = _kernel32()
-    process_set_quota = 0x0100
-    process_terminate = 0x0001
-    handle = kernel32.OpenProcess(process_set_quota | process_terminate, False, pid)
-    if not handle:
+    """Bind *pid* to *job* using PROCESS_SET_QUOTA | PROCESS_TERMINATE."""
+    dll = _kernel32()
+    access = 0x0100 | 0x0001
+    proc_handle = dll.OpenProcess(access, False, pid)
+    if not proc_handle:
         return False
     try:
-        return bool(kernel32.AssignProcessToJobObject(job, handle))
+        return bool(dll.AssignProcessToJobObject(job, proc_handle))
     finally:
-        kernel32.CloseHandle(handle)
+        dll.CloseHandle(proc_handle)
 
 
 def _win_resume_main_thread(pid: int) -> None:
-    """Resume the suspended primary thread of *pid* (found via a thread snapshot)."""
-    kernel32 = _kernel32()
-    th32cs_snapthread = 0x00000004
-    thread_suspend_resume = 0x0002
-    snapshot = kernel32.CreateToolhelp32Snapshot(th32cs_snapthread, 0)
-    if not snapshot or int(snapshot) in (_INVALID_HANDLE_VALUE, -1):
+    """Locate the first thread owned by *pid* via Toolhelp32 and resume it."""
+    dll = _kernel32()
+    snap_handle = dll.CreateToolhelp32Snapshot(0x00000004, 0)
+    if not snap_handle or int(snap_handle) in (_WIN_INVALID_HANDLE, -1):
         return
     try:
-        entry = _THREADENTRY32()
-        entry.dwSize = ctypes.sizeof(_THREADENTRY32)
-        if not kernel32.Thread32First(snapshot, ctypes.byref(entry)):
-            return
-        while True:
-            if entry.th32OwnerProcessID == pid:
-                thread = kernel32.OpenThread(thread_suspend_resume, False, entry.th32ThreadID)
-                if thread:
-                    kernel32.ResumeThread(thread)
-                    kernel32.CloseHandle(thread)
-                    return
-            if not kernel32.Thread32Next(snapshot, ctypes.byref(entry)):
+        raw_entry = ctypes.create_string_buffer(_WIN_THREAD_ENTRY_BYTES)
+        struct.pack_into("<I", raw_entry, 0, _WIN_THREAD_ENTRY_BYTES)
+        has_entry = bool(dll.Thread32First(snap_handle, raw_entry))
+        while has_entry:
+            tid, owner_pid = struct.unpack_from("<II", raw_entry, 8)
+            if owner_pid == pid:
+                thread_handle = dll.OpenThread(0x0002, False, tid)
+                if thread_handle:
+                    try:
+                        dll.ResumeThread(thread_handle)
+                    finally:
+                        dll.CloseHandle(thread_handle)
                 return
+            has_entry = bool(dll.Thread32Next(snap_handle, raw_entry))
     finally:
-        kernel32.CloseHandle(snapshot)
+        dll.CloseHandle(snap_handle)
 
 
 def _win_close_handle(handle: int) -> None:
@@ -775,7 +725,9 @@ async def launch_chrome(
     await reclaim_orphans(state_dir)
     exe = cfg.executable or discover_chrome()
     if not exe:
-        raise Unavailable("未找到 Chrome 或 Edge，请先安装其中一个。若已安装在非标准路径，请设置 ICODE_BROWSER_EXECUTABLE")
+        raise Unavailable(
+            "未找到 Chrome 或 Edge，请先安装其中一个。若已安装在非标准路径，请设置 ICODE_BROWSER_EXECUTABLE"
+        )
 
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     profile = cfg.chrome_profile_dir
