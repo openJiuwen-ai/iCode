@@ -19,20 +19,35 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from . import __version__, diagnose, distribution
+from . import __version__, broker, chrome, diagnose, distribution, subagent
+from .bridge import install as bridge_install
 
 HELP = f"""icode-browser-use {__version__}
 
 Usage:
+  icode-browser-use connect [--chrome | --bridge]
+  icode-browser-use status
+  icode-browser-use disconnect
+  icode-browser-use update-bridge
+  icode-browser-use bridge <install|uninstall> [options]
+  icode-browser-use broker [options]
+  icode-browser-use subagent [--print | --install] [--config-dir PATH] [--force]
   icode-browser-use doctor [--json] [--connect] [--bridge] [--config-dir PATH]
   icode-browser-use install [--source PATH] [--config-dir PATH] [--replace]
   icode-browser-use uninstall [--config-dir PATH]
 
-doctor     report extension discovery, host API, configuration, browser,
-           state folder and Bridge/Broker status; read-only unless --connect
-           (TCP probe) or --bridge (actively wait for the extension)
-install    copy an exported folder package into <config_dir>/extensions/browser
-uninstall  remove that folder package only (profiles and logins are kept)
+connect        connect to your everyday Chrome login (--chrome or --bridge)
+status         show which browser backend new handles will use
+disconnect     clear the saved Chrome login connection preference
+update-bridge  update the unpacked Chrome Bridge extension at its default path
+bridge         install or uninstall the Chrome Native Messaging host & extension
+broker         run or stop the optional persistent local Broker daemon
+subagent       print or install the isolated Browser sub-agent profile (Browser.yaml)
+doctor         report extension discovery, host API, configuration, browser,
+               state folder and Bridge/Broker status; read-only unless --connect
+               (TCP probe) or --bridge (actively wait for the extension)
+install        copy an exported folder package into <config_dir>/extensions/browser
+uninstall      remove that folder package only (profiles and logins are kept)
 
 Exit status: doctor and install return 0 on success; uninstall returns 1 when
 the browser id is still installed afterwards (by a wheel this command cannot
@@ -46,12 +61,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(HELP)
         return 0
     command, rest = args[0], args[1:]
+    if command in ("connect", "status", "disconnect", "update-bridge"):
+        return chrome.main([command, *rest], prog="icode-browser-use")
+    if command == "bridge":
+        return bridge_install.main(rest)
+    if command == "broker":
+        return broker.main(rest)
+    if command == "subagent":
+        return subagent.main(rest)
     if command == "doctor":
         return diagnose.main(rest)
     if command in ("install", "uninstall"):
         return _pack(command, rest)
     print(f"icode-browser-use: unknown command {command!r}\n{HELP}", file=sys.stderr)
     return 2
+
+
+#: Stable plugin CLI entry point (ready for future host ``icode plugin browser-use`` forwarding).
+cli_main = main
 
 
 def _pack(command: str, argv: list[str]) -> int:

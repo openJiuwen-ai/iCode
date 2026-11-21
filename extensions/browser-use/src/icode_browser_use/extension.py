@@ -32,25 +32,73 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Final, Literal
 from urllib.parse import urlsplit
 
 from chrys.extensions import Extension, ToolCall, ToolContext, ToolError, TurnContext
 
-from . import registry
+from . import cli, registry
 from .actions import build_tool_defs
 from .broker_client import BrokerCallUnknown, BrokerSession
 from .config import BrowserConfig, BrowserEnv, ConfigError
 from .errors import BrowserError, ConnectionClosed, Unavailable
 from .locking import acquire_instance_lock, probe_instance_lock
 from .logging import set_log_sink
-from .prompts import BROWSER_PLAYBOOK
+from .prompts import BROWSER_PLAYBOOK, COMPACT_BROWSER_PLAYBOOK
 from .runtime import BrowserRuntime, call_tool
 from .session import BrowserSession
 
 logger = logging.getLogger(__name__)
 
 extension = Extension()
+
+#: Stable plugin CLI entry point (ready for host ``icode plugin browser-use`` forwarding).
+cli_main = cli.main
+
+#: 12 high-cohesion core tools exposed when ``ICODE_BROWSER_TOOLSET=compact`` is set.
+COMPACT_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "browser_open",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_find",
+        "browser_click",
+        "browser_fill",
+        "browser_press_key",
+        "browser_wait_for",
+        "browser_extract",
+        "browser_screenshot",
+        "browser_dialog",
+        "browser_close",
+    }
+)
+
+_WRITE_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "browser_click",
+        "browser_fill",
+        "browser_press_key",
+        "browser_upload",
+        "browser_select_option",
+        "browser_dialog",
+    }
+)
+
+
+def _active_toolset() -> str:
+    raw = (BrowserEnv().get("TOOLSET") or "full").strip().lower()
+    return "compact" if raw == "compact" else "full"
+
+
+def _tool(*, requires_approval: bool) -> Any:
+    """Register on *extension* unless ``ICODE_BROWSER_TOOLSET=compact`` excludes this tool."""
+
+    def decorator(fn: Any) -> Any:
+        if _active_toolset() == "full" or fn.__name__ in COMPACT_TOOL_NAMES:
+            return extension.tool(requires_approval=requires_approval)(fn)
+        return fn
+
+    return decorator
 
 
 #: The core's tool definitions; the adapter reuses their descriptions and
@@ -86,6 +134,10 @@ class _Browser:
     backend: str = ""
     record: dict[str, object] = field(default_factory=dict)
     manifest: Path | None = None
+    visited_origins: list[str] = field(default_factory=list)
+    blocked_origins: list[str] = field(default_factory=list)
+    screenshots: list[str] = field(default_factory=list)
+    write_actions: int = 0
 
 
 _browsers: dict[str, _Browser] = {}
@@ -434,19 +486,57 @@ def _text(blocks: list[dict[str, object]]) -> str:
     )
 
 
+def _record_origin(bucket: list[str], url: str) -> None:
+    """Append a normalized ``scheme://host[:port]`` origin uniquely (never query/path/tokens)."""
+    if not url:
+        return
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return
+    origin = f"{parts.scheme}://{parts.netloc}".lower()
+    if origin not in bucket and len(bucket) < 32:
+        bucket.append(origin)
+
+
+def _format_session_facts(browser: _Browser) -> str:
+    """Render runtime-observed, page-unforgeable session facts for parent-agent cross-checking."""
+    visited = ", ".join(browser.visited_origins) if browser.visited_origins else "none"
+    blocked = ", ".join(browser.blocked_origins) if browser.blocked_origins else "none"
+    shots = ", ".join(browser.screenshots[-10:]) if browser.screenshots else "none"
+    return (
+        "[BROWSER_SESSION_FACTS]\n"
+        f"visited_origins: {visited}\n"
+        f"blocked_origins: {blocked}\n"
+        f"write_actions: {browser.write_actions}\n"
+        f"screenshots: {shots}"
+    )
+
+
 async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> str:
     """Run one core tool and return its text blocks joined for the model."""
+    if name in _WRITE_TOOL_NAMES:
+        browser.write_actions += 1
     try:
         blocks = await _call(browser, name, arguments)
+    except ToolError as exc:
+        if (
+            exc.code == "browser_policy_denied"
+            or "site_blocked" in exc.message
+            or "site_permission_required" in exc.message
+        ):
+            target_url = str(arguments.get("url") or browser.url or "")
+            _record_origin(browser.blocked_origins, target_url)
+        raise
     finally:
         snapshot = browser.session.snapshot
         browser.url = snapshot.url or browser.url
         browser.title = snapshot.title or browser.title
+        _record_origin(browser.visited_origins, browser.url)
         _persist(browser)
     return _text(blocks)
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_open(ctx: ToolContext) -> str:
     """Allocate a browser handle and return its browser_id; launch/connect is deferred until a page tool needs it."""
     browser = _open(ctx)
@@ -501,7 +591,7 @@ def _describe(browser: _Browser) -> tuple[str, str, str]:
     return "closed", "the handle was closed", "call browser_list or browser_open"
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_list(ctx: ToolContext) -> str:
     """List this session's browsers plus recorded handles that can be reopened; never launches Chrome."""
     mine = _mine(ctx)
@@ -549,7 +639,7 @@ async def browser_list(ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_status(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -595,7 +685,7 @@ async def browser_status(
     return "\n".join(lines)
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_resume(
     ctx: ToolContext,
     resume_id: Annotated[str, "resume_id from browser_list for a recorded, not-live browser"],
@@ -665,7 +755,7 @@ async def browser_resume(
     return f"browser_id: {browser.id}\nresume_id {resume_id} {note}"
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_navigate(
     ctx: ToolContext,
     url: Annotated[
@@ -682,7 +772,7 @@ async def browser_navigate(
     return f"browser_id: {browser.id}\n{text}"
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_tabs(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -692,7 +782,7 @@ async def browser_tabs(
     return await _run(browser, "browser_tabs", {})
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_tab_switch(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -703,7 +793,7 @@ async def browser_tab_switch(
     return await _run(browser, "browser_tab_switch", {"tab_id": tab_id})
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_tab_close(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -714,7 +804,7 @@ async def browser_tab_close(
     return await _run(browser, "browser_tab_close", {"tab_id": tab_id})
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_find(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -732,7 +822,7 @@ async def browser_find(
     return await _run(browser, "browser_find", {"query": query, "role": role, "limit": limit, "fresh": fresh})
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_snapshot(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -755,7 +845,7 @@ async def browser_snapshot(
     )
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_click(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -792,7 +882,7 @@ async def browser_click(
     )
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_hover(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -803,7 +893,7 @@ async def browser_hover(
     return await _run(browser, "browser_hover", {"target": target})
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_fill(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -834,7 +924,7 @@ async def browser_fill(
     )
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_press_key(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -853,7 +943,7 @@ async def browser_press_key(
     return await _run(browser, "browser_press_key", arguments)
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_select_option(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -865,7 +955,7 @@ async def browser_select_option(
     return await _run(browser, "browser_select_option", {"target": target, "values": values})
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_wait_for(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -901,7 +991,7 @@ async def browser_wait_for(
     )
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_dialog(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -916,7 +1006,7 @@ async def browser_dialog(
     return await _run(browser, "browser_dialog", arguments)
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_downloads(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -926,7 +1016,7 @@ async def browser_downloads(
     return await _run(browser, "browser_downloads", {})
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_download_cancel(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -937,7 +1027,7 @@ async def browser_download_cancel(
     return await _run(browser, "browser_download_cancel", {"guid": guid})
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_scroll(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -956,7 +1046,7 @@ async def browser_scroll(
     return await _run(browser, "browser_scroll", arguments)
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_extract(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -977,7 +1067,7 @@ async def browser_extract(
     return await _run(browser, "browser_extract", arguments)
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_logs(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -999,7 +1089,7 @@ async def browser_logs(
     )
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_back(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -1009,7 +1099,7 @@ async def browser_back(
     return await _run(browser, "browser_back", {})
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_forward(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -1019,7 +1109,7 @@ async def browser_forward(
     return await _run(browser, "browser_forward", {})
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_reload(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -1030,7 +1120,7 @@ async def browser_reload(
     return await _run(browser, "browser_reload", {"ignore_cache": ignore_cache})
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_screenshot(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -1066,6 +1156,7 @@ async def browser_screenshot(
     size = _image_size(data)
     pixels = f"{size[0]}x{size[1]}, " if size is not None else ""
     relative = path.relative_to(directory.parent).as_posix()
+    browser.screenshots.append(relative)
     return (
         f"Screenshot saved to {path} ({mime}, {pixels}{len(data)} bytes)\n"
         f"Session file: {relative}\n"
@@ -1105,7 +1196,7 @@ def _log_late_close_failure(task: asyncio.Task[None]) -> None:
         logger.warning("browser close finished after cancellation with an error: %s", error)
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_close(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id to close"],
@@ -1122,10 +1213,10 @@ async def browser_close(
         raise
     except Exception as exc:
         raise ToolError(f"browser close failed: {exc}", code="browser_close_failed") from exc
-    return f"browser_id {browser.id} closed"
+    return f"browser_id {browser.id} closed\n{_format_session_facts(browser)}"
 
 
-@extension.tool(requires_approval=True)
+@_tool(requires_approval=True)
 async def browser_upload(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -1161,7 +1252,7 @@ async def browser_upload(
     return await _run(browser, "browser_upload", {"target": target, "path": str(candidate)})
 
 
-@extension.tool(requires_approval=False)
+@_tool(requires_approval=False)
 async def browser_action_status(
     ctx: ToolContext,
     action_id: Annotated[str, "Action id from a previous action result"],
@@ -1226,12 +1317,12 @@ async def browser_context(ctx: TurnContext) -> str | None:
     """Tell the agent which browsers it has open, and the id to pass to browser_* tools."""
     mine = _mine(ctx)
     if mine:
+        playbook = COMPACT_BROWSER_PLAYBOOK if _active_toolset() == "compact" else BROWSER_PLAYBOOK
         return (
-            f"Open browsers: {len(mine)}. Use the browser_id returned by browser_open for browser_* tools. "
-            + BROWSER_PLAYBOOK
+            f"Open browsers: {len(mine)}. Use the browser_id returned by browser_open for browser_* tools. " + playbook
         )
     recorded = _recoverable(ctx)
-    if recorded:
+    if recorded and _active_toolset() == "full":
         return (
             f"Open browsers: 0, but {len(recorded)} browser(s) recorded for this session can be reopened. "
             "Call browser_list to see them, then browser_resume."

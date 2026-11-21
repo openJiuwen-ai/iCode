@@ -110,6 +110,36 @@ approval:
     extension.browser.browser_scroll: skip
 ```
 
+## Unified CLI
+
+All plugin commands are available through the single `icode-browser-use` entry point (the module also exports `cli_main` for future `icode plugin browser-use` host forwarding):
+
+```bash
+icode-browser-use connect --chrome      # or --bridge
+icode-browser-use status
+icode-browser-use disconnect
+icode-browser-use update-bridge
+icode-browser-use bridge install        # native messaging host + extension
+icode-browser-use broker                # optional persistent local Broker
+icode-browser-use subagent --install    # install isolated Browser.yaml profile
+icode-browser-use doctor                # read-only diagnostics
+icode-browser-use install / uninstall   # standalone folder package
+```
+
+## Compact toolset & isolated `Browser` sub-agent
+
+By default the extension exposes all 29 standard tools (`ICODE_BROWSER_TOOLSET=full`). For long sessions or dedicated browser sub-agents, set `ICODE_BROWSER_TOOLSET=compact` to expose only the 12 core tools (`browser_open`, `browser_navigate`, `browser_snapshot`, `browser_find`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_wait_for`, `browser_extract`, `browser_screenshot`, `browser_dialog`, `browser_close`) together with a byte-stable compact playbook — cutting tool-schema token overhead by >55% without losing core web automation workflows.
+
+To isolate raw DOM snapshots, screenshots, and untrusted web content from your main coding agent (preventing context pollution and prompt-injection escalation to `shell` or file writes), install the least-privilege `Browser` sub-agent profile:
+
+```bash
+icode-browser-use subagent --install
+```
+
+This writes `<config_dir>/agents/Browser.yaml` with `extensions: [browser]` and `tools.builtins: [filesystem.read]` (no `shell`, no `filesystem.write`), and prints the `sub_agents.agents` snippet to add to your parent agent profile (e.g., `Code.yaml`).
+
+On `browser_close`, the plugin runtime appends a `[BROWSER_SESSION_FACTS]` block summarizing observed `visited_origins` (query/tokens stripped), `blocked_origins`, `write_actions`, and saved `screenshots` paths so the parent agent can cross-check the sub-agent's narrative against runtime facts.
+
 ## Diagnostics
 
 ```bash

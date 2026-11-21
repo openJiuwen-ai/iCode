@@ -57,6 +57,7 @@ enforced during the transfer and checked again before the file is renamed.
 DEFAULT_STATE_DIRNAME: Final = "icode-browser-use"
 CHROME_LOGIN_PREFERENCE: Final = "reuse-chrome-login"
 CHROME_DEVTOOLS_PREFERENCE: Final = "reuse-chrome-devtools"
+VALID_TOOLSETS: Final = frozenset({"full", "compact"})
 
 #: Allowlist entries are a bare domain or a leading-dot subdomain-only entry.
 #: IP literals are rejected (they cannot be expressed as an allowlist entry).
@@ -244,6 +245,8 @@ class BrowserConfig:
     """Where owned-browser downloads are saved; ``None`` keeps downloads denied."""
     download_max_bytes: int = DOWNLOAD_MAX_MB * 1024 * 1024
     """Largest download kept; a transfer that reaches it is canceled."""
+    toolset: str = "full"
+    """Exposed tool surface: ``full`` (all tools) or ``compact`` (12 core tools)."""
 
     @property
     def backend(self) -> str:
@@ -350,6 +353,9 @@ class BrowserConfig:
             raise ConfigError("ICODE_BROWSER_BROKER_IDLE_EXIT must be a number of seconds") from exc
         if not math.isfinite(broker_idle_exit) or broker_idle_exit < 0:
             raise ConfigError("ICODE_BROWSER_BROKER_IDLE_EXIT must be zero or positive")
+        toolset = (source.get("TOOLSET") or "full").strip().lower() or "full"
+        if toolset not in VALID_TOOLSETS:
+            raise ConfigError("ICODE_BROWSER_TOOLSET must be 'full' or 'compact'")
         state_dir = source.state_dir()
         broker = _as_bool(source.get("BROKER"))
         bridge_setting = source.get("BRIDGE")
@@ -395,4 +401,5 @@ class BrowserConfig:
             dialog_timeout=dialog_timeout,
             download_dir=download_dir,
             download_max_bytes=download_max_mb * 1024 * 1024,
+            toolset=toolset,
         )
