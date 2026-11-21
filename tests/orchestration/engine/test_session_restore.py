@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, create_autospec
@@ -33,9 +32,6 @@ from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mutations import workspace_changes
-from chrys.service.profiles.agents.schema import (
-    AgentProfile,
-)
 from chrys.service.state.locks import ActiveSessionGuard
 from chrys.service.state.store import SESSION_RECOVERY_FILE_NAME, JsonFileStateStore
 from tests.orchestration.engine._recovery_helpers import (
@@ -46,7 +42,9 @@ from tests.orchestration.engine._recovery_helpers import (
     stub_engine_lifecycle,
     stub_engine_shutdown,
 )
+from tests.support.components import plan_workspace
 from tests.support.event_capture import assert_display_message, collect_events
+from tests.support.workspace_engine import stub_workspace_start
 
 
 async def test_restore_loads_winning_recovery_sidecar_after_acquiring_lock(
@@ -110,29 +108,16 @@ async def test_restore_snapshots_settings_inside_the_transition_fence(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(*, staged_loaded, session, **_):
         if staged_loaded is not None:
             engine.settings_handle.install_prepared(engine.settings_handle.prepare(staged_loaded, session=session))
-        if workspace is not None:
-            engine.session.workspace = workspace
 
     monkeypatch.setattr("chrys.orchestration.engine.session_lifecycle.load_settings", hanging_restore_load)
     monkeypatch.setattr(
         "chrys.orchestration.engine.state.controls.load_settings",
         lambda **kwargs: LoadedSettings(settings=replacement_settings, provenance={}),
     )
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         restore = asyncio.create_task(engine.on_session_restore(SessionRestore(session_id="restore_me")))
@@ -273,14 +258,14 @@ async def test_failed_startup_restore_reset_releases_target_without_saving(tmp_p
 
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "restore_me"
-    engine.session.workspace = Workspace.from_cwd(str(target_cwd))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(target_cwd))))
     target_lock = engine.session.guard.acquire_for_restore("restore_me")
     engine.session.guard.install("restore_me", target_lock)
 
     await engine.reset_after_failed_startup_restore()
 
     assert engine.session.session_id is None
-    assert engine.session.workspace == Workspace.from_cwd()
+    assert engine.session.workspace is None
     assert engine.current.loaded is None
     assert engine.session.mutation_tracker is None
     assert engine.session.suppress_save is False
@@ -463,21 +448,10 @@ async def test_session_restore_keeps_admission_closed_through_restored_event(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         shutdown_closed_states.append(engine.turns.turn_state.lease.prompt_admission_closed)
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(**_):
         start_closed_states.append(engine.turns.turn_state.lease.prompt_admission_closed)
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         await engine.on_session_restore(SessionRestore(session_id="restore_me"))
@@ -499,21 +473,10 @@ async def test_new_session_keeps_admission_closed_through_restart(monkeypatch: p
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         states.append(("shutdown", engine.turns.turn_state.lease.prompt_admission_closed))
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(**_):
         states.append(("start", engine.turns.turn_state.lease.prompt_admission_closed))
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     await engine._on_new_session(SessionNew())
 
@@ -528,13 +491,15 @@ async def test_new_session_uses_profile_after_transition_permit(monkeypatch: pyt
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.agent_profile = old_profile
 
-    async def fake_begin_session_transition(operation: str) -> str:
-        assert operation == "new_session"
-        engine.session.agent_profile = new_profile
-        return "session:new_session:test"
+    prepare = engine.permits.prepare_session_transition
 
-    monkeypatch.setattr(engine.permits, "begin_session_transition", fake_begin_session_transition)
-    monkeypatch.setattr(engine.permits, "finish_session_transition", lambda _owner: None)
+    async def choose_profile_after_prepare(operation: str) -> str | None:
+        assert operation == "new_session"
+        owner = await prepare(operation)
+        engine.session.agent_profile = new_profile
+        return owner
+
+    monkeypatch.setattr(engine.permits, "prepare_session_transition", choose_profile_after_prepare)
     stubbed = stub_engine_lifecycle(monkeypatch, engine)
 
     await engine._on_new_session(SessionNew())

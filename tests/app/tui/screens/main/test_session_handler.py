@@ -28,6 +28,7 @@ from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource
 from chrys.service.state.store import JsonFileStateStore
+from chrys.service.workspaces.registry import RegistrySnapshot
 from tests.support.tui_helpers import (
     main_screen_state_at,
     make_session_handler,
@@ -174,6 +175,8 @@ def _resume_screen(
 
         async def list_sessions(self) -> list[object]:
             raise AssertionError("resume must not scan list_sessions()")
+
+        workspace_registry = SimpleNamespace(snapshot=RegistrySnapshot)
 
     async def publish(event: object) -> None:
         published.append(event)

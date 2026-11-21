@@ -1,0 +1,16 @@
+{
+ "canonical_path": "/repo/review.py",
+ "entry_digest": "entry",
+ "input_excerpt": "Review a change",
+ "manifest_digest": "manifest",
+ "mode": "",
+ "model": null,
+ "run_id": "run-0001",
+ "schema_version": 1,
+ "session_id": "legacy-workflow",
+ "source_kind": "project",
+ "spec_digest": "spec",
+ "started_at": "",
+ "title": "Review",
+ "workflow_id": "review"
+}

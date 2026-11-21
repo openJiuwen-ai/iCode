@@ -14,7 +14,14 @@ from chrys.orchestration.workflows.preview import WorkflowPreviewError
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.workflows.artifacts import session_runs
 from chrys.service.workflows.store import read_node_diagnostics
-from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import (
+    confirm,
+    make_host,
+    make_workdir,
+    patch_runtime,
+    run,
+    write_workflow,
+)
 from tests.support.workflow_workers import python_workflow
 
 BASE = """

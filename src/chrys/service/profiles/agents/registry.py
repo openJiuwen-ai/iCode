@@ -899,6 +899,15 @@ class AgentProfileRegistry:
         count += self.load_user_profiles(target)
         return count
 
+    def load_all_readonly(self) -> None:
+        """Load profiles for prechecks without migrating user YAML files."""
+        from chrys.service.profiles.reload import ProfileReload
+
+        self.load_builtins()
+        profiles = ProfileReload(self, None)
+        profiles.scan()
+        profiles.install()
+
 
 def resolve_launch_profile(registry: AgentProfileRegistry, preferred_name: str) -> AgentProfile | None:
     """Resolve a main agent for a fresh start, falling back through Code to the first visible profile.

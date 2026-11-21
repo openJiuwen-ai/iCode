@@ -38,7 +38,13 @@ from tests.app.tui.screens.main._workflow_support import (
     workflow_notice_text,
     workflow_selecting,
 )
-from tests.orchestration.workflows._hosting import make_host, make_profile, make_workdir, patch_runtime, write_workflow
+from tests.orchestration.workflows._hosting import (
+    make_host,
+    make_profile,
+    make_workdir,
+    patch_runtime,
+    write_workflow,
+)
 from tests.support.event_capture import capture_event_sequence
 from tests.support.platform_fakes import platform_with_config_dir
 from tests.support.tui_app_harness import make_chrys_app

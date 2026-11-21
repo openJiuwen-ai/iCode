@@ -66,7 +66,7 @@ class _StreamResult:
 
 def canonical_path(path: str) -> str:
     """Return the comparison identity for a filesystem path."""
-    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    return os.path.normcase(os.path.realpath(path))
 
 
 def lexical_path(path: str) -> str:

@@ -21,6 +21,7 @@ from tests.orchestration.engine._rollback_helpers import (
     _state_after_turns,
     fake_restore_factory,
 )
+from tests.support.components import plan_workspace
 from tests.support.event_capture import assert_display_message
 from tests.support.loaded_agents import install_loaded_agent, reminder_resources
 
@@ -373,7 +374,7 @@ class TestRollbackRefusals:
         if drift == "build":
             engine.permits.advance_build_generation()
         else:
-            engine.session.workspace = Workspace.from_cwd(str(tmp_path / "rebuilt-workspace"))
+            engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path / "rebuilt-workspace"))))
         warnings: list[Warning] = []
         await _collect_events(engine.event_bus, Warning, warnings)
 

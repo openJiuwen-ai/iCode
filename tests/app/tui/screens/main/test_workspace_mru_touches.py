@@ -16,6 +16,7 @@ from chrys.foundation.events.types import (
     SessionRestored,
     WorkspaceUpdated,
 )
+from chrys.foundation.models.workspace import WorkingDir, Workspace
 from tests.support.tui_helpers import (
     fake_session_title,
     main_screen_state_at,
@@ -140,6 +141,7 @@ def test_session_ready_schedules_mru_touches_for_all_roots(monkeypatch: pytest.M
 
     asyncio.run(handler.on_session_ready(event))
 
+    assert screen._state.workspace.roots == ["/repo/primary", "/repo/primary", "/repo/extra"]
     assert captured == [
         {
             "paths": ["/repo/primary", "/repo/primary", "/repo/extra"],
@@ -150,7 +152,7 @@ def test_session_ready_schedules_mru_touches_for_all_roots(monkeypatch: pytest.M
     ]
 
 
-def test_session_restored_schedules_mru_touches_for_all_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_session_restored_schedules_mru_touches_for_all_roots(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     captured: list[dict[str, object]] = []
     monkeypatch.setattr(
         "chrys.app.tui.screens.main.session_handlers.schedule_workspace_mru_touches",
@@ -165,13 +167,13 @@ def test_session_restored_schedules_mru_touches_for_all_roots(monkeypatch: pytes
             self.welcome_info = (profile, cwd)
 
         async def clear(self) -> None:
-            return
+            calls.append(("clear", None))
 
         def set_session_id(self, _session_id: str) -> None:
             return
 
-        def set_workspace_cwd(self, _cwd: str) -> None:
-            return
+        def set_workspace_cwd(self, cwd: str) -> None:
+            calls.append(("chat_cwd", cwd))
 
         def update_usage(self, _tokens: int, _total_session_tokens: int = 0) -> None:
             return
@@ -193,7 +195,14 @@ def test_session_restored_schedules_mru_touches_for_all_roots(monkeypatch: pytes
     input_bar = _FakeInputBar()
     status = _FakeStatusBar()
 
+    class _FakeShellPanel:
+        async def change_directory(self, cwd: str) -> None:
+            calls.append(("shell_cwd", cwd))
+
     def query_one(cls: type):
+        if cls.__name__ == "ShellPanel":
+            return _FakeShellPanel()
+
         if cls.__name__ == "ChatPanel":
             return panel
         if cls.__name__ == "InputBar":
@@ -219,11 +228,20 @@ def test_session_restored_schedules_mru_touches_for_all_roots(monkeypatch: pytes
         working_dirs=["/repo/restored", "/repo/extra"],
     )
 
-    asyncio.run(make_session_handler(screen).on_session_restored(event))
+    handler = make_session_handler(screen)
+    event.primary_cwd = str(tmp_path)
+    asyncio.run(handler.on_session_restored(event))
+    assert calls == [
+        ("shell_cwd", str(tmp_path)),
+        ("paste_cwd", str(tmp_path)),
+        ("clear", None),
+        ("chat_cwd", str(tmp_path)),
+    ]
 
+    assert screen._state.workspace.roots == [str(tmp_path), "/repo/restored", "/repo/extra"]
     assert captured == [
         {
-            "paths": ["/repo/restored", "/repo/restored", "/repo/extra"],
+            "paths": [str(tmp_path), "/repo/restored", "/repo/extra"],
             "max_entries": 20,
             "session_id": "session-old",
             "used_at": event.timestamp,
@@ -244,8 +262,10 @@ def test_workspace_updated_schedules_mru_touches_with_event_timestamp(monkeypatc
         session_id="session-1",
     )
 
-    asyncio.run(make_session_handler(screen).on_workspace_updated(event))
+    handler = make_session_handler(screen)
+    asyncio.run(handler.on_workspace_updated(event))
 
+    assert screen._state.workspace.roots == ["/repo/next", "/repo/next", "/repo/extra"]
     assert captured == [
         {
             "paths": ["/repo/next", "/repo/next", "/repo/extra"],
@@ -256,7 +276,29 @@ def test_workspace_updated_schedules_mru_touches_with_event_timestamp(monkeypatc
     ]
 
 
-def test_workspace_updated_records_mru_end_to_end(tmp_path: Path) -> None:
+def test_same_unspecified_directory_update_refreshes_surfaces(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, object]] = []
+    captured: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "chrys.app.tui.screens.main.session_handlers.schedule_workspace_mru_touches",
+        _capture_mru_touches(captured),
+    )
+    screen = _make_mru_workspace_screen(calls)
+    cwd = str(tmp_path)
+    screen._state.workspace_marker.current_cwd = cwd
+    screen._state.workspace.session_roots = [cwd]
+
+    asyncio.run(make_session_handler(screen).on_workspace_updated(WorkspaceUpdated(primary_cwd=cwd)))
+
+    assert ("paste_cwd", cwd) in calls
+    assert ("workspace_cwd", cwd) in calls
+    assert ("shell_cwd", cwd) in calls
+    assert ("welcome", ("Code Agent", cwd)) in calls
+    assert [entry["paths"] for entry in captured] == [[cwd]]
+
+
+@pytest.mark.parametrize("has_workspace", [False, True])
+def test_workspace_updated_records_mru_end_to_end(tmp_path: Path, has_workspace: bool) -> None:
     """The detached touch task lands in the index; missing dirs never do."""
     from chrys.app.tui.support.workspace_mru import ensure_workspace_mru_index, load_workspace_mru
 
@@ -267,7 +309,11 @@ def test_workspace_updated_records_mru_end_to_end(tmp_path: Path) -> None:
     missing = tmp_path / "deleted"
     ensure_workspace_mru_index([], max_entries=20, root_key="sha256:test-root")
     screen = _make_mru_workspace_screen([])
-    event = WorkspaceUpdated(primary_cwd=str(primary), working_dirs=[str(extra), str(missing)])
+    event = WorkspaceUpdated(
+        primary_cwd=str(primary),
+        working_dirs=[] if has_workspace else [str(extra), str(missing)],
+        workspace=Workspace(str(primary), [WorkingDir(str(extra))], id="team", name="Team") if has_workspace else None,
+    )
 
     async def run() -> None:
         await make_session_handler(screen).on_workspace_updated(event)
@@ -275,7 +321,7 @@ def test_workspace_updated_records_mru_end_to_end(tmp_path: Path) -> None:
 
     asyncio.run(run())
 
-    assert load_workspace_mru(20) == [str(primary), str(extra)]
+    assert load_workspace_mru(20) == ([str(primary)] if has_workspace else [str(primary), str(extra)])
 
 
 def test_workspace_updated_skips_mru_touch_when_index_missing(tmp_path: Path) -> None:

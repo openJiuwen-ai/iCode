@@ -377,10 +377,28 @@ msgstr ""
 msgid "controls.settings_restart_required"
 msgstr ""
 
+#. English: Workspace change was cancelled.
+#. chrys-meta={"fingerprint":"5188e6445d9035f8732fe00d3d9094526ab8e0c8f45b72cf5a2a5b7b35c45144","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.workspace_change_cancelled"
+msgstr ""
+
+#. English: Could not change workspace: {detail}
+#. chrys-meta={"fingerprint":"1cd5ac046b3ee9653c6218b84d18c5166b1cf48a2802b3e8c34d73b6d5d71775","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.workspace_change_failed"
+msgstr ""
+
 #. English: Cannot change the working directory: {path} does not exist.
 #. chrys-meta={"fingerprint":"a65947fbb2a1685469d4e7b418c5bd3b11d44b21ae07cfec374c9afcd4b5e9c8","multiline":false,"placeholders":["path"]}
 #: src/chrys/orchestration/engine/state/controls.py
 msgid "controls.workspace_missing"
+msgstr ""
+
+#. English: The active session changed.
+#. chrys-meta={"fingerprint":"0cda8c8892f4893f8eb1df9ff6dc74f330855416baa0148bea138ab5702cb486","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.workspace_session_changed"
 msgstr ""
 
 #. English: No active agent — cannot change workspace
@@ -438,6 +456,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5a6c676ca8c1e4cf8bf041273eb325296124ba640a954c34d8cc6e1c17019b65","multiline":false,"placeholders":["name"]}
 #: src/chrys/orchestration/engine/run/shortcut_commands.py
 msgid "coordinator.prompt_shortcut_unavailable"
+msgstr ""
+
+#. English: Could not clear the session: {detail}
+#. chrys-meta={"fingerprint":"453bf6e94aafd423f7e06f2f241972db9c8f1847bf23d2b13cba4eea3666e096","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.clear_session_failed"
 msgstr ""
 
 #. English: Cannot fork while the agent is still loading.
@@ -511,6 +535,31 @@ msgstr ""
 #. chrys-meta={"fingerprint":"e2025e440bd5bb775616c298de01d489e01bed7694792e310f287ac5723d617a","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "engine.fork_turn_active"
+msgstr ""
+
+#. English: Start an Unspecified session to choose a working directory.
+#. chrys-meta={"fingerprint":"4781ccefdb90f537ceb12600751a746c110e556494fafc80358a3b92906f903e","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.new_session_choose_cwd"
+msgstr ""
+
+#. English: Choose a workspace or Unspecified. With Unspecified, you can choose
+#. a working directory.
+#. chrys-meta={"fingerprint":"eb24d0b66829bc361e2cbb7f9fa9d84e5cc5d9d6a8d8e1d8807eefcd6505b363","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.new_session_choose_workspace"
+msgstr ""
+
+#. English: Could not start a new session: {detail}
+#. chrys-meta={"fingerprint":"45c92ba736217a4bfdcdefec9f181a6715ae432bf80ae363e69cdea5e21d13fd","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.new_session_failed"
+msgstr ""
+
+#. English: Cannot start a new session without an active agent.
+#. chrys-meta={"fingerprint":"607c7241abc5bbaf471172fe73c86aba6501cc2923a32cf5ee62444d81c34ee1","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "engine.new_session_no_agent"
 msgstr ""
 
 #. English: Cannot discard while a workflow run is active. Cancel the workflow
@@ -894,6 +943,24 @@ msgstr ""
 msgid "restore.agent_profile_unresolved_using_current"
 msgstr ""
 
+#. English: Chat loading requires a Chat session.
+#. chrys-meta={"fingerprint":"37774809f5ec875fb5297498ea2486fa596ab16200b499069ebead512c1e9c77","multiline":false,"placeholders":[]}
+#: src/chrys/service/state/store.py
+msgid "restore.chat_session_required"
+msgstr ""
+
+#. English: Could not restore the session: {detail}
+#. chrys-meta={"fingerprint":"66706b7aa1222c968db3337d2f79d62770e9c88ce5aad216f3208bed9b185d7f","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "restore.failed"
+msgstr ""
+
+#. English: Session {session_id} has no readable chat checkpoint.
+#. chrys-meta={"fingerprint":"cb55c78c1bed4a8191a0ff50b172698e83cccafefcf7d71180cf48da1a2b3871","multiline":false,"placeholders":["session_id"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "restore.no_checkpoint"
+msgstr ""
+
 #. English: The requested agent profile {profile} could not be found. Session
 #. restore was stopped.
 #. chrys-meta={"fingerprint":"c7a2db17096ca8688da2dc421c8db221e6e34d4f6d3de0f392bacc43fdab1ef6","multiline":false,"placeholders":["profile"]}
@@ -907,6 +974,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"c5afc8ff22088b264a82ab6ac25f6925c07fd105afd1934f53b5059bac0498c0","multiline":false,"placeholders":["app"]}
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "restore.service_session_incompatible"
+msgstr ""
+
+#. English: Cannot restore because the active session changed before
+#. installation.
+#. chrys-meta={"fingerprint":"20d28fe846ebe1e72479865204619f269fe570257a2b7822604ee70b087b7740","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "restore.session_changed"
 msgstr ""
 
 #. English: The working directory of this session no longer exists: {path}
@@ -1111,6 +1185,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5ebeb2248b225f57851eb6d7be0459e013046a04926bcd78d3e078e9639aea91","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/session_host.py
 msgid "session_host.no_final_response"
+msgstr ""
+
+#. English: Session {session_id} has no readable checkpoint.
+#. chrys-meta={"fingerprint":"dc3391d6995a6a4ff27e2fbdd45ad6363d0b2f4bcc0e711bdc658b41cdbe67c4","multiline":false,"placeholders":["session_id"]}
+#: src/chrys/orchestration/session_host.py
+msgid "session_host.session_checkpoint_unreadable"
 msgstr ""
 
 #. English: Session id '{session_id}' is ambiguous.
@@ -4370,10 +4450,23 @@ msgstr ""
 msgid "tui.approval.reuse.workdir"
 msgstr ""
 
-#. English: Also applies in other sessions in this working directory.
-#. chrys-meta={"fingerprint":"49bb89c7a881534e18d057af5bd18567bc711a5bbc43f394ecb98d29ab3407b9","multiline":false,"placeholders":[]}
+#. English: Also applies in other Unspecified sessions in this working
+#. directory.
+#. chrys-meta={"fingerprint":"ea2a38927f3b7f8af494949a3fa1421612cee0c192a6cdaacf3df7e302cca17e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.workdir_hint"
+msgstr ""
+
+#. English: This workspace
+#. chrys-meta={"fingerprint":"1e973b8eeb43da401c88b8fd3b2f38f2e7d1e44567da3e698ab18a9110c9364d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.workspace"
+msgstr ""
+
+#. English: Also applies in other sessions in this workspace.
+#. chrys-meta={"fingerprint":"4070bea18d5c3d431186a8fd9d5f3bb84d2a19dad8d8ddf461c7911afdf7c655","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.workspace_hint"
 msgstr ""
 
 #. English: The risk definitions could not be loaded.
@@ -12719,6 +12812,26 @@ msgstr ""
 msgid "tui.startup.session.restore_fallback"
 msgstr ""
 
+#. English: Session restore was cancelled.
+#. chrys-meta={"fingerprint":"b291a894d32359cae26b36ba7303a44bcd5a4d52e6c3af2155c4d7ad33410982","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.workspace_restore_declined"
+msgstr ""
+
+#. English: Could not restore session {session_id}.
+#. chrys-meta={"fingerprint":"eb4e2b5902c7499b1c942e49f011af7ea6f1da19459de556495a9c962a6dba1f","multiline":false,"placeholders":["session_id"]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.workspace_restore_failed"
+msgstr ""
+
+#. English: If the workspace's primary folder is missing, restore it, then
+#. start again with --workspace and -s. To choose another folder, start with -s
+#. alone.
+#. chrys-meta={"fingerprint":"7a71d6e8e453dc451889d28b79cbaf38f2bca19d221af395e3e5cf089eb65c5e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.workspace_restore_restart"
+msgstr ""
+
 #. English: Agent startup failed
 #. chrys-meta={"fingerprint":"3bd4c9e143fe48c4f75c90bcd4af9c333a90c23175eda1c33d12642d2407de4c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/app.py
@@ -12729,6 +12842,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"ff5347f05cc1e039d9010c2905058f253aa7ab5e0fb4e243daf5d0787404db29","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/app.py
 msgid "tui.startup.title.session"
+msgstr ""
+
+#. English: Restore the workspace's primary folder, then start again with
+#. --workspace.
+#. chrys-meta={"fingerprint":"b6e6d5ba8604c5df1642925c0dda5757bac2692fd624694d546fc3de51a1f699","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.workspace.restart"
 msgstr ""
 
 #. English: Agent load failed: {message}
@@ -17437,6 +17557,39 @@ msgstr ""
 msgid "tui.workspace.invalid_directory"
 msgstr ""
 
+#. English: Switch to {path}?  Move: This session leaves workspace “{name}” and
+#. opens in the selected folder. New session: This session stays in the
+#. workspace. A new Unspecified session opens in the selected folder. Cancel:
+#. Keep working in this session.
+#. chrys-meta={"fingerprint":"4ebe3d57425086612c18da27cc3a1766d3e71cf35b94b44c3d85d61b6f1c4f33","multiline":true,"placeholders":["name","path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.choices"
+msgstr ""
+
+#. English: Switch to {path}?  This session will leave workspace “{name}”.
+#. chrys-meta={"fingerprint":"c3fbb1df1ad084630ca83c510ed0ae14e67ad0673ffc37c591e026222a0e438a","multiline":true,"placeholders":["name","path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.message"
+msgstr ""
+
+#. English: New session
+#. chrys-meta={"fingerprint":"9131b5c344492c08b08bbf6a49f91c895f10bcff24befb5b52732f32a07cb299","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.new"
+msgstr ""
+
+#. English: Move
+#. chrys-meta={"fingerprint":"caa4e97314afab58a626e01110ad4aac02e343a3738dca6749007df925eccde9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.switch"
+msgstr ""
+
+#. English: Leave workspace?
+#. chrys-meta={"fingerprint":"32622679321e54e0c529c9b949ed6a459642af8121d3964ad000ce19330671c9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.title"
+msgstr ""
+
 #. English: Choose Folder…
 #. chrys-meta={"fingerprint":"6ed767badd06759198c1333a77ae9d7ed112831b73c05fdb083e1ec53cb2d04e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/workspace_actions.py
@@ -17469,6 +17622,14 @@ msgstr ""
 msgid "tui.workspace.missing.title"
 msgstr ""
 
+#. English: The workspace's primary folder, {path}, no longer exists. Restore
+#. it at its original path. Choosing another folder will open this session
+#. there and leave the workspace.
+#. chrys-meta={"fingerprint":"c4cf69a638b2c29bfab8a784110bf34ec94cbea160eba6484d8a41af451fe534","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.workspace_restore"
+msgstr ""
+
 #. English: Busy
 #. chrys-meta={"fingerprint":"a9c58612686934ef18a443da044d7a0d81b9c35390dfc9ef9acc91d62a95c5fb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/workspace_actions.py
@@ -17485,5 +17646,175 @@ msgstr ""
 #. chrys-meta={"fingerprint":"c421553758dff5cbef6a67694b64c777c61eaa0c317b4940cd32cc3d6c75c20c","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/run/turn_hooks.py
 msgid "turn_hooks.prompt_blocked"
+msgstr ""
+
+#. English: Workspace folders must use absolute paths.
+#. chrys-meta={"fingerprint":"eed9410aa1099e29ad9a20bac35d27cc55e4e47cf1e262f7181605940d9d507b","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.folder_invalid"
+msgstr ""
+
+#. English: The forked session could not be added to workspace “{name}”; it
+#. opens as Unspecified.
+#. chrys-meta={"fingerprint":"e898edf48fb946062178b9bb2eabe5b7ed6da16933cf616a9ebfc3b23c2386c8","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.fork_membership_write_failed"
+msgstr ""
+
+#. English: Workspace “{name}” was deleted. The new session is Unspecified.
+#. chrys-meta={"fingerprint":"608760cd625ad1185c068bfaa90c5cf3e7ef01e0718cb0379fa481cf4d64333d","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.inherited_workspace_missing"
+msgstr ""
+
+#. English: The workspace changed. Confirm leaving it again.
+#. chrys-meta={"fingerprint":"43aca0fb2bf36c183b4ad4c8ae865e8461b9a92e27ae1721e4c7fff0e734e9da","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.leave_confirmation_required"
+msgstr ""
+
+#. English: This session is now Unspecified, but leaving workspace “{name}”
+#. could not be saved; reopened later, it is back in the workspace.
+#. chrys-meta={"fingerprint":"c41bac887ff7b06241242878372c78778cbc9c2b7ee8fd033cdf0e30e93ab159","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.leave_membership_write_failed"
+msgstr ""
+
+#. English: Left workspace “{name}”; this session is now Unspecified.
+#. chrys-meta={"fingerprint":"c03c5186ed5d4cccbf8ab616d77c8b42c6eec8caa9b0c0ed0eea59f2b218c615","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.left"
+msgstr ""
+
+#. English: Workspace membership was cleared. There is no active session in
+#. this run. The session reopens as Unspecified in its saved directory. Opening
+#. failed: {detail}
+#. chrys-meta={"fingerprint":"95885d998416dda4835514b54d8b7021cb960d401996416a131b11688a1dcc14","multiline":false,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.membership_cleared_no_runtime"
+msgstr ""
+
+#. English: Workspace membership was cleared. This run is at {running}. The
+#. session reopens as Unspecified in its saved directory. Opening failed:
+#. {detail}
+#. chrys-meta={"fingerprint":"a6b1ff243d040fcc96f5c186b436f5b339df15d8f443e58b69c4e9ebaad39e5a","multiline":false,"placeholders":["detail","running"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.membership_cleared_open_failed"
+msgstr ""
+
+#. English: Membership was saved for {target}. There is no active session in
+#. this run. Reopening uses {target}. Opening failed: {detail}
+#. chrys-meta={"fingerprint":"5f19d5c5f2b7e979a4d8bae942c035c977b6cb49bed35951b5cb4024cdc691a4","multiline":false,"placeholders":["detail","target"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.membership_saved_no_runtime"
+msgstr ""
+
+#. English: Membership was saved for {target}. This run is at {running}.
+#. Reopening uses {target}. Opening failed: {detail}
+#. chrys-meta={"fingerprint":"4b4b0321f52b2220b4b1ebc9dc57b9e2328ac4506ffaa3d2838bdc29558373ba","multiline":false,"placeholders":["detail","running","target"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.membership_saved_open_failed"
+msgstr ""
+
+#. English: A workspace name can't contain control characters.
+#. chrys-meta={"fingerprint":"f9f5e530d09c194f87ffb9f30a33812c9b9fe35d37a522fbfdc33eb87e7fea03","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.name_control_char"
+msgstr ""
+
+#. English: Enter a workspace name.
+#. chrys-meta={"fingerprint":"d8d9ee7871a057a99edebcfd69f82419f44b1e5a5ef42a6b76c89a52529a8645","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.name_empty"
+msgstr ""
+
+#. English: A workspace with the name {name} already exists.
+#. chrys-meta={"fingerprint":"7323a92e30aee81f3edd398cf5da48d45f66cc5e34f829c509f0134883d0a185","multiline":false,"placeholders":["name"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.name_exists"
+msgstr ""
+
+#. English: This session stays in workspace “{name}”, but its membership could
+#. not be saved; it will reopen as Unspecified.
+#. chrys-meta={"fingerprint":"ac4fa34e5e51f955d3eaa7ec7e27b90333b70cd0af85de21e4695e7a3340c56b","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.new_membership_write_failed"
+msgstr ""
+
+#. English: This workspace no longer exists.
+#. chrys-meta={"fingerprint":"276cbf85c751318fdb35bc8096028dc8ce4b4179b877b45c468da12b0d0c4f1d","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.not_found"
+msgstr ""
+
+#. English: Overlaps with {path}
+#. chrys-meta={"fingerprint":"c1d53dce8144ce44a89280dfb4d6bad3532b50e792489ed2d6a64b4bf5157681","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.overlap"
+msgstr ""
+
+#. English: The primary folder cannot be changed. Create a new workspace to use
+#. a different primary folder.
+#. chrys-meta={"fingerprint":"13a5907d937db44b3e4e3afacc4963eba70c6c294ebd1fc21cb5ee48e6a9f935","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.primary_immutable"
+msgstr ""
+
+#. English: Primary folder does not exist: {path}.
+#. chrys-meta={"fingerprint":"654b76c77173a002570571dd6d7560630523d9b4a12b57dbfea3ae8c8833d5a8","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/workspaces/paths.py
+msgid "workspaces.primary_missing"
+msgstr ""
+
+#. English: The workspace list was written by a newer version of {app}: {path}
+#. chrys-meta={"fingerprint":"16d5593b1d36f43a2bc3b65476e4c105d8b55d0237047c1414e6c16e6235c5dd","multiline":false,"placeholders":["app","path"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_newer_version"
+msgstr ""
+
+#. English: Cannot read the workspace list: {path}
+#. chrys-meta={"fingerprint":"0e442b6acffa1dbc4a8622974408acd79976f6503326ba030249ecd61283d8b9","multiline":false,"placeholders":["path"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_unreadable"
+msgstr ""
+
+#. English: The workspace's primary folder, {path}, no longer exists. Restore
+#. the folder at its original path before rolling back, or reopen the session
+#. in another folder to leave the workspace.
+#. chrys-meta={"fingerprint":"e4c7b4798fa8414de8bb7fa363025cba5ecafe2d92ef53b61beb5b6b6e3c80a7","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/engine/rollback.py
+msgid "workspaces.rollback_primary_missing"
+msgstr ""
+
+#. English: Moved this session from workspace “{previous}” to workspace
+#. “{selected}”.
+#. chrys-meta={"fingerprint":"c630fc82f3c62161bf80cfb44013b947e2e9be6b092447373a6f5fff75ab246f","multiline":false,"placeholders":["previous","selected"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.selected_from_other"
+msgstr ""
+
+#. English: The workspace changed. Try again.
+#. chrys-meta={"fingerprint":"848086fd841e8ad3eeb65ad6b4d75470899e52872ffe9bd64a4b69de70e585cc","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.selection_changed"
+msgstr ""
+
+#. English: Workspace selector is ambiguous: {selector}
+#. chrys-meta={"fingerprint":"b90c19721a0b60c1b06329e3fb39756d59343fdda9e34d55063ce553e991a2b5","multiline":false,"placeholders":["selector"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.selector_ambiguous"
+msgstr ""
+
+#. English: The working directory does not exist. Choose a replacement
+#. directory first.
+#. chrys-meta={"fingerprint":"7fc013672f7cef5d1d62ee241cf3d1cdf8c6894ec4145c0343e56abd26ff4420","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.working_dir_missing"
+msgstr ""
+
+#. English: Workspace list could not be saved: {reason}
+#. chrys-meta={"fingerprint":"93d267f0d0bd69af4c5d7596eba0e82b374090ce9b7b244606283c83595ab746","multiline":false,"placeholders":["reason"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.write_failed"
 msgstr ""
 

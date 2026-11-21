@@ -332,6 +332,7 @@ def test_migrated_shared_approval_only_matches_its_original_directory(tmp_path):
     )
     assert service.match(candidate)
     assert not service.match(replace(candidate, context=ReuseContext(_SESSION_ID, str(tmp_path / "other"))))
+    assert not service.match(replace(candidate, context=replace(candidate.context, workspace_id="ws_" + "a" * 32)))
 
 
 def test_user_settings_can_read_old_trust_from_a_backup():

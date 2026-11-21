@@ -78,10 +78,15 @@ _DECLINE = msg("tui.approval.button.decline", fallback="Decline (N)")
 _REASON_TITLE = msg("tui.approval.reason_title", fallback="Add a decline reason")
 _REUSE_TITLE = msg("tui.approval.reuse.title", fallback="Remember Approval")
 _REUSE_SESSION = msg("tui.approval.reuse.session", fallback="This session")
+_REUSE_WORKSPACE = msg("tui.approval.reuse.workspace", fallback="This workspace")
 _REUSE_WORKDIR = msg("tui.approval.reuse.workdir", fallback="This working directory")
 _REUSE_SESSION_HINT = msg("tui.approval.reuse.session_hint", fallback="Also applies when you restore this session.")
+_REUSE_WORKSPACE_HINT = msg(
+    "tui.approval.reuse.workspace_hint", fallback="Also applies in other sessions in this workspace."
+)
 _REUSE_WORKDIR_HINT = msg(
-    "tui.approval.reuse.workdir_hint", fallback="Also applies in other sessions in this working directory."
+    "tui.approval.reuse.workdir_hint",
+    fallback="Also applies in other Unspecified sessions in this working directory.",
 )
 _REUSE_FILES = msg(
     "tui.approval.reuse.files",
@@ -368,10 +373,12 @@ class ApprovalDialog(
                         id="reuse-session",
                         tooltip=render_str(localizer, _REUSE_SESSION_HINT.bind()),
                     )
+                    shared_label = _REUSE_WORKSPACE if offer.workspace else _REUSE_WORKDIR
+                    shared_hint = _REUSE_WORKSPACE_HINT if offer.workspace else _REUSE_WORKDIR_HINT
                     yield _ApprovalRadioButton(
-                        Text(render_str(localizer, _REUSE_WORKDIR.bind())),
-                        id="reuse-workdir",
-                        tooltip=render_str(localizer, _REUSE_WORKDIR_HINT.bind()),
+                        Text(render_str(localizer, shared_label.bind())),
+                        id="reuse-workspace",
+                        tooltip=render_str(localizer, shared_hint.bind()),
                     )
                 if offer.prefix:
                     with Collapsible(title=render_str(localizer, _REUSE_ADVANCED.bind()), id="reuse-advanced"):
@@ -403,8 +410,8 @@ class ApprovalDialog(
         session = self.query_one("#reuse-session", RadioButton).value
         prefix = offer.prefix and self.query_one("#reuse-extra-args", Checkbox).value
         if prefix:
-            return "PREFIX_SESSION" if session else "PREFIX_WORKDIR"
-        return "EXACT_SESSION" if session else "EXACT_WORKDIR"
+            return "PREFIX_SESSION" if session else "PREFIX_WORKSPACE"
+        return "EXACT_SESSION" if session else "EXACT_WORKSPACE"
 
     def _novel_remote_title(self) -> str:
         """Remote-chosen title, only when it adds information beyond the body.

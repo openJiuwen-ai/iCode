@@ -14,26 +14,30 @@ from pathlib import Path
 
 from chrys.app.cli import headless
 from chrys.app.cli.headless import PreparedRuntime
-from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message
+from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message, open_launch_workspace
 from chrys.app.cli.progress import ProgressWriter, RunContext, TurnProgress, guarded, progress_console
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
-from chrys.app.parsing import SanitizingArgumentParser
+from chrys.app.parsing import WORKDIR_OPTIONS, SanitizingArgumentParser, WorkspaceHelpFormatter
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
 from chrys.foundation.errors.display import DISPLAY_WITH_HINT
+from chrys.foundation.events.types import Event, Warning
 from chrys.foundation.i18n import DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_terminal_block
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.signals import hangup_as_interrupt
 from chrys.foundation.text.encoding import decode_bytes
+from chrys.orchestration.engine.workspaces import LeaveConfirmationRequired
 from chrys.orchestration.session_host import (
+    WORKSPACE_WARNING_CODES,
     AgentProfileNotFoundError,
     AmbiguousSessionIdError,
     ChrysSessionHost,
     HeadlessRunError,
     HeadlessRunResult,
     SessionNotFoundError,
+    collect_workspace_warnings,
 )
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -42,6 +46,10 @@ from chrys.service.profiles.models.resolver import (
     loaded_with_active_model_profile,
     resolve_profile_selector,
 )
+from chrys.service.workspaces.paths import MissingWorkspacePrimary
+from chrys.service.workspaces.registry import WorkspaceRegistryError
+
+_RUN_WORKSPACE_WARNING_CODES = WORKSPACE_WARNING_CODES | {"workspace_left"}
 
 _HEADLESS_RUN_TIMEOUT = msg(
     "run.headless_timeout",
@@ -80,6 +88,7 @@ class PreparedRuntimeHolder:
 def build_parser() -> argparse.ArgumentParser:
     """Build the ``chrys run`` argument parser."""
     parser = SanitizingArgumentParser(
+        formatter_class=WorkspaceHelpFormatter,
         prog=f"{APP_COMMAND} run",
         description=f"Run an {APP_DISPLAY_NAME} agent headlessly until the final response.",
         add_help=False,
@@ -93,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--task",
         metavar="FILE",
         default=None,
-        help="Read prompt from text file (encoding auto-detected, resolved relative to --workdir)",
+        help="Read a text prompt relative to --workdir or the --workspace primary folder (encoding auto-detected)",
     )
     parser.add_argument("-a", "--agent", required=True, help="Agent profile id, name, or display name to run")
     parser.add_argument(
@@ -104,9 +113,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Active model profile id or name to use as the fallback model for this run",
     )
     parser.add_argument("-s", "--session", default=None, help="Optional session id to restore before running")
-    parser.add_argument(
-        "-C",
-        "--workdir",
+    workspace_flags = parser.add_mutually_exclusive_group()
+    workspace_flags.add_argument("--workspace", metavar="WORKSPACE", help="Open a workspace by name or ID prefix")
+    workspace_flags.add_argument(
+        *WORKDIR_OPTIONS,
         metavar="DIR",
         dest="cwd",
         default=None,
@@ -257,14 +267,18 @@ def _resolve_prompt(args: argparse.Namespace) -> str:
 
 async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -> int:
     """Execute parsed ``chrys run`` args."""
-    cwd = _apply_cwd(args.cwd)
+    if args.workspace is not None:
+        selected, snapshot, cwd = open_launch_workspace(args.workspace)
+    else:
+        selected = snapshot = None
+        cwd = _apply_cwd(args.cwd)
     prompt = _resolve_prompt(args)
-    # Normalized once, to the host's own reading of the flag: the host strips
-    # the id and treats a blank one as "no session", and a directory-independent
-    # bootstrap for a run that then starts fresh would silently drop the
-    # working directory's settings layer.
     session_id = (args.session or "").strip()
-    prepared = headless.prepare_runtime(restoring_session=bool(session_id))
+    # A blank selector starts fresh. An explicit workspace supplies the settings root.
+    if selected is not None:
+        prepared = headless.prepare_runtime(workspace_cwd=cwd or "")
+    else:
+        prepared = headless.prepare_runtime(restoring_session=bool(session_id))
     holder.runtime = prepared
     headless.write_pending_warnings(prepared, as_json=args.json)
     loaded, model_registry = _apply_active_model_selection(prepared.loaded, args.model)
@@ -275,6 +289,8 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
         model_registry=model_registry,
         approval_mode=ApprovalMode.BYPASS,
         cwd=cwd,
+        workspace_id=selected.id if selected is not None else None,
+        workspace_snapshot=snapshot,
         on_successful_turn=on_buddy_successful_turn,
         surface=SessionSurface.CLI,
     )
@@ -292,7 +308,12 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
             # root's additions are written before the run. ``start()`` is
             # idempotent; the run does not restore twice.
             if progress is None:
-                await host.start()
+                workspace_warnings: list[Warning] = []
+                async with collect_workspace_warnings(host.event_bus, _RUN_WORKSPACE_WARNING_CODES, workspace_warnings):
+                    try:
+                        await host.start()
+                    finally:
+                        headless.write_warning_events(workspace_warnings, prepared.localizer, as_json=args.json)
             else:
                 progress.restoring(session_id)
                 async with progress.observe_restore(host.event_bus):
@@ -304,7 +325,19 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
                 progress.warnings(delta)
                 progress.restored(host.session_id or "")
         try:
-            result = await host.run_until_final(prompt, on_event=None if progress is None else guarded(progress.handle))
+
+            def workspace_warning(event: Event) -> None:
+                if isinstance(event, Warning) and event.code in _RUN_WORKSPACE_WARNING_CODES:
+                    headless.write_warning_events([event], prepared.localizer, as_json=args.json)
+
+            if progress is None:
+                workspace = host.engine.workspace
+                on_event = (
+                    workspace_warning if selected is not None or (workspace is not None and workspace.id) else None
+                )
+            else:
+                on_event = guarded(progress.handle)
+            result = await host.run_until_final(prompt, on_event=on_event)
         except BaseException:
             if progress is not None:
                 progress.failed()
@@ -359,7 +392,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.prompt is None) == (args.task is None):
         parser.error("provide either a prompt or --task FILE, not both")
-    if (missing_cwd := launch_cwd_missing_message(workdir_flag=True, workdir=args.cwd)) is not None:
+    if (
+        args.workspace is None
+        and (missing_cwd := launch_cwd_missing_message(workdir_flag=True, workdir=args.cwd)) is not None
+    ):
         headless.write_error(missing_cwd, as_json=args.json, code=LAUNCH_CWD_MISSING_CODE)
         return 1
     holder = PreparedRuntimeHolder()
@@ -368,6 +404,14 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(run_command(args, holder))
     except TaskFileError as exc:
         headless.write_error(str(exc), as_json=args.json, code=exc.code)
+        return 1
+    except (WorkspaceRegistryError, MissingWorkspacePrimary) as exc:
+        message = _localized_or_english(exc.display_message, as_json=args.json, runtime=holder.runtime)
+        headless.write_error(message, as_json=args.json, code=exc.code)
+        return 1
+    except LeaveConfirmationRequired as exc:
+        message = _localized_or_english(exc.display_message, as_json=args.json, runtime=holder.runtime)
+        headless.write_error(message, as_json=args.json, code="workspace_leave_confirmation_required")
         return 1
     except HeadlessRunError as exc:
         runtime = holder.runtime

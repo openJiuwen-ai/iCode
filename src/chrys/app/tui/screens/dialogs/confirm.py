@@ -54,8 +54,8 @@ class ConfirmDialog(BaseDialog[bool]):
 
     BINDINGS: ClassVar[list] = [
         localized_binding("escape", "cancel", CANCEL_BINDING, show=False, priority=True),
-        Binding("left", "switch_focus", show=False),
-        Binding("right", "switch_focus", show=False),
+        Binding("left", "switch_focus(-1)", show=False),
+        Binding("right", "switch_focus(1)", show=False),
     ]
 
     CSS_PATH = "confirm.tcss"
@@ -70,6 +70,7 @@ class ConfirmDialog(BaseDialog[bool]):
         confirm_variant: str = "primary",
         *,
         locale_controller: LocaleController | None = None,
+        alternate_label: ConfirmLabel | None = None,
         bold_message_prefix: bool = False,
         tasks: tuple[TaskSummaryData, ...] = (),
         impact: tuple[ConfirmLabel, ...] = (),
@@ -80,6 +81,8 @@ class ConfirmDialog(BaseDialog[bool]):
         self._message_value = message
         self._confirm_label_message = confirm_label
         self._cancel_label_message = cancel_label
+        self._alternate_label_message = alternate_label
+        self.selected_alternate = False
         self._bold_message_prefix = bold_message_prefix
         self._tasks = tasks
         self._impact = impact
@@ -101,6 +104,9 @@ class ConfirmDialog(BaseDialog[bool]):
                 yield from self.compose_message()
                 confirm_label = self._render_message(self._confirm_label_message)
                 specs = [DialogButtonSpec(Text(confirm_label), id="confirm-yes", variant=self._confirm_variant)]
+                if self._alternate_label_message is not None:
+                    alternate_label = self._render_message(self._alternate_label_message)
+                    specs.append(DialogButtonSpec(Text(alternate_label), id="confirm-alternate"))
                 if self._cancel_label_message is not None:
                     cancel_label = self._render_message(self._cancel_label_message)
                     specs.append(DialogButtonSpec(Text(cancel_label), id="confirm-no", variant="warning"))
@@ -219,6 +225,10 @@ class ConfirmDialog(BaseDialog[bool]):
         if self._cancel_label_message is not None:
             self._cancel_label = self._render_message(self._cancel_label_message)
             self.query_one("#confirm-no", Button).label = Text(self._cancel_label)
+        if self._alternate_label_message is not None:
+            self.query_one("#confirm-alternate", Button).label = Text(
+                self._render_message(self._alternate_label_message)
+            )
         self._size_dialog()
 
     def _focus_confirm_button(self) -> None:
@@ -229,16 +239,26 @@ class ConfirmDialog(BaseDialog[bool]):
     def _on_confirm(self, event: Button.Pressed) -> None:
         self.dismiss(True)
 
+    @on(Button.Pressed, "#confirm-alternate")
+    def _on_alternate(self, event: Button.Pressed) -> None:
+        self.selected_alternate = True
+        self.dismiss(True)
+
     @on(Button.Pressed, "#confirm-no")
     def _on_cancel(self, event: Button.Pressed) -> None:
         self.dismiss(False)
 
-    def action_switch_focus(self) -> None:
+    def action_switch_focus(self, direction: int = 1) -> None:
         if self._cancel_label is None:
             return
         yes = self.query_one("#confirm-yes", Button)
         no = self.query_one("#confirm-no", Button)
-        if yes.has_focus:
+        if self._alternate_label_message is not None:
+            alternate = self.query_one("#confirm-alternate", Button)
+            buttons = (yes, alternate, no)
+            focused = next((index for index, button in enumerate(buttons) if button.has_focus), None)
+            (yes if focused is None else buttons[(focused + direction) % len(buttons)]).focus()
+        elif yes.has_focus:
             no.focus()
         else:
             yes.focus()

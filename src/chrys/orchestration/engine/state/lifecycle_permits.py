@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from chrys.foundation.i18n import MessageRef, msg
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
 from chrys.orchestration.engine.state.active_session import ActiveSession
 
@@ -221,6 +222,21 @@ class LifecyclePermits:
             old_session_generation=old_generation,
             prompt_admission_owner=owner,
         )
+
+    async def finish_committed_session_step(self, operation: Callable[[], Awaitable[None]]) -> None:
+        """Let a committed transition finish its owned step before propagating cancellation."""
+        if not self.current_task_owns_session_transition_permit() or not self._active_session_transition_committed:
+            raise RuntimeError("A committed session transition is required.")
+        owner_task = self._active_session_transition_permit_task
+
+        async def complete() -> None:
+            self._active_session_transition_permit_task = asyncio.current_task()
+            try:
+                await operation()
+            finally:
+                self._active_session_transition_permit_task = owner_task
+
+        await finish_close(asyncio.create_task(complete()))
 
     def abort_prepared_session_transition(self, owner: str) -> None:
         """Release a prepared transition without changing session ownership."""

@@ -24,6 +24,8 @@ from chrys.orchestration.engine.state.machine import Trigger
 from chrys.service.context.compaction import UnifiedContextStrategy
 from chrys.service.session.runtime_metadata import CONTEXT_CALIBRATION_VERSION
 from tests.orchestration.engine.test_agent_loader import _candidate_result, _profile
+from tests.support.components import plan_workspace
+from tests.support.workspace_engine import build_workspace_candidate
 
 
 class _Coordinator:
@@ -90,7 +92,9 @@ async def test_preparation_failure_closes_candidates_and_preserves_all_live_valu
     profile = _profile()
     await engine.start(profile)
     engine.current.loaded.bindings.backend.history_state["messages"] = [Message("user", ["preserved"])]
-    engine_services(engine).workspace_change_tracker.retarget_roots(Workspace(primary_cwd=str(tmp_path)))
+    engine_services(engine).workspace_change_tracker.apply_retarget(
+        engine_services(engine).workspace_change_tracker.resolve_retarget(Workspace(primary_cwd=str(tmp_path)))
+    )
     engine_services(engine).workspace_change_tracker.capture_baseline(3)
     engine_services(engine).workspace_change_tracker.queue_safety_notice("keep safety", cwd=str(tmp_path))
     staged_loaded = LoadedSettings(settings=Settings(locale="zh-Hans", workspace_change_notice=False), provenance={})
@@ -174,7 +178,12 @@ async def test_preparation_cleanup_cancellation_still_closes_both_candidate_owne
     profile = _profile()
     coordinator = _Coordinator()
     staged = replace(
-        engine.loader.stage(loaded=engine.loaded_settings, agent_profile=profile, workspace=None, hook_manager=None),
+        engine.loader.stage(
+            loaded=engine.loaded_settings,
+            agent_profile=profile,
+            workspace_plan=plan_workspace(Workspace.from_cwd()),
+            hook_manager=None,
+        ),
         mutation_coordinator=coordinator,
     )
 
@@ -272,7 +281,7 @@ async def test_workspace_preparation_reads_runtime_overlay(
     resolve = engine_services(engine).workspace_change_tracker.resolve_retarget
     seen = []
 
-    def observe(workspace, *, resolve_scope):
+    def observe(workspace, *, resolve_scope=True):
         seen.append(resolve_scope)
         return resolve(workspace, resolve_scope=resolve_scope)
 
@@ -296,10 +305,7 @@ async def test_candidate_history_stamps_occurrences_before_install(
     monkeypatch.setattr(assembly_module, "build_agent", build_candidate)
     engine = agent_engine(bus, settings=Settings())
     profile = _profile()
-    completed = await engine.loader.build(
-        profile,
-        engine.loader.stage(loaded=engine.loaded_settings, agent_profile=profile, workspace=None, hook_manager=None),
-    )
+    completed = await build_workspace_candidate(engine, profile)
     assert engine.current.loaded is None
     item_id = read_analytics_item_id(message.additional_properties)
     assert item_id

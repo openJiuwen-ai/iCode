@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
@@ -73,6 +74,20 @@ class ActiveSessionGuard:
         lock = FileLock(path, timeout=timeout)
         lock.acquire()
         return lock
+
+    async def acquire_for_restore_async(self, session_id: str, *, timeout: float) -> FileLock | None:
+        """Acquire off-thread and release the result if the waiting restore is cancelled."""
+        pending = asyncio.create_task(asyncio.to_thread(self.acquire_for_restore, session_id, timeout=timeout))
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+
+            def release_abandoned(task: asyncio.Task[FileLock | None]) -> None:
+                if not task.cancelled() and task.exception() is None and (lock := task.result()) is not None:
+                    lock.release()
+
+            pending.add_done_callback(release_abandoned)
+            raise
 
     def install(self, session_id: str, lock: FileLock | None) -> None:
         """Make *lock* the active lock held by this guard."""

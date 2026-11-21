@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
+from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
@@ -26,9 +27,16 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
+
+# Bind the runtime's platform getter before the help test patches the platform module.
+from chrys.foundation.models import session_env as session_env
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.startup import RuntimeBootstrap
+from tests.support.platform_fakes import platform_with_config_dir
+from tests.support.symlinks import junction_or_skip, symlink_or_skip
 from tests.support.tui_helpers import main_screen_parts
+from tests.support.workspace_registry import default_workspace_registry as default_workspace_registry
+from tests.support.workspace_registry import move_profile_to_legacy_path, retarget_workdir_alias, save_chat_session
 
 
 @pytest.mark.parametrize("show_startup_loading", [False, True])
@@ -267,7 +275,7 @@ def test_main_restores_terminal_when_app_run_raises(
     monkeypatch.setattr(tui_app, "EventBus", object)
     monkeypatch.setattr(tui_app, "AgentProfileRegistry", _Registry)
     monkeypatch.setattr(tui_app, "ModelProfileRegistry", _Registry)
-    monkeypatch.setattr("chrys.service.state.store.JsonFileStateStore", object)
+    monkeypatch.setattr("chrys.service.session.persistence.open_active_session_store", object)
     monkeypatch.setattr("chrys.orchestration.engine.assembly.assemble_agent_engine", _Engine)
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -276,10 +284,12 @@ def test_main_restores_terminal_when_app_run_raises(
     assert calls == ["run", "restore-terminal", "reset-title", "stop-debug"]
 
 
+@pytest.mark.parametrize("entry", ["workdir", "alias", "junction"])
 def test_main_passes_startup_args_to_app(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     fake_platform,
+    entry,
 ) -> None:
     """The TUI parser should apply high-priority startup args before app construction."""
     from chrys.app.tui import app as tui_app
@@ -293,10 +303,22 @@ def test_main_passes_startup_args_to_app(
     engine_handle: list[SettingsHandle] = []
     workdir = tmp_path / "workspace"
     workdir.mkdir()
+    alias = tmp_path / "alias"
+    if entry == "alias":
+        symlink_or_skip(alias, workdir, target_is_directory=True)
+        getcwd = os.getcwd
+
+        def getcwd_with_alias():
+            cwd = getcwd()
+            return str(alias) if Path(cwd).resolve() == workdir.resolve() else cwd
+
+        monkeypatch.setattr(os, "getcwd", getcwd_with_alias)
+    elif entry == "junction":
+        junction_or_skip(alias, workdir)
 
     class _App:
         def __init__(self, *_args: object, **kwargs: object) -> None:
-            self._return_code = 0
+            self.return_code = 0
             captured_kwargs.update(kwargs)
 
         def run(self) -> None:
@@ -305,7 +327,10 @@ def test_main_passes_startup_args_to_app(
 
     class _AgentRegistry:
         def load_all(self) -> None:
-            return
+            assert entry == "workdir"
+
+        def load_all_readonly(self) -> None:
+            assert entry != "workdir"
 
     class _ModelRegistry:
         def __init__(self) -> None:
@@ -337,11 +362,24 @@ def test_main_passes_startup_args_to_app(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["chrys", "-s", "session-1", "-a", "Code", "-m", "Friendly Model", "-C", str(workdir)],
+        [
+            "chrys",
+            "-s",
+            "session-1",
+            "-a",
+            "Code",
+            "-m",
+            "Friendly Model",
+            *(["-C", str(workdir)] if entry == "workdir" else ["--workspace", "Team"]),
+        ],
     )
     monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
     monkeypatch.delenv("CHRYS_MODEL_PROFILE")
     monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: fake_platform(config_dir=tmp_path))
+    if entry != "workdir":
+        from chrys.service.workspaces.registry import WorkspaceRegistry
+
+        workspace = WorkspaceRegistry().create("Team", str(alias))
     monkeypatch.setattr(startup_mod, "configure_utf8_stdio", lambda: None)
     bootstrap_roots: list[Path] = []
 
@@ -366,7 +404,7 @@ def test_main_passes_startup_args_to_app(
     monkeypatch.setattr(tui_app, "EventBus", object)
     monkeypatch.setattr(tui_app, "AgentProfileRegistry", _AgentRegistry)
     monkeypatch.setattr(tui_app, "ModelProfileRegistry", _ModelRegistry)
-    monkeypatch.setattr("chrys.service.state.store.JsonFileStateStore", object)
+    monkeypatch.setattr("chrys.service.session.persistence.open_active_session_store", object)
     monkeypatch.setattr("chrys.orchestration.engine.assembly.assemble_agent_engine", _Engine)
 
     original_cwd = Path.cwd()
@@ -384,7 +422,13 @@ def test_main_passes_startup_args_to_app(
     assert captured_kwargs["apply_saved_model_on_restore"] is False
     # ``-C`` must chdir before bootstrap: the workdir names the workdir
     # trust domain the settings load reads from.
-    assert bootstrap_roots == [workdir]
+    assert len(bootstrap_roots) == 1 and bootstrap_roots[0].samefile(workdir)
+    if entry != "workdir":
+        assert captured_kwargs["startup_workspace_id"] == workspace.id
+        snapshot = captured_kwargs["startup_workspace_snapshot"]
+        assert snapshot.workspace(workspace.id) == workspace
+        assert Path(captured_kwargs["startup_workspace_cwd"]) == bootstrap_roots[0]
+        assert workspace.primary_cwd == str(alias)
     loaded = captured_engine_kwargs["loaded_settings"]
     assert isinstance(loaded, LoadedSettings)
     # The app must read through the engine's own handle. Anything else — even
@@ -409,7 +453,9 @@ def test_main_passes_startup_args_to_app(
     captured_engine_kwargs["on_successful_turn"]()
     assert buddy_calls == ["buddy", "title"]
     assert captured_engine_kwargs["on_turn_started"].__self__ is title_updater
-    assert calls == [f"cwd:{workdir}", "run", "restore-terminal", "reset-title", "stop-debug"]
+    cwd, *events = calls
+    assert Path(cwd.removeprefix("cwd:")).samefile(workdir)
+    assert events == ["run", "restore-terminal", "reset-title", "stop-debug"]
 
 
 def _hostile_unrecognized_option_argv(_tmp_path: Path) -> tuple[list[str], str]:
@@ -625,11 +671,11 @@ def test_terminal_title_reset_after_run_uses_cwd(monkeypatch: pytest.MonkeyPatch
     assert capsys.readouterr().err == f"\x1b]0;{title}\x07\x1b]2;{title}\x07"
 
 
-def test_tui_help_does_not_offer_profile(monkeypatch: pytest.MonkeyPatch, capsys, tmp_path, fake_platform) -> None:
+def test_tui_help_does_not_offer_profile(monkeypatch: pytest.MonkeyPatch, capsys, tmp_path) -> None:
     """TUI profile selection should happen inside the app, not through argv."""
     from chrys.app.tui import app as tui_app
 
-    monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: fake_platform(config_dir=tmp_path))
+    monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: platform_with_config_dir(tmp_path))
     monkeypatch.setattr("chrys.app.tui.screens.logs.install_log_handler", lambda: None)
     monkeypatch.setattr(sys, "argv", ["chrys", "--help"])
     for key in ("PYTHONUTF8", "PYTHONIOENCODING"):
@@ -707,6 +753,7 @@ async def test_start_engine_surfaces_early_startup_failure() -> None:
     app._engine = _Engine()
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._startup_session_id = ""
+    app._startup_workspace_id = None
     app._deferred_settings_warnings = []
     screen = _attach_startup_facade(_Screen())
 
@@ -723,9 +770,6 @@ async def test_start_engine_restores_startup_session_after_start() -> None:
     class _Engine:
         async def prepare(self, profile: object) -> None:
             calls.append(("prepare", profile))
-
-        async def reset_after_failed_startup_restore(self) -> None:
-            calls.append(("reset_restore", None))
 
         async def start(self, profile: object) -> None:
             calls.append(("start", profile))
@@ -744,6 +788,7 @@ async def test_start_engine_restores_startup_session_after_start() -> None:
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
     app._startup_session_id = "session-1"
+    app._startup_workspace_id = None
     app._deferred_settings_warnings = []
     screen = _attach_startup_facade(
         SimpleNamespace(
@@ -787,6 +832,7 @@ async def test_start_engine_restores_canonical_startup_session_id() -> None:
     app._engine = _Engine()
     app._state_store = _Store()
     app._startup_session_id = "canonicalsess"
+    app._startup_workspace_id = None
     app._deferred_settings_warnings = []
     screen = _attach_startup_facade(
         SimpleNamespace(
@@ -815,9 +861,6 @@ async def test_start_engine_falls_back_when_restore_emits_no_success(outcome: st
     class _Engine:
         async def prepare(self, profile: object) -> None:
             calls.append(("prepare", profile))
-
-        async def reset_after_failed_startup_restore(self) -> None:
-            calls.append(("reset_restore", None))
 
         async def start(self, profile: object) -> None:
             calls.append(("start", profile))
@@ -855,6 +898,7 @@ async def test_start_engine_falls_back_when_restore_emits_no_success(outcome: st
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
     app._startup_session_id = "session-1"
+    app._startup_workspace_id = None
     app._deferred_settings_warnings = []
     profile = object()
 
@@ -875,7 +919,6 @@ async def test_start_engine_falls_back_when_restore_emits_no_success(outcome: st
         ("restore", "session-1"),
         ("cancel", None),
         *(warning if outcome == "failed" else []),
-        ("reset_restore", None),
         ("start", profile),
     ]
 
@@ -941,9 +984,6 @@ async def test_start_engine_dismisses_startup_modal_before_startup_session_resto
         async def prepare(self, profile: object) -> None:
             calls.append(("prepare", profile))
 
-        async def reset_after_failed_startup_restore(self) -> None:
-            calls.append(("reset_restore", None))
-
         async def start(self, profile: object) -> None:
             calls.append(("start", profile))
 
@@ -964,6 +1004,7 @@ async def test_start_engine_dismisses_startup_modal_before_startup_session_resto
     app._engine = _Engine()
     app._state_store = _Store()
     app._startup_session_id = "session-1"
+    app._startup_workspace_id = None
     app._deferred_settings_warnings = []
     screen = _attach_startup_facade(
         SimpleNamespace(
@@ -1025,6 +1066,7 @@ async def test_start_engine_cancels_active_startup_modal_before_startup_session_
     app._engine = _Engine()
     app._state_store = _Store()
     app._startup_session_id = "session-1"
+    app._startup_workspace_id = None
     app._deferred_settings_warnings = []
     screen = _attach_startup_facade(
         SimpleNamespace(
@@ -1066,9 +1108,6 @@ async def test_start_engine_missing_startup_session_warns_and_continues() -> Non
         async def prepare(self, profile: object) -> None:
             calls.append(("prepare", profile))
 
-        async def reset_after_failed_startup_restore(self) -> None:
-            calls.append(("reset_restore", None))
-
         async def start(self, profile: object) -> None:
             calls.append(("start", profile))
 
@@ -1098,6 +1137,7 @@ async def test_start_engine_missing_startup_session_warns_and_continues() -> Non
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
     app._startup_session_id = "missing-session"
+    app._startup_workspace_id = None
     app._deferred_settings_warnings = []
     profile = object()
 
@@ -1108,7 +1148,6 @@ async def test_start_engine_missing_startup_session_warns_and_continues() -> Non
         ("loading", True),
         ("meta", "missing-session"),
         ("loading", False),
-        ("reset_restore", None),
         ("start", profile),
     ]
     warning = f"Session {session_short_id('missing-session')} was not found."
@@ -1125,9 +1164,6 @@ async def test_start_engine_startup_session_restore_failure_warns_and_continues(
     class _Engine:
         async def prepare(self, profile: object) -> None:
             calls.append(("prepare", profile))
-
-        async def reset_after_failed_startup_restore(self) -> None:
-            calls.append(("reset_restore", None))
 
         async def start(self, profile: object) -> None:
             calls.append(("start", profile))
@@ -1165,6 +1201,7 @@ async def test_start_engine_startup_session_restore_failure_warns_and_continues(
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
     app._startup_session_id = "session-1"
+    app._startup_workspace_id = None
     app._deferred_settings_warnings = []
     profile = object()
 
@@ -1176,7 +1213,6 @@ async def test_start_engine_startup_session_restore_failure_warns_and_continues(
         ("meta", "session-1"),
         ("restore", "session-1", True),
         ("loading", False),
-        ("reset_restore", None),
         ("start", profile),
     ]
     warning = f"Could not restore session {session_short_id('session-1')}: restore exploded"
@@ -1216,6 +1252,7 @@ async def test_start_engine_drops_deferred_settings_warnings_after_a_successful_
     app._engine = _Engine()
     app._state_store = _Store()
     app._startup_session_id = "session-1"
+    app._startup_workspace_id = None
     app._bus = bus
     app._deferred_settings_warnings = [Warning(code="settings_layer_warning", message="From the launch cwd.")]
     screen = _attach_startup_facade(
@@ -1239,9 +1276,6 @@ async def test_start_engine_flushes_deferred_settings_warnings_when_falling_back
     class _Engine:
         async def prepare(self, profile: object) -> None:
             calls.append("prepare")
-
-        async def reset_after_failed_startup_restore(self) -> None:
-            calls.append("reset_restore")
 
         async def start(self, profile: object) -> None:
             calls.append("start")
@@ -1290,10 +1324,344 @@ async def test_start_engine_flushes_deferred_settings_warnings_when_falling_back
     app._locale_controller = tui_i18n.LocaleController(Settings(locale="en"))
     app._state_store = _Store()
     app._startup_session_id = "session-1"
+    app._startup_workspace_id = None
     app._bus = bus
     app._deferred_settings_warnings = [Warning(code="settings_layer_warning", message="From the launch cwd.")]
 
     await app._start_engine(object(), _Screen())  # type: ignore[arg-type]
 
-    assert calls == ["prepare", "reset_restore", ("flushed", "settings_layer_warning"), "start"]
+    assert calls == ["prepare", ("flushed", "settings_layer_warning"), "start"]
     assert app._deferred_settings_warnings == []
+
+
+@pytest.mark.parametrize(
+    ("locale", "outcome", "restart_text"),
+    [
+        ("en", "failed", "start again"),
+        ("en", "declined", "start again"),
+        ("zh-Hans", "failed", "重新启动"),
+        ("zh-Hans", "declined", "重新启动"),
+        ("zh-Hans", "no-success", ""),
+        ("zh-Hans", "fresh", ""),
+        ("zh-Hans", "fresh-missing", "重新启动"),
+    ],
+)
+async def test_workspace_startup_error_is_localized(tmp_path, locale, outcome, restart_text):
+    from chrys.app.tui.screens.main.screen import MainScreen
+    from chrys.foundation.models.workspace import Workspace
+    from chrys.service.state.store import JsonFileStateStore
+    from chrys.service.workspaces.paths import MissingWorkspacePrimary
+    from chrys.service.workspaces.registry import workspace_not_found
+
+    store = JsonFileStateStore(tmp_path / "sessions")
+    await store.save_session("target", {"messages": []}, primary_cwd=str(tmp_path))
+    app = object.__new__(ChrysApp)
+    app._state_store = store
+    app._startup_session_id = "" if outcome.startswith("fresh") else "target"
+    app._startup_workspace_id = "private-selector" if outcome == "fresh" else "team"
+    app._startup_workspace_snapshot = None
+    app._startup_workspace_cwd = ""
+    app._locale_controller = tui_i18n.LocaleController(Settings(locale=locale))
+    failure = (
+        MissingWorkspacePrimary(str(tmp_path / "missing"))
+        if outcome == "fresh-missing"
+        else workspace_not_found("private-selector")
+    )
+    app._engine = SimpleNamespace(prepare=AsyncMock(), start=AsyncMock(side_effect=failure))
+    app.exit = Mock()
+    screen = create_autospec(MainScreen, instance=True)
+    if outcome == "declined":
+        screen.restore_startup_session.return_value = "declined"
+    elif outcome == "no-success":
+        screen.restore_startup_session.return_value = "failed"
+    else:
+        screen.restore_startup_session.side_effect = MissingWorkspacePrimary(str(tmp_path / "missing"))
+
+    profile = object()
+    await app._start_engine(profile, screen)
+
+    app.exit.assert_called_once()
+    assert app.exit.call_args.kwargs["return_code"] == 1
+    message = app.exit.call_args.kwargs["message"]
+    if outcome == "fresh":
+        app._engine.start.assert_awaited_once_with(
+            profile, workspace_id="private-selector", workspace=Workspace.from_cwd(), workspace_snapshot=None
+        )
+        assert message == tui_i18n.render_str(app.localizer, failure.display_message)
+        assert message != str(failure)
+    elif outcome == "fresh-missing":
+        app._engine.start.assert_awaited_once()
+        assert message.splitlines()[0] == tui_i18n.render_str(app.localizer, failure.display_message)
+        assert restart_text in message
+    elif outcome == "no-success":
+        assert "无法恢复会话" in message
+        app._engine.start.assert_not_awaited()
+    else:
+        app._engine.start.assert_not_awaited()
+        assert restart_text in message
+        assert "--workspace" in message and "-s" in message
+
+
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+def test_missing_tui_workspace_primary_exits_before_bootstrap_in_the_ui_locale(
+    monkeypatch, tmp_path, capsys, restore, locale
+):
+    from chrys.app.tui import app as tui_app
+    from chrys.foundation.config.user_settings import user_settings_path
+    from chrys.service.workspaces.registry import WorkspaceRegistry
+
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    WorkspaceRegistry().create("Team", str(primary))
+    primary.rmdir()
+    user_settings_path().write_text(f"ui:\n  locale: {locale}\n", encoding="utf-8")
+    argv = ["icode", "--workspace", "Team"]
+    if restore:
+        argv.extend(["-s", "session-1"])
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr("chrys.orchestration.startup.configure_utf8_stdio", lambda: None)
+    monkeypatch.setattr(
+        "chrys.orchestration.startup.bootstrap_runtime", lambda **_: pytest.fail("missing primary reached bootstrap")
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        tui_app.main()
+    assert caught.value.code == 1
+    error, hint = capsys.readouterr().err.splitlines()
+    if locale == "en":
+        assert "Primary folder does not exist" in error
+        assert "primary folder" in hint and "main folder" not in hint
+        assert ("start again with --workspace and -s" in hint) == restore
+    else:
+        assert "主文件夹" in error and "Primary folder" not in error
+        assert "主文件夹" in hint and "start again" not in hint
+        assert ("再用 --workspace 和 -s 重新启动" in hint) == restore
+    if not restore:
+        assert "-s" not in hint
+
+
+@pytest.fixture
+def workspace_argv(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
+    from chrys.app.tui import app as tui_app
+    from chrys.service.llm.mock import MockChatClient
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.models.serializer import save_profile
+    from chrys.service.state.store import JsonFileStateStore
+    from tests.orchestration import _session_host_helpers as helpers
+
+    profile = helpers._make_profile()
+    AgentProfileRegistry().save(profile)
+    _, models = helpers._make_settings_and_models()
+    save_profile(models.get("mock-profile"))
+    helpers._patch_runtime(monkeypatch, [MockChatClient() for _ in range(3)], [])
+    monkeypatch.setattr("chrys.orchestration.startup.configure_utf8_stdio", lambda: None)
+    monkeypatch.setattr(tui_app, "ask_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tui_app, "_restore_terminal_after_run", lambda app: None)
+    monkeypatch.setattr(tui_app, "_reset_terminal_title_after_run", lambda: None)
+    monkeypatch.chdir(tmp_path)
+    messages = []
+
+    def launch(args, examine):
+        class HeadlessTui(ChrysApp):
+            CSS_PATH = Path(sys.modules[ChrysApp.__module__].__file__).with_name("chrys.tcss")
+
+            def run(self):
+                async def drive():
+                    async with self.run_test(size=(120, 40)) as pilot:
+                        await examine(self, pilot)
+
+                asyncio.run(drive())
+
+            def exit(self, result=None, return_code=0, message=None):
+                if message:
+                    messages.append(str(message))
+                super().exit(result, return_code, message)
+
+        monkeypatch.setattr(sys, "argv", ["icode", "-a", profile.name, "-m", "mock-profile", *args])
+        tui_app.main(app_cls=HeadlessTui)
+
+    return JsonFileStateStore(), launch, messages
+
+
+async def _await_workspace_startup(app, pilot):
+    from tests.support.waiting import wait_for
+
+    await wait_for(
+        lambda: app._startup_task is not None and app._startup_task.done(),
+        pilot=pilot,
+        description="workspace startup finished",
+    )
+
+
+@pytest.mark.parametrize("entry", ["present", "retarget", "choose-replacement", "cancel"])
+def test_tui_argv_restore_ignores_workdir_until_replacement_is_chosen(
+    registry, workspace_argv, monkeypatch, tmp_path, entry
+):
+    from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+    from chrys.foundation.events.types import SessionRestore
+    from chrys.kernel import Message
+    from tests.app.tui.behaviors.test_missing_working_dir_flows import _choose_folder, _top_screen
+    from tests.support.tui_helpers import click_when_settled
+    from tests.support.workspace_registry import make_workdirs, write_launch_settings
+
+    store, launch, _ = workspace_argv
+    primary, override, replacement = make_workdirs(tmp_path, "primary", "override", "replacement")
+    workspace_primary = primary
+    if entry == "retarget":
+        workspace_primary = tmp_path / "workspace-primary"
+        symlink_or_skip(workspace_primary, primary, target_is_directory=True)
+        publish = EventBus.publish
+
+        async def retarget_at_open(bus, event, **kwargs):
+            if isinstance(event, SessionRestore) and workspace_primary.is_symlink():
+                retarget_workdir_alias(workspace_primary, override)
+            return await publish(bus, event, **kwargs)
+
+        monkeypatch.setattr(EventBus, "publish", retarget_at_open)
+    workspace = registry.create("Team", str(workspace_primary))
+    registry.set_session_workspace("target", workspace.id)
+    asyncio.run(
+        save_chat_session(
+            store, "target", override, profile="Headless", messages=[Message("user", ["Keep this history"])]
+        )
+    )
+    expected = primary if entry in {"present", "retarget"} else replacement
+    report = tmp_path / "restore-hook.txt"
+    write_launch_settings(expected, report, event="session_restored")
+    if entry in {"choose-replacement", "cancel"}:
+        primary.rmdir()
+
+    async def examine(app, pilot):
+        if entry in {"choose-replacement", "cancel"}:
+            dialog = await _top_screen(pilot, ConfirmDialog)
+            assert "primary folder" in dialog._message.lower()
+            assert "leave" in dialog._message.lower()
+            assert not report.exists()
+            if entry == "cancel":
+                await click_when_settled(pilot, "#confirm-no")
+            else:
+                await _choose_folder(pilot, dialog, tmp_path, replacement)
+        await _await_workspace_startup(app, pilot)
+        assert registry.snapshot().workspace_id_for_session("target") == (
+            None if entry == "choose-replacement" else workspace.id
+        )
+        if entry == "cancel":
+            assert app._engine.session_id != "target"
+            assert not report.exists()
+            assert (await store.load_session("target"))["messages"][0].text == "Keep this history"
+        else:
+            assert app._engine.session_id == "target"
+            assert app._engine.workspace.primary_cwd == str(expected)
+            assert app._engine.settings_handle.settings.warn_threshold_pct == 0.73
+            assert any(message.text == "Keep this history" for message in app._engine.history_messages)
+            assert Path(report.read_text(encoding="utf-8")).samefile(expected)
+
+    launch(["-s", "target", "-C", str(override)], examine)
+
+
+@pytest.mark.parametrize("outcome", ["missing", "move", "refused", "saved-open-failed", "installed-restore-failed"])
+def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, outcome):
+    from chrys.foundation.config.spec import Source
+    from chrys.kernel import Message
+    from chrys.orchestration.engine.build import builder
+    from chrys.orchestration.engine.session_lifecycle import SessionLifecycle
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.workspaces import registry as registry_module
+    from tests.orchestration._session_host_helpers import _make_profile
+    from tests.support.workspace_registry import make_workdirs, write_launch_settings
+
+    store, launch, messages = workspace_argv
+    primary, old, extra = make_workdirs(tmp_path, "primary", "old", "extra")
+    report = tmp_path / "workspace-hook.txt"
+    write_launch_settings(primary, report, event="session_start" if outcome == "missing" else "session_restored")
+    workspace = registry.create("Team", str(primary))
+    previous = registry.create("Previous", str(old))
+    before = None
+    if outcome != "missing":
+        asyncio.run(
+            save_chat_session(
+                store,
+                "target",
+                old,
+                profile="Headless",
+                messages=[Message("user", ["previous chat"])],
+                workdirs=[old, extra],
+            )
+        )
+        registry.set_session_workspace("target", previous.id)
+        before = (store.session_dir("target") / "session.json").read_bytes()
+    if outcome == "refused":
+        default_path, original_path, profile_bytes = move_profile_to_legacy_path(
+            AgentProfileRegistry(), _make_profile()
+        )
+
+        def reject(*args, **kwargs):
+            raise OSError("membership disk full")
+
+        monkeypatch.setattr(registry_module, "atomic_write_text", reject)
+    if outcome == "saved-open-failed":
+
+        async def fail_build(*args, **kwargs):
+            raise RuntimeError("target build failed")
+
+        monkeypatch.setattr(builder, "create_client", fail_build)
+    if outcome == "installed-restore-failed":
+
+        def fail_after_install(lifecycle):
+            assert lifecycle._session.session_id == "target"
+            assert lifecycle._session.workspace.primary_cwd == str(primary)
+            assert lifecycle._current.loaded is not None
+            raise RuntimeError("installed restore failed")
+
+        monkeypatch.setattr(SessionLifecycle, "_restore_terminal_fsm_from_history", fail_after_install)
+
+    failing = outcome in {"refused", "saved-open-failed", "installed-restore-failed"}
+
+    async def examine(app, pilot):
+        if failing:
+            from tests.support.waiting import wait_for
+
+            await wait_for(lambda: bool(messages), pilot=pilot, description="startup error")
+            return
+        await _await_workspace_startup(app, pilot)
+        engine = app._engine
+        assert Path.cwd().samefile(primary)
+        assert engine.workspace.primary_cwd == str(primary)
+        assert engine.settings_handle.base.source_for("context.warn_threshold_pct").layer == Source.WORKDIR
+        assert Path(report.read_text(encoding="utf-8")).samefile(primary)
+        notices = [str(notice.message) for notice in app._notifications]
+        assert registry.snapshot().workspace_id_for_session(engine.session_id) == workspace.id
+        if outcome == "missing":
+            assert engine.session_id != "missing"
+            assert any("was not found" in message for message in notices)
+        else:
+            assert engine.session_id == "target"
+            from tests.support.waiting import wait_for
+
+            # The move notice is posted after startup settles; wait for it rather than racing it.
+            await wait_for(
+                lambda: any("Previous" in str(n.message) and "Team" in str(n.message) for n in app._notifications),
+                pilot=pilot,
+                description="workspace move notice",
+            )
+
+    args = ["--workspace", "Team", "-s", "missing" if outcome == "missing" else "target"]
+    if failing:
+        with pytest.raises(SystemExit) as failed:
+            launch(args, examine)
+        assert failed.value.code == 1
+        assert (store.session_dir("target") / "session.json").read_bytes() == before
+        assert not report.exists()
+        if outcome == "refused":
+            assert any("membership disk full" in message for message in messages)
+            assert registry.snapshot().workspace_id_for_session("target") == previous.id
+            assert original_path.read_bytes() == profile_bytes
+            assert not default_path.exists()
+        else:
+            error = "target build failed" if outcome == "saved-open-failed" else "installed restore failed"
+            assert any(error in message and "Reopening uses Team" in message for message in messages)
+            assert registry.snapshot().workspace_id_for_session("target") == workspace.id
+    else:
+        launch(args, examine)

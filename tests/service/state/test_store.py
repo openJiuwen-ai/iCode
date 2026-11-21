@@ -16,16 +16,21 @@ import pytest
 
 import chrys.service.state.store as store_module
 import chrys.service.trajectory.tombstone as tombstone_module
+import chrys.service.workspaces.registry as registry_module
 from chrys.foundation.util.lock import FileLock
+from chrys.foundation.util.session_ids import session_short_id
 from chrys.kernel import Content, Message
 from chrys.service.session.message_metadata import stamp_message_created_at
+from chrys.service.session.persistence import open_active_session_store
 from chrys.service.state.store import (
     JsonFileStateStore,
     SessionMeta,
     _dir_size,
 )
 from chrys.service.trajectory.tombstone import DeleteOutcome, DeleteResult
+from chrys.service.workspaces.registry import WorkspaceRegistry
 from tests.service.state._store_helpers import SkewedDateTime, browser_page, write_legacy_envelope
+from tests.support.workspace_registry import default_workspace_registry as default_workspace_registry
 
 
 @pytest.mark.asyncio
@@ -41,6 +46,36 @@ async def test_save_and_load_session(tmp_path: Path) -> None:
     assert loaded is not None
     assert len(loaded["messages"]) == 1
     assert loaded["messages"][0].role == "user"
+
+
+async def test_session_selector_uses_restore_snapshot_names(tmp_path: Path) -> None:
+    store = JsonFileStateStore(tmp_path)
+    snapshots = tmp_path / "target" / "snapshots"
+    write_legacy_envelope(snapshots / "1.txt", "target")
+    assert await store.read_session_selector_candidates("target") == ([], False)
+
+    write_legacy_envelope(snapshots / "turn_1.json", "target")
+    (meta,), unreadable = await store.read_session_selector_candidates("target")
+    assert meta.session_id == "target" and not unreadable
+
+
+@pytest.mark.parametrize("broken", ["primary", "legacy"])
+async def test_session_selector_and_restore_use_same_readable_checkpoint(tmp_path: Path, broken: str) -> None:
+    store = JsonFileStateStore(tmp_path)
+    primary = tmp_path / "target" / "session.json"
+    if broken == "primary":
+        write_legacy_envelope(primary.with_suffix(".json.bak"), "target")
+        primary.write_bytes(b"\xff")
+    else:
+        write_legacy_envelope(primary, "target")
+        (tmp_path / "target.json").write_text("{", encoding="utf-8")
+
+    (selected,), unreadable = await store.read_session_selector_candidates("target")
+    assert not unreadable
+    restored = await store.load_session_meta("target", prefer_recovery=True, repair=False)
+    assert restored is not None
+    assert selected.session_id == restored.session_id == "target"
+    assert await store.load_session("target") is not None
 
 
 @pytest.mark.asyncio
@@ -942,3 +977,102 @@ def test_session_migration_does_not_recreate_a_moved_session(tmp_path):
     assert not migrate_session_envelopes(session, backup=move_session, on_read_error=lambda *_: None)
     assert not session.exists()
     assert (moved / path.name).read_bytes() == raw
+
+
+@pytest.mark.parametrize("storage", ["absent", "folder", "legacy", "short-id"])
+async def test_delete_removes_only_target_membership(registry, tmp_path: Path, storage: str) -> None:
+    deleted = "4201eebc-ca45-4328-8882-272f3d7c41cb"
+    store = JsonFileStateStore(tmp_path, workspace_registry=registry)
+    workspace = registry.create("Selected", str(tmp_path))
+    registry.set_session_workspace(deleted, workspace.id)
+    registry.set_session_workspace("kept", workspace.id)
+    if storage == "legacy":
+        legacy = {"meta": {"session_id": deleted, "agent_profile": "Code"}, "state": {"messages": []}}
+        (tmp_path / f"{session_short_id(deleted)}.json").write_text(json.dumps(legacy), encoding="utf-8")
+    elif storage != "absent":
+        await store.save_session(deleted, {"messages": [Message("user", ["Saved work"])]})
+
+    await store.delete_session(session_short_id(deleted) if storage == "short-id" else deleted)
+
+    assert await store.load_session(deleted) is None
+    expected = {"kept": workspace.id}
+    if storage == "absent":
+        expected[deleted] = workspace.id
+    assert registry.snapshot().sessions == expected
+    assert registry.snapshot().workspaces == (workspace,)
+
+
+async def test_delete_from_another_store_keeps_active_session_membership(registry, tmp_path: Path) -> None:
+    active = open_active_session_store()
+    backup = JsonFileStateStore(tmp_path / "backup")
+    session_id = "same-id"
+    workspace = registry.create("Selected", str(tmp_path))
+    backup_workspace = backup.workspace_registry.create("Backup", str(tmp_path))
+    await active.save_session(session_id, {"messages": [Message("user", ["Original"])]})
+    await backup.save_session(session_id, {"messages": [Message("user", ["Backup"])]})
+    registry.set_session_workspace(session_id, workspace.id)
+    backup.workspace_registry.set_session_workspace(session_id, backup_workspace.id)
+    before = registry.path.read_bytes()
+
+    backup = JsonFileStateStore(backup.sessions_root)
+    assert backup.workspace_registry.snapshot().workspace_id_for_session(session_id) == backup_workspace.id
+    assert [meta.session_id for meta in await backup.list_sessions()] == [session_id]
+
+    await backup.delete_session(session_id)
+
+    assert await backup.load_session(session_id) is None
+    assert not backup.workspace_registry.snapshot().maps_session(session_id)
+    assert await backup.list_sessions() == []
+    assert (await active.load_session(session_id))["messages"][0].text == "Original"
+    assert registry.path.read_bytes() == before
+
+    await active.delete_session(session_id)
+
+    assert await active.load_session(session_id) is None
+    assert registry.snapshot().workspace_id_for_session(session_id) is None
+
+
+@pytest.mark.parametrize("failure", [TimeoutError, OSError])
+async def test_delete_succeeds_when_registry_removal_raises(registry, tmp_path, monkeypatch, caplog, failure):
+    store = JsonFileStateStore(tmp_path, workspace_registry=registry)
+    await store.save_session("deleted", {})
+    workspace = registry.create("Selected", str(tmp_path))
+    registry.set_session_workspace("deleted", workspace.id)
+
+    def fail_removal(self, session_id):
+        raise failure("cannot clear membership")
+
+    monkeypatch.setattr(WorkspaceRegistry, "remove_session_workspace", fail_removal)
+    await store.delete_session("deleted")
+
+    assert await store.load_session("deleted") is None
+    assert registry.snapshot().workspace_id_for_session("deleted") == workspace.id
+    assert "Could not remove workspace membership for deleted" in caplog.text
+
+
+async def test_failed_filesystem_delete_keeps_the_surviving_session_membership(
+    registry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JsonFileStateStore(tmp_path, workspace_registry=registry)
+    await store.save_session("kept", {"messages": [Message("user", ["Keep my work"])]})
+    project = registry.create("Selected", str(tmp_path))
+    registry.set_session_workspace("kept", project.id)
+    session_file = store.session_dir("kept") / "session.json"
+    before = session_file.read_bytes(), session_file.stat().st_mtime_ns
+    registry_before = registry.path.read_bytes(), registry.path.stat().st_mtime_ns
+
+    def unexpected_write(path: Path, payload: str, *, encoding: str = "utf-8") -> bytes:
+        pytest.fail("A failed filesystem deletion must not change membership")
+
+    monkeypatch.setattr(registry_module, "atomic_write_text", unexpected_write)
+
+    def fail_without_owner(session_dir: Path, *, sessions_root: Path, path_reused: bool = False) -> DeleteResult:
+        return DeleteResult(DeleteOutcome.INTENT_FAILED)
+
+    monkeypatch.setattr(tombstone_module, "delete_session_directory", fail_without_owner)
+    with pytest.raises(OSError, match="could not be deleted or scheduled"):
+        await store.delete_session("kept")
+
+    assert (session_file.read_bytes(), session_file.stat().st_mtime_ns) == before
+    assert registry.snapshot().workspace_id_for_session("kept") == project.id
+    assert (registry.path.read_bytes(), registry.path.stat().st_mtime_ns) == registry_before

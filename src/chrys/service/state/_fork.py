@@ -594,6 +594,7 @@ class SessionForkMixin:
         meta["parent_session_id"] = parent_session_id
         meta["updated_at"] = updated_at
         meta["service_session_id"] = ""
+        meta.pop("service_session_workspace_fingerprint", None)
         if last_surface is not None:
             meta["last_surface"] = last_surface.value
         # The fork is a new on-disk revision: derived summaries must not be

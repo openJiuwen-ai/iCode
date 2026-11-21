@@ -910,7 +910,7 @@ def test_the_tui_entry_point_assembles_an_engine_that_records_hook_runs(
     monkeypatch.setattr(tui_app, "AgentProfileRegistry", _Registry)
     monkeypatch.setattr(tui_app, "ModelProfileRegistry", _Registry)
     # ``main`` imports these inside, from their own modules.
-    monkeypatch.setattr("chrys.service.state.store.JsonFileStateStore", object)
+    monkeypatch.setattr("chrys.service.session.persistence.open_active_session_store", object)
     monkeypatch.setattr("chrys.orchestration.engine.assembly.assemble_agent_engine", _Engine)
     original_cwd = Path.cwd()
     try:

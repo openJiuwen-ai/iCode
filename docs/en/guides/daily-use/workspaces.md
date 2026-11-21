@@ -37,6 +37,16 @@ When switching working directories, iCode reloads the current agent and loads me
 
 Switching working directories does not create a new session; the current conversation history is preserved. When working on an unrelated project, first enter `/new` to create a new session, then switch working directories in that session. This avoids recording the working directory change in the original session or mixing context from different projects.
 
+## Changing a session’s workspace
+
+This release can open registered workspaces. Workspace management comes in a later release.
+
+When you select a workspace for an existing session, make the session Unspecified, or reopen it with `--workspace`, iCode checks the destination, saves the membership, and then loads the agent for that directory. If the save fails, the current session stays where it was. If opening fails after the save, iCode tells you where the current run is and where the saved session will reopen.
+
+When you open a session in a workspace, iCode uses the workspace’s registered primary folder. A membership change made in another window applies the next time you open the session. If you confirm leaving the workspace while reopening a session, iCode checks the session’s current membership and the folder you confirmed before restoring it. Starting a new session with `/new` or `/clear` keeps the current working directory and inherits the latest workspace name and reference folders. If the primary folder is missing, switch directories first. Forking copies the session and inherits its workspace membership.
+
+If your workspace list was saved by a newer version of iCode, this version shows a warning and refuses changes to the list.
+
 ## If the working directory is deleted or moved
 
 If the working directory is deleted or moved outside iCode, for example in a file manager or another terminal, iCode cannot keep using it:
@@ -47,5 +57,9 @@ If the working directory is deleted or moved outside iCode, for example in a fil
 - If you close the dialog without choosing a folder, it appears again the next time you send a message. You can also switch with `/chdir`, or move the folder back to where it was.
 
 When you resume a session whose working directory no longer exists, iCode asks you to choose a folder to open the session in. If you cancel, the session is not resumed; if you started iCode with `-s`, iCode starts a new session instead.
+
+If the agent fails to load after iCode has closed the previous session, select a workspace, change directories, or switch models to start a new conversation. You can also try opening the saved session again.
+
+If you resume the current session in a replacement folder, its running background commands stay in the task list and stop when you close the session or exit iCode.
 
 If you start iCode from a directory that no longer exists, iCode shows an error and exits. Enter an existing directory, or pass `-C` with the full path of the working directory, such as `icode -C ~/projects/my-app`.

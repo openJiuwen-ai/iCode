@@ -162,7 +162,7 @@ class WorkflowSessionOwner:
                 raise WorkflowWorkspaceLocked(
                     "This workflow session's workspace is fixed. Start a new session to change it."
                 )
-            session.workspace = self.state.workspace.materialize()
+            session.present_workflow_workspace(self.state.workspace.materialize())
             if reconcile:
                 await finish_close(asyncio.create_task(asyncio.to_thread(self._reconcile_storage)))
         if session.workspace is None:

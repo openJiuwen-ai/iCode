@@ -23,9 +23,9 @@ from chrys.foundation.events.types import (
     SessionRestore,
     SettingsReload,
 )
-from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import get_platform
 from chrys.orchestration.engine.assembly import assemble_agent_engine
+from chrys.orchestration.engine.workspaces import MembershipWrite, WorkspacePlan
 from chrys.service.profiles.agents.schema import (
     AgentProfile,
     ModelConfig,
@@ -42,6 +42,7 @@ from tests.orchestration.engine._recovery_helpers import (
     stub_engine_lifecycle,
 )
 from tests.support.loaded_agents import install_loaded_agent
+from tests.support.workspace_engine import stub_workspace_start
 
 
 @pytest.fixture(autouse=True)
@@ -91,15 +92,8 @@ async def test_tui_session_restore_runs_the_saved_model_as_the_sessions_own_with
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        assert start_profile is agent_profile
+    def fake_start(*, profile, operation, staged_loaded, session, **_):
+        assert profile is agent_profile
         assert operation == "restore"
         # The reapplied model travels as the session's own choice; a successful
         # build commits it with the staged load, so a fake simulating one must.
@@ -107,10 +101,7 @@ async def test_tui_session_restore_runs_the_saved_model_as_the_sessions_own_with
         handle.install_prepared(handle.prepare(staged_loaded or handle.base, session=session))
         started_model_ids.append(engine.settings.model_profile)
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         await engine.on_session_restore(SessionRestore(session_id="restore_me", apply_saved_model=True))
@@ -219,7 +210,8 @@ async def test_a_failed_reload_after_a_saved_model_restore_keeps_the_restored_mo
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
         _ = profile, operation
         raise RuntimeError("rebuild failed")
@@ -326,22 +318,12 @@ async def test_session_restore_default_gate_does_not_apply_saved_model(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
-    async def fake_start(
-        _profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
+    def fake_start(*, operation, session, **_):
         assert operation == "restore"
         assert not session
         started_model_ids.append(engine.settings.model_profile)
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         await engine.on_session_restore(SessionRestore(session_id="restore_me"))
@@ -381,7 +363,8 @@ async def test_saved_model_restore_changes_nothing_when_start_fails_before_its_c
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
         assert operation == "restore"
         # The reapplied model arrives staged as the session's own; a build that
@@ -428,14 +411,7 @@ async def test_saved_model_restore_does_not_roll_back_after_executor_install(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
-    async def fail_after_install(
-        _profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
+    def fail_after_install(*, operation, staged_loaded, session, **_):
         assert operation == "restore"
         # The build's commit: settings and executor go live together, and the
         # failure lands after it.
@@ -444,10 +420,7 @@ async def test_saved_model_restore_does_not_roll_back_after_executor_install(
         install_loaded_agent(engine, bindings=replacement_executor)
         raise RuntimeError("post-install failure")
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fail_after_install)
+    stub_workspace_start(monkeypatch, engine, fail_after_install, close=fake_shutdown)
 
     try:
         with pytest.raises(RuntimeError, match="post-install failure"):

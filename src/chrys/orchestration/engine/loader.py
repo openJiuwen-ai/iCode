@@ -10,11 +10,11 @@ import copy
 import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.errors import ConfigError
-from chrys.foundation.config.runtime_pointer import StaleModelFileChange
 from chrys.foundation.errors import clean_error_message
 from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
@@ -26,10 +26,9 @@ from chrys.foundation.events.types import (
     ProfileSwitched,
     SessionReady,
     Warning,
-    WorkspaceUpdated,
 )
 from chrys.foundation.i18n import msg
-from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.models.workspace import Workspace, session_workdirs, workspace_scope_fingerprint
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.trajectory.event_types import ProfileKind
 from chrys.foundation.util.once_close import finish_close
@@ -39,14 +38,24 @@ from chrys.orchestration.engine.build.loaded import AgentManifest, CompletedBuil
 from chrys.orchestration.engine.hook_reporting import wire_hook_reporting
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
+from chrys.orchestration.engine.workspaces import (
+    WORKSPACE_CHANGED,
+    MembershipWrite,
+    SessionWorkspaces,
+    StaleWorkspacePlan,
+    WorkspacePlan,
+    workspace_updated_event,
+)
 from chrys.orchestration.invoker.resources import PreparedAgent
 from chrys.orchestration.session_hooks import SessionHookFactory, hooks_unchanged
 from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
 from chrys.service.mcp.cache import MCPConnectionCache
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES
+from chrys.service.profiles.reload import ProfileReload
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 from chrys.service.trajectory.session import SessionStartInfo
+from chrys.service.workspaces.registry import RegistrySnapshot
 
 if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
@@ -57,7 +66,7 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
     from chrys.orchestration.engine.state.active_session import ActiveSession
     from chrys.orchestration.engine.state.current_agent import CurrentAgent
-    from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
+    from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits, RebuildControlToken
     from chrys.orchestration.engine.state.machine import EngineStateMachine
     from chrys.orchestration.engine.state.session_writer import RecoveryCheckpoints
     from chrys.orchestration.engine.usage import UsagePublisher
@@ -105,11 +114,14 @@ def _responses_service_session_profiles_match(
     )
 
 
-def _workspace_signature(workspace: Workspace | None) -> tuple[str, tuple[str, ...]]:
+def _workspace_signature(workspace: Workspace | None) -> str | tuple[str, tuple[str, ...]]:
     """Return the session-relevant workspace identity for service-session reuse."""
     if workspace is None:
         return ("", ())
-    return (workspace.primary_cwd, tuple(working_dir.path for working_dir in workspace.working_dirs))
+    return workspace_scope_fingerprint(workspace) or (
+        workspace.primary_cwd,
+        tuple(working_dir.path for working_dir in workspace.working_dirs),
+    )
 
 
 def _workspace_primary_cwd(workspace: Workspace | None) -> str:
@@ -245,8 +257,11 @@ class AgentLoader:
         loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
         agent_profile: AgentProfile,
-        workspace: Workspace | None,
+        workspace_plan: WorkspacePlan,
         hook_manager: HookManager | None,
+        restore_session: ActiveSession | None = None,
+        restore_tracker: WorkspaceChangeTracker | None = None,
+        workspace_transaction: bool = False,
     ) -> StagedBuild:
         """Assemble the settings, workspace, and coordinator candidate.
 
@@ -262,8 +277,11 @@ class AgentLoader:
             persistence=self._persistence,
             prepared=self._settings_handle.prepare(base, session=session),
             agent_profile=agent_profile,
-            workspace=workspace,
+            workspace_plan=workspace_plan,
             hook_manager=hook_manager,
+            restore_session=restore_session,
+            restore_tracker=restore_tracker,
+            workspace_transaction=workspace_transaction,
         )
 
     async def stage_hook_manager(
@@ -272,21 +290,24 @@ class AgentLoader:
         operation: str,
         staged_loaded: LoadedSettings | None,
         workspace: Workspace | None,
+        restore_session: ActiveSession | None = None,
     ) -> HookManager | None:
-        """Construct the hook candidate when the caller's replacement decision requires it."""
-        resources = self._permits.staged_reload_resources()
+        """Construct hooks for the session that will own the build."""
+        resources = self._permits.staged_reload_resources() if restore_session is None else None
+        target = restore_session or self._session
+        hook_manager = target.hook_manager
+        replace_hooks = hook_manager is None or operation == "workspace_change"
         if resources is not None:
-            return self._reloaded_hook_manager(resources.hooks)
-        old_hook_manager = self._session.hook_manager
-        hook_manager = old_hook_manager
-        if old_hook_manager is None or operation == "workspace_change":
-            # Working directory hooks are scoped to the primary cwd, so the candidate is built for
-            # the root the staged workspace would install, not the live one.
+            hook_manager = self._reloaded_hook_manager(resources.hooks)
+        elif replace_hooks:
             build_settings = (staged_loaded if staged_loaded is not None else self._settings_handle.base).settings
             hook_manager = await self.build_hook_manager(
                 workdir=_workspace_primary_cwd(workspace),
                 workdir_hooks_enabled=build_settings.workdir_hooks_enabled,
+                session_id=target.session_id,
             )
+        if replace_hooks and hook_manager is not None:
+            hook_manager.trajectory_context_provider = self._trajectory_recorder.context
         return hook_manager
 
     async def build(
@@ -295,9 +316,13 @@ class AgentLoader:
         staged: StagedBuild,
         *,
         preserved_history: dict | None = None,
+        restore_profiles: ProfileReload | None = None,
     ) -> CompletedBuild:
         """Construct a complete candidate without installing it."""
-        profiles = self._permits.staged_profiles()
+        profiles = restore_profiles or self._permits.staged_profiles()
+        progress = self.publish_load_progress
+        if staged.restore_session is not None:
+            progress = partial(progress, session_id=staged.restore_session.session_id)
         return await construction.build_agent(
             self._profile_with_mcp_overlay(profile),
             staged=staged,
@@ -316,7 +341,7 @@ class AgentLoader:
             checkpoints=self._checkpoints,
             usage_publisher=self._usage_publisher,
             fire_pre_compact=self._hooks.fire_pre_compact,
-            publish_load_progress=self.publish_load_progress,
+            publish_load_progress=progress,
             hold_injection_notification=self.hold_injection_notification,
         )
 
@@ -325,12 +350,6 @@ class AgentLoader:
         if self._session.workspace is not None:
             return self._session.workspace.primary_cwd
         return safe_getcwd()
-
-    def _workspace_working_dirs(self) -> list[str]:
-        """Return all workspace root paths for event payloads."""
-        if self._session.workspace is None:
-            return []
-        return [working_dir.path for working_dir in self._session.workspace.working_dirs]
 
     def trajectory_session_start_info(self) -> SessionStartInfo:
         """Resolved lazily, at the recorder's first event — after the build set the fingerprints."""
@@ -464,10 +483,11 @@ class AgentLoader:
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None,
+        workspace_plan: WorkspacePlan,
         hook_manager: HookManager | None,
         trajectory: SessionTrajectory,
         old_hook_manager: HookManager | None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
         """Build and install the agent from a profile.
 
@@ -480,48 +500,54 @@ class AgentLoader:
         rather than mutating the live one, so a failed build keeps the workspace
         the live settings and hooks still describe.
         """
-        self._permits.begin_agent_load()
         try:
-            await self._bus.publish(
-                AgentLoadStarted(
-                    operation=operation,
-                    to_profile=profile.name,
-                    to_display_name=profile.display_name or profile.name,
-                    session_id=self._session.session_id,
-                ),
-            )
+            await self.begin_load(profile, operation=operation, session_id=self._session.session_id)
 
             staged = self.stage(
                 loaded=staged_loaded,
                 session=session,
                 agent_profile=profile,
-                workspace=workspace,
+                workspace_plan=workspace_plan,
                 hook_manager=hook_manager,
+                workspace_transaction=commit_workspace is not None,
             )
             if self._permits.staged_reload_resources() is not None:
                 self._mcp_cache.begin_refresh()
+            owner = self._permits.capture_control_token()
             completed = await self.build(profile, staged)
-            replaced = await self._install_candidate(completed)
-            try:
-                await self._commit_mcp_refresh()
-            finally:
-                await self.release(replaced)
-            self._fsm.try_transition(Trigger.START)
-            self._register_current_engine()
+            announce = operation == "workspace_change" and (
+                self._session.workspace_id is not None or staged.workspace_plan.workspace_id is not None
+            )
+            replaced = await self._install_candidate(completed, owner=owner, commit_workspace=commit_workspace)
+            await self._finish_workspace_install(replaced, announce=announce)
         except Exception as exc:
             await self._settle_failed_build(old=old_hook_manager, staged=hook_manager)
-            await self.publish_load_failed(operation=operation, profile=profile, exc=exc)
+            if operation != "workspace_change" or not isinstance(exc, StaleWorkspacePlan):
+                await self.publish_load_failed(operation=operation, profile=profile, exc=exc)
             raise
         except BaseException:
             await self._settle_failed_build(old=old_hook_manager, staged=hook_manager)
             raise
 
+        await self.finish_load(profile, operation=operation, trajectory=trajectory, old_hook_manager=old_hook_manager)
+
+    async def finish_load(
+        self,
+        profile: AgentProfile,
+        *,
+        operation: str,
+        trajectory: SessionTrajectory,
+        old_hook_manager: HookManager | None = None,
+    ) -> None:
+        """Publish readiness for an installed initial build."""
+        self._fsm.try_transition(Trigger.START)
+        self._register_current_engine()
         # The build committed, so the profiles this session opened with are the
         # ones it keeps: pin them before a switch can rewrite what the recorder
         # reads at its first event.
         trajectory.pin_session_start_info()
 
-        if hook_manager is not old_hook_manager:
+        if self._session.hook_manager is not old_hook_manager:
             await self.commit_hook_manager_replacement(old_hook_manager)
         else:
             self.start_outbox_recovery()
@@ -543,6 +569,7 @@ class AgentLoader:
         )
         await self._bus.publish(
             SessionReady(
+                workspace=self._session.session_workspace,
                 agent_profile=profile.name,
                 display_name=profile.display_name,
                 model_profile_id=self._current.manifest.active_profile.id
@@ -559,7 +586,7 @@ class AgentLoader:
                 memory_files=list(self._current.manifest.memory_files),
                 runtime_details=copy.deepcopy(self._current.manifest.runtime_details),
                 primary_cwd=self._workspace_cwd(),
-                working_dirs=self._workspace_working_dirs(),
+                working_dirs=[directory.path for directory in session_workdirs(self._session.workspace)],
             ),
         )
         await self._bus.publish(
@@ -600,6 +627,7 @@ class AgentLoader:
         stage: str = "",
         stage_subject: str = "",
         stage_status: str = "",
+        session_id: str | None = None,
     ) -> None:
         """Publish an agent load progress event."""
         await self._bus.publish(
@@ -616,8 +644,19 @@ class AgentLoader:
                 stage=stage,
                 stage_subject=stage_subject,
                 stage_status=stage_status,
-                session_id=self._session.session_id,
+                session_id=session_id if session_id is not None else self._session.session_id,
             ),
+        )
+
+    async def begin_load(self, profile: AgentProfile, *, operation: str, session_id: str | None) -> None:
+        self._permits.begin_agent_load()
+        await self._bus.publish(
+            AgentLoadStarted(
+                operation=operation,
+                to_profile=profile.name,
+                to_display_name=profile.display_name or profile.name,
+                session_id=session_id,
+            )
         )
 
     async def publish_load_failed(
@@ -626,6 +665,7 @@ class AgentLoader:
         operation: str,
         profile: AgentProfile,
         exc: Exception,
+        session_id: str | None = None,
     ) -> None:
         """Publish an agent load failure event."""
         display_message, display_hint = (
@@ -637,7 +677,7 @@ class AgentLoader:
                 agent_profile=profile.name,
                 display_name=profile.display_name or profile.name,
                 message=clean_error_message(exc),
-                session_id=self._session.session_id,
+                session_id=session_id if session_id is not None else self._session.session_id,
                 display_message=display_message,
                 display_hint=display_hint,
             ),
@@ -646,11 +686,12 @@ class AgentLoader:
     async def reload(
         self,
         new_profile: AgentProfile,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
         """Restart the agent with a new profile/workspace while preserving history.
 
@@ -678,11 +719,18 @@ class AgentLoader:
             else False
         )
         old_workspace = self._session.workspace
+        target_plan = workspace_plan if workspace_plan is not None else self._session.workspace_plan
+        if target_plan is None:
+            target_plan = SessionWorkspaces.plan(workspace=Workspace.from_cwd(), snapshot=RegistrySnapshot())
+        workspace = workspace_plan.workspace if workspace_plan is not None else None
+        announce_workspace = workspace is not None and (
+            self._session.workspace_id is not None or target_plan.workspace_id is not None
+        )
         old_hook_manager = self._session.hook_manager
         staged_hook_manager = old_hook_manager
         new_loaded = staged_loaded if staged_loaded is not None else self._settings_handle.base
         resources = self._permits.staged_reload_resources()
-        # Working directory hooks are scoped to the primary cwd and gated by ``workdir.hooks_enabled``:
+        # Working directory hooks are primary-cwd scoped and gated by ``workdir.hooks_enabled``:
         # a new primary cwd or a flipped gate rebuilds the manager for the root
         # the build is about to install (the live one when the workspace stays).
         reload_hook_manager = (
@@ -757,8 +805,9 @@ class AgentLoader:
                 loaded=staged_loaded,
                 session=session,
                 agent_profile=new_profile,
-                workspace=workspace if workspace is not None else old_workspace,
+                workspace_plan=target_plan,
                 hook_manager=staged_hook_manager,
+                workspace_transaction=commit_workspace is not None,
             )
             # The commit inside ``_build_agent`` records ``new_profile`` with the
             # executor it configured — and installs ``preserved_state`` into that
@@ -766,16 +815,14 @@ class AgentLoader:
             # awaited post-commit steps, would let a cancellation strand the new
             # executor under the old profile's name or publish it with an empty
             # history for the next save to persist.
+            owner = self._permits.capture_control_token()
             completed = await self.build(
                 new_profile,
                 staged,
                 preserved_history=preserved_state,
             )
-            replaced = await self._install_candidate(completed)
-            try:
-                await self._commit_mcp_refresh()
-            finally:
-                await self.release(replaced)
+            replaced = await self._install_candidate(completed, owner=owner, commit_workspace=commit_workspace)
+            await self._finish_workspace_install(replaced, announce=announce_workspace)
             if staged_hook_manager is not old_hook_manager:
                 await self.commit_hook_manager_replacement(old_hook_manager)
                 hook_manager_replacement_committed = True
@@ -841,7 +888,8 @@ class AgentLoader:
                 staged=staged_hook_manager,
                 retire_staged_hooks=not hook_manager_replacement_committed,
             )
-            await self.publish_load_failed(operation=operation, profile=new_profile, exc=exc)
+            if operation != "workspace_change" or not isinstance(exc, StaleWorkspacePlan):
+                await self.publish_load_failed(operation=operation, profile=new_profile, exc=exc)
             raise
         except BaseException:
             await self._settle_failed_build(
@@ -897,45 +945,92 @@ class AgentLoader:
             from_fingerprint=old_model_profile_fingerprint,
             to_fingerprint=self._current.manifest.model_profile_fingerprint,
         )
-        if workspace is not None:
-            await self._bus.publish(
-                WorkspaceUpdated(
-                    primary_cwd=workspace.primary_cwd,
-                    working_dirs=[d.path for d in workspace.working_dirs],
-                    reference_files=workspace.reference_files,
-                    session_id=self._session.session_id,
-                ),
-            )
+        if workspace is not None and not announce_workspace:
+            await self._publish_workspace_update()
 
-    async def _install_candidate(self, completed: CompletedBuild) -> ReplacedBuild:
-        profiles = self._permits.staged_profiles()
+    async def _publish_workspace_update(self) -> None:
+        await self._bus.publish(
+            workspace_updated_event(self._session, session_id=self._session.session_id),
+        )
+
+    async def _finish_workspace_install(self, replaced: ReplacedBuild, *, announce: bool) -> None:
+        try:
+            try:
+                await self._commit_mcp_refresh()
+            finally:
+                await self.release(replaced)
+        finally:
+            # A committed workspace selection must reach frontends
+            # even if the request was cancelled while retiring its old build.
+            if announce:
+                await finish_close(asyncio.create_task(self._publish_workspace_update()))
+
+    async def stage_restore_profiles(self) -> ProfileReload:
+        """Capture the disk inputs before a strict restore builds from them."""
+        profiles = ProfileReload(self._agent_registry, self._model_registry)
+        await asyncio.to_thread(profiles.scan)
+        profiles.check_versions()
+        return profiles
+
+    @staticmethod
+    async def normalize_candidate_profiles(profiles: ProfileReload) -> None:
+        profiles.check_versions()
+        await finish_close(asyncio.create_task(asyncio.to_thread(profiles.normalize)))
+
+    def _install_candidate_profiles(self, profiles: ProfileReload, launch_agent: str) -> None:
+        self._session.new_session_agent = launch_agent
+        profiles.install()
+
+    async def _install_candidate(
+        self,
+        completed: CompletedBuild,
+        *,
+        owner: RebuildControlToken | None = None,
+        commit_workspace: MembershipWrite | None = None,
+        restore_profiles: ProfileReload | None = None,
+    ) -> ReplacedBuild:
+        """Install a candidate, or a restore already validated before the session transition."""
+        profiles = restore_profiles if restore_profiles is not None else self._permits.staged_profiles()
+        profiles_before_install = commit_workspace is not None or restore_profiles is not None
         launch_agent = None
         try:
             if profiles is not None:
-                profiles.check_versions()
-                await finish_close(asyncio.create_task(asyncio.to_thread(profiles.normalize)))
+                if restore_profiles is None:
+                    await self.normalize_candidate_profiles(profiles)
                 profiles.check_versions()
                 launch_agent = profiles.updated_launch_agent(
                     self._session.new_session_agent, completed.settings.effective.settings.default_agent
                 )
-        except BaseException as exc:
-            if isinstance(exc, ConfigError) and profiles is not None:
-                exc.display_hint = profiles.changes_hint()
-            await self._discard_candidate(completed)
-            raise
-        try:
+            if restore_profiles is None and (
+                commit_workspace is not None or completed.workspace_retarget.source_generation is not None
+            ):
+                if self._session.shutting_down or self._permits.capture_control_token() != owner:
+                    raise RuntimeError(
+                        "Cannot install agent build because the active session changed or the build was superseded."
+                    )
+                if not self._workspace_change_tracker.retarget_is_current(completed.workspace_retarget):
+                    raise StaleWorkspacePlan("Workspace changes changed during preparation.", WORKSPACE_CHANGED.bind())
+            if commit_workspace is not None:
+                self._settings_handle.check_prepared(completed.settings)
+                session_id = self._session.membership_session_id
+                if session_id is None:
+                    raise RuntimeError("Saving workspace membership requires a session ID.")
+                if not commit_workspace.saved:
+                    commit_workspace.save(session_id)
+            if profiles_before_install and profiles is not None and launch_agent is not None:
+                self._install_candidate_profiles(profiles, launch_agent)
             replaced = self.install(completed)
-        except StaleModelFileChange as exc:
-            if profiles is not None:
-                exc.display_hint = profiles.changes_hint()
-            await self._discard_candidate(completed)
+        except BaseException as exc:
+            if restore_profiles is None and self._current.loaded is not completed.loaded:
+                if isinstance(exc, ConfigError) and profiles is not None:
+                    exc.display_hint = profiles.changes_hint()
+                await self.discard_candidate(completed)
             raise
-        if profiles is not None and launch_agent is not None:
-            self._session.new_session_agent = launch_agent
-            profiles.install()
+        if not profiles_before_install and profiles is not None and launch_agent is not None:
+            self._install_candidate_profiles(profiles, launch_agent)
         return replaced
 
-    async def _discard_candidate(self, completed: CompletedBuild) -> None:
+    async def discard_candidate(self, completed: CompletedBuild) -> None:
         coordinator = completed.staged.mutation_coordinator
         await self.release(
             ReplacedBuild(

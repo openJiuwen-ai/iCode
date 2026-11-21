@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "schema_version": 1,
+    "app_version": "0.36.0",
+    "os_name": "macos",
+    "arch": "arm64",
+    "session_id": "legacy-workflow",
+    "created_at": "2026-11-20T02:00:30.827746+00:00",
+    "updated_at": "2026-11-20T02:00:30.827746+00:00",
+    "kind": "workflow",
+    "primary_cwd": "/repo",
+    "working_dirs": [
+      "/repo",
+      "/shared"
+    ],
+    "title": "Review",
+    "custom_title": "",
+    "generated_title": ""
+  },
+  "state": {
+    "identity": {
+      "workflow_id": "review",
+      "canonical_path": "/repo/review.py",
+      "source_kind": "project"
+    },
+    "workspace": {
+      "primary_cwd": "/repo",
+      "working_dirs": [
+        {
+          "path": "/repo",
+          "label": "",
+          "is_primary": true
+        },
+        {
+          "path": "/shared",
+          "label": "Shared",
+          "is_primary": false
+        }
+      ],
+      "reference_files": [
+        "/repo/AGENTS.md"
+      ]
+    },
+    "model": null,
+    "summary": {
+      "run_count": 1,
+      "latest_run_id": "run-0001"
+    },
+    "total_session_tokens": 0,
+    "total_session_input_tokens": 0,
+    "total_session_output_tokens": 0,
+    "total_session_cache_hit_tokens": null
+  },
+  "session_checkpoint_id": "688e900c6c82dd62ca73b80ebf67c27e"
+}

@@ -57,16 +57,22 @@ from chrys.foundation.events.types import (
     UserRollback,
     Warning,
     WorkspaceChange,
+    WorkspaceChangeFinished,
     WorkspaceUpdated,
 )
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.i18n.messages import MessageRef
 from chrys.foundation.models.session_surface import SessionSurface
-from chrys.foundation.models.workspace import WorkingDir, Workspace
+from chrys.foundation.models.workspace import (
+    WorkingDir,
+    Workspace,
+    same_directory,
+)
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.text.yaml_io import dump_yaml
 from chrys.foundation.util.session_ids import SESSION_SHORT_ID_LEN, session_short_id
-from chrys.orchestration.session_host import ChrysSessionHost
+from chrys.orchestration.engine.workspaces import registry_unreadable_warning
+from chrys.orchestration.session_host import WORKSPACE_WARNING_CODES, ChrysSessionHost, collect_workspace_warnings
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.profiles.agents.loader import AgentProfileLoadError, is_filename_safe_profile_name
@@ -82,9 +88,11 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.profiles.models.serializer import delete_profile as delete_model_profile
 from chrys.service.profiles.models.serializer import save_profile as save_model_profile
-from chrys.service.state.store import ChatSessionMeta, JsonFileStateStore, SessionTranscript, StateStore
+from chrys.service.session.persistence import open_active_session_store
+from chrys.service.state.store import ChatSessionMeta, SessionTranscript, StateStore
 from chrys.service.tools.names import chrys_reserved_tool_names
 from chrys.service.trajectory.state import TurnRecord
+from chrys.service.workspaces.registry import RegistrySnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +250,7 @@ class AcpSessionManager:
         self._profile_name = profile_name
         self._approval_mode = approval_mode
         self._process_cwd = _resolve_dir(process_cwd) if process_cwd is not None else None
-        self._state_store = state_store or JsonFileStateStore()
+        self._state_store = state_store or open_active_session_store()
         self._agent_registry = agent_registry or AgentProfileRegistry()
         self._model_registry = model_registry or ModelProfileRegistry()
         self._on_successful_turn = on_successful_turn
@@ -656,6 +664,7 @@ class AcpSessionManager:
         loaded_settings: LoadedSettings,
         workspace: Workspace | None,
         mcp_overlay: list[MCPServerConfig],
+        workspace_snapshot: RegistrySnapshot | None = None,
     ) -> tuple[ChrysSessionHost, SessionTitleUpdater]:
         """Construct a session host plus its per-session auto-title updater.
 
@@ -686,6 +695,7 @@ class AcpSessionManager:
             approval_mode=self._approval_mode,
             cwd=cwd,
             workspace=workspace,
+            workspace_snapshot=workspace_snapshot,
             mcp_overlay=mcp_overlay,
             allow_user_interaction=True,
             on_successful_turn=_on_successful_turn,
@@ -740,7 +750,7 @@ class AcpSessionManager:
             # settings reload instead of reverting to the env default.
             host.engine.pin_ask_user_timeout()
             try:
-                await host.start()
+                await self._start_host(host, warnings)
             except BaseException:
                 await _shutdown_after_failed_start(host, title_updater)
                 raise
@@ -780,7 +790,7 @@ class AcpSessionManager:
             mcp_overlay = _mcp_overlay(mcp_servers)
             existing = self._resolve_active_session(session_id)
             if existing is not None:
-                self._validate_active_cwd(existing, resolved_cwd)
+                installed = self._validate_active_cwd(existing, resolved_cwd)
                 # Overlays (MCP servers / extra directories) cannot be applied to a
                 # running host, so reject rather than silently dropping them.
                 if mcp_overlay:
@@ -789,7 +799,9 @@ class AcpSessionManager:
                         "Close it before reloading with MCP server overlays."
                     )
                     raise AcpSessionError(msg)
-                if additional_directories is not None:
+                if additional_directories is not None and not (
+                    installed is not None and _workspace_extra_dirs_match(additional_directories, installed)
+                ):
                     # Changing roots (including clearing them) means rebuilding the
                     # workspace, which a running host can't do — reject rather than
                     # silently keeping the old scope.
@@ -804,38 +816,51 @@ class AcpSessionManager:
                     recovered_from_sidecar=existing.host.engine.recovered_from_sidecar,
                 )
             canonical_id, meta = await self._resolve_session_meta(session_id)
-            self._validate_saved_cwd(meta, resolved_cwd)
-            # Off-thread: the load reads settings files. The restore itself
-            # re-derives against the saved cwd, but the host must not exist —
-            # even pre-restore — under another project's trust domain.
-            session_loaded = await asyncio.to_thread(self._session_loaded_settings, resolved_cwd)
+            snapshot = self._state_store.workspace_registry.snapshot()
+            try:
+                registered = self._validate_saved_cwd(meta, resolved_cwd, snapshot=snapshot)
+                if registered is not None:
+                    if additional_directories is not None and not _workspace_extra_dirs_match(
+                        additional_directories, registered
+                    ):
+                        override = _workspace_from_dirs(resolved_cwd, additional_directories)
+                        # The cold load's explicit roots apply to this runtime. The registry keeps its definition.
+                        effective = replace(
+                            registered, working_dirs=[d for d in override.working_dirs if not d.is_primary]
+                        )
+                        snapshot = replace(
+                            snapshot,
+                            workspaces=tuple(
+                                effective if item.id == effective.id else item for item in snapshot.workspaces
+                            ),
+                        )
+                    additional_directories = None
+                session_loaded = await asyncio.to_thread(self._session_loaded_settings, resolved_cwd)
+                workspace = (
+                    _workspace_from_dirs(resolved_cwd, additional_directories)
+                    if additional_directories is not None
+                    else None
+                )
+            except Exception:
+                if warnings is not None and snapshot.error is not None:
+                    warnings.append(registry_unreadable_warning(canonical_id, snapshot.error))
+                raise
             host, title_updater = self._build_host(
                 profile_name="",
                 session_id=canonical_id,
                 cwd=resolved_cwd,
                 loaded_settings=session_loaded,
-                # ``None`` keeps the saved roots; a list (even empty) is authoritative,
-                # so pass a workspace whenever the client specified the field at all.
-                workspace=_workspace_from_dirs(resolved_cwd, additional_directories)
-                if additional_directories is not None
-                else None,
+                workspace=workspace,
                 mcp_overlay=mcp_overlay,
+                workspace_snapshot=snapshot,
             )
-            # ACP owns the ask_user lifetime, so its injected timeout survives a
-            # settings reload instead of reverting to the env default.
             host.engine.pin_ask_user_timeout()
             try:
-                await host.start()
+                await self._start_host(host, warnings)
             except BaseException:
                 await _shutdown_after_failed_start(host, title_updater)
                 raise
             if warnings is not None:
-                # Composed from the restore's committed load, not the
-                # pre-restore snapshot above: the restore re-reads the same
-                # root, and an edit landing between the two reads would
-                # otherwise be reported stale — or a rejection only the
-                # committed load hit would go unheard, since its bus warnings
-                # have no subscriber here.
                 warnings.extend(settings_warning_events(host.engine.loaded_settings))
             managed = ManagedSession(
                 session_id=canonical_id,
@@ -850,6 +875,15 @@ class AcpSessionManager:
                 reused_existing=False,
                 recovered_from_sidecar=host.engine.recovered_from_sidecar,
             )
+
+    @staticmethod
+    async def _start_host(host: ChrysSessionHost, warnings: list[Warning] | None) -> None:
+        """Forward workspace notices emitted before the prompt event stream exists."""
+        if warnings is None:
+            await host.start()
+            return
+        async with collect_workspace_warnings(host.event_bus, WORKSPACE_WARNING_CODES, warnings):
+            await host.start()
 
     async def list_sessions(
         self,
@@ -869,26 +903,40 @@ class AcpSessionManager:
         if cwd is None and self._process_cwd is None:
             return [], None
         requested_cwd = self._resolve_requested_cwd(cwd)
-        matches = [
-            meta
-            for meta in cast(list[ChatSessionMeta], await self._state_store.list_sessions(kind="chat"))
-            if _same_dir(meta.primary_cwd, requested_cwd)
-        ]
-        if additional_directories:
-            # Validate filter roots like new/load: absolute, existing dirs. This also
-            # normalizes them so the exact-match comparison is apples-to-apples.
+        snapshot = self._state_store.workspace_registry.snapshot()
+        matches = []
+        for meta in cast(list[ChatSessionMeta], await self._state_store.list_sessions(kind="chat")):
+            active = self._sessions.get(meta.session_id)
+            registered = snapshot.session_workspace(meta.session_id)
+            workspace = _installed_workspace(active) if active is not None else registered
+            catalog_cwd = _catalog_cwd(meta.primary_cwd, workspace)
+            if (
+                workspace is not None
+                and active is not None
+                and registered is not None
+                and same_directory(catalog_cwd, registered.primary_cwd)
+            ):
+                catalog_cwd = registered.primary_cwd
+            if _workspace_cwd_matches(catalog_cwd, requested_cwd, has_workspace=workspace is not None):
+                roots = _workspace_extra_dirs(workspace) if workspace is not None else _session_extra_dirs(meta)
+                matches.append((meta, catalog_cwd, workspace is not None, roots))
+        if additional_directories and (not matches or any(not has_workspace for _, _, has_workspace, _ in matches)):
             resolved_additional = [_resolve_dir(path) for path in additional_directories]
-            matches = [meta for meta in matches if _extra_dirs_match(resolved_additional, meta)]
+            matches = [
+                (meta, catalog_cwd, has_workspace, roots)
+                for meta, catalog_cwd, has_workspace, roots in matches
+                if has_workspace or _extra_dirs_match(resolved_additional, roots)
+            ]
         sessions = sorted(
             matches,
-            key=lambda meta: (meta.updated_at, meta.session_id),
+            key=lambda row: (row[0].updated_at, row[0].session_id),
             reverse=True,
         )
         start = _decode_cursor(cursor)
         page_size = 50
         page = sessions[start : start + page_size]
         next_cursor = str(start + page_size) if start + page_size < len(sessions) else None
-        return [_session_info(meta) for meta in page], next_cursor
+        return [_session_info(meta, catalog_cwd, roots) for meta, catalog_cwd, _, roots in page], next_cursor
 
     def get(self, session_id: str) -> ManagedSession:
         """Return an active managed session."""
@@ -1339,23 +1387,70 @@ class AcpSessionManager:
         )
         return result
 
-    async def set_workspace(self, session_id: str, primary_cwd: str) -> WorkspaceUpdated:
-        """Change the session primary workspace cwd."""
+    async def set_workspace(
+        self,
+        session_id: str,
+        primary_cwd: str,
+        *,
+        warnings: list[Warning] | None = None,
+    ) -> WorkspaceUpdated:
+        """Change the session primary workspace cwd.
+
+        Args:
+            warnings: Collects the workspace notices the change publishes (an unreadable
+                workspace list, a departure that could not be saved), as ``_start_host``
+                does for new and load: no prompt stream is open to carry them.
+        """
         session = self.get(session_id)
         # Validate strictly (must exist, be a dir, resolve absolutely) like new/load.
-        # WorkspaceChange → Workspace.from_cwd only absolutizes, so an unvalidated typo
-        # would rebuild/persist a broken workspace or resolve a relative path against the
-        # process cwd instead of the session.
         resolved_cwd = _resolve_dir(primary_cwd)
-        result = await self._await_runtime_mutation(
-            session,
-            WorkspaceChange(primary_cwd=resolved_cwd, session_id=session.host.session_id),
-            WorkspaceUpdated,
-            timeout_message=f"Timed out waiting for workspace update: {resolved_cwd}",
-            failure_message="Workspace update failed.",
+        command = WorkspaceChange(
+            primary_cwd=resolved_cwd, session_id=session.host.session_id, require_leave_confirmation=False
         )
+        async with session.mutation_lock:
+            if _installed_workspace(session) is not None:
+                return await self._set_workspace_locked(session, command, warnings)
+            result = await self._await_runtime_mutation_locked(
+                session,
+                command,
+                WorkspaceUpdated,
+                timeout_message=f"Timed out waiting for workspace update: {resolved_cwd}",
+                failure_message="Workspace update failed.",
+            )
         session.cwd = result.primary_cwd or resolved_cwd
         return result
+
+    async def _set_workspace_locked(
+        self, session: ManagedSession, command: WorkspaceChange, warnings: list[Warning] | None
+    ) -> WorkspaceUpdated:
+        """Collect this request's inline result and workspace notices during publication."""
+        bus = session.host.event_bus
+        terminal: WorkspaceUpdated | Error | None = None
+
+        async def receive(event: WorkspaceChangeFinished | Warning) -> None:
+            nonlocal terminal
+            if isinstance(event, Warning):
+                if warnings is not None and event.code in WORKSPACE_WARNING_CODES:
+                    warnings.append(event)
+            elif terminal is None and event.request_id == command.event_id:
+                terminal = event.error if event.error is not None else event.workspace_update
+
+        await bus.subscribe(WorkspaceChangeFinished, receive)
+        await bus.subscribe(Warning, receive)
+        try:
+            await bus.publish(command)
+        finally:
+            await bus.unsubscribe(Warning, receive)
+            await bus.unsubscribe(WorkspaceChangeFinished, receive)
+            # Cancellation during post-install cleanup can leave a committed cwd.
+            if (workspace := session.host.engine.workspace) is not None:
+                session.cwd = workspace.primary_cwd
+        if isinstance(terminal, Error):
+            raise AcpSessionError(terminal.message or terminal.code or "Workspace update failed.")
+        if terminal is None:
+            logger.debug("No WorkspaceChangeFinished for request %s", command.event_id)
+            raise AcpSessionError("Workspace update failed.")
+        return terminal
 
     async def begin_close(self, session_id: str) -> None:
         """Stop prompt admission for a session about to be closed.
@@ -1396,8 +1491,11 @@ class AcpSessionManager:
         async with self._lock:
             resolved_cwd = self._resolve_requested_cwd(cwd)
             canonical_id, meta = await self._resolve_session_meta(session_id)
-            self._validate_saved_cwd(meta, resolved_cwd)
             session = self._sessions.get(canonical_id)
+            if session is not None and _installed_workspace(session) is not None:
+                self._validate_active_cwd(session, resolved_cwd)
+            else:
+                self._validate_saved_cwd(meta, resolved_cwd, snapshot=RegistrySnapshot() if session else None)
             if session is not None:
                 session.closing = True
             return canonical_id
@@ -1512,42 +1610,51 @@ class AcpSessionManager:
             raise AcpSessionError(msg)
         return session
 
-    def _validate_saved_cwd(self, meta: ChatSessionMeta, requested_cwd: str) -> None:
-        if not meta.primary_cwd:
+    def _validate_saved_cwd(
+        self, meta: ChatSessionMeta, requested_cwd: str, *, snapshot: RegistrySnapshot | None = None
+    ) -> Workspace | None:
+        snapshot = self._state_store.workspace_registry.snapshot() if snapshot is None else snapshot
+        workspace = snapshot.session_workspace(meta.session_id)
+        saved_cwd = _catalog_cwd(meta.primary_cwd, workspace)
+        if not saved_cwd:
             msg = (
                 f"Session '{session_short_id(meta.session_id)}' has no saved cwd metadata and cannot be loaded "
                 "over ACP."
             )
             raise AcpSessionError(msg)
-        if not os.path.isdir(meta.primary_cwd):
+        if not os.path.isdir(saved_cwd):
             msg = (
                 f"working directory of session '{session_short_id(meta.session_id)}' no longer exists: "
-                f"{surrogate_safe_text(meta.primary_cwd)}"
+                f"{surrogate_safe_text(saved_cwd)}"
             )
             raise AcpSessionError(msg)
-        if not _same_dir(meta.primary_cwd, requested_cwd):
+        if not _workspace_cwd_matches(saved_cwd, requested_cwd, has_workspace=workspace is not None):
             logger.warning(
                 "ACP session load cwd mismatch for %s: saved cwd %s requested cwd %s",
                 session_short_id(meta.session_id),
-                meta.primary_cwd,
+                saved_cwd,
                 requested_cwd,
             )
             msg = f"Session '{session_short_id(meta.session_id)}' belongs to a different workspace."
             raise AcpSessionError(msg)
+        return workspace
 
-    def _validate_active_cwd(self, session: ManagedSession, requested_cwd: str) -> None:
-        if not _same_dir(session.cwd, requested_cwd):
-            logger.warning(
-                "ACP active session load cwd mismatch for %s: active cwd %s requested cwd %s",
-                session_short_id(session.session_id),
-                session.cwd,
-                requested_cwd,
-            )
-            msg = (
-                f"Session '{session_short_id(session.session_id)}' belongs to cwd '{session.cwd}', "
-                f"not requested cwd '{requested_cwd}'."
-            )
-            raise AcpSessionError(msg)
+    def _validate_active_cwd(self, session: ManagedSession, requested_cwd: str) -> Workspace | None:
+        workspace = _installed_workspace(session)
+        cwd = _catalog_cwd(session.cwd, workspace)
+        if _workspace_cwd_matches(cwd, requested_cwd, has_workspace=workspace is not None):
+            return workspace
+        logger.warning(
+            "ACP active session load cwd mismatch for %s: active cwd %s requested cwd %s",
+            session_short_id(session.session_id),
+            cwd,
+            requested_cwd,
+        )
+        msg = (
+            f"Session '{session_short_id(session.session_id)}' belongs to cwd '{cwd}', "
+            f"not requested cwd '{requested_cwd}'."
+        )
+        raise AcpSessionError(msg)
 
     def _session_loaded_settings(self, cwd: str) -> LoadedSettings:
         """Derive one session's settings under its own project trust domain.
@@ -1723,6 +1830,16 @@ def _same_dir(left: str, right: str) -> bool:
         return False
 
 
+def _catalog_cwd(saved_cwd: str, workspace: Workspace | None) -> str:
+    return workspace.primary_cwd if workspace is not None else saved_cwd
+
+
+def _workspace_cwd_matches(left: str, right: str, *, has_workspace: bool) -> bool:
+    if has_workspace:
+        return same_directory(left, right, realpath_fallback=True)
+    return _same_dir(left, right)
+
+
 def _workspace_from_dirs(primary_cwd: str, additional_directories: list[str] | None) -> Workspace:
     dirs = [WorkingDir(path=primary_cwd, is_primary=True)]
     for path in additional_directories or []:
@@ -1826,22 +1943,37 @@ def _session_extra_dirs(meta: ChatSessionMeta) -> list[str]:
     return [d for d in meta.working_dirs if not _same_dir(d, meta.primary_cwd)]
 
 
-def _extra_dirs_match(requested: list[str], meta: ChatSessionMeta) -> bool:
+def _extra_dirs_match(requested: list[str], roots: list[str]) -> bool:
     """Exact, ordered match of a session's additional roots against a request."""
-    saved = _session_extra_dirs(meta)
-    if len(requested) != len(saved):
-        return False
-    return all(_same_dir(req, have) for req, have in zip(requested, saved, strict=True))
+    return len(requested) == len(roots) and all(
+        _same_dir(req, have) for req, have in zip(requested, roots, strict=True)
+    )
 
 
-def _session_info(meta: ChatSessionMeta) -> acp_schema.SessionInfo:
-    extra_dirs = _session_extra_dirs(meta)
+def _installed_workspace(session: ManagedSession) -> Workspace | None:
+    workspace = session.host.engine.workspace
+    return workspace if workspace is not None and workspace.id else None
+
+
+def _workspace_extra_dirs(workspace: Workspace) -> list[str]:
+    return [directory.path for directory in workspace.working_dirs if not directory.is_primary]
+
+
+def _workspace_extra_dirs_match(requested: list[str], workspace: Workspace) -> bool:
+    saved = _workspace_extra_dirs(workspace)
+    return len(requested) == len(saved) and all(
+        os.path.isabs(path) and same_directory(path, root, realpath_fallback=True)
+        for path, root in zip(requested, saved, strict=True)
+    )
+
+
+def _session_info(meta: ChatSessionMeta, cwd: str, roots: list[str]) -> acp_schema.SessionInfo:
     return acp_schema.SessionInfo(
         sessionId=meta.session_id,
-        cwd=meta.primary_cwd,
+        cwd=cwd,
         title=meta.display_title or None,
         updatedAt=meta.updated_at.isoformat(),
-        additionalDirectories=extra_dirs or None,
+        additionalDirectories=roots or None,
         field_meta={
             "agent_profile": meta.agent_profile,
             "agent_display_name": meta.agent_display_name,

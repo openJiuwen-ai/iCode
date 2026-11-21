@@ -353,6 +353,16 @@ class SettingsHandle:
             released=released,
         )
 
+    def check_prepared(self, prepared: PreparedSettings) -> None:
+        """Raise now what :meth:`install_prepared` would raise, so a commit made after this cannot be stranded."""
+        base = prepared.base
+        if base.session_scoped_model or base.manual_model_revision is None:
+            return
+        if base.model_edit is None:
+            check_model_selection_revision(base.manual_model_revision)
+        else:
+            base.model_edit.check()
+
     def install_prepared(self, prepared: PreparedSettings) -> None:
         """Install values whose overlays have already succeeded, with the session's own choices they carry.
 
