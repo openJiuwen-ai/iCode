@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+.tmp/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.json
+.tmp-*
+screenshot-smoke.png

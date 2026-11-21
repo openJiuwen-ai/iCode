@@ -1,0 +1,106 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
+
+body {
+  max-width: 780px;
+  min-width: 0;
+  margin: 24px auto;
+}
+h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.card {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 8px;
+}
+
+.card label[for="default-policy"] {
+  margin-right: 8px;
+}
+
+select {
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, CanvasText 35%, transparent);
+  border-radius: 5px;
+  background: Canvas;
+  color: CanvasText;
+  font: inherit;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.toolbar input {
+  flex: 1;
+  min-width: 200px;
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, CanvasText 35%, transparent);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+#import {
+  display: none;
+}
+
+.import-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, CanvasText 35%, transparent);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 6px 4px;
+  text-align: left;
+  border-top: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+th {
+  font-weight: 600;
+  color: GrayText;
+}
+
+td.actions {
+  display: flex;
+  gap: 4px;
+}
+
+td.origin {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#status {
+  min-height: 1.4em;
+  color: GrayText;
+}
+
+#history {
+  margin: 0;
+  padding-left: 18px;
+}
+
+#history li {
+  margin: 3px 0;
+  color: GrayText;
+}

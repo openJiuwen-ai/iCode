@@ -1,0 +1,60 @@
+<!doctype html>
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="stylesheet" href="options.css" />
+    <title>iCode Browser Bridge — Site permissions</title>
+  </head>
+  <body>
+    <h1>iCode Browser Bridge — Site permissions</h1>
+    <p class="hint">
+      The plugin's domain allowlist still filters network requests; this page
+      controls which sites iCode may act on.
+    </p>
+
+    <section class="card">
+      <label for="default-policy">Default for unknown origins</label>
+      <select id="default-policy">
+        <option value="ask">Ask</option>
+        <option value="allow">Allow</option>
+      </select>
+    </section>
+
+    <section class="card">
+      <div class="toolbar">
+        <input id="origin" type="text" placeholder="https://example.com" spellcheck="false" />
+        <button id="add-allow" type="button">Allow</button>
+        <button id="add-block" type="button">Block</button>
+        <button id="export" type="button">Export JSON</button>
+        <label class="import-button">
+          Import JSON
+          <input id="import" type="file" accept="application/json" hidden />
+        </label>
+        <button id="clear" type="button">Clear all</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Origin</th>
+            <th>State</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p id="empty" hidden>No site overrides.</p>
+      <p id="status" role="status"></p>
+    </section>
+
+    <section class="card">
+      <h2>Recent changes</h2>
+      <ul id="history"></ul>
+      <p id="history-empty" hidden>No changes yet.</p>
+    </section>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

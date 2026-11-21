@@ -1,0 +1,9 @@
+icode-browser-use
+Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This distribution bundles no third-party source code or binary artifacts: the
+package depends only on the Python standard library at runtime. Its development
+dependencies (pytest, pytest-asyncio, pytest-timeout, ruff) are used to build and
+test the project and are not redistributed here.
