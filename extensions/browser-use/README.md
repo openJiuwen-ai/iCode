@@ -366,15 +366,17 @@ previously installed Chrome extension to enable public-web mode. If a site shows
 `site_permission_required`, check its permission in the extension popup.
 
 Every tool action (`DOM*`, `Input*`, `Runtime.evaluate/callFunctionOn`,
-`Accessibility*`, `DOMSnapshot*`, `Page.capture*`) re-checks the tab origin;
-`Fetch`/`Network`/`Target` policy commands are exempt so the page can keep
-loading. If page JavaScript redirects to an unapproved origin, the page may load,
-but snapshots and interactions fail with `site_permission_required` until the
-user allows it.
+`Accessibility*`, `DOMSnapshot*`, `Page.capture*`) re-checks the tab origin, and
+dangerous browser/target/fetch commands (`Browser.*`, `Target.getTargets`,
+`Fetch.*`) are refused by the Bridge. If page JavaScript redirects to an
+unapproved origin, the page may load, but snapshots and interactions fail with
+`site_permission_required` until the user allows it.
 
-The options page (popup → **Manage all sites…**) changes the default for unknown
-origins (Ask/Allow), edits or clears all overrides, exports/imports a JSON file,
-and shows recent changes. The default stays Ask until changed there.
+The options page (popup → **Manage all sites…**) changes the fallback default for
+unknown origins (Ask/Allow) when an allowlist is active or outside a public-web
+session, edits or clears per-site overrides (explicit `block`/`ask` overrides
+always take precedence over public-web mode), exports/imports a JSON file, and
+shows recent changes.
 
 Still open: branded Chrome's manual unpacked load. Updating the extension
 replaces the stable copy; close Chrome first because loaded files can be
@@ -717,7 +719,9 @@ extension adapter and workflow nodes still create their own sessions.
 ## Security
 
 - The HTTP(S) network policy uses CDP `Fetch`, DNS checks and OOPIF arming.
-  In public-web mode, DNS must resolve exclusively to public IP addresses.
+  In public-web mode, Python-side DNS resolution must return exclusively public
+  IP addresses before `Fetch.continueRequest` (note: Chrome performs its own
+  resolution afterwards, so DNS-rebinding TOCTOU is a known CDP limitation).
   The policy also checks scripts, styles, fonts and images. In allowlist mode, a
   real site needs its static hosts as well: for Google properties that means
   `gstatic.com`, `googleusercontent.com` and `googleapis.com` on top of the page's

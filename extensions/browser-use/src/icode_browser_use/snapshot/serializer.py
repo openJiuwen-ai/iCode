@@ -141,8 +141,8 @@ def render(
         name = _single_line(node.name)
         if not name and node.text_hint:
             name = _single_line(node.text_hint[:120])
-        if len(name) > 240:
-            name = name[:239] + "…"
+        if len(name) > 120:
+            name = name[:119] + "…"
         star = "*" if node.scrollable else ""
         mark = "[iframe] " if node.cdp_session_id else ""
         extra = ""

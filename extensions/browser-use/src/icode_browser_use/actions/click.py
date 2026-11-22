@@ -69,8 +69,9 @@ _DOM_USED = ", dispatch=dom"
 _SUBMIT_WORDS = re.compile(
     r"评论|发布|发送|提交|回复|确认|保存|删除|购买|下单|支付|下一步|"
     r"关注|收藏|点赞|转发|报名|预约|同意|继续|结算|加入购物车|发表|更新|"
-    r"post|send|comment|reply|submit|save|delete|buy|pay|confirm|publish|share|"
-    r"follow|like|subscribe|checkout|order|accept|allow|agree|continue|next|apply",
+    r"post|send|comment|reply|submit|save|delete|remove|buy|pay|confirm|publish|share|"
+    r"follow|like|subscribe|checkout|order|place\s+order|add|cart|bag|sign\s+in|register|vote|"
+    r"accept|allow|agree|continue|next|apply",
     re.IGNORECASE,
 )
 _CLICK_POLL = 0.075

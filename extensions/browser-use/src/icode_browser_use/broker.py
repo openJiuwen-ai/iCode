@@ -27,6 +27,7 @@ from .bridge.protocol import MAX_TCP_MESSAGE_BYTES, ProtocolError, encode_messag
 from .config import BrowserConfig, BrowserEnv, ConfigError
 from .errors import BrowserError, Unavailable
 from .locking import InstanceLock, acquire_instance_lock
+from .logging import log
 from .runtime import call_tool
 from .session import BrowserSession
 
@@ -181,8 +182,10 @@ class BrokerServer:
         for session in sessions:
             aclose = getattr(session, "aclose", None)
             if callable(aclose):
-                with contextlib.suppress(Exception):
+                try:
                     await aclose()
+                except Exception as exc:
+                    log(f"broker evicted session aclose failed: {exc!r}")
 
     async def _sweep(self) -> None:
         interval = 1.0 if self.cfg.broker_lease_ttl < 30 else 30.0

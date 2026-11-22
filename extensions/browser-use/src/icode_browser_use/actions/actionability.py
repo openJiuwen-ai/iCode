@@ -421,7 +421,40 @@ def classify_effect(before: dict[str, Any], after: dict[str, Any]) -> str:
     return "none"
 
 
-REJECT_WORDS = ("失败", "错误", "频繁", "登录", "权限", "禁止", "不能", "限制", "failed", "error", "denied", "limit")
+REJECT_WORDS = (
+    "失败",
+    "错误",
+    "频繁",
+    "请先登录",
+    "未登录",
+    "需要登录",
+    "权限",
+    "禁止",
+    "不能",
+    "超出限制",
+    "failed",
+    "error",
+    "denied",
+    "rate limit",
+    "limit exceeded",
+)
+
+_BENIGN_TOAST_RE = re.compile(
+    r"(?:\b(?:0|zero|no)\s+errors?\b|登录成功|login\s+succeeded|signed\s+in\s+successfully)",
+    re.IGNORECASE,
+)
+
+_REJECT_TOAST_RE = re.compile(
+    r"(?:失败|错误|频繁|请先登录|未登录|需要登录|登录已过期|无权限|没有权限|权限不足|禁止|不能|超出限制|"
+    r"\bfailed\b|\berror\b|\bdenied\b|\bforbidden\b|\bunauthorized\b|"
+    r"\brate\s+limit\b|\blimit\s+exceeded\b|\btoo\s+many\s+requests\b|\blogin\s+required\b|\bsign\s+in\s+required\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_rejection_toast(toast: str) -> bool:
+    cleaned = _BENIGN_TOAST_RE.sub("", toast)
+    return bool(_REJECT_TOAST_RE.search(cleaned))
 
 
 def normalize_text(value: Any) -> str:
@@ -456,23 +489,25 @@ def submit_verdict(
         return "提交状态未知（字段回读失败），请 browser_snapshot 复核", False
     before_text = normalize_text(before_field.get("text"))
     after_text = normalize_text(after_field.get("text"))
-    if replaced:
-        return "提交可能成功（编辑器已被替换），请 browser_snapshot 复核", False
-    if before_text and not after_text:
-        return "已提交（输入框已清空）", True
-    href_before = before_page.get("href")
-    href_after = after_page.get("href")
-    if isinstance(href_before, str) and isinstance(href_after, str) and href_before != href_after:
-        return "已提交（页面已跳转）", True
     new_toasts = [
         toast
         for toast in after_page.get("toasts", [])
         if toast not in before_page.get("toasts", []) and normalize_text(toast) != before_text
     ]
-    rejection = next(
-        (toast for toast in new_toasts if any(word in toast.lower() for word in REJECT_WORDS)),
-        None,
-    )
+    rejection = next((toast for toast in new_toasts if _is_rejection_toast(toast)), None)
+    if replaced:
+        return "提交可能成功（编辑器已被替换），请 browser_snapshot 复核", False
+    if before_text and not after_text:
+        if rejection:
+            return (
+                f"提交结果未确认（输入框已清空，但页面出现拒绝提示：{rejection}）；请 browser_snapshot 复核，不要重复提交",
+                False,
+            )
+        return "已提交（输入框已清空）", True
+    href_before = before_page.get("href")
+    href_after = after_page.get("href")
+    if isinstance(href_before, str) and isinstance(href_after, str) and href_before != href_after:
+        return "已提交（页面已跳转）", True
     if rejection:
         return f"提交被拒：{rejection}", False
     if after_page and before_page.get("mutations") != after_page.get("mutations"):

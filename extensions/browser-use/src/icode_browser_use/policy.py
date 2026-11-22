@@ -1,11 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Network policy: per-request allowlist enforcement, DNS guard, OOPIF arming.
+"""Network policy: per-request allowlist enforcement, Python-side DNS guard, OOPIF arming.
 
-Destination rules are enforced per request through CDP ``Fetch``; a DNS guard
-rejects any public destination that resolves to a private address; OOPIF arming freezes
-each cross-origin child frame until ``Fetch`` covers it. The policy is
-fail-closed throughout: a request it cannot prove safe is blocked.
+Destination rules are enforced per HTTP(S) request through CDP ``Fetch``; a Python-side
+DNS guard rejects public destinations that resolve to private addresses before calling
+``Fetch.continueRequest`` (note: Chrome performs its own resolution, so DNS-rebinding
+TOCTOU and non-``Fetch`` channels such as WebSockets and Service/Shared Workers are
+documented limits, not OS-sandbox guarantees). OOPIF arming freezes each cross-origin
+child frame until ``Fetch`` covers it.
 """
 
 from __future__ import annotations
