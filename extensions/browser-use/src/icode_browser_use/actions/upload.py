@@ -8,7 +8,7 @@ from typing import Any
 
 from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed
 from ..types import ToolBlock, text_block
-from ._shared import call_value, resolve_target
+from ._shared import call_value, resolve_target, send_watching_dialog
 from .actionability import evidence_line, mark_dispatched, new_action_id, prepare_action, record_action
 
 NAME = "browser_upload"
@@ -52,12 +52,17 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     action_id = new_action_id()
     prepare_action(session, action_id, "browser_upload", f"prepared upload to {entry.token}")
     client = session.require_client()
+    dialog_seq = getattr(session, "dialog_seq", 0)
     try:
-        await client.send(
-            "DOM.setFileInputFiles",
-            {"files": [str(path)], "objectId": object_id},
-            session_id=entry.cdp_session_id or session.session_id,
-            timeout=session.cfg.cdp_timeout,
+        _, dialog = await send_watching_dialog(
+            session,
+            dialog_seq,
+            lambda: client.send(
+                "DOM.setFileInputFiles",
+                {"files": [str(path)], "objectId": object_id},
+                session_id=entry.cdp_session_id or session.session_id,
+                timeout=session.cfg.cdp_timeout,
+            ),
         )
     except ConnectionClosed:
         raise
@@ -71,6 +76,17 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         return [text_block(text)]
     mark_dispatched(session, action_id, "browser_upload", f"dispatched upload to {entry.token}")
     session.mark_dirty()
+    if dialog is not None:
+        text = (
+            f"已发送上传到 {entry.token}：{path.name}\n"
+            f"{dialog.fields()}\n"
+            "对话框出现：页面脚本暂停，上传结果未确认（不要重复上传）\n"
+            "status=blocked retryable=false\n"
+            "请先调用 browser_dialog（action=accept 或 dismiss），再 browser_snapshot 复核\n"
+            f"{evidence_line(session, action_id)}"
+        )
+        record_action(session, action_id, "browser_upload", "blocked", text)
+        return [text_block(text)]
     # The send returning is not the business result: read the field back.
     try:
         verified = await call_value(session, object_id, _FILE_COUNT_FN, cdp_session_id=entry.cdp_session_id)

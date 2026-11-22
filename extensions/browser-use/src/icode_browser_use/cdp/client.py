@@ -42,6 +42,9 @@ _sleep = asyncio.sleep
 class CDPConnection(Protocol):
     """The narrow CDP surface the session, policy and target layers use."""
 
+    @property
+    def closed(self) -> bool: ...
+
     async def send(
         self,
         method: str,

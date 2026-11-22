@@ -43,6 +43,8 @@ def session(tmp_path, *, fail: bool = False) -> SimpleNamespace:
         require_client=lambda: None,
         mark_dirty=lambda: None,
         note_success=lambda _target: None,
+        dialog_seq=0,
+        dialog_since=lambda _seq: None,
         fail=fail,
     )
 

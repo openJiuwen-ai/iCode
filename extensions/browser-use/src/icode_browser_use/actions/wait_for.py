@@ -344,7 +344,7 @@ async def _lookup(
             object_id = await _resolve_node(session, entry, deadline)
             can_refresh = capture_and_register is not _shared_capture or hasattr(session, "read_frame_metrics")
             if object_id or attempt or not refresh_allowed or not can_refresh:
-                return entry, object_id, refreshed
+                return entry, object_id or "", refreshed
             # Entry from snapshot is detached (re-rendered): refresh once before returning.
             refreshed = await _refresh(session, deadline)
             if not refreshed:
@@ -555,7 +555,9 @@ async def run_post_write_expect(
     if not condition:
         return action_blocks
     action_text = "\n".join(str(b.get("text", "")) for b in action_blocks if b.get("type") == "text")
-    if any(marker in action_text for marker in ("status=blocked", "status=failed", "status=uncertain")):
+    if any(
+        line.startswith(("status=blocked", "status=failed", "status=uncertain")) for line in action_text.splitlines()
+    ):
         return [text_block(f"{action_text}\nexpect_status=skipped reason=write_not_confirmed")]
     expect_args = {
         "condition": condition,
