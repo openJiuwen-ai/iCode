@@ -449,3 +449,61 @@ def test_cmdline_matches_profile_with_spaces_and_rejects_prefix_collision(tmp_pa
     profile = tmp_path / "First Last" / "chrome"
     assert _cmdline_matches_profile(f'chrome.exe "--user-data-dir={profile}" --headless', profile)
     assert not _cmdline_matches_profile(f'chrome.exe "--user-data-dir={profile}-2" --headless', profile)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_hidden_return_text_reads_page_text_not_hidden_button_label(monkeypatch):
+    monkeypatch.setattr(wait_for, "_sleep", lambda _s: _noop())
+    session = _FakeWaitSession(page_texts=["FINAL_WEATHER_ANSWER: Shanghai 24C clear"])
+
+    async def fake_call_node(_session, _object_id, _cdp_session_id, _fn, _deadline):
+        return {"present": True, "visible": False, "text": "Stop generating"}
+
+    monkeypatch.setattr(wait_for, "_call_node", fake_call_node)
+    blocks = await wait_for.run(
+        session,
+        {
+            "condition": "hidden",
+            "target": "@e5#7",
+            "value": "",
+            "timeout_ms": 1000,
+            "return_mode": "text",
+            "max_chars": 1000,
+        },
+    )
+    out = blocks[0]["text"]
+    assert "status=succeeded" in out
+    assert "FINAL_WEATHER_ANSWER: Shanghai 24C clear" in out
+    assert "content:\nStop generating" not in out
+
+
+@pytest.mark.asyncio
+async def test_click_dom_elsewhere_uncertain_still_runs_readonly_expect(monkeypatch):
+    monkeypatch.setattr(wait_for, "_sleep", lambda _s: _noop())
+    session = _FakeWaitSession(page_texts=["TICKET_CONFIRMED_#42"])
+
+    async def fake_run_click(_session, _args):
+        return [
+            text_block(
+                "已点击 @e10#7\ndispatch=sent\neffect=dom_elsewhere\nstatus=uncertain retryable=false\naction_id=a10"
+            )
+        ]
+
+    monkeypatch.setattr(click, "_run_click", fake_run_click)
+    blocks = await click.run(
+        session,
+        {
+            "target": "@e10#7",
+            "button": "left",
+            "click_count": 1,
+            "dispatch": "mouse",
+            "expect_condition": "text",
+            "expect_target": "",
+            "expect_value": "TICKET_CONFIRMED_#42",
+            "expect_timeout_ms": 1000,
+            "expect_return": "text",
+        },
+    )
+    out = blocks[0]["text"]
+    assert "expect_status=matched" in out
+    assert "TICKET_CONFIRMED_#42" in out

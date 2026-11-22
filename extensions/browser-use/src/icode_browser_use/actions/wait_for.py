@@ -469,7 +469,7 @@ async def _collect_return_payload(
             rendered = rendered[:max_chars] + f"\n…(snapshot truncated at {max_chars} chars)"
         return f"snapshot:\n{rendered}" if rendered else ""
     if return_mode == "text":
-        text_val = observed_text
+        text_val = None if condition == "hidden" else observed_text
         if text_val is None:
             try:
                 if target and object_id and condition != "hidden":
@@ -555,9 +555,8 @@ async def run_post_write_expect(
     if not condition:
         return action_blocks
     action_text = "\n".join(str(b.get("text", "")) for b in action_blocks if b.get("type") == "text")
-    if any(
-        line.startswith(("status=blocked", "status=failed", "status=uncertain")) for line in action_text.splitlines()
-    ):
+    lines = action_text.splitlines()
+    if any(line.startswith(("dispatch=not_sent", "status=blocked", "status=failed")) for line in lines):
         return [text_block(f"{action_text}\nexpect_status=skipped reason=write_not_confirmed")]
     expect_args = {
         "condition": condition,
