@@ -677,12 +677,14 @@ def fuse(
             doc_frame_id = _resolve(strings, document.get("frameId")) or frame.frame_id
             doc_frame = FrameInfo(
                 frame_id=doc_frame_id,
-                viewport_width=float(document.get("contentWidth") or frame.viewport_width),
-                viewport_height=float(document.get("contentHeight") or frame.viewport_height),
+                viewport=(
+                    float(document.get("contentWidth") or frame.viewport[0]),
+                    float(document.get("contentHeight") or frame.viewport[1]),
+                ),
                 scroll_x=float(document.get("scrollOffsetX") or 0.0),
                 scroll_y=float(document.get("scrollOffsetY") or 0.0),
-                offset_x=frame.offset_x,
-                offset_y=frame.offset_y,
+                offset=frame.offset,
+                dpr=frame.dpr,
             )
         result.extend(
             _fuse_document(

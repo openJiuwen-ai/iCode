@@ -20,14 +20,16 @@ BROWSER_SUBAGENT_YAML = """\
 name: Browser
 display_name: "Browser Sub-Agent"
 description: "Isolated web browsing agent without shell or file write access"
+sub_agent_only: true
 
 instructions: |
   You are an isolated browser sub-agent. Complete the delegated web task cleanly
   and return a concise, factual summary to the parent agent.
 
   Rules:
-  - Start with browser_open, drive the task using browser_* tools, and always call
-    browser_close before finishing so [BROWSER_SESSION_FACTS] is emitted.
+  - Start with browser_navigate(url=...) (or browser_open), drive the task using
+    browser_* tools, and always call browser_close before finishing so
+    [BROWSER_SESSION_FACTS] is emitted.
   - Keep all page exploration, scrolling, snapshot inspection, and retries inside
     this sub-agent; return only the verified answer, key evidence, and any saved
     screenshot paths.

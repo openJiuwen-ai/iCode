@@ -195,8 +195,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         clip, beyond = await _target_clip(session, entry, object_id)
         if clip:
             params["clip"] = clip
-            if beyond:
-                params["captureBeyondViewport"] = True
+            params["captureBeyondViewport"] = bool(beyond)
 
     data, mime_type = await _capture(session, params, "png")
     if _decoded_size(data) > MAX_IMAGE_BYTES:

@@ -14,6 +14,7 @@ const HOST = "com.chrys.browser";
 const GROUP_TITLE = "iCode";
 const OWNED_TABS_KEY = "chrysOwnedTabsV1";
 const BROWSER_SESSION_KEY = "chrysBrowserSessionV1";
+const BRIDGE_STATE_KEY = "chrysBridgeStateV1";
 const OWN_ORIGIN = `chrome-extension://${chrome.runtime.id}/`;
 let port = null;
 let groupId = null;
@@ -118,8 +119,42 @@ function clearBridgePolicy() {
   try {
     chrome.storage.local.remove("bridgeAllowedDomains");
     chrome.storage.local.remove("bridgeAllowedOrigins");
+    if (chrome.storage.session && chrome.storage.session.remove) {
+      chrome.storage.session.remove(BRIDGE_STATE_KEY);
+    }
   } catch {
     // Best effort; the next Bridge.configure replaces it anyway.
+  }
+}
+
+async function persistBridgeState(leaseId, publicWeb) {
+  try {
+    if (chrome.storage.session && chrome.storage.session.set) {
+      await chrome.storage.session.set({
+        [BRIDGE_STATE_KEY]: { leaseId: leaseId || null, publicWeb: publicWeb === true },
+      });
+    }
+  } catch {
+    // Best effort; in-memory state remains authoritative for this SW lifetime.
+  }
+}
+
+async function restoreBridgeState() {
+  if (bridgeLeaseId !== null) return;
+  try {
+    if (!chrome.storage.session || !chrome.storage.session.get) return;
+    const data = await chrome.storage.session.get({ [BRIDGE_STATE_KEY]: null });
+    const state = data[BRIDGE_STATE_KEY];
+    if (state && typeof state === "object") {
+      if (state.leaseId && bridgeLeaseId === null) {
+        bridgeLeaseId = String(state.leaseId);
+      }
+      if (typeof state.publicWeb === "boolean") {
+        setBridgePublicWeb(state.publicWeb);
+      }
+    }
+  } catch {
+    // Ignore storage errors; fail-closed defaults stay in place.
   }
 }
 
@@ -253,6 +288,7 @@ function forgetSessions(tabId) {
 async function handle(message, sourcePort = port) {
   if (!message || typeof message.method !== "string") return;
   const { id, method, params, sessionId } = message;
+  await restoreBridgeState();
   if (bridgeLeaseId && method !== "Bridge.hello" && method !== "Bridge.configure") {
     if (!message.leaseId) {
       throw new Error("bridge_lease_missing: command has no lease");
@@ -328,9 +364,11 @@ async function handle(message, sourcePort = port) {
       ? params.allowedOrigins.map((origin) => String(origin || "").trim().toLowerCase()).filter(Boolean)
       : [];
     bridgeLeaseId = message.leaseId;
+    const publicWeb = params?.publicWeb === true && !domains.length && !origins.length;
     await chrome.storage.local.set({ bridgeAllowedDomains: domains, bridgeAllowedOrigins: origins });
     if (port === sourcePort && bridgeLeaseId === message.leaseId) {
-      setBridgePublicWeb(params?.publicWeb === true && !domains.length && !origins.length);
+      setBridgePublicWeb(publicWeb);
+      await persistBridgeState(bridgeLeaseId, publicWeb);
     }
     result = { domains: domains.length, origins: origins.length, capabilities: ["ping", "page_log_gated", "tab_state"] };
   } else if (method === "Bridge.tabState") {

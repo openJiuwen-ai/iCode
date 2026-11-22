@@ -409,14 +409,14 @@ def _purge_profiles(state_dir: Path) -> None:
     print(f"purged {removed} session profile(s) at {profile_root}")
 
 
-def main() -> None:
+def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(prog="icode-browser-use-broker")
     parser.add_argument("--stop", action="store_true", help="stop the Broker for this state dir")
     parser.add_argument("--purge-profiles", action="store_true", help="also delete session profiles")
     parser.add_argument("--state-dir", default=None, help="override ICODE_BROWSER_STATE_DIR")
-    args = parser.parse_args()
+    args = parser.parse_args(list(argv) if argv is not None else None)
     if args.purge_profiles and not args.stop:
         print("--purge-profiles requires --stop", file=sys.stderr)
         raise SystemExit(2)
@@ -426,7 +426,7 @@ def main() -> None:
         if not path.is_file():
             if args.purge_profiles:
                 _purge_profiles(state_dir)
-                return
+                return 0
             print(f"no broker discovery at {path}", file=sys.stderr)
             raise SystemExit(1)
 
@@ -461,13 +461,14 @@ def main() -> None:
             raise SystemExit(1)
         if args.purge_profiles:
             _purge_profiles(state_dir)
-        return
+        return 0
     try:
         BrowserConfig.from_env()
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from None
     asyncio.run(_run())
+    return 0
 
 
 if __name__ == "__main__":

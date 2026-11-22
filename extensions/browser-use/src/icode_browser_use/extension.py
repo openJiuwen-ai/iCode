@@ -87,7 +87,10 @@ _WRITE_TOOL_NAMES: Final[frozenset[str]] = frozenset(
 
 def _active_toolset() -> str:
     raw = (BrowserEnv().get("TOOLSET") or "full").strip().lower()
-    return "compact" if raw == "compact" else "full"
+    if raw not in {"full", "compact"}:
+        logger.warning("invalid ICODE_BROWSER_TOOLSET=%r; falling back to 'full' during tool registration", raw)
+        return "full"
+    return raw
 
 
 def _tool(*, requires_approval: bool) -> Any:
@@ -445,9 +448,13 @@ def _get(ctx: ToolContext, browser_id: str) -> _Browser:
     _prune_closed()
     browser = _browsers.get(browser_id)
     if browser is None:
+        hint = (
+            "call browser_navigate(url=...) or browser_open to allocate a new browser handle."
+            if _active_toolset() == "compact"
+            else "call browser_list to see this session's browsers, or browser_open to allocate a new browser handle."
+        )
         raise ToolError(
-            f"Unknown browser_id {browser_id!r}; call browser_list to see this session's browsers, "
-            "or browser_open to allocate a new browser handle.",
+            f"Unknown browser_id {browser_id!r}; {hint}",
             code="unknown_browser",
         )
     if not _owner_matches(browser, ctx):
@@ -499,7 +506,7 @@ def _record_origin(bucket: list[str], url: str) -> None:
 
 
 def _format_session_facts(browser: _Browser) -> str:
-    """Render runtime-observed, page-unforgeable session facts for parent-agent cross-checking."""
+    """Render runtime-observed session facts on close for parent-agent cross-checking."""
     visited = ", ".join(browser.visited_origins) if browser.visited_origins else "none"
     blocked = ", ".join(browser.blocked_origins) if browser.blocked_origins else "none"
     shots = ", ".join(browser.screenshots[-10:]) if browser.screenshots else "none"
@@ -770,16 +777,28 @@ async def browser_navigate(
     ] = "",
 ) -> str:
     """Navigate an existing browser, or allocate a new one and navigate in a single step, returning its fresh snapshot."""
+    allocated = False
     if browser_id.strip():
         browser = _get(ctx, browser_id)
     else:
-        if len(_mine(ctx)) > 1:
+        mine = _mine(ctx)
+        if len(mine) > 1:
             raise ToolError(
                 "Several browsers are open; pass browser_id to choose which one to navigate.",
                 code="browser_id_required",
             )
-        browser = _open(ctx)
-    text = await _run(browser, "browser_navigate", {"url": url})
+        if len(mine) == 1:
+            browser = mine[0]
+        else:
+            browser = _open(ctx)
+            allocated = True
+    try:
+        text = await _run(browser, "browser_navigate", {"url": url})
+    except BaseException:
+        if allocated:
+            with contextlib.suppress(Exception):
+                await _close_and_forget(browser)
+        raise
     return f"browser_id: {browser.id}\n{text}"
 
 
@@ -1300,14 +1319,16 @@ async def browser_upload(
     browser = _get(ctx, browser_id)
     configured_roots = tuple(Path(root).resolve() for root in getattr(browser.session.cfg, "upload_roots", ()))
     if not isinstance(browser.session, BrokerSession):
-        if configured_roots:
-            if not any(candidate == root or root in candidate.parents for root in configured_roots):
-                raise ToolError(
-                    "Upload path is outside ICODE_BROWSER_UPLOAD_ROOTS.",
-                    code="browser_upload_denied",
-                )
-        else:
-            browser.session.cfg = dataclasses.replace(browser.session.cfg, upload_roots=workspaces)
+        if not configured_roots:
+            raise ToolError(
+                "Uploads are disabled until ICODE_BROWSER_UPLOAD_ROOTS is configured.",
+                code="browser_upload_denied",
+            )
+        if not any(candidate == root or root in candidate.parents for root in configured_roots):
+            raise ToolError(
+                "Upload path is outside ICODE_BROWSER_UPLOAD_ROOTS.",
+                code="browser_upload_denied",
+            )
     elif not BrowserEnv().get("UPLOAD_ROOTS"):
         raise ToolError(
             "Broker upload requires ICODE_BROWSER_UPLOAD_ROOTS configured before the Broker starts.",

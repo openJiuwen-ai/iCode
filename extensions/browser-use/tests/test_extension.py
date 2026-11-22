@@ -424,7 +424,11 @@ def test_upload_resolves_a_relative_path_against_ctx_cwd(tmp_path, monkeypatch: 
     from icode_browser_use.config import BrowserConfig
 
     browser = add_browser()
-    browser.session.cfg = BrowserConfig(allowed_domains=("example.com",), state_dir=tmp_path / "state")
+    browser.session.cfg = BrowserConfig(
+        allowed_domains=("example.com",),
+        state_dir=tmp_path / "state",
+        upload_roots=(tmp_path,),
+    )
     file = tmp_path / "input.txt"
     file.write_text("x", encoding="utf-8")
     captured: dict[str, object] = {}
@@ -436,6 +440,19 @@ def test_upload_resolves_a_relative_path_against_ctx_cwd(tmp_path, monkeypatch: 
     monkeypatch.setattr(ext, "_run", fake_run)
     assert asyncio.run(ext.browser_upload(ctx(tmp_path), "b1", "@e1#1", "input.txt")) == "ok"
     assert captured["path"] == str(file.resolve())
+
+
+def test_upload_denied_when_upload_roots_unset(tmp_path) -> None:
+    from icode_browser_use.config import BrowserConfig
+
+    browser = add_browser()
+    browser.session.cfg = BrowserConfig(allowed_domains=("example.com",), state_dir=tmp_path / "state")
+    file = tmp_path / "secret.env"
+    file.write_text("TOKEN=1", encoding="utf-8")
+    with pytest.raises(ToolError) as info:
+        asyncio.run(ext.browser_upload(ctx(tmp_path), "b1", "@e1#1", "secret.env"))
+    assert info.value.code == "browser_upload_denied"
+    assert browser.session.cfg.upload_roots == ()
 
 
 def test_upload_rejects_a_path_outside_the_workspace(tmp_path) -> None:

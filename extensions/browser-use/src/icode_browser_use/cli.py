@@ -64,9 +64,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command in ("connect", "status", "disconnect", "update-bridge"):
         return chrome.main([command, *rest], prog="icode-browser-use")
     if command == "bridge":
-        return bridge_install.main(rest)
+        result = bridge_install.main(rest)
+        return 0 if result is None else int(result)
     if command == "broker":
-        return broker.main(rest)
+        result = broker.main(rest)
+        return 0 if result is None else int(result)
     if command == "subagent":
         return subagent.main(rest)
     if command == "doctor":

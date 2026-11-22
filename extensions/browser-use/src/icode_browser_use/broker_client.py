@@ -19,12 +19,16 @@ from .errors import BrowserError, ConnectionClosed, Unavailable
 
 
 def _requested_wait_seconds(fields: dict[str, Any]) -> float:
-    """A tool's own ``timeout_ms`` (browser_wait_for may wait 180 s): the read must outlast it."""
+    """A tool's own ``timeout_ms`` or ``expect_timeout_ms``: the read must outlast it."""
     arguments = fields.get("arguments")
-    raw = arguments.get("timeout_ms") if isinstance(arguments, dict) else None
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+    if not isinstance(arguments, dict):
         return 0.0
-    return max(0.0, min(float(raw), 600_000.0)) / 1000.0
+    total_ms = 0.0
+    for key in ("timeout_ms", "expect_timeout_ms"):
+        raw = arguments.get(key)
+        if not isinstance(raw, bool) and isinstance(raw, (int, float)):
+            total_ms += max(0.0, min(float(raw), 600_000.0))
+    return min(total_ms, 600_000.0) / 1000.0
 
 
 class BrokerCallUnknown(BrowserError):

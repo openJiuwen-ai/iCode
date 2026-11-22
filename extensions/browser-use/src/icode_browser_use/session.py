@@ -656,6 +656,30 @@ class BrowserSession:
                 url=self._snapshot.url,
                 title=self._snapshot.title,
             )
+            from .policy import install_network_policy
+
+            client = self.require_client()
+            if self._policy is None:
+                self._policy = await install_network_policy(
+                    client,
+                    self.cfg.allowed_domains,
+                    allowed_origins=self.cfg.allowed_origins,
+                    session_id=self._session_id,
+                    scoped=True,
+                    discover_pages=self._transport.owns_browser,
+                    download_dir=str(self._download_dir) if self._download_dir is not None else None,
+                    owns_session=self._owns_session,
+                )
+            else:
+                # A recycled page keeps the policy object (and its one set of event
+                # handlers); only its Fetch interception is re-armed on the new session.
+                await self._policy.bootstrap(
+                    client,
+                    session_id=self._session_id,
+                    scoped=True,
+                    discover_pages=self._transport.owns_browser,
+                    download_dir=str(self._download_dir) if self._download_dir is not None else None,
+                )
         except BaseException:
             self._target_id = previous
             self._session_id = previous_session
@@ -668,30 +692,6 @@ class BrowserSession:
             raise
         finally:
             self._opening_page = False
-        from .policy import install_network_policy
-
-        client = self.require_client()
-        if self._policy is None:
-            self._policy = await install_network_policy(
-                client,
-                self.cfg.allowed_domains,
-                allowed_origins=self.cfg.allowed_origins,
-                session_id=self._session_id,
-                scoped=True,
-                discover_pages=self._transport.owns_browser,
-                download_dir=str(self._download_dir) if self._download_dir is not None else None,
-                owns_session=self._owns_session,
-            )
-        else:
-            # A recycled page keeps the policy object (and its one set of event
-            # handlers); only its Fetch interception is re-armed on the new session.
-            await self._policy.bootstrap(
-                client,
-                session_id=self._session_id,
-                scoped=True,
-                discover_pages=self._transport.owns_browser,
-                download_dir=str(self._download_dir) if self._download_dir is not None else None,
-            )
 
     async def _enable_page(self, session_id: str) -> dict[str, Any]:
         """Enable the domains a driven page needs; return its main-frame info."""
@@ -859,22 +859,26 @@ class BrowserSession:
 
     async def aclose(self) -> None:
         """Close the browser and release everything; idempotent."""
-        async with self._start_lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._state = "closing"
-            task = self._idle_task
-            self._idle_task = None
-            if task is not None and task is not asyncio.current_task() and not task.get_loop().is_closed():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-            try:
-                await self._teardown_transport()
-            finally:
-                self._release_lock()
-                self._state = "closed"
+        current = asyncio.current_task()
+        reentrant = getattr(self, "_action_lock_owner", None) is current
+        cm = contextlib.nullcontext() if reentrant else self._action_lock
+        async with cm:  # type: ignore[union-attr]
+            async with self._start_lock:
+                if self._closed:
+                    return
+                self._closed = True
+                self._state = "closing"
+                task = self._idle_task
+                self._idle_task = None
+                if task is not None and task is not current and not task.get_loop().is_closed():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                try:
+                    await self._teardown_transport()
+                finally:
+                    self._release_lock()
+                    self._state = "closed"
 
     async def _shutdown_idle(self) -> None:
         """Tear the browser down but leave the session restartable (idle close)."""
@@ -942,9 +946,13 @@ class BrowserSession:
 
     def mark_disconnected(self) -> None:
         """Record that the CDP connection died; the next action restarts Chrome."""
+        if self._closed or self._state == "closed":
+            return
         self._state = "failed"
         self._client = None
         self._targets = None
+        if self._child is None:
+            self._release_lock()
 
     # ----------------------------------------------------------------- lock
 
@@ -955,16 +963,20 @@ class BrowserSession:
         if self.login_pending and name not in LOGIN_PENDING_ALLOWED:
             raise Busy(f"会话忙（登录等待中），请使用 {_LOGIN_PENDING_HINT}")
         async with self._action_lock:
-            self._refuse_while_dialog(name)
-            if self.login_pending and name not in LOGIN_PENDING_ALLOWED:
-                raise Busy(f"会话忙（登录等待中），请使用 {_LOGIN_PENDING_HINT}")
-            pending_since = self._login_pending_since
+            self._action_lock_owner = asyncio.current_task()
             try:
-                yield
-            except BaseException:
-                if pending_since is not None:
-                    self._login_pending_since = pending_since
-                raise
+                self._refuse_while_dialog(name)
+                if self.login_pending and name not in LOGIN_PENDING_ALLOWED:
+                    raise Busy(f"会话忙（登录等待中），请使用 {_LOGIN_PENDING_HINT}")
+                pending_since = self._login_pending_since
+                try:
+                    yield
+                except BaseException:
+                    if pending_since is not None:
+                        self._login_pending_since = pending_since
+                    raise
+            finally:
+                self._action_lock_owner = None
 
     def _refuse_while_dialog(self, name: str) -> None:
         """Refuse actions that need the renderer: a dialog has paused the page."""

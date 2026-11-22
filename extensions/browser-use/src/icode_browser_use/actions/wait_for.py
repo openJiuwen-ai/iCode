@@ -161,16 +161,14 @@ _STABLE_NODE_CLEANUP_FN = (
 
 
 def _shadow_text_hit(nodes: list[Any], value: str) -> bool:
-    """Match *value* only against visible/laid-out nodes' text/name (never tag/role/href or hidden nodes)."""
+    """Match *value* only against visible nodes' text/name (never href-derived names or hidden nodes)."""
     needle = value.casefold()
     if not needle:
         return False
     for node in nodes:
-        bbox = getattr(node, "bbox", (0, 0, 0, 0)) or (0, 0, 0, 0)
-        has_box = len(bbox) >= 4 and float(bbox[2] or 0) > 0 and float(bbox[3] or 0) > 0
-        if not getattr(node, "visible", False) and not has_box:
+        if not getattr(node, "visible", False):
             continue
-        name = str(getattr(node, "name", "") or "")
+        name = "" if getattr(node, "name_from_href", False) else str(getattr(node, "name", "") or "")
         hint = str(getattr(node, "text_hint", "") or "")
         if needle in name.casefold() or needle in hint.casefold():
             return True
@@ -397,11 +395,18 @@ def _format_bounded_text(text: str, max_chars: int, *, label: str = "content") -
 
 
 def _format_ref_entry(entry: Any) -> str:
-    ref = getattr(entry, "ref", None)
-    epoch = getattr(entry, "epoch", None)
-    name = sanitize_text(str(getattr(entry, "name", "") or "")).replace("\n", " ")[:120]
-    if ref and epoch:
-        return f"matched_ref=@e{ref}#{epoch} name={name!r}"
+    token = getattr(entry, "token", None)
+    if not token:
+        index = getattr(entry, "index", None)
+        if index is None:
+            index = getattr(entry, "ref", None)
+        epoch = getattr(entry, "epoch", None)
+        token = f"@e{index}#{epoch}" if index and epoch else ""
+    fp = getattr(entry, "fingerprint", None)
+    raw_name = (fp.get("name") if isinstance(fp, dict) else None) or getattr(entry, "name", "") or ""
+    name = sanitize_text(str(raw_name)).replace("\n", " ")[:120]
+    if token:
+        return f"matched_ref={token} name={name!r}"
     return f"matched_ref=unavailable name={name!r}"
 
 
@@ -432,6 +437,8 @@ async def _collect_return_payload(
             try:
                 resolved = session.resolve_target(target)
                 return _format_ref_entry(resolved)
+            except ConnectionClosed:
+                raise
             except Exception:
                 return ""
         return ""
@@ -445,6 +452,8 @@ async def _collect_return_payload(
                 {"scope": "viewport", "interactive_only": False, "target": snap_target, "since": 0},
             )
             rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+        except ConnectionClosed:
+            raise
         except Exception:
             try:
                 blocks = await snapshot_action.run(
@@ -452,6 +461,8 @@ async def _collect_return_payload(
                     {"scope": "viewport", "interactive_only": False, "target": "", "since": 0},
                 )
                 rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+            except ConnectionClosed:
+                raise
             except Exception:
                 return ""
         if len(rendered) > max_chars:
@@ -471,6 +482,8 @@ async def _collect_return_payload(
                     text_val = str(probe.get("text", ""))
                 else:
                     text_val = str(await _evaluate(session, _PAGE_TEXT_EXPR, tail_deadline) or "")
+            except ConnectionClosed:
+                raise
             except Exception:
                 text_val = ""
         return _format_bounded_text(text_val, max_chars, label="content")
@@ -491,13 +504,41 @@ async def read_text_baseline(session: Any, target: str = "") -> str | None:
             return None
         probe = await _probe_node(session, object_id, entry.cdp_session_id, deadline)
         return str(probe.get("text", "")) if probe.get("present") else None
+    except ConnectionClosed:
+        raise
     except Exception:
         return None
 
 
+def _validate_wait_args(condition: str, target: str, value: str, timeout_ms: int) -> tuple[int, str, int]:
+    """Validate wait_for / expect_* arguments before any wait or write dispatch."""
+    if condition in {"visible", "hidden", "editable", "count"} and not target:
+        raise BadRequest(f"{condition} 条件需要 target（@eN 引用或自由文本）")
+    if condition in {"text", "url", "count"} and not value:
+        raise BadRequest(f"{condition} 条件需要 value")
+    if condition == "url" and target:
+        raise BadRequest("url 条件不接受 target，请只给 value")
+    if condition == "count" and target.startswith("@"):
+        raise BadRequest("count 条件的 target 是 browser_find 的查询文本，不是 @eN 引用")
+    quiet_ms = _quiet_window_ms(value) if condition == "stable" else 0
+    if condition == "stable" and timeout_ms < quiet_ms:
+        raise BadRequest(f"stable 条件的 timeout_ms（{timeout_ms}）必须不小于静默窗口 value（{quiet_ms} ms）")
+    count_op, count_value = _count_predicate(value) if condition == "count" else ("=", 0)
+    return quiet_ms, count_op, count_value
+
+
 async def prepare_expect_baseline(session: Any, arguments: dict[str, Any]) -> str | None:
-    """Take a pre-write read-only baseline when ``expect_condition='text_changed'`` is requested."""
-    if str(arguments.get("expect_condition") or "") != "text_changed":
+    """Validate ``expect_*`` parameters and capture a pre-write baseline before dispatching a write."""
+    condition = str(arguments.get("expect_condition") or "")
+    if not condition:
+        return None
+    _validate_wait_args(
+        condition,
+        str(arguments.get("expect_target") or ""),
+        str(arguments.get("expect_value") or ""),
+        int(arguments.get("expect_timeout_ms") or 5000),
+    )
+    if condition != "text_changed":
         return None
     return await read_text_baseline(session, str(arguments.get("expect_target") or ""))
 
@@ -525,13 +566,13 @@ async def run_post_write_expect(
         "max_chars": 2000,
     }
     try:
-        wait_blocks = await run_with_baseline(session, expect_args, baseline=baseline)
+        matched, wait_blocks = await _run_with_baseline_outcome(session, expect_args, baseline=baseline)
     except ConnectionClosed:
         raise
     except BrowserError as exc:
         return [text_block(f"{action_text}\nexpect_status=error expect_error={exc.code}: {exc}")]
     wait_text = "\n".join(str(b.get("text", "")) for b in wait_blocks if b.get("type") == "text")
-    expect_status = "matched" if "status=succeeded" in wait_text else "timeout"
+    expect_status = "matched" if matched else "timeout"
     return [text_block(f"{action_text}\n[EXPECT]\nexpect_status={expect_status}\n{wait_text}")]
 
 
@@ -545,24 +586,23 @@ async def run_with_baseline(
     *,
     baseline: str | None = None,
 ) -> list[ToolBlock]:
+    _matched, blocks = await _run_with_baseline_outcome(session, arguments, baseline=baseline)
+    return blocks
+
+
+async def _run_with_baseline_outcome(
+    session: Any,
+    arguments: dict[str, Any],
+    *,
+    baseline: str | None = None,
+) -> tuple[bool, list[ToolBlock]]:
     condition = arguments["condition"]
     target = arguments["target"]
     value = arguments["value"]
     timeout_ms = arguments["timeout_ms"]
     return_mode = str(arguments.get("return_mode") or "none")
     max_chars = int(arguments.get("max_chars") or 2000)
-    if condition in {"visible", "hidden", "editable", "count"} and not target:
-        raise BadRequest(f"{condition} 条件需要 target（@eN 引用或自由文本）")
-    if condition in {"text", "url", "count"} and not value:
-        raise BadRequest(f"{condition} 条件需要 value")
-    if condition == "url" and target:
-        raise BadRequest("url 条件不接受 target，请只给 value")
-    if condition == "count" and target.startswith("@"):
-        raise BadRequest("count 条件的 target 是 browser_find 的查询文本，不是 @eN 引用")
-    quiet_ms = _quiet_window_ms(value) if condition == "stable" else 0
-    if condition == "stable" and timeout_ms < quiet_ms:
-        raise BadRequest(f"stable 条件的 timeout_ms（{timeout_ms}）必须不小于静默窗口 value（{quiet_ms} ms）")
-    count_op, count_value = _count_predicate(value) if condition == "count" else ("=", 0)
+    quiet_ms, count_op, count_value = _validate_wait_args(condition, target, value, timeout_ms)
 
     started = time.monotonic()
     deadline = started + timeout_ms / 1000
@@ -595,14 +635,13 @@ async def run_with_baseline(
                     basis = "text_match"
                     last = f"page_text_hit={ok}"
                     if not ok:
-                        if _snapshot_matches_epoch(session) and _shadow_text_hit(list(session.snapshot.nodes), value):
-                            ok = True
-                            basis = "shadow_text_match"
-                            last = "page_text_hit=True (shadow_snapshot)"
-                        elif (
-                            time.monotonic() - refresh_at >= _REFRESH_MIN_SECONDS
+                        can_refresh = capture_and_register is not _shared_capture or hasattr(
+                            session, "read_frame_metrics"
+                        )
+                        if (
+                            can_refresh
+                            and time.monotonic() - refresh_at >= _REFRESH_MIN_SECONDS
                             and _remaining(deadline) > _REFRESH_FLOOR_SECONDS
-                            and (capture_and_register is not _shared_capture or hasattr(session, "read_frame_metrics"))
                         ):
                             if await _refresh(session, deadline):
                                 refresh_at = time.monotonic()
@@ -610,6 +649,15 @@ async def run_with_baseline(
                                     ok = True
                                     basis = "shadow_text_match"
                                     last = "page_text_hit=True (shadow_snapshot)"
+                        elif (
+                            not can_refresh
+                            and not getattr(session, "snapshot_dirty", False)
+                            and _snapshot_matches_epoch(session)
+                            and _shadow_text_hit(list(session.snapshot.nodes), value)
+                        ):
+                            ok = True
+                            basis = "shadow_text_match"
+                            last = "page_text_hit=True (shadow_snapshot)"
                 elif condition == "text_changed" and not target:
                     body = str(await _evaluate(session, _PAGE_TEXT_EXPR, deadline) or "")
                     observed_text = body
@@ -772,7 +820,7 @@ async def run_with_baseline(
                 )
                 if payload:
                     detail = f"{detail}\n{payload}" if detail else payload
-                return _success(session, condition, target, value, started, basis, detail)
+                return True, _success(session, condition, target, value, started, basis, detail)
             remaining = _remaining(deadline)
             if remaining <= 0:
                 session.note_success(session.target_id)  # the wait itself was activity
@@ -801,7 +849,7 @@ async def run_with_baseline(
                     )
                 lines.append("下一步：browser_snapshot 或 browser_extract 核对页面，再换条件/目标等待；不要 sleep 轮询")
                 lines.append(f"status=timeout retryable=true\n{_evidence(session)}")
-                return [text_block("\n".join(lines))]
+                return False, [text_block("\n".join(lines))]
             await _sleep(min(_POLL_SECONDS, remaining))
     finally:
         if condition == "stable":

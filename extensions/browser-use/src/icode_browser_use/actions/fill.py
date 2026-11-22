@@ -321,7 +321,11 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             submit_line = f"提交状态未知（页面回读失败：{type(exc).__name__}），不要按 Enter"
         else:
             try:
-                await _press_key(session, "Enter", "Enter", 13, text="\r", cdp_session_id=cdp_session_id)
+                _, dialog_seen = await send_watching_dialog(
+                    session,
+                    dialog_seq,
+                    lambda: _press_key(session, "Enter", "Enter", 13, text="\r", cdp_session_id=cdp_session_id),
+                )
             except ConnectionClosed:
                 raise
             except (CDPTimeout, BrowserError) as exc:
@@ -330,41 +334,46 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 replaced = False
                 after_field = before_field
                 after_page = before_page
-                dialog_seen = None
-                for _ in range(_SUBMIT_BUDGET):
-                    await _sleep(_SUBMIT_POLL)
-                    dialog_seen = session.dialog_since(dialog_seq)
-                    if dialog_seen is not None:
-                        submit_line = (
-                            f"提交结果未确认：{dialog_seen.fields()}；"
-                            "请先调用 browser_dialog，再 browser_snapshot 复核，不要重复按 Enter"
-                        )
-                        break
-                    try:
-                        after_field = await _read_state(session, object_id, cdp_session_id)
-                    except ConnectionClosed:
-                        raise
-                    except StaleRef:
-                        replaced = True
-                        break
-                    except (CDPTimeout, BrowserError):
-                        after_field = {}
-                        break
-                    try:
-                        after_page = await _page_state(session, cdp_session_id)
-                    except ConnectionClosed:
-                        raise
-                    except (CDPTimeout, BrowserError):
-                        after_page = {}
-                        break
-                    if not _normalize_text(after_field.get("text")) or before_page.get("href") != after_page.get(
-                        "href"
-                    ):
-                        break
-                if dialog_seen is None:
-                    submit_line, submitted = _submit_verdict(
-                        before_field, after_field, before_page, after_page, replaced=replaced
+                if dialog_seen is not None:
+                    submit_line = (
+                        f"提交结果未确认：{dialog_seen.fields()}；"
+                        "请先调用 browser_dialog，再 browser_snapshot 复核，不要重复按 Enter"
                     )
+                else:
+                    for _ in range(_SUBMIT_BUDGET):
+                        await _sleep(_SUBMIT_POLL)
+                        dialog_seen = session.dialog_since(dialog_seq)
+                        if dialog_seen is not None:
+                            submit_line = (
+                                f"提交结果未确认：{dialog_seen.fields()}；"
+                                "请先调用 browser_dialog，再 browser_snapshot 复核，不要重复按 Enter"
+                            )
+                            break
+                        try:
+                            after_field = await _read_state(session, object_id, cdp_session_id)
+                        except ConnectionClosed:
+                            raise
+                        except StaleRef:
+                            replaced = True
+                            break
+                        except (CDPTimeout, BrowserError):
+                            after_field = {}
+                            break
+                        try:
+                            after_page = await _page_state(session, cdp_session_id)
+                        except ConnectionClosed:
+                            raise
+                        except (CDPTimeout, BrowserError):
+                            after_page = {}
+                            break
+                        if not _normalize_text(after_field.get("text")) or before_page.get("href") != after_page.get(
+                            "href"
+                        ):
+                            break
+                    if dialog_seen is None:
+                        submit_line, submitted = _submit_verdict(
+                            before_field, after_field, before_page, after_page, replaced=replaced
+                        )
 
     session.mark_dirty()
     if not mismatch and (not submit or submitted):

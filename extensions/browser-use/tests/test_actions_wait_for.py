@@ -609,7 +609,7 @@ def test_text_wait_falls_back_to_snapshot_for_closed_shadow_dom(monkeypatch, det
     async def shadow_capture(sess) -> None:
         sess.captures += 1
         sess.snapshot.nodes = [
-            FusedNode(9, "f", "t", "generic", "没有更多评论", "div", 0, (0, 0, 100, 20), ref=9, epoch=5)
+            FusedNode(9, "f", "t", "generic", "没有更多评论", "div", 0, (0, 0, 100, 20), visible=True, ref=9, epoch=5)
         ]
 
     monkeypatch.setattr(wait_for, "capture_and_register", shadow_capture)

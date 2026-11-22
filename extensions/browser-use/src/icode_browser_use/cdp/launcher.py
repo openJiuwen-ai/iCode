@@ -655,13 +655,16 @@ def _remove(path: Path) -> None:
 
 
 def _cmdline_matches_profile(cmdline: str, profile: Path) -> bool:
-    """Require an exact ``--user-data-dir=<profile>`` argument match (never substring)."""
+    """Require an exact ``--user-data-dir=<profile>`` argument match (handles spaces; never prefix-matches)."""
+    import shlex
+
     target = f"--user-data-dir={profile}"
-    # Check both raw space-delimited and quoted tokens so prefix collisions
-    # like ``.../chrome-2`` or editors opening ``chrome.log`` never match.
-    for token in cmdline.split():
-        cleaned = token.strip("\"'")
-        if cleaned == target:
+    try:
+        tokens = shlex.split(cmdline, posix=(os.name != "nt"))
+    except ValueError:
+        tokens = cmdline.split()
+    for token in tokens:
+        if token.strip("\"'") == target:
             return True
     return f'"{target}"' in cmdline or f"'{target}'" in cmdline
 

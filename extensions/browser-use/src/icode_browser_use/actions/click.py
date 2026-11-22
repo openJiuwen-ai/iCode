@@ -673,6 +673,12 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
                 effect = "target_detached"
             elif observed == "navigation":
                 effect = "navigation"
+            elif observed == "dialog":
+                dialog = session.dialog_since(dialog_seq)
+                if dialog is not None:
+                    text = _dialog_blocked(session, entry, label, dialog, action_id)
+                    record_action(session, action_id, "browser_click", "blocked", text)
+                    return [text_block(text)]
         if not verified_control and effect not in ("navigation", "target_detached"):
             after_facts = await _target_facts(session, object_id, cdp_session_id)
             if after_facts.get("connected") is False:

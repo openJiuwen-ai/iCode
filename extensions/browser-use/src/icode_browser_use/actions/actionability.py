@@ -299,9 +299,10 @@ async def cdp_hit_test(
             "tag": str(getattr(hit_node, "tag", "") or "").upper(),
             "id": "",
         }
-    if hit_node is None and target_object_id:
-        # Handle newly inserted children or #text nodes absent from snapshot.nodes
-        # by resolving the hit node and walking its composed parent/host chain.
+    if target_object_id:
+        # Handle newly inserted children, #text nodes, or slotted light-DOM children
+        # (whose snapshot ancestor_ids point to the shadow host rather than the inner shadow target)
+        # by resolving the hit node and walking its composed parent/slot/host chain.
         try:
             resolved = await client.send(
                 "DOM.resolveNode",
