@@ -153,25 +153,36 @@ class BrokerServer:
         ):
             return
         finally:
-            self._release_for_connection(writer)
+            evicted = self._release_for_connection(writer)
             self._clients.discard(writer)
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+            await self._close_evicted_sessions(evicted)
 
-    def _release_for_connection(self, writer: asyncio.StreamWriter) -> None:
+    def _release_for_connection(self, writer: asyncio.StreamWriter) -> list[Any]:
         for lease_id, lease in list(self.leases.items()):
             if lease.connection is writer:
                 self.leases.pop(lease_id, None)
-        self._evict_idle_sessions()
+        return self._evict_idle_sessions()
 
-    def _evict_idle_sessions(self) -> None:
+    def _evict_idle_sessions(self) -> list[Any]:
+        evicted: list[Any] = []
         for session_id, session in list(self.sessions.items()):
             if any(lease.session_id == session_id for lease in self.leases.values()):
                 continue
             if getattr(session, "state", None) in {"idle", "closed", "failed"}:
                 self.sessions.pop(session_id, None)
                 self.owners.pop(session_id, None)
+                evicted.append(session)
+        return evicted
+
+    async def _close_evicted_sessions(self, sessions: list[Any]) -> None:
+        for session in sessions:
+            aclose = getattr(session, "aclose", None)
+            if callable(aclose):
+                with contextlib.suppress(Exception):
+                    await aclose()
 
     async def _sweep(self) -> None:
         interval = 1.0 if self.cfg.broker_lease_ttl < 30 else 30.0
@@ -184,7 +195,7 @@ class BrokerServer:
                         continue
                     if now - lease.last_seen > self.cfg.broker_lease_ttl:
                         self.leases.pop(lease_id, None)
-            self._evict_idle_sessions()
+            await self._close_evicted_sessions(self._evict_idle_sessions())
             if (
                 self.cfg.broker_idle_exit > 0
                 and not self._clients

@@ -456,6 +456,14 @@ def submit_verdict(
         return "提交状态未知（字段回读失败），请 browser_snapshot 复核", False
     before_text = normalize_text(before_field.get("text"))
     after_text = normalize_text(after_field.get("text"))
+    if replaced:
+        return "提交可能成功（编辑器已被替换），请 browser_snapshot 复核", False
+    if before_text and not after_text:
+        return "已提交（输入框已清空）", True
+    href_before = before_page.get("href")
+    href_after = after_page.get("href")
+    if isinstance(href_before, str) and isinstance(href_after, str) and href_before != href_after:
+        return "已提交（页面已跳转）", True
     new_toasts = [
         toast
         for toast in after_page.get("toasts", [])
@@ -467,14 +475,6 @@ def submit_verdict(
     )
     if rejection:
         return f"提交被拒：{rejection}", False
-    if replaced:
-        return "提交可能成功（编辑器已被替换），请 browser_snapshot 复核", False
-    if before_text and not after_text:
-        return "已提交（输入框已清空）", True
-    href_before = before_page.get("href")
-    href_after = after_page.get("href")
-    if isinstance(href_before, str) and isinstance(href_after, str) and href_before != href_after:
-        return "已提交（页面已跳转）", True
     if after_page and before_page.get("mutations") != after_page.get("mutations"):
         return "提交可能已发出（页面有更新），请 browser_snapshot 复核", False
     if not after_page:

@@ -598,10 +598,29 @@ def _ps_cmdline(pid: int) -> str | None:
 
 
 def _win_cmdline(pid: int) -> str | None:
-    """Read a process command line via ``wmic``; ``None`` means 'unknown, keep'."""
+    """Read a process command line on Windows (CIM first for Win11, ``wmic`` fallback); ``None`` means 'unknown, keep'."""
+    try:
+        ps_result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL,
+            **windows_hidden_kwargs(),
+        )
+        if ps_result.returncode == 0 and ps_result.stdout.strip():
+            return ps_result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
     try:
         result = subprocess.run(
-            ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine"],
+            ["wmic", "process", "where", f"ProcessId={int(pid)}", "get", "CommandLine"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -696,7 +715,7 @@ async def _reclaim_orphans(state_dir: Path) -> None:
         log(f"残留 chrome.pid 指向的进程已不存在（pid={pid}），清理")
         _remove(pid_file)
         return
-    cmdline = _process_cmdline(pid)
+    cmdline = await asyncio.to_thread(_process_cmdline, pid)
     if cmdline is None:
         log(f"无法读取 pid={pid} 的命令行，保守起见不回收以免误杀")
         return

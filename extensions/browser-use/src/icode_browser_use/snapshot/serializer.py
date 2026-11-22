@@ -162,7 +162,9 @@ def render(
                 extra += f' placeholder="{_single_line(node.placeholder[:80])}"'
         line = f'  {token} {mark}{role} "{name}"{extra}{star}' + (f" ×{take}" if take > 1 else "")
         if used + weight(line) + 1 > budget:
-            break
+            if budget - used <= 40:
+                break
+            continue
         lines.append(line)
         used += weight(line) + 1
         shown += take

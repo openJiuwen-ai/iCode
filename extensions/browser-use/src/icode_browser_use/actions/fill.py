@@ -70,6 +70,8 @@ _submit_verdict = submit_verdict
 def _values_match(value: Any, expected: str, *, clear: bool = True) -> bool:
     actual = _normalize_text(value)
     wanted = _normalize_text(expected)
+    if not wanted:
+        return actual == "" if clear else True
     if not actual:
         return False
     return actual == wanted if clear else wanted in actual

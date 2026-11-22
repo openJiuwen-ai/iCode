@@ -915,6 +915,7 @@ class BrowserSession:
         self._dialog = None
         self._last_dialog = None
         self._dialog_orphans = 0
+        self._login_pending_since = None
         for info in self._downloads.values():
             if info.state == "in_progress":
                 info.state = "failed"
