@@ -56,7 +56,7 @@ from chrys.service.approval.arbitration import ApprovalDecisionArbiter, Approval
 from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.approval.prejudge_v2 import Policy, Route, load_policy, route
-from chrys.service.approval.prejudge_v2.execution import isolated_shell_call, prepare_shell
+from chrys.service.approval.prejudge_v2.execution import isolated_shell_call, prepare_shell, supports_isolated_launch
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedReuse
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
@@ -65,6 +65,7 @@ from chrys.service.approval.safety_classifier import (
     target_may_access_sensitive_data,
 )
 from chrys.service.tools.approval_targets import approved_targets
+from chrys.service.tools.builtins.shell import ShellTools
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.tools import tool_operation_id
 
@@ -109,16 +110,9 @@ def _shadow_command_preview(command: str) -> str:
     limit = 512
     preview = ascii(command[:limit])
     suffix = " [truncated]"
-    if len(preview) <= limit and len(command) <= limit:
-        return preview
-    left, right = 0, min(len(command), limit)
-    while left < right:
-        mid = (left + right + 1) // 2
-        if len(ascii(command[:mid])) <= limit - len(suffix):
-            left = mid
-        else:
-            right = mid - 1
-    return ascii(command[:left]) + suffix
+    if len(preview) > limit or len(command) > limit:
+        return preview[: limit - len(suffix)] + suffix
+    return preview
 
 
 if TYPE_CHECKING:
@@ -472,14 +466,21 @@ class ApprovalMiddleware(FunctionMiddleware):
                             reason = "ordinary_policy"
                         elif not isinstance(context.arguments, dict):
                             reason = "unsupported_arguments"
+                        elif (
+                            not isinstance(shell_tool := context.function.bound_instance, ShellTools)
+                            or shell_tool.shell.name != tool_name
+                            or not supports_isolated_launch(shell_tool.shell)
+                        ):
+                            reason = "unsupported_shell_configuration"
                         else:
                             prepared_shell = prepare_shell(
-                                tool_name, cmd, observed.executables, tuple(self._workspace_roots)
+                                shell_tool.shell, cmd, observed.executables, tuple(self._workspace_roots)
                             )
                             if prepared_shell is None:
                                 reason = "untrusted_launch_context"
                     _prejudge_logger.info(
-                        "%s route=%s reason=%s policy=%s digest=%s rules=%s spans=%s",
+                        "%s route=%s reason=%s policy=%s digest=%s rules=%s spans=%s "
+                        "policy_candidate=%s decoded_sensitive_target=%s",
                         mode,
                         Route.ALLOW if prepared_shell is not None else Route.DEFER,
                         reason,
@@ -487,6 +488,8 @@ class ApprovalMiddleware(FunctionMiddleware):
                         observed.analysis_digest,
                         observed.matched_rule_ids,
                         observed.matched_node_spans,
+                        observed.policy_candidate,
+                        "true" if observed.decoded_sensitive_target else "false",
                     )
                     if mode == "shadow" and _prejudge_logger.isEnabledFor(logging.DEBUG):
                         _prejudge_logger.debug(

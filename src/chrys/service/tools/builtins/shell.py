@@ -329,9 +329,7 @@ def _shell_launch(
     if approved is None:
         payload = _prepare_pipe_command(command, shell) if pipe else command
         return _shell_argv_variants(shell, payload), build_shell_subprocess_env()
-    approved.require_launch(shell.name, command)
-    if shell.args != ["-c"]:
-        raise ApprovalInvalidatedError("The configured shell arguments changed after structured approval.")
+    approved.require_launch(shell, command)
     return _shell_argv_variants(shell, command, startup_args=("--noprofile", "--norc")), approved.environment
 
 
@@ -971,9 +969,11 @@ class ShellTools:
         budget = max(100, max_output_tokens)
         tasks = self._tasks
         approved_shell = isolated_shell_call.get()
-        if approved_shell is not None and not approved_shell.claim(self._shell.name, command):
+        if approved_shell is not None and not approved_shell.claim(self._shell, command):
             _record_shell_error()
-            return tool_error("approval_invalidated", "Shell command or dialect changed after structured approval.")
+            return tool_error(
+                "approval_invalidated", "Shell command or launch configuration changed after structured approval."
+            )
         # Validate command against filter policy (if configured); the command
         # this shell is given to stop a background task always passes.
         if self._filter is not None and not (tasks is not None and tasks.is_stop_command(command, self._shell.name)):

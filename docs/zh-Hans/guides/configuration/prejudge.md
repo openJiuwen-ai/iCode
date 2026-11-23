@@ -58,6 +58,10 @@ AST Matcher 当前只支持 Bash/Git Bash。zsh、sh、dash、PowerShell、cmd.e
 
 普通审批和 BYPASS 保留原有启动设置。依赖继承的 Bash 函数或启动脚本的命令，使用结构化快捷审批时可能表现不同。该快捷审批信任系统启动状态、用户配置的环境、`PATH` 和通过它解析到的可执行文件。使用相对查找路径或位于已知工作区内的可执行文件时会 DEFER。请将可信程序和搜索目录放在 Agent 无法修改的位置。继承状态和外部程序可以独立于工具调用发生变化。即使匹配宽泛规则，`open`、`osascript` 和更改执行状态的 Shell 内建命令也会 DEFER。
 
+只要有一个 `PATH` 目录位于工作区内，该启动环境下的命令就无法使用结构化 ALLOW。常见情况包括激活项目的 `.venv`，或以用户主目录作为 iCode 工作区。可在诊断日志中查看 `reason=untrusted_launch_context`。这些调用会继续走普通审批，满足条件时仍可使用原有的只读快捷审批。自定义 Shell 启动参数也可能在执行前触发 DEFER（`reason=unsupported_shell_configuration`）。
+
+`cd` 会改变解析命令和检查敏感目标所用的目录。因此，`cd sub && git status` 这样的复合命令会 DEFER。
+
 ### 审批及执行边界
 
 - **Pre-Judge 只返回 ALLOW 或 DEFER。** 本层不产生拒绝或 BLOCK 结果；正常审批和执行检查仍可独立拒绝调用。
@@ -71,6 +75,8 @@ AST Matcher 当前只支持 Bash/Git Bash。zsh、sh、dash、PowerShell、cmd.e
 如果首次切换时策略加载失败，所选的 MANUAL/AUTO 模式仍然生效。TUI 或 ACP 客户端会收到含配置路径的警告。此策略快照停用结构化 ALLOW，原有审批流程及其只读快捷审批继续工作。修复 YAML 或解析器安装后，重启 iCode 即可重试加载。正常启动时，无效的已启用策略会抛出包含路径的错误。
 
 **Shadow 日志。** Shadow 和 enforce 使用相同的资格判断，审批结果保持不变。TUI 用户可在 iCode 配置目录的 `logs/debug.log` 中搜索 `shadow route=`。ACP 的 stderr 不输出 INFO。需要查看 ACP 的 Shadow 判定时，可设置 `CHRYS_OTEL=true`，同时保持遥测端点和敏感数据采集未配置，然后查看会话的 `otel/logs.jsonl`。INFO 记录包含判定、原因、策略及规则 ID 和匹配范围。DEBUG 可能包含最多 512 字符的转义命令预览。无界面 CLI 使用 BYPASS。
+
+INFO 日志的 `policy_candidate` 表示 AST 和 YAML 规则在敏感目标及启动检查之前的结果，`route` 则预测是否能使用结构化快捷审批。`decoded_sensitive_target=true` 表示解码参数检查发现了原始文本检查遗漏的敏感目标。在 enforce 模式下，即使没有 YAML 规则匹配，过去自动运行的调用也可能进入普通审批。原有只读快捷审批和已有授权复用也不会自动通过这次调用。Shadow 会记录该发现，实际审批行为保持原样。
 
 ### 兼容性与当前限制
 

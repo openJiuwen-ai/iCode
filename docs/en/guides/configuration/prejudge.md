@@ -58,6 +58,10 @@ An eligible Bash or Git Bash call runs the original command in the configured sh
 
 Ordinary approval and BYPASS retain their normal launch settings. A command using an inherited Bash function or startup script can behave differently when the structured shortcut is used. The shortcut trusts system startup state and the user-supplied environment and executables, including `PATH`. Relative lookup entries and executable locations inside the known workspace DEFER. Keep trusted programs and search directories outside locations the agent can change. Inherited state and external programs can change independently of the tool call. Opaque carriers such as `open`, `osascript`, and shell builtins that change execution state DEFER even if a broad rule matches.
 
+If any `PATH` directory is inside a workspace, Structured ALLOW is unavailable for commands using that launch context. This can happen with an activated project `.venv` or when iCode uses your home directory as its workspace. Look for `reason=untrusted_launch_context` in the diagnostics. These calls continue through ordinary approval, including the legacy read-only shortcut when applicable. A custom Shell argument list can also DEFER before execution (`reason=unsupported_shell_configuration`).
+
+`cd` changes the directories used for command resolution and sensitive-target checks. A compound command such as `cd sub && git status` DEFERs for that reason.
+
 ### Approval and execution boundaries
 
 - **Pre-Judge only offers ALLOW or DEFER.** It does not produce a rejection or a BLOCK result. Ordinary approval and execution checks can still reject a call independently.
@@ -71,6 +75,8 @@ Ordinary approval and BYPASS retain their normal launch settings. A command usin
 If that first switch fails to load the policy, the requested MANUAL/AUTO mode still takes effect. The TUI or ACP client receives a warning with the configuration path. Structured ALLOW stays disabled for this policy snapshot and ordinary approval, including the read-only shortcut, continues. Fix the YAML or parser installation and restart iCode to retry loading. Invalid enabled policies at ordinary startup raise a path-qualified error.
 
 **Shadow diagnostics.** Shadow uses the same eligibility calculation as enforce mode and leaves approval unchanged. In the TUI, look for `shadow route=` in `logs/debug.log` under the iCode configuration directory. ACP keeps INFO off stderr. To observe ACP Shadow decisions, opt in with `CHRYS_OTEL=true` and leave the telemetry endpoint and sensitive-data collection unset. With local telemetry, look in the session's `otel/logs.jsonl`. INFO includes the decision, reason, policy/rule IDs and matched spans. DEBUG can include an escaped command preview of up to 512 characters. The headless CLI uses BYPASS.
+
+The INFO field `policy_candidate` shows whether the AST and YAML rules qualify before sensitive-target and launch checks. The `route` field predicts the structured shortcut. When `decoded_sensitive_target=true`, the argument check found a target the raw text check missed. In enforce mode that finding can send a call to ordinary approval even if no YAML rule matches and the call previously ran automatically. It also prevents the existing read-only shortcut and remembered authorization from approving that call. Shadow reports the finding and preserves the current approval behavior.
 
 ### Compatibility and limitations
 

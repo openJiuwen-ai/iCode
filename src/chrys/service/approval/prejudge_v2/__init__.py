@@ -66,6 +66,8 @@ class PreJudgeResult:
     analysis_digest: str
     executables: tuple[str, ...] = ()
     sensitive: bool = False
+    decoded_sensitive_target: bool = False
+    policy_candidate: Route = Route.DEFER
 
 
 MatcherField = Literal["argv_exact", "argv_first"]
@@ -560,7 +562,8 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
     spans: list[tuple[int, int]] = []
     all_allowed = analysis.coverage_complete
     reason = analysis.unsupported[0] if analysis.unsupported else "unmatched_unit"
-    sensitive = shell_command_may_access_sensitive_data(command, shell_name=dialect)
+    raw_sensitive = shell_command_may_access_sensitive_data(command, shell_name=dialect)
+    argv_sensitive = False
     for node in analysis.executable_nodes:
         allowed = False
         for rule in policy.rules:
@@ -572,7 +575,9 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
         if not allowed:
             all_allowed = False
         if node.argv is not None and shell_argv_may_access_sensitive_data(node.argv, shell_name=dialect):
-            sensitive = True
+            argv_sensitive = True
+    policy_candidate = Route.ALLOW if all_allowed else Route.DEFER
+    sensitive = raw_sensitive or argv_sensitive
     if sensitive:
         all_allowed = False
         reason = "sensitive_target"
@@ -585,4 +590,6 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
         digest,
         tuple(node.argv[0] for node in analysis.executable_nodes if node.argv) if all_allowed else (),
         sensitive,
+        argv_sensitive and not raw_sensitive,
+        policy_candidate,
     )

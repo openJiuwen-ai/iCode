@@ -299,7 +299,7 @@ async def test_uncertified_or_sensitive_bash_source_never_reaches_execution(
         assert [entry["status"] for entry in middleware.drain_decisions()] == ["user_rejected"]
 
 
-@pytest.mark.parametrize("changed", ["source", "dialect", "task"])
+@pytest.mark.parametrize("changed", ["source", "dialect", "args", "path", "task"])
 async def test_bash_approval_invalidates_when_identity_changes(bash_tool, changed, monkeypatch):
     source = "echo approved-source"
     await _write_policy([{"argv_exact": ["echo", "approved-source"]}])
@@ -316,6 +316,10 @@ async def test_bash_approval_invalidates_when_identity_changes(bash_tool, change
         actual_source = source
         if changed == "dialect":
             target = ShellTools(SessionEnvironment.capture(), shell=replace(bash_tool.shell, name="sh"))
+        if changed == "args":
+            target = ShellTools(SessionEnvironment.capture(), shell=replace(bash_tool.shell, args=["--norc", "-c"]))
+        if changed == "path":
+            target = ShellTools(SessionEnvironment.capture(), shell=replace(bash_tool.shell, path="other-bash"))
         if changed == "source":
             # Simulate a downstream hook changing benign source after approval.
             actual_source = "echo changed-source"
@@ -390,29 +394,39 @@ async def test_bash_approval_binding_is_cleared_on_interrupted_execution(bash_to
 
 
 @pytest.mark.parametrize(
-    ("source", "decision", "workspace_path"),
+    ("source", "decision", "location"),
     [
-        ("echo approved", Route.ALLOW, False),
-        ("review_fixture_tool .e'n'v", Route.DEFER, False),
-        ("review_fixture_tool sample # note", Route.DEFER, False),
-        ("review_fixture_tool sample", Route.DEFER, True),
+        ("echo approved", Route.ALLOW, "outside"),
+        ("review_fixture_tool .e'n'v", Route.DEFER, "outside"),
+        ("review_fixture_tool sample # note", Route.DEFER, "outside"),
+        ("review_fixture_tool sample", Route.DEFER, "workspace"),
+        ("review_fixture_tool sample", Route.DEFER, "home"),
+        ("review_fixture_tool sample", Route.DEFER, "venv"),
     ],
-    ids=["certified", "sensitive", "unsupported", "workspace-path"],
+    ids=["certified", "sensitive", "unsupported", "workspace-path", "home-workspace", "activated-venv"],
 )
 async def test_bash_shadow_predicts_the_structured_enforce_decision(
     bash_tool,
     source,
     decision,
-    workspace_path,
+    location,
     tmp_path,
     monkeypatch,
     caplog,
 ):
     tool = bash_tool.tools()[0]
-    workspace = tmp_path / "workspace"
-    await asyncio.to_thread(workspace.mkdir)
-    if workspace_path:
-        monkeypatch.setenv("PATH", os.pathsep.join((str(workspace), os.environ["PATH"])))
+    workspace = tmp_path if location == "home" else tmp_path / "workspace"
+    lookup_dir = {
+        "outside": tmp_path / "trusted-bin",
+        "workspace": workspace / "bin",
+        "home": workspace / ".local" / "bin",
+        "venv": workspace / ".venv" / ("Scripts" if os.name == "nt" else "bin"),
+    }[location]
+    await asyncio.to_thread(workspace.mkdir, exist_ok=True)
+    await asyncio.to_thread(lookup_dir.mkdir, parents=True, exist_ok=True)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(lookup_dir), os.environ["PATH"])))
+    if location == "venv":
+        monkeypatch.setenv("VIRTUAL_ENV", str(workspace / ".venv"))
     logger = "chrys.service.agent_middleware.control.approval.prejudge"
     caplog.set_level(logging.INFO, logger=logger)
     for mode in ("shadow", "enforce"):
@@ -422,6 +436,8 @@ async def test_bash_shadow_predicts_the_structured_enforce_decision(
             observed = [record.getMessage() for record in caplog.records if record.name == logger]
             (prediction,) = [message for message in observed if message.startswith(f"{mode} route=")]
             assert prediction.startswith(f"{mode} route={decision.value} ")
+            if location != "outside":
+                assert "reason=untrusted_launch_context" in prediction
             assert source not in prediction
             (recorded,) = middleware.drain_decisions()
             if decision is Route.ALLOW:
@@ -432,6 +448,32 @@ async def test_bash_shadow_predicts_the_structured_enforce_decision(
                 assert "rejected by user" in str(context.result).lower()
                 assert len(requests) == 1
                 assert recorded["status"] == "user_rejected"
+
+
+@pytest.mark.parametrize("mode", ["shadow", "enforce"])
+async def test_custom_shell_args_defer_before_launch(bash_tool, mode, caplog, monkeypatch):
+    source = "echo normal-launch"
+    await _write_policy([{"argv_exact": ["echo", "normal-launch"]}], mode=mode)
+    custom_shell = replace(bash_tool.shell, args=["-e", "-c"])
+    tool = ShellTools(SessionEnvironment.capture(), shell=custom_shell).tools()[0]
+    logger = "chrys.service.agent_middleware.control.approval.prejudge"
+    caplog.set_level(logging.INFO, logger=logger)
+    normal_launch = shell_module._shell_launch
+    launches = []
+
+    def record(shell: ShellInfo, command: str, *, pipe: bool = False):
+        assert isolated_shell_call.get() is None
+        launches.append((shell.args, command))
+        return normal_launch(shell, command, pipe=pipe)
+
+    monkeypatch.setattr(shell_module, "_shell_launch", record)
+    async with _approval(tool) as (middleware, requests):
+        context = await _invoke(middleware, tool, source)
+        assert _stdout(context.result) == "normal-launch"
+        assert launches == [(custom_shell.args, source)]
+        assert not requests
+        assert [entry["status"] for entry in middleware.drain_decisions()] == ["auto_approved"]
+        assert f"{mode} route=defer reason=unsupported_shell_configuration" in caplog.text
 
 
 async def test_bash_approved_launch_rechecks_a_retargeted_path_link(bash_tool, tmp_path, monkeypatch):

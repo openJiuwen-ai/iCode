@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import logging
 from types import MappingProxyType
+from unittest.mock import AsyncMock, create_autospec
 
 import pytest
 from pydantic import BaseModel
 
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse, InvocationToolCallResult
+from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse, ApprovalReviewed, InvocationToolCallResult
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.tool_kinds import KIND_SHELL, set_tool_kind
 from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY
 from chrys.kernel.middleware import FunctionInvocationContext
@@ -19,11 +22,13 @@ from chrys.kernel.tools import FunctionTool
 from chrys.service.agent_middleware.control import approval as approval_module
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.agent_middleware.events.tool_events import ToolEventMiddleware
+from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
-from chrys.service.approval.prejudge_v2 import Policy, PreJudgeResult, Route
+from chrys.service.approval.prejudge_v2 import Policy, PreJudgeResult, Route, load_policy
+from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from tests.support.event_capture import capture_events
-from tests.support.prejudge import require_grammars
+from tests.support.prejudge import bound_bash_tool, require_grammars
 
 
 @pytest.mark.parametrize(
@@ -44,8 +49,7 @@ async def test_shell_allow_and_defer_follow_existing_approval(
         "route",
         lambda cmd, dialect, policy: PreJudgeResult(suggestion, "test", (), (), policy.policy_id, "digest"),
     )
-    tool = FunctionTool(name="bash")
-    set_tool_kind(tool, KIND_SHELL)
+    tool = bound_bash_tool()
     bus = EventBus()
     requests = []
 
@@ -277,8 +281,6 @@ async def test_real_parser_yaml_policy_and_approval_integration(
     tmp_path, monkeypatch, command, expected_executions, expected_requests
 ):
     require_grammars("tree_sitter", "tree_sitter_bash")
-    from chrys.service.approval.prejudge_v2 import load_policy
-
     policy_file = tmp_path / "prejudge.yaml"
     policy_file.write_text(
         'schema_version: 1\nmode: "enforce"\npolicy_id: end-to-end\n'
@@ -295,8 +297,7 @@ async def test_real_parser_yaml_policy_and_approval_integration(
     )
     policy = load_policy(policy_file)
     monkeypatch.setattr(approval_module, "load_policy", lambda _: policy)
-    tool = FunctionTool(name="bash")
-    set_tool_kind(tool, KIND_SHELL)
+    tool = bound_bash_tool()
     bus = EventBus()
     requests: list[ApprovalRequest] = []
 
@@ -328,6 +329,95 @@ async def test_real_parser_yaml_policy_and_approval_integration(
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, reject)
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+@pytest.mark.parametrize("matches", [False, True], ids=["unmatched", "matching"])
+@pytest.mark.parametrize("path", ["policy-auto", "legacy-readonly", "daa", "auto-judge"])
+async def test_decoded_target_changes_only_enforce_approval(tmp_path, monkeypatch, caplog, mode, matches, path):
+    require_grammars("tree_sitter", "tree_sitter_bash")
+    executable = "cat" if path == "legacy-readonly" else "review_fixture_tool"
+    command = f"{executable} .e'n'v"
+    policy_file = tmp_path / "prejudge.yaml"
+    rules = (
+        "rules:\n  - id: fixture\n    effect: allow\n    target: command\n"
+        f"    match:\n      argv_first: [{executable}]\n"
+        if matches
+        else "rules: []\n"
+    )
+    policy_file.write_text(f'schema_version: 1\nmode: "{mode}"\npolicy_id: fixture\n{rules}', encoding="utf-8")
+    policy = load_policy(policy_file)
+    monkeypatch.setattr(approval_module, "load_policy", lambda _: policy)
+    tool = bound_bash_tool()
+    context = FunctionInvocationContext(tool, {"command": command, "reason": "Classify an inert test string"})
+    require = path in {"legacy-readonly", "daa"}
+    config = ApprovalPolicy(
+        ApprovalConfig(default="require" if require else "auto", overrides={} if require else {"shell": "auto"}),
+        tools=[tool],
+    )
+    reuse = None
+    if path == "daa":
+        runtime = SessionEnvironment.capture("decoded-target", Workspace.from_cwd(str(tmp_path)))
+        reuse = ApprovalReuseBinding(runtime, [tool])
+        prepared = reuse.prepare(context, reusable=True)
+        assert prepared.candidate is not None
+        assert reuse.service.remember(prepared.candidate, "EXACT_SESSION")
+    judge = create_autospec(ApprovalJudge, instance=True) if path == "auto-judge" else None
+    if judge is not None:
+        judge.evaluate.return_value = JudgeVerdict(approved=False, reason="fixture rejection")
+    bus = EventBus()
+    requests = []
+
+    async def answer(request: ApprovalRequest) -> None:
+        requests.append(request)
+        if judge is None:
+            await bus.publish(ApprovalResponse(request_id=request.request_id, approved=False))
+
+    async def reject_review(event: ApprovalReviewed) -> None:
+        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=False))
+
+    await bus.subscribe(ApprovalRequest, answer)
+    await bus.subscribe(ApprovalReviewed, reject_review)
+    middleware = ApprovalMiddleware(
+        config,
+        bus,
+        reuse=reuse,
+        approval_judge=judge,
+        approval_mode=ApprovalMode.AUTO if judge is not None else ApprovalMode.MANUAL,
+    )
+    execute = AsyncMock(spec=lambda: None)
+    try:
+        logger = approval_module._prejudge_logger.name
+        with caplog.at_level(logging.INFO, logger=logger):
+            await middleware.process(context, execute)
+        records = [record.getMessage() for record in caplog.records if record.name == logger]
+        if mode == "off":
+            assert not records
+        else:
+            (prediction,) = records
+            assert f"{mode} route=defer reason=sensitive_target " in prediction
+            assert f"policy_candidate={'allow' if matches else 'defer'} decoded_sensitive_target=true" in prediction
+            assert command not in prediction
+            assert ".env" not in prediction
+        if mode == "enforce":
+            execute.assert_not_awaited()
+            (request,) = requests
+            assert request.reuse_offer is None
+            assert request.judging is (judge is not None)
+            if judge is not None:
+                judge.evaluate.assert_awaited_once()
+        else:
+            execute.assert_awaited_once()
+            assert not requests
+            if path in {"legacy-readonly", "daa"}:
+                (decision,) = middleware.drain_decisions()
+                assert decision["status"] == ("reuse_approved" if path == "daa" else "auto_approved")
+            if judge is not None:
+                judge.evaluate.assert_not_awaited()
+    finally:
+        await middleware.close()
+        await bus.unsubscribe(ApprovalRequest, answer)
+        await bus.unsubscribe(ApprovalReviewed, reject_review)
 
 
 @pytest.mark.parametrize(

@@ -9,9 +9,12 @@ import os
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.platform.runtime_paths import build_shell_subprocess_env
+
+if TYPE_CHECKING:
+    from chrys.foundation.platform import ShellInfo
 
 _BASH_DIALECTS = frozenset({"bash", "git_bash"})
 
@@ -62,24 +65,31 @@ class ApprovedShell:
     locations: tuple[str, ...] = ()
     roots: tuple[str, ...] = ()
     executables: tuple[str, ...] = ()
+    shell_path: str = ""
+    shell_args: tuple[str, ...] = ()
     active: bool = True
     claimed: bool = False
     issued: bool = False
 
-    def _matches(self, dialect: str, source: str) -> bool:
-        return self.active and asyncio.current_task() is self.owner and (self.dialect, self.source) == (dialect, source)
+    def _matches(self, shell: ShellInfo, source: str) -> bool:
+        return (
+            self.active
+            and asyncio.current_task() is self.owner
+            and (self.dialect, self.source) == (shell.name, source)
+            and (self.shell_path, self.shell_args) == (shell.path, tuple(shell.args))
+        )
 
-    def claim(self, dialect: str, source: str) -> bool:
-        if self.claimed or not self._matches(dialect, source):
+    def claim(self, shell: ShellInfo, source: str) -> bool:
+        if self.claimed or not self._matches(shell, source):
             return False
         self.claimed = True
         return True
 
-    def require_launch(self, dialect: str, source: str) -> None:
+    def require_launch(self, shell: ShellInfo, source: str) -> None:
         if (
             not self.claimed
             or self.issued
-            or not self._matches(dialect, source)
+            or not self._matches(shell, source)
             or not _trusted_locations(self.locations, self.roots)
             or not _trusted_lookup(self.environment, self.executables, self.roots)
         ):
@@ -88,14 +98,15 @@ class ApprovedShell:
 
 
 def prepare_shell(
-    dialect: str, source: str, executables: tuple[str, ...], roots: tuple[str, ...]
+    shell: ShellInfo, source: str, executables: tuple[str, ...], roots: tuple[str, ...]
 ) -> ApprovedShell | None:
     """Compute shared Shadow and Enforce eligibility without running a shell."""
     owner = asyncio.current_task()
-    if owner is None or dialect not in _BASH_DIALECTS:
+    if owner is None or not supports_isolated_launch(shell):
         return None
     env = build_shell_subprocess_env()
     locations = (
+        shell.path,
         *env.get("PATH", "").split(os.pathsep),
         *(word for word in executables if "/" in word or "\\" in word),
     )
@@ -104,7 +115,21 @@ def prepare_shell(
     for key in tuple(env):
         if key in {"BASH_ENV", "ENV"} or key.startswith("BASH_FUNC_"):
             del env[key]
-    return ApprovedShell(dialect, source, owner, env, locations, roots, executables)
+    return ApprovedShell(
+        shell.name,
+        source,
+        owner,
+        env,
+        locations,
+        roots,
+        executables,
+        shell_path=shell.path,
+        shell_args=tuple(shell.args),
+    )
+
+
+def supports_isolated_launch(shell: ShellInfo) -> bool:
+    return shell.name in _BASH_DIALECTS and shell.args == ["-c"]
 
 
 isolated_shell_call: ContextVar[ApprovedShell | None] = ContextVar("prejudge_isolated_shell_call", default=None)

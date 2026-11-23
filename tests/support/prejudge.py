@@ -9,6 +9,17 @@ import os
 
 import pytest
 
+from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.platform import ShellInfo
+from chrys.kernel.tools import FunctionTool
+from chrys.service.tools.builtins.shell import ShellTools
+
+
+def bound_bash_tool() -> FunctionTool:
+    """A configured Bash tool for middleware tests that stop before launch."""
+    runtime = SessionEnvironment.capture()
+    return ShellTools(runtime, shell=ShellInfo("bash", runtime.platform.shell.path, ["-c"])).tools()[0]
+
 
 def require_grammars(*modules: str) -> None:
     for name in modules:
