@@ -97,9 +97,11 @@ class TestElideMiddle:
 
     def test_an_emoji_directory_does_not_overflow_the_column(self) -> None:
         """The column is 24 cells wide whatever the name is made of; the emoji must not spill."""
-        long_dir = "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466" * 6
+        family = "👨\u200d👩\u200d👧\u200d👦"
+        long_dir = family * 13
         cells = row_cells(_meta("abc", cwd=f"/repos/{long_dir}"), now=_BASE)
-        assert cell_len(cells["directory"]) <= 24, f"{cells['directory']!r} is {cell_len(cells['directory'])} cells"
+        assert cells["directory"] == f"{family * 6}…{family * 5}"
+        assert cell_len(cells["directory"]) <= 24
 
 
 class TestFormatTokens:
