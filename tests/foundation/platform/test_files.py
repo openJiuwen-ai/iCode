@@ -1164,3 +1164,46 @@ def test_windows_secure_open_owner_only_append_propagates_other_errors(
     monkeypatch.setattr(files, "_windows_secure_open", fake_windows_secure_open)
     with pytest.raises(files.SecureFileError):
         files.secure_open_owner_only_append(tmp_path / "events.jsonl")
+
+
+def test_verify_owner_identity_path_accepts_an_owned_file(tmp_path) -> None:
+    """On Windows this also proves the minimal access mask suffices for the owner SID:
+    a missing READ_CONTROL would fail the security lookup with an access denial."""
+    target = tmp_path / "store.json"
+    target.write_text("{}", encoding="utf-8")
+
+    files.verify_owner_identity_path(target)
+
+
+def test_verify_owner_identity_path_rejects_directories_and_missing_files(tmp_path) -> None:
+    with pytest.raises(files.SecureFileError):
+        files.verify_owner_identity_path(tmp_path)
+    with pytest.raises(files.SecureFileError):
+        files.verify_owner_identity_path(tmp_path / "missing.json")
+
+
+def test_replace_blocker_allows_a_new_file_in_a_writable_directory(tmp_path) -> None:
+    assert files.replace_blocker(tmp_path / "not-yet.json") is None
+    target = tmp_path / "store.json"
+    target.write_text("{}", encoding="utf-8")
+    assert files.replace_blocker(target) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_replace_blocker_reports_a_read_only_parent_and_file(tmp_path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory and file permissions")
+    target = tmp_path / "store.json"
+    target.write_text("{}", encoding="utf-8")
+    tmp_path.chmod(0o500)
+    try:
+        assert "not writable" in (files.replace_blocker(target) or "")
+    finally:
+        tmp_path.chmod(0o700)
+    target.chmod(0o400)
+    try:
+        assert "read-only" in (files.replace_blocker(target) or "")
+        target.chmod(0o600)
+        assert files.replace_blocker(target) is None
+    finally:
+        target.chmod(0o600)

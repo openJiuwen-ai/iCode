@@ -4,21 +4,27 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import sys
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import create_autospec
 
 import pytest
 
+import chrys.service.approval.grant_store as grant_store
 from chrys.app.cli import app, approvals
+from chrys.foundation.config.settings import resolve_sessions_dir
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import get_platform
-from chrys.foundation.platform.files import atomic_write_owner_only_text
+from chrys.foundation.platform.files import SecureFileError, atomic_write_owner_only_text
 from chrys.kernel.middleware import FunctionInvocationContext
-from chrys.service.approval.grant_store import session_grants_path
+from chrys.service.approval.grant_store import GRANTS_FILE, ApprovalGrantStore, session_grants_path
+from chrys.service.approval.reuse import ApprovalReuseService
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.tools.builtins.shell import ShellTools
@@ -49,6 +55,32 @@ def grants(tmp_path, monkeypatch):
     assert binding.service.remember(candidate, "EXACT_SESSION")
     assert binding.service.remember(candidate, "EXACT_WORKSPACE")
     return binding, candidate
+
+
+def session_store(config_dir: Path, session_id: str) -> ApprovalGrantStore:
+    """A store for one session folder, created on demand and separate from the fixture's."""
+    path = session_grants_path(config_dir, session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return ApprovalGrantStore(path)
+
+
+def remember_session_grant(grants, session_id: str) -> ApprovalGrantStore:
+    """Remember one session grant for *session_id* and return the store holding it."""
+    binding, candidate = grants
+    store = session_store(binding.runtime.platform.config_dir, session_id)
+    scoped = replace(candidate, context=replace(candidate.context, session_id=session_id))
+    assert ApprovalReuseService(binding.service.store, store).remember(scoped, "EXACT_SESSION")
+    return store
+
+
+def stored_scopes(store: ApprovalGrantStore) -> list[str]:
+    """The scopes a store still holds; an unreadable store reads as empty, as the CLI does."""
+    return [row["scope"] for row in store.load()]
+
+
+def session_folder(binding, name: str) -> Path:
+    """The on-disk session folder called *name*, which need not be a session ID."""
+    return resolve_sessions_dir(binding.runtime.platform.config_dir, create=False) / name
 
 
 def test_cli_lists_and_revokes_grants(grants, capsys, monkeypatch):
@@ -298,6 +330,197 @@ def test_cli_reports_an_unreadable_store_instead_of_an_empty_one(grants, capsys)
     assert "could not be read" in streams.err
     assert "clear --all" in streams.err
     assert approvals.main(["clear", "--all"]) == 0
-    out = capsys.readouterr().out
+    capsys.readouterr()  # consume the clear output so it cannot satisfy the next assertion
     assert approvals.main(["list"]) == 0
-    assert "No remembered approvals." in capsys.readouterr().out or out
+    assert "No remembered approvals." in capsys.readouterr().out
+
+
+def test_cli_scopes_the_recovery_hint_for_a_broken_session_store(grants, capsys):
+    binding, _ = grants
+    healthy = remember_session_grant(grants, "abcdef012345")
+    # A folder named after a full ID plus a suffix: `--session` strips the dash and
+    # truncates to twelve characters, so the hint would address the healthy session
+    # and leave the broken folder untouched.
+    broken = session_folder(binding, "abcdef012345-backup")
+    broken.mkdir(parents=True)
+    atomic_write_owner_only_text(broken / GRANTS_FILE, "{")
+
+    assert approvals.main(["list"]) == 1
+    streams = capsys.readouterr()
+    assert "No remembered approvals." not in streams.out
+    assert "could not be read" in streams.err
+    assert "clear --session abcdef012345" not in streams.err
+    assert str(broken / GRANTS_FILE) in streams.err
+    assert stored_scopes(healthy) == ["SESSION"]
+
+
+def test_cli_hint_for_a_round_tripping_session_name_repairs_that_store(grants, capsys):
+    binding, _ = grants
+    config_dir = binding.runtime.platform.config_dir
+    # "sessiona" is the short folder of the fixture's "session-a", so the hint maps back.
+    broken = session_grants_path(config_dir, "session-a")
+    atomic_write_owner_only_text(broken, "{")
+    other = remember_session_grant(grants, "abcdef012345")
+
+    assert approvals.main(["list"]) == 1
+    assert "clear --session sessiona" in capsys.readouterr().err
+    assert approvals.main(["clear", "--session", "sessiona"]) == 0
+    assert capsys.readouterr().out == "Cleared selected grants.\n"
+    assert stored_scopes(ApprovalGrantStore(broken)) == []
+    assert stored_scopes(other) == ["SESSION"]
+    assert [rule.scope for rule in binding.service.rules()] == ["WORKDIR"]
+
+
+@pytest.mark.parametrize("action", ["list", "clear"])
+def test_cli_rejects_a_session_folder_that_maps_to_another_store(grants, capsys, action):
+    binding, _ = grants
+    healthy = remember_session_grant(grants, "abcdef012345")
+    session_folder(binding, "abcdef012345-backup").mkdir(parents=True)
+    with pytest.raises(SystemExit) as error:
+        approvals.main([action, "--session", "abcdef012345-backup"])
+    assert error.value.code == 2
+    assert "Session ID is ambiguous" in capsys.readouterr().err
+    assert stored_scopes(healthy) == ["SESSION"]
+
+
+def test_cli_keeps_session_grants_when_a_shared_store_holds_a_directory(grants, capsys):
+    binding, _ = grants
+    healthy = remember_session_grant(grants, "abcdef012345")
+    shared = binding.runtime.platform.config_dir / GRANTS_FILE
+    shared.unlink()
+    shared.mkdir()
+
+    assert approvals.main(["list"]) == 1
+    streams = capsys.readouterr()
+    assert str(shared) in streams.err
+    assert "not a regular file" in streams.err
+    assert "clear --all" not in streams.err
+
+    assert approvals.main(["clear", "--all"]) == 1
+    streams = capsys.readouterr()
+    assert streams.out == ""
+    assert "could not be cleared" in streams.err
+    assert str(shared) in streams.err
+    assert shared.is_dir()
+    assert stored_scopes(healthy) == ["SESSION"]
+
+
+def test_cli_json_diagnostics_stay_parseable_when_a_store_is_unreadable(grants, capsys):
+    binding, _ = grants
+    shared = binding.runtime.platform.config_dir / GRANTS_FILE
+    atomic_write_owner_only_text(shared, "{")
+
+    assert approvals.main(["list", "--json"]) == 1
+    streams = capsys.readouterr()
+    assert [row["scope"] for row in json.loads(streams.out)] == ["SESSION"]
+    diagnostics = [json.loads(line) for line in streams.err.splitlines() if line.strip()]
+    assert [record["code"] for record in diagnostics] == ["approval_store_unreadable"]
+    assert str(shared) in diagnostics[0]["error"]
+
+
+def test_cli_reports_an_incomplete_revoke_lookup_as_json(grants, capsys):
+    binding, _ = grants
+    shared = binding.runtime.platform.config_dir / GRANTS_FILE
+    atomic_write_owner_only_text(shared, "{")
+
+    assert approvals.main(["revoke", "0" * 32, "--json"]) == 1
+    diagnostics = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    # "Not found" would be a guess while a store that may hold the id went unread.
+    assert [record["code"] for record in diagnostics] == [
+        "approval_store_unreadable",
+        "approval_grant_lookup_incomplete",
+    ]
+
+
+def test_cli_reports_an_unknown_revoke_id_as_json(grants, capsys):
+    assert approvals.main(["revoke", "0" * 32, "--json"]) == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    [record] = [json.loads(line) for line in out.err.splitlines() if line.strip()]
+    assert record["code"] == "approval_grant_not_found"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_cli_does_not_suggest_a_clear_that_cannot_be_written(grants, capsys):
+    binding, _ = grants
+    shared = binding.runtime.platform.config_dir / GRANTS_FILE
+    atomic_write_owner_only_text(shared, "{")
+    # A lock file already exists, so the failure below is the parent's permissions,
+    # not the inability to create the sidecar.
+    shared.with_name(shared.name + ".lock").write_bytes(b"")
+    directory = shared.parent
+    directory.chmod(0o500)
+    try:
+        assert approvals.main(["list"]) == 1
+        streams = capsys.readouterr()
+        assert "not writable" in streams.err or "cannot be opened" in streams.err
+        assert "clear --all" not in streams.err
+
+        assert approvals.main(["clear", "--all"]) == 1
+        streams = capsys.readouterr()
+        assert "could not be cleared:" in streams.err
+        assert str(shared) in streams.err
+        assert "Some approval stores could not be cleared." not in streams.err
+    finally:
+        directory.chmod(0o700)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows file names cannot contain a newline")
+def test_cli_keeps_a_hostile_session_folder_name_on_one_line(grants, capsys):
+    from chrys.app.cli.display import one_line
+
+    assert "\n" not in one_line("evil\nfolder")
+    binding, _ = grants
+    broken = session_folder(binding, "evil\nfolder")
+    broken.mkdir(parents=True)
+    atomic_write_owner_only_text(broken / GRANTS_FILE, "{")
+
+    assert approvals.main(["list"]) == 1
+    # The log line the library writes itself is not part of the diagnostic block.
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip() and "no grants reused" not in line]
+    assert len(lines) == 3
+    assert all("evil" in line for line in lines[1:])
+
+
+def test_windows_clear_target_verifies_the_owner_sid(grants, monkeypatch):
+    binding, _ = grants
+    store = binding.service.store
+    opened: list[Path] = []
+
+    def open_verified(path: Path) -> None:
+        opened.append(path)
+
+    monkeypatch.setattr(grant_store, "verify_owner_identity_path", open_verified)
+    store._verify_windows_target(0)
+    assert opened == [store.path]
+
+    def deny(path: Path) -> None:
+        raise SecureFileError(errno.EACCES, "denied")
+
+    monkeypatch.setattr(grant_store, "verify_owner_identity_path", deny)
+    with pytest.raises(SecureFileError, match="owner could not be verified"):
+        store._verify_windows_target(0)
+
+    # A directory is rejected on its attributes alone: opening it would only fail later.
+    monkeypatch.setattr(grant_store, "verify_owner_identity_path", pytest.fail)
+    with pytest.raises(SecureFileError, match="not a regular file"):
+        store._verify_windows_target(0x10)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+@pytest.mark.parametrize(("data", "cleared"), [('{"version": 1, "rules": []}\n', True), ("{", False)])
+def test_clearing_respects_a_read_only_directory_with_an_existing_lock(grants, data, cleared):
+    binding, _ = grants
+    store = binding.service.store
+    atomic_write_owner_only_text(store.path, data)
+    store.lock_path.write_bytes(b"")
+    before = store.path.read_bytes()
+    directory = store.path.parent
+    directory.chmod(0o500)
+    try:
+        # An empty store needs no write, so a read-only parent and an existing lock
+        # cannot fail it; a broken one must still report the failure.
+        assert store.clear() is cleared
+        assert store.path.read_bytes() == before
+    finally:
+        directory.chmod(0o700)

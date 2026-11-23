@@ -8,6 +8,7 @@ import errno
 import json
 import logging
 import os
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,8 +17,10 @@ from chrys.foundation.models.workdir_migration import BackupOriginal, ReportRead
 from chrys.foundation.platform.files import (
     SecureFileError,
     atomic_write_owner_only_bytes,
+    replace_blocker,
     require_writable_file,
     secure_open_owner_only_binary,
+    verify_owner_identity_path,
 )
 from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.session_ids import session_short_id
@@ -29,6 +32,9 @@ logger = logging.getLogger(__name__)
 GRANTS_FILE = "approval-grants.json"
 MAX_GRANTS = 1000
 MAX_BYTES = 4 * 1024 * 1024
+
+_WINDOWS_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 
 
 def _grants_edit(original: object, *, validate: bool = False) -> dict[str, Any] | None:
@@ -100,6 +106,22 @@ def session_grants_path(config_dir: Path, session_id: str) -> Path:
     return resolve_sessions_dir(config_dir, create=False) / short_id / GRANTS_FILE
 
 
+def _scope_edit(scope_key: tuple[str, str]) -> Callable[[list[dict[str, Any]]], list[dict[str, Any]] | None]:
+    """Build the edit that drops every grant matching *scope_key*; None when nothing matched."""
+
+    def edit(rules: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        kept = []
+        for rule in rules:
+            row = _grants_edit(rule)
+            if row is None or not grant_matches_scope(
+                row.get("scope"), row.get("scope_id"), row.get("workdir"), scope_key
+            ):
+                kept.append(rule)
+        return kept if len(kept) < len(rules) else None
+
+    return edit
+
+
 class ApprovalGrantStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -150,47 +172,116 @@ class ApprovalGrantStore:
         self._warned_unreadable = False
         return rows
 
-    def _write_rules(self, rules: list[dict[str, Any]]) -> bool:
-        """Rewrite the store without reading it; the caller owns the whole payload.
+    def _verify_target_repairable(self) -> None:
+        """Refuse a leaf that clearing must not replace, checked under the file lock.
 
-        Repairing unreadable content is not the same thing as following a planted link:
-        the leaf is refused here because ``_read`` used to be the only place that did it.
+        Repairing an unreadable store is only safe when the path names a regular
+        file owned by the current user — or nothing at all, so a store that was
+        never written can be created. Mode and content are deliberately not
+        checked: a world-readable or unparsable file is exactly what ``clear``
+        exists to repair. A symlink, FIFO, socket, reparse point or directory is
+        rejected, and on POSIX a file owned by someone else is rejected as well,
+        instead of being swapped out by the atomic replace that follows.
         """
         try:
-            if self.path.is_symlink():
-                raise SecureFileError(f"Approval store is a symbolic link: {self.path}")
+            info = self.path.lstat()
+        except FileNotFoundError:
+            return
+        if os.name == "nt":
+            # st_file_attributes exists only on the Windows stat_result; reading it
+            # through getattr keeps this module type-checkable on Linux and macOS.
+            self._verify_windows_target(getattr(info, "st_file_attributes", 0))
+            return
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise SecureFileError(f"Approval store is not a regular file: {self.path}")
+        if info.st_uid != os.geteuid():
+            raise SecureFileError(f"Approval store is not owned by the current user: {self.path}")
+
+    def _verify_windows_target(self, attributes: int) -> None:
+        """Reject a Windows leaf that clearing must not replace, owner SID included."""
+        if attributes & (_WINDOWS_FILE_ATTRIBUTE_DIRECTORY | _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT):
+            raise SecureFileError(f"Approval store is not a regular file: {self.path}")
+        # The read path verifies the owner SID; replacing the file must too, or a
+        # writable directory lets `clear` overwrite another user's grants. The
+        # identity-only open asks for no data access, so a DACL that denies reading
+        # the file — which `clear` exists to repair — does not block the repair.
+        try:
+            verify_owner_identity_path(self.path)
+        except OSError as error:
+            raise SecureFileError(f"Approval store owner could not be verified: {self.path} ({error})") from error
+
+    def target_problem(self) -> str | None:
+        """Return why ``clear`` cannot replace this store's leaf, or None when it may.
+
+        Mirrors the whole write path, not just the leaf: a repair hint is only worth
+        printing when the command it names could actually succeed.
+        """
+        try:
+            self._verify_target_repairable()
+        except (OSError, ValueError) as error:
+            return str(error) or error.__class__.__name__
+        return replace_blocker(self.path)
+
+    def _write_rules(self, rules: list[dict[str, Any]]) -> bool:
+        return self._write_rules_or_reason(rules) is None
+
+    def _write_rules_or_reason(self, rules: list[dict[str, Any]]) -> str | None:
+        """Rewrite the store without reading it; the caller owns the whole payload."""
+        try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self._write_lock():
-                payload = (
-                    json.dumps({"version": 1, "rules": rules}, ensure_ascii=True, allow_nan=False, indent=2) + "\n"
-                )
-                self._commit(payload, len(rules))
-            self._warned_unreadable = False
-            return True
-        except OSError, ValueError, TypeError, RecursionError:
+                return self._write_rules_locked(rules)
+        except (OSError, ValueError, TypeError, RecursionError) as error:
             logger.warning("Approval grants could not be written")
-            return False
+            return str(error) or error.__class__.__name__
+
+    def _write_rules_locked(self, rules: list[dict[str, Any]]) -> str | None:
+        """Rewrite the store while the caller holds the write lock.
+
+        Repairing unreadable content is not the same thing as following a planted
+        link or replacing a special file: the leaf is re-verified under the lock
+        so a concurrent swap cannot slip past the check before the atomic write.
+        """
+        try:
+            self._verify_target_repairable()
+            payload = json.dumps({"version": 1, "rules": rules}, ensure_ascii=True, allow_nan=False, indent=2) + "\n"
+            self._commit(payload, len(rules))
+            self._warned_unreadable = False
+            return None
+        except (OSError, ValueError, TypeError, RecursionError) as error:
+            logger.warning("Approval grants could not be written")
+            return str(error) or error.__class__.__name__
 
     def _update(
         self, edit: Callable[[list[dict[str, Any]]], list[dict[str, Any]] | None], *, unchanged_ok: bool = False
     ) -> bool:
         """Rewrite the locked, re-read rules with *edit*; None from *edit* writes nothing."""
+        return self._update_or_reason(edit, unchanged_ok=unchanged_ok) is None
+
+    def _update_or_reason(
+        self, edit: Callable[[list[dict[str, Any]]], list[dict[str, Any]] | None], *, unchanged_ok: bool = False
+    ) -> str | None:
+        """Rewrite the locked, re-read rules with *edit*; None from *edit* writes nothing."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self._write_lock():
                 _, current = self._read()
+                # A successful re-read proves the file is readable again, whether or
+                # not *edit* matches anything: otherwise a later breakage stays silent.
+                self._warned_unreadable = False
                 rules = edit(current)
                 if rules is None:
-                    return unchanged_ok
+                    return None if unchanged_ok else "No matching grant"
                 payload = (
                     json.dumps({"version": 1, "rules": rules}, ensure_ascii=True, allow_nan=False, indent=2) + "\n"
                 )
                 self._commit(payload, len(rules))
-        except OSError, ValueError, TypeError, RecursionError:
+            self._warned_unreadable = False
+        except (OSError, ValueError, TypeError, RecursionError) as error:
             logger.warning("Approval grants could not be updated")
-            return False
+            return str(error) or error.__class__.__name__
 
-        return True
+        return None
 
     def _commit(self, payload: str, count: int, *, before_write: Callable[[], None] | None = None) -> None:
         encoded = payload.encode("utf-8")
@@ -261,22 +352,39 @@ class ApprovalGrantStore:
         return bool(rule_id) and self._update(edit)
 
     def clear(self, *, scope_key: tuple[str, str] | None = None) -> bool:
-        # Clearing everything needs no knowledge of what is stored, so it must never
-        # depend on a readable store: otherwise an unreadable file is also unrepairable.
-        if scope_key is None:
-            return self._write_rules([])
+        return self.clear_or_reason(scope_key=scope_key) is None
 
-        def edit(rules: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-            kept = []
-            for rule in rules:
-                row = _grants_edit(rule)
-                if row is None or not grant_matches_scope(
-                    row.get("scope"), row.get("scope_id"), row.get("workdir"), scope_key
-                ):
-                    kept.append(rule)
-            return kept if len(kept) < len(rules) else None
+    def clear_or_reason(self, *, scope_key: tuple[str, str] | None = None) -> str | None:
+        """Clear grants; return why the store could not be repaired, or None on success.
 
-        return self._update(edit, unchanged_ok=True)
+        Clearing everything needs no knowledge of what is stored, so it must never
+        depend on a readable store: otherwise an unreadable file is also unrepairable.
+        An already-empty store is decided under the write lock, so a concurrent writer
+        that is mid-commit cannot make the clear report success before its grants land.
+        """
+        if scope_key is not None:
+            return self._update_or_reason(_scope_edit(scope_key), unchanged_ok=True)
+        return self._clear_everything_or_reason()
+
+    def _clear_everything_or_reason(self) -> str | None:
+        """Empty the store under one lock; an already-empty readable store is not rewritten."""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._write_lock():
+                try:
+                    _, rules = self._read()
+                except OSError, ValueError, RecursionError:
+                    # Unreadable content is what the repair path exists for.
+                    return self._write_rules_locked([])
+                if not rules:
+                    # Nothing to change and nothing to write: a read-only parent or a
+                    # lock held elsewhere cannot fail a clear that has no work to do.
+                    self._warned_unreadable = False
+                    return None
+                return self._write_rules_locked([])
+        except (OSError, ValueError, TypeError, RecursionError) as error:
+            logger.warning("Approval grants could not be written")
+            return str(error) or error.__class__.__name__
 
 
 def _identity(rule: dict[str, Any] | None) -> list[object]:
