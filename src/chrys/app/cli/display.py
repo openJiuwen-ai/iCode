@@ -13,21 +13,26 @@ from rich.console import Console
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
 
-_MIN_TABLE_WIDTH = 40
-"""Below this a tabular listing has no room left for a column, and rich prints nothing at all."""
+_UNUSABLE_TABLE_WIDTH = 79
+"""Smallest usable ``Console.width``; on legacy Windows this is ``COLUMNS=80`` minus one."""
+
+_FALLBACK_TABLE_WIDTH = 120
+"""Wide enough for all current columns, including a 35-character profile ID."""
 
 
 def stdout_console() -> Console:
     """A stdout console for human-readable tables, with a usable width floor.
 
-    ``rich`` reads its width from ``COLUMNS``; a degenerate value yields a
-    non-positive width and the table renders as the empty string, so the command
-    exits zero having printed nothing. The floor keeps the listing visible.
+    ``rich`` reads its width from ``COLUMNS``; a degenerate value either makes
+    the table render as the empty string or leaves too little room for every
+    column, so the listing exits zero while silently hiding data. Below the
+    usable width we substitute a width that fits all current columns. The
+    assignment is unconditional: it also freezes a normal width at construction
+    time, so Rich cannot re-probe the terminal just before printing.
     """
     console = Console(file=sys.stdout, highlight=False)
-    if console.width >= _MIN_TABLE_WIDTH:
-        return console
-    return Console(file=sys.stdout, highlight=False, width=_MIN_TABLE_WIDTH)
+    console.width = _FALLBACK_TABLE_WIDTH if console.width < _UNUSABLE_TABLE_WIDTH else console.width
+    return console
 
 
 def one_line(text: str) -> str:
