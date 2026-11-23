@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from chrys.foundation.models.invocations import ContentChannel
     from chrys.service.context.providers.history import CompressedBlock
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
+    from chrys.service.state.folds import FoldItem
 
 from chrys.app.tui.widgets.chat.chrome import (
     ChatBottomSpacer,
@@ -2109,7 +2110,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         messages: list[dict[str, Any]],
         initial_profile: str = "",
         file_snapshots: dict[FileSnapshotKey, list[FileSnapshotPayload]] | None = None,
-        compressed_blocks: dict[str, CompressedBlock] | None = None,
+        folds: list[FoldItem] | None = None,
         recovered_from_sidecar: bool = False,
         rollback_targets: set[int] | None = None,
     ) -> None:
@@ -2132,7 +2133,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
                 messages,
                 initial_profile=initial_profile,
                 file_snapshots=file_snapshots,
-                compressed_blocks=compressed_blocks,
+                folds=folds,
             )
         finally:
             self._replay_process_protect_last = False

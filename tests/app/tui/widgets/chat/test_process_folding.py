@@ -26,6 +26,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SEARCH, KIND_SHELL, TOOL_CALL_KIND_METADATA_KEY
 from chrys.kernel import Content, Message
 from chrys.service.context.providers.history import CompressedBlock
+from chrys.service.state.folds import FoldItem
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import ChatPanelApp, click_when_settled, rich_plain
 from tests.support.waiting import wait_for
@@ -108,7 +109,9 @@ async def test_compressed_terminal_status_prevents_folding(inside: bool, marker:
         thinking_expanded=lambda: True,
     ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history([summary] if inside else [summary, status], compressed_blocks={"archive": block})
+        await panel.replay_history(
+            [summary] if inside else [summary, status], folds=[FoldItem("archive", "condensed", block=block)]
+        )
         await panel.wait_replay_complete()
         assert not panel.query(ProcessBlock)
         assert all(message.display for message in panel.query(AgentMessage))
@@ -141,7 +144,7 @@ async def test_compressed_failure_followed_by_success_still_folds(answer_inside:
     ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(
-            [summary] if answer_inside else [summary, final], compressed_blocks={"archive": block}
+            [summary] if answer_inside else [summary, final], folds=[FoldItem("archive", "condensed", block=block)]
         )
         await panel.wait_replay_complete()
         assert _summary(panel) == [
@@ -181,7 +184,7 @@ async def test_omitted_status_never_creates_an_empty_process_or_wraps_lone_think
         thinking_expanded=lambda: True,
     ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history([summary], compressed_blocks={"archive": block})
+        await panel.replay_history([summary], folds=[FoldItem("archive", "condensed", block=block)])
         await panel.wait_replay_complete()
         assert not panel.query(ProcessBlock)
         assert not panel.query(InterruptedMessage)
@@ -209,7 +212,7 @@ async def test_omitted_failure_after_a_non_answer_still_ends_the_turn(boundary: 
         thinking_expanded=lambda: True,
     ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history([summary], compressed_blocks={"archive": block})
+        await panel.replay_history([summary], folds=[FoldItem("archive", "condensed", block=block)])
         await panel.wait_replay_complete()
         assert not panel.query(ProcessBlock)
         assert all(message.display for message in panel.query(AgentMessage))
@@ -223,7 +226,7 @@ async def test_omitted_failure_stays_visible_until_a_later_success() -> None:
         thinking_expanded=lambda: True,
     ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history([summary], compressed_blocks={"archive": block})
+        await panel.replay_history([summary], folds=[FoldItem("archive", "condensed", block=block)])
         await panel.wait_replay_complete()
         await panel.add_agent_message("")
         assert not panel.query(ProcessBlock)
@@ -318,7 +321,7 @@ async def test_archived_local_tools_keep_results_and_follow_the_turn_fold_policy
         thinking_expanded=lambda: True,
     ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history([summary], compressed_blocks={"archive": archived})
+        await panel.replay_history([summary], folds=[FoldItem("archive", "condensed", block=archived)])
         await panel.wait_replay_complete()
         groups = list(panel.query(ToolGroup))
         assert len(groups) == 2
@@ -375,7 +378,7 @@ async def test_mixed_compressed_turn_counts_tools_in_collapsed_and_expanded_titl
         thinking_expanded=lambda: True,
     ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history([summary], compressed_blocks={"mixed": archived})
+        await panel.replay_history([summary], folds=[FoldItem("mixed", "condensed", block=archived)])
         await panel.wait_replay_complete()
         blocks = list(panel.query(ProcessBlock))
         assert len(blocks) == 2

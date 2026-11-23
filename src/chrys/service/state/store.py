@@ -11,7 +11,7 @@ import logging
 import os as os
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
@@ -24,6 +24,7 @@ from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.platform.files import atomic_write_text as _common_atomic_write_text
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.kernel import EXCLUDED_KEY
 from chrys.service.session.side_questions import SideQuestionSessionSeed, load_side_questions, write_side_questions
 from chrys.service.state._fork import SessionForkMixin
 from chrys.service.state._session_files import _MRU_SWEEP_SLACK as _MRU_SWEEP_SLACK
@@ -68,6 +69,7 @@ from chrys.service.state._session_meta import _is_visible_message as _is_visible
 from chrys.service.state._session_meta import _message_created_at as _message_created_at
 from chrys.service.state._session_meta import _parse_session_timestamp as _parse_session_timestamp
 from chrys.service.state._session_meta import recorded_surface as recorded_surface
+from chrys.service.state.folds import FoldItem, message_contents, message_properties, transcript_folds
 from chrys.service.state.serializers import deserialize_state, serialize_state
 from chrys.service.state.session_catalog import (
     CatalogEntry,
@@ -96,15 +98,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class SessionTranscript:
-    """A chat session's replayable history and the turn identity behind it.
-
-    Both come from one read of the session envelope, so the turns always
-    describe the messages beside them — a separate read could see the next
-    turn's registry against this turn's messages.
-    """
+    """Messages, turn identity and any requested folds from one session envelope."""
 
     messages: list[dict[str, Any]]
     turns: list[TurnRecord]
+    folds: list[FoldItem] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionReplay:
+    """Chat state, history and title metadata selected together for the TUI."""
+
+    state: dict[str, Any]
+    transcript: SessionTranscript
+    meta: SessionMeta | None = None
 
 
 # The catalog is rewritten whole, so after its first merge a process merges a
@@ -198,7 +205,11 @@ class StateStore(Protocol):
         session_id: str,
         *,
         prefer_recovery: bool = False,
+        include_folds: bool = False,
     ) -> SessionTranscript | None: ...
+    async def load_session_for_replay(
+        self, session_id: str, *, prefer_recovery: bool = False
+    ) -> SessionReplay | None: ...
     async def load_session_meta(
         self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False
     ) -> SessionMeta | None: ...
@@ -259,6 +270,35 @@ def _is_run_name(run_id: str) -> bool:
 
 def _newer_of(current: SessionMruEntry | None, candidate: SessionMruEntry) -> SessionMruEntry:
     return candidate if current is None else sort_entries([current, candidate])[0]
+
+
+def normalize_transcript_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the persisted contents used on both sides of a chat transcript."""
+    contents = []
+    for content in message_contents(message.get("contents")):
+        if isinstance(content, str):
+            if content.startswith("Content(type="):
+                contents.append({"type": "legacy", "raw": content})
+            else:
+                contents.append({"type": "text", "text": content})
+        elif isinstance(content, dict):
+            contents.append(content)
+    entry: dict[str, Any] = {"role": message.get("role", ""), "contents": contents}
+    properties = message_properties(message)
+    if properties:
+        entry["additional_properties"] = properties
+    return entry
+
+
+def _transcript(state: dict[str, Any], folds: list[FoldItem]) -> SessionTranscript:
+    # Excluded messages in active context stay hidden. Each block independently
+    # preserves the messages it held at compaction time.
+    messages = [
+        normalize_transcript_message(message)
+        for message in state.get("messages", [])
+        if not message_properties(message).get(EXCLUDED_KEY, False)
+    ]
+    return SessionTranscript(messages, turn_records(state), folds)
 
 
 class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
@@ -1261,43 +1301,14 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         session_id: str,
         *,
         prefer_recovery: bool = False,
+        include_folds: bool = False,
     ) -> SessionTranscript | None:
-        """Read the session envelope once into replayable messages and turn identity."""
         try:
             raw = self._resolve_effective_envelope(session_id, prefer_recovery=prefer_recovery)
             if raw is None:
                 return None
             state = raw.get("state", {})
-            messages = state.get("messages", [])
-            # Normalize: ensure each message has role + contents as dicts.
-            # Skip every message compaction excluded, deliberately: tool
-            # calls it summarized or removed, a dropped current turn's
-            # in-between text, and turns folded into a compressed block.
-            # Tool summaries stay in this raw list as the model's context;
-            # transcript replays drop them too (``is_compaction_tool_summary``),
-            # so the reopened session transcript shows neither a summary nor
-            # the messages it replaced. Compressed blocks keep their own
-            # archived copy and render it separately.
-            result = []
-            for msg in messages:
-                ap = msg.get("additional_properties", {})
-                if ap.get("_excluded", False):
-                    continue
-                contents = []
-                for c in msg.get("contents", []):
-                    if isinstance(c, str):
-                        # Legacy plain-string format
-                        if c.startswith("Content(type="):
-                            contents.append({"type": "legacy", "raw": c})
-                        else:
-                            contents.append({"type": "text", "text": c})
-                    elif isinstance(c, dict):
-                        contents.append(c)
-                entry: dict[str, Any] = {"role": msg.get("role", ""), "contents": contents}
-                if msg.get("additional_properties"):
-                    entry["additional_properties"] = msg["additional_properties"]
-                result.append(entry)
-            return SessionTranscript(messages=result, turns=turn_records(state))
+            return _transcript(state, transcript_folds(state) if include_folds else [])
         except KeyError:
             return None
 
@@ -1306,9 +1317,30 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         session_id: str,
         *,
         prefer_recovery: bool = False,
+        include_folds: bool = False,
     ) -> SessionTranscript | None:
-        """Load a chat session's replayable history and turn registry together."""
-        return await asyncio.to_thread(self._load_session_transcript_sync, session_id, prefer_recovery=prefer_recovery)
+        """Load persisted history and its turn registry, with folds when requested."""
+        return await asyncio.to_thread(
+            self._load_session_transcript_sync, session_id, prefer_recovery=prefer_recovery, include_folds=include_folds
+        )
+
+    def _load_session_for_replay_sync(self, session_id: str, *, prefer_recovery: bool = False) -> SessionReplay | None:
+        raw = self._resolve_effective_envelope(session_id, prefer_recovery=prefer_recovery)
+        if raw is None:
+            return None
+        if resolve_session_kind(raw["meta"]) != "chat":
+            raise ValueError("Chat loading requires a Chat session.")
+        state = raw.get("state", {})
+        decoded = deserialize_state(state)
+        folds = transcript_folds(state, decoded_blocks=decoded["compressed_msgs"])
+        meta = None
+        with contextlib.suppress(KeyError, OSError, ValueError, TypeError):
+            meta = self._session_meta_from_envelope(raw, size_bytes=_dir_size(self._session_dir(session_id)))
+        return SessionReplay(decoded, _transcript(state, folds), meta)
+
+    async def load_session_for_replay(self, session_id: str, *, prefer_recovery: bool = False) -> SessionReplay | None:
+        """Decode chat state and build the transcript from the same selected envelope."""
+        return await asyncio.to_thread(self._load_session_for_replay_sync, session_id, prefer_recovery=prefer_recovery)
 
     async def load_session_raw(
         self,
@@ -1316,14 +1348,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         *,
         prefer_recovery: bool = False,
     ) -> list[dict[str, Any]] | None:
-        """Load raw serialized messages for replay.
-
-        Returns:
-            A list of message dicts or ``None`` if the session does not
-            exist.  Intermediate text (agent text returned alongside tool
-            calls) is embedded per-message in
-            ``additional_properties["_intermediate_text"]``.
-        """
+        """Load the normalized active messages, with excluded messages filtered out."""
         transcript = await self.load_session_transcript(session_id, prefer_recovery=prefer_recovery)
         return None if transcript is None else transcript.messages
 

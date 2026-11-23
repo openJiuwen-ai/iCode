@@ -30,6 +30,8 @@ from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.kernel import Message
 from chrys.service.context.providers.history import CompressedBlock
+from chrys.service.state.folds import FoldItem
+from chrys.service.state.store import JsonFileStateStore, SessionReplay, SessionTranscript
 from tests.support.tui_helpers import (
     fake_session_title,
     main_screen_state_at,
@@ -38,31 +40,26 @@ from tests.support.tui_helpers import (
 )
 
 
-def test_restore_session_title_state_honors_prefer_recovery() -> None:
-    """Crash-recovered sessions must read title overlays from the same source
-    as the replayed history (the recovery sidecar), not the stale primary."""
+async def test_replay_reads_title_and_transcript_from_the_same_recovery_envelope(tmp_path: Path, monkeypatch) -> None:
+    store = JsonFileStateStore(tmp_path)
+    await store.save_session("s1", {"messages": [Message("user", ["primary"])]}, title="Primary title")
+    store.save_recovery_session("s1", {"messages": [Message("user", ["recovery"])]}, title="Recovery title")
+    resolve = store._resolve_effective_envelope
+    reads = []
 
-    calls: list[tuple[str, object]] = []
+    def count_read(session_id: str, *, prefer_recovery: bool = False):
+        reads.append((session_id, prefer_recovery))
+        return resolve(session_id, prefer_recovery=prefer_recovery)
 
-    class _Store:
-        async def load_session_meta(self, session_id: str, *, prefer_recovery: bool = False) -> object:
-            calls.append(("meta", (session_id, prefer_recovery)))
-            return SimpleNamespace(custom_title="Pinned", generated_title="Auto", title="first msg")
+    monkeypatch.setattr(store, "_resolve_effective_envelope", count_read)
+    loaded = await store.load_session_for_replay("s1", prefer_recovery=True)
 
-    class _Ui:
-        def reset_session_title_state(self) -> None:
-            calls.append(("reset", None))
-
-        def set_session_title_state(self, *, custom: str, generated: str, fallback: str) -> None:
-            calls.append(("set", (custom, generated, fallback)))
-
-    ui = _Ui()
-    host = SimpleNamespace(state_store=_Store(), _ui=lambda: ui)
-
-    asyncio.run(SessionHandler._restore_session_title_state(host, "sess1", prefer_recovery=True))
-
-    assert ("meta", ("sess1", True)) in calls
-    assert ("set", ("Pinned", "Auto", "first msg")) in calls
+    assert loaded is not None
+    assert loaded.meta is not None
+    assert loaded.meta.title == "Recovery title"
+    assert loaded.transcript.messages[0]["contents"][0]["text"] == "recovery"
+    assert [message.text for message in loaded.state["messages"]] == ["recovery"]
+    assert reads == [("s1", True)]
 
 
 def test_apply_custom_title_clear_publishes_resolved_display_title() -> None:
@@ -273,6 +270,9 @@ def test_session_restore_marks_fully_compacted_session_as_having_messages(tmp_pa
         async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
             calls.append(("error", (message, action_label)))
 
+        async def replay_history(self, messages, *, folds, **_kwargs) -> None:
+            calls.append(("replay", (messages, folds)))
+
     class _FakeInputBar:
         retry_mode = True
 
@@ -306,13 +306,12 @@ def test_session_restore_marks_fully_compacted_session_as_having_messages(tmp_pa
         def session_dir(self, session_id: str) -> Path:
             return tmp_path / "sessions" / session_id
 
-        async def load_session(self, session_id: str, *, prefer_recovery: bool = False) -> dict[str, object]:
-            calls.append(("load_session", (session_id, prefer_recovery)))
-            return state
-
-        async def load_session_raw(self, session_id: str, *, prefer_recovery: bool = False) -> list[dict[str, object]]:
-            calls.append(("load_session_raw", (session_id, prefer_recovery)))
-            return []
+        async def load_session_for_replay(self, session_id: str, *, prefer_recovery: bool = False):
+            calls.append(("read", (session_id, prefer_recovery)))
+            meta = SimpleNamespace(custom_title="Pinned", generated_title="Auto", title="first msg")
+            return SessionReplay(
+                state, SessionTranscript([], [], [FoldItem("ctx_1", "old turn", 0, block=compressed)]), meta
+            )
 
         async def list_sessions(self) -> list[object]:
             return []
@@ -343,7 +342,11 @@ def test_session_restore_marks_fully_compacted_session_as_having_messages(tmp_pa
         _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         query_one=query_one,
         _set_has_messages=lambda value: calls.append(("has_messages", value)),
-        _session_title=fake_session_title(set_terminal_title_for_cwd=lambda cwd: calls.append(("title_cwd", cwd))),
+        _session_title=fake_session_title(
+            set_terminal_title_for_cwd=lambda cwd: calls.append(("title_cwd", cwd)),
+            reset_session_title_state=lambda: calls.append(("title_reset", None)),
+            set_session_title_state=lambda **title: calls.append(("title", title)),
+        ),
         _events=SimpleNamespace(finish_agent_load=lambda message: calls.append(("finish", message))),
         _debug=lambda *_args: None,
     )
@@ -364,6 +367,14 @@ def test_session_restore_marks_fully_compacted_session_as_having_messages(tmp_pa
     assert ("has_messages", False) not in calls
     assert ("workspace_cwd", "/old/missing/path") in calls
     assert ("compressed_block", ("ctx_1", "old turn", 2, (1, 1))) in calls
+    assert [value for name, value in calls if name == "read"] == [("session-compacted", False)]
+    assert ("replay", ([], [FoldItem("ctx_1", "old turn", 0, block=compressed)])) in calls
+    # The saved title comes from the same read, after the stale one is cleared.
+    titles = [(name, value) for name, value in calls if name in {"title_reset", "title"}]
+    assert titles == [
+        ("title_reset", None),
+        ("title", {"custom": "Pinned", "generated": "Auto", "fallback": "first msg"}),
+    ]
     assert input_bar.retry_mode is False
 
 
@@ -670,12 +681,9 @@ def test_session_restore_reseeds_todo_state_from_saved_state_tolerantly(tmp_path
         def session_dir(self, session_id: str) -> Path:
             return tmp_path / "sessions" / session_id
 
-        async def load_session(self, session_id: str, *, prefer_recovery: bool = False) -> dict[str, object]:
+        async def load_session_for_replay(self, session_id: str, *, prefer_recovery: bool = False):
             calls.append(("load_session", (session_id, prefer_recovery)))
-            return state
-
-        async def load_session_raw(self, session_id: str, *, prefer_recovery: bool = False) -> list[dict[str, object]]:
-            return []
+            return SessionReplay(state, SessionTranscript([], []))
 
         async def list_sessions(self) -> list[object]:
             return []

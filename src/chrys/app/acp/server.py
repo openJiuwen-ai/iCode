@@ -31,7 +31,7 @@ from chrys.app.acp.bridge import (
 )
 from chrys.app.acp.content import AcpContentError, ContentBlock, convert_prompt_blocks
 from chrys.app.acp.errors import failure_fields, internal_error, invalid_params, turn_failed
-from chrys.app.acp.history import replay_session_history, session_history_payload
+from chrys.app.acp.history import compressed_context_payload, replay_session_history, session_history_payload
 from chrys.app.acp.hook_confirmations import AcpSessionHookConfirmations
 from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager, ManagedSession, jsonable_dataclass
@@ -1117,8 +1117,8 @@ class ChrysAcpServer:
             except Exception as exc:
                 raise _request_error(exc) from exc
             if transcript is None:
-                return {"sessionId": canonical_id, "turns": [], "messages": []}
-            return session_history_payload(canonical_id, transcript.messages, transcript.turns)
+                return {"sessionId": canonical_id, "turns": [], "messages": [], "compressedBlocks": []}
+            return session_history_payload(canonical_id, transcript)
         if method == "session/turns":
             return await self._session_turns_payload(params)
         if method == "session/retry":
@@ -1482,11 +1482,9 @@ class ChrysAcpServer:
                 "chrys/context_compressed",
                 {
                     "sessionId": event_session_id,
-                    "compressedContextId": event.compressed_context_id,
-                    "summary": event.summary,
-                    "freedMessages": event.freed_messages,
-                    "turnRange": list(event.turn_range),
-                    "source": event.source,
+                    **compressed_context_payload(
+                        event.compressed_context_id, event.summary, event.freed_messages, event.turn_range, event.source
+                    ),
                 },
             )
             return True
