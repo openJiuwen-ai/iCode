@@ -2,6 +2,8 @@
 
 iCode 可以使用 Tree-sitter 和字面量 YAML 规则分析 Bash 指令，再进入原有工具审批。功能**默认关闭**，只返回 **ALLOW** 或 **DEFER**：ALLOW 提供快捷自动审批，DEFER 交给原有审批流程；Pre-Judge 本身不拒绝命令。原有 Hook、审批策略、只读快捷审批、DAA（已有授权复用机制）、已记住的授权和**执行前** Shell Command Filter 的行为均保留。
 
+结构化 ALLOW 仅适用于 iCode 在 Bash 或 Git Bash 中运行的命令；zsh（macOS 默认）和 PowerShell（Windows 默认）始终 DEFER 到普通审批。iCode 使用 `$SHELL` 指定的 shell，因此在 macOS 上请用 `SHELL=/bin/bash icode` 启动；在 Windows 上，只有通过 `git_bash` 工具（安装 Git Bash 后提供）发起的调用才符合条件。
+
 将配置存放在受信任的用户级目录中（macOS/Linux 通常为 `~/.chrys/prejudge.yaml`）。使用该配置目录的所有 Profile 和工作区共享此策略。
 
 ```yaml

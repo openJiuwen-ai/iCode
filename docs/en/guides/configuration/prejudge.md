@@ -2,6 +2,8 @@
 
 iCode can optionally inspect Bash commands using Tree-sitter and literal YAML rules before ordinary tool approval. It is **off by default** and returns only **ALLOW** or **DEFER**. ALLOW offers an automatic-approval shortcut; DEFER continues through existing approval. Pre-Judge does not deny commands. Existing Hooks, approval policy, the read-only shortcut, DAA (the existing authorization-reuse mechanism), remembered grants, and the **pre-execution** Shell Command Filter retain their existing behavior.
 
+Structured ALLOW applies only to commands that iCode runs in Bash or Git Bash; zsh (the macOS default) and PowerShell (the Windows default) always DEFER to ordinary approval. iCode uses the shell named by `$SHELL`, so on macOS start it with `SHELL=/bin/bash icode`; on Windows, only calls made through the `git_bash` tool (provided when Git Bash is installed) qualify.
+
 Place `prejudge.yaml` in iCode's trusted user configuration directory (`~/.chrys/prejudge.yaml` on macOS/Linux). The user policy applies across profiles and workspaces using that configuration directory.
 
 ```yaml
