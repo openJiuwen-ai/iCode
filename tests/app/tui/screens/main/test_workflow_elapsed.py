@@ -17,7 +17,7 @@ from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import wait_for
 
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_elapsed_clock_updates_units_and_resets_for_a_new_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     started_at = datetime(2026, 9, 16, tzinfo=UTC)
     clock = create_autospec(datetime)
     clock.now.return_value = started_at

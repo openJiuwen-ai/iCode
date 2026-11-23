@@ -13,7 +13,7 @@ from chrys.foundation.models.session_surface import SessionSurface
 from chrys.orchestration.session_host import WorkflowRunRejectedError
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.state.store import JsonFileStateStore
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, patch_runtime, run, write_workflow
 from tests.support.workflow_workers import python_workflow
 
 
@@ -21,7 +21,7 @@ async def test_session_binding_round_trips_and_rejected_changes_do_not_create_ru
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     source = python_workflow("def check(text):\n    return text\n", "check")
     write_workflow(project, "review", source)
     host = make_host(tmp_path, project=project)
@@ -70,7 +70,7 @@ async def test_a_run_records_the_launch_surface_on_its_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, surface: SessionSurface
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     host = make_host(tmp_path, project=project, surface=surface)
     store = JsonFileStateStore(tmp_path / "sessions")
@@ -92,7 +92,7 @@ async def test_admission_save_failure_does_not_create_a_run_or_empty_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool, after_write: bool
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     host = make_host(tmp_path, project=project)
     store = JsonFileStateStore(tmp_path / "sessions")

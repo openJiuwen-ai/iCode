@@ -148,11 +148,11 @@ async def test_settings_reload_with_missing_registry_entry_reuses_active_profile
     assert calls == [(active, "settings_reload")]
 
 
-async def test_settings_reload_derives_the_project_root_from_the_session_workspace(
+async def test_settings_reload_derives_the_workdir_root_from_the_session_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The project trust domain is root-derived, and the pinned model plus the
+    """The workdir trust domain is root-derived, and the pinned model plus the
     launch mode's retry policy travel *into* the load, not after it."""
     profile = _profile()
     root = tmp_path / "workspace"
@@ -175,7 +175,7 @@ async def test_settings_reload_derives_the_project_root_from_the_session_workspa
 
     await engine._on_settings_reload(SettingsReload())
 
-    assert load_kwargs["project_root"] == Path(engine.session.workspace.primary_cwd)
+    assert load_kwargs["workdir"] == Path(engine.session.workspace.primary_cwd)
     assert load_kwargs["eval_context"].frontend_default_max_transient_retries == 15
     assert load_kwargs["model_profile"] == "pinned-model"
 

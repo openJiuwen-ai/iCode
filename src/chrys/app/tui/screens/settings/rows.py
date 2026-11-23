@@ -16,8 +16,8 @@ from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.language import LANGUAGE_OPTIONS
 from chrys.app.tui.screens.settings.danger import is_dangerous_transition
 from chrys.app.tui.screens.settings.layout import (
-    HINT_PROJECT_CONFIG_DORMANT,
-    PROJECT_CONFIG_KEY,
+    HINT_WORKDIR_CONFIG_DORMANT,
+    WORKDIR_CONFIG_KEY,
     HintArgs,
     Placeholder,
     RowKind,
@@ -260,10 +260,10 @@ class SettingRow(Vertical):
         return render_str(localizer, self.bind_hint(hint))
 
     def bind_hint(self, hint: MessageDef) -> MessageRef:
-        if self.spec.key == PROJECT_CONFIG_KEY and not self._last_value:
-            dormant = sum(len(entry.keys) for entry in self._ports.loaded.dormant_project)
+        if self.spec.key == WORKDIR_CONFIG_KEY and not self._last_value:
+            dormant = sum(len(entry.keys) for entry in self._ports.loaded.dormant_workdir)
             if dormant:
-                return HINT_PROJECT_CONFIG_DORMANT.bind(count=dormant)
+                return HINT_WORKDIR_CONFIG_DORMANT.bind(count=dormant)
         args = self.row.hint_args
         if args is HintArgs.FIELD_DEFAULT:
             return hint.bind(default=str(field_default(self.spec.key)))

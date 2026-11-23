@@ -24,7 +24,7 @@ from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource
 from tests.app.tui.screens.main._workflow_support import workflow_notice_text
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
@@ -38,7 +38,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 
 async def test_preview_and_start_share_workspace_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     engine, bus = WorkflowEngine(), EventBus()
     engine.workspace = Workspace(str(project), [WorkingDir(str(tmp_path / "shared"))])
@@ -63,7 +63,7 @@ async def test_preview_and_start_share_workspace_snapshot(tmp_path: Path, monkey
 async def test_workflow_shares_the_launch_approval_badge_and_its_errors_stay_scoped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus)
     async with app.run_test(size=(140, 42)) as pilot:
@@ -110,7 +110,7 @@ async def test_workflow_shares_the_launch_approval_badge_and_its_errors_stay_sco
 async def test_the_badge_keeps_the_launch_mode_while_workflow_drafts_carry_only_the_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: bool, mode: ApprovalMode
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus = EventBus()
     app = make_chrys_app(
         tmp_path / "sessions",
@@ -163,7 +163,7 @@ async def test_the_badge_keeps_the_launch_mode_while_workflow_drafts_carry_only_
 async def test_restoring_a_workflow_keeps_the_launch_badge_without_writing_approval_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus)
@@ -200,7 +200,7 @@ async def test_restoring_a_workflow_keeps_the_launch_badge_without_writing_appro
 async def test_workflow_diff_reads_active_run_snapshot_not_chat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     engine = WorkflowEngine()
     app = make_chrys_app(tmp_path / "sessions", engine=engine)
@@ -233,7 +233,7 @@ async def test_workflow_diff_reads_active_run_snapshot_not_chat(
 async def test_draft_reselection_keeps_its_workspace_after_hidden_chat_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "alternate", python_workflow("def fn(value):\n    return value\n", "fn"))
     monkeypatch.chdir(project)
     engine = WorkflowEngine()
@@ -256,7 +256,7 @@ async def test_draft_reselection_keeps_its_workspace_after_hidden_chat_changes(
 async def test_bound_start_checks_shadow_identity_before_preview_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(140, 42)) as pilot:

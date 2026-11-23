@@ -178,7 +178,7 @@ def _project_files(ctx: ImportContext, user: dict[str, Any], user_path: Path) ->
     # the workspace alone.
     workspace = Path(os.path.abspath(ctx.workspace_cwd))
     ancestors = [workspace, *workspace.parents]
-    root = _project_root(ancestors, markers if is_str_list(markers) else [".git"]) or workspace
+    root = _marker_root(ancestors, markers if is_str_list(markers) else [".git"]) or workspace
     repo = git_root(ctx.workspace_cwd)
     # Codex knows no repository folder where it finds no main checkout (a submodule, say).
     main = main_checkout(repo) if repo else None
@@ -199,7 +199,7 @@ def _same_folder(first: Path, second: Path) -> bool:
         return False
 
 
-def _project_root(ancestors: list[Path], markers: list[str]) -> Path | None:
+def _marker_root(ancestors: list[Path], markers: list[str]) -> Path | None:
     """The nearest folder holding a marker; a ``.git`` folder counts only with a ``HEAD``."""
     for folder in ancestors:
         for marker in markers:

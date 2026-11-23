@@ -227,7 +227,7 @@ def _prepare_runtime() -> Settings:
     from chrys.foundation.config.warnings import settings_warning_events
     from chrys.orchestration.startup import bootstrap_runtime
 
-    bootstrap = bootstrap_runtime(configure_stdio=True, setup_telemetry=False, project_root=Path(os.getcwd()))
+    bootstrap = bootstrap_runtime(configure_stdio=True, setup_telemetry=False, workdir=Path(os.getcwd()))
     for warning in (*bootstrap.warnings, *settings_warning_events(bootstrap.loaded)):
         _write_stderr(f"Warning: {warning.message}")
     return bootstrap.loaded.settings

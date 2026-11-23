@@ -37,7 +37,7 @@ from chrys.foundation.tool_kinds import (
     KIND_WEB_SEARCH,
     TOOL_CALL_KIND_METADATA_KEY,
 )
-from tests.support.tui_helpers import ChatPanelApp, resize_when_settled
+from tests.support.tui_helpers import ChatPanelApp, open_process_for, resize_when_settled
 from tests.support.waiting import wait_for
 
 # Absolute on every OS: a Windows path needs its drive.
@@ -316,6 +316,7 @@ async def test_a_group_s_one_succeeded_call_names_what_it_did_and_any_other_grou
             for call_id, result, _path in calls:
                 await cp.add_tool_result(call_id, "read_file", result)
             await cp.add_agent_message("done")
+            open_process_for(group)
             return group.query_one(ToolGroupTitle)
 
         one = await group_of(("a", "ok", _DEEP))

@@ -26,10 +26,12 @@ from chrys.foundation.config.settings import Settings, resolve_sessions_dir
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
 from chrys.foundation.config.warnings import settings_warning_events
+from chrys.foundation.events.types import Warning
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.signals import hangup_as_interrupt
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.startup import bootstrap_runtime
+from chrys.orchestration.workdir_migration import MIGRATION_CODES
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -88,12 +90,16 @@ def _configure_logging() -> None:
     logging.basicConfig(handlers=[handler], level=logging.WARNING)
 
 
-def _prepare_runtime() -> LoadedSettings:
+def _prepare_runtime() -> tuple[LoadedSettings, tuple[Warning, ...]]:
     """Freeze the startup environment, apply runtime patches, and return settings."""
     bootstrap = bootstrap_runtime(configure_stdio=True)
+    startup_warnings = []
     for warning in (*bootstrap.warnings, *settings_warning_events(bootstrap.loaded)):
-        sys.stderr.write(f"Warning: {warning.message}\n")
-    return bootstrap.loaded
+        if warning.code in MIGRATION_CODES:
+            startup_warnings.append(warning)
+        else:
+            sys.stderr.write(f"Warning: {warning.message}\n")
+    return bootstrap.loaded, tuple(startup_warnings)
 
 
 def _resolve_cwd(cwd: str) -> str:
@@ -125,7 +131,7 @@ def _initial_vision(
 async def run_command(args: argparse.Namespace) -> int:
     """Execute parsed ``chrys acp`` args."""
     process_cwd = _resolve_cwd(args.cwd) if args.cwd else None
-    loaded = _prepare_runtime()
+    loaded, startup_warnings = _prepare_runtime()
     # ACP clients own the ask_user interaction lifetime, so default to no
     # backend timeout; a positive --ask-user-timeout opts back into a bound.
     ask_user_timeout = args.ask_user_timeout if args.ask_user_timeout and args.ask_user_timeout > 0 else None
@@ -154,6 +160,7 @@ async def run_command(args: argparse.Namespace) -> int:
         manager,
         initial_vision=initial_vision,
         permission_timeout_seconds=settings.approval_timeout_seconds,
+        startup_warnings=startup_warnings,
     )
     # A client that ends this process kills it outright, so its background commands outlive it until now.
     left_behind = asyncio.create_task(asyncio.to_thread(_stop_left_behind))

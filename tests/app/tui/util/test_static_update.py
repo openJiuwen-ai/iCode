@@ -138,7 +138,9 @@ async def test_never_arranged_widget_under_hidden_ancestor_skips_layout_and_show
         ]
 
 
-async def test_widget_hidden_after_layout_that_grows_meanwhile_shows_its_new_height() -> None:
+async def test_widget_hidden_after_layout_that_grows_meanwhile_shows_its_new_height(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _StaticsApp()
     async with app.run_test(size=(60, 12)):
         shelf = app.query_one("#shelf")
@@ -146,13 +148,41 @@ async def test_widget_hidden_after_layout_that_grows_meanwhile_shows_its_new_hei
         await _settle(app)
         assert shelved.outer_size.height == 1
         shelf.add_class("-hidden")
-        await _settle(app)
+        layout = await _spy_layout(app, monkeypatch)
 
         update_static_in_place(shelved, "shelved one\nshelved two")
         await _settle(app)
+        layout.assert_not_called()
+
         shelf.remove_class("-hidden")
         await _settle(app)
 
         assert shelved.outer_size.height == 2
         lines = _frame_text(app).splitlines()
         assert [line.rstrip() for line in lines[3:6]] == ["shelved one", "shelved two", "ROW-BELOW"]
+
+
+async def test_plain_display_reveal_remeasures_hidden_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _StaticsApp()
+    async with app.run_test(size=(60, 12)):
+        shelf = app.query_one("#shelf")
+        shelved = app.query_one("#shelved", Static)
+        await _settle(app)
+        assert shelved.outer_size.height == 1
+        shelf.display = False
+        layout = await _spy_layout(app, monkeypatch)
+
+        update_static_in_place(shelved, "one\ntwo\nthree\nfour")
+        await _settle(app)
+        layout.assert_not_called()
+
+        shelf.display = True
+        await _settle(app)
+        assert shelved.outer_size.height == 4
+        assert [line.rstrip() for line in _frame_text(app).splitlines()[3:8]] == [
+            "one",
+            "two",
+            "three",
+            "four",
+            "ROW-BELOW",
+        ]

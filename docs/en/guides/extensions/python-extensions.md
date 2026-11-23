@@ -388,7 +388,7 @@ The package's `description` is what the "Tools" tab shows. iCode runs on Python 
 
 | What you see | What to check |
 | --- | --- |
-| The extension is missing from the "Tools" tab | The file is in the `extensions` folder of the configuration directory (not in a project folder), its name ends in `.py` or it is a folder with `__init__.py`, and its name does not start with `_` or `.`. A package must be installed into the environment iCode runs in. |
+| The extension is missing from the "Tools" tab | The file is in the `extensions` folder of the configuration directory (not in the working directory), its name ends in `.py` or it is a folder with `__init__.py`, and its name does not start with `_` or `.`. A package must be installed into the environment iCode runs in. |
 | "Skipped …" under "Extensions" | The id breaks the id rules above or repeats a built-in tool category. Rename the file or folder. |
 | A warning that the agent starts without the extension | The warning gives the reason: the extension is not installed, is installed twice, failed to import (the message names the error), or has a tool whose name another tool already uses. |
 | A call ends with "Error: Function failed." | The tool raised an exception other than `ToolError`. In the TUI, iCode records it in `logs/debug.log` in the configuration directory. Raise `ToolError` for failures the model should read. |

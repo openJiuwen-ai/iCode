@@ -20,7 +20,7 @@
 
 ## 执行任务
 
-在项目目录中运行命令，并通过 `-a` 或 `--agent` 指定智能体。任务文本含空格时使用引号：
+在工作目录中运行命令，并通过 `-a` 或 `--agent` 指定智能体。任务文本含空格时使用引号：
 
 ```shell
 icode run "概述这个项目的目录结构和主要模块" --agent QA
@@ -87,17 +87,17 @@ icode run "概述这个项目" --agent QA --quiet
 `-C` 或 `--workdir` 指定智能体处理文件和执行命令时使用的工作目录，无需先在终端中切换目录：
 
 ```shell
-icode run "检查未提交的变更并说明风险" --agent QA --workdir <project-directory>
+icode run "检查未提交的变更并说明风险" --agent QA --workdir <working-directory>
 ```
 
-将 `<project-directory>` 替换为实际项目路径。可以使用绝对路径，或相对于运行命令时所在目录的路径；路径必须指向一个已有目录。
+将 `<working-directory>` 替换为工作目录的实际路径。可以使用绝对路径，或相对于运行命令时所在目录的路径；路径必须指向一个已有目录。
 
 ## 从文件读取任务
 
 较长、需要版本管理或由脚本生成的任务可以放在文本文件中，再通过 `-t` 或 `--task` 读取：
 
 ```shell
-icode run --task prompts/review.md --agent Code --workdir <project-directory>
+icode run --task prompts/review.md --agent Code --workdir <working-directory>
 ```
 
 `--task` 不要求特定文件后缀。iCode 会读取该文件内容，并将其作为本次任务的提示词。任务文件路径可以是绝对路径，也可以是相对路径；使用相对路径时，iCode 会在 `--workdir` 指定的目录中查找该文件，未指定 `--workdir` 时，则在运行命令时所在的目录中查找。

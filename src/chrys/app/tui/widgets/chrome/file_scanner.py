@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Async project path discovery and fuzzy filtering.
+"""Async working directory path discovery and fuzzy filtering.
 
 The scanner supports million-scale workspaces by streaming subprocess sources
 to bounded file budgets and returning explicit truncation metadata instead of
@@ -28,47 +28,47 @@ from chrys.foundation.platform.process import (
 )
 from chrys.foundation.vendor import find_rg
 
-ProjectPathKind = Literal["file", "directory"]
-ProjectPathOrdering = Literal["path-sorted", "discovery"]
+WorkdirPathKind = Literal["file", "directory"]
+WorkdirPathOrdering = Literal["path-sorted", "discovery"]
 
 DEFAULT_FILE_DISCOVERY_BUDGET = 1_000_000
 DEFAULT_SUGGESTION_BUDGET = 2_000_000
 
 
 @dataclass(frozen=True, slots=True)
-class ProjectPathSuggestion:
-    """A referenceable project path shown in the ``@`` suggestion menu."""
+class WorkdirPathSuggestion:
+    """A referenceable working directory path shown in the ``@`` suggestion menu."""
 
     path: str
-    kind: ProjectPathKind
+    kind: WorkdirPathKind
 
 
 @dataclass(frozen=True, slots=True)
-class ProjectPathScanResult:
-    """Project path suggestions plus scan budget/truncation metadata."""
+class WorkdirPathScanResult:
+    """Working directory path suggestions plus scan budget/truncation metadata."""
 
     root: str
-    paths: list[ProjectPathSuggestion]
+    paths: list[WorkdirPathSuggestion]
     file_count: int
     suggestion_count: int
     truncated: bool
     file_budget: int
     suggestion_budget: int
     source_truncations: dict[str, bool] = field(default_factory=dict)
-    ordering: ProjectPathOrdering = "path-sorted"
+    ordering: WorkdirPathOrdering = "path-sorted"
 
     @classmethod
     def from_suggestions(
         cls,
         *,
         root: str,
-        paths: list[ProjectPathSuggestion],
+        paths: list[WorkdirPathSuggestion],
         file_budget: int | None = None,
         suggestion_budget: int | None = None,
         truncated: bool = False,
         source_truncations: dict[str, bool] | None = None,
-        ordering: ProjectPathOrdering = "path-sorted",
-    ) -> ProjectPathScanResult:
+        ordering: WorkdirPathOrdering = "path-sorted",
+    ) -> WorkdirPathScanResult:
         """Wrap a prebuilt suggestion list in scan-result metadata."""
         file_count = sum(1 for path in paths if path.kind == "file")
         suggestion_count = len(paths)
@@ -97,7 +97,7 @@ class _PathSourceResult:
 class _SuggestionBuildResult:
     """Bounded file/directory suggestions derived from file paths."""
 
-    suggestions: list[ProjectPathSuggestion]
+    suggestions: list[WorkdirPathSuggestion]
     truncated: bool = False
 
 
@@ -269,13 +269,13 @@ def _rg_path() -> str:
     return find_rg() or "rg"
 
 
-async def scan_project_paths(
+async def scan_workdir_paths(
     root: str,
     max_paths: int | None = None,
     *,
     file_budget: int = DEFAULT_FILE_DISCOVERY_BUDGET,
     suggestion_budget: int = DEFAULT_SUGGESTION_BUDGET,
-) -> ProjectPathScanResult:
+) -> WorkdirPathScanResult:
     """Return relative file and directory paths from *root* with scan metadata.
 
     Strategy:
@@ -328,7 +328,7 @@ async def scan_project_paths(
     file_budget = max(0, file_budget)
     suggestion_budget = max(0, suggestion_budget)
     if not os.path.isdir(root):
-        return ProjectPathScanResult(
+        return WorkdirPathScanResult(
             root=root,
             paths=[],
             file_count=0,
@@ -340,7 +340,7 @@ async def scan_project_paths(
         )
     primary: list[str] = []
     source_truncations: dict[str, bool] = {}
-    ordering: ProjectPathOrdering = "path-sorted"
+    ordering: WorkdirPathOrdering = "path-sorted"
     rg_truncated = False
 
     probes = await _run_probes(root, file_budget=file_budget)
@@ -379,7 +379,7 @@ async def scan_project_paths(
             source_truncations["os_walk"] = True
 
     # Append supplemental paths. Dedup preserves primary order and keeps
-    # lower-priority hidden/ignored entries after the normal project files.
+    # lower-priority hidden/ignored entries after the normal working directory files.
     seen = set(primary)
     if file_budget > 0 and (
         _append_unique_paths(primary, seen, probes.dot_entries.paths, file_budget=file_budget)
@@ -393,10 +393,10 @@ async def scan_project_paths(
         if _append_ignored_files(primary, seen, probe, file_budget=file_budget):
             source_truncations[key] = True
 
-    suggestions = await asyncio.to_thread(_project_path_suggestions, primary, suggestion_budget=suggestion_budget)
+    suggestions = await asyncio.to_thread(_workdir_path_suggestions, primary, suggestion_budget=suggestion_budget)
     if suggestions.truncated:
         source_truncations["suggestions"] = True
-    return ProjectPathScanResult(
+    return WorkdirPathScanResult(
         root=root,
         paths=suggestions.suggestions,
         file_count=len(primary),
@@ -473,7 +473,7 @@ def _probe_or_raise[T](result: T | BaseException) -> T:
     return result
 
 
-def _project_path_suggestions(
+def _workdir_path_suggestions(
     paths: list[str],
     *,
     suggestion_budget: int | None = None,
@@ -492,7 +492,7 @@ def _project_path_suggestions(
     suggestion_budget = max(0, suggestion_budget)
     if suggestion_budget <= 0:
         return _SuggestionBuildResult([], truncated=bool(paths))
-    suggestions: list[ProjectPathSuggestion] = []
+    suggestions: list[WorkdirPathSuggestion] = []
     seen: set[str] = set()
     shared_directories = ""
 
@@ -514,12 +514,12 @@ def _project_path_suggestions(
             if directory in seen:
                 continue
             seen.add(directory)
-            suggestions.append(ProjectPathSuggestion(path=directory, kind="directory"))
+            suggestions.append(WorkdirPathSuggestion(path=directory, kind="directory"))
             if len(suggestions) >= suggestion_budget:
                 return _SuggestionBuildResult(suggestions, truncated=True)
         if path not in seen:
             seen.add(path)
-            suggestions.append(ProjectPathSuggestion(path=path, kind="file"))
+            suggestions.append(WorkdirPathSuggestion(path=path, kind="file"))
             if len(suggestions) >= suggestion_budget:
                 return _SuggestionBuildResult(suggestions, truncated=raw_index < len(paths) - 1)
         shared_directories = directory_source[: directory_source.rfind("/") + 1]

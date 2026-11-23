@@ -20,7 +20,9 @@ from chrys.app.tui.support.gc_freeze import (
     GcReclaimRequested,
     GcRemovedContent,
 )
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import (
     ToolCall,
@@ -46,6 +48,18 @@ from tests.support.waiting import wait_for
 
 # Tests here call register_kind_renderer(KIND_SUB_AGENT, ...) directly; undo it per test.
 pytestmark = pytest.mark.usefixtures("restore_kind_renderer_registry")
+
+
+def _show_process(group: ToolGroup) -> None:
+    """Open the containing process before exercising an individual group's restore."""
+    panel = group.parent
+    if isinstance(panel, ChatPanel):
+        owner = panel._process_controller.owner_of(group)
+        if owner is not None and owner.collapsed:
+            if isinstance(owner, LiveProcessRow):
+                panel._toggle_live_process_row(owner)
+            elif isinstance(owner, ProcessBlock):
+                panel._toggle_process_block(owner)
 
 
 def _model_coordinator_freeze(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,6 +119,7 @@ async def test_collapsed_completed_tool_group_prunes_and_rebuilds_file_diff() ->
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("edit")
         await cp.add_tool_start("edit1", "edit_file", "filesystem.write", args={"path": "src/app.py"})
+        _show_process(cp.query_one(ToolGroup))
         await cp.add_tool_result(
             "edit1",
             "edit_file",
@@ -123,6 +138,7 @@ async def test_collapsed_completed_tool_group_prunes_and_rebuilds_file_diff() ->
         assert len(group._tools) == 0
         assert not list(cp.query(DiffView))
 
+        _show_process(group)
         group.collapsed = False
         await wait_for(
             lambda: list(cp.query(InlineUnifiedDiffLines)),
@@ -210,6 +226,7 @@ async def test_restored_tool_subtree_removal_names_its_nodes_only_while_no_freez
 
         for frozen_after_restore in (False, True):
             app.gc_messages.clear()
+            _show_process(group)
             group.collapsed = False
             await wait_for(lambda: group._content_mounted, pilot=pilot, description="subtree restored")
             if frozen_after_restore:
@@ -242,6 +259,7 @@ async def test_plain_restored_tool_subtree_posts_stable_content_absorb() -> None
         # Model the coordinator having consumed the removal reclaim. The
         # subsequent expansion must independently announce its rebuilt tree.
         app.gc_messages.clear()
+        _show_process(group)
         group.collapsed = False
         await wait_for(lambda: app.gc_messages, pilot=pilot, description="app.gc_messages")
 
@@ -272,6 +290,7 @@ async def test_lazy_tool_expand_posts_stable_content_absorb_after_mounts_finish(
         )
         await pilot.pause()
 
+        _show_process(group)
         group.collapsed = False
         await wait_for(
             lambda: any(isinstance(message, GcAbsorbRequested) for message in app.gc_messages),
@@ -338,6 +357,7 @@ async def test_tool_group_expand_restores_cards_before_pending_diff_prepare_fini
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
         assert group._content_mounted is False
 
+        _show_process(group)
         group.collapsed = False
         await wait_for(
             lambda: group._content_mounted and len(group._tools) == 1,
@@ -400,6 +420,7 @@ async def test_tool_group_collapse_during_inline_diff_mount_keeps_diff_deferred(
             group = next(ancestor for ancestor in self.ancestors if isinstance(ancestor, ToolGroup))
             group.collapsed = True
             if reexpand_during_mount:
+                _show_process(group)
                 group.collapsed = False
             collapsed_during_mount.set()
 
@@ -424,6 +445,7 @@ async def test_tool_group_collapse_during_inline_diff_mount_keeps_diff_deferred(
         await cp.add_tool_result("sa1", "explore_agent", "ok", 5)
         await cp.add_tool_start("edit1", "edit_file", KIND_FILESYSTEM_WRITE, args={"path": "src/app.py"})
         group = cp.query_one(ToolGroup)
+        _show_process(group)
         group.collapsed = False
         await cp.add_tool_result("edit1", "edit_file", "Edited src/app.py", 25, file_snapshot=("old\n", "new\n"))
         card = cp.query_one(EditFileToolCall)
@@ -473,6 +495,7 @@ async def test_tool_group_collapse_during_inline_diff_mount_keeps_diff_deferred(
         assert group.collapsed is True
         assert card._diff_pending is True
 
+        _show_process(group)
         group.collapsed = False
         # The widget appears in the DOM before the mount coroutine finishes,
         # so wait for the card's own state to settle, not just the query.
@@ -514,6 +537,7 @@ async def test_tool_group_expand_retries_inline_diff_after_failed_mount(
         await cp.add_tool_result("sa1", "explore_agent", "ok", 5)
         await cp.add_tool_start("edit1", "edit_file", KIND_FILESYSTEM_WRITE, args={"path": "src/app.py"})
         group = cp.query_one(ToolGroup)
+        _show_process(group)
         group.collapsed = False
         with caplog.at_level(logging.WARNING, logger="chrys.app.tui.widgets.chat.renderers.file_edit"):
             await cp.add_tool_result("edit1", "edit_file", "Edited src/app.py", 25, file_snapshot=("old\n", "new\n"))
@@ -529,6 +553,7 @@ async def test_tool_group_expand_retries_inline_diff_after_failed_mount(
 
         group.collapsed = True
         await pilot.pause()
+        _show_process(group)
         group.collapsed = False
         await wait_for(
             lambda: not card._diff_mounting and not card._diff_pending and card._has_inline_diff_child(),
@@ -559,6 +584,9 @@ async def test_rejected_file_tool_stays_text_after_collapse_expand_with_running_
         await pilot.pause()
 
         group = cp.query_one(ToolGroup)
+        _show_process(group)
+        group.collapsed = False
+        await wait_for(lambda: group._content_mounted, pilot=pilot, description="the rejected card is shown")
         rejected_tool = group._tools["edit1"]
         assert rejected_tool.has_class("-rejected")
 
@@ -566,6 +594,7 @@ async def test_rejected_file_tool_stays_text_after_collapse_expand_with_running_
         await pilot.pause()
         assert rejected_tool._diff_pending is False
 
+        _show_process(group)
         group.collapsed = False
         worker = group._pending_content_worker
         assert worker is not None
@@ -589,6 +618,9 @@ async def test_shell_tool_nonzero_exit_rebuild_uses_complete_path_metadata() -> 
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("run")
         await cp.add_tool_start("sh1", "bash", KIND_SHELL, args={"command": "false"})
+        group = cp.query_one(ToolGroup)
+        _show_process(group)
+        group.collapsed = False
         await cp.add_tool_result("sh1", "bash", result, 1234)
         await pilot.pause()
 
@@ -603,6 +635,7 @@ async def test_shell_tool_nonzero_exit_rebuild_uses_complete_path_metadata() -> 
         group = cp.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
 
+        _show_process(group)
         group.collapsed = False
         await wait_for(lambda: group._content_mounted, pilot=pilot, description="group._content_mounted")
 
@@ -643,6 +676,7 @@ async def test_tool_group_restore_reprunes_when_collapsed_mid_rebuild(monkeypatc
         monkeypatch.setattr(group, "call_later", _drop_call_later)
         monkeypatch.setattr(content, "mount", _mount_then_collapse)
 
+        _show_process(group)
         group.collapsed = False
         await group._restore_completed_tool_widgets()
         await pilot.pause()
@@ -663,6 +697,7 @@ async def test_tool_group_release_restores_when_expand_races_awaited_removal(
             app, monkeypatch, "tool1"
         )
 
+        _show_process(group)
         group.collapsed = False
         release_removal.set()
         await release_task
@@ -679,7 +714,7 @@ async def test_tool_group_release_restores_when_expand_races_awaited_removal(
         assert app.gc_messages[1].reason is GcAbsorbReason.STABLE_CONTENT_MOUNTED
 
 
-async def test_tool_group_release_restores_live_tool_added_during_awaited_removal(
+async def test_tool_group_release_mounts_only_live_tool_added_during_awaited_removal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A tool added after release starts must remain mounted and running."""
@@ -697,13 +732,20 @@ async def test_tool_group_release_restores_live_tool_added_during_awaited_remova
         await pilot.pause()
 
         assert group.collapsed is True
-        assert group._content_mounted is True
+        assert group._content_mounted is False
         assert group.is_tool_running("new") is True
-        assert group.get_tool("new") is not None
-        assert set(group._tools) == {"old", "new"}
-        assert len(content.children) == 2
+        live = group.get_tool("new")
+        assert live is not None
+        assert set(group._tools) == {"new"}
+        assert list(content.children) == [live]
         assert len(app.gc_messages) == 1
         assert isinstance(app.gc_messages[0], GcReclaimRequested)
+
+        _show_process(group)
+        group.collapsed = False
+        await group._restore_completed_tool_widgets()
+        assert group.get_tool("new") is live
+        assert [card.call_id for card in group.query(ToolCall)] == ["old", "new"]
 
 
 async def test_tool_group_release_normalizes_tool_completed_during_awaited_removal(
@@ -727,6 +769,7 @@ async def test_tool_group_release_normalizes_tool_completed_during_awaited_remov
         assert group._tools == {}
         assert not content.children
 
+        _show_process(group)
         group.collapsed = False
         await group._restore_completed_tool_widgets()
         await pilot.pause()
@@ -772,6 +815,7 @@ async def test_tool_group_serializes_add_with_in_progress_full_restore(
             return wait_for_release()
 
         monkeypatch.setattr(content, "mount", delayed_mount)
+        _show_process(group)
         group.collapsed = False
         restore_task = asyncio.create_task(group._restore_completed_tool_widgets())
         await mount_started.wait()
@@ -847,6 +891,7 @@ async def test_tool_group_replay_metadata_approval_renders_rejected(monkeypatch:
 
         assert group._tool_records["reject1"].status == "rejected"
 
+        _show_process(group)
         group.collapsed = False
         await group._restore_completed_tool_widgets()
         await pilot.pause()
@@ -925,8 +970,8 @@ async def test_collapsed_running_tool_group_prunes_when_last_tool_completes() ->
         assert len(group._tools) == 0
 
 
-async def test_pruned_open_tool_group_restores_completed_tools_when_new_tool_starts() -> None:
-    """A later parallel start must not make earlier pruned tools disappear."""
+async def test_pruned_open_tool_group_restores_completed_tools_when_expanded() -> None:
+    """A later start mounts only its own card until the group opens."""
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("tools")
@@ -945,15 +990,18 @@ async def test_pruned_open_tool_group_restores_completed_tools_when_new_tool_sta
         await pilot.pause()
 
         assert group.collapsed is True
-        assert group._content_mounted is True
+        assert group._content_mounted is False
+        assert set(group._tools) == {"b"}
+        live = group._tools["b"]
+        assert live.status == "running"
+
+        _show_process(group)
+        group.collapsed = False
+        await wait_for(lambda: group._content_mounted, pilot=pilot, description="missing cards restored")
+
         assert set(group._tools) == {"a", "b"}
         assert group._tools["a"].status == "complete"
-        assert group._tools["b"].status == "running"
-
-        group.collapsed = False
-        await pilot.pause()
-
-        assert set(group._tools) == {"a", "b"}
+        assert group._tools["b"] is live
         assert [child.call_id for child in group.query(ToolCall)] == ["a", "b"]
 
 

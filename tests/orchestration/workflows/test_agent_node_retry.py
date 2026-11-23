@@ -41,7 +41,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -131,7 +131,7 @@ async def test_a_pass_that_times_out_after_a_tool_resumes_without_running_the_to
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     expire = _hold_node_deadline(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")
     client = MockChatClient(
@@ -184,7 +184,7 @@ async def test_a_resumed_attempt_keeps_the_narration_of_a_completed_tool_exchang
 ) -> None:
     """The resumed attempt continues after the narration in its history and never writes it again."""
     expire = _hold_node_deadline(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")
     client = MockChatClient(
@@ -232,7 +232,7 @@ async def test_a_resumed_attempt_withdraws_the_answer_it_asks_for_again_with_its
     later attempt carries on from what the views hold by then.
     """
     expire = _hold_node_deadline(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")
     client = MockChatClient(
@@ -320,7 +320,7 @@ async def test_a_node_that_keeps_timing_out_fails_with_agent_timeout_after_its_a
         monkeypatch,
         [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="never", delay=3600)] * 2)],
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2, timeout=0.3))
     host = make_host(tmp_path, project=project)
     try:
@@ -350,7 +350,7 @@ async def test_a_rate_limit_after_a_tool_retries_the_request_in_place(
         429, {"error": {"type": "requests", "code": "rate_limit_exceeded", "message": "Rate limit reached"}}
     )
     assert classify_error(rate_limited).retryable
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")
     client = MockChatClient(responses=[])
@@ -393,7 +393,7 @@ async def test_an_exhausted_quota_is_not_retried(tmp_path: Path, monkeypatch: py
         429, {"error": {"type": "insufficient_quota", "code": "insufficient_quota", "message": "Quota exceeded"}}
     )
     assert classify_error(quota).kind is ErrorKind.QUOTA_EXHAUSTED
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")
     client = MockChatClient(responses=[])
@@ -434,7 +434,7 @@ async def test_a_timeout_during_the_retry_backoff_sends_no_further_request(
         create_autospec(client._next_response, side_effect=[rate_limited, MockResponse(text="never sent")]),
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=1, timeout=_NODE_TIMEOUT))
     host = make_host(tmp_path, project=project)
 
@@ -488,7 +488,7 @@ async def test_a_timeout_during_a_local_tool_resumes_after_the_hosted_call_of_th
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
     entered = _install_hold_tool(monkeypatch)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2, timeout=_NODE_TIMEOUT))
     host = make_host(tmp_path, project=project, stream=stream)
     try:
@@ -537,7 +537,7 @@ async def test_a_request_dropped_after_running_hosted_work_is_not_retried(
         ]
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=3))
     host = make_host(tmp_path, project=project, stream=True)
     try:
@@ -556,7 +556,7 @@ async def test_an_earlier_request_answering_the_same_hosted_call_id_does_not_mak
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Providers mint per-response ids: the first request's kept result says nothing about the second's call."""
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")
     client = HostedMockChatClient(
@@ -593,7 +593,7 @@ async def test_an_earlier_request_answering_the_same_hosted_call_id_does_not_mak
 async def test_with_no_request_retries_a_failed_pass_resumes_on_the_next_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")
     client = MockChatClient(responses=[])
@@ -653,7 +653,7 @@ async def test_under_service_side_storage_a_failed_request_retries_the_whole_run
         ),
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2))
     host = make_host(tmp_path, project=project, chat_options=_SERVICE_SIDE_STORAGE)
     try:
@@ -707,7 +707,7 @@ async def test_a_pass_that_ends_while_a_hosted_call_runs_settles_its_card(
     """The attempt's transcript never leaves a provider-hosted call running once the attempt ended."""
     expire = _hold_node_deadline(monkeypatch)
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), _HostedCallThenStops(failure)])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=1, timeout=_NODE_TIMEOUT))
     host = make_host(tmp_path, project=project, stream=True)
     try:
@@ -767,7 +767,7 @@ async def test_a_timeout_that_abandons_a_running_background_response_is_not_retr
     expire = _hold_node_deadline(monkeypatch)
     client = _BackgroundResponseThenSilence()
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client, MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2, timeout=_NODE_TIMEOUT))
     host = make_host(tmp_path, project=project, stream=True)
     try:
@@ -808,7 +808,7 @@ async def test_a_failed_poll_of_a_background_response_never_creates_its_hosted_w
         ]
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=3))
     host = make_host(
         tmp_path,
@@ -857,7 +857,7 @@ async def test_an_acp_agent_that_cannot_reopen_for_a_retry_fails_the_node_rather
 
     monkeypatch.setattr(agent_node_module, "build_acp_node", create_autospec(real_build, side_effect=build))
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=3, timeout=_NODE_TIMEOUT, profile="External"))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), _acp_profile("idle_stall")])
 
@@ -900,7 +900,7 @@ async def test_a_retired_acp_agent_that_fails_to_close_leaves_the_timeout_to_be_
 
     monkeypatch.setattr(agent_node_module, "PreparedAgent", _TeardownFailsOnce)
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2, timeout=_NODE_TIMEOUT, profile="External"))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), _acp_profile("idle_stall")])
 
@@ -941,7 +941,7 @@ async def test_an_acp_agent_its_connection_retries_cannot_reach_is_not_retried_b
 
     monkeypatch.setattr(AcpAgentClient, "connect", create_autospec(real_connect, side_effect=connect))
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2, profile="External"))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), _acp_profile("happy")])
     try:
@@ -1003,7 +1003,7 @@ async def test_a_transient_failure_resumes_and_asks_again_for_the_answer_it_cut_
     """The next attempt starts by itself, and its request no longer ends with the half answer."""
     client = _ShowsThenStops((shows_text, ConnectionResetError("connection reset by peer")))
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2))
     host = make_host(
         tmp_path, project=project, stream=True, settings=Settings(model_profile="mock-profile", max_transient_retries=0)
@@ -1051,7 +1051,7 @@ async def test_under_service_side_storage_a_failure_after_shown_text_is_left_to_
     assert classify_error(failure).retryable
     client = _ShowsThenStops((True, failure))
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2))
     host = make_host(
         tmp_path,
@@ -1092,7 +1092,7 @@ async def test_a_timeout_resumes_and_asks_again_for_the_answer_it_cut_off(
     expire = _hold_node_deadline(monkeypatch)
     client = _ShowsThenStops((shows_text, None))
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2, timeout=_NODE_TIMEOUT))
     host = make_host(tmp_path, project=project, stream=True)
     try:
@@ -1127,7 +1127,7 @@ async def test_a_timeout_resumes_and_asks_again_for_the_answer_it_cut_off(
 async def test_a_cancelled_node_keeps_the_answer_it_showed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = _ShowsThenStops((True, None))
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _workflow(max_attempts=2))
     host = make_host(tmp_path, project=project, stream=True)
     task: asyncio.Task[Any] | None = None

@@ -117,7 +117,7 @@ class HookRunDetail:
     on_error: str
     delivery: str
     source: str
-    """``project`` or ``global``; empty when unknown."""
+    """``workdir`` or ``global``; empty when unknown."""
     source_path: str
     run_type: str
     """``script``, ``command`` or ``shell``."""

@@ -21,6 +21,7 @@ from chrys.app.tui.widgets.chat.messages import (
     format_message_created_at,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import (
     ToolCall,
@@ -43,6 +44,7 @@ from chrys.service.mutations.store import SnapshotStore
 from tests.support.async_tasks import running_task, wait_for_completion, wait_for_started
 from tests.support.tui_helpers import (
     ChatPanelApp,
+    open_process_for,
 )
 from tests.support.waiting import wait_for
 
@@ -279,6 +281,7 @@ async def test_live_zero_duration_tool_does_not_gain_replay_suffix_after_rebuild
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
 
         assert group._content_mounted is False
+        open_process_for(group)
         group.collapsed = False
         await wait_for(
             lambda: group._content_mounted and group._tools,
@@ -395,7 +398,10 @@ async def test_replay_foreground_has_a_hard_cap_even_for_hidden_entries(monkeypa
         monkeypatch.setattr(panel, "mount", record_mount)
         await panel.mount_transcript_widgets(widgets)
         assert batches == [32, 32, 32, 32]
-        assert len(panel.pending_transcript_widgets()) == len(widgets) - 128
+        pending = panel.pending_transcript_widgets()
+        blocks = [entry for entry in pending if isinstance(entry, ProcessBlock)]
+        assert len(blocks) == 1 and blocks[0].members == widgets[1:-1]
+        assert len(pending) == len(widgets) + 1 - 128
         await panel.wait_replay_complete()
         assert not panel.pending_transcript_widgets()
         assert max(batches) <= 32

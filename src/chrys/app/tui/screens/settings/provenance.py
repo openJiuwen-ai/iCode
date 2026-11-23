@@ -12,13 +12,13 @@ from chrys.foundation.config.spec import SettingOrigin, Source, specs_by_key
 from chrys.foundation.config.warnings import warning_display_message
 from chrys.foundation.i18n import DisplayPath, MessageRef, msg
 
-_BADGE_PROJECT = msg("tui.settings.badge.project", fallback="project")
+_BADGE_WORKDIR = msg("tui.settings.badge.workdir", fallback="working directory")
 _BADGE_ENV = msg("tui.settings.badge.env", fallback="env")
 _BADGE_THIS_SESSION = msg("tui.settings.badge.this_session", fallback="this session")
 _BADGE_PINNED = msg("tui.settings.badge.pinned", fallback="pinned")
 _BADGE_SEALED = msg("tui.settings.badge.sealed", fallback="sealed")
 
-_HINT_SET_BY_PROJECT = msg("tui.settings.provenance.project", fallback="Set by {path}.")
+_HINT_SET_BY_WORKDIR = msg("tui.settings.provenance.workdir", fallback="Set by {path}.")
 _HINT_SET_BY_ENV = msg(
     "tui.settings.provenance.env",
     fallback="Set by environment variable {variable}.",
@@ -36,7 +36,7 @@ _HINT_SEALED = msg(
     fallback="The saved value was rejected, so the built-in default is in effect.",
 )
 
-_GREYED_LAYERS = frozenset({Source.PROJECT, Source.ENV})
+_GREYED_LAYERS = frozenset({Source.WORKDIR, Source.ENV})
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,9 +60,9 @@ def provenance_view(loaded: LoadedSettings, key: str) -> ProvenanceView:
     if key in loaded.sealed_keys:
         return ProvenanceView(editable=True, badge=_BADGE_SEALED.bind(), hint=_sealed_hint(loaded, key), sealed=True)
     layer = origin.layer
-    if layer is Source.PROJECT:
+    if layer is Source.WORKDIR:
         path = DisplayPath(origin.path) if origin.path is not None else DisplayPath("settings.yaml")
-        return ProvenanceView(editable=False, badge=_BADGE_PROJECT.bind(), hint=_HINT_SET_BY_PROJECT.bind(path=path))
+        return ProvenanceView(editable=False, badge=_BADGE_WORKDIR.bind(), hint=_HINT_SET_BY_WORKDIR.bind(path=path))
     if layer is Source.ENV:
         return ProvenanceView(
             editable=False,

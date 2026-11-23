@@ -19,7 +19,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -128,7 +128,7 @@ async def test_node_and_children_share_one_initialization_and_next_activation_re
     monkeypatch.setattr(mcp_connection_module, "_create_mcp_tool", factory)
     scan = create_autospec(discovery_module.discover_file_skills, side_effect=discovery_module.discover_file_skills)
     monkeypatch.setattr(discovery_module, "discover_file_skills", scan)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "initialization", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=_profiles(skill_root))
 

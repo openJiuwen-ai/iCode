@@ -31,7 +31,7 @@ async def test_replay_preserves_timestamps_emits_and_terminal_reconciliation(tmp
         run_id=directory.name,
         session_id=str(uuid4()),
         workflow_id="example",
-        source_kind="project",
+        source_kind="workdir",
         canonical_path=str(tmp_path / "workflow.py"),
         title="Example",
         input_excerpt="",

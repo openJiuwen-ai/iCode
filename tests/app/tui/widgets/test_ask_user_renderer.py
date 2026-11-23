@@ -53,7 +53,7 @@ from chrys.foundation.tool_kinds import KIND_ASK_USER
 from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY, TOOL_INTERRUPTED_METADATA_KEY
 from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import LocalizedApp, rich_plain, rich_segment_lines
+from tests.support.tui_helpers import LocalizedApp, open_process_for, rich_plain, rich_segment_lines
 from tests.support.waiting import wait_for, wait_until, wait_until_quiet
 
 _RENDERER_MODULES = (
@@ -1426,6 +1426,8 @@ async def test_completed_ask_user_rebuild_keeps_fixed_chrome_viewport_allocation
         panel = pilot.app.query_one(ChatPanel)
         await _wait_for_layout(pilot, lambda: panel.size.height == 20)
         await panel.add_tool_start("c1", "ask_user", KIND_ASK_USER, args=_question_args(questions))
+        open_process_for(panel.query_one(ToolGroup))
+        panel.query_one(ToolGroup).collapsed = False
         await panel.add_tool_result("c1", "ask_user", result)
 
         group = panel.query_one(ToolGroup)
@@ -1718,7 +1720,7 @@ def _inline_pilot_idle(request: pytest.FixtureRequest, monkeypatch: pytest.Monke
 async def test_request_matched_inline_timeout_unlocks_without_auto_collapsing(_inline_pilot_idle: None) -> None:
     class PanelApp(App):
         def compose(self) -> ComposeResult:
-            yield ChatPanel(tool_groups_expanded=lambda: False)
+            yield ChatPanel()
 
     async with PanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
@@ -1726,6 +1728,7 @@ async def test_request_matched_inline_timeout_unlocks_without_auto_collapsing(_i
         group = panel._tool_groups_by_call_id["c1"]
         assert group.collapsed is True
 
+        open_process_for(group)
         assert panel.show_ask_user_inline("c1", "req-1", _one_question(["Python"]))
         await pilot.pause()
         assert group.collapsed is False
@@ -1750,7 +1753,7 @@ async def test_request_matched_inline_timeout_unlocks_without_auto_collapsing(_i
 async def test_failed_inline_handoff_does_not_expand_or_lock_group(monkeypatch: pytest.MonkeyPatch) -> None:
     class PanelApp(App):
         def compose(self) -> ComposeResult:
-            yield ChatPanel(tool_groups_expanded=lambda: False)
+            yield ChatPanel()
 
     async with PanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)

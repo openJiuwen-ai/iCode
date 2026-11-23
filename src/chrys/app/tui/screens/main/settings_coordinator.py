@@ -69,10 +69,7 @@ class SettingsCoordinatorCallbacks:
     notification_service: Callable[[], NotificationService]
     turn_lifecycle_task: Callable[[], asyncio.Task[None] | None]
     turn_in_progress: Callable[[], bool]
-    apply_tool_groups_expanded: Callable[[bool], None]
     apply_approval_defer_while_judging: Callable[[bool], None]
-    apply_thinking_expanded: Callable[[bool], None]
-    apply_fold_finished_turns: Callable[[bool], None]
 
 
 def _values_by_key(loaded: LoadedSettings) -> dict[str, Any]:
@@ -223,17 +220,9 @@ class SettingsCoordinator:
         elif key == "trajectory.verify_commands":
             self._queue.schedule({key: str(value)})
             self._callbacks.apply_trajectory_verify_commands(str(value))
-        elif key == "ui.chat.tool_groups_expanded":
-            self._callbacks.apply_tool_groups_expanded(bool(value))
         elif key == "ui.approval.defer_while_judging":
             self._queue.schedule({key: bool(value)})
             self._callbacks.apply_approval_defer_while_judging(bool(value))
-        elif key == "ui.chat.show_thinking":
-            self._queue.schedule({key: bool(value)})
-            self._callbacks.apply_thinking_expanded(bool(value))
-        elif key == "ui.chat.fold_finished_turns":
-            self._queue.schedule({key: bool(value)})
-            self._callbacks.apply_fold_finished_turns(bool(value))
         else:
             msg_text = f"{key}: no live writer registered"
             raise ValueError(msg_text)
@@ -325,7 +314,11 @@ class SettingsCoordinator:
         loaded = self._settings_handle.loaded
         values = _values_by_key(loaded)
         for key in list(self._desired):
-            if is_greyed_layer(loaded.source_for(key)) or values[key] == self._desired[key]:
+            if (
+                is_greyed_layer(loaded.source_for(key))
+                or values[key] == self._desired[key]
+                or (key in self._reload_keys and not self._reload_dirty)
+            ):
                 del self._desired[key]
 
     async def wait_for_finalize(self, failures_before_flush: int) -> str | MessageRef | None:

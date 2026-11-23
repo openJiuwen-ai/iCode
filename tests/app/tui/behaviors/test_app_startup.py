@@ -256,7 +256,7 @@ def test_main_restores_terminal_when_app_run_raises(
     monkeypatch.setattr(
         startup_mod,
         "bootstrap_runtime",
-        lambda *, project_root: RuntimeBootstrap(loaded=LoadedSettings(settings=Settings(), provenance={})),
+        lambda *, workdir: RuntimeBootstrap(loaded=LoadedSettings(settings=Settings(), provenance={})),
     )
     monkeypatch.setattr(logs_mod, "install_log_handler", lambda: None)
     monkeypatch.setattr(tui_app, "configure_debug_logging", lambda _path: object())
@@ -345,8 +345,8 @@ def test_main_passes_startup_args_to_app(
     monkeypatch.setattr(startup_mod, "configure_utf8_stdio", lambda: None)
     bootstrap_roots: list[Path] = []
 
-    def _fake_bootstrap(*, project_root: Path) -> RuntimeBootstrap:
-        bootstrap_roots.append(project_root)
+    def _fake_bootstrap(*, workdir: Path) -> RuntimeBootstrap:
+        bootstrap_roots.append(workdir)
         return RuntimeBootstrap(loaded=LoadedSettings(settings=Settings(), provenance={}))
 
     monkeypatch.setattr(startup_mod, "bootstrap_runtime", _fake_bootstrap)
@@ -382,7 +382,7 @@ def test_main_passes_startup_args_to_app(
     assert captured_kwargs["startup_session_id"] == "session-1"
     assert captured_kwargs["profile_name"] == "Code"
     assert captured_kwargs["apply_saved_model_on_restore"] is False
-    # ``-C`` must chdir before bootstrap: the workdir names the project
+    # ``-C`` must chdir before bootstrap: the workdir names the workdir
     # trust domain the settings load reads from.
     assert bootstrap_roots == [workdir]
     loaded = captured_engine_kwargs["loaded_settings"]

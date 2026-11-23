@@ -320,7 +320,7 @@ async def _build_kernel_node(
         profile.skills,
         runtime=environment,
         session_dir=res.session_dir,
-        project_skills_enabled=res.settings.project_skills_enabled,
+        workdir_skills_enabled=res.settings.workdir_skills_enabled,
         discovery_scope=initialization.skills,
     )
     for warn in skill_warnings:

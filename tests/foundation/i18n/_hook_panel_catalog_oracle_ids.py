@@ -80,7 +80,7 @@ HOOK_PANEL_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.hook_confirmation.message",
         "tui.hook_confirmation.no_reason",
         "tui.hook_confirmation.source.global",
-        "tui.hook_confirmation.source.project",
+        "tui.hook_confirmation.source.workdir",
         "tui.hook_confirmation.sub_agent_tool",
         "tui.hook_confirmation.title",
         "tui.hook_confirmation.tool",

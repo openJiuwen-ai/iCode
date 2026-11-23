@@ -113,7 +113,7 @@ def _workspace_signature(workspace: Workspace | None) -> tuple[str, tuple[str, .
 
 
 def _workspace_primary_cwd(workspace: Workspace | None) -> str:
-    """Return the workspace primary cwd used for project-scoped config."""
+    """Return the workspace primary cwd used for directory-scoped settings."""
     return workspace.primary_cwd if workspace is not None else ""
 
 
@@ -280,12 +280,12 @@ class AgentLoader:
         old_hook_manager = self._session.hook_manager
         hook_manager = old_hook_manager
         if old_hook_manager is None or operation == "workspace_change":
-            # Project hooks are primary-cwd scoped, so the candidate is built for
+            # Working directory hooks are scoped to the primary cwd, so the candidate is built for
             # the root the staged workspace would install, not the live one.
             build_settings = (staged_loaded if staged_loaded is not None else self._settings_handle.base).settings
             hook_manager = await self.build_hook_manager(
-                project_root=_workspace_primary_cwd(workspace),
-                project_hooks_enabled=build_settings.project_hooks_enabled,
+                workdir=_workspace_primary_cwd(workspace),
+                workdir_hooks_enabled=build_settings.workdir_hooks_enabled,
             )
         return hook_manager
 
@@ -341,12 +341,12 @@ class AgentLoader:
         )
 
     async def build_hook_manager(
-        self, *, project_root: str, project_hooks_enabled: bool, session_id: str | None = None
+        self, *, workdir: str, workdir_hooks_enabled: bool, session_id: str | None = None
     ) -> HookManager | None:
         resolved_session_id = session_id or self._session.session_id
         manager = await SessionHookFactory(self._bus, confirmations=self._hook_confirmations)(
-            project_root=project_root,
-            project_hooks_enabled=project_hooks_enabled,
+            workdir=workdir,
+            workdir_hooks_enabled=workdir_hooks_enabled,
             session_id=resolved_session_id,
         )
         # Every main-session manager reports to the TUI; workflow managers are
@@ -682,12 +682,12 @@ class AgentLoader:
         staged_hook_manager = old_hook_manager
         new_loaded = staged_loaded if staged_loaded is not None else self._settings_handle.base
         resources = self._permits.staged_reload_resources()
-        # Project hooks are primary-cwd scoped and gated by ``project.hooks_enabled``:
+        # Working directory hooks are scoped to the primary cwd and gated by ``workdir.hooks_enabled``:
         # a new primary cwd or a flipped gate rebuilds the manager for the root
         # the build is about to install (the live one when the workspace stays).
         reload_hook_manager = (
             workspace is not None and _workspace_primary_cwd(old_workspace) != _workspace_primary_cwd(workspace)
-        ) or new_loaded.settings.project_hooks_enabled != self._settings_handle.base.settings.project_hooks_enabled
+        ) or new_loaded.settings.workdir_hooks_enabled != self._settings_handle.base.settings.workdir_hooks_enabled
         hook_manager_root = _workspace_primary_cwd(workspace if workspace is not None else old_workspace)
         hook_manager_replacement_committed = False
 
@@ -749,8 +749,8 @@ class AgentLoader:
                 self._mcp_cache.begin_refresh()
             elif reload_hook_manager:
                 staged_hook_manager = await self.build_hook_manager(
-                    project_root=hook_manager_root,
-                    project_hooks_enabled=new_loaded.settings.project_hooks_enabled,
+                    workdir=hook_manager_root,
+                    workdir_hooks_enabled=new_loaded.settings.workdir_hooks_enabled,
                 )
 
             staged = self.stage(

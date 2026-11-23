@@ -52,7 +52,7 @@ def _settings_without_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def prepare(*, restoring_session: bool = False) -> headless.PreparedRuntime:
         freeze_process_env()
-        loaded = load_settings(project_root=Path.cwd())
+        loaded = load_settings(workdir=Path.cwd())
         warnings = settings_warning_events(loaded, skip=headless.speaks_for_the_env_var)
         return headless.PreparedRuntime(loaded, Localizer("en"), warnings)
 
@@ -74,12 +74,12 @@ def _global_hooks(text: str = _GLOBAL) -> Path:
     return _write(get_platform().config_dir / "hooks" / "hooks.yaml", text)
 
 
-def _project_hooks(text: str) -> Path:
+def _workdir_hooks(text: str) -> Path:
     return _write(Path.cwd() / ".chrys" / "hooks" / "hooks.yaml", text)
 
 
-def _enable_project_hooks() -> None:
-    _write(get_platform().config_dir / "settings.yaml", "project:\n  hooks_enabled: true\n")
+def _enable_workdir_hooks() -> None:
+    _write(get_platform().config_dir / "settings.yaml", "workdir:\n  hooks_enabled: true\n")
 
 
 @pytest.mark.parametrize("word", ["hook", "hooks"])
@@ -118,16 +118,22 @@ def test_with_no_hooks_file_the_list_names_where_it_looked(capsys: pytest.Captur
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_the_list_says_whether_project_hooks_load(enabled: bool, capsys: pytest.CaptureFixture[str]) -> None:
-    _project_hooks("hooks:\n  - id: p\n    event: after_turn\n    run: {type: shell, shell: s}\n")
+def test_the_list_says_whether_workdir_hooks_load(enabled: bool, capsys: pytest.CaptureFixture[str]) -> None:
+    _workdir_hooks("hooks:\n  - id: p\n    event: after_turn\n    run: {type: shell, shell: s}\n")
     if enabled:
-        _enable_project_hooks()
+        _enable_workdir_hooks()
 
     assert hooks_cli.main(["list"]) == 0
 
     captured = capsys.readouterr()
-    state = "loaded" if enabled else "not loaded: turn on Load project hooks under Settings → Safety → Project trust"
-    assert captured.out.splitlines()[0] == f"Project hooks: {_shown('.chrys', 'hooks', 'hooks.yaml')} ({state})"
+    state = (
+        "loaded"
+        if enabled
+        else "not loaded: turn on Load working directory hooks under Settings → Safety → Working directory trust"
+    )
+    assert (
+        captured.out.splitlines()[0] == f"Working directory hooks: {_shown('.chrys', 'hooks', 'hooks.yaml')} ({state})"
+    )
     # The listing says it on the file's own line; the startup warning would repeat it.
     assert captured.err == ""
 
@@ -187,36 +193,36 @@ def test_a_program_or_script_that_can_be_found_is_listed_whole(
 
 
 def test_the_list_names_a_hook_both_files_define(capsys: pytest.CaptureFixture[str]) -> None:
-    project_path = _project_hooks("hooks:\n  - id: notify\n    event: after_turn\n    run: {type: shell, shell: s}\n")
-    _enable_project_hooks()
+    workdir_path = _workdir_hooks("hooks:\n  - id: notify\n    event: after_turn\n    run: {type: shell, shell: s}\n")
+    _enable_workdir_hooks()
     global_path = _global_hooks()
 
     assert hooks_cli.main(["list"]) == 0
 
     assert capsys.readouterr().out.splitlines()[-1] == (
-        f"note: hook 'notify': defined in both project ({project_path}) and global ({global_path}) hooks configs. "
-        "Both will run, project first. To suppress the global hook, set 'enabled: false' in the global file."
+        f"note: hook 'notify': defined in both working directory ({workdir_path}) and global ({global_path}) hooks configs. "
+        "Both will run, working directory first. To suppress the global hook, set 'enabled: false' in the global file."
     )
 
 
-def test_validate_warns_that_project_hooks_are_off(capsys: pytest.CaptureFixture[str]) -> None:
-    _project_hooks("hooks:\n  - id: p\n    event: after_turn\n    run: {type: shell, shell: s}\n")
+def test_validate_warns_that_workdir_hooks_are_off(capsys: pytest.CaptureFixture[str]) -> None:
+    _workdir_hooks("hooks:\n  - id: p\n    event: after_turn\n    run: {type: shell, shell: s}\n")
 
     assert hooks_cli.main(["validate"]) == 0
 
     captured = capsys.readouterr()
-    assert captured.err.startswith("Warning: Found project hooks in ")
+    assert captured.err.startswith("Warning: Found working directory hooks in ")
     assert captured.out.splitlines() == ["PASS 1 file · 1 hook"]
 
 
-def test_an_invalid_project_file_that_is_off_says_it_is_off_first(capsys: pytest.CaptureFixture[str]) -> None:
-    _project_hooks("hooks: {}\n")
+def test_an_invalid_workdir_file_that_is_off_says_it_is_off_first(capsys: pytest.CaptureFixture[str]) -> None:
+    _workdir_hooks("hooks: {}\n")
 
     assert hooks_cli.main(["list"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         (
-            f"Project hooks: {_shown('.chrys', 'hooks', 'hooks.yaml')} (not loaded: turn on Load project hooks under "
-            "Settings → Safety → Project trust; the file is also invalid: 'hooks' must be a list, got dict; "
+            f"Working directory hooks: {_shown('.chrys', 'hooks', 'hooks.yaml')} (not loaded: turn on Load working directory hooks under "
+            "Settings → Safety → Working directory trust; the file is also invalid: 'hooks' must be a list, got dict; "
             "run 'icode hook validate' for details)"
         )
     ]
@@ -243,8 +249,8 @@ def test_an_invalid_file_is_listed_with_its_first_error(capsys: pytest.CaptureFi
 def test_the_list_as_json(capsys: pytest.CaptureFixture[str]) -> None:
     global_path = _global_hooks()
     _write(global_path.parent / "scripts" / "check.py", "")
-    project_path = _project_hooks("hooks: {}\n")
-    _enable_project_hooks()
+    workdir_path = _workdir_hooks("hooks: {}\n")
+    _enable_workdir_hooks()
 
     assert hooks_cli.main(["--json"]) == 0
 
@@ -252,11 +258,11 @@ def test_the_list_as_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert "SECRET" not in out
     data = json.loads(out)
     assert data["version"] == 1
-    assert data["searched"] == [str(project_path.parent), str(global_path.parent)]
+    assert data["searched"] == [str(workdir_path.parent), str(global_path.parent)]
     project, global_ = data["files"]
     assert (project["scope"], project["path"], project["state"], project["hooks"]) == (
-        "project",
-        str(project_path),
+        "workdir",
+        str(workdir_path),
         "invalid",
         [],
     )
@@ -372,7 +378,7 @@ def test_a_script_in_a_linked_hooks_folder_is_shown_as_written(
     _write(linked / "scripts" / "s.py", "")
     (Path.cwd() / ".chrys").mkdir()
     symlink_or_skip(Path.cwd() / ".chrys" / "hooks", linked, target_is_directory=True)
-    _enable_project_hooks()
+    _enable_workdir_hooks()
 
     assert hooks_cli.main(["list"]) == 0
 

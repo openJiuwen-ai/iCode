@@ -28,6 +28,7 @@ from tests.support.tui_helpers import (
     ChatPanelApp,
     LocalizedWidgetApp,
     exec_panel_text,
+    open_process_for,
 )
 from tests.support.waiting import wait_for
 
@@ -41,6 +42,8 @@ async def test_shell_tool_streamed_tail_survives_prune_rebuild() -> None:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("run")
         await cp.add_tool_start("sh1", "bash", KIND_SHELL, args={"command": "printf lines"})
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         cp.update_tool_progress("sh1", result_lines)
         await cp.add_tool_result("sh1", "bash", "\n".join(result_lines) + "\n[exit_code: 0]", 123)
         await pilot.pause()
@@ -56,6 +59,7 @@ async def test_shell_tool_streamed_tail_survives_prune_rebuild() -> None:
         assert group._content_mounted is False
         assert len(group._tools) == 0
 
+        open_process_for(group)
         group.collapsed = False
         await wait_for(lambda: group._content_mounted, pilot=pilot, description="group._content_mounted")
 
@@ -74,6 +78,8 @@ async def test_shell_tool_timeout_result_overrides_streamed_progress_on_rebuild(
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("run")
         await cp.add_tool_start("sh1", "bash", KIND_SHELL, args={"command": "pytest", "timeout": 180})
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         cp.update_tool_progress("sh1", ["1009 tests collected in 0.35s"])
         await cp.add_tool_result("sh1", "bash", result, 180000, metadata={SHELL_TIMED_OUT_METADATA_KEY: True})
         await pilot.pause()
@@ -90,6 +96,7 @@ async def test_shell_tool_timeout_result_overrides_streamed_progress_on_rebuild(
         group = cp.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
 
+        open_process_for(group)
         group.collapsed = False
         await wait_for(lambda: group._content_mounted, pilot=pilot, description="group._content_mounted")
 
@@ -112,6 +119,8 @@ async def test_shell_tool_non_timeout_failure_keeps_streamed_tail() -> None:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("run")
         await cp.add_tool_start("sh1", "bash", KIND_SHELL, args={"command": "pytest"})
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         cp.update_tool_progress("sh1", progress_lines)
         await cp.add_tool_result("sh1", "bash", result, 1200)
         await pilot.pause()
@@ -149,6 +158,8 @@ async def test_shell_tool_exit_code_zero_overrides_error_prefixed_stdout_on_rebu
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("run")
         await cp.add_tool_start("sh1", "bash", KIND_SHELL, args={"command": "printf error"})
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         await cp.add_tool_result("sh1", "bash", result, 25, **metadata_kwargs)
         await pilot.pause()
 
@@ -161,6 +172,7 @@ async def test_shell_tool_exit_code_zero_overrides_error_prefixed_stdout_on_rebu
         group = cp.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
 
+        open_process_for(group)
         group.collapsed = False
         await wait_for(lambda: group._content_mounted, pilot=pilot, description="group._content_mounted")
 
@@ -175,6 +187,8 @@ async def test_shell_tool_user_rejection_status_is_rejected_not_error() -> None:
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_tool_start("sh1", "bash", KIND_SHELL, args={"command": "rm file"})
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         await cp.add_tool_result(
             "sh1",
             "bash",
@@ -199,6 +213,8 @@ async def test_shell_tool_structured_nonzero_exit_code_renders_error_without_suf
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("run")
         await cp.add_tool_start("sh1", "bash", KIND_SHELL, args={"command": "false"})
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         await cp.add_tool_result("sh1", "bash", result, 1234, metadata=metadata)
         await pilot.pause()
 
@@ -218,6 +234,8 @@ async def test_shell_tool_exit_suffix_removal_preserves_leading_whitespace() -> 
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("run")
         await cp.add_tool_start("sh1", "bash", KIND_SHELL, args={"command": "printf indent"})
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         await cp.add_tool_result("sh1", "bash", result, 25)
         await pilot.pause()
 
@@ -320,6 +338,8 @@ async def test_tool_result_status_rules(
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_tool_start("call-1", tool_name, tool_kind, args=args)
+        open_process_for(cp.query(ToolGroup).last())
+        cp.query(ToolGroup).last().collapsed = False
         await cp.add_tool_result("call-1", tool_name, output_text, 17, **metadata_kwargs)
         await pilot.pause()
 

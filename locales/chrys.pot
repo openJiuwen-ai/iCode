@@ -145,13 +145,6 @@ msgstr ""
 msgid "construction.hook_skipped"
 msgstr ""
 
-#. English: Project hooks config could not be loaded: {detail}. Project hooks
-#. disabled; global hooks unaffected.
-#. chrys-meta={"fingerprint":"9839468e9ee83c7dc2f6f497db1b93d2ffe39523039e736b1af7248098a200f4","multiline":true,"placeholders":["detail"]}
-#: src/chrys/orchestration/session_hooks.py
-msgid "construction.project_hooks_invalid"
-msgstr ""
-
 #. English: The previous OpenAI Responses service session is not compatible
 #. with the active agent profile, workspace, model profile, service endpoint,
 #. or storage is disabled. {app_name} will continue from local history only.
@@ -165,6 +158,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"dc19fb815bca13dfbbb3d6c7406ed71fa3d2dffd25fe54b477ec65f033d2c910","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "construction.trajectory_activation_failed"
+msgstr ""
+
+#. English: Working directory hooks config could not be loaded: {detail}.
+#. Working directory hooks disabled; global hooks unaffected.
+#. chrys-meta={"fingerprint":"45003c9e83e2484f615093cf835736a8e180f8a70e1b34ff7897e5f014fc6705","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/session_hooks.py
+msgid "construction.workdir_hooks_invalid"
 msgstr ""
 
 #. English: Model profile '{profile_id}' not found
@@ -235,18 +235,18 @@ msgstr ""
 msgid "controls.reload_drain_failed"
 msgstr ""
 
-#. English: Reload stopped: the hooks the new project trust setting needs can't
-#. be used. {detail} Settings and hooks stay as they were, with project hooks
-#. still loaded.
-#. chrys-meta={"fingerprint":"6c046aaeb3be103e7340a9bf62d5ad06359c3a76b0a21d842348b24fe608fc35","multiline":true,"placeholders":["detail"]}
+#. English: Reload stopped: the hooks the new working directory trust setting
+#. needs can't be used. {detail} Settings and hooks stay as they were, with
+#. working directory hooks still loaded.
+#. chrys-meta={"fingerprint":"5cd3ab03bd6fbe060d2a77f45b3bab946588e4a6b32c916b5d64579d93560049","multiline":true,"placeholders":["detail"]}
 #: src/chrys/orchestration/engine/reload_resources.py
 msgid "controls.reload_hook_trust_failed_loaded"
 msgstr ""
 
-#. English: Reload stopped: the hooks the new project trust setting needs can't
-#. be used. {detail} Settings and hooks stay as they were, with project hooks
-#. still not loaded.
-#. chrys-meta={"fingerprint":"43d62042627309f1d98fc56b9f0b0547c2b98cd1d05cf09a73bde3b73c1fc8ba","multiline":true,"placeholders":["detail"]}
+#. English: Reload stopped: the hooks the new working directory trust setting
+#. needs can't be used. {detail} Settings and hooks stay as they were, with
+#. working directory hooks still not loaded.
+#. chrys-meta={"fingerprint":"08347ad8bfd320af92f1db9c5d617ab98f63df2768ac565696d4bdb0897098e0","multiline":true,"placeholders":["detail"]}
 #: src/chrys/orchestration/engine/reload_resources.py
 msgid "controls.reload_hook_trust_failed_not_loaded"
 msgstr ""
@@ -1192,10 +1192,10 @@ msgstr ""
 msgid "settings.document_invalid_mapping"
 msgstr ""
 
-#. English: {path}: unreadable or invalid project YAML document.
-#. chrys-meta={"fingerprint":"15a37c04d7af60e8771c143eea5df927b6a5194b6337a16ca1ec0f59b69a4a36","multiline":false,"placeholders":["path"]}
+#. English: {path}: unreadable or invalid working directory YAML document.
+#. chrys-meta={"fingerprint":"46691db4d4fcdd8e34fb301797af5eba025c5a24faa55542c03da29b5970b8b6","multiline":false,"placeholders":["path"]}
 #: src/chrys/foundation/config/yaml_store.py
-msgid "settings.document_invalid_project"
+msgid "settings.document_invalid_workdir"
 msgstr ""
 
 #. English: {path}: invalid YAML or text encoding.
@@ -1410,49 +1410,6 @@ msgstr ""
 msgid "settings.otel.sensitive_data.label"
 msgstr ""
 
-#. English: Load project settings
-#. chrys-meta={"fingerprint":"2a87f33f6c3c6354f36d0b6af25cea969f5d50769c8cff67a1730759ba21be09","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.project.config_enabled.label"
-msgstr ""
-
-#. English: Load project hooks
-#. chrys-meta={"fingerprint":"2aaab6464ac86e0c96020b41474a39b035a75875637a6a78b74e9e9fb75df16b","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.project.hooks_enabled.label"
-msgstr ""
-
-#. English: Load project skills
-#. chrys-meta={"fingerprint":"b61cadb426631200c2b3bae39f2d7327581e11726f2d5bc6dd1f029a5c5805c5","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.project.skills_enabled.label"
-msgstr ""
-
-#. English: Found project settings in {path} ({keys}), but they are not loaded.
-#. To apply them, turn on Load project settings under Settings → Safety →
-#. Project trust (project.config_enabled).
-#. chrys-meta={"fingerprint":"0da01f2749b1cbfc944e1ebe38724c1ca1797004a728fb60dccd5a169e91a645","multiline":false,"placeholders":["keys","path"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.project_config_dormant"
-msgstr ""
-
-#. English: Found project hooks in {path}, but they are not loaded. To run
-#. them, turn on Load project hooks under Settings → Safety → Project trust
-#. (project.hooks_enabled).
-#. chrys-meta={"fingerprint":"cd4a080a5c645b5c000b009e2f3b7981fad1f1a623166d31bd3594ae47020d2e","multiline":false,"placeholders":["path"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.project_hooks_dormant"
-msgstr ""
-
-#. English: Found project skills in {path}. They are not loaded automatically;
-#. to load them, turn on Load project skills under Settings → Safety → Project
-#. trust (project.skills_enabled) and keep the agent's Load skills from working
-#. folder option on.
-#. chrys-meta={"fingerprint":"4c94c15d7a79a9735c3584fae604120142833197ede868e8ee4e071a4072fc6c","multiline":false,"placeholders":["path"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.project_skills_dormant"
-msgstr ""
-
 #. English: Ignoring {source}={raw}: expected a boolean.
 #. chrys-meta={"fingerprint":"f804369b50e63015f7f5a7096b0d54c6de66e96fd168736853c1690d0ad9c6e2","multiline":false,"placeholders":["raw","source"]}
 #: src/chrys/foundation/config/warnings.py
@@ -1508,19 +1465,6 @@ msgstr ""
 msgid "settings.rejected.number"
 msgstr ""
 
-#. English: Ignoring {source}: projects may not set this key.
-#. chrys-meta={"fingerprint":"b6855da737c500323618337ec2fb2d033c9ce9521e6904500c99510af7e88b00","multiline":false,"placeholders":["source"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.rejected.project_key"
-msgstr ""
-
-#. English: Ignoring {source}={raw}: a project may only tighten this setting,
-#. not loosen it.
-#. chrys-meta={"fingerprint":"9ee589c3aaceb4e4212e896acbe9855a3b94aef7d3dbec35642bbe2f8b66a7ed","multiline":false,"placeholders":["raw","source"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.rejected.project_loosens"
-msgstr ""
-
 #. English: Ignoring {source}={raw}: expected text.
 #. chrys-meta={"fingerprint":"0ae0fe6c721a479b0ac3021484667308b6d57d531ae1afcd941e97ada85a14f6","multiline":false,"placeholders":["raw","source"]}
 #: src/chrys/foundation/config/warnings.py
@@ -1532,6 +1476,19 @@ msgstr ""
 #. chrys-meta={"fingerprint":"bfd8f46b8bbb8950440696bef68b42cc02eb6c15af338662c5cd1bceb3ee2a3e","multiline":false,"placeholders":["raw","source"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.rejected.web_origin"
+msgstr ""
+
+#. English: Ignoring {source}: working directories may not set this key.
+#. chrys-meta={"fingerprint":"94a18068f6e67846f746dc55339354f1d3759eec2215d7d8b4f023296144b0fe","multiline":false,"placeholders":["source"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.rejected.workdir_key"
+msgstr ""
+
+#. English: Ignoring {source}={raw}: a working directory may only tighten this
+#. setting, not loosen it.
+#. chrys-meta={"fingerprint":"45646c5a81445e79da5abc292de9faed6663f2231481804e08ea43147827bada","multiline":false,"placeholders":["raw","source"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.rejected.workdir_loosens"
 msgstr ""
 
 #. English: Rollback snapshots to keep
@@ -1690,28 +1647,10 @@ msgstr ""
 msgid "settings.ui.chat.file_snapshot_inline_chars.label"
 msgstr ""
 
-#. English: Automatically fold completed turns
-#. chrys-meta={"fingerprint":"0dbfa66db6994053f1b028a5a8be48037876a9958c58f1ed65c1162649a2d074","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.ui.chat.fold_finished_turns.label"
-msgstr ""
-
 #. English: Full-color images
 #. chrys-meta={"fingerprint":"f7bdad3865459dc049b6b8babf8b6cfd87fb48b926019174798e5cfabd5cb35b","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.ui.chat.image_graphics.label"
-msgstr ""
-
-#. English: Expand thinking by default
-#. chrys-meta={"fingerprint":"3d187e34709e9b4d6156cc40d0b44cb6e74930750947e596a8c9d11dc9f5a349","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.ui.chat.show_thinking.label"
-msgstr ""
-
-#. English: Expand tool details by default
-#. chrys-meta={"fingerprint":"79644eefc7d4277f1f44569d63fa5be51591030d7d8fc4ed2ccf9ad44d6c5e70","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.ui.chat.tool_groups_expanded.label"
 msgstr ""
 
 #. English: Editor keymap
@@ -1736,6 +1675,49 @@ msgstr ""
 #. chrys-meta={"fingerprint":"38a94db4a2cfa4f763d5c62ded47a9803b6578a3917adfc326e5ae523d9c95ac","multiline":false,"placeholders":["keys","path"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.unknown_keys"
+msgstr ""
+
+#. English: Load working directory settings
+#. chrys-meta={"fingerprint":"27441e229fc05ab3b1a21f9ba211090c013bdef3e1b52f4b719a2e96ed8e04db","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.workdir.config_enabled.label"
+msgstr ""
+
+#. English: Load working directory hooks
+#. chrys-meta={"fingerprint":"5572c3a67b01ff2e45ab5f0ce459f9b6514eb1f0b9ac9a6cdec23993cc271fc8","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.workdir.hooks_enabled.label"
+msgstr ""
+
+#. English: Load working directory skills
+#. chrys-meta={"fingerprint":"ecd3b2bff3afe93c14c4cf9439ffbb0e642558093d278b835dc127d34fa4f370","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.workdir.skills_enabled.label"
+msgstr ""
+
+#. English: Found working directory settings in {path} ({keys}), but they are
+#. not loaded. To apply them, turn on Load working directory settings under
+#. Settings → Safety → Working directory trust (workdir.config_enabled).
+#. chrys-meta={"fingerprint":"d4ea2bf11a982fbe64fbfaa7395ae4edd616e7376a2e25586234920fbb98110d","multiline":false,"placeholders":["keys","path"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.workdir_config_dormant"
+msgstr ""
+
+#. English: Found working directory hooks in {path}, but they are not loaded.
+#. To run them, turn on Load working directory hooks under Settings → Safety →
+#. Working directory trust (workdir.hooks_enabled).
+#. chrys-meta={"fingerprint":"57a5337db2813842616aed7c368512c007dcc3a88276f8dcd387d29ed2b1abb0","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.workdir_hooks_dormant"
+msgstr ""
+
+#. English: Found working directory skills in {path}. They are not loaded
+#. automatically; to load them, turn on Load working directory skills under
+#. Settings → Safety → Working directory trust (workdir.skills_enabled) and
+#. keep the agent's Load skills from working folder option on.
+#. chrys-meta={"fingerprint":"31eef15589a88494ebc8e113c924c5d8a2408a9d675c5ce374dee32bd03e3698","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.workdir_skills_dormant"
 msgstr ""
 
 #. English: Workspace change notices
@@ -1792,6 +1774,38 @@ msgstr ""
 #. chrys-meta={"fingerprint":"fd6133b7df24206d743a991be3061a706ec40ca1a0fa33881b1abdafb7ea36dd","multiline":false,"placeholders":["source"]}
 #: src/chrys/orchestration/startup.py
 msgid "startup.raw_http_capture_on"
+msgstr ""
+
+#. English: Migrated working directory data in {files}. Backups are in
+#. {backup}.
+#. chrys-meta={"fingerprint":"e24e55b484e7ab1922fef0d92f86d3f11f6d873d73dcb72ca413a1915a09577f","multiline":false,"placeholders":["backup","files"]}
+#: src/chrys/orchestration/workdir_migration.py
+msgid "startup.workdir_data_migrated"
+msgstr ""
+
+#. English: Could not read working directory data at {path} ({error}).
+#. English-plural: Could not read working directory data at {count} paths,
+#. including {path} ({error}).
+#. chrys-meta={"fingerprint":"47a264c468640e403bd29364af0e1fb7b4eb24c376ee27ece7ac8a1623b11ed1","multiline":false,"placeholders":["error","path"]}
+#: src/chrys/orchestration/workdir_migration.py
+msgid "startup.workdir_data_migration_failed"
+msgid_plural "startup.workdir_data_migration_failed#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: Left {count} malformed approval row unmigrated in {path}.
+#. English-plural: Left {count} malformed approval rows unmigrated in {path}.
+#. chrys-meta={"fingerprint":"2de8c89505cd37e67fd661e2bd1ec0baa9de870b48f90dd5e3195a002943b94a","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/workdir_migration.py
+msgid "startup.workdir_grants_unmigrated"
+msgid_plural "startup.workdir_grants_unmigrated#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: Disabled conflicting working directory trust settings ({keys}).
+#. chrys-meta={"fingerprint":"add94e06d8f05fa5dd64d5244b93cf59287af9f374f7dd4ac56235b9ef295d30","multiline":false,"placeholders":["keys"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "startup.workdir_trust_conflict"
 msgstr ""
 
 #. English: Continue
@@ -2655,8 +2669,8 @@ msgid "tui.agent_config.skills.allowed_extensions"
 msgstr ""
 
 #. English: Also auto-loaded when Load skills from working folder and Load
-#. project skills are on
-#. chrys-meta={"fingerprint":"368fd9084cf4958687877508adc37f6530c8653bbe63de9ed4599f65424275c8","multiline":false,"placeholders":[]}
+#. working directory skills are on
+#. chrys-meta={"fingerprint":"a0d79e763a4cc9abe788ed755de87506630af4f7ef530b265e44bf426150af65","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/skills.py
 msgid "tui.agent_config.skills.auto_load_covered"
 msgstr ""
@@ -2711,10 +2725,10 @@ msgid "tui.agent_config.skills.load_working_folder"
 msgstr ""
 
 #. English: Auto-load skills from the agents skills directory under the current
-#. working folder when Load project skills is on under Settings → Safety →
-#. Project trust. Reloaded automatically when the workspace cwd changes (/chdir
-#. or file picker).
-#. chrys-meta={"fingerprint":"01ee7f4d82049a5eec12eceb6435cd810664d38141638a5d6ac2dfdd04668e68","multiline":false,"placeholders":[]}
+#. working folder when Load working directory skills is on under Settings →
+#. Safety → Working directory trust. Reloaded automatically when the working
+#. directory changes (/chdir or file picker).
+#. chrys-meta={"fingerprint":"668ea359999c6ce8799f9f43bb9914ff7ca4bfc01a97d048c380b287ef4eb519","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/skills.py
 msgid "tui.agent_config.skills.load_working_folder_tooltip"
 msgstr ""
@@ -4332,18 +4346,6 @@ msgstr ""
 msgid "tui.approval.reuse.prefix_warning"
 msgstr ""
 
-#. English: This project
-#. chrys-meta={"fingerprint":"7637c4c84143125b13e6f8e527c5ff9128977bfeb8384623411a3439fcad7511","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.reuse.project"
-msgstr ""
-
-#. English: Also applies in other sessions in this project.
-#. chrys-meta={"fingerprint":"37794bc95bdcd98ec09e232ecacf9d6be3f1634327f8b6ac30bb1696a5ee4b01","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.reuse.project_hint"
-msgstr ""
-
 #. English: This session
 #. chrys-meta={"fingerprint":"12b3b02a90d375bfcac56fa2e2e2480dfaa6d8b3403623740039d86b07fad1d9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
@@ -4360,6 +4362,18 @@ msgstr ""
 #. chrys-meta={"fingerprint":"6e37e71d02e38f81ecec007c76eb522161280b8332d539d606163234756f1eae","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.title"
+msgstr ""
+
+#. English: This working directory
+#. chrys-meta={"fingerprint":"73c1f271073a585f6a3e9402b7d4c55df975c62b4134f1d5bee46765a7f051aa","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.workdir"
+msgstr ""
+
+#. English: Also applies in other sessions in this working directory.
+#. chrys-meta={"fingerprint":"49bb89c7a881534e18d057af5bd18567bc711a5bbc43f394ecb98d29ab3407b9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.workdir_hint"
 msgstr ""
 
 #. English: The risk definitions could not be loaded.
@@ -4827,7 +4841,7 @@ msgstr ""
 
 #. English: Back
 #. chrys-meta={"fingerprint":"54e3d3a7dd67439200ea93a892b5b3ae5e17574c6ac23d0f2ba9275cb436cf9b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/screen.py
+#: src/chrys/app/tui/binding_display.py
 msgid "tui.binding.back"
 msgstr ""
 
@@ -7128,10 +7142,10 @@ msgstr ""
 msgid "tui.hook_confirmation.source.global"
 msgstr ""
 
-#. English: project
-#. chrys-meta={"fingerprint":"bd23bc14344c23c37663fa3d2cbed77723dbdeb192c21123926d683137832e39","multiline":false,"placeholders":[]}
+#. English: working directory
+#. chrys-meta={"fingerprint":"52de2ca9eb66810e1c971cca14b316524a472c3f8152deb88b2ab26f3d8141db","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
-msgid "tui.hook_confirmation.source.project"
+msgid "tui.hook_confirmation.source.workdir"
 msgstr ""
 
 #. English: Tool: {tool} (sub-agent {agent})
@@ -8508,13 +8522,13 @@ msgstr ""
 
 #. English: Open the token usage dialog, read from every saved session.
 #. Overview: new tokens by date range, their trend over time,     and totals by
-#. model, source, project or model profile, with each     model's speed. A
-#. model used through several of your profiles is     shown once for each.
-#. Calendar: new tokens day by day, and one day's details.      New tokens are
-#. the input not served from the provider's cache,     plus the output,
-#. thinking included. Deleted sessions and external     ACP agents are not
-#. counted.
-#. chrys-meta={"fingerprint":"a87aa08d2639c51b43157a086c097d76e872dbba2633ac4b416249d6d2bb8e62","multiline":true,"placeholders":[]}
+#. model, source, working directory or model profile, with each     model's
+#. speed. A model used through several of your profiles is     shown once for
+#. each.     Calendar: new tokens day by day, and one day's details.      New
+#. tokens are the input not served from the provider's cache,     plus the
+#. output, thinking included. Deleted sessions and external     ACP agents are
+#. not counted.
+#. chrys-meta={"fingerprint":"7456c3f79036daf1406c1232b289fe28ab2b0894af6ce364d539b4083f2aae37","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.usage.body"
 msgstr ""
@@ -11409,12 +11423,6 @@ msgstr ""
 msgid "tui.runtime_details.section.model_profile"
 msgstr ""
 
-#. English: Project hooks
-#. chrys-meta={"fingerprint":"79d2434de4057eef6609e68b889943fd258ea146a8a269326fb0bafe30b34f42","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/runtime_details.py
-msgid "tui.runtime_details.section.project_hooks"
-msgstr ""
-
 #. English: Sub-agent tools
 #. chrys-meta={"fingerprint":"0d6512d36c6052424a18f8c94996fdad6238f65a2149b19e1631ef2e524272e6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
@@ -11425,6 +11433,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"da20c6c120ecb78cc05772af898747418966d2b18fad72c8c8f7d2de3361d700","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
 msgid "tui.runtime_details.section.unavailable_extensions"
+msgstr ""
+
+#. English: Working directory hooks
+#. chrys-meta={"fingerprint":"21f756d678fc9608a34bf85359436877fa4f8eedbf4470cbe4879d0ea7edb540","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.section.workdir_hooks"
 msgstr ""
 
 #. English: Shortcuts
@@ -11949,12 +11963,6 @@ msgstr ""
 msgid "tui.settings.badge.pinned"
 msgstr ""
 
-#. English: project
-#. chrys-meta={"fingerprint":"bd23bc14344c23c37663fa3d2cbed77723dbdeb192c21123926d683137832e39","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.badge.project"
-msgstr ""
-
 #. English: sealed
 #. chrys-meta={"fingerprint":"1d8edbfb829fa60982c1a6e333b5a195884251b54360ef7a86d3b517b5612207","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/provenance.py
@@ -11965,6 +11973,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"f01fdc621fbf228feafe423510cd8659da398f198c1a487ae38dca9669f3165c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/provenance.py
 msgid "tui.settings.badge.this_session"
+msgstr ""
+
+#. English: working directory
+#. chrys-meta={"fingerprint":"52de2ca9eb66810e1c971cca14b316524a472c3f8152deb88b2ab26f3d8141db","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/provenance.py
+msgid "tui.settings.badge.workdir"
 msgstr ""
 
 #. English: Auto mode lets a model approve tool calls without asking you.
@@ -12203,36 +12217,6 @@ msgstr ""
 msgid "tui.settings.hint.otel.sensitive_data"
 msgstr ""
 
-#. English: Project settings found ({count} key) — enable to apply them.
-#. English-plural: Project settings found ({count} keys) — enable to apply
-#. them.
-#. chrys-meta={"fingerprint":"ce357c8c3e53500591c67a1f3e8d3e3c2d6fd014c289b2d3040beceee4f2b5fb","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.project.config_dormant"
-msgid_plural "tui.settings.hint.project.config_dormant#plural"
-msgstr[0] ""
-msgstr[1] ""
-
-#. English: Let <workspace>/.chrys/settings.yaml adjust engineering settings
-#. for that workspace.
-#. chrys-meta={"fingerprint":"9884d643e237794ad469fe31e654f3e0a1a3aa63ad7371536da2a4d099797284","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.project.config_enabled"
-msgstr ""
-
-#. English: Run the hooks defined in <workspace>/.chrys/hooks alongside your
-#. global hooks.
-#. chrys-meta={"fingerprint":"99df1dbc7a7b0f8d3bf942ea97ded135e0e66c9e0658622f106f76092e31f2d4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.project.hooks_enabled"
-msgstr ""
-
-#. English: Load the skills in <workspace>/.agents/skills alongside your own.
-#. chrys-meta={"fingerprint":"90be5d34d370632b13543da780cdca3ca6d059b2112d5e79c5f17cc39232edbb","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.project.skills_enabled"
-msgstr ""
-
 #. English: Per-turn snapshots kept for /rollback; default {default}.
 #. chrys-meta={"fingerprint":"b5c2c2a5af954993106ce8505979f26313b9d0e7836ca9f7e53829db01c3f7dd","multiline":false,"placeholders":["default"]}
 #: src/chrys/app/tui/screens/settings/layout.py
@@ -12341,13 +12325,6 @@ msgstr ""
 msgid "tui.settings.hint.tools.web_search.private_origins"
 msgstr ""
 
-#. English: Fold activity after successful replies. Applies to future completed
-#. turns and sessions opened afterwards; existing folds keep their state.
-#. chrys-meta={"fingerprint":"dd6f495b926ae2dd26c75f387f91bd697b778178dc885330561ea6187c6faa50","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.ui.chat.fold_finished_turns"
-msgstr ""
-
 #. English: Show images in full color in Ghostty, kitty, iTerm2 3.7.5 or later,
 #. WezTerm, VS Code with terminal images on and Windows Terminal 1.22 or later,
 #. asking the terminal at startup which one it is. When off, or in other
@@ -12355,21 +12332,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5c545554ef6729a1c740b6e9cbd8a4f2f57fb3e2fa449b522fd7e61aa0b635a6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.image_graphics"
-msgstr ""
-
-#. English: Expand new thinking while the model writes it. When off, the folded
-#. row shows the estimated token count and speed. Click it at any time to read
-#. the full text.
-#. chrys-meta={"fingerprint":"b0fb777fbe8cd96c7286ab6c22895ed223bf50a353552011d1d8270d6e366695","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.ui.chat.show_thinking"
-msgstr ""
-
-#. English: Expand new tool groups by default. When off, click the tool status
-#. at any time to view details.
-#. chrys-meta={"fingerprint":"b2b8a4e58431aba828e9a5e19336c9399f3afde680e311e53ecb5c0fd169e47b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.ui.chat.tool_groups_expanded"
 msgstr ""
 
 #. English: Language of menus, hints and messages; changes apply immediately.
@@ -12382,6 +12344,38 @@ msgstr ""
 #. chrys-meta={"fingerprint":"91693c5ea2c35832f9e6e5413eee0c8032ef9aafca815d58e7d558818a9bd169","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.theme"
+msgstr ""
+
+#. English: Working directory settings found ({count} key) — enable to apply
+#. them.
+#. English-plural: Working directory settings found ({count} keys) — enable to
+#. apply them.
+#. chrys-meta={"fingerprint":"fc7050f02cace05864056f2dbcab27b965f7cc733ff87dfc05beb9c6c725af6f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.workdir.config_dormant"
+msgid_plural "tui.settings.hint.workdir.config_dormant#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: Load settings from .chrys/settings.yaml in each session's primary
+#. working directory.
+#. chrys-meta={"fingerprint":"32674d399ceff9a998e9827d7c121db67d318b0c77158efbc56858310dc9c477","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.workdir.config_enabled"
+msgstr ""
+
+#. English: Load hooks from .chrys/hooks in each session's primary working
+#. directory, alongside your global hooks.
+#. chrys-meta={"fingerprint":"2df9f8f6edf489970e42f0fc0b2e5533d5adb0e68ac9c18c08a116c02084c29b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.workdir.hooks_enabled"
+msgstr ""
+
+#. English: Allow agents to load skills from .agents/skills in each session's
+#. primary working directory.
+#. chrys-meta={"fingerprint":"a866d875384076ef00937500ad83d33b97d58542755f3b2ddf42ab7d06a60821","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.workdir.skills_enabled"
 msgstr ""
 
 #. English: Tell the agent about files changed outside the conversation at turn
@@ -12498,12 +12492,6 @@ msgstr ""
 msgid "tui.settings.provenance.env"
 msgstr ""
 
-#. English: Set by {path}.
-#. chrys-meta={"fingerprint":"b4955aa7cb0c380c0008d5db4b538e5aa1cedebe1b421b15068ec35655247aa5","multiline":false,"placeholders":["path"]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.provenance.project"
-msgstr ""
-
 #. English: The saved value was rejected, so the built-in default is in effect.
 #. chrys-meta={"fingerprint":"a6208b007bd14704e8580df8da930d9d47cf50e95a83ada41c5e3a5c3bfdeabc","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/provenance.py
@@ -12514,6 +12502,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"d7de0e7dc52f0f3311e74a18694516071d4076e1ac2b42dfae15761b2cfcda0b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/provenance.py
 msgid "tui.settings.provenance.session"
+msgstr ""
+
+#. English: Set by {path}.
+#. chrys-meta={"fingerprint":"b4955aa7cb0c380c0008d5db4b538e5aa1cedebe1b421b15068ec35655247aa5","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/settings/provenance.py
+msgid "tui.settings.provenance.workdir"
 msgstr ""
 
 #. English: Could not finish saving the Settings panel. Reload stopped.
@@ -12624,12 +12618,6 @@ msgstr ""
 msgid "tui.settings.section.notifications"
 msgstr ""
 
-#. English: Project trust
-#. chrys-meta={"fingerprint":"9aaa1b2e975dfd31550ed0cab60b9cbd0c5524d4c5aee59ed034bc113d4b8d87","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.section.project_trust"
-msgstr ""
-
 #. English: Rollback
 #. chrys-meta={"fingerprint":"a6f676dbe1a7754d87fa0370c0d6c07595a08e6b1721f72fed7bfff7ac125348","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
@@ -12658,6 +12646,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"f986ea0da9e92ca438eededc408c5cfbc8f9d79120703eddd46a4874b6bdd8fa","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.web"
+msgstr ""
+
+#. English: Working directory trust
+#. chrys-meta={"fingerprint":"54d870cddd4b080c5354a6219f25e62fcb5e7deb996db0ffeaa29a2996dfdc19","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.section.workdir_trust"
 msgstr ""
 
 #. English: Workspace notice
@@ -16696,16 +16690,16 @@ msgstr ""
 msgid "tui.usage.group.profile"
 msgstr ""
 
-#. English: Project
-#. chrys-meta={"fingerprint":"bb494880de8a82165303fb5db8a2bd69147f6fff4874591b25d51ec1569bafb1","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/usage.py
-msgid "tui.usage.group.project"
-msgstr ""
-
 #. English: Source
 #. chrys-meta={"fingerprint":"8a23381b73255be7becb386ff5bf8b4846f3fcba4f6d5404413d16d72d5ed687","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.group.source"
+msgstr ""
+
+#. English: Working directory
+#. chrys-meta={"fingerprint":"346d3f271ad750bbf4adb1c857d83e23c6d3deadb9759af7c530d0a5df1f4633","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.workdir"
 msgstr ""
 
 #. English: ←→↑↓ day  {month_keys} month
@@ -16826,12 +16820,6 @@ msgstr[1] ""
 #. chrys-meta={"fingerprint":"fa4919283bfc36cffdd2cb8d70c78fc0e0870bf186fad1652a8c9fd73dd291a0","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.profile.other"
-msgstr ""
-
-#. English: Other workspaces
-#. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/usage.py
-msgid "tui.usage.project.other"
 msgstr ""
 
 #. English: All
@@ -16958,6 +16946,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"56dabaa7e3c3d626ed9a56bd103a3b2413e97b221fc8b7e45ac390e8919e1765","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.trend.weekly"
+msgstr ""
+
+#. English: Other working directories
+#. chrys-meta={"fingerprint":"f56cd728d028472e025133c9c598f9a47f8f94c60f8119b20c545630c063287f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.workdir.other"
 msgstr ""
 
 #. English: OK
@@ -17271,10 +17265,11 @@ msgstr ""
 msgid "tui.workflow.delete_package_note"
 msgstr ""
 
-#. English: Project files may be recoverable in Git. Run history stays.
-#. chrys-meta={"fingerprint":"34bcccf8b90d9c3564b6566599191daa57ef5dfef79679a0e7a05127d1291e7f","multiline":false,"placeholders":[]}
+#. English: Working directory files may be recoverable in Git. Run history
+#. stays.
+#. chrys-meta={"fingerprint":"5c4d42012971c10328a042bfef383ecb7b1b87f05bcdd5743c673f873de6e08e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
-msgid "tui.workflow.delete_project"
+msgid "tui.workflow.delete_workdir"
 msgstr ""
 
 #. English: This session is bound to its working directory.
@@ -17757,10 +17752,10 @@ msgstr ""
 msgid "tui.workflow.source.global"
 msgstr ""
 
-#. English: project
-#. chrys-meta={"fingerprint":"bd23bc14344c23c37663fa3d2cbed77723dbdeb192c21123926d683137832e39","multiline":false,"placeholders":[]}
+#. English: working directory
+#. chrys-meta={"fingerprint":"52de2ca9eb66810e1c971cca14b316524a472c3f8152deb88b2ab26f3d8141db","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
-msgid "tui.workflow.source.project"
+msgid "tui.workflow.source.workdir"
 msgstr ""
 
 #. English: This workflow changed. Reopen it to preview and confirm before

@@ -17,7 +17,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -39,7 +39,7 @@ async def test_research_fans_out_before_synthesizing_both_named_perspectives(
     responses = ("First research result", "Second research result")
     clients = [MockChatClient(responses=[MockResponse(text=text)]) for text in responses]
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), *clients])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "research_synthesis", (FIXTURES / "research_synthesis.py").read_bytes())
     host = make_host(tmp_path, project=project, profiles=_profiles())
     started: set[str] = set()
@@ -98,7 +98,7 @@ async def test_release_switch_runs_only_its_selected_branch(
     plan = MockChatClient(responses=[MockResponse(text="Remediation: fix compatibility first.")])
     clients = [MockChatClient(responses=[]), assess, *([] if ready else [plan])]
     patch_runtime(monkeypatch, clients)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "release_readiness", (FIXTURES / "release_readiness.py").read_bytes())
     host = make_host(tmp_path, project=project, profiles=_profiles())
     try:
@@ -125,7 +125,7 @@ async def test_refactor_uses_tools_and_carries_request_and_feedback_between_iter
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, passes: bool
 ) -> None:
     iterations = 2 if passes else 3
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "code_refactor", (FIXTURES / "code_refactor.py").read_bytes())
     target = project / "refactor.txt"
     editors = [

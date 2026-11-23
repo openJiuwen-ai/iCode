@@ -24,7 +24,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -41,7 +41,7 @@ async def test_chat_model_switch_does_not_change_workflow_node_bindings(
         monkeypatch,
         [MockChatClient(responses=[]), *[MockChatClient(responses=[MockResponse(text="done")]) for _ in range(4)]],
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(
         project,
         "review",
@@ -96,9 +96,9 @@ async def test_reload_updates_saved_default_but_preserves_launch_policy_for_all_
     fake = replace(platform.get_platform(), config_dir=config)
     monkeypatch.setattr(platform, "get_platform", lambda: fake)
     freeze_process_env()
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
-    loaded = load_settings(project_root=project).overlay(Source.SESSION, model_profile="mock-profile")
+    loaded = load_settings(workdir=project).overlay(Source.SESSION, model_profile="mock-profile")
     host = make_host(tmp_path, project=project, loaded_settings=loaded, approval_mode=launch_mode)
     store = JsonFileStateStore(tmp_path / "sessions")
     try:

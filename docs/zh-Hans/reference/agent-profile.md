@@ -435,9 +435,9 @@ skills:
 | `script_timeout` | 正整数 | `300` | Skill 脚本最长运行秒数。省略或只写字段名不给值时取默认 `300`；写成非正整数的具体值会导致整个 agent profile 被跳过。 |
 | `script_extensions` | 字符串列表 | `[.py, .sh, .ps1]` | 允许作为 Skill 脚本运行的扩展名；所需解释器必须已经安装。 |
 | `auto_load_user_agents_skills` | 布尔值 | `true` | 是否加载 Agent Skills 用户级共享目录。 |
-| `auto_load_cwd_agents_skills` | 布尔值 | `true` | 是否加载当前工作目录的 `.agents/skills`；还需在设置中开启“加载项目 Skills”（`project.skills_enabled`）。切换工作目录后重新加载。 |
+| `auto_load_cwd_agents_skills` | 布尔值 | `true` | 是否加载当前工作目录的 `.agents/skills`；还需在设置中开启“加载工作目录 Skills”（`workdir.skills_enabled`）。切换工作目录后重新加载。 |
 
-iCode 用户 Skill 目录始终加载；Agent Skills 用户级共享目录默认加载；当前工作目录 Skill 目录在设置中开启“加载项目 Skills”后加载。两者可分别通过两个 `auto_load_*` 字段关闭。用户级 Skill 目录路径见[Skill 安装位置](../guides/extensions/skills.md#skill-安装位置)。
+iCode 用户 Skill 目录始终加载；Agent Skills 用户级共享目录默认加载；当前工作目录 Skill 目录在设置中开启“加载工作目录 Skills”后加载。两者可分别通过两个 `auto_load_*` 字段关闭。用户级 Skill 目录路径见[Skill 安装位置](../guides/extensions/skills.md#skill-安装位置)。
 
 多个来源出现同名 Skill 时，优先级从高到低为：`paths` 中靠前的目录、iCode 用户 Skill 目录、Agent Skills 用户级共享目录、当前工作目录 Skill 目录、`inline` 中靠前的定义。同一个搜索根目录中存在多个同名 Skill 时，发现顺序不确定；为确保加载指定版本，请只保留其中一个。
 
@@ -468,7 +468,7 @@ Skill 的安装步骤、目录规范、加载验证和使用方式详见[安装�
 memory:
   files:
     - AGENTS.md
-    - docs/project-context.md
+    - docs/working-directory-context.md
   folders:
     - docs/reference
 ```

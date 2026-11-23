@@ -14,6 +14,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_text, widget_localizer
+from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.util.todo_format import todo_checklist_renderable, todo_done_count
 from chrys.app.tui.widgets.chat.tool_call import ToolCall, ToolCardHeader
 from chrys.foundation.i18n import msg
@@ -111,4 +112,4 @@ class TodoToolCall(ToolCall):
         if not items:
             return
         with suppress(Exception):
-            self.query_one("#tc-body", Static).update(self._checklist_renderable(items))
+            update_static_in_place(self.query_one("#tc-body", Static), self._checklist_renderable(items))

@@ -210,6 +210,9 @@ class _FakeToolGroup:
         # record, so nothing reports running afterwards.
         return not self._cancelled and call_id in self._tools
 
+    def ignores_repeated_start(self, call_id: str) -> bool:
+        return call_id in self.completed
+
     def finalize_activity_header(self) -> None:
         self.activity_header_finalized = True
 

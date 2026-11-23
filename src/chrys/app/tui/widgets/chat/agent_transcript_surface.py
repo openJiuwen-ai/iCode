@@ -21,6 +21,7 @@ from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.util.bottom_follow import BottomFollow
 from chrys.app.tui.util.removal import remove_shielded
 from chrys.app.tui.widgets.chat.fold_gap import show_fold_gaps
+from chrys.app.tui.widgets.chat.guide_fold import GuideFoldRequested
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     ErrorMessage,
@@ -556,7 +557,6 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
             self,
             self,
             finalize_agent_message=self._settle_answer_before_tools,
-            tool_groups_expanded=lambda: False,
         )
         localization = _TranscriptLocalization(self._render_message)
         self._live = LiveTranscriptRenderer(
@@ -910,6 +910,11 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
 
     def pre_layout(self, layout: Layout) -> None:
         show_fold_gaps(self.displayed_children)
+
+    def on_guide_fold_requested(self, event: GuideFoldRequested) -> None:
+        event.stop()
+        if not event.process:
+            event.member.fold_member_guide(self)
 
     async def remove_trailing_status(self) -> None:
         status = self.failed_turn_status()

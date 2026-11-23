@@ -18,7 +18,7 @@ This guide explains how to configure memory for the main agent.
 2. Click "+ Add File" in the "Files" section.
 3. Enter a path, or use "Browse" to select a `.md` or `.txt` file. With "Workspace relative" selected, enter a relative path, such as `AGENTS.md` or `docs/context.md`; otherwise, enter an absolute path.
 
-    > **Note:** Relative paths are resolved against the current working directory when memory loads, rather than the directory where the agent profile was created. This lets the same agent load each project's own `AGENTS.md`. Relative paths must stay inside the working directory; use an absolute path for files outside it.
+    > **Note:** Relative paths are resolved against the current working directory when memory loads, rather than the directory where the agent profile was created. This lets the same agent load each working directory’s own `AGENTS.md`. Relative paths must stay inside the working directory; use an absolute path for files outside it.
 4. Click "Save", then close the agent configuration window.
 
 ## Add a memory folder

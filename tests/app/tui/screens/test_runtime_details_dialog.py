@@ -318,11 +318,11 @@ def test_runtime_details_dialog_groups_skills_and_files_by_source() -> None:
     assert "docs/design.md" in _section_text(file_sections[1])
 
 
-def test_runtime_details_dialog_groups_project_and_global_hooks_with_runtime_metadata() -> None:
+def test_runtime_details_dialog_groups_workdir_and_global_hooks_with_runtime_metadata() -> None:
     details = AgentRuntimeDetails(
         hook_sources=[
             RuntimeHookSourceDetails(
-                scope="project",
+                scope="workdir",
                 source_path="/repo/[literal]/.chrys/hooks/hooks.yaml",
                 hooks=[
                     RuntimeHookDetails(
@@ -352,16 +352,16 @@ def test_runtime_details_dialog_groups_project_and_global_hooks_with_runtime_met
 
     sections = RuntimeDetailsDialog(details)._hook_sections()
 
-    assert [str(section.border_title) for section in sections] == ["Project hooks", "Global hooks"]
-    project_text = _section_text(sections[0])
-    assert "Source" not in project_text
-    assert "/repo/[literal]/.chrys/hooks/hooks.yaml" not in project_text
+    assert [str(section.border_title) for section in sections] == ["Working directory hooks", "Global hooks"]
+    workdir_text = _section_text(sections[0])
+    assert "Source" not in workdir_text
+    assert "/repo/[literal]/.chrys/hooks/hooks.yaml" not in workdir_text
     assert str(sections[0].border_subtitle) == escape("/repo/[literal]/.chrys/hooks/hooks.yaml")
-    assert "project[guard]" in project_text
-    assert "before_tool_call" in project_text
-    assert "blocking" in project_text
-    assert "ON" in project_text
-    assert "Protect [literal] writes" in project_text
+    assert "project[guard]" in workdir_text
+    assert "before_tool_call" in workdir_text
+    assert "blocking" in workdir_text
+    assert "ON" in workdir_text
+    assert "Protect [literal] writes" in workdir_text
     global_text = _section_text(sections[1])
     assert str(sections[1].border_subtitle) == "/config/hooks/hooks.yaml"
     assert "audit" in global_text

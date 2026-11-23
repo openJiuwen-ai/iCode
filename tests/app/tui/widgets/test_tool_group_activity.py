@@ -14,6 +14,7 @@ from textual.widgets import Static
 
 from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
 from chrys.app.tui.widgets.chat import tool_call as tool_call_module
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers import sleep as sleep_module
 from chrys.app.tui.widgets.chat.renderers.sleep import SleepToolCall
@@ -33,17 +34,8 @@ from chrys.foundation.tool_kinds import (
     KIND_SUB_AGENT,
 )
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import title_runs, title_text
+from tests.support.tui_helpers import ChatPanelApp, click_when_settled, title_runs, title_text
 from tests.support.waiting import wait_for, wait_until
-
-
-class _PanelApp(App):
-    def __init__(self, *, expanded: bool) -> None:
-        self.expanded = expanded
-        super().__init__()
-
-    def compose(self) -> ComposeResult:
-        yield ChatPanel(tool_groups_expanded=lambda: self.expanded)
 
 
 def _painted(app: App) -> str:
@@ -53,6 +45,12 @@ def _painted(app: App) -> str:
 
 def _title(group: ToolGroup) -> str:
     return title_text(group.query_one(ToolGroupTitle))
+
+
+def _show_process(panel: ChatPanel) -> None:
+    row = panel.query_one(LiveProcessRow)
+    if row.collapsed:
+        panel._toggle_live_process_row(row)
 
 
 async def _running(pilot: Pilot[None], group: ToolGroup) -> bool:
@@ -70,8 +68,30 @@ async def _running(pilot: Pilot[None], group: ToolGroup) -> bool:
 
 
 @pytest.mark.asyncio
+async def test_a_new_tool_group_starts_folded_even_in_open_activity() -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("Prompt")
+        await panel.add_thinking_delta("r1", "reasoning", "Find the entry point.")
+        panel.finish_thinking_segment("r1")
+        await click_when_settled(pilot, panel.query_one(LiveProcessRow))
+        await panel.add_tool_start("read", "read_file", KIND_FILESYSTEM_READ, args={"path": "notes.py"})
+
+        group = panel.query_one(ToolGroup)
+        await wait_for(
+            lambda: "Reading notes.py" in _painted(pilot.app),
+            pilot=pilot,
+            description="the new tool group's title is painted",
+        )
+        cards = group.query_one("#tg-content")
+        assert not cards.display
+        await click_when_settled(pilot, group.query_one(ToolGroupTitle))
+        assert cards.display
+
+
+@pytest.mark.asyncio
 async def test_activity_title_renders_a_real_ellipsis_at_narrow_width() -> None:
-    async with _PanelApp(expanded=False).run_test(size=(28, 12)) as pilot:
+    async with ChatPanelApp().run_test(size=(28, 12)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start(
             "shell",
@@ -82,6 +102,8 @@ async def test_activity_title_renders_a_real_ellipsis_at_narrow_width() -> None:
         await pilot.pause()
 
         title = panel.query_one(ToolGroupTitle)
+        _show_process(panel)
+        await pilot.pause()
         rendered = title.render()
         assert rendered.plain.endswith("…")
         assert rendered.cell_len <= title.content_size.width
@@ -89,7 +111,7 @@ async def test_activity_title_renders_a_real_ellipsis_at_narrow_width() -> None:
 
 @pytest.mark.asyncio
 async def test_live_group_activity_survives_manual_expand_and_falls_back_by_recency() -> None:
-    async with _PanelApp(expanded=False).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start(
             "shell",
@@ -100,6 +122,7 @@ async def test_live_group_activity_survives_manual_expand_and_falls_back_by_rece
         await pilot.pause()
 
         group = panel.query_one(ToolGroup)
+        _show_process(panel)
         assert group.collapsed is True
         assert _title(group) == "Running focused tests"
         assert await _running(pilot, group) is True
@@ -149,7 +172,7 @@ async def test_live_group_activity_survives_manual_expand_and_falls_back_by_rece
 
 
 @pytest.mark.asyncio
-async def test_bare_chat_panel_keeps_compatibility_default_expanded() -> None:
+async def test_bare_chat_panel_folds_its_live_process() -> None:
     class _BarePanelApp(App):
         def compose(self) -> ComposeResult:
             yield ChatPanel()
@@ -157,29 +180,14 @@ async def test_bare_chat_panel_keeps_compatibility_default_expanded() -> None:
     async with _BarePanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("read", "read_file", KIND_FILESYSTEM_READ, args={"path": "README.md"})
-        assert panel.query_one(ToolGroup).collapsed is False
-
-
-@pytest.mark.asyncio
-async def test_default_getter_is_read_for_each_new_group_without_rewriting_existing_state() -> None:
-    async with _PanelApp(expanded=False).run_test() as pilot:
-        panel = pilot.app.query_one(ChatPanel)
-        await panel.add_tool_start("first", "read_file", KIND_FILESYSTEM_READ, args={"path": "one.txt"})
-        first = panel.query_one(ToolGroup)
-        assert first.collapsed is True
-
-        panel._end_tool_group()
-        pilot.app.expanded = True
-        await panel.add_tool_start("second", "read_file", KIND_FILESYSTEM_READ, args={"path": "two.txt"})
-        groups = list(panel.query(ToolGroup))
-
-        assert groups == [first, panel._tool_groups_by_call_id["second"]]
-        assert [group.collapsed for group in groups] == [True, False]
+        assert panel.query_one(ToolGroup).collapsed is True
+        assert panel.query_one(ToolGroup).process_hidden
+        assert panel.query_one(LiveProcessRow).collapsed
 
 
 @pytest.mark.asyncio
 async def test_shell_without_reason_hides_command_and_skill_activity_uses_safe_fields() -> None:
-    async with _PanelApp(expanded=False).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("shell", "zsh", KIND_SHELL, args={"command": "secret --token value"})
         group = panel.query_one(ToolGroup)
@@ -218,7 +226,7 @@ async def test_fold_target_ignores_locked_groups() -> None:
 
 @pytest.mark.asyncio
 async def test_paused_sub_agent_expands_and_locks_group_until_resume() -> None:
-    async with _PanelApp(expanded=False).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("parent", "Explore", KIND_SUB_AGENT, args={"task": "inspect"})
         panel.link_sub_agent_invocation("parent", "invocation", "Explore Agent")
@@ -227,6 +235,7 @@ async def test_paused_sub_agent_expands_and_locks_group_until_resume() -> None:
         assert group.collapsed is True
         assert group.collapse_locked is False
 
+        _show_process(panel)
         panel.sub_agent_paused("invocation", "acp_transport", "connection closed", 2)
         await pilot.pause()
 
@@ -244,12 +253,13 @@ async def test_paused_sub_agent_expands_and_locks_group_until_resume() -> None:
 
 @pytest.mark.asyncio
 async def test_sub_agent_inner_activity_updates_parent_header_and_retains_latest_state() -> None:
-    async with _PanelApp(expanded=False).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("parent", "Explore", KIND_SUB_AGENT, args={"task": "inspect"})
         panel.link_sub_agent_invocation("parent", "invocation", "Explore Agent")
 
         group = panel.query_one(ToolGroup)
+        _show_process(panel)
         assert _title(group) == "Running Explore Agent"
 
         panel.add_sub_agent_answer("Explore Agent", "invocation", "segment", "Let me inspect the notes.")
@@ -290,7 +300,7 @@ def _sub_agent_line(panel: ChatPanel) -> str:
 @pytest.mark.asyncio
 async def test_a_sub_agent_retry_takes_the_answer_it_withdraws_out_of_the_latest_activity() -> None:
     """The header and the card's line show the agent again; withdrawing an answer they no longer show changes nothing."""
-    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("parent", "Explore", KIND_SUB_AGENT, args={"task": "inspect"})
         panel.link_sub_agent_invocation("parent", "invocation", "Explore Agent")
@@ -309,7 +319,7 @@ async def test_a_sub_agent_retry_takes_the_answer_it_withdraws_out_of_the_latest
 @pytest.mark.asyncio
 async def test_a_sub_agent_call_started_again_unchanged_is_no_new_activity() -> None:
     """An ACP agent sends a running call's start again before its result: only new input makes it the activity again."""
-    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("parent", "Explore", KIND_SUB_AGENT, args={"task": "inspect"})
         panel.link_sub_agent_invocation("parent", "invocation", "Explore Agent")
@@ -333,7 +343,7 @@ async def test_a_sub_agent_call_started_again_unchanged_is_no_new_activity() -> 
 
 @pytest.mark.asyncio
 async def test_system_retry_and_interrupt_are_tool_group_presentation_boundaries() -> None:
-    async with _PanelApp(expanded=False).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
 
         await panel.add_tool_start("system", "read_file", KIND_FILESYSTEM_READ, args={"path": "system.txt"})
@@ -436,7 +446,7 @@ async def test_a_running_sleep_counts_down_in_its_group_title_after_why_it_sleep
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = _Clock(monkeypatch)
-    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30, "reason": "Waiting for CI"})
         group = panel.query_one(ToolGroup)
@@ -467,7 +477,7 @@ async def test_a_running_sleep_counts_down_in_its_group_title_after_why_it_sleep
 @pytest.mark.asyncio
 async def test_a_sleep_title_counts_down_only_while_shown(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = _Clock(monkeypatch)
-    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30})
         title = panel.query_one(ToolGroupTitle)
@@ -496,12 +506,13 @@ async def test_a_sleep_title_counts_down_only_while_shown(monkeypatch: pytest.Mo
 @pytest.mark.asyncio
 async def test_a_narrow_sleep_title_cuts_why_it_sleeps_and_keeps_its_time_left(monkeypatch: pytest.MonkeyPatch) -> None:
     _Clock(monkeypatch)
-    async with _PanelApp(expanded=False).run_test(size=(40, 12)) as pilot:
+    async with ChatPanelApp().run_test(size=(40, 12)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start(
             "s1", "sleep", KIND_SLEEP, args={"seconds": 3600, "reason": "Waiting for the nightly build to finish"}
         )
         title = panel.query_one(ToolGroupTitle)
+        _show_process(panel)
         await pilot.pause()
         rendered = title.render()
         assert rendered.plain.endswith("… · 1h left")
@@ -512,9 +523,9 @@ async def test_a_narrow_sleep_title_cuts_why_it_sleeps_and_keeps_its_time_left(m
 
 
 @pytest.mark.asyncio
-async def test_a_sleep_keeps_its_start_only_while_its_call_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_repeated_sleep_start_keeps_the_countdown_until_completion(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = _Clock(monkeypatch)
-    async with _PanelApp(expanded=False).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30})
         group = panel.query_one(ToolGroup)
@@ -524,9 +535,12 @@ async def test_a_sleep_keeps_its_start_only_while_its_call_runs(monkeypatch: pyt
         assert _title(group) == "Sleeping · 20s left"
 
         await panel.add_tool_result("s1", "sleep", "Slept 30 seconds.", 30_000)
+        finished = _title(group)
         clock.now += 60.0
-        # A later call with the same id is a new sleep: it counts from its own start.
-        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30})
+        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 60, "reason": "Repeated delivery"})
+        assert _title(group) == finished == "Sleeping"
+
+        await panel.add_tool_start("s2", "sleep", KIND_SLEEP, args={"seconds": 30})
         assert _title(group) == "Sleeping · 30s left"
 
 
@@ -544,12 +558,14 @@ async def test_a_sleep_card_built_after_its_call_started_counts_from_the_start_i
         return compose(card)
 
     monkeypatch.setattr(SleepToolCall, "compose", record_compose)
-    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         # As a nested transcript built later hands it the start its journal recorded.
         await panel._tool_registry.add_tool_start(
             "s1", "sleep", KIND_SLEEP, args={"seconds": 60}, started_at=clock.now - 40.0
         )
+        _show_process(panel)
+        panel.query_one(ToolGroup).collapsed = False
         await wait_for(lambda: frames, pilot=pilot, description="the card paints")
         assert set(frames) == {"- sleep (40 seconds/60 seconds) Skip    Remaining: 20 seconds"}
         # It composes with it: no frame, however soon after its mount, shows another.
@@ -562,12 +578,13 @@ async def test_a_sleep_card_its_folded_group_opens_shows_the_time_left_now_in_it
 ) -> None:
     clock = _Clock(monkeypatch)
     frames = _card_time_frames(monkeypatch)
-    async with _PanelApp(expanded=False).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 60})
         group = panel.query_one(ToolGroup)
         clock.now += 40.0
         # Folded, the card did not count.
+        _show_process(panel)
         group.collapsed = False
         await wait_for(lambda: frames, pilot=pilot, description="the card paints")
         assert set(frames) == {"- sleep (40 seconds/60 seconds) Skip    Remaining: 20 seconds"}
@@ -576,7 +593,7 @@ async def test_a_sleep_card_its_folded_group_opens_shows_the_time_left_now_in_it
 @pytest.mark.asyncio
 async def test_a_sleep_title_reads_in_one_language_after_a_locale_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     _Clock(monkeypatch)
-    app = _PanelApp(expanded=False)
+    app = ChatPanelApp()
     controller = LocaleController(Settings(locale="en"))
     app.locale_controller = controller  # type: ignore[attr-defined]
     async with app.run_test(size=(100, 30)) as pilot:
@@ -593,7 +610,7 @@ async def test_a_sleep_title_reads_in_one_language_after_a_locale_switch(monkeyp
 @pytest.mark.asyncio
 async def test_an_interrupted_sleep_counts_what_it_slept_until_then(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = _Clock(monkeypatch)
-    async with _PanelApp(expanded=False).run_test(size=(100, 30)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30})
         group = panel.query_one(ToolGroup)

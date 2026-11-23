@@ -25,7 +25,7 @@ from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.loader import (
     HooksConfigError,
     load_hooks_dir,
-    load_hooks_project,
+    load_workdir_hooks,
     merge_hooks_files,
 )
 from chrys.service.hooks.manager import HookManager
@@ -68,20 +68,20 @@ def _write_hooks_file(path: Path, hooks: list[HookConfig]) -> Path:
 
 def _build_manager(
     tmp_path: Path,
-    project_hooks: list[HookConfig] | None,
+    workdir_hooks: list[HookConfig] | None,
     global_hooks: list[HookConfig] | None,
 ) -> HookManager | None:
-    project_root = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     config_dir = tmp_path / "config"
-    project_root.mkdir(parents=True, exist_ok=True)
+    workdir.mkdir(parents=True, exist_ok=True)
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    project_file: HooksFile | None = None
-    if project_hooks is not None:
-        path = _write_hooks_file(project_root / ".chrys", project_hooks)
-        project_file = load_hooks_project(project_root)
-        assert project_file is not None
-        assert project_file.source == str(path)
+    workdir_file: HooksFile | None = None
+    if workdir_hooks is not None:
+        path = _write_hooks_file(workdir / ".chrys", workdir_hooks)
+        workdir_file = load_workdir_hooks(workdir)
+        assert workdir_file is not None
+        assert workdir_file.source == str(path)
 
     global_file: HooksFile | None = None
     if global_hooks is not None:
@@ -89,16 +89,16 @@ def _build_manager(
         global_file = load_hooks_dir(config_dir)
         assert global_file is not None
 
-    merged = merge_hooks_files(project=project_file, global_=global_file)
+    merged = merge_hooks_files(workdir=workdir_file, global_=global_file)
     if not merged.hooks:
         return None
     return HookManager(file=merged, hooks_dir=config_dir / "hooks")
 
 
-def test_project_only_no_global(tmp_path: Path) -> None:
+def test_workdir_only_no_global(tmp_path: Path) -> None:
     mgr = _build_manager(
         tmp_path,
-        project_hooks=[_hook_config(id_="p1", event="before_tool_call")],
+        workdir_hooks=[_hook_config(id_="p1", event="before_tool_call")],
         global_hooks=None,
     )
     assert mgr is not None
@@ -106,10 +106,10 @@ def test_project_only_no_global(tmp_path: Path) -> None:
     assert len(mgr.file.hooks) == 1
 
 
-def test_global_only_no_project(tmp_path: Path) -> None:
+def test_global_only_no_workdir(tmp_path: Path) -> None:
     mgr = _build_manager(
         tmp_path,
-        project_hooks=None,
+        workdir_hooks=None,
         global_hooks=[_hook_config(id_="g1", event="before_tool_call")],
     )
     assert mgr is not None
@@ -124,7 +124,7 @@ def test_neither_returns_none(tmp_path: Path) -> None:
 def test_both_no_collision(tmp_path: Path) -> None:
     mgr = _build_manager(
         tmp_path,
-        project_hooks=[_hook_config(id_="p1", event="before_tool_call")],
+        workdir_hooks=[_hook_config(id_="p1", event="before_tool_call")],
         global_hooks=[_hook_config(id_="g1", event="before_tool_call")],
     )
     assert mgr is not None
@@ -132,10 +132,10 @@ def test_both_no_collision(tmp_path: Path) -> None:
     assert len(mgr.sources()) == 2
 
 
-def test_same_id_both_run_with_project_first(tmp_path: Path) -> None:
+def test_same_id_both_run_with_workdir_first(tmp_path: Path) -> None:
     mgr = _build_manager(
         tmp_path,
-        project_hooks=[_hook_config(id_="lint", event="before_tool_call")],
+        workdir_hooks=[_hook_config(id_="lint", event="before_tool_call")],
         global_hooks=[_hook_config(id_="lint", event="before_tool_call")],
     )
     assert mgr is not None
@@ -143,13 +143,13 @@ def test_same_id_both_run_with_project_first(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_blocking_event_project_block_short_circuits_global(
+async def test_blocking_event_workdir_block_short_circuits_global(
     tmp_path: Path,
 ) -> None:
     marker = tmp_path / "global-ran.txt"
     mgr = _build_manager(
         tmp_path,
-        project_hooks=[
+        workdir_hooks=[
             HookConfig(
                 id="guard",
                 event=HookEvent.BEFORE_TOOL_CALL,
@@ -191,22 +191,22 @@ async def test_blocking_event_project_block_short_circuits_global(
     assert not marker.exists()
 
 
-def test_project_parse_error_raises(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    hooks_dir = project_root / ".chrys" / "hooks"
+def test_workdir_parse_error_raises(tmp_path: Path) -> None:
+    workdir = tmp_path / "workdir"
+    hooks_dir = workdir / ".chrys" / "hooks"
     hooks_dir.mkdir(parents=True)
     (hooks_dir / "hooks.yaml").write_text(": bad: yaml: :", encoding="utf-8")
 
     with pytest.raises(HooksConfigError):
-        load_hooks_project(project_root)
+        load_workdir_hooks(workdir)
 
 
-def test_relative_path_resolves_to_project_dir(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    scripts_dir = project_root / ".chrys" / "hooks" / "scripts"
+def test_relative_path_resolves_to_workdir(tmp_path: Path) -> None:
+    workdir = tmp_path / "workdir"
+    scripts_dir = workdir / ".chrys" / "hooks" / "scripts"
     scripts_dir.mkdir(parents=True)
     (scripts_dir / "foo.py").write_text("#!/usr/bin/env python3\n")
-    (project_root / ".chrys" / "hooks" / "hooks.yaml").write_text(
+    (workdir / ".chrys" / "hooks" / "hooks.yaml").write_text(
         """\
 version: 1
 hooks:
@@ -218,18 +218,18 @@ hooks:
 """,
         encoding="utf-8",
     )
-    file = load_hooks_project(project_root)
+    file = load_workdir_hooks(workdir)
     assert file is not None
     assert file.hooks[0].run.path == str((scripts_dir / "foo.py").resolve())
 
 
-def test_settings_merge_global_default_retained_when_project_settings_missing(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
+def test_settings_merge_global_default_retained_when_workdir_settings_missing(tmp_path: Path) -> None:
+    workdir = tmp_path / "workdir"
     config_dir = tmp_path / "config"
-    project_root.mkdir()
+    workdir.mkdir()
     config_dir.mkdir()
     _write_hooks_file(
-        project_root / ".chrys",
+        workdir / ".chrys",
         [_hook_config(id_="p1", event="before_tool_call")],
     )
     (config_dir / "hooks").mkdir(parents=True)
@@ -245,20 +245,20 @@ hooks:
 """,
         encoding="utf-8",
     )
-    project_file = load_hooks_project(project_root)
+    workdir_file = load_workdir_hooks(workdir)
     global_file = load_hooks_dir(config_dir)
-    assert project_file is not None and global_file is not None
-    merged = merge_hooks_files(project=project_file, global_=global_file)
+    assert workdir_file is not None and global_file is not None
+    merged = merge_hooks_files(workdir=workdir_file, global_=global_file)
     assert merged.settings.shutdown_grace_seconds == 5.0
 
 
-def test_settings_merge_project_missing_settings_uses_global(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
+def test_settings_merge_workdir_missing_settings_uses_global(tmp_path: Path) -> None:
+    workdir = tmp_path / "workdir"
     config_dir = tmp_path / "config"
-    project_root.mkdir()
+    workdir.mkdir()
     config_dir.mkdir()
     _write_hooks_file(
-        project_root / ".chrys",
+        workdir / ".chrys",
         [_hook_config(id_="p1", event="before_tool_call")],
     )
     (config_dir / "hooks").mkdir(parents=True)
@@ -274,14 +274,14 @@ hooks:
 """,
         encoding="utf-8",
     )
-    project_file = load_hooks_project(project_root)
+    workdir_file = load_workdir_hooks(workdir)
     global_file = load_hooks_dir(config_dir)
-    assert project_file is not None and global_file is not None
-    merged = merge_hooks_files(project=project_file, global_=global_file)
+    assert workdir_file is not None and global_file is not None
+    merged = merge_hooks_files(workdir=workdir_file, global_=global_file)
     assert merged.settings.shutdown_grace_seconds == 9.0
 
 
-def test_project_root_is_primary_cwd(tmp_path: Path) -> None:
+def test_workdir_root_is_primary_cwd(tmp_path: Path) -> None:
     fake_root = tmp_path / "fake_root"
     real_root = tmp_path / "real_root"
     fake_root.mkdir()
@@ -289,11 +289,11 @@ def test_project_root_is_primary_cwd(tmp_path: Path) -> None:
     hooks_dir = fake_root / ".chrys" / "hooks"
     hooks_dir.mkdir(parents=True)
     (hooks_dir / "hooks.yaml").write_text("version: 1\nhooks: []\n", encoding="utf-8")
-    file = load_hooks_project(fake_root)
+    file = load_workdir_hooks(fake_root)
     assert file is not None
     assert file.source == str(hooks_dir / "hooks.yaml")
 
-    assert load_hooks_project(real_root) is None
+    assert load_workdir_hooks(real_root) is None
 
 
 def test_restore_uses_session_primary_cwd(tmp_path: Path) -> None:
@@ -306,7 +306,7 @@ def test_restore_uses_session_primary_cwd(tmp_path: Path) -> None:
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.chdir(new)
     try:
-        file = load_hooks_project(old)
+        file = load_workdir_hooks(old)
     finally:
         monkeypatch.undo()
     assert file is not None
@@ -314,12 +314,12 @@ def test_restore_uses_session_primary_cwd(tmp_path: Path) -> None:
 
 
 def test_enabled_false_honored_cross_file(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     config_dir = tmp_path / "config"
-    project_root.mkdir()
+    workdir.mkdir()
     config_dir.mkdir()
     _write_hooks_file(
-        project_root / ".chrys",
+        workdir / ".chrys",
         [_hook_config(id_="p1", event="before_tool_call")],
     )
     (config_dir / "hooks").mkdir(parents=True)
@@ -334,10 +334,10 @@ hooks:
 """,
         encoding="utf-8",
     )
-    project_file = load_hooks_project(project_root)
+    workdir_file = load_workdir_hooks(workdir)
     global_file = load_hooks_dir(config_dir)
-    assert project_file is not None and global_file is not None
-    merged = merge_hooks_files(project=project_file, global_=global_file)
+    assert workdir_file is not None and global_file is not None
+    merged = merge_hooks_files(workdir=workdir_file, global_=global_file)
     assert [h.id for h in merged.hooks] == ["p1", "g1"]
     assert merged.hooks[1].enabled is False
 
@@ -345,7 +345,7 @@ hooks:
 def test_ordering_preserved(tmp_path: Path) -> None:
     mgr = _build_manager(
         tmp_path,
-        project_hooks=[_hook_config(id_=f"p{i}", event="before_tool_call") for i in range(3)],
+        workdir_hooks=[_hook_config(id_=f"p{i}", event="before_tool_call") for i in range(3)],
         global_hooks=[_hook_config(id_=f"g{i}", event="before_tool_call") for i in range(5)],
     )
     assert mgr is not None
@@ -369,25 +369,25 @@ def test_same_id_warning_logged(
 
     _build_manager(
         tmp_path,
-        project_hooks=[_hook_config(id_="lint", event="before_tool_call")],
+        workdir_hooks=[_hook_config(id_="lint", event="before_tool_call")],
         global_hooks=[_hook_config(id_="lint", event="before_tool_call")],
     )
     with caplog.at_level(logging.WARNING, logger="chrys.service.hooks.loader"):
-        project_file = load_hooks_project(tmp_path / "project")
+        workdir_file = load_workdir_hooks(tmp_path / "workdir")
         global_file = load_hooks_dir(tmp_path / "config")
-        merge_hooks_files(project=project_file, global_=global_file)
+        merge_hooks_files(workdir=workdir_file, global_=global_file)
     assert any("lint" in record.message for record in caplog.records), (
         f"expected warning about 'lint' collision, got: {[r.message for r in caplog.records]}"
     )
 
 
-def test_modify_flows_project_to_global(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
+def test_modify_flows_workdir_to_global(tmp_path: Path) -> None:
+    workdir = tmp_path / "workdir"
     config_dir = tmp_path / "config"
-    project_root.mkdir()
+    workdir.mkdir()
     config_dir.mkdir()
     _write_hooks_file(
-        project_root / ".chrys",
+        workdir / ".chrys",
         [_hook_config(id_="rewrite", event="before_tool_call")],
     )
     (config_dir / "hooks").mkdir(parents=True)
@@ -401,10 +401,10 @@ hooks:
 """,
         encoding="utf-8",
     )
-    project_file = load_hooks_project(project_root)
+    workdir_file = load_workdir_hooks(workdir)
     global_file = load_hooks_dir(config_dir)
-    assert project_file is not None and global_file is not None
-    merged = merge_hooks_files(project=project_file, global_=global_file)
+    assert workdir_file is not None and global_file is not None
+    merged = merge_hooks_files(workdir=workdir_file, global_=global_file)
     assert [h.id for h in merged.hooks] == ["rewrite", "rewrite"]
 
 
@@ -437,22 +437,22 @@ def test_from_single_preserves_hooks_and_settings(tmp_path: Path) -> None:
     assert wrapped.sources == ["/x.yaml"]
 
 
-def test_from_single_as_project_flag(tmp_path: Path) -> None:
+def test_from_single_as_workdir_flag(tmp_path: Path) -> None:
     from chrys.service.hooks.schema import HooksFile, MergedHooksFile
 
     plain = HooksFile(
         hooks=[_hook_config(id_="p1", event="before_tool_call")],
         source="/proj.yaml",
     )
-    wrapped = MergedHooksFile.from_single(plain, as_project=True)
-    assert wrapped.project is plain
+    wrapped = MergedHooksFile.from_single(plain, as_workdir=True)
+    assert wrapped.workdir is plain
     assert wrapped.global_ is None
     assert wrapped.sources == ["/proj.yaml"]
 
 
 def test_merged_source_omits_empty_source_segments() -> None:
     wrapped = MergedHooksFile(
-        project=HooksFile(source=""),
+        workdir=HooksFile(source=""),
         global_=HooksFile(source="/cfg/hooks.yaml"),
     )
     assert wrapped.source == "/cfg/hooks.yaml"

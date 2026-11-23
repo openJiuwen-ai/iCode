@@ -104,7 +104,9 @@ async def test_compressed_terminal_status_prevents_folding(inside: bool, marker:
     history[-1] = Message("assistant", [Content.from_text("Partial answer")]).to_dict()
     status = _terminal_status(marker, status_code)
     summary, block = _archive([*history, status] if inside else history)
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([summary] if inside else [summary, status], compressed_blocks={"archive": block})
         await panel.wait_replay_complete()
@@ -134,7 +136,9 @@ async def test_compressed_failure_followed_by_success_still_folds(answer_inside:
     history.append(Message("assistant", [Content.from_text("Partial answer")]).to_dict())
     history.append(_terminal_status(HistoryMarkerKind.INTERRUPTED, HistoryMarkerKind.STATUS_EXECUTION_FAILED))
     summary, block = _archive([*history, final] if answer_inside else history)
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(
             [summary] if answer_inside else [summary, final], compressed_blocks={"archive": block}
@@ -173,7 +177,9 @@ async def test_omitted_status_never_creates_an_empty_process_or_wraps_lone_think
         ]
     )
     summary, block = _archive(history)
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([summary], compressed_blocks={"archive": block})
         await panel.wait_replay_complete()
@@ -199,7 +205,9 @@ async def test_omitted_failure_after_a_non_answer_still_ends_the_turn(boundary: 
         )
     history.append(_terminal_status(HistoryMarkerKind.INTERRUPTED, None))
     summary, block = _archive(history)
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([summary], compressed_blocks={"archive": block})
         await panel.wait_replay_complete()
@@ -207,16 +215,16 @@ async def test_omitted_failure_after_a_non_answer_still_ends_the_turn(boundary: 
         assert all(message.display for message in panel.query(AgentMessage))
 
 
-async def test_omitted_failure_survives_setting_changes_until_a_later_success() -> None:
-    enabled = False
+async def test_omitted_failure_stays_visible_until_a_later_success() -> None:
     history = _history()
     history.append(_terminal_status(HistoryMarkerKind.INTERRUPTED, None))
     summary, block = _archive(history)
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: enabled).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([summary], compressed_blocks={"archive": block})
         await panel.wait_replay_complete()
-        enabled = True
         await panel.add_agent_message("")
         assert not panel.query(ProcessBlock)
         await panel.add_agent_message("Recovered.")
@@ -258,7 +266,9 @@ def _summary(panel: ChatPanel) -> list[tuple[int, int, bool, str]]:
 
 
 async def test_live_and_replay_share_segments_counts_and_default_fold_state() -> None:
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await _live(panel)
         await pilot.pause()
@@ -289,9 +299,8 @@ async def test_live_and_replay_share_segments_counts_and_default_fold_state() ->
         assert panel.get_all_messages() == copied
 
 
-@pytest.mark.parametrize("fold", [False, True])
 @pytest.mark.parametrize("failed", [False, True])
-async def test_archived_local_tools_keep_results_and_follow_the_turn_fold_policy(fold: bool, failed: bool) -> None:
+async def test_archived_local_tools_keep_results_and_follow_the_turn_fold_policy(failed: bool) -> None:
     history = _history()
     if failed:
         history[-1] = Message(
@@ -305,7 +314,9 @@ async def test_archived_local_tools_keep_results_and_follow_the_turn_fold_policy
         [Content.from_text("Condensed")],
         additional_properties={HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY, "_block_id": "archive"},
     ).to_dict()
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: fold).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([summary], compressed_blocks={"archive": archived})
         await panel.wait_replay_complete()
@@ -319,7 +330,7 @@ async def test_archived_local_tools_keep_results_and_follow_the_turn_fold_policy
         if failed:
             assert not panel.query(ProcessBlock)
             assert all(group.display for group in groups)
-        if fold and not failed:
+        else:
             # The injection still divides the turn's two tool batches into separate folded activities.
             assert _summary(panel) == [
                 (0, 1, True, "▸ 1 tool call: 1 read"),
@@ -328,9 +339,6 @@ async def test_archived_local_tools_keep_results_and_follow_the_turn_fold_policy
             second_narration = next(message for message in panel.query(AgentMessage) if message.text == "One more.")
             assert second_narration.process_hidden
             assert all(not group.display for group in groups)
-        elif not failed:
-            assert not panel.query(ProcessBlock)
-            assert all(group.display for group in groups)
 
 
 @pytest.mark.parametrize("retained_kind", ["hosted", "informational"])
@@ -363,7 +371,9 @@ async def test_mixed_compressed_turn_counts_tools_in_collapsed_and_expanded_titl
         [Content.from_text("Condensed")],
         additional_properties={HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY, "_block_id": "mixed"},
     ).to_dict()
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([summary], compressed_blocks={"mixed": archived})
         await panel.wait_replay_complete()
@@ -399,7 +409,9 @@ async def test_restored_awaiting_sub_agents_status_cannot_complete_a_turn(status
             },
         ).to_dict()
     )
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(history)
         await panel.wait_replay_complete()
@@ -411,22 +423,23 @@ async def test_restored_awaiting_sub_agents_status_cannot_complete_a_turn(status
 
 
 async def test_failed_header_mount_keeps_members_visible_and_can_be_retried(monkeypatch: pytest.MonkeyPatch) -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        mount = panel.mount_transcript_after
+        mount = panel.place_transcript_entry
 
-        async def fail_first_segment(anchor, block):
-            assert all(member.display for member in block.members)
-            if block.segment_index == 0:
-                return False
-            return await mount(anchor, block)
+        async def fail_first_segment(header, anchor, *, before=False):
+            if isinstance(header, ProcessBlock):
+                assert all(member.display for member in header.members)
+                if header.segment_index == 0:
+                    return False
+            return await mount(header, anchor, before=before)
 
-        monkeypatch.setattr(panel, "mount_transcript_after", fail_first_segment)
+        monkeypatch.setattr(panel, "place_transcript_entry", fail_first_segment)
         await _live(panel)
         assert _summary(panel) == [(1, 1, True, "▸ 1 tool call: 1 read")]
         assert panel.query(ToolGroup).first().display
         existing = panel.query_one(ProcessBlock)
-        monkeypatch.setattr(panel, "mount_transcript_after", mount)
+        monkeypatch.setattr(panel, "place_transcript_entry", mount)
         await panel._process_controller.complete_live()
         assert _summary(panel) == [
             (0, 1, True, "▸ 1 tool call: 1 read"),
@@ -436,7 +449,7 @@ async def test_failed_header_mount_keeps_members_visible_and_can_be_retried(monk
 
 
 async def test_unowned_tool_state_notifications_do_not_enter_batch_update() -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await _live(panel)
         group = panel.query(ToolGroup).first()
@@ -450,7 +463,7 @@ async def test_unowned_tool_state_notifications_do_not_enter_batch_update() -> N
 async def test_a_turn_header_counts_its_calls_by_kind_and_a_failure_that_lands_after_it_folded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test(size=(120, 24)) as pilot:
+    async with ChatPanelApp().run_test(size=(120, 24)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_user_message("prompt")
         await panel.add_tool_start("r1", "read_file", KIND_FILESYSTEM_READ, args={})
@@ -505,9 +518,9 @@ async def test_a_turn_header_counts_its_calls_by_kind_and_a_failure_that_lands_a
 
 
 async def test_an_open_turn_draws_one_unbroken_guide_down_its_members() -> None:
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test(
-        size=(100, 40)
-    ) as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test(size=(100, 40)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_user_message("prompt")
         for step in range(2):
@@ -536,7 +549,9 @@ async def test_an_open_turn_draws_one_unbroken_guide_down_its_members() -> None:
 
 
 async def test_tool_free_activity_uses_fallback_title_and_single_thinking_has_no_wrapper() -> None:
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_user_message("prompt")
         await panel.add_answer_delta("middle", "An intermediate update.")
@@ -557,7 +572,7 @@ async def test_tool_free_activity_uses_fallback_title_and_single_thinking_has_no
 
 
 async def test_failure_prompt_cleanup_has_no_precreated_header() -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_user_message("failed prompt")
         await panel.add_error("failed")
@@ -569,7 +584,7 @@ async def test_failure_prompt_cleanup_has_no_precreated_header() -> None:
 
 
 async def test_manual_expand_persists_and_fold_toggles_processes_with_their_contents() -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await _live(panel)
         block = panel.query(ProcessBlock).first()
@@ -584,30 +599,9 @@ async def test_manual_expand_persists_and_fold_toggles_processes_with_their_cont
         assert all(group.display and not group.collapsed for group in panel.query(ToolGroup))
 
 
-async def test_fold_can_open_existing_processes_after_automatic_folding_is_disabled() -> None:
-    enabled = True
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: enabled).run_test() as pilot:
-        panel = pilot.app.query_one(ChatPanel)
-        await _live(panel)
-        enabled = False
-        thinking = panel.query_one(ThinkingMessage)
-        await wait_for(lambda: not thinking.query(VirtualizedMarkdown), pilot=pilot, description="thinking released")
-        assert panel.toggle_fold_all() is False
-        assert all(not block.collapsed for block in panel.query(ProcessBlock))
-        assert all(member.display for block in panel.query(ProcessBlock) for member in block.members)
-        await wait_for(
-            lambda: bool(thinking.query(VirtualizedMarkdown)),
-            pilot=pilot,
-            description="keyboard expansion restores thinking",
-        )
-        assert not thinking.collapsed
-        assert panel.toggle_fold_all() is True
-        assert all(block.collapsed for block in panel.query(ProcessBlock))
-
-
 @pytest.mark.parametrize("lock", [False, True], ids=["running-tool", "ask-user-lock"])
 async def test_terminal_member_notification_retries_deferred_folding(lock: bool) -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_user_message("prompt")
         await panel.add_tool_start("c1", "read_file", "filesystem.read")
@@ -630,7 +624,7 @@ async def test_terminal_member_notification_retries_deferred_folding(lock: bool)
 
 @pytest.mark.parametrize("lock", [False, True], ids=["running-tool", "ask-user-lock"])
 async def test_fold_expansion_survives_the_last_blocker_finishing(lock: bool) -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await _live(panel)
         await panel.add_user_message("next")
@@ -659,7 +653,7 @@ async def test_fold_expansion_survives_the_last_blocker_finishing(lock: bool) ->
 
 
 async def test_fold_with_only_blocked_sections_preserves_pending_intent() -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_user_message("prompt")
         await panel.add_tool_start("pending", "read_file", "filesystem.read")
@@ -675,16 +669,11 @@ async def test_fold_with_only_blocked_sections_preserves_pending_intent() -> Non
         await wait_for(lambda: block.collapsed, pilot=pilot, description="preserved pending fold applied")
 
 
-async def test_sidecar_last_turn_and_disabled_setting_leave_process_visible() -> None:
-    enabled = True
-    async with ChatPanelApp(fold_finished_turns=lambda: enabled).run_test() as pilot:
+async def test_sidecar_last_turn_leaves_process_visible() -> None:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(_history(), recovered_from_sidecar=True)
         await panel.wait_replay_complete()
-        assert not panel.query(ProcessBlock)
-        await panel.clear()
-        enabled = False
-        await _live(panel)
         assert not panel.query(ProcessBlock)
 
 
@@ -705,7 +694,7 @@ async def test_adding_tools_cannot_override_process_visibility(replay: bool) -> 
 
 
 async def test_inserted_header_preserves_cross_entry_selection_and_prepend_anchor() -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await _live(panel)
         await pilot.pause()
@@ -763,7 +752,9 @@ def test_a_compaction_card_and_a_context_fold_are_each_a_compaction_entry() -> N
 
 
 async def test_a_compaction_during_a_turn_stays_visible_between_the_sections_it_splits() -> None:
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_user_message("prompt")
         await panel.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, args={})
@@ -831,7 +822,7 @@ def test_foreground_budget_caps_visible_entries_and_total_hidden_entries() -> No
 
 @pytest.mark.parametrize("ending", ["error", "interrupted", "empty"])
 async def test_unsuccessful_or_empty_final_never_hides_the_last_process(ending: str) -> None:
-    async with ChatPanelApp(fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_user_message("prompt")
         await panel.add_tool_start("c", "read_file", "filesystem.read")

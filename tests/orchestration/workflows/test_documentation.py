@@ -14,7 +14,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -28,7 +28,7 @@ async def test_workflow_node_does_not_inject_product_documentation(
     docs.mkdir()
     (docs / "index.yaml").write_text("locales: [en]\ntopics: []\n", encoding="utf-8")
     monkeypatch.setenv("CHRYS_DOCS_ROOT", str(docs))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     client = MockChatClient(responses=[MockResponse(text="reviewed")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client], builtin_tools=True)
     write_workflow(

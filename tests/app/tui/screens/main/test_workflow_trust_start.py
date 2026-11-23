@@ -15,7 +15,7 @@ from chrys.app.tui.widgets.workflow.info import WorkflowInfo
 from chrys.foundation.events import types as events
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.service.llm.mock import MockChatClient
-from tests.orchestration.workflows._hosting import make_host, make_project, patch_runtime, write_workflow
+from tests.orchestration.workflows._hosting import make_host, make_workdir, patch_runtime, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, ENGINE_TURN_TIMEOUT, wait_for, with_wait_deadline
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_trust_dialog_precedes_top_level_execution_and_cancel_has_no_side_effects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     marker = tmp_path / "executed"
     source = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n".encode()
@@ -58,7 +58,7 @@ async def test_trust_dialog_precedes_top_level_execution_and_cancel_has_no_side_
         assert not marker.exists()
         assert main._workflow_panel.preview is None
         assert (
-            main._workflow.browser.catalog.ledger().recorded(str(project / ".chrys/workflows/untrusted.py"), "project")
+            main._workflow.browser.catalog.ledger().recorded(str(project / ".chrys/workflows/untrusted.py"), "workdir")
             is None
         )
         main._workflow.browser.open("untrusted")
@@ -88,7 +88,7 @@ async def test_trust_dialog_precedes_top_level_execution_and_cancel_has_no_side_
 async def test_starting_worker_can_be_cancelled_before_acceptance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     block, pid = tmp_path / "block-load", tmp_path / "worker-pid"
     source = (

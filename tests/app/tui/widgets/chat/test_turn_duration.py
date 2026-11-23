@@ -14,8 +14,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from textual.geometry import Region
 
-from chrys.app.tui.widgets.chat.messages import AgentMessage, turn_duration_ms
+from chrys.app.tui.widgets.chat.messages import AgentMessage, _AgentReplyHeader, turn_duration_ms
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.replay import (
     HistoryReplayPlanner,
@@ -311,3 +312,20 @@ async def test_text_tools_followed_tells_no_time_though_a_boundary_let_it_go() -
         await pilot.pause()
 
         assert [message._duration_ms for message in panel.query(AgentMessage)] == [None]
+
+
+async def test_a_streamed_answer_shows_its_time_as_the_turn_completes_it() -> None:
+    """The header widens for the time it learns at the end: nothing of it is cut, live as replayed."""
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("hello")
+        await panel.add_answer_delta("a", "Hello!")
+        await pilot.pause()
+        panel.finish_answer_segment("a", completed=True)
+        await panel.add_agent_message("Hello!", created_at=_at(2), turn_started_at=_SENT.isoformat())
+        await pilot.pause()
+        answer = panel.query(AgentMessage).last()
+        header = answer.query_one(_AgentReplyHeader)
+        painted = header.render_lines(Region(0, 0, header.size.width, 1))[0].text
+        assert painted.rstrip() == answer._header_text().plain
+        assert "(2s)" in painted

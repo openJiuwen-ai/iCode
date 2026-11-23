@@ -3,7 +3,7 @@
 """Check that the directory a command was launched from still exists.
 
 A shell can keep a directory as its cwd after it was deleted or moved. Commands
-that use the cwd to resolve a workspace or project settings check it after
+that use the cwd to resolve working directory settings check it after
 parsing their arguments. A valid absolute ``-C`` path also passes this check.
 Otherwise, a missing cwd stops the command with a single error message.
 """

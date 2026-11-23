@@ -41,7 +41,7 @@ from tests.app.tui.terminal.test_program_status import (
     _turn_origin,
 )
 from tests.orchestration.engine.run.test_retry_integration import started_retry_engine
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import (
     ENGINE_TEST_WAIT_TIMEOUT,
@@ -93,7 +93,7 @@ async def test_acknowledging_the_context_clears_a_done_or_an_error_result_alike(
 async def test_workflow_context_changes_clear_only_acknowledged_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, outcome: str
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     requests = await _requests(bus)
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)

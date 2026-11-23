@@ -165,18 +165,22 @@ class RunningTitle(GatedAnimation):
             self.pause_animation()
         return True
 
-    def running_title(self, title: Text, end: int | None = None, *, base: RichColor | None = None) -> Text:
-        """*title* after the dot, the band across its first *end* characters, or all of them.
+    def running_title(
+        self, title: Text, end: int | None = None, *, base: RichColor | None = None, show_dot: bool = True
+    ) -> Text:
+        """*title* with a band across its first *end* characters, or all of them, optionally after the dot.
 
         The band rises from *base*, the colour of the title's text, or else the widget's own.
         """
         lit = self.text_style_of(self.SHIMMER_COMPONENT)
         if self.app.animation_level == "none":
-            return Text.assemble((f"{RUNNING_DOT} ", lit), title)
+            return Text.assemble((f"{RUNNING_DOT} ", lit), title) if show_dot else title
         now = time.monotonic()
-        dot, on = running_dot(now)
         start = self.rich_style.color if base is None else base
         shimmer(title, len(title.plain) if end is None else end, start, lit.color, now)
+        if not show_dot:
+            return title
+        dot, on = running_dot(now)
         return Text.assemble((f"{dot} ", lit if on else Style()), title)
 
 
