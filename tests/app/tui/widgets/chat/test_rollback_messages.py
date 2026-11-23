@@ -28,6 +28,7 @@ from chrys.foundation.patches.textual_precompose import precompose_tree
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY, OPERATION_ID_KEY
 from chrys.kernel import Content, Message
 from chrys.service.context.providers.history import CompressedBlock
+from chrys.service.state.folds import FoldItem
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, WidgetApp, click_when_settled
@@ -280,7 +281,10 @@ async def test_archived_tools_copy_and_diff_pair_by_operation_not_reused_provide
     async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(
-            messages, compressed_blocks={"archive": block}, file_snapshots=snapshots, rollback_targets={0, 1}
+            messages,
+            folds=[FoldItem("archive", "condensed", block=block)],
+            file_snapshots=snapshots,
+            rollback_targets={0, 1},
         )
         await panel.wait_replay_complete()
         old, new = panel.query(UserMessage)
@@ -329,7 +333,7 @@ async def test_legacy_provider_id_cannot_alias_a_modern_operation_snapshot_in_an
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(
             [message.to_dict() for message in messages],
-            compressed_blocks={"collision": block},
+            folds=[FoldItem("collision", "condensed", block=block)],
             file_snapshots=snapshots,
         )
         await panel.wait_replay_complete()

@@ -5323,6 +5323,9 @@
       "JsonFileStateStore.load_session": [
         ["thread_pool", "await asyncio.to_thread(self._load_session_sync, session_id, prefer_recovery=prefer_recovery)", "unresolved"]
       ],
+      "JsonFileStateStore.load_session_for_replay": [
+        ["thread_pool", "await asyncio.to_thread(self._load_session_for_replay_sync, session_id, prefer_recovery=prefer_recovery)", "unresolved"]
+      ],
       "JsonFileStateStore.load_session_meta": [
         ["thread_pool", "await asyncio.to_thread(self._load_session_meta_sync, session_id, prefer_recovery=prefer_recovery, strict=strict)", "unresolved"]
       ],
@@ -5333,7 +5336,7 @@
         ["wrapper", "await self.load_session_transcript(session_id, prefer_recovery=prefer_recovery)", "unresolved", "chrys.service.state.store.JsonFileStateStore.load_session_transcript"]
       ],
       "JsonFileStateStore.load_session_transcript": [
-        ["thread_pool", "await asyncio.to_thread(self._load_session_transcript_sync, session_id, prefer_recovery=prefer_recovery)", "unresolved"]
+        ["thread_pool", "await asyncio.to_thread(self._load_session_transcript_sync, session_id, prefer_recovery=prefer_recovery, include_folds=include_folds)", "unresolved"]
       ],
       "JsonFileStateStore.load_workflow_session": [
         ["thread_pool", "await asyncio.to_thread(self._load_workflow_session_sync, session_id)", "workflow-blocking"]

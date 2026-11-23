@@ -346,8 +346,8 @@ class SessionMetaMixin:
         ``None`` means the message is not a user-typed prompt: wrong role,
         synthetic history (turn/status markers, ``continue`` nudges), or no
         text content.  Legacy sessions store ``contents`` as plain strings;
-        those count as text under the same rule replay's
-        ``_load_session_raw_sync`` uses (a ``Content(type=`` repr blob is
+        those count as text under the same rule
+        ``normalize_transcript_message`` uses (a ``Content(type=`` repr blob is
         not text).  Capping each block to its collapsed head+tail before
         joining yields the same final excerpt as capping the full joined
         collapse — the message-level windows only ever read a block's
@@ -390,7 +390,7 @@ class SessionMetaMixin:
         the live list — keeping ``role == "user"`` text while skipping
         synthetic history (turn/status markers, ``continue`` nudges).
         Legacy sessions store ``contents`` as plain strings; those count as
-        text under the same rule replay's ``_load_session_raw_sync`` uses
+        text under the same rule ``normalize_transcript_message`` uses
         (a ``Content(type=`` repr blob is not text).
         Compaction can leave a message in both places; such twins dedup by
         their capped TEXT, never by ``message_id`` — ids restart across

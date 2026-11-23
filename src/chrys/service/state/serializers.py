@@ -107,6 +107,13 @@ def serialize_compressed_block(block: CompressedBlock) -> dict[str, Any]:
     }
 
 
+def _turn_range(value: object) -> tuple[int, int]:
+    """A stored ``[first, last]`` turn range; anything malformed reads as unknown ``(0, 0)``."""
+    if isinstance(value, list | tuple) and len(value) == 2 and all(type(turn) is int for turn in value):
+        return value[0], value[1]
+    return 0, 0
+
+
 def deserialize_compressed_block(data: dict[str, Any]) -> CompressedBlock:
     """Reconstruct a CompressedBlock from a serialized dict."""
     return CompressedBlock(
@@ -114,7 +121,7 @@ def deserialize_compressed_block(data: dict[str, Any]) -> CompressedBlock:
         messages=[deserialize_message(m) for m in data.get("messages", [])],
         summary_text=data["summary_text"],
         marker_id=data.get("marker_id", ""),
-        turn_range=tuple(data.get("turn_range", [0, 0])),
+        turn_range=_turn_range(data.get("turn_range")),
         created_at=data.get("created_at", ""),
     )
 
