@@ -30,6 +30,7 @@ from chrys.app.tui.screens.models import screen as screen_module
 from chrys.app.tui.screens.models.screen import ModelConfigScreen
 from chrys.foundation.errors.classify import ErrorKind
 from chrys.foundation.errors.provider import ProviderResponseError
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.kernel import ChatResponse, Message
 from chrys.service.llm.model_list import ConnectionSnapshot, ModelDiscovery
 from chrys.service.profiles.models.schema import ModelProfile
@@ -81,6 +82,9 @@ class FakeLLM:
         use_route_session_context: bool = False,
         session_dir: Path | None = None,
         tool_result_ceiling_tokens: int | None = None,
+        *,
+        request_role: RequestRole | None = None,
+        request_scope: RequestScope | None = None,
     ) -> AsyncIterator[object]:
         self.profiles.append(profile)
         self.session_ids.append(session_id)
@@ -314,6 +318,9 @@ async def test_client_setup_failure_is_reported(fake_llm: FakeLLM, monkeypatch: 
         use_route_session_context: bool = False,
         session_dir: Path | None = None,
         tool_result_ceiling_tokens: int | None = None,
+        *,
+        request_role: RequestRole | None = None,
+        request_scope: RequestScope | None = None,
     ) -> AsyncIterator[object]:
         raise ValueError("environment variable MISSING_KEY_ZZ is not set")
         yield  # pragma: no cover

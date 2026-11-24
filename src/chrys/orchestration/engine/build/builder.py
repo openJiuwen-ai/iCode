@@ -46,6 +46,7 @@ from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
+from chrys.foundation.util.chrys_headers import RequestRole
 from chrys.foundation.util.imports import import_off_loop
 from chrys.kernel import Agent, LoopRecorder
 from chrys.kernel.sessions import ContextProvider
@@ -545,6 +546,7 @@ async def build_agent(
         invocation_publishers = InvocationPublishers(bus)
         client = await create_client(
             active_profile,
+            request_role=RequestRole.MAIN_AGENT,
             on_intermediate_text=on_intermediate,
             session_id=session_id,
             session_dir=effective_session_dir,

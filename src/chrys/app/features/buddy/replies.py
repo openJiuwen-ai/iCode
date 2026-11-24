@@ -81,6 +81,7 @@ def stock_reply(buddy: Buddy) -> MessageRef:
 
 async def _ask_model(buddy: Buddy) -> str:
     from chrys.foundation.config.settings_store import load_settings
+    from chrys.foundation.util.chrys_headers import RequestRole
     from chrys.kernel import Message
     from chrys.orchestration.engine.engine import get_current_engine
     from chrys.service.llm.clients import scoped_client
@@ -120,6 +121,7 @@ async def _ask_model(buddy: Buddy) -> str:
         request = f"The conversation so far:\n{conversation}\n\n{request}"
     async with scoped_client(
         profile,
+        request_role=RequestRole.PET,
         session_id=(
             derive_llm_route_session_id(session_id, route_kind="buddy-reply", model_profile=profile)
             if session_id

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+from chrys.foundation.util.chrys_headers import RequestRole
 from chrys.kernel import EXCLUDED_KEY, TOOL_CALL_CONTENT_TYPES, TOOL_RESULT_CONTENT_TYPES, Message
 from chrys.kernel.client import sanitize_side_call_options
 from chrys.kernel.exchanges import (
@@ -177,6 +178,7 @@ async def answer_side_question(
     ]
     async with scoped_client(
         profile,
+        request_role=RequestRole.SIDE_QUESTION,
         session_id=derive_llm_route_session_id(session_id, route_kind="side-question", model_profile=profile),
         parent_session_id=session_id,
         session_dir=session_dir,

@@ -39,6 +39,7 @@ from chrys.foundation.i18n import DisplayBlock, DisplaySequence, Localizer, Mess
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.models.workspace import WorkingDir, Workspace
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.orchestration.session_host import (
     AgentProfileNotFoundError,
     ChrysSessionHost,
@@ -86,6 +87,8 @@ def _hand_out_sub_agent_client(monkeypatch: pytest.MonkeyPatch, client: MockChat
         use_route_session_context: bool,
         session_dir: Path,
         tool_result_ceiling_tokens: int | None,
+        request_role: RequestRole,
+        request_scope: RequestScope | None,
     ) -> MockChatClient:
         return client
 

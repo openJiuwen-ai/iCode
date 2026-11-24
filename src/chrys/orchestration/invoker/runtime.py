@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.foundation.retry import RetryAttemptInfo
+    from chrys.foundation.util.chrys_headers import RequestScope
     from chrys.kernel.client import BaseChatClient
     from chrys.kernel.middleware import ChatMiddleware
     from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
@@ -109,6 +110,7 @@ class LastWordsInputs(TypedDict):
     session_id: NotRequired[str | None]
     parent_session_id: NotRequired[str | None]
     session_dir: NotRequired[Path | None]
+    request_scope: NotRequired[RequestScope | None]
     max_transient_retries: NotRequired[int | None]
     publish_retry: NotRequired[Callable[[RetryAttemptInfo], Awaitable[None]] | None]
     publish_status: NotRequired[Callable[[CompactionStatus], Awaitable[None]] | None]

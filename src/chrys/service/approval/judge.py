@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import ChatResponse, Message
 from chrys.service.approval.formal import FormalEvaluator
@@ -377,11 +378,14 @@ class ApprovalJudge:
         parent_session_id: str | None = None,
         session_dir: Path | None = None,
         auto_review: str = "direct",
+        *,
+        request_scope: RequestScope | None = None,
     ) -> None:
         self._profile = profile
         self._session_id = session_id
         self._parent_session_id = parent_session_id
         self._session_dir = session_dir
+        self._request_scope = request_scope
         self._client: Any = None
         self._client_lock = asyncio.Lock()
         self._closed = False
@@ -406,6 +410,8 @@ class ApprovalJudge:
 
                 self._client = await create_client(
                     self._profile,
+                    request_role=RequestRole.APPROVAL_JUDGE,
+                    request_scope=self._request_scope,
                     session_id=self._session_id,
                     parent_session_id=self._parent_session_id,
                     session_dir=self._session_dir,

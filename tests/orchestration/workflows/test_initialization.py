@@ -82,6 +82,8 @@ def _child_clients(monkeypatch: pytest.MonkeyPatch) -> list[MockChatClient]:
         use_route_session_context,
         session_dir,
         tool_result_ceiling_tokens,
+        request_role,
+        request_scope,
     ):
         client = MockChatClient(
             responses=[

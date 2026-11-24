@@ -56,6 +56,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import get_platform
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.foundation.util.imports import import_off_loop
 from chrys.orchestration.engine.state.lifecycle_permits import RebuildPermitDenied
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -224,6 +225,9 @@ class Builds:
         use_route_session_context: bool = False,
         session_dir: Path | None = None,
         tool_result_ceiling_tokens: int | None = None,
+        *,
+        request_role: RequestRole | None = None,
+        request_scope: RequestScope | None = None,
     ) -> ScriptedModel:
         self.profiles.append(profile.id)
         hold, self.hold = self.hold, None
