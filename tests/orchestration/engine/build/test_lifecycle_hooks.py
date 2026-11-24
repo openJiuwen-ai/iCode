@@ -35,6 +35,7 @@ from chrys.service.hooks.schema import HookConfig, HookExecution, HookRun, HookS
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.trajectory.session import SessionTrajectory
+from tests.support.components import plan_workspace
 from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent, make_manifest
 from tests.support.reminder_stack import reminder_pair
 from tests.support.waiting import wait_until
@@ -151,7 +152,7 @@ def _completed_build(engine: AgentEngine, staged: StagedBuild, *, engine_service
         staged=staged,
         settings=engine.settings_handle.prepare(staged.loaded),
         workspace_retarget=engine_services(engine).workspace_change_tracker.resolve_retarget(
-            staged.workspace,
+            staged.workspace_plan.workspace,
             resolve_scope=engine.settings_handle.prepare(staged.loaded).effective.settings.workspace_change_notice,
         ),
         loaded=engine.current.loaded if engine.current.loaded is not None else make_loaded_agent(),
@@ -417,7 +418,7 @@ async def test_settings_reload_flipping_workdir_hooks_rebuilds_the_hook_manager(
     new_manager = _FakeHookManager("new")
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.agent_profile = profile
-    engine.session.workspace = workspace
+    engine.session.install_workspace(plan_workspace(workspace))
     install_loaded_agent(engine, bindings=_FakeExecutor())  # type: ignore[assignment]
     engine.session.hook_manager = old_manager  # type: ignore[assignment]
     builds: list[tuple[str, object]] = []
@@ -706,7 +707,7 @@ async def test_workspace_soft_restart_reloads_workdir_hook_manager_before_build(
     new_manager = _FakeHookManager("new")
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.agent_profile = profile
-    engine.session.workspace = old_workspace
+    engine.session.install_workspace(plan_workspace(old_workspace))
     install_loaded_agent(engine, bindings=_FakeExecutor())  # type: ignore[assignment]
     engine.session.hook_manager = old_manager  # type: ignore[assignment]
     loaded_from: list[str] = []
@@ -727,7 +728,7 @@ async def test_workspace_soft_restart_reloads_workdir_hook_manager_before_build(
 
     await engine.loader.reload(
         profile,
-        workspace=new_workspace,
+        workspace_plan=plan_workspace(new_workspace),
         operation="workspace_change",
     )
     if engine.session.outbox_recovery_task is not None:
@@ -748,7 +749,7 @@ async def test_soft_restart_rearms_preserved_phase4_state(
     profile = AgentProfile(name="Code")
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.agent_profile = profile
-    engine.session.workspace = Workspace(primary_cwd=str(tmp_path))
+    engine.session.install_workspace(plan_workspace(Workspace(primary_cwd=str(tmp_path))))
     entry = ManifestEntry(
         record_id="r1",
         group_id="g1",
@@ -822,7 +823,7 @@ async def test_soft_restart_incompatible_service_session_warning_keeps_legacy_te
     profile = AgentProfile(name="Code")
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.agent_profile = profile
-    engine.session.workspace = Workspace(primary_cwd=str(tmp_path))
+    engine.session.install_workspace(plan_workspace(Workspace(primary_cwd=str(tmp_path))))
     install_loaded_agent(engine, bindings=_FakeExecutor())  # type: ignore[assignment]
     engine.current.loaded.bindings.backend.service_session_id = "response-session"
     engine.current.loaded.bindings.backend.service_session_storage_enabled = True
@@ -871,7 +872,7 @@ async def test_workspace_soft_restart_keeps_reloaded_hook_manager_after_post_bui
     new_manager = _FakeHookManager("new")
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.agent_profile = profile
-    engine.session.workspace = old_workspace
+    engine.session.install_workspace(plan_workspace(old_workspace))
     install_loaded_agent(engine, bindings=_FakeExecutor())  # type: ignore[assignment]
     engine.session.hook_manager = old_manager  # type: ignore[assignment]
 
@@ -896,7 +897,7 @@ async def test_workspace_soft_restart_keeps_reloaded_hook_manager_after_post_bui
     with pytest.raises(RuntimeError, match="bind failed"):
         await engine.loader.reload(
             profile,
-            workspace=new_workspace,
+            workspace_plan=plan_workspace(new_workspace),
             operation="workspace_change",
         )
     if engine.session.outbox_recovery_task is not None:

@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.models.workspace import WorkingDir, Workspace, WorkspaceDeparture
 from chrys.foundation.platform import PlatformInfo, ShellInfo
 from chrys.service.agent_middleware.reminders import runtime_env
 from chrys.service.agent_middleware.reminders.runtime_env import RuntimeEnvSource
@@ -245,3 +247,35 @@ class TestPythonExecutionPathHints:
 
         assert _runtime_python_line(runtime_python) in hint
         assert f"    - your runtime uv: {runtime_uv}" not in hint
+
+
+def _main_hint(runtime: SessionEnvironment) -> str:
+    hint = RuntimeEnvSource(runtime, shell_tool_enabled=False, workspace_section=True).snapshot()
+    assert hint is not None
+    return hint
+
+
+def _workspace_runtime(tmp_path: Path, name: str = "Selected") -> SessionEnvironment:
+    primary = tmp_path / "primary"
+    primary.mkdir(exist_ok=True)
+    runtime = SessionEnvironment.capture(
+        "project-session",
+        Workspace(str(tmp_path), [WorkingDir(str(primary))], id="p", name=name),
+        workspace_index=("Workspace folders:", f"- {primary} (primary)"),
+    )
+    return replace(runtime, platform=_linux_runtime(tmp_path).platform)
+
+
+def test_a_hand_written_workdir_name_cannot_add_lines_to_the_reminder(tmp_path: Path) -> None:
+    """Control characters in a name written into the project list by hand reach the model as spaces."""
+    member = _workspace_runtime(tmp_path, name="Two\nlines\x07")
+    main = RuntimeEnvSource(member, shell_tool_enabled=False, workspace_section=True).snapshot()
+    sub_agent = RuntimeEnvSource(member, shell_tool_enabled=False).snapshot()
+    left = SessionEnvironment.capture(
+        "left-session", Workspace.from_cwd(str(tmp_path)), departed_workspace=WorkspaceDeparture("Old\r\nname")
+    )
+    departed = RuntimeEnvSource(left, shell_tool_enabled=False, workspace_section=True).snapshot()
+    assert main is not None and sub_agent is not None and departed is not None
+    assert "  Workspace: Two lines " in main.splitlines()
+    assert f"    - {tmp_path / 'primary'}" in sub_agent.splitlines()
+    assert '  Workspace: Unspecified (left workspace "Old  name")' in departed.splitlines()

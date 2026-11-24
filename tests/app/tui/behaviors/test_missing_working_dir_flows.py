@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from textual.pilot import Pilot
@@ -24,24 +25,36 @@ from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
+    AgentLoadFinished,
+    AgentLoadStarted,
     Error,
     InvocationMessage,
     SessionReady,
     SessionRestore,
+    SessionRestored,
     UserMessage,
     WorkspaceChange,
+    WorkspaceChangeFinished,
+    WorkspaceUpdated,
 )
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.platform import get_platform
 from chrys.kernel import Message
 from chrys.orchestration.engine.run.working_dir import WORKING_DIR_MISSING_CODE
+from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
-from tests.support.event_capture import collect_events
+from chrys.service.state.store import JsonFileStateStore
+from tests.support.event_capture import capture_event_sequence, collect_events
+from tests.support.rollback_spec import PROFILE, ask
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
+from tests.support.workspace_engine import start_workspace_engine
+from tests.support.workspace_registry import write_cwd_hook
 
 _PROFILE = AgentProfile(name="Code", display_name="Code", description="Test profile")
 
@@ -63,6 +76,12 @@ class _Engine(SessionGenerationEngine):
     def __init__(self, bus: EventBus, cwd: Path) -> None:
         self._bus = bus
         self._cwd = cwd
+        self.workspace = Workspace.from_cwd(str(cwd))
+        self.session = SimpleNamespace(
+            workspace=self.workspace,
+            workspace_id=None,
+            owns_runtime_id=lambda session_id: session_id == "test-session",
+        )
         self.turn_lifecycle_task: asyncio.Task[None] | None = None
 
     async def start(self, _profile: AgentProfile) -> None:
@@ -338,3 +357,68 @@ async def test_resume_of_a_session_whose_folder_is_gone_opens_it_in_the_chosen_f
         (restore,) = restores
         assert restore.session_id == "saved-session"
         assert restore.primary_cwd == str(replacement)
+        assert restore.confirmation is None
+
+
+@pytest.mark.parametrize("has_workspace", [False, True], ids=["unspecified", "workspace"])
+async def test_resume_current_session_after_its_folder_moves(
+    agent_engine, monkeypatch, tmp_path: Path, has_workspace
+) -> None:
+    workspace, parent, replacement = _folders(tmp_path)
+    hook_output = tmp_path / "restored-in.txt"
+    write_cwd_hook(get_platform().config_dir, hook_output, event="session_restored", hook_id="record-restore")
+    store = JsonFileStateStore(tmp_path / "state")
+    registry = store.workspace_registry
+    workspace_id = registry.create("Team", str(workspace)).id if has_workspace else None
+    engine = await start_workspace_engine(agent_engine, monkeypatch, workspace, store=store, workspace_id=workspace_id)
+    profiles = AgentProfileRegistry()
+    profiles.register(PROFILE)
+    app = make_chrys_app(
+        tmp_path / "state",
+        engine=engine,
+        event_bus=engine.event_bus,
+        agent_registry=profiles,
+        profile_name=PROFILE.name,
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _ready_main_screen(pilot, workspace)
+        await ask(engine, "saved conversation")
+        session_id = engine.session_id
+        assert session_id is not None and await store.load_latest_session_id() == session_id
+        assert engine.session.workspace_id == workspace_id
+        history = engine.current.require_loaded().bindings.backend.history_state
+        history["messages"].append(Message("user", ["only in memory"]))
+        workspace.rename(parent / "moved")
+
+        async with capture_event_sequence(
+            engine.event_bus,
+            AgentLoadStarted,
+            AgentLoadFinished,
+            SessionRestored,
+            WorkspaceUpdated,
+            WorkspaceChangeFinished,
+        ) as events:
+            await _submit(pilot, screen, "/resume")
+            dialog = await _top_screen(pilot, ConfirmDialog)
+            await _choose_folder(pilot, dialog, parent, replacement)
+            await wait_for(
+                lambda: any(isinstance(event, SessionRestored | WorkspaceChangeFinished) for event in events),
+                pilot=pilot,
+                description="resume reaches a terminal event",
+            )
+            (restored,) = [event for event in events if isinstance(event, SessionRestored)]
+            assert (restored.session_id, restored.primary_cwd, restored.message_count) == (
+                session_id,
+                str(replacement),
+                2,
+            )
+            assert [message.text for message in engine.history_messages if message.role == "user"] == [
+                "saved conversation"
+            ]
+            assert engine.session.workspace_id is None
+            assert registry.snapshot().workspace_id_for_session(session_id) is None
+            await wait_for(hook_output.is_file, pilot=pilot, description="session_restored hook ran")
+            assert Path(hook_output.read_text(encoding="utf-8")).resolve() == replacement.resolve()
+            assert not screen._state.run.agent_loading
+            assert not screen._state.session.restoring_session

@@ -61,6 +61,7 @@ from tests.support.event_capture import capture_events
 from tests.support.extensions import install_file_extension
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.workspace_engine import runtime_reminder, workspace_selection
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -178,6 +179,7 @@ async def test_a_node_has_sleep_though_its_profile_omits_it(tmp_path: Path, monk
 
 
 async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Profile skills and memory reach the node along with the installed reference folders."""
     node_client = MockChatClient(responses=[MockResponse(text="node done")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
     project = make_workdir(tmp_path)
@@ -193,9 +195,18 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     )
     profile.memory = MemoryConfig(files=["NOTES.md"])
     write_workflow(project, "skilled", _WORKFLOW)
+    related = tmp_path / "related"
+    related.mkdir()
     host = make_host(tmp_path, project=project, profiles=[profile])
     try:
         await confirm(host, "skilled")
+        await host.start()
+        registry = host.engine.lifecycle.workspaces.registry
+        assert registry is not None
+        selected = registry.create("Selected", str(project), [str(related)])
+        change = workspace_selection(selected.id)
+        await host.engine.event_bus.publish(change, raise_handler_errors=True)
+        assert str(related) in runtime_reminder(host.engine)
         result, _events = await run(host, "skilled", input_text="Go")
     finally:
         await host.shutdown()
@@ -204,6 +215,8 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     ((messages, options),) = node_client.call_history
     assert "Remember: the build is green." in options["instructions"]
     assert "<name>review</name>" in (messages[-1].text or "")
+    assert "Project:" not in (messages[-1].text or "")
+    assert str(related) in (messages[-1].text or "")
     assert {"load_skill", "read_skill_resource", "run_skill_script"} <= {tool.name for tool in options["tools"]}
 
 

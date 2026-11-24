@@ -17,7 +17,7 @@ from chrys.service.session.persistence import SessionPersistence
 
 
 def _publisher(bus: EventBus) -> tuple[ActiveSession, UsagePublisher]:
-    session = ActiveSession(persistence=SessionPersistence(None, bus), workspace=None, approval_mode=None)
+    session = ActiveSession(persistence=SessionPersistence(None, bus), workspace_plan=None, approval_mode=None)
     session.session_id = "original"
     return session, UsagePublisher(bus=bus, session=session, current=CurrentAgent())
 

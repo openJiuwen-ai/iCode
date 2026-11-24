@@ -15,7 +15,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, cast
 
 from chrys.foundation.platform.paths import display_relpath
@@ -206,6 +206,9 @@ class WorkspaceRetarget:
     resolve_scope: bool
     new_cwd: str | None
     canonical_new_cwd: str | None
+    source_baseline: WorkspaceBaseline | None = None
+    baseline: WorkspaceBaseline | None = None
+    source_generation: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,8 +239,10 @@ class WorkspaceChangeTracker:
         with self._lock:
             return self._baseline
 
-    def retarget_roots(self, workspace: Workspace | None, *, resolve_scope: bool = True) -> None:
-        """Resolve a new desired scope and retain only comparable baseline roots.
+    def resolve_retarget(
+        self, workspace: Workspace | None, *, resolve_scope: bool = True, freeze_baseline: bool = False
+    ) -> WorkspaceRetarget:
+        """Resolve candidate scope and directory identity without writing live state.
 
         Args:
             resolve_scope: ``False`` when the change notice is disabled: the
@@ -251,18 +256,34 @@ class WorkspaceChangeTracker:
                 kept baseline then. Safety notices are rebased regardless:
                 they are delivered whether or not the notice is enabled.
         """
-        self.apply_retarget(self.resolve_retarget(workspace, resolve_scope=resolve_scope))
-
-    def resolve_retarget(self, workspace: Workspace | None, *, resolve_scope: bool = True) -> WorkspaceRetarget:
-        """Resolve candidate scope and directory identity without writing live state."""
+        source_baseline = source_generation = None
+        if freeze_baseline:
+            with self._lock:
+                source_baseline = self._baseline
+                source_generation = self._generation
         scope = _resolve_workspace_scope(workspace) if resolve_scope else _ResolvedScope(roots=())
-        new_cwd = os.path.normpath(os.path.abspath(workspace.primary_cwd)) if workspace is not None else None
+        baseline = (
+            _reconcile_baseline(source_baseline, scope)
+            if resolve_scope and source_baseline is not None
+            else source_baseline
+        )
+        new_cwd, cwd_identity = _notice_cwd(workspace)
         return WorkspaceRetarget(
             scope=scope,
             resolve_scope=resolve_scope,
             new_cwd=new_cwd,
-            canonical_new_cwd=canonical_path(new_cwd) if new_cwd is not None else None,
+            canonical_new_cwd=cwd_identity,
+            source_baseline=source_baseline,
+            baseline=baseline,
+            source_generation=source_generation,
         )
+
+    def retarget_is_current(self, retarget: WorkspaceRetarget) -> bool:
+        """Whether the candidate still describes the live baseline at install time."""
+        if retarget.source_generation is None:
+            return True
+        with self._lock:
+            return self._baseline is retarget.source_baseline and self._generation == retarget.source_generation
 
     def apply_retarget(self, retarget: WorkspaceRetarget) -> None:
         """Install the resolved workspace values and rebase queued notices in memory."""
@@ -275,10 +296,17 @@ class WorkspaceChangeTracker:
             # their relative paths were rendered against the old cwd —
             # pin the base explicitly so the model does not resolve them
             # against the new workspace.
-            self._pending_safety = [_rebase_safety_notice(chunk, retarget) for chunk in self._pending_safety]
+            self._pending_safety = [
+                _rebase_safety_notice(chunk, retarget.new_cwd, retarget.canonical_new_cwd)
+                for chunk in self._pending_safety
+            ]
             if old_baseline is None or not retarget.resolve_scope:
                 return
-            self._baseline = _reconcile_baseline(old_baseline, retarget.scope)
+            self._baseline = (
+                _reconcile_baseline(old_baseline, retarget.scope)
+                if retarget.source_generation is None
+                else retarget.baseline
+            )
 
     def reset_for_restart(self) -> None:
         """Clear session-owned state while preserving the tracker instance."""
@@ -476,7 +504,7 @@ class WorkspaceChangeTracker:
         """
         if not notice:
             return
-        base = os.path.normpath(os.path.abspath(cwd)) if cwd else None
+        base = str(Path(cwd).absolute()) if cwd else None
         chunk = _resolve_safety_notice(_SafetyNotice(notice, base))
         with self._lock:
             self._pending_safety.append(chunk)
@@ -516,11 +544,17 @@ class WorkspaceChangeTracker:
             payload["pending_safety"] = [{"text": chunk.text, "cwd": chunk.cwd} for chunk in pending_safety]
         return payload
 
-    def restore(self, value: object, workspace: Workspace | None = None, *, resolve_scope: bool = True) -> None:
+    def restore(
+        self,
+        value: object,
+        workspace: Workspace | None = None,
+        *,
+        resolve_scope: bool = True,
+    ) -> None:
         """Restore a persisted payload and reconcile it with the freshly resolved scope.
 
         Args:
-            resolve_scope: Same contract as :meth:`retarget_roots` — ``False``
+            resolve_scope: Same contract as :meth:`resolve_retarget` — ``False``
                 skips the Git probes, installs the inactive (empty) scope in
                 place of whatever the previous session left behind, and keeps
                 the restored baseline exactly as persisted for the next
@@ -534,13 +568,7 @@ class WorkspaceChangeTracker:
             scope = _resolve_workspace_scope(workspace)
         else:
             scope = None
-        new_cwd = os.path.normpath(os.path.abspath(workspace.primary_cwd)) if workspace is not None else None
-        retarget = WorkspaceRetarget(
-            scope=scope if scope is not None else _ResolvedScope(roots=()),
-            resolve_scope=resolve_scope,
-            new_cwd=new_cwd,
-            canonical_new_cwd=canonical_path(new_cwd) if new_cwd is not None else None,
-        )
+        new_cwd, cwd_identity = _notice_cwd(workspace)
         with self._lock:
             self._generation += 1
             self._pending_boundary_notice = None
@@ -548,7 +576,7 @@ class WorkspaceChangeTracker:
             # warnings; rehydrate them, pinning the path base exactly as a
             # workspace switch would when the restored cwd differs from
             # queue time.
-            self._pending_safety = [_rebase_safety_notice(chunk, retarget) for chunk in pending_safety]
+            self._pending_safety = [_rebase_safety_notice(chunk, new_cwd, cwd_identity) for chunk in pending_safety]
             if scope is not None:
                 self._scope = scope
             self._baseline = (
@@ -556,6 +584,18 @@ class WorkspaceChangeTracker:
                 if resolve_scope and baseline is not None and self._scope.roots
                 else baseline
             )
+
+    def install_restored_state(self, prepared: WorkspaceChangeTracker) -> None:
+        """Install a restore's decoded state without reparsing or probing the filesystem."""
+        with prepared._lock:
+            scope, baseline = prepared._scope, prepared._baseline
+            pending_safety = list(prepared._pending_safety)
+        with self._lock:
+            self._generation += 1
+            self._scope = scope
+            self._baseline = baseline
+            self._pending_boundary_notice = None
+            self._pending_safety = pending_safety
 
     def _install_capture_deadline(self, turn_id: int) -> WorkspaceBaseline:
         with self._lock:
@@ -740,8 +780,10 @@ def _resolve_workspace_scope(workspace: Workspace | None) -> _ResolvedScope:
     seen: set[str] = set()
     seen_stat_ids: set[tuple[int, int]] = set()
     for raw in raw_inputs:
-        display = os.path.normpath(os.path.abspath(raw))
-        physical = canonical_path(display)
+        physical = canonical_path(raw)
+        display = os.path.abspath(raw)
+        if os.pardir in PurePath(raw).parts and canonical_path(display) != physical:
+            display = os.path.realpath(raw)
         if physical in seen:
             continue
         seen.add(physical)
@@ -1555,19 +1597,27 @@ def _resolve_safety_notice(chunk: _SafetyNotice) -> _SafetyNotice:
     if chunk.cwd is None:
         return chunk
     try:
-        return replace(chunk, canonical_cwd=canonical_path(chunk.cwd))
+        canonical = canonical_path(chunk.cwd)
+        return replace(chunk, canonical_cwd=canonical)
     except OSError, UnicodeError:
         return _pin_safety_notice(chunk)
 
 
-def _rebase_safety_notice(chunk: _SafetyNotice, retarget: WorkspaceRetarget) -> _SafetyNotice:
+def _notice_cwd(workspace: Workspace | None) -> tuple[str | None, str | None]:
+    if workspace is None:
+        return None, None
+    cwd = str(Path(workspace.primary_cwd).absolute())
+    return cwd, canonical_path(cwd)
+
+
+def _rebase_safety_notice(chunk: _SafetyNotice, cwd: str | None, identity: str | None) -> _SafetyNotice:
     """Pin a pending safety notice's path base when the workspace moves.
 
     The notice text cannot be re-rendered (its source data is gone), so a
     switch to a different primary cwd prepends the original base once;
     after that the chunk is base-independent and never annotated again.
     """
-    if chunk.cwd is None or retarget.new_cwd is None or chunk.canonical_cwd == retarget.canonical_new_cwd:
+    if chunk.cwd is None or cwd is None or chunk.canonical_cwd == identity:
         return chunk
     return _pin_safety_notice(chunk)
 

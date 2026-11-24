@@ -40,11 +40,17 @@ After saving the configuration, verify the connection:
 
 ## Working directories and sessions
 
-When creating or restoring a session, the client can pass the project's working directory to iCode. The directory supplied by the client must be an existing absolute path. If the client does not provide a working directory, iCode uses the directory specified by `--workdir <working-directory>`. If both are provided, the client's working directory takes precedence.
+You can find and open a workspace’s sessions through any path that points to its primary folder, including a case alias on a case-insensitive volume. iCode uses the path saved in the workspace for the session.
+
+When creating or restoring a session, the client can pass the session’s working directory to iCode. The directory supplied by the client must be an existing absolute path. If the client does not provide a working directory, iCode uses the directory specified by `--workdir <working-directory>`. If both are provided, the client's working directory takes precedence.
 
 iCode checks `--workdir` at startup. The specified directory must exist even if the client will later provide a working directory; otherwise, iCode cannot start.
 
-Session data is saved in iCode's session storage directory, rather than the working directory. To find the actual location, see [Find the session ID and storage location](../daily-use/sessions.md#find-the-session-id-and-storage-location). iCode records the working directory when a session is created. Listing sessions through an ACP client shows only sessions that match the current working directory. iCode refuses to restore a session if the working directory does not match.
+Session data is saved in iCode's session storage directory. To find the actual location, see [Find the session ID and storage location](../daily-use/sessions.md#find-the-session-id-and-storage-location).
+
+For sessions without a workspace, listing and deletion use the last saved working directory. Opening an already active session and viewing its history use its current directory. For workspace sessions, all four operations use the workspace's primary folder, as installed for an active session or as registered for a closed one.
+
+For workspace sessions, the ACP session list shows the physical paths of the primary folder and available reference folders. The client can reuse those paths to open the session.
 
 Sessions used through an ACP client also appear in the TUI's "Chat Sessions" window once you check "ACP" there. See [Resume an existing session](../daily-use/sessions.md#resume-an-existing-session).
 

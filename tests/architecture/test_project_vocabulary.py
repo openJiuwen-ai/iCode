@@ -136,4 +136,5 @@ def test_cli_help_uses_current_directory_vocabulary() -> None:
     for module in (acp, app, approvals, hooks, rsi, run, serve, trajectory, workflow):
         assert not retired_words(_help(module.build_parser()))
     assert "--workdir" in approvals.build_parser().format_help()
+    assert "--workspace" in approvals.build_parser().format_help()
     assert approvals.build_parser().parse_args(["--project", "."]).workdir == "."

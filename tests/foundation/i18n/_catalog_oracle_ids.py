@@ -17,6 +17,7 @@ from tests.foundation.i18n._trajectory_catalog_oracle_ids import TRAJECTORY_MESS
 from tests.foundation.i18n._usage_catalog_oracle_ids import USAGE_MESSAGE_IDS
 from tests.foundation.i18n._web_catalog_oracle_ids import WEB_MESSAGE_IDS
 from tests.foundation.i18n._workflow_catalog_oracle_ids import WORKFLOW_MESSAGE_IDS
+from tests.foundation.i18n._workspace_catalog_oracle_ids import WORKSPACE_MESSAGE_IDS
 
 # Adding or removing a msg() definition means editing this set, or an area file
 # imported above, in the SAME commit: the oracle test compares the POT and PO
@@ -947,6 +948,8 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.sidebar.toc.empty",
     "tui.sidebar.toc.title",
     "tui.startup.session.in_use",
+    "tui.startup.session.workspace_restore_declined",
+    "tui.startup.session.workspace_restore_restart",
     "tui.startup.session.not_found",
     "tui.startup.session.read_failed",
     "tui.startup.session.restore_failed",
@@ -955,6 +958,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.startup.session.start_new",
     "tui.startup.title.agent_failed",
     "tui.startup.title.session",
+    "tui.startup.workspace.restart",
     "tui.status.agent_load_failed",
     "tui.status.agent_selector_label",
     "tui.status.agent_startup_failed",
@@ -1030,6 +1034,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.workspace.missing.message",
     "tui.workspace.missing.message_restore",
     "tui.workspace.missing.message_submit",
+    "tui.workspace.missing.workspace_restore",
     "tui.workspace.missing.title",
     "tui.workspace.title.busy",
     "tui.workspace.title.invalid_path",
@@ -1282,6 +1287,7 @@ EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
     | SETTINGS_MESSAGE_IDS
     | TOOL_CARD_MESSAGE_IDS
     | PROMPT_MESSAGE_IDS
+    | WORKSPACE_MESSAGE_IDS
     | USAGE_MESSAGE_IDS
     | PROFILE_CONFIG_MESSAGE_IDS
     | TRAJECTORY_MESSAGE_IDS

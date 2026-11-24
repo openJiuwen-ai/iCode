@@ -29,7 +29,7 @@ from chrys.service.workflows.admission import AgentBinding
 async def test_middleware_usage_fields_reach_session_events_and_extra_args_do_not_rebind_them(tmp_path: Path) -> None:
     bus = EventBus()
     session = ActiveSession(
-        persistence=SessionPersistence(None, bus), workspace=None, approval_mode=ApprovalMode.BYPASS
+        persistence=SessionPersistence(None, bus), workspace_plan=None, approval_mode=ApprovalMode.BYPASS
     )
     session.session_id = "session"
     publisher = UsagePublisher(bus=bus, session=session, current=CurrentAgent())

@@ -73,7 +73,7 @@ foundation → {}
 ## Source map (`src/chrys/`)
 - foundation/: config, events, models, i18n, trajectory, platform, patches.
 - kernel/: flat; its `_*.py` modules are private outside `kernel/` (import through `chrys.kernel`).
-- service/: llm, profiles, tools, mcp, skills, hooks, approval, session, state, context, mutations, agent_middleware, acp_client, workflows.
+- service/: llm, profiles, tools, mcp, skills, hooks, approval, session, state, workspaces, context, mutations, agent_middleware, acp_client, workflows.
 - orchestration/: startup, engine, invoker, sub_agents, session_host, workflows.
 - app/: cli, tui, acp, features.
 
@@ -148,6 +148,7 @@ foundation → {}
 - Config/data dir (`<config_dir>`): `~/.chrys` (macOS/Linux), `%APPDATA%/chrys` (Windows). Sessions live in `<session_root>/sessions/<short-id>/`; `<session_root>` is `CHRYS_SESSION_ROOT_DIR` / `storage.session_root_dir` (the PARENT of `sessions/`; restart-only, not project-settable), defaulting to `<config_dir>`. Open files under `get_platform().config_dir` and `resolve_sessions_dir()` (real paths: the owner-only file helpers refuse a link anywhere on a path), never the as-named `conventional_config_dir()` (only code acting on the entry itself, like the uninstaller, wants it). `session_dir("")` is the sessions ROOT: reject empty ids before any delete or rmtree.
 - Per session: `session.json`, `session.json.bak` and the crash sidecar `session.recovery.json`; `<session_root>/sessions/.locks/<short-id>.active.lock` marks the one owning process. The sidecar is written mid-turn, deleted by every primary save and never part of the `.bak`/snapshot heal chain; a reader considers it only with `prefer_recovery=True`, after owning the active lock or finding it unheld, and it wins when newer than the primary or when the primary is missing/unreadable.
 - Fork copies the whole session dir: a new per-session file that embeds the session id or absolute paths needs handling in `service/state/_fork.py`.
+- Workspace membership is recorded only in `<config_dir>/workspaces.json` (`service/workspaces/registry.py`). Session files may carry an irreversible workspace scope fingerprint for provider continuation.
 - Startup restore (`-s`) is transactional: the TUI uses the selector's metadata as a read-only workspace hint. Once `SessionLifecycle` owns the active lock, `load_chat_for_restore()` verifies the identity and kind of one checkpoint and derives state, metadata, and source from it before migrating or repairing files. Startup succeeds only once the matching `SessionRestored` is observed (see EventBus). On failure run `engine.reset_after_failed_startup_restore()` (tears down with saves suppressed) and the screen's `cancel_startup_session_restore()` before offering Retry or Start new session. Only an explicit new-session choice starts fresh. Browser TUI processes created by `icode serve -s` use the same path.
 
 ## TUI

@@ -74,6 +74,7 @@ from chrys.orchestration.sub_agents.registration import (
 )
 from chrys.service.agent_middleware import ResponseBatchCounter
 from chrys.service.agent_middleware.injection import InjectionMiddleware
+from chrys.service.agent_middleware.reminders.workspace import workspace_index_lines
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
@@ -96,7 +97,7 @@ from chrys.service.tools.names import chrys_reserved_tool_names
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
-    from chrys.foundation.models.workspace import Workspace
+    from chrys.foundation.models.workspace import Workspace, WorkspaceDeparture
     from chrys.orchestration.sub_agents.tools import SubAgentTools
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.turn_context import TurnContextHolder
@@ -283,6 +284,8 @@ async def build_agent(
     on_usage: Callable[..., None],
     *,
     # -- optional -----------------------------------------------------
+    departed_workspace: WorkspaceDeparture | None = None,
+    missing_working_dirs: tuple[str, ...] = (),
     model_registry: ModelProfileRegistry | None = None,
     on_sub_agent_usage: Callable[..., None] | None = None,
     on_side_call_usage: Callable[[Mapping[str, Any]], None] | None = None,
@@ -409,7 +412,6 @@ async def build_agent(
 
         # Capture the session environment for this agent build.
         await _progress(AGENT_LOAD_PHASE_RUNTIME, "Capturing workspace context", status=AGENT_LOAD_STATUS_RUNNING)
-        runtime = SessionEnvironment.capture(workspace=workspace)
         serialize_implicit_windows = not settings.parallel_implicit_tools
 
         # Auto-loaded memory (files + folders configured on the profile).  Read
@@ -420,6 +422,21 @@ async def build_agent(
             profile.memory,
             workspace_cwd=workspace.primary_cwd if workspace else None,
         )
+        # The workspace's folders are runtime state: index them for the runtime
+        # reminder, never for the system prompt. Shell tool registration separately
+        # checks for working directories outside the workspace folder set.
+        workspace_index = (
+            workspace_index_lines(workspace, profile.memory, memory_content)
+            if workspace is not None and workspace.id
+            else ()
+        )
+        runtime = SessionEnvironment.capture(
+            workspace=workspace,
+            workspace_index=workspace_index,
+            departed_workspace=departed_workspace,
+            missing_working_dirs=missing_working_dirs,
+        )
+        memory_text = memory_content.text
         acp_depth = acp_sub_agent_depth()
         effective_sub_agents: list[dict[str, Any]] = []
         for ref in profile.sub_agents.agents:
@@ -433,7 +450,7 @@ async def build_agent(
             )
         agent_profile_fingerprint = agent_profile_context_fingerprint(
             profile,
-            memory_text=memory_content.text,
+            memory_text=memory_text,
             effective_sub_agents=effective_sub_agents,
             allow_user_interaction=allow_user_interaction,
         )
@@ -510,7 +527,7 @@ async def build_agent(
             spill_quota=spill_quota,
             debug_log_dir=last_words_log_dir,
             compaction_config=profile.compaction,
-            memory_text=memory_content.text,
+            memory_text=memory_text,
             warn_threshold_pct=settings.warn_threshold_pct,
             session_id=context_recall_session_id,
             parent_session_id=session_id,
@@ -581,9 +598,8 @@ async def build_agent(
         # Collect workspace roots for file-write auto-approval (needed by both
         # the main agent's ApprovalMiddleware and each sub-agent's fresh one).
         workspace_roots: list[str] = []
-        if workspace:
-            workspace_roots.append(workspace.primary_cwd)
-            workspace_roots.extend(wd.path for wd in workspace.working_dirs)
+        if workspace is not None:
+            workspace_roots = [runtime.cwd, *(wd.path for wd in runtime.working_dirs)]
 
         # Build sub-agent tools at the composition root. The displaced owner
         # stays live until construction atomically installs this result.
@@ -887,6 +903,7 @@ async def build_agent(
             automatic_compaction=profile.compaction.enabled,
             sub_agent_names=[t.name for t in sub_agent_tools.get_tools()] if sub_agent_tools else None,
             shell_tool_enabled=KIND_SHELL in tool_kinds.values(),
+            workspace_section=True,
             tool_names=[*tool_names, *context_tool_names, *skill_tool_names],
             session_root=effective_session_dir,
             file_read_available=KIND_FILESYSTEM_READ in tool_kinds.values(),
@@ -1008,7 +1025,9 @@ async def build_agent(
         approval_middleware = await create_approval(
             conversation,
             ApprovalInputs(
-                reuse=ApprovalReuseBinding(runtime, tools, session_id=session_id)
+                reuse=ApprovalReuseBinding(
+                    runtime, tools, session_id=session_id, workspace_id=workspace.id if workspace else None
+                )
                 if session_id or runtime.session_id
                 else None,
                 approval_policy=approval_policy,
@@ -1089,7 +1108,7 @@ async def build_agent(
             tool_kinds=tool_kinds,
             skill_names=skill_names,
             memory_files=memory_content.loaded_files,
-            instructions=_system_prompt(profile, memory_content.text, context_providers),
+            instructions=_system_prompt(profile, memory_text, context_providers),
             profile_instructions=profile.instructions or "",
             agent_profile_fingerprint=agent_profile_fingerprint,
             model_profile_fingerprint=model_profile_fingerprint,

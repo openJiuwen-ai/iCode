@@ -476,8 +476,10 @@ async def test_session_restore_releases_target_lock_when_setup_fails(
     bus = EventBus()
     engine = assemble_agent_engine(bus, settings=Settings(), state_store=store)
 
-    async def fail_load_chat_for_restore(_session_id: str, *, prefer_recovery: bool, ignore_recovery: bool) -> object:
-        _ = prefer_recovery, ignore_recovery
+    async def fail_load_chat_for_restore(
+        _session_id: str, *, prefer_recovery: bool, ignore_recovery: bool, repair: bool = True
+    ) -> object:
+        _ = prefer_recovery, ignore_recovery, repair
         raise RuntimeError("checkpoint read failed")
 
     monkeypatch.setattr(engine_services(engine).persistence, "load_chat_for_restore", fail_load_chat_for_restore)

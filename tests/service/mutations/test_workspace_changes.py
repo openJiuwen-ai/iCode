@@ -10,6 +10,7 @@ import subprocess
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import create_autospec
 
@@ -69,7 +70,7 @@ def test_agent_notice_rebases_physical_paths_to_alias_cwd(tmp_path: Path) -> Non
         pytest.skip("Directory symlinks unavailable")
     workspace = _workspace(alias)
     changes = WorkspaceChangeTracker()
-    changes.retarget_roots(workspace)
+    changes.apply_retarget(changes.resolve_retarget(workspace))
     target = real / "file.txt"
     target.write_bytes(b"original")
     mutations = MutationTracker(SnapshotStore(tmp_path / "session"))
@@ -122,7 +123,7 @@ def git_workspace(tmp_path: Path, git_repo_factory: Callable[[Path], Path]) -> P
 
 def test_git_create_modify_delete_and_common_dirty_delete(git_workspace: Path) -> None:
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(git_workspace))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(git_workspace)))
     dirty = git_workspace / "README.md"
     dirty.write_text("dirty baseline", encoding="utf-8")
     tracker.capture_baseline(1)
@@ -139,7 +140,7 @@ def test_git_create_modify_delete_and_common_dirty_delete(git_workspace: Path) -
 
 def test_git_reconcile_and_tracking_changed(git_workspace: Path) -> None:
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(git_workspace))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(git_workspace)))
     readme = git_workspace / "README.md"
     readme.write_text("dirty", encoding="utf-8")
     tracker.capture_baseline(1)
@@ -160,7 +161,7 @@ def test_git_index_only_transition_reports_tracking_changed(git_workspace: Path)
     """git add/reset touch only the index — no filesystem field moves, the
     status tuple is the sole observable of the transition."""
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(git_workspace))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(git_workspace)))
     readme = git_workspace / "README.md"
     readme.write_text("dirty", encoding="utf-8")
     tracker.capture_baseline(1)
@@ -208,7 +209,7 @@ def test_duplicate_porcelain_records_retain_statuses_and_cap_unique(git_workspac
     assert capped.failed is False
 
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(git_workspace))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(git_workspace)))
     baseline = tracker.capture_baseline(1)
     assert baseline.degraded[_root_key(git_workspace)].reason is DegradedReason.TOO_MANY_FILES
 
@@ -290,7 +291,7 @@ def test_head_move_with_scoped_change_and_empty_scoped_delta(git_workspace: Path
     _git(git_workspace, "commit", "-m", "scopes")
 
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(scoped))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(scoped)))
     tracker.capture_baseline(1)
     (other / "b.txt").write_text("b2", encoding="utf-8")
     _git(git_workspace, "add", "other/b.txt")
@@ -312,7 +313,7 @@ def test_missing_and_empty_non_git_roots(tmp_path: Path) -> None:
     empty.mkdir()
     missing = tmp_path / "missing"
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(empty, missing))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(empty, missing)))
     baseline = tracker.capture_baseline(1)
 
     assert baseline.roots[_root_key(empty)].mode is BaselineMode.SCAN
@@ -329,7 +330,7 @@ def test_primary_duplicate_and_symlink_alias_deduplicate(tmp_path: Path) -> None
     except OSError:
         pytest.skip("directory symlinks unavailable")
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(alias, root, alias))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(alias, root, alias)))
     baseline = tracker.capture_baseline(1)
     assert len(baseline.roots) == 1
     (root / "external.txt").write_text("external", encoding="utf-8")
@@ -380,7 +381,7 @@ def test_tracked_symlink_change_names_link_not_destination(
     )
 
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(git_workspace))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(git_workspace)))
     tracker.capture_baseline(1)
 
     link.unlink()
@@ -412,7 +413,7 @@ def test_dirty_symlink_does_not_collide_with_destination(git_workspace: Path) ->
     link.symlink_to("target.txt")
 
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(git_workspace))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(git_workspace)))
     baseline = tracker.capture_baseline(1)
     (root_baseline,) = baseline.roots.values()
     names = {os.path.basename(path) for path in root_baseline.files}
@@ -433,7 +434,7 @@ def test_non_git_scan_ignores_dynamic_gitignore_and_detects_mode(tmp_path: Path)
     target.write_text("same", encoding="utf-8")
     (root / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
     tracker.capture_baseline(1)
     (root / ".gitignore").write_text("", encoding="utf-8")
     current_mode = target.stat().st_mode
@@ -456,13 +457,16 @@ def test_more_than_32_roots_reports_exact_aggregate(tmp_path: Path, monkeypatch:
     # root-limit aggregate, so take the deadline out of the equation.
     monkeypatch.setattr(workspace_changes, "_CAPTURE_DEADLINE_SECONDS", 3600.0)
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(roots[0], *roots[1:]))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(roots[0], *roots[1:])))
     baseline = tracker.capture_baseline(1)
     assert len(baseline.roots) == 32
     assert baseline.root_limit_omitted == 3
 
 
-def test_serialization_round_trip_and_retarget_narrow(git_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("has_workspace", [False, True])
+def test_serialization_round_trip_and_retarget_narrow(
+    git_workspace: Path, monkeypatch: pytest.MonkeyPatch, has_workspace: bool
+) -> None:
     child = git_workspace / "child"
     child.mkdir()
     (child / "a.txt").write_text("a", encoding="utf-8")
@@ -477,8 +481,13 @@ def test_serialization_round_trip_and_retarget_narrow(git_workspace: Path, monke
         "resolve_git_root",
         create_autospec(workspace_changes.resolve_git_root, return_value=root),
     )
+
+    def workspace_at(cwd: Path) -> Workspace:
+        workspace = _workspace(cwd)
+        return replace(workspace, id="ws_pinned", name="Pinned") if has_workspace else workspace
+
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(git_workspace))
+    tracker.apply_retarget(tracker.resolve_retarget(workspace_at(git_workspace)))
     baseline = tracker.capture_baseline(1)
     assert baseline.degraded == {}
     assert baseline.roots[root].mode is BaselineMode.GIT
@@ -486,27 +495,27 @@ def test_serialization_round_trip_and_retarget_narrow(git_workspace: Path, monke
     assert payload is not None
 
     same = WorkspaceChangeTracker()
-    same.restore(payload, _workspace(git_workspace))
+    same.restore(payload, workspace_at(git_workspace))
     assert same.serialize() == payload
 
     restored = WorkspaceChangeTracker()
-    restored.restore(payload, _workspace(child))
+    restored.restore(payload, workspace_at(child))
     narrowed = restored.baseline
     assert narrowed is not None
     assert narrowed.turn_id == baseline.turn_id
     assert next(iter(narrowed.roots.values())).scope == ("child",)
 
     child_tracker = WorkspaceChangeTracker()
-    child_tracker.retarget_roots(_workspace(child))
+    child_tracker.apply_retarget(child_tracker.resolve_retarget(workspace_at(child)))
     child_tracker.capture_baseline(2)
     child_payload = child_tracker.serialize()
     assert child_payload is not None
     widened = WorkspaceChangeTracker()
-    widened.restore(child_payload, _workspace(git_workspace))
+    widened.restore(child_payload, workspace_at(git_workspace))
     widened_baseline = widened.baseline
     assert widened_baseline is not None
     assert widened_baseline.roots == {}
-    assert widened_baseline.degraded[_root_key(git_workspace)].reason is DegradedReason.MISSING_BASELINE
+    assert widened_baseline.degraded[root].reason is DegradedReason.MISSING_BASELINE
 
 
 def test_fully_skipped_agent_change_and_retained_caveat(tmp_path: Path) -> None:
@@ -681,7 +690,7 @@ def test_mixed_non_git_parent_and_nested_git_are_owned_once(
     git_repo_factory(nested)
     (nested / "untracked.txt").write_text("untracked", encoding="utf-8")
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(parent, nested))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(parent, nested)))
 
     baseline = tracker.capture_baseline(1)
 
@@ -703,7 +712,7 @@ def test_nested_git_repo_keeps_its_own_root(
     nested.mkdir()
     git_repo_factory(nested)
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(parent, nested))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(parent, nested)))
 
     baseline = tracker.capture_baseline(1)
     assert set(baseline.roots) == {_root_key(parent), _root_key(nested)}
@@ -721,7 +730,7 @@ def test_case_alias_roots_deduplicate_by_physical_identity(tmp_path: Path) -> No
     if not (alias.exists() and os.path.samefile(root, alias)):
         pytest.skip("filesystem is case-sensitive")
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root, alias))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root, alias)))
 
     baseline = tracker.capture_baseline(1)
     assert len(baseline.roots) == 1
@@ -749,7 +758,7 @@ def test_display_root_ascent_failure_skips_instead_of_raising(
 
     monkeypatch.setattr(os.path, "relpath", _cross_drive)
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(sub))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(sub)))
 
     baseline = tracker.capture_baseline(1)
     assert root_physical in baseline.roots
@@ -832,7 +841,7 @@ def test_non_git_scan_cap_boundary(tmp_path: Path) -> None:
     for index in range(5_000):
         (root / f"f{index:04}.txt").touch()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
 
     valid = tracker.capture_baseline(1)
     assert len(valid.roots[_root_key(root)].files) == 5_000
@@ -853,7 +862,7 @@ def test_git_permission_changes_for_clean_and_dirty_paths(git_workspace: Path) -
     target.chmod(original_mode)
 
     clean_tracker = WorkspaceChangeTracker()
-    clean_tracker.retarget_roots(_workspace(git_workspace))
+    clean_tracker.apply_retarget(clean_tracker.resolve_retarget(_workspace(git_workspace)))
     clean_tracker.capture_baseline(1)
     target.chmod(changed_mode)
     clean_notice = _tracker_notice(clean_tracker, git_workspace)
@@ -862,7 +871,7 @@ def test_git_permission_changes_for_clean_and_dirty_paths(git_workspace: Path) -
 
     target.write_text("dirty", encoding="utf-8")
     dirty_tracker = WorkspaceChangeTracker()
-    dirty_tracker.retarget_roots(_workspace(git_workspace))
+    dirty_tracker.apply_retarget(dirty_tracker.resolve_retarget(_workspace(git_workspace)))
     dirty_tracker.capture_baseline(1)
     target.chmod(original_mode)
     dirty_notice = _tracker_notice(dirty_tracker, git_workspace)
@@ -884,7 +893,7 @@ def test_root_limit_never_probes_omitted_inputs(tmp_path: Path, monkeypatch: pyt
 
     monkeypatch.setattr(workspace_changes, "resolve_git_root", _resolve)
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(roots[0], *roots[1:]))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(roots[0], *roots[1:])))
 
     baseline = tracker.capture_baseline(1)
     assert len(probed) == 32
@@ -898,7 +907,7 @@ def test_capture_deadline_marks_unfinished_roots(tmp_path: Path, monkeypatch: py
     first.mkdir()
     second.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(first, second))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(first, second)))
     original = workspace_changes._capture_scan_root
     now = [0.0]
 
@@ -917,7 +926,7 @@ def test_capture_deadline_marks_unfinished_roots(tmp_path: Path, monkeypatch: py
 def test_degraded_serialization_and_incomparable_retarget(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(missing))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(missing)))
     tracker.capture_baseline(7)
     payload = tracker.serialize()
     assert payload is not None
@@ -928,7 +937,7 @@ def test_degraded_serialization_and_incomparable_retarget(tmp_path: Path) -> Non
 
     missing.mkdir()
     restored.restore(payload, _workspace(missing))
-    restored.retarget_roots(_workspace(missing))
+    restored.apply_retarget(restored.resolve_retarget(_workspace(missing)))
     baseline = restored.baseline
     assert baseline is not None
     assert baseline.degraded[_root_key(missing)].reason is DegradedReason.MISSING_BASELINE
@@ -952,7 +961,7 @@ def test_retarget_without_resolution_skips_root_probes_but_still_rebases_safety(
     tracker = WorkspaceChangeTracker()
     tracker.queue_safety_notice("Files not reverted: a.txt", cwd=str(old_cwd))
 
-    tracker.retarget_roots(_workspace(new_cwd), resolve_scope=False)
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(new_cwd), resolve_scope=False))
 
     assert tracker.capture_baseline(1).roots == {}
     notice = tracker.take_pending_notice()
@@ -968,7 +977,7 @@ def test_retarget_without_resolution_keeps_the_baseline_for_the_next_enabled_ret
     inactive scope — that would erase every root and leave the re-enabling
     retarget nothing to reconcile."""
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(tmp_path))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(tmp_path)))
     captured = tracker.capture_baseline(2)
     assert _root_key(tmp_path) in captured.roots
     real_resolve = workspace_changes.resolve_git_root
@@ -977,11 +986,11 @@ def test_retarget_without_resolution_keeps_the_baseline_for_the_next_enabled_ret
         raise AssertionError("root resolution must not probe Git while the notice is off")
 
     monkeypatch.setattr(workspace_changes, "resolve_git_root", _no_probe)
-    tracker.retarget_roots(_workspace(tmp_path), resolve_scope=False)
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(tmp_path), resolve_scope=False))
     assert tracker.baseline is captured
 
     monkeypatch.setattr(workspace_changes, "resolve_git_root", real_resolve)
-    tracker.retarget_roots(_workspace(tmp_path), resolve_scope=True)
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(tmp_path), resolve_scope=True))
     baseline = tracker.baseline
     assert baseline is not None
     assert baseline.roots[_root_key(tmp_path)] == captured.roots[_root_key(tmp_path)]
@@ -998,7 +1007,7 @@ def test_retarget_with_resolution_probes_roots(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(workspace_changes, "resolve_git_root", _record)
     tracker = WorkspaceChangeTracker()
 
-    tracker.retarget_roots(_workspace(tmp_path))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(tmp_path)))
 
     assert probed == [_root_key(tmp_path)]
 
@@ -1014,7 +1023,7 @@ def test_restore_without_resolution_keeps_payload_and_skips_root_probes(
     target.mkdir()
     previous.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(target))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(target)))
     captured = tracker.capture_baseline(3)
     assert _root_key(target) in captured.roots
     tracker.queue_safety_notice("Files not reverted: b.txt", cwd=str(target))
@@ -1027,17 +1036,17 @@ def test_restore_without_resolution_keeps_payload_and_skips_root_probes(
 
     # The restoring engine still holds the previous session's scope.
     restored = WorkspaceChangeTracker()
-    restored.retarget_roots(_workspace(previous))
+    restored.apply_retarget(restored.resolve_retarget(_workspace(previous)))
     monkeypatch.setattr(workspace_changes, "resolve_git_root", _no_probe)
 
     restored.restore(payload, _workspace(target), resolve_scope=False)
     assert restored.serialize() == payload
-    restored.retarget_roots(_workspace(target), resolve_scope=False)
+    restored.apply_retarget(restored.resolve_retarget(_workspace(target), resolve_scope=False))
     assert restored.serialize() == payload
     assert restored.take_pending_notice() == "Files not reverted: b.txt"
 
     monkeypatch.setattr(workspace_changes, "resolve_git_root", real_resolve)
-    restored.retarget_roots(_workspace(target), resolve_scope=True)
+    restored.apply_retarget(restored.resolve_retarget(_workspace(target), resolve_scope=True))
     baseline = restored.baseline
     assert baseline is not None
     assert baseline.roots[_root_key(target)] == captured.roots[_root_key(target)]
@@ -1077,7 +1086,7 @@ def test_offline_edit_appears_after_baseline_restore(tmp_path: Path, monkeypatch
         create_autospec(workspace_changes.read_git_status, side_effect=status_from_disk),
     )
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(tmp_path))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(tmp_path)))
     captured = tracker.capture_baseline(1)
     assert captured.degraded == {}
     assert captured.roots[root].mode is BaselineMode.GIT
@@ -1100,7 +1109,7 @@ def test_head_delta_problem_keeps_scoped_caveat(
     delta_result: GitDeltaResult,
 ) -> None:
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(git_workspace))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(git_workspace)))
     tracker.capture_baseline(1)
     readme = git_workspace / "README.md"
     readme.write_text("new", encoding="utf-8")
@@ -1131,7 +1140,7 @@ def test_recovery_subtracts_verified_rows_and_resurfaces_post_crash_edits(tmp_pa
     foreign.write_text("base", encoding="utf-8")
     unfinished.write_text("base", encoding="utf-8")
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
 
     mutations = MutationTracker(SnapshotStore(tmp_path / "session"))
@@ -1232,7 +1241,7 @@ def test_foreign_writes_absorbed_by_baseline_still_reported_as_peer_changes(tmp_
     move.provenance = MutationProvenance.FOREIGN
 
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
 
     notice = workspace_tracker.compute_turn_notice(
@@ -1260,7 +1269,7 @@ def test_peer_row_deduped_when_external_diff_already_reports_it(tmp_path: Path) 
     target = root / "shared.txt"
     target.write_text("base", encoding="utf-8")
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
 
     mutations = MutationTracker(SnapshotStore(tmp_path / "session"))
@@ -1300,7 +1309,7 @@ def test_contested_agent_row_carries_peer_badge(tmp_path: Path) -> None:
     write.contested = True
 
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
 
     notice = workspace_tracker.compute_turn_notice(
@@ -1332,7 +1341,7 @@ def test_retry_boundary_surfaces_contested_row_as_peer_change(tmp_path: Path) ->
     write.contested = True
 
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
 
     notice = workspace_tracker.compute_turn_notice(
@@ -1360,7 +1369,7 @@ def test_retry_boundary_surfaces_truncated_detection(tmp_path: Path) -> None:
     mutations.mark_detection_truncated()
 
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
 
     notice = workspace_tracker.compute_turn_notice(
@@ -1398,7 +1407,7 @@ def test_truncated_contested_agent_row_keeps_peer_fallback(tmp_path: Path) -> No
     second.contested = True
 
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
 
     notice = workspace_tracker.compute_turn_notice(
@@ -1434,7 +1443,7 @@ def test_symlink_agent_edit_does_not_badge_destination_external_row(tmp_path: Pa
     mutations.record_after(write)
 
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
     dest.write_text("external", encoding="utf-8")
 
@@ -1470,7 +1479,7 @@ def test_alias_route_agent_edit_still_badges_external_row(tmp_path: Path) -> Non
     mutations.record_after(write)
 
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
     target.write_text("external", encoding="utf-8")
 
@@ -1497,7 +1506,7 @@ def test_recovery_subtraction_keeps_destination_of_agent_edited_symlink(tmp_path
     link = root / "link"
     link.symlink_to(dest)
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
 
     mutations = MutationTracker(SnapshotStore(tmp_path / "session"))
@@ -1539,7 +1548,7 @@ def test_peer_row_for_symlink_not_suppressed_by_destination_external_row(tmp_pat
     write.provenance = MutationProvenance.FOREIGN
 
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
     dest.write_text("external", encoding="utf-8")
 
@@ -1577,7 +1586,7 @@ def test_net_zero_contested_row_surfaces_as_peer_change(tmp_path: Path) -> None:
     second.contested = True
 
     workspace_tracker = WorkspaceChangeTracker()
-    workspace_tracker.retarget_roots(_workspace(root))
+    workspace_tracker.apply_retarget(workspace_tracker.resolve_retarget(_workspace(root)))
     workspace_tracker.capture_baseline(1)
 
     notice = workspace_tracker.compute_turn_notice(
@@ -1601,7 +1610,7 @@ def test_recovery_without_mutation_log_degrades_instead_of_misattributing(tmp_pa
     target = root / "file.txt"
     target.write_text("before", encoding="utf-8")
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
     tracker.capture_baseline(1)
     target.write_text("after", encoding="utf-8")
 
@@ -1638,7 +1647,7 @@ def test_global_section_truncation_counts_are_exact(tmp_path: Path) -> None:
     first.mkdir()
     second.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(first, second))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(first, second)))
     tracker.capture_baseline(1)
     for root in (first, second):
         for index in range(3):
@@ -1698,10 +1707,10 @@ def test_safety_notice_pins_base_after_workspace_switch(tmp_path: Path) -> None:
     new_root = tmp_path / "new_ws"
     new_root.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(old_root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(old_root)))
     tracker.queue_safety_notice('- modified: "file.txt"', cwd=str(old_root))
 
-    tracker.retarget_roots(_workspace(new_root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(new_root)))
 
     notice = tracker.take_pending_notice()
     assert notice is not None
@@ -1714,10 +1723,10 @@ def test_safety_notice_same_cwd_rebuild_keeps_text_verbatim(tmp_path: Path) -> N
     root = tmp_path / "ws"
     root.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
     tracker.requeue_notice('- modified: "file.txt"', cwd=str(root))
 
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
 
     assert tracker.take_pending_notice() == '- modified: "file.txt"'
 
@@ -1727,7 +1736,7 @@ def test_safety_notice_survives_serialize_restore_without_baseline(tmp_path: Pat
     root = tmp_path / "ws"
     root.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
     tracker.queue_safety_notice('- modified: "kept.txt"', cwd=str(root))
     assert tracker.baseline is None
 
@@ -1744,7 +1753,7 @@ def test_serialize_carries_baseline_and_safety_notice_together(tmp_path: Path) -
     root = tmp_path / "ws"
     root.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
     tracker.capture_baseline(1)
     tracker.queue_safety_notice('- modified: "kept.txt"', cwd=str(root))
 
@@ -1761,7 +1770,7 @@ def test_restored_safety_notice_pins_base_on_cwd_change(tmp_path: Path) -> None:
     new_root = tmp_path / "new_ws"
     new_root.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(old_root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(old_root)))
     tracker.queue_safety_notice('- modified: "file.txt"', cwd=str(old_root))
 
     restored = WorkspaceChangeTracker()
@@ -1797,11 +1806,11 @@ def test_safety_notice_annotates_once_across_repeated_switches(tmp_path: Path) -
         root.mkdir()
         roots.append(root)
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(roots[0]))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(roots[0])))
     tracker.requeue_notice('- created: "gen.txt"', cwd=str(roots[0]))
 
-    tracker.retarget_roots(_workspace(roots[1]))
-    tracker.retarget_roots(_workspace(roots[2]))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(roots[1])))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(roots[2])))
 
     notice = tracker.take_pending_notice()
     assert notice is not None
@@ -1813,7 +1822,7 @@ def test_cancelled_capture_late_worker_cannot_install(tmp_path: Path, monkeypatc
     root = tmp_path / "root"
     root.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
     entered = threading.Event()
     release = threading.Event()
     original = workspace_changes._capture_workspace
@@ -1828,7 +1837,7 @@ def test_cancelled_capture_late_worker_cannot_install(tmp_path: Path, monkeypatc
         future = pool.submit(tracker.capture_baseline, 1)
         assert entered.wait(timeout=5.0)
         tracker.capture_cancelled()
-        tracker.retarget_roots(_workspace(root))
+        tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
         release.set()
         future.result(timeout=5.0)
     assert tracker.baseline is None
@@ -1841,7 +1850,7 @@ def test_timed_out_capture_stays_single_flight_and_rejects_late_result(
     root = tmp_path / "root"
     root.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
     entered = threading.Event()
     release = threading.Event()
     calls = 0
@@ -1873,7 +1882,7 @@ def test_cancelled_notice_late_worker_cannot_publish(tmp_path: Path, monkeypatch
     target = root / "file.txt"
     target.write_text("before", encoding="utf-8")
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
     tracker.capture_baseline(1)
     target.write_text("after", encoding="utf-8")
     entered = threading.Event()
@@ -1899,7 +1908,7 @@ def test_serialize_never_observes_partial_worker_install(tmp_path: Path, monkeyp
     root = tmp_path / "root"
     root.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(_workspace(root))
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(root)))
     old = tracker.capture_baseline(1)
     entered = threading.Event()
     release = threading.Event()

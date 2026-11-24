@@ -34,7 +34,7 @@ class SessionResources[Metadata: SessionUsageMetadata]:
         session_id: str | None = None,
     ) -> None:
         self._persistence = persistence
-        self.workspace = workspace
+        self._workspace = workspace
         self.session_id: str | None = session_id
         self.runtime_meta = runtime_meta
         self.spill_quota = SpillQuota()
@@ -44,6 +44,13 @@ class SessionResources[Metadata: SessionUsageMetadata]:
         self.hook_manager: HookManager | None = None
         self.background_tasks: BackgroundTasks | None = None
         """The session's shell commands running in the background; it outlives every rebuild."""
+
+    @property
+    def workspace(self) -> Workspace | None:
+        return self._workspace
+
+    def present_workflow_workspace(self, workspace: Workspace) -> None:
+        self._workspace = workspace
 
     def workspace_cwd(self) -> str:
         """Return the current workspace cwd, falling back only before workspace initialization."""
