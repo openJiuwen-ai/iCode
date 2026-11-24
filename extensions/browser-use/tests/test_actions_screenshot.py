@@ -98,3 +98,51 @@ def test_target_screenshot_translates_no_layout_error_to_bad_request() -> None:
     with pytest.raises(BadRequest) as exc_info:
         asyncio.run(screenshot.run(session, {"full_page": False, "target": "@e1#7", "annotate": False}))
     assert "无可见布局盒模型" in str(exc_info.value)
+
+
+def test_scrolled_below_the_fold_oopif_screenshot_re_reads_live_offset() -> None:
+    """Scrolling a below-the-fold OOPIF must not double-count main-frame scroll against a cached offset."""
+
+    class _ScrolledOopifClient:
+        def __init__(self) -> None:
+            self.scrolled = False
+            self.calls: list[tuple[str, dict, str | None]] = []
+
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            params = dict(params or {})
+            self.calls.append((method, params, session_id))
+            if method == "DOM.scrollIntoViewIfNeeded":
+                # Main document scrolls from 0 -> 1000 so iframe at doc y=1200 moves to viewport y=200.
+                self.scrolled = True
+                return {}
+            if method == "Page.getFrameTree" and session_id == "oopif-1":
+                return {"frameTree": {"frame": {"id": "frame-oopif-1"}}}
+            if method == "DOM.getFrameOwner" and session_id == "main":
+                assert params["frameId"] == "frame-oopif-1"
+                return {"backendNodeId": 777}
+            if method == "DOM.resolveNode" and session_id == "main":
+                return {"object": {"objectId": "iframe-owner-obj"}}
+            if method == "Runtime.callFunctionOn":
+                if params.get("objectId") == "iframe-owner-obj":
+                    # Live viewport position of iframe after scroll: y=200 (was 1200 pre-scroll).
+                    return {"result": {"value": {"x": 20.0, "y": 200.0 if self.scrolled else 1200.0}}}
+                return {
+                    "result": {
+                        "value": {"x": 10.0, "y": 50.0, "width": 80.0, "height": 30.0, "scrollX": 0.0, "scrollY": 0.0}
+                    }
+                }
+            if method == "Runtime.evaluate" and session_id == "main":
+                return {"result": {"value": {"x": 0.0, "y": 1000.0 if self.scrolled else 0.0}}}
+            if method == "Page.captureScreenshot":
+                return {"data": _PNG_1X1}
+            return {}
+
+    client = _ScrolledOopifClient()
+    session = _ShotSession(client, cdp_session_id="oopif-1")
+    # Cached pre-scroll offset from snapshot was (20, 1200) when scrollY was 0.
+    session.oopif_offset = lambda sid: (20.0, 1200.0) if sid else (0.0, 0.0)
+    asyncio.run(screenshot.run(session, {"full_page": False, "target": "@e1#7", "annotate": False}))
+    cap_params = next(p for m, p, _ in client.calls if m == "Page.captureScreenshot")
+    # True document coordinates: x = 20 + 10 = 30 (padded 22), y = 200 + 50 + 1000 = 1250 (padded 1242), NOT 2250!
+    assert cap_params["captureBeyondViewport"] is True
+    assert cap_params["clip"] == {"x": 22.0, "y": 1242.0, "width": 96.0, "height": 46.0, "scale": 1}

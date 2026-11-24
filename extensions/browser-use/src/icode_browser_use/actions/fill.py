@@ -12,6 +12,7 @@ from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed, Sta
 from ..types import ToolBlock, text_block
 from ._shared import call_value, dialog_since, eval_value, resolve_target, send_watching_dialog
 from .actionability import (
+    WriteOutcome,
     evidence_line,
     field_state,
     focus_target,
@@ -199,16 +200,16 @@ async def _clear(session: Any, object_id: str, cdp_session_id: str | None) -> No
         raise BadRequest("无法清空目标字段（清空后仍有内容）；未继续输入")
 
 
-def _uncertain_fill(session: Any, entry: Any, reason: str, action_id: str) -> list[ToolBlock]:
+def _uncertain_fill(session: Any, entry: Any, reason: str, action_id: str, *, dispatched: bool = True) -> WriteOutcome:
     text = (
         f"已填入 {entry.token}\nstatus=uncertain retryable=false\nreason={reason}；不要重复输入\n"
         f"{evidence_line(session, action_id)}"
     )
     record_action(session, action_id, "browser_fill", "uncertain", text)
-    return [text_block(text)]
+    return WriteOutcome(status="uncertain", dispatched=dispatched, blocks=[text_block(text)], action_id=action_id)
 
 
-def _blocked_dialog_fill(session: Any, entry: Any, info: Any, action_id: str) -> list[ToolBlock]:
+def _blocked_dialog_fill(session: Any, entry: Any, info: Any, action_id: str) -> WriteOutcome:
     result = "\n".join(
         [
             f"已填入 {entry.token}",
@@ -220,16 +221,18 @@ def _blocked_dialog_fill(session: Any, entry: Any, info: Any, action_id: str) ->
         ]
     )
     record_action(session, action_id, "browser_fill", "blocked", result)
-    return [text_block(result)]
+    return WriteOutcome(
+        status="blocked", dispatched=True, blocks=[text_block(result)], effect="dialog", action_id=action_id
+    )
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     baseline = await prepare_expect_baseline(session, arguments)
-    blocks = await _run_fill(session, arguments)
-    return await run_post_write_expect(session, arguments, baseline=baseline, action_blocks=blocks)
+    outcome = await _run_fill(session, arguments)
+    return await run_post_write_expect(session, arguments, baseline=baseline, action_blocks=outcome)
 
 
-async def _run_fill(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
+async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     target = arguments["target"]
     text = arguments["text"]
     clear = arguments["clear"]
@@ -248,7 +251,7 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         except ConnectionClosed:
             raise
         except (CDPTimeout, BrowserError) as exc:
-            return _uncertain_fill(session, entry, f"clear_failed:{type(exc).__name__}", action_id)
+            return _uncertain_fill(session, entry, f"clear_failed:{type(exc).__name__}", action_id, dispatched=False)
 
     client = session.require_client()
     prepare_action(session, action_id, "browser_fill", f"prepared fill of {entry.token}")
@@ -409,4 +412,4 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         lines.append(f"{dialog.fields()}；对话框出现后输入结果未确认，请先 browser_dialog 再复核")
     text = "\n".join(lines)
     record_action(session, action_id, "browser_fill", status, text)
-    return [text_block(text)]
+    return WriteOutcome(status=status, dispatched=True, blocks=[text_block(text)], action_id=action_id)

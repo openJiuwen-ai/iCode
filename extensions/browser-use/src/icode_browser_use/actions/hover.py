@@ -38,6 +38,8 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     offset = session.oopif_offset(cdp_session_id)
 
     x, y = await _hit_point(session, object_id, entry, cdp_session_id, offset)
+    if cdp_session_id:
+        offset = session.oopif_offset(cdp_session_id)
     try:
         hit = await hit_test(
             session,

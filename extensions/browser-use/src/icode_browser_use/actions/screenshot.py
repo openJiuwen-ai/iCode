@@ -10,7 +10,7 @@ from typing import Any
 from ..config import MAX_IMAGE_BYTES
 from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed, Unavailable
 from ..types import ToolBlock, image_block
-from ._shared import call_value, resolve_target
+from ._shared import call_value, resolve_oopif_offset, resolve_target
 
 NAME = "browser_screenshot"
 
@@ -38,8 +38,20 @@ _NO_LAYOUT_RE = re.compile(
 _TARGET_RECT_FN = (
     "function(){"
     " const r=this.getBoundingClientRect();"
-    " return {x:r.left, y:r.top, width:r.width, height:r.height,"
-    "   scrollX:window.scrollX||0, scrollY:window.scrollY||0};"
+    " let x=r.left, y=r.top;"
+    " let win=this.ownerDocument && this.ownerDocument.defaultView;"
+    " while(win && win.frameElement){"
+    "   const fe=win.frameElement;"
+    "   const fr=fe.getBoundingClientRect();"
+    "   const pw=win.parent;"
+    "   const cs=(pw && pw.getComputedStyle) ? pw.getComputedStyle(fe) : null;"
+    "   x += fr.left + (cs ? (parseFloat(cs.borderLeftWidth)||0)+(parseFloat(cs.paddingLeft)||0) : 0);"
+    "   y += fr.top + (cs ? (parseFloat(cs.borderTopWidth)||0)+(parseFloat(cs.paddingTop)||0) : 0);"
+    "   win = pw;"
+    " }"
+    " const topWin=win || window;"
+    " return {x, y, width:r.width, height:r.height,"
+    "   scrollX:topWin.scrollX||0, scrollY:topWin.scrollY||0};"
     "}"
 )
 
@@ -86,8 +98,6 @@ async def _target_clip(session: Any, entry: Any, object_id: str) -> tuple[dict[s
     client = session.require_client()
     cdp_session_id = getattr(entry, "cdp_session_id", None)
     session_id = cdp_session_id or session.session_id
-    offset_fn = getattr(session, "oopif_offset", None)
-    offset = offset_fn(cdp_session_id) if callable(offset_fn) and cdp_session_id else (0.0, 0.0)
     try:
         await client.send(
             "DOM.scrollIntoViewIfNeeded",
@@ -102,6 +112,9 @@ async def _target_clip(session: Any, entry: Any, object_id: str) -> tuple[dict[s
             raise BadRequest(
                 "目标节点无可见布局盒模型（可能隐藏或未渲染），无法裁剪截图；请改用视口截图或先 browser_find 确认可见节点"
             ) from exc
+    # Read the OOPIF's live main-frame viewport origin *after* scrolling so
+    # main-document scroll changes are not double-counted against a cached offset.
+    offset = await resolve_oopif_offset(session, cdp_session_id) if cdp_session_id else (0.0, 0.0)
     rect_val: Any = None
     try:
         res = await call_value(session, object_id, _TARGET_RECT_FN, cdp_session_id=cdp_session_id)

@@ -251,6 +251,8 @@ class BrowserSession:
         self._oopif_sessions: dict[str, str] = {}
         self._oopif_parents: dict[str, str | None] = {}
         self._oopif_offsets: dict[str, tuple[float, float]] = {}
+        self._oopif_enabled: set[str] = set()
+        self._oopif_frame_ids: dict[str, str] = {}
         self._dirty = False
         self._probe_seen: int | None = None
         self._probe_script_id: str = ""
@@ -422,6 +424,24 @@ class BrowserSession:
         if not cdp_session_id:
             return (0.0, 0.0)
         return self._oopif_offsets.get(cdp_session_id, (0.0, 0.0))
+
+    def is_oopif_enabled(self, cdp_session_id: str) -> bool:
+        """Whether CDP domains have been enabled for this attached OOPIF session."""
+        return cdp_session_id in self._oopif_enabled
+
+    def mark_oopif_enabled(self, cdp_session_id: str) -> None:
+        """Remember that CDP domains are enabled on *cdp_session_id* until detach or reconnect."""
+        if not self._oopif_sessions or cdp_session_id in self._oopif_sessions:
+            self._oopif_enabled.add(cdp_session_id)
+
+    def oopif_frame_id(self, cdp_session_id: str) -> str:
+        """Cached root frameId for an attached OOPIF session, or empty when unknown."""
+        return self._oopif_frame_ids.get(cdp_session_id, "")
+
+    def set_oopif_frame_id(self, cdp_session_id: str, frame_id: str) -> None:
+        """Remember the root frameId of an attached OOPIF session."""
+        if frame_id and (not self._oopif_sessions or cdp_session_id in self._oopif_sessions):
+            self._oopif_frame_ids[cdp_session_id] = frame_id
 
     # ------------------------------------------------------------------ pages
 
@@ -911,6 +931,8 @@ class BrowserSession:
         self._oopif_sessions.clear()
         self._oopif_parents.clear()
         self._oopif_offsets.clear()
+        self._oopif_enabled.clear()
+        self._oopif_frame_ids.clear()
         self._cancel_dialog_task()
         self._dialog = None
         self._last_dialog = None
@@ -952,6 +974,9 @@ class BrowserSession:
         self._state = "failed"
         self._client = None
         self._targets = None
+        self._oopif_enabled.clear()
+        self._oopif_frame_ids.clear()
+        self._oopif_offsets.clear()
         if self._child is None:
             self._release_lock()
 
@@ -1272,6 +1297,8 @@ class BrowserSession:
             frame = tree.get("frameTree", {}).get("frame", {})
             frame_id = str(frame.get("id", ""))
             url = str(frame.get("url", ""))
+            if frame_id:
+                self.set_oopif_frame_id(cdp_session_id, frame_id)
         response = await client.send(
             "Runtime.evaluate",
             {"expression": _METRICS_EXPR, "returnByValue": True},
@@ -1947,6 +1974,8 @@ class BrowserSession:
         self._oopif_sessions.pop(child_session, None)
         self._oopif_parents.pop(child_session, None)
         self._oopif_offsets.pop(child_session, None)
+        self._oopif_enabled.discard(child_session)
+        self._oopif_frame_ids.pop(child_session, None)
         self._oopif_page.pop(child_session, None)
         for descendant in self.oopif_children(child_session):
             self._forget_oopif(descendant)

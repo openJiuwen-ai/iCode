@@ -335,3 +335,76 @@ def test_a_dialog_opened_by_the_change_handler_blocks_the_result(monkeypatch) ->
     assert session.successes == 0
     row = session.journal.lookup("fixed")
     assert row is not None and row["status"] == "blocked"
+
+
+def test_select_option_targets_exact_enabled_index_for_duplicate_values(monkeypatch) -> None:
+    session = FakeSession()
+    state = {
+        "ok": True,
+        "tag": "select",
+        "multiple": True,
+        "disabled": False,
+        "options": [
+            {"index": 0, "value": "dup", "label": "Disabled Group Item", "disabled": True, "selected": False},
+            {"index": 1, "value": "dup", "label": "Enabled Beta", "disabled": False, "selected": False},
+            {"index": 2, "value": "dup", "label": "Enabled Gamma", "disabled": False, "selected": False},
+        ],
+    }
+    after_right = {
+        **state,
+        "options": [
+            {"index": 0, "value": "dup", "label": "Disabled Group Item", "disabled": True, "selected": False},
+            {"index": 1, "value": "dup", "label": "Enabled Beta", "disabled": False, "selected": False},
+            {"index": 2, "value": "dup", "label": "Enabled Gamma", "disabled": False, "selected": True},
+        ],
+    }
+    captured_args: list[list[dict[str, Any]]] = []
+    states = [state, after_right]
+
+    async def fake_call_value(_session, _object_id, function, **kwargs):
+        if "wantedIdx" in function:
+            captured_args.append(list(kwargs["arguments"]))
+            return {"type": "object", "value": {"selected": ["dup"], "selectedIndices": [2]}}
+        return {"type": "object", "value": dict(states.pop(0) if len(states) > 1 else states[0])}
+
+    async def fake_target_facts(*_args, **_kwargs):
+        return dict(FACTS)
+
+    monkeypatch.setattr(select_option, "call_value", fake_call_value)
+    monkeypatch.setattr(select_option, "target_facts", fake_target_facts)
+
+    blocks = asyncio.run(select_option.run(session, {"target": "@e2#4", "values": ["Enabled Gamma"]}))
+    assert "status=succeeded" in blocks[0]["text"]
+    assert captured_args == [[{"value": ["dup"]}, {"value": [2]}]]
+
+
+def test_select_option_readback_rejects_disabled_selected_option(monkeypatch) -> None:
+    session = FakeSession()
+    state = {
+        "ok": True,
+        "tag": "select",
+        "multiple": False,
+        "disabled": False,
+        "options": [
+            {"index": 0, "value": "dup", "label": "Disabled", "disabled": True, "selected": False},
+            {"index": 1, "value": "dup", "label": "Enabled", "disabled": False, "selected": False},
+        ],
+    }
+    bad_after = {
+        **state,
+        "options": [
+            {"index": 0, "value": "dup", "label": "Disabled", "disabled": True, "selected": True},
+            {"index": 1, "value": "dup", "label": "Enabled", "disabled": False, "selected": False},
+        ],
+    }
+    install(monkeypatch, session, states=[state, bad_after])
+    blocks = asyncio.run(select_option.run(session, {"target": "@e2#4", "values": ["dup"]}))
+    assert "status=uncertain" in blocks[0]["text"]
+    assert "status=succeeded" not in blocks[0]["text"]
+
+
+def test_select_option_js_checks_optgroup_and_fieldset_disabled() -> None:
+    assert "optgroup" in select_option._SELECT_STATE_FN
+    assert "matches(':disabled')" in select_option._SELECT_STATE_FN
+    assert "optgroup" in select_option._APPLY_FN
+    assert "selectedIndex" in select_option._APPLY_FN

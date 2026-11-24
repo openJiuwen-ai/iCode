@@ -23,7 +23,7 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..errors import BrowserError, LoginRequired
+from ..errors import BrowserError, CDPTimeout, ConnectionClosed, LoginRequired
 from ..logging import log
 
 #: A login form is "dominant" only on a sparse page (design §8.2, conservative).
@@ -254,6 +254,186 @@ async def capture_sources(
     return snapshot_result, ax
 
 
+_OOPIF_DOMAINS = ("Page.enable", "Runtime.enable", "DOM.enable", "Accessibility.enable")
+
+_IFRAME_ORIGIN_FN = (
+    "function(){"
+    " let x=0, y=0, el=this;"
+    " while(el){"
+    "   const r=el.getBoundingClientRect();"
+    "   const win=el.ownerDocument && el.ownerDocument.defaultView;"
+    "   const cs=(win && win.getComputedStyle) ? win.getComputedStyle(el) : getComputedStyle(el);"
+    "   x += r.left + (parseFloat(cs.borderLeftWidth)||0) + (parseFloat(cs.paddingLeft)||0);"
+    "   y += r.top + (parseFloat(cs.borderTopWidth)||0) + (parseFloat(cs.paddingTop)||0);"
+    "   el = win && win.frameElement ? win.frameElement : null;"
+    " }"
+    " return {x, y};"
+    "}"
+)
+
+
+async def ensure_oopif_domains(session: Any, child_session: str) -> None:
+    """Enable CDP domains on *child_session* once per attached session."""
+    is_enabled = getattr(session, "is_oopif_enabled", None)
+    if callable(is_enabled) and is_enabled(child_session):
+        return
+    client = session.require_client()
+    results = await asyncio.gather(
+        *(client.send(domain, session_id=child_session, timeout=session.cfg.cdp_timeout) for domain in _OOPIF_DOMAINS),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, ConnectionClosed):
+            raise result
+        if isinstance(result, BaseException) and not isinstance(result, BrowserError):
+            raise result
+    if not any(isinstance(result, CDPTimeout) for result in results):
+        mark_enabled = getattr(session, "mark_oopif_enabled", None)
+        if callable(mark_enabled):
+            mark_enabled(child_session)
+
+
+def _quad_origin(quad: Any) -> tuple[float, float] | None:
+    if not isinstance(quad, (list, tuple)) or len(quad) < 8:
+        return None
+    xs = [float(v) for v in quad[0::2]]
+    ys = [float(v) for v in quad[1::2]]
+    return (min(xs), min(ys)) if xs and ys else None
+
+
+async def _frame_owner_viewport_origin(
+    session: Any,
+    child_session: str,
+    parent_session: str | None,
+) -> tuple[float, float] | None:
+    """Read *child_session*'s live iframe content-box origin in *parent_session*'s viewport."""
+    client = session.require_client()
+    frame_id_fn = getattr(session, "oopif_frame_id", None)
+    frame_id = frame_id_fn(child_session) if callable(frame_id_fn) else ""
+    if not frame_id:
+        tree = await client.send(
+            "Page.getFrameTree",
+            session_id=child_session,
+            timeout=session.cfg.cdp_timeout,
+        )
+        frame = (tree or {}).get("frameTree", {}).get("frame", {}) if isinstance(tree, dict) else {}
+        frame_id = str(frame.get("id", "")) if isinstance(frame, dict) else ""
+        if frame_id:
+            set_frame_id = getattr(session, "set_oopif_frame_id", None)
+            if callable(set_frame_id):
+                set_frame_id(child_session, frame_id)
+    if not frame_id:
+        return None
+    parent_sid = parent_session or session.session_id
+    owner = await client.send(
+        "DOM.getFrameOwner",
+        {"frameId": frame_id},
+        session_id=parent_sid,
+        timeout=session.cfg.cdp_timeout,
+    )
+    owner_backend = int((owner or {}).get("backendNodeId", 0) or 0) if isinstance(owner, dict) else 0
+    if not owner_backend:
+        return None
+    try:
+        resolved = await client.send(
+            "DOM.resolveNode",
+            {"backendNodeId": owner_backend},
+            session_id=parent_sid,
+            timeout=session.cfg.cdp_timeout,
+        )
+        owner_object_id = (
+            str(((resolved or {}).get("object") or {}).get("objectId", "")) if isinstance(resolved, dict) else ""
+        )
+        if owner_object_id:
+            origin_res = await call_value(
+                session,
+                owner_object_id,
+                _IFRAME_ORIGIN_FN,
+                cdp_session_id=parent_session,
+            )
+            val = origin_res.get("value") if isinstance(origin_res, dict) else None
+            if isinstance(val, dict) and "x" in val and "y" in val:
+                return float(val["x"]), float(val["y"])
+    except ConnectionClosed:
+        raise
+    except BrowserError:
+        pass
+    try:
+        quads_res = await client.send(
+            "DOM.getContentQuads",
+            {"backendNodeId": owner_backend},
+            session_id=parent_sid,
+            timeout=session.cfg.cdp_timeout,
+        )
+        quads = (quads_res or {}).get("quads") if isinstance(quads_res, dict) else None
+        if isinstance(quads, list) and quads:
+            origin = _quad_origin(quads[0])
+            if origin is not None:
+                return origin
+    except ConnectionClosed:
+        raise
+    except BrowserError:
+        pass
+    return None
+
+
+async def resolve_oopif_offset(session: Any, cdp_session_id: str | None) -> tuple[float, float]:
+    """Read *cdp_session_id*'s live content-box origin in main-frame viewport coordinates.
+
+    Walks the OOPIF ancestor chain up to the main frame after any scroll so
+    screenshot, click and hover all share fresh post-scroll coordinates. Falls
+    back to the cached ``session.oopif_offset`` when live lookup is unavailable
+    (for example in minimal unit-test doubles).
+    """
+    if not cdp_session_id:
+        return (0.0, 0.0)
+    offset_fn = getattr(session, "oopif_offset", None)
+    cached = offset_fn(cdp_session_id) if callable(offset_fn) else (0.0, 0.0)
+    parent_fn = getattr(session, "oopif_parent", None)
+    chain: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    current: str | None = cdp_session_id
+    while current and current not in seen and len(chain) < 8:
+        seen.add(current)
+        parent = parent_fn(current) if callable(parent_fn) else None
+        chain.append((current, parent))
+        current = parent
+    chain.reverse()
+    total_x = 0.0
+    total_y = 0.0
+    set_offset = getattr(session, "set_oopif_offset", None)
+    for child_sid, parent_sid in chain:
+        try:
+            origin = await _frame_owner_viewport_origin(session, child_sid, parent_sid)
+        except ConnectionClosed:
+            raise
+        except BrowserError:
+            return cached
+        if origin is None:
+            return cached
+        total_x += origin[0]
+        total_y += origin[1]
+        if callable(set_offset):
+            set_offset(child_sid, (total_x, total_y))
+    return (total_x, total_y)
+
+
+async def scroll_into_view_and_offset(
+    session: Any,
+    object_id: str,
+    cdp_session_id: str | None,
+) -> tuple[float, float]:
+    """Scroll *object_id* into view, then read its OOPIF's live main-viewport offset."""
+    client = session.require_client()
+    await client.send(
+        "DOM.scrollIntoViewIfNeeded",
+        {"objectId": object_id},
+        session_id=cdp_session_id or session.session_id,
+        timeout=session.cfg.cdp_timeout,
+    )
+    return await resolve_oopif_offset(session, cdp_session_id)
+
+
 async def _capture_oopif_tree(
     session: Any,
     child_session: str,
@@ -277,14 +457,13 @@ async def _capture_oopif_tree(
         return []
     client = session.require_client()
     try:
-        for domain in ("Page.enable", "Runtime.enable", "DOM.enable", "Accessibility.enable"):
-            try:
-                await client.send(domain, session_id=child_session, timeout=session.cfg.cdp_timeout)
-            except BrowserError:
-                pass
+        await ensure_oopif_domains(session, child_session)
         frame = await session.read_frame_metrics(cdp_session_id=child_session)
         if not frame.frame_id:
             return []
+        set_frame_id = getattr(session, "set_oopif_frame_id", None)
+        if callable(set_frame_id):
+            set_frame_id(child_session, frame.frame_id)
         owner = await client.send(
             "DOM.getFrameOwner",
             {"frameId": frame.frame_id},

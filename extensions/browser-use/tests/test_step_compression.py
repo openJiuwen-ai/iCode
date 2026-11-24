@@ -524,8 +524,8 @@ async def test_broker_evict_calls_aclose_on_failed_sessions(tmp_path):
             closed.append("closed")
 
     server.sessions["s1"] = FakeFailedSession()  # type: ignore[assignment]
-    evicted = server._evict_idle_sessions()
-    await server._close_evicted_sessions(evicted)
+    evicted = await server._evict_idle_sessions()
+    assert evicted is True
     assert "s1" not in server.sessions
     assert closed == ["closed"]
 
@@ -644,3 +644,123 @@ async def test_reclaim_orphans_runs_process_cmdline_in_to_thread(monkeypatch, tm
     monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
     await launcher._reclaim_orphans(tmp_path)
     assert seen == [(launcher._process_cmdline, (424242,))]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_snapshot_payload_respects_timeout_budget_and_preserves_success(monkeypatch):
+    import asyncio
+    import time
+
+    from icode_browser_use.actions import snapshot as snapshot_action
+
+    calls = 0
+
+    async def slow_snapshot(_session, _args):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.25)
+        return [text_block("late snapshot")]
+
+    monkeypatch.setattr(snapshot_action, "run", slow_snapshot)
+    session = _FakeWaitSession(page_texts=["READY"])
+
+    started = time.monotonic()
+    blocks = await wait_for.run(
+        session,
+        {
+            "condition": "text",
+            "target": "",
+            "value": "READY",
+            "timeout_ms": 100,
+            "return_mode": "snapshot",
+            "max_chars": 2000,
+        },
+    )
+    elapsed = time.monotonic() - started
+    out = blocks[0]["text"]
+    assert "status=succeeded" in out
+    assert calls == 1, "untargeted snapshot failure/timeout must not retry identical full-page snapshot"
+    assert elapsed < 0.22, f"return_mode='snapshot' bypassed timeout_ms=100 (took {elapsed:.3f}s)"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_text_payload_respects_timeout_budget(monkeypatch):
+    import asyncio
+    import time
+
+    session = _FakeWaitSession()
+
+    async def slow_eval(_session, _expr, _deadline):
+        await asyncio.sleep(0.25)
+        return "too slow"
+
+    async def fast_node(_session, _obj, _cdp, _fn, _deadline):
+        return {"present": True, "visible": False, "text": "Spinner"}
+
+    monkeypatch.setattr(wait_for, "_call_node", fast_node)
+    monkeypatch.setattr(wait_for, "_evaluate", slow_eval)
+
+    started = time.monotonic()
+    blocks = await wait_for.run(
+        session,
+        {
+            "condition": "hidden",
+            "target": "@e5#7",
+            "value": "",
+            "timeout_ms": 100,
+            "return_mode": "text",
+            "max_chars": 500,
+        },
+    )
+    elapsed = time.monotonic() - started
+    out = blocks[0]["text"]
+    assert "status=succeeded" in out
+    assert elapsed < 0.22, f"return_mode='text' bypassed timeout_ms=100 (took {elapsed:.3f}s)"
+
+
+@pytest.mark.asyncio
+async def test_run_post_write_expect_uses_structured_write_outcome_not_prose(monkeypatch):
+    from icode_browser_use.actions.actionability import WriteOutcome
+
+    monkeypatch.setattr(wait_for, "_sleep", lambda _s: _noop())
+    session = _FakeWaitSession(page_texts=["DONE_SIGNAL"])
+
+    # Structured succeeded outcome runs expect even if rendered prose contains misleading tokens.
+    succeeded = WriteOutcome(
+        status="succeeded",
+        dispatched=True,
+        blocks=[text_block("custom wording\nstatus=blocked\ndispatch=not_sent")],
+    )
+    blocks = await wait_for.run_post_write_expect(
+        session,
+        {
+            "expect_condition": "text",
+            "expect_target": "",
+            "expect_value": "DONE_SIGNAL",
+            "expect_timeout_ms": 1000,
+            "expect_return": "none",
+        },
+        baseline=None,
+        action_blocks=succeeded,
+    )
+    assert "expect_status=matched" in blocks[0]["text"]
+
+    # Structured blocked outcome skips expect even if rendered prose says status=succeeded.
+    blocked = WriteOutcome(
+        status="blocked",
+        dispatched=False,
+        blocks=[text_block("custom wording\nstatus=succeeded")],
+    )
+    blocks = await wait_for.run_post_write_expect(
+        session,
+        {
+            "expect_condition": "text",
+            "expect_target": "",
+            "expect_value": "DONE_SIGNAL",
+            "expect_timeout_ms": 1000,
+            "expect_return": "none",
+        },
+        baseline=None,
+        action_blocks=blocked,
+    )
+    assert "expect_status=skipped reason=write_not_confirmed" in blocks[0]["text"]

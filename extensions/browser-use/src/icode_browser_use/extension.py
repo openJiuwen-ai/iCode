@@ -744,6 +744,8 @@ async def browser_resume(
             ) from exc
         probe.release()
     browser = _allocate(ctx, base, slot)
+    if isinstance(browser.session, BrokerSession):
+        browser.session.mark_resumed()
     if backend == "broker":
         note = (
             "reacquired the Broker session for this slot; the Broker may still hold the original page. "

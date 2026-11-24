@@ -11,13 +11,35 @@ from __future__ import annotations
 import re
 import secrets
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from ..errors import BrowserError, ConnectionClosed, StaleRef
 from ..journal import DISPATCHED, PREPARED, RESULT
+from ..types import ToolBlock
 from ._shared import call_value, eval_value
 
 JsonCall = Callable[..., Awaitable[dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class WriteOutcome:
+    """Structured dispatch and verification outcome of a write action.
+
+    Post-write flows (such as ``expect_*``) branch on these fields rather than
+    scanning rendered prose lines, so wording adjustments never alter control flow.
+    """
+
+    status: str
+    dispatched: bool
+    blocks: list[ToolBlock]
+    effect: str = ""
+    action_id: str = ""
+
+    @property
+    def can_run_expect(self) -> bool:
+        return self.dispatched and self.status not in {"blocked", "failed"}
+
 
 PAGE_STATE_EXPR = (
     "(()=>({"
@@ -66,7 +88,7 @@ TARGET_FACTS_FN = (
     "   ariaChecked:this.getAttribute('aria-checked'),"
     "   ariaLabel:(this.getAttribute('aria-label')||'').trim().slice(0,80),"
     "   contextLength,"
-    "   disabled:this.disabled===true,"
+    "   disabled:this.disabled===true || (typeof this.matches==='function' && this.matches(':disabled')),"
     "   ariaDisabled:this.getAttribute('aria-disabled')==='true',"
     "   classDisabled:/\\bdisabled\\b/.test(cls)}; }"
 )
@@ -138,7 +160,7 @@ FOCUS_FN = (
     "   type:(this.type||'').toLowerCase(),"
     "   editable:this.isContentEditable===true,"
     "   readOnly:this.readOnly===true,"
-    "   disabled:this.disabled===true,"
+    "   disabled:this.disabled===true || (typeof this.matches==='function' && this.matches(':disabled')),"
     "   inShadow:root!==document,"
     "   hasLayout:rect.width>0 && rect.height>0,"
     "   tabIndex:typeof this.tabIndex==='number'?this.tabIndex:-1,"

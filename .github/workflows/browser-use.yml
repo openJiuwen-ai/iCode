@@ -1,0 +1,49 @@
+name: Browser Use Plugin
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'extensions/browser-use/**'
+      - '.github/workflows/browser-use.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: browser-use-${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  plugin_tests:
+    name: Plugin tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux
+            os: ubuntu-latest
+          - label: windows
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.7"
+          prune-cache: true
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+          allow-prereleases: true
+      - run: uv sync
+      - name: Install browser-use plugin editable
+        run: uv pip install --no-deps -e extensions/browser-use
+      - name: Lint browser-use plugin
+        run: uv run --no-sync ruff check --isolated --line-length 120 --select E,F --ignore E501 --no-fix extensions/browser-use/src extensions/browser-use/tests extensions/browser-use/scripts
+      - name: Run browser-use Python tests
+        run: uv run --no-sync pytest -c extensions/browser-use/pyproject.toml extensions/browser-use/tests
+      - name: Run browser-use MV3 extension tests
+        run: node --test extensions/browser-use/src/icode_browser_use/extension/background.test.js extensions/browser-use/src/icode_browser_use/extension/chunks.test.js extensions/browser-use/src/icode_browser_use/extension/permissions.test.js

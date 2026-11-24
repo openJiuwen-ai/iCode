@@ -52,6 +52,14 @@ MAX_BROKER_SESSIONS = 8
 MAX_BROKER_SESSIONS_PER_OWNER = 2
 
 
+def _consume_task_error(task: asyncio.Task[None]) -> None:
+    """Retrieve a detached teardown task's exception so asyncio never warns."""
+    if task.cancelled():
+        return
+    with contextlib.suppress(Exception):
+        task.exception()
+
+
 class BrokerServer:
     """One Broker process owning named BrowserSessions."""
 
@@ -74,6 +82,8 @@ class BrokerServer:
         self.sessions: dict[str, Any] = {}
         self.owners: dict[str, str] = {}
         self.leases: dict[str, Lease] = {}
+        self._closing_tasks: dict[str, asyncio.Task[None]] = {}
+        self._closing_owners: dict[str, str] = {}
         self._tools = {
             tool.name: tool
             for tool in build_tool_defs(
@@ -154,38 +164,85 @@ class BrokerServer:
         ):
             return
         finally:
-            evicted = self._release_for_connection(writer)
+            self._release_for_connection(writer)
             self._clients.discard(writer)
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
-            await self._close_evicted_sessions(evicted)
+            await self._evict_idle_sessions()
 
-    def _release_for_connection(self, writer: asyncio.StreamWriter) -> list[Any]:
+    def _release_for_connection(self, writer: asyncio.StreamWriter) -> None:
         for lease_id, lease in list(self.leases.items()):
             if lease.connection is writer:
                 self.leases.pop(lease_id, None)
-        return self._evict_idle_sessions()
 
-    def _evict_idle_sessions(self) -> list[Any]:
-        evicted: list[Any] = []
+    def _begin_close_session(self, session_id: str, *, log_errors: bool = False) -> asyncio.Task[None] | None:
+        """Detach *session_id* and start (or join) its single teardown task."""
+        existing = self._closing_tasks.get(session_id)
+        if existing is not None:
+            return existing
+        for active_id, active_lease in list(self.leases.items()):
+            if active_lease.session_id == session_id:
+                self.leases.pop(active_id, None)
+        session = self.sessions.pop(session_id, None)
+        if session is None:
+            self.owners.pop(session_id, None)
+            return None
+        self._closing_owners[session_id] = self.owners.get(session_id, "")
+        task = asyncio.get_running_loop().create_task(
+            self._teardown_session(session_id, session, log_errors=log_errors)
+        )
+        task.add_done_callback(_consume_task_error)
+        self._closing_tasks[session_id] = task
+        return task
+
+    async def _teardown_session(self, session_id: str, session: Any, *, log_errors: bool) -> None:
+        try:
+            aclose = getattr(session, "aclose", None)
+            if callable(aclose):
+                if log_errors:
+                    try:
+                        await aclose()
+                    except Exception as exc:
+                        log(f"broker evicted session aclose failed: {exc!r}")
+                else:
+                    await aclose()
+        finally:
+            for active_id, active_lease in list(self.leases.items()):
+                if active_lease.session_id == session_id:
+                    self.leases.pop(active_id, None)
+            if self.sessions.get(session_id) is session:
+                self.sessions.pop(session_id, None)
+            self.owners.pop(session_id, None)
+            self._closing_owners.pop(session_id, None)
+            self._closing_tasks.pop(session_id, None)
+
+    async def _close_session(self, session_id: str, *, log_errors: bool = False) -> None:
+        task = self._begin_close_session(session_id, log_errors=log_errors)
+        if task is not None:
+            await asyncio.shield(task)
+
+    def _evictable_session_ids(self) -> list[str]:
+        candidates: list[str] = []
         for session_id, session in list(self.sessions.items()):
+            if session_id in self._closing_tasks:
+                continue
             if any(lease.session_id == session_id for lease in self.leases.values()):
                 continue
             if getattr(session, "state", None) in {"idle", "closed", "failed"}:
-                self.sessions.pop(session_id, None)
-                self.owners.pop(session_id, None)
-                evicted.append(session)
-        return evicted
+                candidates.append(session_id)
+        return candidates
 
-    async def _close_evicted_sessions(self, sessions: list[Any]) -> None:
-        for session in sessions:
-            aclose = getattr(session, "aclose", None)
-            if callable(aclose):
-                try:
-                    await aclose()
-                except Exception as exc:
-                    log(f"broker evicted session aclose failed: {exc!r}")
+    async def _evict_idle_sessions(self) -> bool:
+        """Detach and close every unleased idle/closed/failed session via the unified teardown path."""
+        tasks = [
+            task
+            for session_id in self._evictable_session_ids()
+            if (task := self._begin_close_session(session_id, log_errors=True)) is not None
+        ]
+        for task in tasks:
+            await asyncio.shield(task)
+        return bool(tasks)
 
     async def _sweep(self) -> None:
         interval = 1.0 if self.cfg.broker_lease_ttl < 30 else 30.0
@@ -198,12 +255,13 @@ class BrokerServer:
                         continue
                     if now - lease.last_seen > self.cfg.broker_lease_ttl:
                         self.leases.pop(lease_id, None)
-            await self._close_evicted_sessions(self._evict_idle_sessions())
+            await self._evict_idle_sessions()
             if (
                 self.cfg.broker_idle_exit > 0
                 and not self._clients
                 and not self.leases
                 and not self.sessions
+                and not self._closing_tasks
                 and now - self._last_activity > self.cfg.broker_idle_exit
             ):
                 self.stop_event.set()
@@ -214,7 +272,7 @@ class BrokerServer:
         op = message.get("op")
         try:
             if op == "acquire":
-                lease = self._acquire(
+                lease = await self._acquire(
                     str(message.get("owner", "")),
                     str(message.get("session_id", "")),
                     writer,
@@ -239,25 +297,30 @@ class BrokerServer:
                 if lease is None or lease.generation != str(message.get("generation", "")):
                     return {"id": request_id, "ok": False, "error": "broker lease is not active"}
                 self.leases.pop(lease.lease_id, None)
-                self._evict_idle_sessions()
+                await self._evict_idle_sessions()
                 return {"id": request_id, "ok": True}
             if op == "close":
                 lease = self.leases.get(str(message.get("lease_id", "")))
-                if lease is not None and lease.generation == str(message.get("generation", "")):
+                req_generation = str(message.get("generation", ""))
+                req_owner = str(message.get("owner", ""))
+                req_session_id = str(message.get("session_id", ""))
+                if lease is not None and lease.generation == req_generation:
                     session_id = lease.session_id
-                    self.leases.pop(lease.lease_id, None)
                 else:
-                    session_id = str(message.get("session_id", ""))
-                    if self.owners.get(session_id) != str(message.get("owner", "")):
+                    session_id = req_session_id
+                    if not session_id or not req_owner:
                         return {"id": request_id, "ok": False, "error": "broker lease is not active"}
-                session = self.sessions.get(session_id)
-                for active_id, active_lease in list(self.leases.items()):
-                    if active_lease.session_id == session_id:
-                        self.leases.pop(active_id, None)
-                if session is not None:
-                    await session.aclose()
-                    self.sessions.pop(session_id, None)
-                    self.owners.pop(session_id, None)
+                    known_owner = self.owners.get(session_id) or self._closing_owners.get(session_id)
+                    if known_owner is not None and known_owner != req_owner:
+                        return {"id": request_id, "ok": False, "error": "broker lease is not active"}
+                    if (
+                        known_owner is None
+                        and session_id not in self.sessions
+                        and session_id not in self._closing_tasks
+                    ):
+                        # Idempotent close: the session does not exist (never created or already closed).
+                        return {"id": request_id, "ok": True}
+                await self._close_session(session_id, log_errors=False)
                 return {"id": request_id, "ok": True}
             if op == "shutdown":
                 self.stop_event.set()
@@ -275,59 +338,100 @@ class BrokerServer:
         except Exception as exc:  # noqa: BLE001 - broker boundary
             return {"id": request_id, "ok": False, "error": f"broker_error: {exc}"}
 
-    def _acquire(self, owner: str, session_id: str, connection: Any) -> Lease:
+    async def _acquire(self, owner: str, session_id: str, connection: Any) -> Lease:
         if not owner or not session_id:
             raise Unavailable("broker acquire requires owner and session_id")
-        for lease in list(self.leases.values()):
-            if lease.session_id != session_id:
+        while True:
+            closing = self._closing_tasks.get(session_id)
+            if closing is not None:
+                closing_owner = self._closing_owners.get(session_id)
+                if closing_owner and closing_owner != owner:
+                    raise Unavailable(f"browser session {session_id} is owned by another client")
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(closing)
                 continue
-            if lease.connection is connection:
-                return lease
-            if lease.connection is not None and lease.connection.is_closing():
-                self.leases.pop(lease.lease_id, None)
-                continue
-            if lease.owner == owner:
-                raise Unavailable(f"browser session {session_id} already has a live lease; close the previous client")
-            raise Unavailable(f"browser session {session_id} is owned by another client")
-        known_owner = self.owners.get(session_id)
-        if known_owner is not None and known_owner != owner:
-            raise Unavailable(f"browser session {session_id} is owned by another client")
-        session = self.sessions.get(session_id)
-        if session is None:
-            self._evict_idle_sessions()
-            if self.cfg.bridge:
-                if self.sessions:
-                    raise Unavailable("bridge mode supports one Broker session per state dir")
-                session_cfg = self.cfg
-            elif session_id == "default" and (self.cfg.state_dir / "chrome").is_dir():
-                # Preserve the pre-multi-session profile/login for the default id.
-                session_cfg = self.cfg
-            else:
-                if len(self.sessions) >= MAX_BROKER_SESSIONS:
-                    raise Unavailable(f"at most {MAX_BROKER_SESSIONS} Broker sessions are supported")
-                if sum(1 for current in self.owners.values() if current == owner) >= (MAX_BROKER_SESSIONS_PER_OWNER):
+            for lease in list(self.leases.values()):
+                if lease.session_id != session_id:
+                    continue
+                if lease.connection is connection:
+                    if session_id in self.sessions:
+                        return lease
+                    self.leases.pop(lease.lease_id, None)
+                    continue
+                if lease.connection is not None and lease.connection.is_closing():
+                    self.leases.pop(lease.lease_id, None)
+                    continue
+                if lease.owner == owner:
                     raise Unavailable(
-                        f"at most {MAX_BROKER_SESSIONS_PER_OWNER} Broker sessions per owner are supported"
+                        f"browser session {session_id} already has a live lease; close the previous client"
                     )
-                session_cfg = replace(
-                    self.cfg,
-                    state_dir=_session_state_dir(self.cfg.state_dir, session_id),
-                )
-            session = self._session_factory(session_cfg)
-            self.sessions[session_id] = session
-            self.owners[session_id] = owner
-        if isinstance(session, BrowserSession):
-            session.reset_action_budget()
-        lease = Lease(
-            secrets.token_hex(12),
-            owner,
-            session_id,
-            connection,
-            secrets.token_hex(8),
-            time.monotonic(),
-        )
-        self.leases[lease.lease_id] = lease
-        return lease
+                raise Unavailable(f"browser session {session_id} is owned by another client")
+            known_owner = self.owners.get(session_id)
+            if known_owner is not None and known_owner != owner:
+                raise Unavailable(f"browser session {session_id} is owned by another client")
+            session = self.sessions.get(session_id)
+            if session is not None and getattr(session, "state", None) == "closed":
+                await self._close_session(session_id, log_errors=True)
+                continue
+            if session is None:
+                if self._evictable_session_ids():
+                    await self._evict_idle_sessions()
+                    continue
+                if self.cfg.bridge:
+                    if self._closing_tasks and not self.sessions:
+                        for task in list(self._closing_tasks.values()):
+                            with contextlib.suppress(Exception):
+                                await asyncio.shield(task)
+                        continue
+                    if self.sessions:
+                        raise Unavailable("bridge mode supports one Broker session per state dir")
+                    session_cfg = self.cfg
+                elif session_id == "default" and (self.cfg.state_dir / "chrome").is_dir():
+                    # Preserve the pre-multi-session profile/login for the default id.
+                    session_cfg = self.cfg
+                else:
+                    if len(self.sessions) + len(self._closing_tasks) >= MAX_BROKER_SESSIONS:
+                        if self._closing_tasks:
+                            for task in list(self._closing_tasks.values()):
+                                with contextlib.suppress(Exception):
+                                    await asyncio.shield(task)
+                            continue
+                        raise Unavailable(f"at most {MAX_BROKER_SESSIONS} Broker sessions are supported")
+                    if sum(1 for current in self.owners.values() if current == owner) >= (
+                        MAX_BROKER_SESSIONS_PER_OWNER
+                    ):
+                        owner_closing = [
+                            task
+                            for sid, task in list(self._closing_tasks.items())
+                            if self._closing_owners.get(sid) == owner
+                        ]
+                        if owner_closing:
+                            for task in owner_closing:
+                                with contextlib.suppress(Exception):
+                                    await asyncio.shield(task)
+                            continue
+                        raise Unavailable(
+                            f"at most {MAX_BROKER_SESSIONS_PER_OWNER} Broker sessions per owner are supported"
+                        )
+                    session_cfg = replace(
+                        self.cfg,
+                        state_dir=_session_state_dir(self.cfg.state_dir, session_id),
+                    )
+                session = self._session_factory(session_cfg)
+                self.sessions[session_id] = session
+                self.owners[session_id] = owner
+            if isinstance(session, BrowserSession):
+                session.reset_action_budget()
+            lease = Lease(
+                secrets.token_hex(12),
+                owner,
+                session_id,
+                connection,
+                secrets.token_hex(8),
+                time.monotonic(),
+            )
+            self.leases[lease.lease_id] = lease
+            return lease
 
     async def _call(
         self, lease_id: str, generation: str, tool_name: str, arguments: Any
@@ -375,12 +479,16 @@ class BrokerServer:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._sweep_task
             self._sweep_task = None
-        for session in self.sessions.values():
+        for session_id in list(self.sessions):
+            self._begin_close_session(session_id, log_errors=True)
+        for task in list(self._closing_tasks.values()):
             with contextlib.suppress(Exception):
-                await session.aclose()
+                await asyncio.shield(task)
         self.sessions.clear()
         self.owners.clear()
         self.leases.clear()
+        self._closing_tasks.clear()
+        self._closing_owners.clear()
         if self.file.is_file():
             with contextlib.suppress(OSError, ValueError):
                 payload = json.loads(self.file.read_text(encoding="utf-8"))

@@ -37,6 +37,10 @@ class BrokerCallUnknown(BrowserError):
     code = "browser_unknown"
 
 
+class _BrokerNotRunning(Unavailable):
+    """Internal marker: no live Broker process was found at discovery time."""
+
+
 class BrokerSession:
     """A BrowserSession-shaped facade over a Broker lease (extension adapter)."""
 
@@ -51,8 +55,16 @@ class BrokerSession:
         self.cfg = cfg
         self.state = "ready"
         self.snapshot = SimpleNamespace(url="", title="")
+        # True once this handle may correspond to a Broker-side session (first call
+        # or explicit resume). A fresh handle from browser_open can close locally.
+        self._remote_possible = False
+
+    def mark_resumed(self) -> None:
+        """Mark that this handle resumed a slot which may already exist on the Broker."""
+        self._remote_possible = True
 
     async def call_tool(self, tool: str, arguments: Any) -> list[dict[str, Any]]:
+        self._remote_possible = True
         blocks = await self.client.call(tool, arguments)
         self.snapshot.url = self.client.last_url
         self.snapshot.title = self.client.last_title
@@ -67,7 +79,12 @@ class BrokerSession:
         return self.client.connected
 
     async def aclose(self) -> None:
-        await self.client.close_session()
+        if self._remote_possible or getattr(self.client, "connected", False) or getattr(self.client, "lease_id", ""):
+            await self.client.close_session()
+        else:
+            local_close = getattr(self.client, "aclose", None)
+            if callable(local_close):
+                await local_close()
         self.state = "closed"
 
 
@@ -166,18 +183,28 @@ class BrokerClient:
 
     async def close_session(self) -> None:
         """Close the Broker-side BrowserSession (used by extension browser_close)."""
-        if self._writer is None:
-            await self._connect(allow_spawn=False)
-        response = await self._request(
-            "close",
-            lease_id=self.lease_id,
-            generation=self.lease_generation,
-            session_id=self.session_id,
-            owner=self.owner,
-            allow_spawn=False,
-        )
+        try:
+            if self._writer is None:
+                await self._connect(allow_spawn=False)
+            response = await self._request(
+                "close",
+                lease_id=self.lease_id,
+                generation=self.lease_generation,
+                session_id=self.session_id,
+                owner=self.owner,
+                allow_spawn=False,
+            )
+        except _BrokerNotRunning:
+            # No Broker process is running, so no Broker-side session exists to close.
+            self.lease_id = ""
+            self.lease_generation = ""
+            await self.aclose()
+            return
         if not response.get("ok"):
             raise BrowserError(str(response.get("error") or "broker close failed"))
+        # The Broker already dropped this lease during close; skip a redundant release.
+        self.lease_id = ""
+        self.lease_generation = ""
         await self.aclose()
 
     async def _request(self, op: str, *, allow_spawn: bool = True, **fields: Any) -> dict[str, Any]:
@@ -247,7 +274,7 @@ class BrokerClient:
             payload = None
         if payload is None:
             if not self.cfg.broker_autostart or not allow_spawn:
-                raise Unavailable(
+                raise _BrokerNotRunning(
                     "browser broker is not running; start icode-browser-use-broker "
                     "(or set ICODE_BROWSER_BROKER_AUTOSTART=1 for development)"
                 )

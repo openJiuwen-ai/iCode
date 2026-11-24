@@ -24,7 +24,12 @@ PARAMS: dict[str, Any] = {
     "path": {"type": "string", "required": True},
 }
 
-_IS_FILE_INPUT_FN = "function(){ return {ok:this.type==='file' && !this.disabled}; }"
+_IS_FILE_INPUT_FN = (
+    "function(){"
+    " const disabled=this.disabled===true || (typeof this.matches==='function' && this.matches(':disabled'));"
+    " return {ok:(this.tagName||'').toLowerCase()==='input' && this.type==='file' && !disabled};"
+    "}"
+)
 _FILE_COUNT_FN = "function(){ return {ok:this.type==='file', count:this.files?this.files.length:0}; }"
 
 

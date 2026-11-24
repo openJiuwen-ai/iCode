@@ -12,9 +12,10 @@ from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed, Sta
 from ..journal import RESULT
 from ..prompts import CLICK_HARD_RULE
 from ..types import ToolBlock, text_block
-from ._shared import call_value, eval_value, resolve_target, send_watching_dialog
+from ._shared import call_value, eval_value, resolve_target, scroll_into_view_and_offset, send_watching_dialog
 from .actionability import (
     HIT_TEST_FN,
+    WriteOutcome,
     cdp_hit_test,
     classify_effect,
     evidence_line,
@@ -260,17 +261,14 @@ _NO_LAYOUT_RE = re.compile(
 )
 
 
-async def _visible_quad(session: Any, object_id: str, cdp_session_id: str | None) -> Any | None:
-    """Scroll the node into view and return its largest content quad (frame-local coordinates)."""
+async def _visible_quad_with_offset(
+    session: Any, object_id: str, cdp_session_id: str | None
+) -> tuple[Any | None, tuple[float, float]]:
+    """Scroll the node into view and return ``(quad, live_oopif_offset)``."""
     client = session.require_client()
     session_id = cdp_session_id or session.session_id
     try:
-        await client.send(
-            "DOM.scrollIntoViewIfNeeded",
-            {"objectId": object_id},
-            session_id=session_id,
-            timeout=session.cfg.cdp_timeout,
-        )
+        offset = await scroll_into_view_and_offset(session, object_id, cdp_session_id)
         quads_response = await client.send(
             "DOM.getContentQuads",
             {"objectId": object_id},
@@ -287,7 +285,7 @@ async def _visible_quad(session: Any, object_id: str, cdp_session_id: str | None
             )
             model = model_response.get("model") or {}
             quad = model.get("content") or model.get("border") or model.get("padding")
-        return quad
+        return quad, offset
     except BrowserError as exc:
         if _NO_LAYOUT_RE.search(str(exc)):
             raise BadRequest(
@@ -295,6 +293,12 @@ async def _visible_quad(session: Any, object_id: str, cdp_session_id: str | None
                 "请用 browser_find 查看带 [in-view] 或 [editable] 标记的候选元素"
             ) from exc
         raise
+
+
+async def _visible_quad(session: Any, object_id: str, cdp_session_id: str | None) -> Any | None:
+    """Scroll the node into view and return its largest content quad (frame-local coordinates)."""
+    quad, _offset = await _visible_quad_with_offset(session, object_id, cdp_session_id)
+    return quad
 
 
 async def _hit_point(
@@ -307,13 +311,14 @@ async def _hit_point(
     """Scroll the node into view then read its box; return a parent-viewport point.
 
     ``DOM.getContentQuads`` returns coordinates in the frame that owns the node;
-    for an OOPIF that is its local viewport, so the iframe offset is added.
-    The snapshot bbox is already in parent coordinates and is used as-is.
+    for an OOPIF that is its local viewport, so the post-scroll iframe offset is
+    added. The snapshot bbox is already in parent coordinates and is used as-is.
     """
-    quad = await _visible_quad(session, object_id, cdp_session_id)
+    quad, live_offset = await _visible_quad_with_offset(session, object_id, cdp_session_id)
     if quad is not None:
+        active_offset = live_offset if cdp_session_id else offset
         x, y = _quad_center(quad)
-        return x + offset[0], y + offset[1]
+        return x + active_offset[0], y + active_offset[1]
     bbox = getattr(entry, "bbox", None)
     if bbox and len(bbox) == 4:
         x, y, width, height = (float(v) for v in bbox)
@@ -333,13 +338,15 @@ async def _corner_points(
     trying); a CDP failure propagates so the caller does not mistake it for
     "no corners".
     """
-    quad = await _visible_quad(session, object_id, cdp_session_id)
+    quad, live_offset = await _visible_quad_with_offset(session, object_id, cdp_session_id)
     points = _quad_points(quad) if quad is not None else []
     if len(points) < 3:
         return []
+    active_offset = live_offset if cdp_session_id else offset
     cx, cy = _quad_center(quad)
     return [
-        (cx + (px - cx) * _CORNER_INSET + offset[0], cy + (py - cy) * _CORNER_INSET + offset[1]) for px, py in points
+        (cx + (px - cx) * _CORNER_INSET + active_offset[0], cy + (py - cy) * _CORNER_INSET + active_offset[1])
+        for px, py in points
     ]
 
 
@@ -391,6 +398,8 @@ async def _locate_hit(
     so no point is known to reach the target and occlusion is not established).
     """
     x, y = await _hit_point(session, object_id, entry, cdp_session_id, offset)
+    if cdp_session_id:
+        offset = session.oopif_offset(cdp_session_id)
     hit = await _safe_hit_test(session, object_id, x, y, cdp_session_id, offset, entry=entry)
     if hit is None:
         return x, y, "unverified", None
@@ -401,12 +410,16 @@ async def _locate_hit(
     for attempt in range(2):
         if attempt:
             x, y = await _hit_point(session, object_id, entry, cdp_session_id, offset)
+            if cdp_session_id:
+                offset = session.oopif_offset(cdp_session_id)
             hit = await _safe_hit_test(session, object_id, x, y, cdp_session_id, offset, entry=entry)
             if _confirmed(hit):
                 return x, y, "centre", hit
             unanswered = unanswered or hit is None
         try:
             corners = await _corner_points(session, object_id, cdp_session_id, offset)
+            if cdp_session_id:
+                offset = session.oopif_offset(cdp_session_id)
         except ConnectionClosed:
             raise
         except (CDPTimeout, BrowserError):
@@ -530,11 +543,11 @@ async def _dispatch_click(session: Any, x: float, y: float, button: str, count: 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     baseline = await prepare_expect_baseline(session, arguments)
-    blocks = await _run_click(session, arguments)
-    return await run_post_write_expect(session, arguments, baseline=baseline, action_blocks=blocks)
+    outcome = await _run_click(session, arguments)
+    return await run_post_write_expect(session, arguments, baseline=baseline, action_blocks=outcome)
 
 
-async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
+async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     target = arguments["target"]
     button = arguments["button"]
     count = arguments["click_count"]
@@ -554,7 +567,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
             f"{evidence_line(session, action_id)}"
         )
         record_action(session, action_id, "browser_click", "blocked", text)
-        return [text_block(text)]
+        return WriteOutcome(status="blocked", dispatched=False, blocks=[text_block(text)], action_id=action_id)
 
     submit_like = _is_submit_like(facts)
     dispatch = arguments.get("dispatch", "mouse")
@@ -566,7 +579,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
                 f"dispatch=not_sent\nstatus=blocked retryable=false\n{evidence_line(session, action_id)}"
             )
             record_action(session, action_id, "browser_click", "blocked", text)
-            return [text_block(text)]
+            return WriteOutcome(status="blocked", dispatched=False, blocks=[text_block(text)], action_id=action_id)
         x = y = 0.0
         where = "dom"
     else:
@@ -578,7 +591,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
                 f"{evidence_line(session, action_id)}"
             )
             record_action(session, action_id, "browser_click", "uncertain", text)
-            return [text_block(text)]
+            return WriteOutcome(status="uncertain", dispatched=False, blocks=[text_block(text)], action_id=action_id)
         if where == "occluded":
             text = (
                 f"未点击 {entry.token}：{_ALL_OCCLUDED}"
@@ -589,7 +602,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
                 f"{evidence_line(session, action_id)}"
             )
             record_action(session, action_id, "browser_click", "blocked", text)
-            return [text_block(text)]
+            return WriteOutcome(status="blocked", dispatched=False, blocks=[text_block(text)], action_id=action_id)
     baseline_ok = True
     try:
         before = await _page_state(session, cdp_session_id)
@@ -629,7 +642,9 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
             f"{evidence_line(session, action_id)}"
         )
         record_action(session, action_id, "browser_click", "uncertain", text)
-        return [text_block(text)]
+        return WriteOutcome(
+            status="uncertain", dispatched=True, blocks=[text_block(text)], effect="unknown", action_id=action_id
+        )
     if dialog is not None:
         mark_dispatched(
             session,
@@ -639,7 +654,9 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
         )
         text = _dialog_blocked(session, entry, label, dialog, action_id)
         record_action(session, action_id, "browser_click", "blocked", text)
-        return [text_block(text)]
+        return WriteOutcome(
+            status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
+        )
     mark_dispatched(
         session,
         action_id,
@@ -650,7 +667,9 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
     if effect == "dialog":
         text = _dialog_blocked(session, entry, label, session.dialog_since(dialog_seq), action_id)
         record_action(session, action_id, "browser_click", "blocked", text)
-        return [text_block(text)]
+        return WriteOutcome(
+            status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
+        )
     verified_control = False
     if not baseline_ok:
         effect = "unknown"
@@ -679,7 +698,13 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
                 if dialog is not None:
                     text = _dialog_blocked(session, entry, label, dialog, action_id)
                     record_action(session, action_id, "browser_click", "blocked", text)
-                    return [text_block(text)]
+                    return WriteOutcome(
+                        status="blocked",
+                        dispatched=True,
+                        blocks=[text_block(text)],
+                        effect="dialog",
+                        action_id=action_id,
+                    )
         if not verified_control and effect not in ("navigation", "target_detached"):
             after_facts = await _target_facts(session, object_id, cdp_session_id)
             if after_facts.get("connected") is False:
@@ -713,7 +738,9 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
     if dialog is not None:
         text = _dialog_blocked(session, entry, label, dialog, action_id)
         record_action(session, action_id, "browser_click", "blocked", text)
-        return [text_block(text)]
+        return WriteOutcome(
+            status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
+        )
 
     if effect in ("navigation", "dom", "target_detached"):
         session.note_success(session.target_id)
@@ -750,4 +777,4 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]
             )
     text = "\n".join(lines)
     record_action(session, action_id, "browser_click", status, text)
-    return [text_block(text)]
+    return WriteOutcome(status=status, dispatched=True, blocks=[text_block(text)], effect=effect, action_id=action_id)

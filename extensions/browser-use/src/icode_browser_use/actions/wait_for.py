@@ -21,6 +21,7 @@ difference; ``count`` counts ``browser_find`` matches in a refreshed snapshot.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import re
 import time
 from typing import Any
@@ -37,6 +38,7 @@ from ..snapshot.serializer import sanitize_text
 from ..types import ToolBlock, text_block
 from ._shared import capture_and_register
 from ._shared import capture_and_register as _shared_capture
+from .actionability import WriteOutcome
 from .extract import _DEEP_TEXT_JS
 from .find import matching_nodes
 
@@ -102,7 +104,8 @@ _NODE_PROBE_FN = (
     "   && style.visibility!=='collapse' && style.display!=='none' && style.opacity!=='0';"
     " const tag=(this.tagName||'').toLowerCase();"
     " const type=(this.type||'').toLowerCase();"
-    " const disabled=this.disabled===true || this.getAttribute('aria-disabled')==='true';"
+    " const disabled=this.disabled===true || (typeof this.matches==='function' && this.matches(':disabled'))"
+    "   || this.getAttribute('aria-disabled')==='true';"
     " const readOnly=this.readOnly===true || this.getAttribute('aria-readonly')==='true';"
     " const textLike=this.isContentEditable===true || tag==='textarea'"
     "   || (tag==='input' && ['','text','search','email','url','tel','password','number'].includes(type));"
@@ -410,6 +413,16 @@ def _format_ref_entry(entry: Any) -> str:
     return f"matched_ref=unavailable name={name!r}"
 
 
+@dataclass(frozen=True)
+class WaitOutcome:
+    """Structured result of one ``browser_wait_for`` evaluation."""
+
+    matched: bool
+    status: str
+    basis: str
+    blocks: list[ToolBlock]
+
+
 async def _collect_return_payload(
     session: Any,
     *,
@@ -420,11 +433,11 @@ async def _collect_return_payload(
     entry: Any,
     object_id: str,
     observed_text: str | None,
+    deadline: float,
 ) -> str:
-    """Deliver ref, scoped snapshot, or bounded text alongside a settled wait."""
+    """Deliver ref, scoped snapshot, or bounded text within the shared *deadline*."""
     if return_mode == "none":
         return ""
-    tail_deadline = time.monotonic() + 2.0
     if return_mode == "ref":
         if entry is not None:
             return _format_ref_entry(entry)
@@ -443,27 +456,41 @@ async def _collect_return_payload(
                 return ""
         return ""
     if return_mode == "snapshot":
+        remaining = _remaining(deadline)
+        if remaining <= 0:
+            return ""
         from . import snapshot as snapshot_action
 
         snap_target = target if (target and condition not in {"hidden", "count"}) else ""
+        rendered = ""
         try:
-            blocks = await snapshot_action.run(
-                session,
-                {"scope": "viewport", "interactive_only": False, "target": snap_target, "since": 0},
+            blocks = await asyncio.wait_for(
+                snapshot_action.run(
+                    session,
+                    {"scope": "viewport", "interactive_only": False, "target": snap_target, "since": 0},
+                ),
+                timeout=remaining,
             )
             rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
         except ConnectionClosed:
             raise
         except Exception:
-            try:
-                blocks = await snapshot_action.run(
-                    session,
-                    {"scope": "viewport", "interactive_only": False, "target": "", "since": 0},
-                )
-                rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
-            except ConnectionClosed:
-                raise
-            except Exception:
+            remaining = _remaining(deadline)
+            if snap_target and remaining > 0:
+                try:
+                    blocks = await asyncio.wait_for(
+                        snapshot_action.run(
+                            session,
+                            {"scope": "viewport", "interactive_only": False, "target": "", "since": 0},
+                        ),
+                        timeout=remaining,
+                    )
+                    rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+                except ConnectionClosed:
+                    raise
+                except Exception:
+                    return ""
+            else:
                 return ""
         if len(rendered) > max_chars:
             rendered = rendered[:max_chars] + f"\n…(snapshot truncated at {max_chars} chars)"
@@ -471,28 +498,36 @@ async def _collect_return_payload(
     if return_mode == "text":
         text_val = None if condition == "hidden" else observed_text
         if text_val is None:
+            remaining = _remaining(deadline)
+            if remaining <= 0:
+                return ""
             try:
                 if target and object_id and condition != "hidden":
-                    probe = await _probe_node(
-                        session,
-                        object_id,
-                        entry.cdp_session_id if entry else None,
-                        tail_deadline,
+                    probe = await asyncio.wait_for(
+                        _probe_node(
+                            session,
+                            object_id,
+                            entry.cdp_session_id if entry else None,
+                            deadline,
+                        ),
+                        timeout=remaining,
                     )
                     text_val = str(probe.get("text", ""))
                 else:
-                    text_val = str(await _evaluate(session, _PAGE_TEXT_EXPR, tail_deadline) or "")
+                    text_val = str(
+                        await asyncio.wait_for(_evaluate(session, _PAGE_TEXT_EXPR, deadline), timeout=remaining) or ""
+                    )
             except ConnectionClosed:
                 raise
             except Exception:
-                text_val = ""
+                return ""
         return _format_bounded_text(text_val, max_chars, label="content")
     return ""
 
 
-async def read_text_baseline(session: Any, target: str = "") -> str | None:
+async def read_text_baseline(session: Any, target: str = "", *, timeout_s: float = 1.5) -> str | None:
     """Capture a read-only text baseline before a write action for ``expect_condition='text_changed'``."""
-    deadline = time.monotonic() + 1.5
+    deadline = time.monotonic() + max(0.05, min(1.5, timeout_s))
     try:
         if not target:
             return str(await _evaluate(session, _PAGE_TEXT_EXPR, deadline) or "")
@@ -532,15 +567,37 @@ async def prepare_expect_baseline(session: Any, arguments: dict[str, Any]) -> st
     condition = str(arguments.get("expect_condition") or "")
     if not condition:
         return None
+    timeout_ms = int(arguments.get("expect_timeout_ms") or 5000)
     _validate_wait_args(
         condition,
         str(arguments.get("expect_target") or ""),
         str(arguments.get("expect_value") or ""),
-        int(arguments.get("expect_timeout_ms") or 5000),
+        timeout_ms,
     )
     if condition != "text_changed":
         return None
-    return await read_text_baseline(session, str(arguments.get("expect_target") or ""))
+    return await read_text_baseline(
+        session,
+        str(arguments.get("expect_target") or ""),
+        timeout_s=timeout_ms / 1000.0,
+    )
+
+
+def _coerce_write_outcome(result: WriteOutcome | list[ToolBlock]) -> WriteOutcome:
+    """Adapt legacy raw block lists from test doubles into a :class:`WriteOutcome`."""
+    if isinstance(result, WriteOutcome):
+        return result
+    action_text = "\n".join(str(b.get("text", "")) for b in result if b.get("type") == "text")
+    lines = action_text.splitlines()
+    dispatched = not any(line.startswith("dispatch=not_sent") for line in lines)
+    status = "succeeded"
+    if any(line.startswith("status=blocked") for line in lines):
+        status = "blocked"
+    elif any(line.startswith("status=failed") for line in lines):
+        status = "failed"
+    elif any(line.startswith("status=uncertain") for line in lines):
+        status = "uncertain"
+    return WriteOutcome(status=status, dispatched=dispatched, blocks=result)
 
 
 async def run_post_write_expect(
@@ -548,15 +605,15 @@ async def run_post_write_expect(
     arguments: dict[str, Any],
     *,
     baseline: str | None,
-    action_blocks: list[ToolBlock],
+    action_blocks: WriteOutcome | list[ToolBlock],
 ) -> list[ToolBlock]:
     """Attach bounded read-only verification after a single write action without ever re-dispatching it."""
+    outcome = _coerce_write_outcome(action_blocks)
     condition = str(arguments.get("expect_condition") or "")
     if not condition:
-        return action_blocks
-    action_text = "\n".join(str(b.get("text", "")) for b in action_blocks if b.get("type") == "text")
-    lines = action_text.splitlines()
-    if any(line.startswith(("dispatch=not_sent", "status=blocked", "status=failed")) for line in lines):
+        return outcome.blocks
+    action_text = "\n".join(str(b.get("text", "")) for b in outcome.blocks if b.get("type") == "text")
+    if not outcome.can_run_expect:
         return [text_block(f"{action_text}\nexpect_status=skipped reason=write_not_confirmed")]
     expect_args = {
         "condition": condition,
@@ -567,13 +624,13 @@ async def run_post_write_expect(
         "max_chars": 2000,
     }
     try:
-        matched, wait_blocks = await _run_with_baseline_outcome(session, expect_args, baseline=baseline)
+        wait_outcome = await _run_with_baseline_outcome(session, expect_args, baseline=baseline)
     except ConnectionClosed:
         raise
     except BrowserError as exc:
         return [text_block(f"{action_text}\nexpect_status=error expect_error={exc.code}: {exc}")]
-    wait_text = "\n".join(str(b.get("text", "")) for b in wait_blocks if b.get("type") == "text")
-    expect_status = "matched" if matched else "timeout"
+    wait_text = "\n".join(str(b.get("text", "")) for b in wait_outcome.blocks if b.get("type") == "text")
+    expect_status = "matched" if wait_outcome.matched else "timeout"
     return [text_block(f"{action_text}\n[EXPECT]\nexpect_status={expect_status}\n{wait_text}")]
 
 
@@ -587,8 +644,8 @@ async def run_with_baseline(
     *,
     baseline: str | None = None,
 ) -> list[ToolBlock]:
-    _matched, blocks = await _run_with_baseline_outcome(session, arguments, baseline=baseline)
-    return blocks
+    outcome = await _run_with_baseline_outcome(session, arguments, baseline=baseline)
+    return outcome.blocks
 
 
 async def _run_with_baseline_outcome(
@@ -596,7 +653,7 @@ async def _run_with_baseline_outcome(
     arguments: dict[str, Any],
     *,
     baseline: str | None = None,
-) -> tuple[bool, list[ToolBlock]]:
+) -> WaitOutcome:
     condition = arguments["condition"]
     target = arguments["target"]
     value = arguments["value"]
@@ -818,10 +875,16 @@ async def _run_with_baseline_outcome(
                     entry=entry,
                     object_id=object_id,
                     observed_text=observed_text,
+                    deadline=deadline,
                 )
                 if payload:
                     detail = f"{detail}\n{payload}" if detail else payload
-                return True, _success(session, condition, target, value, started, basis, detail)
+                return WaitOutcome(
+                    matched=True,
+                    status="succeeded",
+                    basis=basis,
+                    blocks=_success(session, condition, target, value, started, basis, detail),
+                )
             remaining = _remaining(deadline)
             if remaining <= 0:
                 session.note_success(session.target_id)  # the wait itself was activity
@@ -839,6 +902,7 @@ async def _run_with_baseline_outcome(
                         entry=entry,
                         object_id=object_id,
                         observed_text=observed_text,
+                        deadline=deadline,
                     )
                     if partial:
                         lines.append(partial.replace("\ncontent:\n", "\npartial_text:\n", 1))
@@ -850,7 +914,12 @@ async def _run_with_baseline_outcome(
                     )
                 lines.append("下一步：browser_snapshot 或 browser_extract 核对页面，再换条件/目标等待；不要 sleep 轮询")
                 lines.append(f"status=timeout retryable=true\n{_evidence(session)}")
-                return False, [text_block("\n".join(lines))]
+                return WaitOutcome(
+                    matched=False,
+                    status="timeout",
+                    basis="",
+                    blocks=[text_block("\n".join(lines))],
+                )
             await _sleep(min(_POLL_SECONDS, remaining))
     finally:
         if condition == "stable":

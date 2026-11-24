@@ -46,21 +46,59 @@ _SELECT_STATE_FN = (
     "function(){"
     " const tag=(this.tagName||'').toLowerCase();"
     " if(tag!=='select') return {ok:false, reason:'not_select', tag};"
-    " const options=[...this.options].map(o=>({"
-    "   value:String(o.value), label:String(o.label||o.text||'').trim(),"
-    "   disabled:o.disabled===true, selected:o.selected===true}));"
-    " return {ok:true, tag, multiple:this.multiple===true, disabled:this.disabled===true,"
+    " const elDisabled=(el)=>el.disabled===true || (typeof el.matches==='function' && el.matches(':disabled'));"
+    " const optDisabled=(o)=>{"
+    "   if(o.disabled===true) return true;"
+    "   let p=o.parentElement;"
+    "   while(p && p!==this){"
+    "     if((p.tagName||'').toLowerCase()==='optgroup' && p.disabled===true) return true;"
+    "     p=p.parentElement;"
+    "   }"
+    "   return false;"
+    " };"
+    " const options=[...this.options].map((o, index)=>({"
+    "   index, value:String(o.value), label:String(o.label||o.text||'').trim(),"
+    "   disabled:optDisabled(o), selected:o.selected===true}));"
+    " return {ok:true, tag, multiple:this.multiple===true, disabled:elDisabled(this),"
     "   options};"
     "}"
 )
 
 _APPLY_FN = (
-    "function(values){"
+    "function(values, indices){"
+    " const optDisabled=(o)=>{"
+    "   if(o.disabled===true) return true;"
+    "   let p=o.parentElement;"
+    "   while(p && p!==this){"
+    "     if((p.tagName||'').toLowerCase()==='optgroup' && p.disabled===true) return true;"
+    "     p=p.parentElement;"
+    "   }"
+    "   return false;"
+    " };"
+    " const useIndices=Array.isArray(indices);"
+    " const wantedIdx=useIndices ? new Set(indices) : null;"
     " const wanted=new Set(values);"
-    " for(const option of this.options) option.selected=wanted.has(String(option.value));"
+    " if(!this.multiple){"
+    "   let target=-1;"
+    "   for(let i=0; i<this.options.length; i++){"
+    "     const option=this.options[i];"
+    "     const matched=useIndices ? wantedIdx.has(i) : wanted.has(String(option.value));"
+    "     if(matched && !optDisabled(option)){ target=i; break; }"
+    "   }"
+    "   if(target>=0) this.selectedIndex=target;"
+    " } else {"
+    "   for(let i=0; i<this.options.length; i++){"
+    "     const option=this.options[i];"
+    "     const matched=useIndices ? wantedIdx.has(i) : wanted.has(String(option.value));"
+    "     option.selected=matched && !optDisabled(option);"
+    "   }"
+    " }"
     " this.dispatchEvent(new Event('input',{bubbles:true}));"
     " this.dispatchEvent(new Event('change',{bubbles:true}));"
-    " return {selected:[...this.options].filter(o=>o.selected).map(o=>String(o.value))};"
+    " return {"
+    "   selected:[...this.options].filter(o=>o.selected).map(o=>String(o.value)),"
+    "   selectedIndices:[...this.options].map((o, i)=>o.selected ? i : -1).filter(i=>i>=0),"
+    " };"
     "}"
 )
 
@@ -69,9 +107,26 @@ _READBACK_POLL = 0.075
 _READBACK_POLLS = 2
 
 
-def _selected(state: dict[str, Any]) -> list[str]:
+def _selected_options(state: dict[str, Any]) -> list[dict[str, Any]]:
     options = [option for option in state.get("options", []) if isinstance(option, dict)]
-    return [str(option.get("value")) for option in options if option.get("selected")]
+    return [option for option in options if option.get("selected")]
+
+
+def _selected(state: dict[str, Any]) -> list[str]:
+    return [str(option.get("value")) for option in _selected_options(state)]
+
+
+def _readback_matches(state: dict[str, Any], resolved_values: list[str], target_indices: list[int]) -> bool:
+    if not state.get("ok"):
+        return False
+    selected_opts = _selected_options(state)
+    if not selected_opts:
+        return False
+    if any(option.get("disabled") for option in selected_opts):
+        return False
+    if all(isinstance(option.get("index"), int) for option in selected_opts):
+        return {int(option["index"]) for option in selected_opts} == set(target_indices)
+    return {str(option.get("value")) for option in selected_opts} == set(resolved_values)
 
 
 async def _select_state(session: Any, object_id: str, cdp_session_id: str | None) -> dict[str, Any]:
@@ -80,29 +135,47 @@ async def _select_state(session: Any, object_id: str, cdp_session_id: str | None
     return value if isinstance(value, dict) else {}
 
 
-def _resolve_options(state: dict[str, Any], values: list[str]) -> tuple[list[str], list[str], list[str]]:
-    """Map requested values/labels to option values.
+def _resolve_option_targets(
+    state: dict[str, Any], values: list[str]
+) -> tuple[list[int], list[str], list[str], list[str]]:
+    """Map requested values/labels to concrete enabled option indices and values.
 
-    Returns ``(resolved, missing, unavailable)``: *missing* never matched an
-    option, *unavailable* matched only disabled options. A value shared by one
-    disabled and one enabled option resolves through the enabled one.
+    Returns ``(indices, resolved_values, missing, unavailable)``: *missing*
+    never matched an option, *unavailable* matched only effectively disabled
+    options (including options inside a disabled ``<optgroup>``). A value shared
+    by one disabled and one enabled option resolves strictly to the enabled
+    option's index so duplicate-value siblings are never modified together.
     """
     options = [option for option in state.get("options", []) if isinstance(option, dict)]
+    indexed = [
+        (int(option["index"]) if isinstance(option.get("index"), int) else pos, option)
+        for pos, option in enumerate(options)
+    ]
+    indices: list[int] = []
     resolved: list[str] = []
     missing: list[str] = []
     unavailable: list[str] = []
     for requested in values:
-        matches = [option for option in options if option.get("value") == requested]
+        matches = [(idx, option) for idx, option in indexed if option.get("value") == requested]
         if not matches:
-            matches = [option for option in options if option.get("label") == requested]
+            matches = [(idx, option) for idx, option in indexed if option.get("label") == requested]
         if not matches:
             missing.append(requested)
             continue
-        enabled = next((option for option in matches if not option.get("disabled")), None)
+        enabled = next(((idx, option) for idx, option in matches if not option.get("disabled")), None)
         if enabled is None:
             unavailable.append(requested)
-        elif enabled.get("value") not in resolved:
-            resolved.append(str(enabled.get("value")))
+        else:
+            idx, option = enabled
+            if idx not in indices:
+                indices.append(idx)
+                resolved.append(str(option.get("value")))
+    return indices, resolved, missing, unavailable
+
+
+def _resolve_options(state: dict[str, Any], values: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """Map requested values/labels to option values (compat wrapper)."""
+    _indices, resolved, missing, unavailable = _resolve_option_targets(state, values)
     return resolved, missing, unavailable
 
 
@@ -171,7 +244,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         )
         return _blocked(session, action_id, text)
 
-    resolved, missing, unavailable = _resolve_options(state, values)
+    target_indices, resolved, missing, unavailable = _resolve_option_targets(state, values)
     if missing or unavailable:
         reasons = []
         if missing:
@@ -183,7 +256,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             f"status=blocked retryable=false\n{evidence_line(session, action_id)}"
         )
         return _blocked(session, action_id, text)
-    if not state.get("multiple") and len(resolved) > 1:
+    if not state.get("multiple") and len(target_indices) > 1:
         text = (
             f"未选择 {entry.token}：这是单选 <select>，一次只能选一个值（请求了 {values}）；"
             "请重新调用并只给一个值\n"
@@ -202,7 +275,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 object_id,
                 _APPLY_FN,
                 cdp_session_id=cdp_session_id,
-                arguments=[{"value": resolved}],
+                arguments=[{"value": resolved}, {"value": target_indices}],
             ),
         )
     except ConnectionClosed:
@@ -223,6 +296,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     dialog = await dialog_since(session, dialog_seq)
     after: dict[str, Any] = {}
     selected: list[str] = []
+    matched = False
     if dialog is None:
         for attempt in range(_READBACK_POLLS + 1):
             if attempt:
@@ -238,7 +312,8 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             if dialog is not None:
                 break
             selected = _selected(after) if after.get("ok") else []
-            if set(selected) == set(resolved):
+            matched = _readback_matches(after, resolved, target_indices)
+            if matched:
                 break
     dialog = session.dialog_since(dialog_seq)
     if dialog is not None:
@@ -248,7 +323,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     session.mark_dirty()
 
     lines = [f"已在 {entry.token} 选择 {resolved}"]
-    if selected and set(selected) == set(resolved):
+    if matched:
         status = "succeeded"
         lines.append(f"selected={selected}")
         lines.append("status=succeeded")
