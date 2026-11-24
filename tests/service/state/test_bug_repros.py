@@ -476,13 +476,13 @@ async def test_session_restore_releases_target_lock_when_setup_fails(
     bus = EventBus()
     engine = assemble_agent_engine(bus, settings=Settings(), state_store=store)
 
-    async def fail_load_session_meta(_session_id: str, *, prefer_recovery: bool = False) -> object:
-        _ = prefer_recovery
-        raise RuntimeError("metadata read failed")
+    async def fail_load_chat_for_restore(_session_id: str, *, prefer_recovery: bool, ignore_recovery: bool) -> object:
+        _ = prefer_recovery, ignore_recovery
+        raise RuntimeError("checkpoint read failed")
 
-    monkeypatch.setattr(engine_services(engine).persistence, "load_session_meta", fail_load_session_meta)
+    monkeypatch.setattr(engine_services(engine).persistence, "load_chat_for_restore", fail_load_chat_for_restore)
 
-    with pytest.raises(RuntimeError, match="metadata read failed"):
+    with pytest.raises(RuntimeError, match="checkpoint read failed"):
         await engine.on_session_restore(SessionRestore(session_id="target"))
 
     assert not store.active_owner_path("target").exists()

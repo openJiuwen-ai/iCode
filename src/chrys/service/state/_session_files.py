@@ -76,19 +76,42 @@ class SessionForkError(RuntimeError):
     """Raised when a session cannot be forked safely."""
 
 
-def session_write_lock_path(sessions_dir: Path, session_id: str) -> Path:
+def _session_lock_path(sessions_dir: Path, session_id: str, suffix: str, *, follow_session_links: bool = True) -> Path:
+    name = _session_short_id(session_id)
+    directory = sessions_dir / name
+    # Root-level locks survive a session delete/recreate. All directory links
+    # and Windows junctions to a writable archive must use its physical root.
+    if follow_session_links and name and (directory.is_symlink() or directory.is_junction()):
+        target = directory.resolve()
+        sessions_dir, name = target.parent, target.name
+    return sessions_dir / ".locks" / f"{name}.{suffix}"
+
+
+def session_write_lock_path(sessions_dir: Path, session_id: str, *, follow_session_links: bool = True) -> Path:
     """Return the root-level write lock path for *session_id*."""
-    return sessions_dir / ".locks" / f"{_session_short_id(session_id)}.write.lock"
+    return _session_lock_path(sessions_dir, session_id, "write.lock", follow_session_links=follow_session_links)
 
 
-def session_active_lock_path(sessions_dir: Path, session_id: str) -> Path:
+def session_active_lock_path(sessions_dir: Path, session_id: str, *, follow_session_links: bool = True) -> Path:
     """Return the root-level active-session lock path for *session_id*."""
-    return sessions_dir / ".locks" / f"{_session_short_id(session_id)}.active.lock"
+    return _session_lock_path(sessions_dir, session_id, "active.lock", follow_session_links=follow_session_links)
 
 
 def session_active_owner_path(sessions_dir: Path, session_id: str) -> Path:
     """Return the owner metadata path paired with the active-session lock."""
-    return sessions_dir / ".locks" / f"{_session_short_id(session_id)}.active.json"
+    return _session_lock_path(sessions_dir, session_id, "active.json")
+
+
+def linked_recovery_active_lock(path: Path, target: Path) -> Path | None:
+    """Find the physical archive that writes an individually linked recovery file."""
+    candidate = target.with_name(SESSION_RECOVERY_FILE_NAME)
+    if (
+        target.name == candidate.name or (candidate.is_file() and target.samefile(candidate))
+    ) and not path.parent.samefile(target.parent):
+        # A relocated session directory may have any name. Use that whole name
+        # just as a writer reaching it through a directory link would.
+        return target.parent.parent / ".locks" / f"{target.parent.name}.active.lock"
+    return None
 
 
 def parse_snapshot_turn(path: Path) -> int:

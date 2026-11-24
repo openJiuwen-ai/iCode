@@ -9,6 +9,7 @@ import sys
 from typing import Final
 
 from chrys import __version__
+from chrys.app.parsing import add_startup_session_option
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 
 _TUI_SUBPROCESS_COMMAND = "__tui_subprocess__"
@@ -146,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--version", action="store_true", help=f"Print the {APP_DISPLAY_NAME} version and exit")
 
     tui_options = parser.add_argument_group("TUI options")
-    tui_options.add_argument("-s", "--session", metavar="SESSION", help="Restore the given session id after startup")
+    add_startup_session_option(tui_options)
     tui_options.add_argument(
         "-a",
         "--agent",

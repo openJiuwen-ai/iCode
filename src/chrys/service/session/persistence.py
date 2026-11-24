@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from chrys.foundation.models.workspace import Workspace
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.schema import ModelProfile
-    from chrys.service.state.store import SessionCheckpoint, StateStore
+    from chrys.service.state.store import ChatRestoreData, SessionCheckpoint, StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -410,11 +410,25 @@ class SessionPersistence:
             return False
         return await self._state_store.recovery_session_wins(session_id)
 
-    async def load_session(self, session_id: str, *, prefer_recovery: bool = False) -> dict | None:
+    async def load_session(
+        self, session_id: str, *, prefer_recovery: bool = False, owns_active_lock: bool = False
+    ) -> dict | None:
         """Load a session's state from disk."""
         if self._state_store is None:
             return None
-        return await self._state_store.load_session(session_id, prefer_recovery=prefer_recovery)
+        return await self._state_store.load_session(
+            session_id, prefer_recovery=prefer_recovery, owns_active_lock=owns_active_lock
+        )
+
+    async def load_chat_for_restore(
+        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool
+    ) -> ChatRestoreData | None:
+        """Load the verified checkpoint while the session lifecycle owns the active lock."""
+        if self._state_store is None:
+            return None
+        return await self._state_store.load_chat_for_restore(
+            session_id, prefer_recovery=prefer_recovery, ignore_recovery=ignore_recovery
+        )
 
     async def load_session_meta(self, session_id: str, *, prefer_recovery: bool = False):
         """Load metadata for one session by id."""

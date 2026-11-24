@@ -60,6 +60,7 @@ from chrys.orchestration.workflows.worker_client import WorkflowWorkerClient
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.session.persistence import SessionPersistence
+from chrys.service.state.store import ChatRestoreData
 from chrys.service.workflows.interpreter import InterpreterError
 from chrys.service.workflows.layout import run_dir
 from chrys.service.workflows.orphans import read_run_terminal
@@ -1323,22 +1324,22 @@ async def test_a_request_during_a_session_restore_is_refused_rather_than_admitte
     host = make_host(tmp_path, project=project)
     entered = asyncio.Event()
     release = asyncio.Event()
-    real_load = SessionPersistence.load_session
+    real_load = SessionPersistence.load_chat_for_restore
 
     async def _load(
-        self: SessionPersistence, session_id: str, *, prefer_recovery: bool = False
-    ) -> dict[str, Any] | None:
-        state = await real_load(self, session_id, prefer_recovery=prefer_recovery)
+        self: SessionPersistence, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool
+    ) -> ChatRestoreData | None:
+        checkpoint = await real_load(self, session_id, prefer_recovery=prefer_recovery, ignore_recovery=ignore_recovery)
         entered.set()
-        await release.wait()  # the restore has read the saved state and is about to fence and rebuild
-        return state
+        await release.wait()  # keep the restore in flight before it rebuilds the session
+        return checkpoint
 
     try:
         await confirm(host, "chain")
         await host.run_until_final("Save a chat session")
         first, _events = await run(host, "chain", input_text="saved")
         session_id = host.session_id
-        monkeypatch.setattr(SessionPersistence, "load_session", _load)
+        monkeypatch.setattr(SessionPersistence, "load_chat_for_restore", _load)
         async with capture_event_sequence(
             host.event_bus, WorkflowRunRejected, WorkflowRunAccepted, SessionRestored, Error
         ) as events:

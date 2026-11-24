@@ -17,7 +17,7 @@ from chrys.app.cli.headless import PreparedRuntime
 from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message
 from chrys.app.cli.progress import ProgressWriter, RunContext, TurnProgress, guarded, progress_console
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
-from chrys.app.parsing import SanitizingArgumentParser
+from chrys.app.parsing import SanitizingArgumentParser, add_startup_session_option
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Active model profile id or name to use as the fallback model for this run",
     )
-    parser.add_argument("-s", "--session", default=None, help="Optional session id to restore before running")
+    add_startup_session_option(parser)
     parser.add_argument(
         "-C",
         "--workdir",
@@ -259,11 +259,7 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
     """Execute parsed ``chrys run`` args."""
     cwd = _apply_cwd(args.cwd)
     prompt = _resolve_prompt(args)
-    # Normalized once, to the host's own reading of the flag: the host strips
-    # the id and treats a blank one as "no session", and a directory-independent
-    # bootstrap for a run that then starts fresh would silently drop the
-    # working directory's settings layer.
-    session_id = (args.session or "").strip()
+    session_id = args.session
     prepared = headless.prepare_runtime(restoring_session=bool(session_id))
     holder.runtime = prepared
     headless.write_pending_warnings(prepared, as_json=args.json)

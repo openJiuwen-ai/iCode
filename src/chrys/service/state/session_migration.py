@@ -386,12 +386,18 @@ def run_session_migration(plan: MigrationPlan) -> MigrationReport:
             skipped_present.append(item.session_id)
             continue
         with contextlib.ExitStack() as locks:
+            # This copy accepts only direct entries. Lock the planned names even
+            # if a session folder was replaced by a link before validation below.
             # ``TimeoutError`` is an ``OSError``: the timeout branches must come
             # first. Any other failure to take a lock (an unwritable ``.locks``
             # folder, a lock path occupied by a directory or a symlink) is
             # that session's failure, not the migration's.
             try:
-                locks.enter_context(FileLock(session_active_lock_path(source_root, item.session_id), timeout=0))
+                locks.enter_context(
+                    FileLock(
+                        session_active_lock_path(source_root, item.session_id, follow_session_links=False), timeout=0
+                    )
+                )
             except TimeoutError:
                 skipped_active.append(item.session_id)
                 continue
@@ -401,13 +407,13 @@ def run_session_migration(plan: MigrationPlan) -> MigrationReport:
             try:
                 locks.enter_context(
                     FileLock(
-                        session_write_lock_path(source_root, item.session_id),
+                        session_write_lock_path(source_root, item.session_id, follow_session_links=False),
                         timeout=MIGRATION_WRITE_LOCK_TIMEOUT_SECONDS,
                     )
                 )
                 locks.enter_context(
                     FileLock(
-                        session_write_lock_path(destination_root, item.session_id),
+                        session_write_lock_path(destination_root, item.session_id, follow_session_links=False),
                         timeout=MIGRATION_WRITE_LOCK_TIMEOUT_SECONDS,
                     )
                 )

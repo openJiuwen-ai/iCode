@@ -247,7 +247,7 @@
         ["awaitable", "await self._close()", "unresolved"]
       ],
       "finish_close": [
-        ["shield", "await asyncio.shield(task)", "unresolved"]
+        ["shield", "await asyncio.shield(work)", "unresolved"]
       ]
     },
     "chrys.kernel._loop_recorder": {
@@ -1617,7 +1617,9 @@
         ["awaitable", "await self._bus.publish(Warning(code='service_session_incompatible', message=f'This session was saved with an OpenAI Responses service session. The active agent/model profile, workspace, service endpoint, or storage mode is not compatible, so {APP_DISPLAY_NAME} will continue from local history only.', display_message=_RESTORE_SERVICE_SESSION_INCOMPATIBLE.bind(app=APP_DISPLAY_NAME), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='sub_agents_reload_discarded', message=f'{len(paused_records)} paused sub-agent(s) from a previous session were discarded: {tool_names}', display_message=_RESTORE_SUB_AGENTS_DISCARDED.bind(discarded=len(paused_records), names=DisplaySequence(tuple(discarded_tools))), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._writer.save_current_session(raise_on_error=bool(paused_records))", "unresolved"],
-        ["awaitable", "await self._bus.publish(SessionRestored(session_id=event.session_id, agent_profile=profile_name, display_name=profile.display_name if profile else '', initial_agent_profile=meta.agent_profile_history[0] if meta is not None and meta.agent_profile_history else profile.display_name if profile else profile_name, message_count=meta.message_count if meta else 0, cwd_warning=cwd_warning, primary_cwd=target_cwd, recovered_from_sidecar=recovered_from_sidecar, working_dirs=[working_dir.path for working_dir in self._session.workspace.working_dirs] if self._session.workspace is not None else []))", "unresolved"],
+        ["awaitable", "await store.load_session_for_replay(event.session_id)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(SessionReplay.from_saved_state, checkpoint.saved_state, meta)", "unresolved"],
+        ["awaitable", "await self._bus.publish(SessionRestored(session_id=event.session_id, agent_profile=profile_name, display_name=profile.display_name if profile else '', initial_agent_profile=meta.agent_profile_history[0] if meta is not None and meta.agent_profile_history else profile.display_name if profile else profile_name, message_count=meta.message_count if meta else 0, cwd_warning=cwd_warning, primary_cwd=target_cwd, recovered_from_sidecar=recovered_from_sidecar, replay=replay, working_dirs=[working_dir.path for working_dir in self._session.workspace.working_dirs] if self._session.workspace is not None else []))", "unresolved"],
         ["wrapper", "await self._fire_session_restored_hook(restored_session_id=event.session_id, profile_name=profile_name)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._fire_session_restored_hook"]
       ],
       "SessionLifecycle._publish_session_fork_error": [
@@ -1719,23 +1721,24 @@
       ],
       "SessionLifecycle.on_session_restore": [
         ["awaitable", "await self._bus.publish(Error(code='no_state_store', message='State store not configured', session_id=event.session_id))", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(self._session.guard.acquire_for_restore, event.session_id, timeout=SESSION_RESTORE_ACTIVE_LOCK_TIMEOUT_SECONDS)", "unresolved"],
-        ["awaitable", "await self._bus.publish(Error(code='session_in_use', message=self._session.guard.conflict_message(event.session_id), session_id=event.session_id))", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(self._persistence.state_store.delete_recovery_session, event.session_id)", "unresolved"],
-        ["awaitable", "await self._persistence.load_session(event.session_id, prefer_recovery=prefer_recovery)", "unresolved"],
-        ["awaitable", "await self._bus.publish(Error(code='session_not_found', message=f\"Session '{event.session_id}' not found\", session_id=event.session_id))", "unresolved"],
-        ["awaitable", "await self._persistence.load_session_meta(event.session_id, prefer_recovery=prefer_recovery)", "unresolved"],
-        ["awaitable", "await self._bus.publish(Error(code='session_kind_mismatch', message='Open this session in Workflow mode.', session_id=event.session_id))", "unresolved"],
-        ["awaitable", "await self._persistence.recovery_session_wins(event.session_id)", "unresolved"],
-        ["awaitable", "await self._bus.publish(Error(code='session_cwd_missing', message=f'Working directory of session {session_short_id(event.session_id)} no longer exists: {surrogate_safe_text(target_cwd)}', display_message=_RESTORE_SESSION_CWD_MISSING.bind(path=DisplayPath(target_cwd)), session_id=event.session_id))", "unresolved"],
-        ["awaitable", "await self._bus.publish(Error(code='requested_agent_profile_unresolved', message=f\"Requested agent profile '{event.profile_name}' could not be resolved; session restore was stopped.\", display_message=_RESTORE_REQUESTED_AGENT_PROFILE_UNRESOLVED.bind(profile=event.profile_name), session_id=event.session_id))", "unresolved"],
-        ["awaitable", "await self._bus.publish(Error(code='saved_agent_profile_unresolved', message=f\"Saved agent profile id '{saved_profile_id}' for '{saved_profile_name}' could not be uniquely resolved, and no current profile is active.\", display_message=_RESTORE_AGENT_PROFILE_UNRESOLVED.bind(saved=saved_display), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._permits.prepare_session_transition('restore')", "unresolved"],
+        ["awaitable", "await self._session.guard.acquire_for_restore_async(event.session_id, timeout=SESSION_RESTORE_ACTIVE_LOCK_TIMEOUT_SECONDS)", "unresolved"],
+        ["awaitable", "await reject_restore(Error(code='session_in_use', message=self._session.guard.conflict_message(event.session_id), session_id=event.session_id))", "unresolved"],
+        ["awaitable", "await self._persistence.load_chat_for_restore(event.session_id, prefer_recovery=prefer_recovery, ignore_recovery=event.ignore_recovery)", "unresolved"],
+        ["awaitable", "await reject_restore(Error(code='session_in_use', message=str(exc), session_id=event.session_id))", "unresolved"],
+        ["awaitable", "await reject_restore(Error(code='session_kind_mismatch', message=str(exc), session_id=event.session_id))", "unresolved"],
+        ["awaitable", "await reject_restore(Error(code='session_not_found', message=f\"Session '{event.session_id}' not found\", session_id=event.session_id))", "unresolved"],
+        ["awaitable", "await reject_restore(Error(code='session_cwd_missing', message=f'Working directory of session {session_short_id(event.session_id)} no longer exists: {surrogate_safe_text(target_cwd)}', display_message=_RESTORE_SESSION_CWD_MISSING.bind(path=DisplayPath(target_cwd)), session_id=event.session_id))", "unresolved"],
+        ["awaitable", "await reject_restore(Error(code='requested_agent_profile_unresolved', message=f\"Requested agent profile '{event.profile_name}' could not be resolved; session restore was stopped.\", display_message=_RESTORE_REQUESTED_AGENT_PROFILE_UNRESOLVED.bind(profile=event.profile_name), session_id=event.session_id))", "unresolved"],
+        ["awaitable", "await reject_restore(Error(code='saved_agent_profile_unresolved', message=f\"Saved agent profile id '{saved_profile_id}' for '{saved_profile_name}' could not be uniquely resolved, and no current profile is active.\", display_message=_RESTORE_AGENT_PROFILE_UNRESOLVED.bind(saved=saved_display), session_id=event.session_id))", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(load_settings, workdir=Path(target_cwd), eval_context=self._reload_eval_context(), **self._session_pin_overrides())", "unresolved"],
         ["wrapper", "await self.close_session_in_place(keep_side_answers=True)", "session-transition-work", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session_in_place"],
         ["wrapper", "await self.close_session()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"],
-        ["wrapper", "await self._hydrate_restored_session(event=event, state=state, meta=meta, profile=profile, profile_name=profile_name, profile_switch=profile_switch, profile_resolution_warning=profile_resolution_warning, recovered_from_sidecar=recovered_from_sidecar, cwd_warning=cwd_warning, target_cwd=target_cwd, staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._hydrate_restored_session"],
+        ["wrapper", "await self._hydrate_restored_session(event=event, checkpoint=checkpoint, profile=profile, profile_name=profile_name, profile_switch=profile_switch, profile_resolution_warning=profile_resolution_warning, cwd_warning=cwd_warning, target_cwd=target_cwd, staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._hydrate_restored_session"],
         ["awaitable", "await self._bus.publish(Error(code='session_restore_failed', message=str(exc), session_id=event.session_id))", "unresolved"]
+      ],
+      "SessionLifecycle.on_session_restore.reject_restore": [
+        ["awaitable", "await self._bus.publish(error)", "unresolved"]
       ],
       "SessionLifecycle.refresh_mutation_attribution": [
         ["thread_pool", "await loop.run_in_executor(None, lambda: coordinator.reclassify(tracker, force=force, fallback_root=self._session.workspace_cwd()))", "unresolved"],
@@ -2447,7 +2450,7 @@
         ["wrapper", "async for event in self._iter_run_events(self._coerce_user_message(message), raise_for_outcome=raise_for_outcome)", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost._iter_run_events"]
       ],
       "ChrysSessionHost._resolve_restore_session_id": [
-        ["awaitable", "await self._state_store.list_sessions()", "unresolved"]
+        ["awaitable", "await self._state_store.resolve_startup_session(raw)", "unresolved"]
       ],
       "ChrysSessionHost.cancel_current_turn": [
         ["awaitable", "await self._bus.publish(UserInterrupt(session_id=self.session_id))", "unresolved"]
@@ -2478,7 +2481,7 @@
         ["sleep", "await asyncio.sleep(timeout)", "unresolved"]
       ],
       "ChrysSessionHost.load_workflow_session": [
-        ["awaitable", "await self._state_store.load_session_meta(normalized, strict=True)", "unresolved"],
+        ["awaitable", "await self._state_store.resolve_startup_session(session_id)", "unresolved"],
         ["awaitable", "await self._state_store.load_workflow_session(meta.session_id)", "workflow-blocking"]
       ],
       "ChrysSessionHost.preview_workflow": [
@@ -5197,8 +5200,11 @@
       "SessionPersistence.list_sessions": [
         ["awaitable", "await self._state_store.list_sessions()", "unresolved"]
       ],
+      "SessionPersistence.load_chat_for_restore": [
+        ["awaitable", "await self._state_store.load_chat_for_restore(session_id, prefer_recovery=prefer_recovery, ignore_recovery=ignore_recovery)", "unresolved"]
+      ],
       "SessionPersistence.load_session": [
-        ["awaitable", "await self._state_store.load_session(session_id, prefer_recovery=prefer_recovery)", "unresolved"]
+        ["awaitable", "await self._state_store.load_session(session_id, prefer_recovery=prefer_recovery, owns_active_lock=owns_active_lock)", "unresolved"]
       ],
       "SessionPersistence.load_session_meta": [
         ["awaitable", "await self._state_store.load_session_meta(session_id, prefer_recovery=prefer_recovery)", "unresolved"]
@@ -5302,12 +5308,22 @@
         ["wrapper", "await bound_process_output(self._session_dir, 'skill', partial, budget, captures, lead=f'{error}\\n{PARTIAL_OUTPUT_LABEL}\\n')", "unresolved", "chrys.service.tools.spill.bound_process_output"]
       ]
     },
+    "chrys.service.state.locks": {
+      "ActiveSessionGuard.acquire_for_restore_async": [
+        ["shield", "await asyncio.shield(worker)", "unresolved"],
+        ["wrapper", "await finish_close(worker)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ]
+    },
     "chrys.service.state.store": {
       "JsonFileStateStore.delete_session": [
         ["thread_pool", "await asyncio.to_thread(self._delete_session_sync, session_id, allow_active=allow_active)", "unresolved"]
       ],
       "JsonFileStateStore.list_sessions": [
         ["thread_pool", "await asyncio.to_thread(self._list_sessions_sync, kind=kind)", "unresolved"]
+      ],
+      "JsonFileStateStore.load_chat_for_restore": [
+        ["shield", "await asyncio.shield(worker)", "unresolved"],
+        ["wrapper", "await finish_close(worker)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
       ],
       "JsonFileStateStore.load_latest_session_id": [
         ["thread_pool", "await asyncio.to_thread(self._load_latest_session_id_sync)", "unresolved"],
@@ -5321,7 +5337,7 @@
         ["thread_pool", "await asyncio.to_thread(self._load_recovery_session_meta_sync, session_id)", "unresolved"]
       ],
       "JsonFileStateStore.load_session": [
-        ["thread_pool", "await asyncio.to_thread(self._load_session_sync, session_id, prefer_recovery=prefer_recovery)", "unresolved"]
+        ["thread_pool", "await asyncio.to_thread(self._load_session_sync, session_id, prefer_recovery=prefer_recovery, owns_active_lock=owns_active_lock)", "unresolved"]
       ],
       "JsonFileStateStore.load_session_for_replay": [
         ["thread_pool", "await asyncio.to_thread(self._load_session_for_replay_sync, session_id, prefer_recovery=prefer_recovery)", "unresolved"]
@@ -5346,6 +5362,9 @@
       ],
       "JsonFileStateStore.recovery_session_wins": [
         ["thread_pool", "await asyncio.to_thread(self._recovery_session_wins_sync, session_id)", "unresolved"]
+      ],
+      "JsonFileStateStore.resolve_startup_session": [
+        ["thread_pool", "await asyncio.to_thread(self._resolve_startup_session_sync, selector.strip(), require_inactive)", "unresolved"]
       ],
       "JsonFileStateStore.save_session": [
         ["thread_pool", "await asyncio.to_thread(self._save_session_sync, session_id, state, agent_profile=agent_profile, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, title=title, agent_profile_history=agent_profile_history, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id, parent_session_id=parent_session_id, last_surface=last_surface)", "unresolved"]
