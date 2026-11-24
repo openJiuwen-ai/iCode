@@ -18,6 +18,7 @@ from chrys.kernel import Message
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
+from chrys.orchestration.engine.workspaces import MembershipWrite, WorkspacePlan
 from chrys.service.mutations.types import RollbackPlan
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.state.store import JsonFileStateStore, atomic_copy_file
@@ -132,7 +133,7 @@ def fake_restore_factory(
 ) -> Callable[[Any], Awaitable[None]]:
     """``on_session_restore`` stand-in that reloads the swapped session from ``store``."""
 
-    async def _fake_restore(event: Any) -> None:
+    async def _fake_restore(event: Any, *, for_rollback: bool = False) -> None:
         loaded = await store.load_session(event.session_id)
         assert loaded is not None
         engine_services(engine).history.bind(loaded)
@@ -169,8 +170,13 @@ def fake_start_factory(engine: AgentEngine) -> Callable[..., Awaitable[None]]:
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
+        assert commit_workspace is None
         engine.session.agent_profile = profile
+        if workspace_plan is not None:
+            engine.session.install_workspace(workspace_plan)
         install_loaded_agent(engine, bindings=_StubExec())  # type: ignore[assignment]
         if staged_loaded is not None:
             engine.settings_handle.install_prepared(engine.settings_handle.prepare(staged_loaded, session=session))

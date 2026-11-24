@@ -514,6 +514,13 @@ class ChrysAcpServer:
                 mcp_servers=mcp_servers,
                 warnings=warnings,
             )
+        except Exception as exc:
+            if self._client is not None:
+                for warning in warnings:
+                    with contextlib.suppress(Exception):
+                        await self._send_warning(warning.session_id or session_id, warning)
+            raise _request_error(exc) from exc
+        try:
             session = result.session
             # One cleanup scope for everything after the load: a session this
             # request created must not stay in the active map when any of the
@@ -1095,10 +1102,17 @@ class ChrysAcpServer:
             primary_cwd = _string_param(params, "primaryCwd") or _string_param(params, "primary_cwd")
             if not primary_cwd:
                 raise invalid_params({"details": "primaryCwd is required."})
+            # Sent even when the change fails: an unreadable workspace list is told once per session.
+            warnings = []
+
             try:
-                result = await self._manager.set_workspace(session_id, primary_cwd)
+                result = await self._manager.set_workspace(session_id, primary_cwd, warnings=warnings)
             except Exception as exc:
                 raise _request_error(exc) from exc
+            finally:
+                for warning in warnings:
+                    with contextlib.suppress(Exception):
+                        await self._send_warning(session_id, warning)
             # A workspace change soft-restarts the agent, which can alter skills,
             # MCP/runtime details, memory, and workspace-loaded context — push the
             # refreshed runtime so the client doesn't keep stale state.

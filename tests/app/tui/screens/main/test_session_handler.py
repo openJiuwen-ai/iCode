@@ -30,6 +30,7 @@ from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource
 from chrys.service.state.store import JsonFileStateStore
+from chrys.service.workspaces.registry import RegistrySnapshot
 from tests.support.tui_helpers import (
     main_screen_state_at,
     make_session_handler,
@@ -108,8 +109,9 @@ async def test_declining_startup_workspace_keeps_the_legacy_checkpoint_in_place(
     resolved = await store.resolve_startup_session(session_id)
     assert resolved is not None
 
-    async def decline(path: str) -> None:
+    async def decline(path: str, workspace_restore: bool) -> None:
         assert path == str(missing_cwd)
+        assert not workspace_restore
         assert legacy.is_file() and not primary.exists()
 
     async def unexpected_publish(event: object) -> None:
@@ -207,6 +209,8 @@ def _resume_screen(
 
         async def list_sessions(self) -> list[object]:
             raise AssertionError("resume must not scan list_sessions()")
+
+        workspace_registry = SimpleNamespace(snapshot=RegistrySnapshot)
 
     async def publish(event: object) -> None:
         published.append(event)

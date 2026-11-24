@@ -28,38 +28,25 @@ def _state(tracker):
     )
 
 
-def test_retarget_composition_matches_resolve_and_apply(tmp_path) -> None:
-    workspace = Workspace(primary_cwd=str(tmp_path / "new"))
-    first, second = WorkspaceChangeTracker(), WorkspaceChangeTracker()
-    for tracker in [first, second]:
-        tracker.queue_safety_notice("kept", cwd=str(tmp_path / "old"))
-    first.retarget_roots(workspace, resolve_scope=False)
-    second.apply_retarget(second.resolve_retarget(workspace, resolve_scope=False))
-    assert _state(first) == _state(second)
-    assert first.serialize() == second.serialize()
-
-
-def test_disabled_resolve_and_apply_skip_probes_and_preserve_baseline(tmp_path, monkeypatch) -> None:
+def test_disabled_scope_resolution_preserves_baseline(tmp_path, monkeypatch):
     workspace = Workspace(primary_cwd=str(tmp_path))
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(workspace)
-    baseline = tracker.capture_baseline(7)
+    tracker.apply_retarget(tracker.resolve_retarget(workspace))
+    tracker.capture_baseline(7)
+    before = tracker.serialize()
 
     def fail(*args):
-        raise AssertionError("scope was probed")
+        pytest.fail("disabled scope resolution probed the filesystem")
 
     monkeypatch.setattr(module, "_resolve_workspace_scope", fail)
-    retarget = tracker.resolve_retarget(workspace, resolve_scope=False)
-    assert tracker.baseline is baseline
-    tracker.apply_retarget(retarget)
-    assert tracker.baseline is baseline
-    assert tracker._scope.roots == ()
+    tracker.apply_retarget(tracker.resolve_retarget(workspace, resolve_scope=False))
+    assert tracker.serialize() == before
 
 
 @pytest.mark.parametrize("operation", ["resolve", "restore"])
 def test_new_directory_resolution_failure_preserves_all_tracker_state(operation, tmp_path, monkeypatch) -> None:
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(Workspace(primary_cwd=str(tmp_path)))
+    tracker.apply_retarget(tracker.resolve_retarget(Workspace(primary_cwd=str(tmp_path))))
     tracker.capture_baseline(3)
     tracker.queue_safety_notice("sole notice", cwd=str(tmp_path))
     tracker._pending_boundary_notice = "boundary"
@@ -88,10 +75,10 @@ def test_apply_retarget_with_pending_and_newly_queued_notices_never_resolves_pat
     old = tmp_path / "old"
     workspace = Workspace(primary_cwd=str(tmp_path / "new"))
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(Workspace(primary_cwd=str(tmp_path)))
+    tracker.apply_retarget(tracker.resolve_retarget(Workspace(primary_cwd=str(tmp_path))))
     tracker.capture_baseline(3)
     tracker.queue_safety_notice("first", cwd=str(old))
-    retarget = tracker.resolve_retarget(workspace, resolve_scope=True)
+    retarget = tracker.resolve_retarget(workspace, resolve_scope=True, freeze_baseline=True)
     tracker.queue_safety_notice("second", cwd=str(old))
 
     def fail(*args, **kwargs):
@@ -99,6 +86,7 @@ def test_apply_retarget_with_pending_and_newly_queued_notices_never_resolves_pat
 
     monkeypatch.setattr(module.os.path, "realpath", fail)
     monkeypatch.setattr(module, "_resolve_workspace_scope", fail)
+    monkeypatch.setattr(module, "_reconcile_baseline", fail)
     tracker.apply_retarget(retarget)
     assert tracker.take_pending_notice() == f"{_header(old)}\nfirst\n\n{_header(old)}\nsecond"
 
@@ -134,8 +122,10 @@ def test_notice_resolution_failure_keeps_full_text_and_marks_original_base_once(
         tracker.queue_safety_notice(notice, cwd=old)
     payload = tracker.serialize()
     assert payload["pending_safety"] == [{"text": f"{_header(old)}\n{notice}", "cwd": None}]
-    tracker.retarget_roots(Workspace(primary_cwd=str(tmp_path / "new")), resolve_scope=False)
-    tracker.retarget_roots(Workspace(primary_cwd=str(tmp_path / "another")), resolve_scope=False)
+    tracker.apply_retarget(tracker.resolve_retarget(Workspace(primary_cwd=str(tmp_path / "new")), resolve_scope=False))
+    tracker.apply_retarget(
+        tracker.resolve_retarget(Workspace(primary_cwd=str(tmp_path / "another")), resolve_scope=False)
+    )
     assert tracker.take_pending_notice() == f"{_header(old)}\n{notice}"
     assert tracker.take_pending_notice() is None
 
@@ -152,5 +142,5 @@ def test_retarget_uses_queue_time_symlink_identity_unlike_re_resolving_the_old_d
     tracker.queue_safety_notice("unchanged text", cwd=str(link))
     link.unlink()
     link.symlink_to(second, target_is_directory=True)
-    tracker.retarget_roots(Workspace(primary_cwd=str(first)), resolve_scope=False)
+    tracker.apply_retarget(tracker.resolve_retarget(Workspace(primary_cwd=str(first)), resolve_scope=False))
     assert tracker.take_pending_notice() == "unchanged text"

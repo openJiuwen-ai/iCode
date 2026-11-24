@@ -39,6 +39,7 @@ from chrys.service.llm.chat_completions import history as chat_history
 from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
 from chrys.service.llm.openai_responses.replay import encode_input
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
+from chrys.service.state.serializers import deserialize_message, serialize_message
 from tests.support.reminder_calls import enrich_call, establish_request
 from tests.support.reminder_stack import reminder_pair
 
@@ -1082,3 +1083,26 @@ async def test_continuation_poll_keeps_the_held_catalogs(monkeypatch: pytest.Mon
     sent = await _service_call(middleware, [_user("second")], handle="resp_1", answer="resp_2")
 
     assert _count(sent, _CATALOG) == 0
+
+
+async def test_saved_workdir_reminders_replay_byte_for_byte(monkeypatch: pytest.MonkeyPatch) -> None:
+    old = "[Runtime Environment]\n  Project: Team\n  Project folders:\n  - /repo (primary)"
+    departed = '[Runtime Environment]\n  Project: Unspecified (left project "Team")'
+    runtime: list[str | None] = [old]
+    writer = _middleware(monkeypatch, runtime=runtime)
+    history: list[Message] = []
+    first = await _next_turn(writer, history, "first")
+    runtime[0] = departed
+    second = await _next_turn(writer, history, "second")
+
+    # Re-ID the messages via the same provider-state serializer used by session persistence.
+    saved = [serialize_message(message) for message in history]
+    restored = [deserialize_message(message) for message in saved]
+    runtime[0] = "[Runtime Environment]\n  Workspace: Team"
+    reader = _middleware(monkeypatch, runtime=runtime)
+    reader.prepare_turn()
+    wire = await enrich_call(reader, [*restored, _user("third")])
+
+    assert [text.encode() for text in _texts(wire[0])] == [text.encode() for text in first]
+    assert [text.encode() for text in _texts(wire[2])] == [text.encode() for text in second]
+    assert _wrap(runtime[0]) in _texts(wire[-1])

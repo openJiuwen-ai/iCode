@@ -1,0 +1,53 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Pinned lookup ids for workspace management."""
+
+from __future__ import annotations
+
+WORKSPACE_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
+    {
+        "controls.workspace_change_cancelled",
+        "controls.workspace_change_failed",
+        "controls.workspace_session_changed",
+        "engine.clear_session_failed",
+        "engine.new_session_choose_cwd",
+        "engine.new_session_choose_workspace",
+        "engine.new_session_failed",
+        "engine.new_session_no_agent",
+        "restore.no_checkpoint",
+        "restore.session_changed",
+        "tui.startup.session.workspace_restore_failed",
+        "workspaces.write_failed",
+        "tui.workspace.leave_workspace.title",
+        "tui.workspace.leave_workspace.message",
+        "tui.workspace.leave_workspace.choices",
+        "tui.workspace.leave_workspace.new",
+        "tui.workspace.leave_workspace.switch",
+        "workspaces.leave_confirmation_required",
+        "workspaces.left",
+        "workspaces.selected_from_other",
+        "workspaces.folder_invalid",
+        "workspaces.new_membership_write_failed",
+        "workspaces.leave_membership_write_failed",
+        "workspaces.fork_membership_write_failed",
+        "workspaces.membership_cleared_no_runtime",
+        "workspaces.membership_cleared_open_failed",
+        "workspaces.membership_saved_no_runtime",
+        "workspaces.membership_saved_open_failed",
+        "workspaces.name_control_char",
+        "workspaces.name_empty",
+        "workspaces.name_exists",
+        "workspaces.not_found",
+        "workspaces.overlap",
+        "workspaces.inherited_workspace_missing",
+        "workspaces.primary_immutable",
+        "workspaces.primary_missing",
+        "workspaces.rollback_primary_missing",
+        "workspaces.selection_changed",
+        "workspaces.selector_ambiguous",
+        "workspaces.selector_not_found",
+        "workspaces.registry_unreadable",
+        "workspaces.registry_newer_version",
+        "workspaces.working_dir_missing",
+    }
+)

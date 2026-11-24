@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "schema_version": 1,
+    "app_version": "0.36.0",
+    "os_name": "macos",
+    "arch": "arm64",
+    "session_id": "legacy-empty",
+    "created_at": "2026-11-20T02:00:30.820313+00:00",
+    "updated_at": "2026-11-20T02:00:30.820313+00:00",
+    "kind": "chat",
+    "primary_cwd": "/repo",
+    "working_dirs": [],
+    "title": "Keep this conversation",
+    "custom_title": "",
+    "generated_title": "",
+    "model_provider": "",
+    "model_api_style": "",
+    "model_id": "",
+    "model_profile_id": "",
+    "model_base_url": "",
+    "model_profile_fingerprint": "",
+    "service_session_id": "",
+    "agent_profile": "",
+    "agent_display_name": "",
+    "agent_profile_id": "",
+    "agent_profile_fingerprint": "",
+    "message_count": 1,
+    "agent_profile_history": [],
+    "parent_session_id": ""
+  },
+  "state": {
+    "messages": [
+      {
+        "type": "message",
+        "role": "user",
+        "contents": [
+          {
+            "type": "text",
+            "text": "Keep this conversation",
+            "additional_properties": {}
+          }
+        ],
+        "additional_properties": {}
+      }
+    ],
+    "compressed_msgs": [],
+    "turn_counter": 0
+  },
+  "session_checkpoint_id": "c2156f28be29d9748c61a0b122788c48"
+}

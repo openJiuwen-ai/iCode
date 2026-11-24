@@ -1327,9 +1327,11 @@ async def test_a_request_during_a_session_restore_is_refused_rather_than_admitte
     real_load = SessionPersistence.load_chat_for_restore
 
     async def _load(
-        self: SessionPersistence, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool
+        self: SessionPersistence, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool, repair: bool = True
     ) -> ChatRestoreData | None:
-        checkpoint = await real_load(self, session_id, prefer_recovery=prefer_recovery, ignore_recovery=ignore_recovery)
+        checkpoint = await real_load(
+            self, session_id, prefer_recovery=prefer_recovery, ignore_recovery=ignore_recovery, repair=repair
+        )
         entered.set()
         await release.wait()  # keep the restore in flight before it rebuilds the session
         return checkpoint

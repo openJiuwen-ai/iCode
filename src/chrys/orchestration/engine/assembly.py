@@ -28,6 +28,7 @@ from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
 from chrys.orchestration.engine.state.machine import EngineStateMachine
 from chrys.orchestration.engine.state.session_writer import SessionWriter
 from chrys.orchestration.engine.usage import UsagePublisher
+from chrys.orchestration.engine.workspaces import SessionWorkspaces
 from chrys.orchestration.session_hooks import SessionHookFactory
 from chrys.orchestration.workflows.coordinator import WorkflowCoordinator
 from chrys.service.approval.policy import ApprovalMode
@@ -38,6 +39,7 @@ from chrys.service.mcp.cache import MCPConnectionCache
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
 from chrys.service.session.history import SessionHistoryManager
 from chrys.service.session.persistence import SessionPersistence
+from chrys.service.workspaces.registry import RegistrySnapshot
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
@@ -92,7 +94,9 @@ def assemble_agent_engine(
     persistence = SessionPersistence(state_store, event_bus)
     session = ActiveSession(
         persistence=persistence,
-        workspace=initial_workspace,
+        workspace_plan=SessionWorkspaces.plan(workspace=initial_workspace, snapshot=RegistrySnapshot())
+        if initial_workspace is not None
+        else None,
         approval_mode=initial_approval_mode or ApprovalMode(settings_handle.settings.default_approval_mode),
         surface=surface,
         pause_failed_sub_agents=pause_failed_sub_agents,

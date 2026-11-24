@@ -24,14 +24,17 @@ from unittest.mock import create_autospec
 import pytest
 
 import chrys.orchestration.engine.build.builder as builder_module
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.runtime_pointer import MODEL_POINTER_KEY, get_model_pointer
 from chrys.foundation.config.settings_store import LoadedSettings, load_settings
 from chrys.foundation.config.spec import Source
+from chrys.foundation.config.user_settings import user_settings_path
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentLoadFailed,
     AgentLoadStarted,
     AgentProfileSwitch,
+    Error,
     Event,
     ModelProfileSwitched,
     RollbackResult,
@@ -44,8 +47,11 @@ from chrys.foundation.events.types import (
     SettingsReload,
     UserMessage,
     UserRollback,
+    Warning,
     WorkflowRunStarted,
     WorkspaceChange,
+    WorkspaceOperation,
+    WorkspaceUpdated,
 )
 from chrys.foundation.models.workspace import Workspace
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -78,6 +84,12 @@ from tests.support.waiting import (
     await_run_task_chain,
     wait_for,
     with_wait_deadline,
+)
+from tests.support.workspace_registry import (
+    make_workdir_alias,
+    make_workdirs,
+    retarget_workdir_alias,
+    write_cwd_hook,
 )
 
 if TYPE_CHECKING:
@@ -789,8 +801,437 @@ async def test_a_failed_startup_restore_drops_the_session_model_even_when_its_te
 
     # The fallback start that follows is a new session, so it starts on the default model.
     assert failed == [True]
+    assert engine.session_id is None
+    assert engine.current.loaded is None
     assert _session_model(engine) == ""
     assert engine.settings.model_profile == DEFAULT_MODEL
+
+
+@pytest.mark.parametrize("rebuild", ["workspace", "chdir", "model"])
+async def test_rebuild_after_failed_restore_starts_a_new_session(agent_engine, monkeypatch, tmp_path, rebuild):
+    started = await _start(agent_engine, monkeypatch, tmp_path)
+    engine, store = started.engine, started.store
+    registry = store.workspace_registry
+    target = registry.create("Target", str(started.workspace))
+    await _seed_restorable_session(
+        store, text="original target history", agent_profile=_CODE.name, primary_cwd=str(started.workspace)
+    )
+    registry.set_session_workspace("restore_me", target.id)
+    saved = store.session_dir("restore_me") / "session.json"
+    before = saved.read_bytes()
+    started.clients.fail_builds = 1
+
+    async with capture_event_sequence(engine.event_bus, Error) as errors:
+        await engine.event_bus.publish(SessionRestore(session_id="restore_me"))
+    assert [(error.code, error.session_id) for error in errors] == [("session_restore_failed", "restore_me")]
+    assert engine.session_id is None
+    assert engine.current.loaded is None
+    assert engine.history_messages == []
+    assert not engine.session.guard.owns("restore_me")
+
+    if rebuild == "workspace":
+        await _publish(engine, WorkspaceChange(workspace_operation=WorkspaceOperation.SELECT, workspace_id=target.id))
+        assert engine.session.workspace_id == target.id
+    elif rebuild == "model":
+        await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+        assert _model(engine) == OTHER_MODEL
+    else:
+        destination = tmp_path / "new-directory"
+        destination.mkdir()
+        await _publish(engine, WorkspaceChange(primary_cwd=str(destination)))
+        assert engine.workspace.primary_cwd == str(destination)
+    await _complete_turn(engine, "turn after failed restore")
+    assert engine.session_id is not None and engine.session_id != "restore_me"
+    assert saved.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("directory", "rebuild"),
+    [
+        ("unchanged", "direct"),
+        ("unchanged", "tui"),
+        ("deleted", "direct"),
+        ("retargeted", "tui"),
+        ("registered", "direct"),
+    ],
+)
+async def test_failed_restore_restarts_with_settings_for_the_recovery_directory(
+    agent_engine, monkeypatch, tmp_path, directory, rebuild
+):
+    startup, target = make_workdirs(tmp_path, "workspace", "target")
+    if directory == "retargeted":
+        previous, replacement, previous_cwd = make_workdir_alias(tmp_path, "previous", "other", "link")
+    else:
+        previous = previous_cwd = tmp_path / "previous"
+        previous.mkdir()
+    for root, retry_count in ((startup, 2), (previous, 3), (target, 4)):
+        (root / ".chrys").mkdir()
+        (root / ".chrys" / "settings.yaml").write_text(
+            f"llm:\n  retry:\n    max_transient: {retry_count}\n", encoding="utf-8"
+        )
+    user_settings_path().parent.mkdir(parents=True, exist_ok=True)
+    user_settings_path().write_text("workdir:\n  config_enabled: true\n", encoding="utf-8")
+    freeze_process_env()
+    monkeypatch.chdir(startup)
+    started = await _start(agent_engine, monkeypatch, tmp_path, loaded=load_settings(workdir=startup))
+    engine, store = started.engine, started.store
+    if directory == "registered":
+        workspace = store.workspace_registry.create("Previous", str(previous))
+        await _publish(
+            engine, WorkspaceChange(workspace_operation=WorkspaceOperation.SELECT, workspace_id=workspace.id)
+        )
+        assert engine.session.workspace_id == workspace.id
+        await _complete_turn(engine, "old conversation")
+    else:
+        await _publish(engine, WorkspaceChange(primary_cwd=str(previous_cwd)))
+    old_id = engine.session_id
+    assert engine.settings.max_transient_retries == 3
+    await _seed_restorable_session(store, agent_profile=_CODE.name, primary_cwd=str(target))
+    saved = store.session_dir("restore_me") / "session.json"
+    before = saved.read_bytes()
+    updates = []
+
+    async def record_update(event: WorkspaceUpdated) -> None:
+        updates.append((event.primary_cwd, event.workspace, event.session_id, engine.settings.max_transient_retries))
+
+    async def fail_target_build(_profile, staged):
+        assert staged.workspace_plan.workspace.primary_cwd == str(target)
+        assert staged.loaded.settings.max_transient_retries == 4
+        if directory == "deleted":
+            (previous / ".chrys" / "settings.yaml").unlink()
+            (previous / ".chrys").rmdir()
+            previous.rmdir()
+        elif directory == "retargeted":
+            retarget_workdir_alias(previous_cwd, replacement)
+        if directory == "deleted":
+            monkeypatch.chdir(target)
+        raise RuntimeError("target build failed")
+
+    await engine.event_bus.subscribe(WorkspaceUpdated, record_update)
+    async with capture_event_sequence(engine.event_bus, Error) as errors:
+        with monkeypatch.context() as patch:
+            patch.setattr(engine.loader, "build", fail_target_build)
+            with pytest.raises(RuntimeError, match="target build failed"):
+                await _publish(engine, SessionRestore(session_id="restore_me"))
+    await engine.event_bus.unsubscribe(WorkspaceUpdated, record_update)
+
+    assert engine.session_id is None
+    assert engine.session.workspace_id is None
+    assert engine.current.loaded is None
+    assert not engine.session.guard.owns("restore_me")
+    # Only workspace and settings errors bring their own display text; this one is shown as main shows it.
+    assert [(error.code, error.message, error.display_message) for error in errors] == [
+        ("session_restore_failed", "target build failed", None)
+    ]
+    expected_root, retry_count = (
+        (startup.resolve(), 2) if directory in {"deleted", "retargeted"} else (previous.resolve(), 3)
+    )
+    assert updates == [(str(expected_root), None, None, retry_count)]
+    if directory == "registered":
+        assert store.workspace_registry.snapshot().workspace_id_for_session(old_id) == workspace.id
+
+    if rebuild == "direct":
+        await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+    else:
+        activate_model_profile(OTHER_MODEL)
+        await _publish(engine, SettingsReload(model_chosen=True))
+    assert _model(engine) == OTHER_MODEL
+    assert engine.current.require_loaded().runtime.cwd == str(expected_root)
+    assert engine.settings.max_transient_retries == retry_count
+    assert engine.session.workspace_id is None
+    assert engine.session_id not in {None, old_id, "restore_me"}
+    await _complete_turn(engine, "new conversation")
+    assert saved.read_bytes() == before
+
+
+def _write_retry_settings(root: Path, retry_count: int) -> None:
+    (root / ".chrys").mkdir(exist_ok=True)
+    (root / ".chrys" / "settings.yaml").write_text(
+        f"llm:\n  retry:\n    max_transient: {retry_count}\n", encoding="utf-8"
+    )
+
+
+def _trust_workdir_config() -> None:
+    user_settings_path().parent.mkdir(parents=True, exist_ok=True)
+    user_settings_path().write_text("workdir:\n  config_enabled: true\n", encoding="utf-8")
+
+
+async def test_failed_restore_returns_to_the_link_it_began_in_with_that_directory_settings(
+    agent_engine, monkeypatch, tmp_path
+):
+    """The folder the restore began in is the one still there, wherever the link points now."""
+    startup, target = make_workdirs(tmp_path, "workspace", "target")
+    previous, replacement, link = make_workdir_alias(tmp_path, "previous", "other", "link")
+    for root, retry_count in ((startup, 2), (previous, 3), (replacement, 5), (target, 4)):
+        _write_retry_settings(root, retry_count)
+    _trust_workdir_config()
+    freeze_process_env()
+    monkeypatch.chdir(startup)
+    started = await _start(agent_engine, monkeypatch, tmp_path, loaded=load_settings(workdir=startup))
+    engine, store = started.engine, started.store
+    await _publish(engine, WorkspaceChange(primary_cwd=str(link)))
+    assert engine.settings.max_transient_retries == 3
+    await _seed_restorable_session(store, agent_profile=_CODE.name, primary_cwd=str(target))
+    saved = store.session_dir("restore_me") / "session.json"
+    before = saved.read_bytes()
+
+    # The link moves before the restore begins: what it began in is the link, and
+    # that is what the reset returns to, loading the settings of what it points at now.
+    retarget_workdir_alias(link, replacement)
+
+    async def fail_target_build(_profile, staged):
+        assert staged.loaded.settings.max_transient_retries == 4
+        raise RuntimeError("target build failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(engine.loader, "build", fail_target_build)
+        with pytest.raises(RuntimeError, match="target build failed"):
+            await _publish(engine, SessionRestore(session_id="restore_me"))
+
+    assert engine.settings.max_transient_retries == 5
+    assert Path(engine.workspace.primary_cwd).resolve() == replacement.resolve()
+    await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+    assert _model(engine) == OTHER_MODEL
+    assert Path(engine.current.require_loaded().runtime.cwd).resolve() == replacement.resolve()
+    assert engine.settings.max_transient_retries == 5
+    assert saved.read_bytes() == before
+
+
+async def test_failed_restore_warns_and_keeps_current_settings_when_the_fallback_root_will_not_load(
+    agent_engine, monkeypatch, tmp_path
+):
+    """A best-effort fallback load neither blocks the reset nor retries before the next build."""
+    startup, target = make_workdirs(tmp_path, "workspace", "target")
+    previous = tmp_path / "previous"
+    previous.mkdir()
+    for root, retry_count in ((startup, 2), (previous, 3), (target, 4)):
+        _write_retry_settings(root, retry_count)
+    _trust_workdir_config()
+    freeze_process_env()
+    monkeypatch.chdir(startup)
+    started = await _start(agent_engine, monkeypatch, tmp_path, loaded=load_settings(workdir=startup))
+    engine, store = started.engine, started.store
+    await _publish(engine, WorkspaceChange(primary_cwd=str(previous)))
+    assert engine.settings.max_transient_retries == 3
+    await _seed_restorable_session(store, agent_profile=_CODE.name, primary_cwd=str(target))
+    saved = store.session_dir("restore_me") / "session.json"
+    before = saved.read_bytes()
+    failures = {"left": 1}
+
+    async def fail_target_build(_profile, staged):
+        assert staged.loaded.settings.max_transient_retries == 4
+        (previous / ".chrys" / "settings.yaml").unlink()
+        (previous / ".chrys").rmdir()
+        previous.rmdir()
+        raise RuntimeError("target build failed")
+
+    def load_with_fault(*, workdir, **kwargs):
+        if workdir == startup and failures["left"]:
+            failures["left"] -= 1
+            raise OSError("startup settings unavailable")
+        return load_settings(workdir=workdir, **kwargs)
+
+    async with capture_event_sequence(engine.event_bus, Error, Warning) as events:
+        with monkeypatch.context() as patch:
+            patch.setattr(engine.loader, "build", fail_target_build)
+            patch.setattr("chrys.orchestration.engine.session_lifecycle.load_settings", load_with_fault)
+            with pytest.raises(RuntimeError, match="target build failed"):
+                await _publish(engine, SessionRestore(session_id="restore_me"))
+
+    warnings = [event for event in events if isinstance(event, Warning)]
+    assert [warning.code for warning in warnings] == ["settings_workdir_config_read_failed"]
+    assert str(startup.resolve()) in warnings[0].message
+    # The build was not blocked: the settings in force still describe the
+    # directory they came from, which is what the fallback root runs on.
+    assert engine.settings.max_transient_retries == 3
+    assert engine.workspace.primary_cwd == str(startup.resolve())
+    await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+    assert engine.current.require_loaded().runtime.cwd == str(startup.resolve())
+    assert engine.settings.max_transient_retries == 2
+    assert saved.read_bytes() == before
+
+
+async def test_a_second_failed_restore_still_returns_to_the_first_resume_directory(agent_engine, monkeypatch, tmp_path):
+    """The settings the first reset put back say the session is at home in that directory."""
+    startup, first_target, second_target = make_workdirs(tmp_path, "workspace", "first-target", "second-target")
+    previous = tmp_path / "previous"
+    previous.mkdir()
+    for root, retry_count in ((startup, 2), (previous, 3), (first_target, 4), (second_target, 5)):
+        _write_retry_settings(root, retry_count)
+    _trust_workdir_config()
+    freeze_process_env()
+    monkeypatch.chdir(startup)
+    started = await _start(agent_engine, monkeypatch, tmp_path, loaded=load_settings(workdir=startup))
+    engine, store = started.engine, started.store
+    await _publish(engine, WorkspaceChange(primary_cwd=str(previous)))
+    assert engine.settings.max_transient_retries == 3
+    await _seed_restorable_session(store, agent_profile=_CODE.name, primary_cwd=str(first_target))
+
+    async def fail_after_settings_install(_profile, staged):
+        assert staged.loaded.settings.max_transient_retries == 4
+        engine.settings_handle.install(staged.loaded)
+        raise RuntimeError("first target build failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(engine.loader, "build", fail_after_settings_install)
+        with pytest.raises(RuntimeError, match="first target build failed"):
+            await _publish(engine, SessionRestore(session_id="restore_me"))
+    assert engine.settings.max_transient_retries == 3
+
+    await _seed_restorable_session(
+        store, agent_profile=_CODE.name, primary_cwd=str(second_target), text="second target"
+    )
+
+    async def fail_before_settings_install(_profile, staged):
+        assert staged.loaded.settings.max_transient_retries == 5
+        raise RuntimeError("second target build failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(engine.loader, "build", fail_before_settings_install)
+        with pytest.raises(RuntimeError, match="second target build failed"):
+            await _publish(engine, SessionRestore(session_id="restore_me"))
+
+    assert engine.settings.max_transient_retries == 3
+    assert engine.workspace.primary_cwd == str(previous.resolve())
+    await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+    assert engine.current.require_loaded().runtime.cwd == str(previous.resolve())
+    assert engine.settings.max_transient_retries == 3
+
+
+@pytest.mark.parametrize("rebuild", ["model", "new"])
+async def test_rebuild_in_a_moved_link_uses_the_settings_of_the_directory_it_lands_in(
+    agent_engine, monkeypatch, tmp_path, rebuild
+):
+    startup = tmp_path / "workspace"
+    startup.mkdir()
+    previous, replacement, link = make_workdir_alias(tmp_path, "previous", "other", "link")
+    for root, retry_count in ((startup, 2), (previous, 3), (replacement, 5)):
+        _write_retry_settings(root, retry_count)
+    _trust_workdir_config()
+    freeze_process_env()
+    monkeypatch.chdir(startup)
+    started = await _start(agent_engine, monkeypatch, tmp_path, loaded=load_settings(workdir=startup))
+    engine = started.engine
+    await _publish(engine, WorkspaceChange(primary_cwd=str(link)))
+    assert engine.settings.max_transient_retries == 3
+    old_id = engine.session_id
+
+    retarget_workdir_alias(link, replacement)
+
+    if rebuild == "model":
+        await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+        assert _model(engine) == OTHER_MODEL
+    else:
+        await _publish(engine, SessionNew())
+        assert engine.session_id not in {None, old_id}
+    assert engine.current.require_loaded().runtime.cwd == str(link)
+    assert engine.settings.max_transient_retries == 5
+
+
+@pytest.mark.parametrize("rebuild", ["model", "new"])
+async def test_rebuild_in_a_moved_link_loads_that_directory_hooks_and_reports_its_settings(
+    agent_engine, monkeypatch, tmp_path, rebuild
+):
+    """Hooks and settings warnings come from the directory the settings were loaded for, as on /chdir."""
+    startup = tmp_path / "workspace"
+    startup.mkdir()
+    _previous, replacement, link = make_workdir_alias(tmp_path, "previous", "other", "link")
+    write_cwd_hook(replacement / ".chrys", tmp_path / "report.txt", event="user_prompt_submit", hook_id="moved")
+    (replacement / ".chrys" / "settings.yaml").write_text("bogus_key: 1\n", encoding="utf-8")
+    user_settings_path().parent.mkdir(parents=True, exist_ok=True)
+    user_settings_path().write_text("workdir:\n  config_enabled: true\n  hooks_enabled: true\n", encoding="utf-8")
+    freeze_process_env()
+    monkeypatch.chdir(startup)
+    started = await _start(agent_engine, monkeypatch, tmp_path, loaded=load_settings(workdir=startup))
+    engine = started.engine
+    await _publish(engine, WorkspaceChange(primary_cwd=str(link)))
+    assert engine.session.hook_manager is None
+
+    retarget_workdir_alias(link, replacement)
+    async with capture_event_sequence(engine.event_bus, Warning) as events:
+        if rebuild == "model":
+            await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+        else:
+            await _publish(engine, SessionNew())
+
+    assert engine.session.hook_manager is not None
+    assert [event.code for event in events if isinstance(event, Warning)] == ["setting_rejected"]
+
+
+async def test_build_with_settings_of_no_directory_does_not_reload(agent_engine, monkeypatch, tmp_path):
+    """A hand-assembled engine has no directory identity, so nothing says it is stale."""
+    started = await _start(agent_engine, monkeypatch, tmp_path)
+    engine = started.engine
+    assert engine.settings_handle.base.workdir_identity is None
+    loads: list[Path] = []
+
+    def counting_load(*, workdir, **kwargs):
+        loads.append(workdir)
+        return load_settings(workdir=workdir, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("chrys.orchestration.engine.session_lifecycle.load_settings", counting_load)
+        await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+
+    assert loads == []
+    assert _model(engine) == OTHER_MODEL
+
+
+async def test_a_failed_model_switch_rolls_back_to_settings_that_still_know_their_directory(
+    agent_engine, monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started = await _start(agent_engine, monkeypatch, tmp_path, loaded=load_settings(workdir=workspace))
+    engine = started.engine
+    identity = engine.settings_handle.base.workdir_identity
+    assert identity is not None
+
+    started.clients.fail_builds = 1
+    with pytest.raises(RuntimeError, match="model client unavailable"):
+        await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+    assert engine.settings_handle.base.workdir_identity == identity
+
+    loads: list[Path] = []
+
+    def counting_load(*, workdir, **kwargs):
+        loads.append(workdir)
+        return load_settings(workdir=workdir, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("chrys.orchestration.engine.session_lifecycle.load_settings", counting_load)
+        await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+
+    assert loads == []
+    assert _model(engine) == OTHER_MODEL
+
+
+async def test_restore_close_error_after_runtime_and_lock_release_clears_the_previous_id(
+    agent_engine, monkeypatch, tmp_path
+):
+    started = await _start(agent_engine, monkeypatch, tmp_path)
+    engine = started.engine
+    old_id = engine.session_id
+    await _seed_restorable_session(started.store, agent_profile=_CODE.name, primary_cwd=str(started.workspace))
+    saved = started.store.session_dir("restore_me") / "session.json"
+    before = saved.read_bytes()
+    close = engine.lifecycle.close_session
+
+    async def close_then_fail():
+        await close()
+        assert engine.current.loaded is None
+        assert not engine.session.guard.owns(old_id)
+        raise RuntimeError("close failed after release")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(engine.lifecycle, "close_session", close_then_fail)
+        with pytest.raises(RuntimeError, match="close failed after release"):
+            await _publish(engine, SessionRestore(session_id="restore_me"))
+
+    assert engine.session_id is None
+    await _publish(engine, SetModelProfile(profile_id=OTHER_MODEL))
+    assert engine.session_id not in {None, old_id, "restore_me"}
+    assert saved.read_bytes() == before
 
 
 async def test_a_default_agent_made_sub_agent_only_is_skipped_at_a_new_session(

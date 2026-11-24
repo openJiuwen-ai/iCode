@@ -22,6 +22,7 @@ from chrys.service.approval.grant_store import session_grants_path
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.tools.builtins.shell import ShellTools
+from chrys.service.workspaces.registry import WorkspaceRegistry
 
 
 @pytest.fixture
@@ -34,7 +35,9 @@ def grants(tmp_path, monkeypatch):
         "bootstrap_runtime",
         create_autospec(
             approvals.bootstrap_runtime,
-            return_value=SimpleNamespace(warnings=[], loaded=SimpleNamespace(trust_conflicts=())),
+            return_value=SimpleNamespace(
+                warnings=[], loaded=SimpleNamespace(trust_conflicts=()), settings=SimpleNamespace(locale="en")
+            ),
         ),
     )
     tools = ShellTools(runtime).tools()
@@ -44,7 +47,7 @@ def grants(tmp_path, monkeypatch):
     ).candidate
     assert candidate is not None
     assert binding.service.remember(candidate, "EXACT_SESSION")
-    assert binding.service.remember(candidate, "EXACT_WORKDIR")
+    assert binding.service.remember(candidate, "EXACT_WORKSPACE")
     return binding, candidate
 
 
@@ -67,6 +70,7 @@ def test_cli_lists_commands_as_shell_text(grants, capsys):
     assert all(line.endswith("  exact npm run test") for line in lines)
     assert all("workdir=" in line for line in lines)
     assert any("WORKDIR" in line for line in lines)
+    assert all("WORKSPACE" not in line for line in lines)
 
 
 @pytest.mark.parametrize("argv", [[], ["--json"]])
@@ -79,12 +83,13 @@ def test_cli_lists_when_no_action_is_given(grants, capsys, argv):
         assert len(out.splitlines()) == 2
 
 
-def test_cli_usage_names_the_singular_command(capsys):
+def test_cli_usage_names_the_singular_command_and_public_filters(capsys):
     with pytest.raises(SystemExit):
         approvals.main(["--help"])
     help_text = capsys.readouterr().out
     assert help_text.startswith("usage: icode approval ")
-    assert "--workdir" in help_text
+    assert "--workspace" in help_text
+    assert "--workdir DIR" in help_text
     assert "--project" not in help_text
 
 
@@ -107,7 +112,7 @@ def test_cli_requires_an_explicit_clear_scope(grants):
 
 
 @pytest.mark.parametrize("command", [["list"], ["clear"], ["clear", "--all"], ["revoke", "grant-id"]])
-@pytest.mark.parametrize("flag", ["--workdir", "--project", "--session"])
+@pytest.mark.parametrize("flag", ["--workspace", "--workdir", "--project", "--session"])
 def test_cli_rejects_empty_filters_before_startup(grants, capsys, command, flag):
     binding, _ = grants
     with pytest.raises(SystemExit) as error:
@@ -119,7 +124,7 @@ def test_cli_rejects_empty_filters_before_startup(grants, capsys, command, flag)
     assert len(binding.service.rules()) == 2
 
 
-@pytest.mark.parametrize("flag", ["--workdir", "--project", "--session"])
+@pytest.mark.parametrize("flag", ["--workspace", "--workdir", "--project", "--session"])
 def test_cli_rejects_all_with_a_filter(grants, capsys, flag):
     binding, _ = grants
     with pytest.raises(SystemExit) as error:
@@ -169,16 +174,16 @@ async def test_session_restore_fork_and_delete_grant_lifecycle(grants):
     assert rebuilt.service.match(candidate)
 
 
-def test_workdir_filter_accepts_removed_directories(grants, capsys):
+def test_workdir_filter_accepts_removed_directories(grants):
     binding, candidate = grants
     removed = str(binding.runtime.platform.config_dir / "removed")
     removed_candidate = replace(candidate, context=replace(candidate.context, workdir=removed))
-    assert binding.service.remember(removed_candidate, "EXACT_WORKDIR")
+    assert binding.service.remember(removed_candidate, "EXACT_WORKSPACE")
     assert approvals.main(["clear", "--workdir", removed]) == 0
     assert not binding.service.match(removed_candidate)
 
 
-@pytest.mark.parametrize("flag", ["--workdir", "--project"])
+@pytest.mark.parametrize("flag", ["--project", "--workdir"])
 def test_directory_filter_lists_revokes_and_clears_session_and_shared_grants(grants, capsys, tmp_path, flag):
     binding, candidate = grants
     directory = candidate.context.workdir
@@ -200,6 +205,57 @@ def test_directory_filter_lists_revokes_and_clears_session_and_shared_grants(gra
     assert not binding.service.rules()
     [remaining] = other_binding.service.rules()
     assert remaining.scope == "SESSION" and remaining.workdir == other.context.workdir
+
+
+@pytest.mark.parametrize("flag", ["--project", "--workdir", "--session"])
+def test_workspace_filter_excludes_directory_and_session_filters(grants, capsys, flag):
+    with pytest.raises(SystemExit) as error:
+        approvals.main(["list", flag, "scope", "--workspace", "Team"])
+    assert error.value.code == 2
+    assert "--workspace cannot be combined" in capsys.readouterr().err
+    approvals.bootstrap_runtime.assert_not_called()
+
+
+@pytest.mark.parametrize("selector", ["name", "prefix", "id", "deleted", "unreadable"])
+def test_workspace_filter_leaves_directory_and_session_grants(grants, capsys, tmp_path, selector):
+    binding, candidate = grants
+    registry = WorkspaceRegistry()
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    workspace = registry.create("Team", str(primary))
+    workspace_grant = replace(candidate, context=replace(candidate.context, workspace_id=workspace.id))
+    assert binding.service.remember(workspace_grant, "EXACT_WORKSPACE")
+    primary.rmdir()
+    if selector == "deleted":
+        registry.delete(workspace.id)
+    if selector == "unreadable":
+        registry.path.write_text("broken", encoding="utf-8")
+    value = {"name": "tEaM", "prefix": workspace.id[:12]}.get(selector, workspace.id)
+    assert approvals.main(["list", "--workspace", value, "--json"]) == 0
+    [row] = json.loads(capsys.readouterr().out)
+    assert (row["scope"], row["scope_id"]) == ("WORKSPACE", workspace.id)
+    assert "workdir" not in row
+    assert approvals.main(["clear", "--workspace", value]) == 0
+    assert {rule.scope for rule in binding.service.rules()} == {"WORKDIR", "SESSION"}
+
+
+def test_workspace_filter_reports_unknown_name_and_rejects_directories(grants, capsys):
+    _, candidate = grants
+    # CLI output stays English whatever the display language.
+    approvals.bootstrap_runtime.return_value.settings.locale = "zh-Hans"
+    for name in ("Missing", candidate.context.workdir):
+        assert approvals.main(["list", "--workspace", name]) == 1
+        assert f"No workspace matches {name}." in capsys.readouterr().err
+
+
+def test_workspace_filter_reports_unreadable_registry_for_names(grants, capsys):
+    registry = WorkspaceRegistry()
+    registry.path.parent.mkdir(parents=True, exist_ok=True)
+    registry.path.write_text("broken", encoding="utf-8")
+    assert approvals.main(["list", "--workspace", "Team", "--json"]) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert json.loads(output.err)["code"] == "workspace_registry_unreadable"
 
 
 def test_cli_reports_migration_once_on_stderr(capsys, monkeypatch):

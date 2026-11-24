@@ -85,6 +85,7 @@ class ChatSessionMeta(SessionMetadata):
     model_base_url: str = ""
     model_profile_fingerprint: str = ""
     service_session_id: str = ""
+    service_session_workspace_fingerprint: str = ""
     parent_session_id: str = ""
     # Bounded head/tail excerpts of user prompts, never full transcript text.
     user_prompt_search_text: str = ""
@@ -579,6 +580,7 @@ class SessionMetaMixin:
             model_base_url=meta.get("model_base_url", ""),
             model_profile_fingerprint=meta.get("model_profile_fingerprint", ""),
             service_session_id=meta.get("service_session_id", ""),
+            service_session_workspace_fingerprint=meta.get("service_session_workspace_fingerprint", ""),
             parent_session_id=meta.get("parent_session_id", ""),
             user_prompt_search_text=SessionMetaMixin._envelope_user_prompt_search_text(envelope),
         )

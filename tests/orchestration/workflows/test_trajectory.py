@@ -14,7 +14,14 @@ from chrys.service.analytics import Precision, SessionCounterSamples, analyze_tr
 from chrys.service.analytics.export import analysis_json, perfetto_trace
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.trajectory.session import trajectory_events_path
-from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import (
+    confirm,
+    make_host,
+    make_workdir,
+    patch_runtime,
+    run,
+    write_workflow,
+)
 from tests.support.trajectory_invariants import assert_trajectory_accounted, assert_trajectory_operation_settlement
 
 

@@ -932,7 +932,7 @@ class ShellTools:
         execute.description = description
 
         tools = [execute]
-        if self._runtime.working_dirs:
+        if self._runtime.working_dirs or self._runtime.missing_working_dirs:
             list_dirs = self.list_workspace_dirs
             set_tool_kind(list_dirs, KIND_SHELL)
             tools.append(list_dirs)
@@ -1198,7 +1198,7 @@ class ShellTools:
         Returns directory paths with their labels and primary status.
         Useful for understanding the project structure across multiple repositories.
         """
-        if not self._runtime.working_dirs:
+        if not (self._runtime.working_dirs or self._runtime.missing_working_dirs):
             return f"No workspace active. Current directory: {self._runtime.cwd}"
         lines = [f"Workspace directories (cwd: {self._runtime.cwd}):"]
         for wd in self._runtime.working_dirs:
@@ -1206,6 +1206,7 @@ class ShellTools:
             label = f" [{wd.label}]" if wd.label else ""
             exists = " ok" if wd.exists else " MISSING"
             lines.append(f"  {wd.path}{label}{marker}{exists}")
+        lines.extend(f"  {path} MISSING" for path in self._runtime.missing_working_dirs)
         return "\n".join(lines)
 
 

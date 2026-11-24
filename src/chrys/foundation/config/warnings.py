@@ -27,7 +27,7 @@ from chrys.foundation.config.settings_store import LoadedSettings, SettingsWarni
 from chrys.foundation.config.spec import SettingOrigin, Source, specs_by_key
 from chrys.foundation.config.user_settings import user_settings_path
 from chrys.foundation.events.types import Warning
-from chrys.foundation.i18n import DisplaySequence, MessageDef, MessageRef, msg
+from chrys.foundation.i18n import DisplayPath, DisplaySequence, MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 
 _REJECTED_BOOL = msg(
@@ -88,6 +88,10 @@ _CLAMPED_MAXIMUM = msg(
 _DOCUMENT_ERROR = msg(
     "settings.document_read_failed",
     fallback="Settings could not be read. Using the last available configuration.",
+)
+_WORKDIR_CONFIG_READ_FAILED = msg(
+    "settings.workdir_config_read_failed",
+    fallback="Settings for {path} could not be read. Continuing with the current configuration.",
 )
 _UNKNOWN_KEYS = msg(
     "settings.unknown_keys",
@@ -208,6 +212,20 @@ def _verdict_event(warning: SettingsWarning) -> Warning:
 def trust_conflict_warning(keys: tuple[str, ...] | list[str]) -> Warning:
     display = _TRUST_CONFLICT.bind(keys=", ".join(keys))
     return Warning(code=MIGRATION_TRUST_CONFLICT, message=format_message(display), display_message=display)
+
+
+def workdir_config_read_failure(path: str) -> Warning:
+    """Say a rebuild kept the installed settings because its own directory would not load.
+
+    The identity the build checked still names the old directory, so the next
+    build retries by itself; nothing else has to remember the failure.
+    """
+    display_message = _WORKDIR_CONFIG_READ_FAILED.bind(path=DisplayPath(path))
+    return Warning(
+        code="settings_workdir_config_read_failed",
+        message=format_message(display_message),
+        display_message=display_message,
+    )
 
 
 def settings_warning_events(

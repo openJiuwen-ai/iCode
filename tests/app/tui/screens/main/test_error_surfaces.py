@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.main.event_handlers import (
     _UNKNOWN_ERROR,
     BackendEventHandler,
@@ -36,6 +37,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.text.draft_references import EMPTY_REFERENCES, DraftReferences
+from chrys.orchestration.engine.workspaces import LeaveConfirmationRequired
 from tests.support.tui_helpers import (
     fake_session_title,
     main_screen_state_at,
@@ -47,7 +49,6 @@ from tests.support.tui_helpers import (
 
 def test_session_in_use_error_uses_modal_not_chat_or_status() -> None:
     """Session ownership conflicts should be modal-only, not chat/status noise."""
-    from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 
     pushed: list[object] = []
     debug_calls: list[tuple[str, str]] = []
@@ -98,9 +99,9 @@ def test_session_in_use_error_uses_modal_not_chat_or_status() -> None:
     assert debug_calls and debug_calls[0][0] == "Error"
 
 
-def test_hosted_web_warning_uses_modal_once_per_configuration() -> None:
+@pytest.mark.parametrize("code", ["hosted_web_tools_preferred", "workspace_membership_write_failed"])
+def test_hosted_web_warning_uses_modal_once_per_configuration(code: str) -> None:
     """A capability handover reaches the user as a modal, and only once per configuration."""
-    from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 
     pushed: list[object] = []
     debug_calls: list[tuple[str, str]] = []
@@ -121,8 +122,10 @@ def test_hosted_web_warning_uses_modal_once_per_configuration() -> None:
         _debug=debug,
     )
     handler = make_backend_handler(screen)
+    engine = SimpleNamespace(session_generation=1)
+    handler._services.engine_provider = lambda: engine
     event = Warning(
-        code="hosted_web_tools_preferred",
+        code=code,
         message="Provider-hosted web tools own local web_search; model profile test-id",
         session_id="session-1",
     )
@@ -145,21 +148,27 @@ def test_hosted_web_warning_uses_modal_once_per_configuration() -> None:
 
     # A new chat session with the same model configuration is still the same notice.
     asyncio.run(handler.on_warning(replace(event, session_id="session-2")))
-    assert len(pushed) == 1
+    assert len(pushed) == (1 if code == "hosted_web_tools_preferred" else 2)
+
+    # Reopening the same session starts another warning cycle; capability ownership remains global.
+    engine.session_generation += 1
+    asyncio.run(handler.on_warning(event))
+    assert len(pushed) == (1 if code == "hosted_web_tools_preferred" else 3)
 
     # A different configuration is a new notice.
     asyncio.run(handler.on_warning(replace(event, message="...; model profile other-id")))
-    assert len(pushed) == 2
+    assert len(pushed) == (2 if code == "hosted_web_tools_preferred" else 4)
 
 
-def test_session_in_use_error_dismisses_active_load_modal() -> None:
-    """A restore ownership conflict should close loading UI before showing the standard modal."""
-    from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+@pytest.mark.parametrize("code", ["session_in_use", "workspace_leave_confirmation_required"])
+def test_restore_refusal_dismisses_active_load_modal(code: str) -> None:
+    """A restore refusal closes loading UI before showing its error."""
 
     pushed: list[object] = []
     debug_calls: list[tuple[str, str]] = []
     running: list[bool] = []
     loading: list[bool] = []
+    notifications: list[str] = []
     status_snapshot = {"visible": True, "flash": None, "status": "Idle"}
     status_restores: list[dict[str, object]] = []
 
@@ -198,6 +207,7 @@ def test_session_in_use_error_dismisses_active_load_modal() -> None:
         _set_agent_running=running.append,
         _set_agent_loading=loading.append,
         query_one=query_one,
+        notify=lambda message, **_kwargs: notifications.append(message),
         _debug=debug,
     )
     handler = make_backend_handler(screen)
@@ -205,7 +215,12 @@ def test_session_in_use_error_dismisses_active_load_modal() -> None:
     handler._agent_load_status_snapshot = status_snapshot
 
     message = f"Session '40d9a0483e08' is already open in another {APP_DISPLAY_NAME} instance (pid=47219)."
-    asyncio.run(handler.on_error(Error(code="session_in_use", message=message)))
+    if code == "session_in_use":
+        event = Error(code=code, message=message)
+    else:
+        error = LeaveConfirmationRequired()
+        event = Error(code=code, message=str(error), display_message=error.display_message)
+    asyncio.run(handler.on_error(event))
 
     assert screen._state.session.restoring_session is False
     assert restoring == [False]
@@ -213,10 +228,14 @@ def test_session_in_use_error_dismisses_active_load_modal() -> None:
     assert fake_dialog.result_calls == []
     assert handler._agent_load_dialog is None
     assert loading == [False]
-    assert running == [False]
     assert status_restores == [status_snapshot]
-    assert len(pushed) == 1
-    assert isinstance(pushed[0], ConfirmDialog)
+    if code == "session_in_use":
+        assert running == [False]
+        assert len(pushed) == 1
+        assert isinstance(pushed[0], ConfirmDialog)
+    else:
+        assert pushed == []
+        assert notifications == [event.message]
     assert debug_calls and debug_calls[0][0] == "Error"
 
 
@@ -453,6 +472,78 @@ def test_pending_turn_error_leaves_the_draft_for_the_sender_without_inline_retry
     assert running == []
     assert handler._state.submit.returned is False
     assert chat_errors == [("Prompt denied", None)]
+
+
+@pytest.mark.parametrize(
+    ("code", "with_workdir"),
+    [
+        ("workspace_change_failed", False),
+        ("workspace_change_failed", True),
+        ("workspace_selection_failed", False),
+        ("workspace_primary_missing", False),
+    ],
+)
+@pytest.mark.parametrize("initial_retry", [False, True])
+def test_directory_error_outside_submit_keeps_the_existing_retry_surface(
+    code: str, with_workdir: bool, initial_retry: bool
+) -> None:
+    """A failed /cd is an ordinary UI error rather than a rejected submit."""
+    in_submit = False
+    message = "Working directory does not exist: /gone"
+
+    class _FakeInputBar(_RestorableDraftFake):
+        retry_mode = initial_retry
+        _retry_label = ""
+        value = ""
+        locked = in_submit
+
+        def unlock_and_keep(self) -> None:
+            self.locked = False
+
+    class _FakeStatusBar:
+        def flash(self, flashed: str, *, error: bool = False) -> None:
+            flashes.append((flashed, error))
+
+    class _FakeChatPanel:
+        async def add_error(self, shown: str, *, action_label: MessageRef | str | None = None) -> None:
+            chat_errors.append(shown)
+
+    input_bar = _FakeInputBar()
+    flashes: list[tuple[str, bool]] = []
+    chat_errors: list[str] = []
+    notifications: list[str] = []
+    running: list[bool] = []
+
+    def query_one(cls: object) -> object:
+        return {"InputBar": input_bar, "StatusBar": _FakeStatusBar(), "ChatPanel": _FakeChatPanel()}[cls.__name__]
+
+    state = MainScreenState()
+    state.workspace.workspace_id = "project-id" if with_workdir else None
+    screen = SimpleNamespace(
+        _state=state,
+        _set_agent_running=running.append,
+        notify=lambda shown, **_kwargs: notifications.append(shown),
+        query_one=query_one,
+        _debug=lambda *_args: None,
+    )
+    handler = make_backend_handler(screen)
+    handler._agent_load_dialog = None
+    error = Error(code=code, message=message)
+
+    asyncio.run(handler.on_error(error))
+
+    assert state.submit.blocked is False
+    if code == "workspace_change_failed" and not with_workdir:
+        assert running == [False]
+        assert chat_errors == [message]
+        assert [error for _flashed, error in flashes] == [True]
+        assert input_bar.retry_mode is True
+    else:
+        assert running == []
+        assert chat_errors == []
+        assert flashes == []
+        assert notifications == [message]
+        assert input_bar.retry_mode is initial_retry
 
 
 def test_pending_submit_error_display_localizes_chat_but_debug_keeps_protocol_english() -> None:

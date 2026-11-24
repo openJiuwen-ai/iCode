@@ -381,7 +381,13 @@ class _FakeManager:
         self.turn_context_reads.append((cwd, session_id))
         return session_id, self.turn_context_dir, list(self.turn_records)
 
-    async def set_workspace(self, session_id: str, primary_cwd: str) -> WorkspaceUpdated:
+    async def set_workspace(
+        self,
+        session_id: str,
+        primary_cwd: str,
+        *,
+        warnings: list[Warning] | None = None,
+    ) -> WorkspaceUpdated:
         self.workspace_updates.append((session_id, primary_cwd))
         return WorkspaceUpdated(primary_cwd=primary_cwd, working_dirs=[primary_cwd], reference_files=[])
 

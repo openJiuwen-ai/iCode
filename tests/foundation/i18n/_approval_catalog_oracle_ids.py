@@ -16,6 +16,8 @@ APPROVAL_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.approval.reuse.prefix_warning",
         "tui.approval.reuse.workdir",
         "tui.approval.reuse.workdir_hint",
+        "tui.approval.reuse.workspace",
+        "tui.approval.reuse.workspace_hint",
         "tui.approval.reuse.session",
         "tui.approval.reuse.session_hint",
         "tui.approval.reuse.title",

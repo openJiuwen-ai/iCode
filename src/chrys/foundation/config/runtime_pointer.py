@@ -85,6 +85,10 @@ class ModelFileChange:
     origin: SettingOrigin
     generation: int
 
+    def check(self) -> None:
+        """Raise what :meth:`commit` would, without writing."""
+        check_model_selection_revision(self.generation)
+
     def commit(self) -> None:
         global _file_choice
         with _lock:
