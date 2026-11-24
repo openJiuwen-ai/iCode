@@ -120,7 +120,7 @@ async def test_structured_allow_precedes_legacy_readonly(allow_policy: Path, mon
         pytest.fail("An eligible structured ALLOW must return before the legacy readonly shortcut")
 
     monkeypatch.setattr(shell_filter, "is_safe_readonly_command", forbidden_readonly)
-    tool = bound_bash_tool()
+    tool = bound_bash_tool(monkeypatch)
     middleware = ApprovalMiddleware(ApprovalPolicy(ApprovalConfig(default="require"), tools=[tool]), EventBus())
     context = FunctionInvocationContext(tool, {"command": "configured_tool --version"})
     executed = False

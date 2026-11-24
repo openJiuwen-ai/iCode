@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import os
+from pathlib import Path
 
 import pytest
 
@@ -15,9 +16,10 @@ from chrys.kernel.tools import FunctionTool
 from chrys.service.tools.builtins.shell import ShellTools
 
 
-def bound_bash_tool() -> FunctionTool:
+def bound_bash_tool(monkeypatch: pytest.MonkeyPatch) -> FunctionTool:
     """A configured Bash tool for middleware tests that stop before launch."""
     runtime = SessionEnvironment.capture()
+    monkeypatch.setenv("PATH", str(Path(runtime.platform.shell.path).parent))
     return ShellTools(runtime, shell=ShellInfo("bash", runtime.platform.shell.path, ["-c"])).tools()[0]
 
 

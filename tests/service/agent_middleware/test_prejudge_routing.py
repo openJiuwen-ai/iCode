@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import MappingProxyType
 from unittest.mock import AsyncMock, create_autospec
@@ -24,7 +25,7 @@ from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.agent_middleware.events.tool_events import ToolEventMiddleware
 from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
-from chrys.service.approval.prejudge_v2 import Policy, PreJudgeResult, Route, load_policy
+from chrys.service.approval.prejudge_v2 import Matcher, Policy, PreJudgeResult, Route, Rule, load_policy, route
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from tests.support.event_capture import capture_events
@@ -49,7 +50,7 @@ async def test_shell_allow_and_defer_follow_existing_approval(
         "route",
         lambda cmd, dialect, policy: PreJudgeResult(suggestion, "test", (), (), policy.policy_id, "digest"),
     )
-    tool = bound_bash_tool()
+    tool = bound_bash_tool(monkeypatch)
     bus = EventBus()
     requests = []
 
@@ -297,7 +298,7 @@ async def test_real_parser_yaml_policy_and_approval_integration(
     )
     policy = load_policy(policy_file)
     monkeypatch.setattr(approval_module, "load_policy", lambda _: policy)
-    tool = bound_bash_tool()
+    tool = bound_bash_tool(monkeypatch)
     bus = EventBus()
     requests: list[ApprovalRequest] = []
 
@@ -348,7 +349,7 @@ async def test_decoded_target_changes_only_enforce_approval(tmp_path, monkeypatc
     policy_file.write_text(f'schema_version: 1\nmode: "{mode}"\npolicy_id: fixture\n{rules}', encoding="utf-8")
     policy = load_policy(policy_file)
     monkeypatch.setattr(approval_module, "load_policy", lambda _: policy)
-    tool = bound_bash_tool()
+    tool = bound_bash_tool(monkeypatch)
     context = FunctionInvocationContext(tool, {"command": command, "reason": "Classify an inert test string"})
     require = path in {"legacy-readonly", "daa"}
     config = ApprovalPolicy(
@@ -463,6 +464,48 @@ async def test_real_parser_empty_policy_keeps_readonly_approval(tmp_path, monkey
         await middleware.close()
 
 
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+@pytest.mark.parametrize("matches", [False, True])
+@pytest.mark.parametrize("quote", ["'", '"'], ids=["literal", "expansion"])
+async def test_literal_dollar_argv_preserves_readonly_approval(monkeypatch, mode, matches, quote):
+    require_grammars("tree_sitter", "tree_sitter_bash")
+    argv = ("grep", "-F", "$DEMO_TOKEN", "README.md")
+    command = f"grep -F {quote}$DEMO_TOKEN{quote} README.md"
+    rules = (Rule("grep", Route.ALLOW, Matcher("argv_exact", argv)),) if matches else ()
+    policy = Policy(mode, "grep-literal", rules)
+    monkeypatch.setattr(approval_module, "load_policy", lambda _: policy)
+    result = route(command, "bash", policy)
+    literal = quote == "'"
+    assert result.sensitive is (mode != "off" and not literal)
+    assert result.decoded_sensitive_target is False
+    assert (result.route is Route.ALLOW) is (mode != "off" and matches and literal)
+    tool = bound_bash_tool(monkeypatch)
+    bus = EventBus()
+    requests = []
+
+    async def reject(request: ApprovalRequest) -> None:
+        requests.append(request)
+        await bus.publish(ApprovalResponse(request_id=request.request_id, approved=False))
+
+    await bus.subscribe(ApprovalRequest, reject)
+    middleware = ApprovalMiddleware(ApprovalPolicy(ApprovalConfig(default="require"), tools=[tool]), bus)
+    execute = AsyncMock(spec=lambda: None)
+    try:
+        await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
+        (decision,) = middleware.drain_decisions()
+        if literal:
+            execute.assert_awaited_once()
+            assert not requests
+            assert decision["status"] == ("prejudge_approved" if mode == "enforce" and matches else "auto_approved")
+        else:
+            execute.assert_not_awaited()
+            assert len(requests) == 1
+            assert decision["status"] == "user_rejected"
+    finally:
+        await middleware.close()
+        await bus.unsubscribe(ApprovalRequest, reject)
+
+
 async def test_bypass_skips_invalid_policy_loading_and_shadow(monkeypatch, caplog):
     def forbidden_loader(_):
         pytest.fail("BYPASS must not load a policy it will never evaluate")
@@ -547,7 +590,7 @@ async def test_bypass_to_manual_lazily_loads_one_session_snapshot(monkeypatch):
         await first.close()
 
 
-async def test_shadow_logs_bounded_command_text_and_spans(monkeypatch, caplog):
+async def test_shadow_logs_spans_without_command_text(monkeypatch, caplog):
     monkeypatch.setattr(approval_module, "load_policy", lambda _: Policy("shadow", "pilot", ()))
     monkeypatch.setattr(
         approval_module,
@@ -577,19 +620,88 @@ async def test_shadow_logs_bounded_command_text_and_spans(monkeypatch, caplog):
         info = [record.getMessage() for record in caplog.records if record.levelno == logging.INFO]
         assert any("shadow route=defer" in line and "spans=((0, 4),)" in line for line in info)
         assert all("command=" not in line for line in info)
-        assert "command='echo " in caplog.text
-        assert "[truncated]" in caplog.text
+        assert "command=" not in caplog.text
+        assert command not in caplog.text
         assert "hidden_suffix" not in caplog.text
     finally:
         await middleware.close()
 
 
-@pytest.mark.parametrize("command", ["\x1b\n\x00é", "\x00" * 300, "é" * 600, "a" * 900])
-def test_shadow_preview_counts_escaped_output(command):
-    preview = approval_module._shadow_command_preview(command)
-    assert len(preview) <= 512
-    assert preview.isascii()
-    assert all(" " <= char <= "~" for char in preview)
+@pytest.fixture
+def loopback_otlp_logs():
+    from concurrent.futures import ThreadPoolExecutor
+
+    import grpc
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import (
+        LogsServiceServicer,
+        add_LogsServiceServicer_to_server,
+    )
+
+    received = []
+
+    class Receiver(LogsServiceServicer):
+        def Export(self, request, context):
+            received.append(request.SerializeToString())
+            return ExportLogsServiceResponse()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        server = grpc.server(pool)
+        add_LogsServiceServicer_to_server(Receiver(), server)
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        try:
+            yield f"http://127.0.0.1:{port}", received
+        finally:
+            assert server.stop(0).wait(timeout=5)
+
+
+async def test_shadow_debug_and_exception_records_are_safe_for_otlp(monkeypatch, caplog, loopback_otlp_logs):
+    from chrys.foundation.config.settings import Settings
+    from chrys.foundation.observability import setup as otel
+    from chrys.foundation.observability.gate import TELEMETRY_GATE
+
+    require_grammars("tree_sitter", "tree_sitter_bash")
+    endpoint, received = loopback_otlp_logs
+    for name in ("ENDPOINT", "TRACES_ENDPOINT", "METRICS_ENDPOINT", "HEADERS", "LOGS_HEADERS"):
+        monkeypatch.delenv(f"OTEL_EXPORTER_OTLP_{name}", raising=False)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", endpoint)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    monkeypatch.setenv("no_grpc_proxy", "127.0.0.1")
+    # The actual handler uses its explicit provider. Avoid changing the SDK's set-once global.
+    monkeypatch.setattr("opentelemetry._logs.set_logger_provider", lambda provider: None)
+    assert otel.setup_otel(Settings(otel_enabled=True, otel_sensitive_data=False)) is not None
+    provider = otel._INSTALLED_LOGGER_PROVIDER
+    assert TELEMETRY_GATE.enabled and not TELEMETRY_GATE.sensitive_enabled
+
+    command = "echo ICODE_PREJUDGE_SECRET_MARKER_20261124"
+    monkeypatch.setattr(approval_module, "load_policy", lambda _: Policy("shadow", "otel-fixture", ()))
+    tool = bound_bash_tool(monkeypatch)
+    middleware = ApprovalMiddleware(ApprovalPolicy(ApprovalConfig(default="skip"), tools=[tool]), EventBus())
+    execute = AsyncMock(spec=lambda: None)
+
+    def fail_with_source(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
+        raise ValueError(command)
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger=approval_module._prejudge_logger.name):
+            approval_module._prejudge_logger.debug("OTLP DEBUG control")
+            await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
+            monkeypatch.setattr(approval_module, "route", fail_with_source)
+            await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
+        assert execute.await_count == 2
+        assert [entry["status"] for entry in middleware.drain_decisions()] == ["auto_approved", "auto_approved"]
+        assert await asyncio.to_thread(provider.force_flush, timeout_millis=5000)
+        data = b"".join(received)
+        assert b"OTLP DEBUG control" in data
+        assert b"shadow route=defer reason=unmatched_unit policy=otel-fixture" in data
+        assert b"shadow pre-judge evaluation failed; deferring" in data
+        assert b"ICODE_PREJUDGE_SECRET_MARKER_20261124" not in data
+        assert "ICODE_PREJUDGE_SECRET_MARKER_20261124" not in caplog.text
+    finally:
+        await middleware.close()
+        await asyncio.to_thread(otel._revoke_previous_setup)
+        await asyncio.to_thread(provider.shutdown)
 
 
 async def test_human_edited_command_does_not_reenter_prejudge(monkeypatch):

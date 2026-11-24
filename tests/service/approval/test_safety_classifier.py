@@ -9,9 +9,24 @@ import pytest
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
     shell_arg_may_access_sensitive_data,
+    shell_argv_may_access_sensitive_data,
     shell_command_may_access_sensitive_data,
     target_may_access_sensitive_data,
 )
+
+
+@pytest.mark.parametrize(
+    ("argv", "sensitive"),
+    [
+        (("grep", "-F", "$DEMO_TOKEN", "README.md"), False),
+        (("printenv", "DEMO_TOKEN"), True),
+        (("env", "A=1", "printenv"), True),
+        (("bash", "-c", "echo '$DEMO_TOKEN'"), False),
+        (("bash", "-c", 'echo "$DEMO_TOKEN"'), True),
+    ],
+)
+def test_certified_argv_keeps_literal_tokens_and_explicit_child_source_distinct(argv, sensitive):
+    assert shell_argv_may_access_sensitive_data(argv, shell_name="bash") is sensitive
 
 
 def test_shell_sensitive_analysis_caps_pathological_unclosed_substitutions() -> None:

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 _SENSITIVE_TARGET_RE = re.compile(
@@ -346,7 +347,7 @@ def _posix_command_segments(command: str) -> list[list[str]]:
     return segments
 
 
-def _posix_env_command_target_index(segment: list[str], index: int) -> int:
+def _posix_env_command_target_index(segment: Sequence[str], index: int) -> int:
     """Return index after an ``env`` wrapper and its options/assignments."""
     index += 1
     while index < len(segment):
@@ -364,7 +365,7 @@ def _posix_env_command_target_index(segment: list[str], index: int) -> int:
     return index
 
 
-def _posix_command_builtin_target_index(segment: list[str], index: int) -> int:
+def _posix_command_builtin_target_index(segment: Sequence[str], index: int) -> int:
     """Return index after a POSIX ``command`` wrapper."""
     index += 1
     while index < len(segment):
@@ -390,7 +391,7 @@ def _sudo_option_consumes_value(option: str) -> bool:
     )
 
 
-def _posix_sudo_target_index(segment: list[str], index: int) -> int:
+def _posix_sudo_target_index(segment: Sequence[str], index: int) -> int:
     """Return index after a ``sudo`` wrapper and its options."""
     index += 1
     while index < len(segment):
@@ -411,7 +412,7 @@ def _posix_sudo_target_index(segment: list[str], index: int) -> int:
     return index
 
 
-def _posix_unwrapped_command_index(segment: list[str]) -> int:
+def _posix_unwrapped_command_index(segment: Sequence[str]) -> int:
     """Return the command index after leading env/command/sudo wrappers."""
     index = 0
     while index < len(segment):
@@ -434,10 +435,10 @@ def _posix_unwrapped_command_index(segment: list[str]) -> int:
     return index
 
 
-def _posix_shell_c_payloads(command: str) -> list[tuple[str, str]]:
+def _posix_shell_c_payloads(segments: Iterable[Sequence[str]]) -> list[tuple[str, str]]:
     """Return ``(shell_name, payload)`` for POSIX shell ``-c`` invocations."""
     payloads: list[tuple[str, str]] = []
-    for segment in _posix_command_segments(command):
+    for segment in segments:
         index = _posix_unwrapped_command_index(segment)
         if index >= len(segment):
             continue
@@ -477,7 +478,7 @@ def _posix_command_indirection_may_access_sensitive_data(command: str, *, shell_
     for payload in _posix_substitution_payloads(command):
         if _shell_command_may_access_sensitive_data(payload, shell_name=shell_name, depth=depth + 1):
             return True
-    for nested_shell_name, payload in _posix_shell_c_payloads(command):
+    for nested_shell_name, payload in _posix_shell_c_payloads(_posix_command_segments(command)):
         if _shell_command_may_access_sensitive_data(payload, shell_name=nested_shell_name, depth=depth + 1):
             return True
     return False
@@ -516,7 +517,20 @@ def shell_argv_may_access_sensitive_data(argv: tuple[str, ...], *, shell_name: s
             normalized = "/".join(part.rstrip(" .") for part in re.split(r"[/:\\]", token))
             if target_may_access_sensitive_data(normalized):
                 return True
-    return shell_command_may_access_sensitive_data(" ".join(argv), shell_name=shell_name)
+    if argv and shell_name in {"bash", "git_bash"}:
+        head = os.path.basename(argv[0]).lower().removesuffix(".exe")
+        if head == "printenv":
+            return True
+        if head == "env":
+            target = next((arg for arg in argv[1:] if not _POSIX_ENV_ASSIGNMENT_RE.fullmatch(arg)), "")
+            if not target or target.startswith("-") or target in {"env", "printenv"}:
+                return True
+        # A recognized shell's -c argument really is a separate source string.
+        return any(
+            shell_command_may_access_sensitive_data(payload, shell_name=nested_shell)
+            for nested_shell, payload in _posix_shell_c_payloads((argv,))
+        )
+    return False
 
 
 def _parsed_args(raw_args: Any) -> dict[str, Any]:

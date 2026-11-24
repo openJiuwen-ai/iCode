@@ -11,6 +11,7 @@ import os
 import shutil
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -24,7 +25,12 @@ from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.approval.prejudge_v2 import Route, load_policy, route
-from chrys.service.approval.prejudge_v2.execution import isolated_shell_call
+from chrys.service.approval.prejudge_v2.execution import (
+    ApprovalInvalidatedError,
+    _trusted_locations,
+    isolated_shell_call,
+    prepare_shell,
+)
 from chrys.service.mutations.trace import shell_trace_argv
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.tools.builtins import shell as shell_module
@@ -36,7 +42,6 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
-    from pathlib import Path
 
     from chrys.kernel.tools import FunctionTool
 
@@ -64,6 +69,13 @@ def bash_tool(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytes
     for key in tuple(os.environ):
         if key.upper() in {"BASH_ENV", "ENV"} or key.upper().startswith("BASH_FUNC_"):
             monkeypatch.delenv(key)
+    # Keep native positive controls independent of stale runner PATH entries.
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join(
+            path for path in os.environ["PATH"].split(os.pathsep) if Path(path).is_absolute() and Path(path).is_dir()
+        ),
+    )
 
     return ShellTools(SessionEnvironment.capture(), shell=shell)
 
@@ -268,6 +280,9 @@ async def test_bash_startup_isolation_is_local_to_an_approved_call_and_retry(bas
         ('review_fixture_tool $"sample"', False),
         ("review_fixture_tool .e'n'v", True),
         (r"review_fixture_tool $'\x2eenv'", True),
+        ("cp .e'n'v out", True),
+        (r"cp $'\x2eenv' out", True),
+        ("cat .env", True),
         ("review_fixture_tool sample | head -n 1", False),
         ("open harmless.txt", False),
         ("osascript harmless.fixture", False),
@@ -279,9 +294,7 @@ async def test_uncertified_or_sensitive_bash_source_never_reaches_execution(
     expected_sensitive,
     monkeypatch,
 ):
-    await _write_policy(
-        [{"argv_first": ["review_fixture_tool"]}, {"argv_first": ["open"]}, {"argv_first": ["osascript"]}]
-    )
+    await _write_policy([{"argv_first": [head]} for head in ("review_fixture_tool", "open", "osascript", "cp", "cat")])
     policy = load_policy(get_platform().config_dir / "prejudge.yaml")
     decision = route(source, bash_tool.shell.name, policy)
     assert decision.route is Route.DEFER
@@ -476,11 +489,95 @@ async def test_custom_shell_args_defer_before_launch(bash_tool, mode, caplog, mo
         assert f"{mode} route=defer reason=unsupported_shell_configuration" in caplog.text
 
 
-async def test_bash_approved_launch_rechecks_a_retargeted_path_link(bash_tool, tmp_path, monkeypatch):
+def _directory_alias(link: Path, target: Path) -> None:
+    if get_platform().is_windows:
+        junction_or_skip(link, target)
+    else:
+        symlink_or_skip(link, target, target_is_directory=True)
+
+
+def test_path_trust_checks_workspace_entries_and_intermediate_link_targets(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    inside_executable = workspace / "fixture-tool"
+    inside_executable.touch()
+    outside_executable = outside / "fixture-tool"
+    outside_executable.touch()
+    outward = workspace / "outward"
+    inward = tmp_path / "inward"
+    indirect = tmp_path / "indirect"
+    _directory_alias(outward, outside)
+    _directory_alias(inward, workspace)
+    _directory_alias(indirect, outward)
+    assert indirect.resolve() == outside.resolve()
+    roots = (str(workspace),)
+    assert _trusted_locations((str(outside), str(outside_executable)), roots) is not None
+    for path in (workspace, inside_executable, outward, inward, indirect, outward / outside_executable.name):
+        assert _trusted_locations((str(path),), roots) is None
+
+
+async def test_workspace_path_aliases_defer_at_approval(bash_tool, tmp_path, monkeypatch, caplog):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    await asyncio.to_thread(workspace.mkdir)
+    await asyncio.to_thread(outside.mkdir)
+    outward = workspace / "bin"
+    await asyncio.to_thread(_directory_alias, outward, outside)
+    monkeypatch.setenv("PATH", str(outward))
+    source = "fixture-tool sample"
+    await _write_policy([{"argv_exact": source.split()}])
+    tool = bash_tool.tools()[0]
+    with caplog.at_level(logging.INFO, logger="chrys.service.agent_middleware.control.approval.prejudge"):
+        async with _approval(tool, workspace_roots=[str(workspace)]) as (middleware, requests):
+            context = await _invoke(middleware, tool, source)
+            assert context.result is not None and "rejected by user" in str(context.result).lower()
+            assert len(requests) == 1
+    assert "enforce route=defer reason=untrusted_launch_context" in caplog.text
+
+
+async def test_case_insensitive_workspace_path_alias_defers(bash_tool, tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    directory = workspace / "bin"
+    await asyncio.to_thread(directory.mkdir, parents=True)
+    alias = tmp_path / "WORKSPACE" / "BIN"
+    if not await asyncio.to_thread(alias.exists):
+        pytest.skip("Temporary filesystem is case-sensitive")
+    assert await asyncio.to_thread(alias.samefile, directory)
+    roots = (str(workspace),)
+    assert _trusted_locations((str(alias),), roots) is None
+    monkeypatch.setenv("PATH", str(alias))
+    assert prepare_shell(bash_tool.shell, "echo fixture", ("echo",), roots) is None
+
+
+async def test_explicit_workspace_executable_defers_and_unavailable_path_invalidates(bash_tool, tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    directory = tmp_path / "external-bin"
+    await asyncio.to_thread(workspace.mkdir)
+    await asyncio.to_thread(directory.mkdir)
+    executable = workspace / "fixture-tool"
+    await asyncio.to_thread(executable.touch)
+    monkeypatch.setenv("PATH", str(directory))
+    roots = (str(workspace),)
+    assert prepare_shell(bash_tool.shell, str(executable), (str(executable),), roots) is None
+    approved = prepare_shell(bash_tool.shell, "echo fixture", ("echo",), roots)
+    assert approved is not None
+    assert approved.claim(bash_tool.shell, "echo fixture")
+    await asyncio.to_thread(directory.rmdir)
+    assert prepare_shell(bash_tool.shell, "echo fixture", ("echo",), roots) is None
+    with pytest.raises(ApprovalInvalidatedError):
+        approved.require_launch(bash_tool.shell, "echo fixture")
+
+
+@pytest.mark.parametrize("new_target", ["workspace", "outside"])
+async def test_bash_approved_launch_rechecks_a_retargeted_path_link(bash_tool, tmp_path, monkeypatch, new_target):
     outside = tmp_path / "outside-workspace"
     workspace = tmp_path / "workspace"
     await asyncio.to_thread(outside.mkdir)
     await asyncio.to_thread(workspace.mkdir)
+    replacement = workspace if new_target == "workspace" else tmp_path / "other-external-directory"
+    await asyncio.to_thread(replacement.mkdir, exist_ok=True)
     link = tmp_path / "path-link"
     if get_platform().is_windows:
         await asyncio.to_thread(junction_or_skip, link, outside)
@@ -501,10 +598,10 @@ async def test_bash_approved_launch_rechecks_a_retargeted_path_link(bash_tool, t
         assert isolated_shell_call.get() is not None
         if get_platform().is_windows:
             await asyncio.to_thread(link.rmdir)
-            await asyncio.to_thread(junction_or_skip, link, workspace)
+            await asyncio.to_thread(junction_or_skip, link, replacement)
         else:
             await asyncio.to_thread(link.unlink)
-            await asyncio.to_thread(symlink_or_skip, link, workspace, target_is_directory=True)
+            await asyncio.to_thread(symlink_or_skip, link, replacement, target_is_directory=True)
         context.result = await tool.invoke(context=context, skip_parsing=True)
 
     async with _approval(tool, workspace_roots=[str(workspace)]) as (middleware, requests):

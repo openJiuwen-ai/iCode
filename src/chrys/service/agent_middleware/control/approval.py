@@ -105,16 +105,6 @@ def _session_prejudge_policy(
     return cached
 
 
-def _shadow_command_preview(command: str) -> str:
-    """One-line, bounded command text for local shadow diagnostics."""
-    limit = 512
-    preview = ascii(command[:limit])
-    suffix = " [truncated]"
-    if len(preview) > limit or len(command) > limit:
-        return preview[: limit - len(suffix)] + suffix
-    return preview
-
-
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
@@ -491,13 +481,10 @@ class ApprovalMiddleware(FunctionMiddleware):
                         observed.policy_candidate,
                         "true" if observed.decoded_sensitive_target else "false",
                     )
-                    if mode == "shadow" and _prejudge_logger.isEnabledFor(logging.DEBUG):
-                        _prejudge_logger.debug(
-                            "shadow digest=%s command=%s", observed.analysis_digest, _shadow_command_preview(cmd)
-                        )
                 except Exception:
                     prepared_shell = None
-                    _prejudge_logger.exception("%s pre-judge evaluation failed; deferring", mode)
+                    # Exceptions from source processing can embed the full command.
+                    _prejudge_logger.warning("%s pre-judge evaluation failed; deferring", mode)
             else:
                 _prejudge_logger.info("%s route=defer reason=no_command_text policy=%s", mode, self._prejudge.policy_id)
             if mode == "shadow":

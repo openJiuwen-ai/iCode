@@ -531,7 +531,7 @@ def load_policy(path: Path, *, report_shadow_failure: bool = False) -> Policy:
     except Exception as exc:
         message = f"Pre-Judge policy {path}: {exc}"
         if not report_shadow_failure and isinstance(content, dict) and content.get("mode") == "shadow":
-            logger.warning("%s; disabling shadow observation", message, exc_info=True)
+            logger.warning("%s; disabling shadow observation", message)
             return Policy("off", "", ())
         if isinstance(exc, RuntimeError):
             raise RuntimeError(message) from exc
