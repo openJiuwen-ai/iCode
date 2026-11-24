@@ -56,6 +56,7 @@ from chrys.app.tui.copy_messages import COPY_FAILED
 from chrys.app.tui.graphics.detect import ask_terminal
 from chrys.app.tui.i18n import LocaleController, render_str
 from chrys.app.tui.notifications import NotificationService, NotificationSettings
+from chrys.app.tui.session_lookup import SESSION_IN_USE, SESSION_NOT_FOUND, lookup_session
 from chrys.app.tui.support.gc_freeze import (
     GC_FREEZE_ENABLED,
     GC_FREEZE_WATCHDOG_PERIOD_SECONDS,
@@ -128,20 +129,9 @@ _AGENT_STARTUP_FAILED_TITLE = msg(
     "tui.startup.title.agent_failed",
     fallback="Agent startup failed",
 )
-_SESSION_READ_FAILED = msg(
-    "tui.startup.session.read_failed",
-    fallback="Could not read session {session_id}: {error}",
-)
-_SESSION_NOT_FOUND = msg(
-    "tui.startup.session.not_found",
-    fallback="Session {session_id} was not found.",
-)
 _SESSION_RESTORE_FALLBACK = msg(
     "tui.startup.session.restore_fallback",
     fallback="Could not open session {session_id}.",
-)
-_SESSION_IN_USE = msg(
-    "tui.startup.session.in_use", fallback="Session {session_id} is open in another window or process."
 )
 _START_NEW = msg("tui.startup.session.start_new", fallback="Start new session")
 _RETRY = msg("tui.startup.session.retry", fallback="Retry")
@@ -1295,21 +1285,11 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             logger.exception("Engine startup failed")
 
     async def _restore_startup_session(self, screen: MainScreen, selector: str) -> MessageRef | None:
-        from chrys.service.state.store import AmbiguousSessionIdError, StartupSessionInUseError
-
         workspace_start = self._startup_workspace_id is not None
         screen.set_startup_agent_loading(True)
-        try:
-            meta = await self._state_store.resolve_startup_session(selector, require_inactive=True)
-        except StartupSessionInUseError:
-            return _SESSION_IN_USE.bind(session_id=selector)
-        except AmbiguousSessionIdError as exc:
-            return exc.display_message or _SESSION_READ_FAILED.bind(session_id=selector, error=str(exc))
-        except Exception as exc:
-            logger.warning("Failed to read startup session %s", selector, exc_info=True)
-            return _SESSION_READ_FAILED.bind(session_id=selector, error=str(exc))
-        if meta is None:
-            return _SESSION_NOT_FOUND.bind(session_id=selector)
+        meta = await lookup_session(self._state_store, selector, require_inactive=True)
+        if isinstance(meta, MessageRef):
+            return meta
         await self._dismiss_startup_load_dialog_before_restore(screen)
         try:
             outcome = (
@@ -1331,9 +1311,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         if outcome == "restored":
             return None
         if isinstance(outcome, Error) and outcome.code == "session_in_use":
-            return _SESSION_IN_USE.bind(session_id=selector)
+            return SESSION_IN_USE.bind(session_id=selector)
         if isinstance(outcome, Error) and outcome.code == "session_not_found":
-            return _SESSION_NOT_FOUND.bind(session_id=selector)
+            return SESSION_NOT_FOUND.bind(session_id=selector)
         if workspace_start:
             # --workspace never falls back to another folder or workspace: it exits.
             if outcome == "declined":

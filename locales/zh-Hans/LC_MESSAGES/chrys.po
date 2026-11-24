@@ -5912,11 +5912,11 @@ msgstr "撤回最近几轮，或从指定轮次开始撤回"
 msgid "tui.commands.description.runtime"
 msgstr "显示当前模型、工具、Skills 和文件"
 
-#. English: Browse saved sessions
-#. chrys-meta={"fingerprint":"fccecee5ae5c50539a097461a6d2da97d61df4cd9d245a67d2995f16d2e68221","multiline":false,"placeholders":[]}
+#. English: Browse saved sessions or open one by ID
+#. chrys-meta={"fingerprint":"ed49d3b4e6dc7f1a0b7686fe9fd63757a41813e56cb8be696c8c5f27cc2742dc","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.sessions"
-msgstr "浏览已保存的会话"
+msgstr "浏览已保存的会话或按 ID 打开会话"
 
 #. English: Open the Settings panel
 #. chrys-meta={"fingerprint":"e4e0e7446ecf702e80582c5fde105c31c811dbcc6a750c9915e2dc23f16c2f27","multiline":false,"placeholders":[]}
@@ -8752,14 +8752,17 @@ msgstr ""
 "        - 按来源目录分组的 Skills\n"
 "        - 按来源分组的预配置记忆文件"
 
-#. English: Open the session browser to view and resume previous sessions.
-#. From the browser you can:     - Select a session to resume     - Delete old
-#. sessions     - View session metadata (date, turns, etc.)
-#. chrys-meta={"fingerprint":"6bd2a9018c6d5c5aabd993b293e24cfe6292187ade9d8cb8e84698b873baa93f","multiline":true,"placeholders":[]}
+#. English: Enter a 12-character session ID or a full UUID to open a saved
+#. session.  Without an ID, open the session browser.  From the browser you
+#. can:     - Select a session to resume     - Delete old sessions     - View
+#. session metadata (date, turns, etc.)
+#. chrys-meta={"fingerprint":"928d9b7c848a1635b24ea4eedcaefdad10136b1b1e23954ad79f1e3c7776e37e","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.sessions.body"
 msgstr ""
-"打开会话浏览器以查看和恢复先前的会话。\n"
+"输入 12 位会话短 ID 或完整 UUID 可打开已保存的会话。\n"
+"\n"
+"省略 ID 时打开会话列表。\n"
 "\n"
 "在浏览器中可以：\n"
 "    - 选择要恢复的会话\n"
@@ -11290,7 +11293,7 @@ msgstr "分支"
 
 #. English: Resume
 #. chrys-meta={"fingerprint":"f0d2c4252b8ffaf6165b9f369a20bdfc4d5118370ccf7f48d940ff469e56ef74","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/session_handlers.py
+#: src/chrys/app/tui/session_lookup.py
 msgid "tui.session.title.resume"
 msgstr "恢复"
 
@@ -12978,19 +12981,19 @@ msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子
 
 #. English: Session {session_id} is open in another window or process.
 #. chrys-meta={"fingerprint":"daee48a4ab9abc7fe13f522d94575980593b174a8bd046657c75737ba30de091","multiline":false,"placeholders":["session_id"]}
-#: src/chrys/app/tui/app.py
+#: src/chrys/app/tui/session_lookup.py
 msgid "tui.startup.session.in_use"
 msgstr "会话 {session_id} 已在其他窗口或进程中打开。"
 
 #. English: Session {session_id} was not found.
 #. chrys-meta={"fingerprint":"a5c2002c8e98be1f6de66c9e7ceb5fd6595b9dcfc1595822cbd0bc7cdf8036c6","multiline":false,"placeholders":["session_id"]}
-#: src/chrys/app/tui/app.py
+#: src/chrys/app/tui/session_lookup.py
 msgid "tui.startup.session.not_found"
 msgstr "未找到会话 {session_id}。"
 
 #. English: Could not read session {session_id}: {error}
 #. chrys-meta={"fingerprint":"9857e34dde42749b4d20cb76e0f352592519ca3023ca87b0a7ded4f5e1f3b45f","multiline":false,"placeholders":["error","session_id"]}
-#: src/chrys/app/tui/app.py
+#: src/chrys/app/tui/session_lookup.py
 msgid "tui.startup.session.read_failed"
 msgstr "无法读取会话 {session_id}：{error}"
 

@@ -234,7 +234,7 @@ def test_resume_last_session_opens_modal_before_lookup_and_restores_latest() -> 
     restoring: list[bool] = []
     screen = _resume_screen(latest="latest-session", calls=calls, published=published, restoring=restoring)
 
-    asyncio.run(make_session_handler(screen).resume_last_session())
+    asyncio.run(make_session_handler(screen).resume_session())
 
     assert [name for name, _ in calls] == ["lookup_modal", "load_latest", "restore_modal"]
     assert ("restore_modal", "latest-session") in calls
@@ -260,7 +260,7 @@ def test_resume_last_session_modal_is_open_while_lookup_blocks() -> None:
             lookup_release=release,
         )
         handler = make_session_handler(screen)
-        task = asyncio.create_task(handler.resume_last_session())
+        task = asyncio.create_task(handler.resume_session())
         await started.wait()
         assert calls == [("lookup_modal", ""), ("load_latest", None)]
         assert published == []
@@ -279,7 +279,7 @@ def test_resume_last_session_without_sessions_closes_modal_and_notifies() -> Non
     restoring: list[bool] = []
     screen = _resume_screen(latest=None, calls=calls, published=published, restoring=restoring)
 
-    asyncio.run(make_session_handler(screen).resume_last_session())
+    asyncio.run(make_session_handler(screen).resume_session())
 
     assert [name for name, _ in calls] == ["lookup_modal", "load_latest", "cancel", "notify"]
     assert calls[-1][1][1] == "warning"
@@ -296,7 +296,7 @@ def test_resume_last_session_lookup_failure_cleans_up() -> None:
         latest=RuntimeError("index exploded"), calls=calls, published=published, restoring=restoring
     )
 
-    asyncio.run(make_session_handler(screen).resume_last_session())
+    asyncio.run(make_session_handler(screen).resume_session())
 
     assert ("cancel", None) in calls
     assert ("debug", ("SessionRestore", "failed to look up latest session: index exploded")) in calls
@@ -312,7 +312,7 @@ def test_resume_last_session_ignores_running_or_loading_agent() -> None:
     screen = _resume_screen(latest="ignored", calls=calls, published=published)
     screen._state.run.agent_running = True
 
-    asyncio.run(make_session_handler(screen).resume_last_session())
+    asyncio.run(make_session_handler(screen).resume_session())
 
     assert calls == []
     assert published == []

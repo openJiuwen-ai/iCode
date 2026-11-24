@@ -45,7 +45,7 @@
 | `/resume` | — | 恢复最近的聊天会话，工作流会话会被跳过。详见[恢复已有会话](../guides/daily-use/sessions.md#恢复已有会话)。 | — |
 | `/fork` | — | 从当前会话创建一个独立分支。创建后，当前窗口仍停留在原会话，可以选择留在原会话或切换到分支。 | — |
 | `/rename [title]` | — | 设置或清除会话标题。详见[修改会话标题](../guides/daily-use/sessions.md#修改会话标题)。 | `title`：直接应用的自定义标题。省略或只输入空白时打开标题编辑器。 |
-| `/sessions` | — | 打开会话窗口，以浏览、恢复或删除会话。详见[管理与恢复会话](../guides/daily-use/sessions.md)。 | — |
+| `/sessions [session_id]` | — | 浏览已保存的会话，或按 ID 直接打开。详见[管理和恢复会话](../guides/daily-use/sessions.md)。 | 可填写 12 位短 ID 或完整 UUID。省略时打开会话列表。 |
 | `/theme [theme]` | — | 切换界面主题。详见[外观设置](../guides/configuration/settings.md#外观)。 | `theme`：直接切换到指定主题。省略参数时，按空格键或 **Enter** 显示可用主题。 |
 | `/language [locale]` | — | 切换界面显示语言。详见[外观设置](../guides/configuration/settings.md#外观)。 | `locale`：直接切换到指定语言。当前支持 `system`（跟随系统）、`en`（英文）和 `zh-Hans`（简体中文）。省略参数时，按空格键或 **Enter** 显示可用值。 |
 | `/chdir [path]` | `/cd` | 切换当前会话的工作目录。详见[在会话中切换工作目录](../guides/daily-use/workspaces.md#在会话中切换工作目录)。 | `path`：已存在的目标目录，可以使用绝对路径或相对于当前工作目录的路径。省略时打开目录选择器。 |

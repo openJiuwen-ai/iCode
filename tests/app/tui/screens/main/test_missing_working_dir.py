@@ -950,7 +950,7 @@ async def test_resume_closes_its_loading_dialog_before_asking(tmp_path: Path) ->
     store = await _saved_store(tmp_path, "saved", missing)
     probe = await _restore_probe(store, str(replacement))
 
-    await probe.handler.resume_last_session()
+    await probe.handler.resume_session()
 
     assert probe.calls == [
         ("loading_ui", ""),
@@ -968,7 +968,7 @@ async def test_declined_resume_leaves_the_screen_idle(tmp_path: Path) -> None:
     store = await _saved_store(tmp_path, "saved", missing)
     probe = await _restore_probe(store, None)
 
-    await probe.handler.resume_last_session()
+    await probe.handler.resume_session()
 
     assert probe.calls == [("loading_ui", ""), ("cancel_loading_ui", None), ("choose", (str(missing), False, False))]
     assert probe.published == []
@@ -989,7 +989,7 @@ async def test_resume_cancels_its_lookup_dialog_when_the_user_keeps_background_t
     probe.handler._callbacks = dataclasses.replace(
         probe.handler._callbacks, confirm_stopping_background_tasks=keep_background_tasks
     )
-    await probe.handler.resume_last_session()
+    await probe.handler.resume_session()
 
     assert probe.calls == [("loading_ui", ""), ("keep_background_tasks", None), ("cancel_loading_ui", None)]
     assert probe.published == []

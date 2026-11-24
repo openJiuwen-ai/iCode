@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -121,13 +123,17 @@ class WorkflowSessionView:
         self.host.request_refresh()
         return True
 
-    async def restore_session(self, session_id: str, run_id: str = "") -> None:
+    async def restore_session(
+        self, session_id: str, run_id: str = "", *, on_missing: Callable[[], None] | None = None
+    ) -> None:
         if self.host.services.execution_busy() or self.host.awaiting_engine or self.host.services.state_store is None:
             return
         self.host.leave()
-        await self.restore_flow.start(lambda token: self._restore_session(token, session_id, run_id))
+        await self.restore_flow.start(lambda token: self._restore_session(token, session_id, run_id, on_missing))
 
-    async def _restore_session(self, token: FlowToken, session_id: str, run_id: str) -> None:
+    async def _restore_session(
+        self, token: FlowToken, session_id: str, run_id: str, on_missing: Callable[[], None] | None
+    ) -> None:
         store = self.host.services.state_store
         if store is None:
             raise RuntimeError("Restoring a workflow session requires a state store.")
@@ -188,6 +194,15 @@ class WorkflowSessionView:
             if not run_id and state.latest_run_id and historical.started.run_id != state.latest_run_id:
                 self.host.feedback.notify(text.RESTORE_FALLBACK.bind(run_id=historical.started.run_id))
         except (OSError, ValueError, KeyError) as exc:
+            if on_missing is not None and self.restore_flow.current(token):
+                # A missing run snapshot alone does not mean the session was deleted.
+                missing = False
+                with suppress(OSError, ValueError, TypeError, KeyError):
+                    missing = await store.resolve_startup_session(session_id) is None
+                if missing:
+                    if self.restore_flow.current(token):
+                        on_missing()
+                    return
             if self.restore_flow.current(token):
                 self.host.show_error(str(exc))
         finally:
