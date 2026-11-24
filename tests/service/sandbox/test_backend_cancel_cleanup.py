@@ -2,8 +2,9 @@
 
 """What a cancelled sandbox call leaves behind.
 
-A cancel during create, after an id is known, deletes that id. A cancel before
-any id is known deletes nothing. A cancelled exec keeps the writable sandbox.
+A create names its sandbox id before the POST, so a cancel at any point of the
+create deletes that id, also before the server has answered. A cancelled exec
+keeps the writable sandbox.
 
 
 HTTP is mocked; nothing listens and nothing is spawned.
@@ -80,12 +81,13 @@ async def test_cancel_after_create_returns_an_id_deletes_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Once an id is known and not cached, cancel DELETEs it. A second cancel still does."""
+    """A cancel while the new sandbox starts DELETEs it. A second cancel still does."""
+    monkeypatch.setattr(backend, "_new_sandbox_id", lambda: "icode-requested")
     work = tmp_path / "work"
     work.mkdir()
     script = _Script()
+    script.honor_requested_ids = True
     script.create_phase = "created"
-    script.distinct_ids = True
     release = asyncio.Event()
     transport = _HoldingTransport(
         script,
@@ -112,7 +114,7 @@ async def test_cancel_after_create_returns_an_id_deletes_it(
         release.set()
         await _cancel_pending(task)
     assert _create_bodies(script) == [_mount_body(_physical(work), "rw")]
-    assert _deleted(script) == ["/api/v1/sandboxes/sb-1"]
+    assert _deleted(script) == ["/api/v1/sandboxes/icode-requested"]
     assert _exec_ids(script) == []
     assert _no_stop(script)
     assert backend._writable_by_root == {}
@@ -121,11 +123,12 @@ async def test_cancel_after_create_returns_an_id_deletes_it(
     assert backend._retiring == set()
 
 
-async def test_cancel_before_create_returns_an_id_deletes_nothing(
+async def test_cancel_before_create_returns_deletes_the_requested_id(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A cancel before the create response has no id, so the client deletes nothing."""
+    """The server may finish a create the client stopped waiting for, so the named id is deleted."""
+    monkeypatch.setattr(backend, "_new_sandbox_id", lambda: "icode-requested")
     work = tmp_path / "work"
     work.mkdir()
     script = _Script()
@@ -149,7 +152,7 @@ async def test_cancel_before_create_returns_an_id_deletes_nothing(
         release.set()
         await _cancel_pending(task)
     assert _create_bodies(script) == []
-    assert _deleted(script) == []
+    assert _deleted(script) == ["/api/v1/sandboxes/icode-requested"]
     assert _exec_ids(script) == []
     assert _no_stop(script)
     assert backend._writable_by_root == {}

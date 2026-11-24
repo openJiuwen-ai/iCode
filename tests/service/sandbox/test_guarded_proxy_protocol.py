@@ -15,6 +15,7 @@ ending open connections, also from the runtime's stop and restart.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import socket
@@ -61,12 +62,9 @@ class _Origin:
                 conn, _address = self.listener.accept()
             except OSError:
                 return
-            with conn:
+            with conn, contextlib.suppress(OSError):
                 conn.settimeout(_READ_SECONDS)
-                try:
-                    self._serve(conn)
-                except OSError:
-                    pass
+                self._serve(conn)
 
     def close(self) -> None:
         self.release.set()

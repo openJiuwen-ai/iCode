@@ -50,10 +50,16 @@ class CreateDelivery:
     runtime has registered the sandbox. ``create_sandbox`` checks it again
     before publishing READY, so a runtime that finishes after the drop does
     not leave a sandbox the client never received.
+
+    ``registered`` is the ref this call put in the registry, set under the
+    manager lock and cleared when the call rolls it back. A rollback deletes
+    only that ref: a create refused for an id that already exists, or one
+    cancelled before it registered, never deletes another call's sandbox.
     """
 
     def __init__(self) -> None:
         self.abandoned = False
+        self.registered: SandboxRef | None = None
 
 
 def _exec_failed_before_dispatch(result: ExecResult) -> bool:
@@ -645,6 +651,8 @@ class SandboxManager:
             )
             self._sandboxes[sandbox_id] = ref
             self._policies[sandbox_id] = policy
+            if delivery is not None:
+                delivery.registered = ref
             try:
                 self._save_state(ref)
                 self.audit.log(AuditEventType.SANDBOX_CREATED, sandbox_id)
@@ -662,6 +670,8 @@ class SandboxManager:
                 self._policies.pop(sandbox_id, None)
                 self._delete_state(sandbox_id)
                 self._delete_policy(sandbox_id)
+                if delivery is not None:
+                    delivery.registered = None
                 raise
             runtime = self._runtime_for(ref)
 
@@ -860,9 +870,21 @@ class SandboxManager:
                 self._save_state(current)
                 return current
 
-    async def delete_sandbox(self, sandbox_id: str) -> None:
+    async def delete_sandbox(
+        self,
+        sandbox_id: str,
+        *,
+        expected: SandboxRef | None = None,
+    ) -> None:
+        """Stop and remove ``sandbox_id``.
+
+        With ``expected``, only that registered object is removed: an id
+        now held by another ref raises :class:`SandboxNotFoundError`.
+        """
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
+            if expected is not None and ref is not expected:
+                raise SandboxNotFoundError(f"Sandbox '{sandbox_id}' not found")
             runtime = self._runtime_for(ref)
             ref.phase = SandboxPhase.DELETING
             self._save_state(ref)
@@ -875,9 +897,10 @@ class SandboxManager:
         self.audit.log(AuditEventType.SANDBOX_DELETED, sandbox_id)
 
         async with self._lock:
-            self._sandboxes.pop(sandbox_id, None)
-            self._policies.pop(sandbox_id, None)
-            self._delete_state(sandbox_id)
+            if self._sandboxes.get(sandbox_id) is ref:
+                self._sandboxes.pop(sandbox_id, None)
+                self._policies.pop(sandbox_id, None)
+                self._delete_state(sandbox_id)
 
     async def exec_in_sandbox(
         self,

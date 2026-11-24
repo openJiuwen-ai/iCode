@@ -131,12 +131,19 @@ sandbox was forgotten or already replaced and this was the last use, the
 sandbox is deleted, and that delete is shielded the same way. Another exec
 still running in that read-only sandbox keeps it until that exec ends.
 A cancel before this call has started an exec, a ``SandboxError``, and a
-completed exec do not change the cache. A cancel during create, after the
-server has returned a sandbox id and before that id is cached or counted
-in flight, DELETEs the id. The delete is shielded, so a second cancellation
-does not skip it. A writable sandbox that was stored in the cache is not
-deleted. This path does not POST ``/stop``. A cancel before any id is known
-has nothing to delete.
+completed exec do not change the cache.
+
+Create
+------
+Each create names its sandbox: the id is generated here and sent with the
+POST, so it is known before the server answers. A cancel, or any failure
+before the sandbox is ``ready`` (an error response, a sandbox that did not
+start), DELETEs that id before the call ends; the server may have created
+it after the client stopped waiting, and a DELETE of an id it never created
+is a harmless 404. The delete is shielded, so a second cancellation does
+not skip it. A 409 means the id names a sandbox this call did not create,
+so it is not deleted. An id already cached or counted in flight is not
+deleted either. This path does not POST ``/stop``.
 """
 
 from __future__ import annotations
@@ -146,6 +153,7 @@ import functools
 import os
 import posixpath
 import re
+import secrets
 import sys
 import time
 from collections.abc import Sequence
@@ -500,18 +508,21 @@ async def _cached_phase(client: httpx.AsyncClient, sandbox_id: str) -> str:
 
 
 async def _create_ready(client: httpx.AsyncClient, body: dict[str, Any]) -> str:
-    """Create a sandbox and return its id once the phase is ``ready``.
+    """Create a sandbox under a fresh id and return its id once the phase is ``ready``.
 
-    A cancellation after an id is known, and before the caller stores it,
-    DELETEs that id when nothing has cached it or is executing in it. The
-    delete is shielded. A cancel before the create response has no id to
-    delete. This does not POST ``/stop``.
+    Every exit other than that return DELETEs each id this call may own
+    (see "Create" in the module docstring). This does not POST ``/stop``.
     """
-    known: list[str] = []
+    requested = _new_sandbox_id()
+    known = [requested]
     try:
-        created = _json_object(await _post_json(client, "/api/v1/sandboxes", body))
+        response = await _post_json(client, "/api/v1/sandboxes", {**body, "sandbox_id": requested})
+        if response.status_code == 409:
+            known.clear()
+        created = _json_object(response)
         sandbox_id = _require_id(created)
-        known.append(sandbox_id)
+        if sandbox_id not in known:
+            known.append(sandbox_id)
         if created.get("phase") != _READY:
             started = _json_object(await client.post(f"{_sandbox_path(sandbox_id)}/start"))
             started_id = _require_id(started)
@@ -521,10 +532,15 @@ async def _create_ready(client: httpx.AsyncClient, body: dict[str, Any]) -> str:
             if started.get("phase") != _READY:
                 raise _not_ready(started)
         return sandbox_id
-    except asyncio.CancelledError:
+    except BaseException:
         for sandbox_id in known:
             await _delete_unowned(client, sandbox_id)
         raise
+
+
+def _new_sandbox_id() -> str:
+    """A fresh id in the server's custom-id alphabet (``[0-9a-z_-]``, at most 40)."""
+    return f"icode-{secrets.token_hex(12)}"
 
 
 async def _delete_unowned(client: httpx.AsyncClient, sandbox_id: str) -> None:

@@ -22,6 +22,7 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -524,6 +525,92 @@ async def test_cancelled_creates_do_not_leave_ready_sandboxes(
     assert [item.id for item in listed] == ["create-ok"]
     assert listed[0].phase == SandboxPhase.READY
     assert set(runtime.cleaned) == {"cancel-raise", "cancel-race"}
+
+
+def _route_manager(tmp_path: Path, runtime: _CreateRuntime) -> Any:
+    from jiuwenbox.server.policy_engine import PolicyEngine
+    from jiuwenbox.server.sandbox_manager import SandboxManager
+
+    class _Audit:
+        def log(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    return SandboxManager(
+        runtime=runtime,  # type: ignore[arg-type]
+        policy_engine=PolicyEngine(policies_dir=tmp_path / "policies"),
+        audit_logger=_Audit(),  # type: ignore[arg-type]
+        state_dir=tmp_path / "state",
+        policy_path=tmp_path / "missing-policy.yaml",
+        update_policy_path=tmp_path / "missing-updates.yaml",
+    )
+
+
+async def test_dropped_duplicate_create_keeps_the_existing_sandbox(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A create whose client drops before it registers deletes nothing, not the id's current owner."""
+    from jiuwenbox.models.sandbox import SandboxPhase
+    from jiuwenbox.server.routes import sandbox as sandbox_routes
+    from jiuwenbox.server.routes.sandbox import CreateSandboxRequest, create_sandbox
+    from starlette.responses import Response
+
+    from tests.support.waiting import wait_for
+
+    runtime = _CreateRuntime()
+    manager = _route_manager(tmp_path, runtime)
+    monkeypatch.setattr(sandbox_routes, "_mgr", lambda: manager)
+    kept = await create_sandbox(
+        CreateSandboxRequest(sandbox_id="taken"),
+        _DisconnectRequest(None),  # type: ignore[arg-type]
+    )
+    assert kept.phase == SandboxPhase.READY
+
+    gone = asyncio.Event()
+    gone.set()
+    # The held lock keeps the duplicate from registering, or from being
+    # refused, until its client has dropped.
+    await manager._lock.acquire()
+    try:
+        task = asyncio.create_task(
+            create_sandbox(CreateSandboxRequest(sandbox_id="taken"), _DisconnectRequest(gone))  # type: ignore[arg-type]
+        )
+        await wait_for(task.done, description="the dropped duplicate create returned without the manager lock")
+    finally:
+        manager._lock.release()
+    result = await task
+
+    assert isinstance(result, Response)
+    assert result.status_code == 499
+    listed = await manager.list_sandboxes()
+    assert [(item.id, item.phase) for item in listed] == [("taken", SandboxPhase.READY)]
+    assert listed[0] is kept
+    assert runtime.cleaned == []
+
+
+async def test_delete_with_an_expected_ref_spares_another_owner(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+) -> None:
+    from jiuwenbox.models.sandbox import SandboxSpec
+    from jiuwenbox.server.runtime.errors import SandboxNotFoundError
+    from jiuwenbox.server.sandbox_manager import CreateDelivery
+
+    runtime = _CreateRuntime()
+    manager = _route_manager(tmp_path, runtime)
+    delivery = CreateDelivery()
+    ref = await manager.create_sandbox(SandboxSpec(sandbox_id="owned"), delivery=delivery)
+    assert delivery.registered is ref
+
+    with pytest.raises(SandboxNotFoundError):
+        await manager.delete_sandbox("owned", expected=ref.model_copy())
+    assert [item.id for item in await manager.list_sandboxes()] == ["owned"]
+    assert runtime.cleaned == []
+
+    await manager.delete_sandbox("owned", expected=ref)
+    assert await manager.list_sandboxes() == []
+    assert runtime.cleaned == ["owned"]
 
 
 def test_any_bind_naming_the_engine_home_is_reserved_and_a_parent_bind_is_not(

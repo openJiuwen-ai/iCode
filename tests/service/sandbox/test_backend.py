@@ -10,6 +10,7 @@ import builtins
 import contextlib
 import json
 import os
+import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,9 @@ class _Script:
         self.phase_error: str | None = None
         self.phase_error_field = "error_message"
         self.read_timeouts: list[tuple[str, float | None]] = []
+        # A real server creates the id the client names; the default keeps the
+        # scripted ``sb-N`` ids so path assertions stay short.
+        self.honor_requested_ids = False
         self._issued = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -88,7 +92,9 @@ class _Script:
         if request.method == "POST" and path == "/api/v1/sandboxes":
             if self.create_status < 200 or self.create_status >= 300:
                 return httpx.Response(self.create_status, json={"error": "unavailable"})
-            sandbox_id = self._allocate_id()
+            requested = body.get("sandbox_id") if isinstance(body, dict) else None
+            honored = requested if self.honor_requested_ids and isinstance(requested, str) else None
+            sandbox_id = honored or self._allocate_id()
             return httpx.Response(self.create_status, json=self._phase_body(sandbox_id, self.create_phase))
         route = _sandbox_route(path)
         if route is None:
@@ -338,7 +344,33 @@ async def _run_workspace(
 
 
 def _create_bodies(script: _Script) -> list[object]:
+    """Each create body without the client-generated ``sandbox_id`` (checked by ``_requested_ids``)."""
+    bodies: list[object] = []
+    for body in _raw_create_bodies(script):
+        if not isinstance(body, dict):
+            bodies.append(body)
+            continue
+        bodies.append({key: value for key, value in body.items() if key != "sandbox_id"})
+    return bodies
+
+
+def _raw_create_bodies(script: _Script) -> list[object]:
     return [event[2] for event in script.events if event[0] == "POST" and event[1] == "/api/v1/sandboxes"]
+
+
+def _requested_ids(script: _Script) -> list[str]:
+    """The id each create named; every one is fresh and in the server's custom-id alphabet."""
+    ids: list[str] = []
+    for body in _raw_create_bodies(script):
+        if not isinstance(body, dict) or not isinstance(body.get("sandbox_id"), str):
+            raise AssertionError(f"create body names no sandbox id: {body!r}")
+        sandbox_id = body["sandbox_id"]
+        if re.fullmatch(r"[0-9a-z_-]{4,40}", sandbox_id) is None:
+            raise AssertionError(f"create named an id the server refuses: {sandbox_id!r}")
+        ids.append(sandbox_id)
+    if len(set(ids)) != len(ids):
+        raise AssertionError(f"creates reused an id: {ids!r}")
+    return ids
 
 
 def _assert_no_secret(text: str) -> None:
@@ -565,7 +597,8 @@ async def test_create_then_exec_and_second_call_reuses_the_sandbox_id(monkeypatc
     assert second.exit_code == 0
     creates = [event for event in script.events if event[0] == "POST" and event[1] == "/api/v1/sandboxes"]
     assert len(creates) == 1
-    assert creates[0][2] == {
+    assert len(_requested_ids(script)) == 1
+    assert _create_bodies(script)[0] == {
         "policy_mode": "append",
         "policy": {
             "filesystem_policy": {
@@ -595,12 +628,36 @@ async def test_create_starts_when_the_new_sandbox_is_not_ready(monkeypatch: pyte
 
 
 async def test_sandbox_that_stays_unready_is_sandbox_error(monkeypatch: pytest.MonkeyPatch):
+    """The sandbox that did not start is deleted, not left behind in its error phase."""
     script = _Script()
+    script.honor_requested_ids = True
     script.create_phase = "provisioning"
     script.start_phase = "error"
     with pytest.raises(SandboxError, match="did not become ready"):
         await _run(script, monkeypatch)
     assert not any(path.endswith("/exec") for _method, path in _paths(script))
+    assert _deleted(script) == [f"/api/v1/sandboxes/{_requested_ids(script)[0]}"]
+    assert _SPAWN_CALLS == []
+
+
+async def test_failed_create_response_deletes_the_requested_id(monkeypatch: pytest.MonkeyPatch):
+    """A server error may come after the server created the sandbox, so the named id is deleted."""
+    script = _Script()
+    script.create_status = 500
+    with pytest.raises(SandboxError, match="HTTP 500"):
+        await _run(script, monkeypatch)
+    assert _deleted(script) == [f"/api/v1/sandboxes/{_requested_ids(script)[0]}"]
+    assert _SPAWN_CALLS == []
+
+
+async def test_conflicting_create_does_not_delete_the_existing_sandbox(monkeypatch: pytest.MonkeyPatch):
+    """A 409 means another sandbox holds the id, and this call did not create it."""
+    script = _Script()
+    script.create_status = 409
+    with pytest.raises(SandboxError, match="HTTP 409"):
+        await _run(script, monkeypatch)
+    assert len(_requested_ids(script)) == 1
+    assert _deleted(script) == []
     assert _SPAWN_CALLS == []
 
 
@@ -1180,6 +1237,8 @@ async def test_cancel_during_exec_still_cancels_when_stop_fails(monkeypatch: pyt
 
 
 async def test_cancel_during_create_does_not_stop_the_sandbox(monkeypatch: pytest.MonkeyPatch):
+    """It deletes the id it named instead, since the server may still create it."""
+    monkeypatch.setattr(backend, "_new_sandbox_id", lambda: "icode-requested")
     script = _Script()
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -1199,7 +1258,7 @@ async def test_cancel_during_create_does_not_stop_the_sandbox(monkeypatch: pytes
         await _cancel_pending(task)
     assert not any(path.endswith("/stop") for _method, path in _paths(script))
     assert not any(path.endswith("/exec") for _method, path in _paths(script))
-    assert _deleted(script) == []
+    assert _deleted(script) == ["/api/v1/sandboxes/icode-requested"]
     assert backend._sandbox_id is None
     assert _SPAWN_CALLS == []
 

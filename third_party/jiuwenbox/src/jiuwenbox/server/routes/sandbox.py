@@ -181,22 +181,18 @@ class ListFilesQuery(BaseModel):
     include_dirs: bool = True
 
 
-async def _delete_registered_sandbox(sandbox_id: str) -> None:
-    """Stop and drop a sandbox the client will not keep.
+async def _delete_registered_sandbox(delivery: CreateDelivery) -> None:
+    """Stop and drop the sandbox this create registered, which the client will not keep.
 
-    A create that has not registered an id yet is a no-op. A create that
+    A create that registered nothing (refused, or cancelled first) is a
+    no-op, so another call's sandbox with the same id stays. A create that
     reached READY in the race with cancellation is still removed.
     """
-    manager = _mgr()
-    try:
-        present = any(item.id == sandbox_id for item in await manager.list_sandboxes())
-    except Exception:
-        logger.warning("failed to list sandboxes while dropping %s", sandbox_id, exc_info=True)
-        present = True
-    if not present:
+    ref = delivery.registered
+    if ref is None:
         return
     try:
-        await manager.delete_sandbox(sandbox_id)
+        await _mgr().delete_sandbox(ref.id, expected=ref)
     except SandboxNotFoundError:
         return
 
@@ -278,7 +274,7 @@ async def create_sandbox(request: CreateSandboxRequest, http_request: Request):
         elif not create_task.cancelled():
             create_task.exception()
         if not keep:
-            await _delete_registered_sandbox(sandbox_id)
+            await _delete_registered_sandbox(delivery)
         if rearm_cancel:
             raise asyncio.CancelledError
 

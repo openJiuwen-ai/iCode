@@ -5386,7 +5386,7 @@
         ["wrapper", "await _create_ready(client, _create_body(cwd, _READ_WRITE))", "unresolved", "chrys.service.sandbox.backend._create_ready"]
       ],
       "_create_ready": [
-        ["wrapper", "await _post_json(client, '/api/v1/sandboxes', body)", "unresolved", "chrys.service.sandbox.backend._post_json"],
+        ["wrapper", "await _post_json(client, '/api/v1/sandboxes', {**body, 'sandbox_id': requested})", "unresolved", "chrys.service.sandbox.backend._post_json"],
         ["awaitable", "await client.post(f'{_sandbox_path(sandbox_id)}/start')", "unresolved"],
         ["wrapper", "await _delete_unowned(client, sandbox_id)", "unresolved", "chrys.service.sandbox.backend._delete_unowned"]
       ],
