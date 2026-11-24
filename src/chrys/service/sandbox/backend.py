@@ -63,7 +63,7 @@ that exists inside the mount and is not a symlink: ``.ssh``, ``.bashrc``,
 ``.npmrc``, ``.wgetrc``, ``.curlrc``, ``.azure``, ``.config/gh``,
 ``.config/git``, ``.config/gcloud``, ``.config/glab``,
 ``.config/configstore``, ``.local/share/keyrings``, ``.aws``, ``.kube``,
-``.docker``, ``.netrc``, ``.chrys``, and the sandbox engine home directory.
+``.docker``, ``.netrc``, and ``.chrys``.
 ``host_path`` and ``sandbox_path`` are that path under the mount, not another
 spelling of its real path. A symlink is not followed. A path whose real
 location falls outside the mount is not bound; the comparison is
@@ -71,15 +71,24 @@ location falls outside the mount is not bound; the comparison is
 ``.config`` as a whole stays writable, and so does a project ``.git/hooks``.
 The legacy single-cwd writable create uses the same covers.
 
-The account control directories are also covered when an ancestor is a
-writable mount. The iCode directory is ``Path.home() / ".chrys"``. The
-sandbox engine home is the password-database home
-(``pwd.getpwuid(os.geteuid()).pw_dir``, or ``Path.home()`` when that is
-unavailable) joined with the engine home directory name. Each existing
-directory whose realpath is inside the mount, and which is not reached
-through a symlink that leaves the mount, is appended as a read-only bind of
-that path. A missing directory is skipped. This covers ``/home/user/.chrys``
-when the writable mount is ``/home``.
+The iCode config directory (``get_platform().config_dir``) is also covered
+when an ancestor is a writable mount. When it exists, its realpath is inside
+the mount, and it is not reached through a symlink that leaves the mount, it
+is appended as a read-only bind of that path. This covers
+``/home/user/.chrys`` when the writable mount is ``/home``.
+
+Hidden directories
+------------------
+Every create, writable or read-only, also appends
+``filesystem_policy.hidden_host_paths``: the real paths of the iCode config
+directory and the session store. Wherever a bind shows one of them, the
+server mounts an empty read-only tmpfs over it, so a mount of the account
+home or one of its parents cannot read settings, keys or transcripts. The
+server hides its own home the same way, so this client adds no cover for
+it. A directory stays visible only below a mount that starts strictly
+inside it. A command cwd that the server would hide raises
+``SandboxError`` before a sandbox is created or reused. A server that does
+not know the field ignores it; the read-only cover above still applies.
 
 When ``workspace_root`` is omitted, the first command cwd remains the
 writable root of a single legacy slot. That slot is separate from the
@@ -165,6 +174,9 @@ _CACHE_REPLACE = "replace"
 _LOCK_WAIT_EXPIRED = "Sandbox command timed out waiting for the sandbox."
 _OUTSIDE_WORKDIR = "Sandbox command working directory is outside the workspace and was not mounted."
 _UNENCODABLE_PATH = "Sandbox path could not be encoded for the sandbox request."
+_HIDDEN_WORKDIR = (
+    "Sandbox command working directory is inside the iCode config or session directory, which the sandbox hides."
+)
 # Host trees that must not be bind-mounted merely because the process cwd
 # is there. The account home is added at the call. Comparison is realpath
 # components, so a symlink into one of these trees is protected too.
@@ -380,12 +392,14 @@ async def _ready_legacy_sandbox(client: httpx.AsyncClient, cwd: str) -> str:
     tree raises. Any other later cwd reuses the sandbox created for the
     first cwd.
     """
-    if _legacy_inside(cwd):
-        return await _reuse_legacy_writable(client)
-    if _sandbox_id is not None and _writable_root is not None:
-        _reject_unmounted_protected(_physical_dir(cwd))
-        return await _reuse_legacy_writable(client)
-    return await _create_legacy_writable(client, cwd)
+    physical_cwd = _physical_dir(cwd)
+    if _sandbox_id is None or _writable_root is None:
+        _reject_hidden_cwd(physical_cwd, (physical_cwd,))
+        return await _create_legacy_writable(client, cwd)
+    if not _legacy_inside(cwd):
+        _reject_unmounted_protected(physical_cwd)
+    _reject_hidden_cwd(physical_cwd, (_physical_dir(_writable_root),))
+    return await _reuse_legacy_writable(client)
 
 
 def _legacy_inside(cwd: str) -> bool:
@@ -440,6 +454,7 @@ async def _ready_workspace_sandbox(
     physical_cwd = _physical_dir(cwd)
     if not _cwd_uses_writable(physical_cwd, mounts):
         _reject_unmounted_protected(physical_cwd)
+    _reject_hidden_cwd(physical_cwd, mounts)
     return await _ready_keyed_writable(client, mounts), physical_cwd
 
 
@@ -823,7 +838,8 @@ def _bind_body(mounts: Sequence[str], mode: str) -> dict[str, Any]:
 
     Writable mounts stay read-write. Account paths that exist inside them are
     appended afterwards as read-only binds of that same path. Read-only mounts
-    are left as the caller passed them.
+    are left as the caller passed them. Either mode names the directories the
+    server must hide wherever a bind would show them.
     """
     binds: list[dict[str, str]] = [{"host_path": path, "sandbox_path": path, "mode": mode} for path in mounts]
     if mode == _READ_WRITE:
@@ -833,35 +849,48 @@ def _bind_body(mounts: Sequence[str], mode: str) -> dict[str, Any]:
         "policy": {
             "filesystem_policy": {
                 "bind_mounts": binds,
+                "hidden_host_paths": list(_hidden_host_paths()),
             }
         },
     }
+
+
+def _hidden_host_paths() -> tuple[str, ...]:
+    """Real paths of the iCode config directory and the session store.
+
+    The server mounts an empty read-only tmpfs wherever a bind shows one of
+    them, so a mount of the account home or one of its parents cannot read
+    settings, keys or transcripts. The bundled server's own home lives in the
+    config directory. A server that does not know the field ignores it; the
+    read-only cover of the config directory still keeps it unwritable there.
+    """
+    from chrys.foundation.config.settings import resolve_sessions_dir
+
+    paths: list[str] = []
+    for path in (_icode_config_dir(), resolve_sessions_dir(create=False)):
+        physical = os.path.realpath(path)
+        if not any(_same_or_inside_physical(kept, physical) for kept in paths):
+            paths.append(physical)
+    return tuple(paths)
 
 
 def _sensitive_readonly_binds(mounts: Sequence[str]) -> list[dict[str, str]]:
     """Read-only covers for account paths that exist inside ``mounts``.
 
     Relative names are covered at the mount root. The real iCode config
-    directory and the sandbox engine home are covered as well when an
-    ancestor of those directories is the mount, which is what protects
-    ``~/.chrys`` when the writable mount is the parent of the account home.
+    directory is covered as well when an ancestor of it is the mount, which
+    keeps ``~/.chrys`` unwritable when the writable mount is the parent of the
+    account home, even on a server that cannot hide it.
     """
     covers: list[dict[str, str]] = []
     seen: set[str] = set()
     for mount in mounts:
         physical_mount = os.path.realpath(mount)
-        for parts in _sensitive_relative_parts():
+        for parts in _SENSITIVE_RELATIVE_PARTS:
             _append_cover(covers, seen, _sensitive_cover_path(mount, physical_mount, parts))
         for absolute in _account_control_dirs():
             _append_cover(covers, seen, _account_control_cover(mount, physical_mount, absolute))
     return covers
-
-
-def _sensitive_relative_parts() -> tuple[tuple[str, ...], ...]:
-    """Account paths, including the sandbox engine home directory name."""
-    from chrys.service.sandbox.supervisor import sandbox_engine_home_dirname
-
-    return (*_SENSITIVE_RELATIVE_PARTS, (sandbox_engine_home_dirname(),))
 
 
 def _append_cover(covers: list[dict[str, str]], seen: set[str], candidate: str | None) -> None:
@@ -871,21 +900,16 @@ def _append_cover(covers: list[dict[str, str]], seen: set[str], candidate: str |
     covers.append({"host_path": candidate, "sandbox_path": candidate, "mode": _READ_ONLY})
 
 
-def _account_control_dirs() -> tuple[str, str]:
-    """iCode config directory and the sandbox engine home directory."""
-    return (_icode_config_dir(), _sandbox_engine_home_dir())
+def _account_control_dirs() -> tuple[str, ...]:
+    """The iCode config directory."""
+    return (_icode_config_dir(),)
 
 
 def _icode_config_dir() -> str:
-    """Linux iCode config directory: ``Path.home() / ".chrys"``."""
-    return str(Path.home() / ".chrys")
+    """iCode config directory, by its real path."""
+    from chrys.foundation.platform import get_platform
 
-
-def _sandbox_engine_home_dir() -> str:
-    """Sandbox engine home under the password-database home."""
-    from chrys.service.sandbox.supervisor import sandbox_engine_home_dirname
-
-    return os.path.join(_password_database_home(), sandbox_engine_home_dirname())
+    return str(get_platform().config_dir)
 
 
 def _password_database_home() -> str:
@@ -1011,6 +1035,25 @@ def _physical_dir(path: str) -> str:
     ``os.path.realpath`` before the path is a mount or a cache key.
     """
     return os.path.realpath(path)
+
+
+def _reject_hidden_cwd(physical_cwd: str, physical_mounts: Sequence[str]) -> None:
+    """Raise when the server would hide ``physical_cwd`` behind an empty tmpfs.
+
+    A hidden directory is covered wherever a bind of it or of an ancestor
+    shows it. It stays visible only below a mount that starts strictly inside
+    it, so a cwd anywhere else under it would not exist in the sandbox.
+    """
+    for hidden in _hidden_host_paths():
+        if not _same_or_inside_physical(hidden, physical_cwd):
+            continue
+        if not any(
+            mount != hidden
+            and _same_or_inside_physical(hidden, mount)
+            and _same_or_inside_physical(mount, physical_cwd)
+            for mount in physical_mounts
+        ):
+            raise SandboxError(_HIDDEN_WORKDIR)
 
 
 def _reject_unmounted_protected(physical_cwd: str) -> None:

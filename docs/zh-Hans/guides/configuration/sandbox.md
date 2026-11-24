@@ -59,6 +59,8 @@ iCode 不会以 root 启动这个沙箱。如果以 root 启动 iCode，沙箱�
 
 可写范围是本次会话的工作区，也就是启动 iCode 时所在的目录。在主目录中启动 iCode 时，主目录里其余的文件仍然可写。下面这些路径如果是工作区里的真实文件或目录，会保持只读：`.ssh`、`.bashrc`、`.bash_profile`、`.profile`、`.zshrc`、`.zprofile`、`.zshenv`、`.zlogin`、`.gitconfig`、`.git-credentials`、`.gnupg`、`.pypirc`、`.npmrc`、`.wgetrc`、`.curlrc`、`.azure`、`.config/gh`、`.config/git`、`.config/gcloud`、`.config/glab`、`.config/configstore`、`.local/share/keyrings`、`.aws`、`.kube`、`.docker`、`.netrc`。同名的符号链接不会被盖住。沙箱限制的是命令能写入的位置。
 
+沙箱中的命令看不到 iCode 自己的设置文件夹（`~/.chrys`），也看不到保存会话的文件夹。如果工作区包含它们（例如你在主目录中启动了 iCode），它们在沙箱里是空的只读目录。Shell 命令所在的目录如果位于其中，命令会被拒绝并报错。在 `~/.chrys` 内部的某个文件夹中启动 iCode 仍然可以正常使用，那个文件夹照常可见。
+
 你为会话添加的其他工作目录也同样可写。添加或移除目录会在下一条 Shell 命令生效：移除的目录在那里不再可写。如果命令所在的目录是经由符号链接到达的，命令会在链接指向的真实目录里运行。
 
 沙箱限制的是命令的进程，不是工作区的还原点。

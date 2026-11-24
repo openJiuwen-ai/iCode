@@ -106,7 +106,7 @@ def _bind_mounts(script: _Script) -> list[object]:
     assert isinstance(policy, dict)
     filesystem = policy["filesystem_policy"]
     assert isinstance(filesystem, dict)
-    assert set(filesystem) == {"bind_mounts"}
+    assert set(filesystem) == {"bind_mounts", "hidden_host_paths"}
     mounts = filesystem["bind_mounts"]
     assert isinstance(mounts, list)
     return mounts
@@ -351,8 +351,11 @@ def _recorded_binds(argv: list[str]) -> list[tuple[str, str, str]]:
     return recorded
 
 
-async def test_chrys_and_jiuwenbox_directories_are_covered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``.chrys`` and ``.jiuwenbox`` directly inside a writable mount are read-only."""
+async def test_chrys_directory_is_covered_and_the_engine_home_is_left_to_the_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``.chrys`` is read-only. ``.jiuwenbox`` gets no cover: the server hides its own home and refuses one."""
     work = tmp_path / "work"
     (work / ".chrys").mkdir(parents=True)
     (work / ".jiuwenbox").mkdir()
@@ -362,7 +365,6 @@ async def test_chrys_and_jiuwenbox_directories_are_covered(tmp_path: Path, monke
     assert _bind_mounts(script) == [
         _bind(physical, "rw"),
         _bind(os.path.join(physical, ".chrys"), "ro"),
-        _bind(os.path.join(physical, ".jiuwenbox"), "ro"),
     ]
 
 
@@ -374,17 +376,66 @@ async def test_account_control_dirs_under_an_ancestor_mount_are_covered(
     home = tmp_path / "home"
     user = home / "user"
     (user / ".chrys").mkdir(parents=True)
-    (user / ".jiuwenbox").mkdir()
     monkeypatch.setattr(backend, "_icode_config_dir", lambda: str(user / ".chrys"))
-    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(user / ".jiuwenbox"))
     physical = _physical(home)
     script = _Script()
     await _run(script, monkeypatch, cwd=str(home), workspace_root=str(home))
     assert _bind_mounts(script) == [
         _bind(physical, "rw"),
         _bind(os.path.join(physical, "user", ".chrys"), "ro"),
-        _bind(os.path.join(physical, "user", ".jiuwenbox"), "ro"),
     ]
+
+
+def test_icode_config_dir_is_the_platform_config_dir() -> None:
+    """Not ``Path.home() / ".chrys"``: the config directory can live elsewhere."""
+    from chrys.foundation.platform import get_platform
+
+    assert backend._icode_config_dir() == str(get_platform().config_dir)
+    assert backend._icode_config_dir() != str(Path.home() / ".chrys")
+
+
+def _hidden_paths(script: _Script) -> object:
+    bodies = [body for method, path, body in script.events if method == "POST" and path == "/api/v1/sandboxes"]
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert isinstance(body, dict)
+    return body["policy"]["filesystem_policy"]["hidden_host_paths"]
+
+
+async def test_create_names_the_config_dir_and_session_store_as_hidden(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both real paths are sent, whatever the mounts, for the server to cover with a tmpfs."""
+    from chrys.foundation.config.settings import resolve_sessions_dir
+    from chrys.foundation.platform import get_platform
+
+    work = tmp_path / "work"
+    work.mkdir()
+    script = _Script()
+    await _run(script, monkeypatch, cwd=str(work), workspace_root=str(work))
+    config_dir = os.path.realpath(get_platform().config_dir)
+    sessions = os.path.realpath(resolve_sessions_dir(create=False))
+    assert not sessions.startswith(config_dir + os.sep)
+    assert _hidden_paths(script) == [config_dir, sessions]
+
+
+async def test_a_session_store_inside_the_config_dir_is_not_named_twice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_dir = tmp_path / "config"
+    (config_dir / "sessions").mkdir(parents=True)
+    monkeypatch.setattr(backend, "_icode_config_dir", lambda: str(config_dir))
+    monkeypatch.setattr(
+        "chrys.foundation.config.settings.resolve_sessions_dir",
+        lambda *, create: config_dir / "sessions",
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    script = _Script()
+    await _run(script, monkeypatch, cwd=str(work), workspace_root=str(work))
+    assert _hidden_paths(script) == [os.path.realpath(config_dir)]
 
 
 async def test_missing_account_control_dir_is_not_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -392,7 +443,6 @@ async def test_missing_account_control_dir_is_not_bound(tmp_path: Path, monkeypa
     work = tmp_path / "work"
     work.mkdir()
     monkeypatch.setattr(backend, "_icode_config_dir", lambda: str(tmp_path / "missing-chrys"))
-    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(tmp_path / "missing-jiuwenbox"))
     script = _Script()
     await _run(script, monkeypatch, cwd=str(work), workspace_root=str(work))
     assert _bind_mounts(script) == [_bind(_physical(work), "rw")]
@@ -408,7 +458,6 @@ async def test_account_control_dir_outside_the_mount_is_not_bound(
     sibling = tmp_path / "sibling"
     (sibling / ".chrys").mkdir(parents=True)
     monkeypatch.setattr(backend, "_icode_config_dir", lambda: str(sibling / ".chrys"))
-    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(tmp_path / "missing-jiuwenbox"))
     script = _Script()
     await _run(script, monkeypatch, cwd=str(work), workspace_root=str(work))
     assert _bind_mounts(script) == [_bind(_physical(work), "rw")]
@@ -426,7 +475,6 @@ async def test_account_control_symlink_that_leaves_the_mount_is_not_bound(
     link = home / "user"
     symlink_or_skip(link, outside, target_is_directory=True)
     monkeypatch.setattr(backend, "_icode_config_dir", lambda: str(link / ".chrys"))
-    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(tmp_path / "missing-jiuwenbox"))
     script = _Script()
     await _run(script, monkeypatch, cwd=str(home), workspace_root=str(home))
     assert _bind_mounts(script) == [_bind(_physical(home), "rw")]
@@ -439,16 +487,9 @@ async def test_account_control_dir_is_not_bound_twice(tmp_path: Path, monkeypatc
     physical = _physical(work)
     covered = os.path.join(physical, ".chrys")
     monkeypatch.setattr(backend, "_icode_config_dir", lambda: covered)
-    monkeypatch.setattr(backend, "_sandbox_engine_home_dir", lambda: str(tmp_path / "missing-jiuwenbox"))
     script = _Script()
     await _run(script, monkeypatch, cwd=str(work), workspace_root=str(work))
     assert _bind_mounts(script) == [_bind(physical, "rw"), _bind(covered, "ro")]
-
-
-def test_sandbox_engine_home_dir_uses_the_password_database_home(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The sandbox engine home lives under the password-database home, not only ``Path.home()``."""
-    monkeypatch.setattr(backend, "_password_database_home", lambda: "/srv/account")
-    assert backend._sandbox_engine_home_dir() == os.path.join("/srv/account", ".jiuwenbox")
 
 
 def test_password_database_home_prefers_pw_dir(monkeypatch: pytest.MonkeyPatch) -> None:

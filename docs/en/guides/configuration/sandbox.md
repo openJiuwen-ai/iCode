@@ -59,6 +59,8 @@ The workspace is mounted writable inside the sandbox, so the command can read an
 
 The writable area is the workspace of this session: the directory where iCode was started. Starting iCode in your home directory makes the rest of that directory writable. These paths stay read-only when they are real files or directories inside that writable area: `.ssh`, `.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, `.zprofile`, `.zshenv`, `.zlogin`, `.gitconfig`, `.git-credentials`, `.gnupg`, `.pypirc`, `.npmrc`, `.wgetrc`, `.curlrc`, `.azure`, `.config/gh`, `.config/git`, `.config/gcloud`, `.config/glab`, `.config/configstore`, `.local/share/keyrings`, `.aws`, `.kube`, `.docker`, and `.netrc`. A symbolic link with one of those names is left as it is. The sandbox's limit is where the command can write.
 
+Commands in the sandbox cannot see iCode's own settings folder (`~/.chrys`) or the folder where your sessions are saved. When the workspace contains them, for example because you started iCode in your home directory, they look empty and read-only inside the sandbox. A Shell command whose directory is inside one of them is refused with an error. Starting iCode in a folder inside `~/.chrys` still works, and that folder is visible as usual.
+
 Other working directories you add to the session are writable in the same way. Adding or removing one takes effect at the next Shell command: a directory you removed is no longer writable there. When a command's directory is reached through a symbolic link, the command runs in the real directory the link points to.
 
 The sandbox limits the command's process. It is not a restore point for the workspace.

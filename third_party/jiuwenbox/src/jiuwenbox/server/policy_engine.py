@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from jiuwenbox.logging_config import configure_logging
-from jiuwenbox.models.policy import BindMount, NetworkRulePolicy, SecurityPolicy
+from jiuwenbox.models.policy import NetworkRulePolicy, SecurityPolicy
 from jiuwenbox.server.conch_policy import ConchRunAsError, resolve_conch_run_as
 from jiuwenbox.server.runtime.errors import PolicyValidationError
 from jiuwenbox.server.workspace import JIUWENBOX_HOME, SANDBOX_WORKSPACE
@@ -81,43 +81,6 @@ class PolicyEngine:
             if normalized == reserved_path or normalized.is_relative_to(reserved_path):
                 return True
         return False
-
-    @staticmethod
-    def _strict_ancestor(ancestor: str, path: str) -> bool:
-        """True when ``ancestor`` is a proper directory prefix of ``path``."""
-        parent = PurePosixPath(ancestor)
-        child = PurePosixPath(path)
-        return (
-            parent.is_absolute()
-            and child.is_absolute()
-            and child != parent
-            and child.is_relative_to(parent)
-        )
-
-    def _is_readonly_reserved_cover(self, mount: BindMount, binds: list[BindMount]) -> bool:
-        """A read-only bind of reserved storage that only tightens a parent mount.
-
-        Starting in the account home mounts that home read-write and then
-        covers ``~/.jiuwenbox`` read-only. That cover is the same path on
-        both sides and sits strictly inside another read-write bind in this
-        policy. A direct mount of the reserved directory, a read-write bind,
-        or a read-only bind that would expose the directory on its own is
-        still rejected.
-        """
-        if mount.mode != "ro" or PurePosixPath(mount.host_path) != PurePosixPath(
-            mount.sandbox_path
-        ):
-            return False
-        path = mount.host_path
-        if not self._is_reserved_workspace_path(path, str(SANDBOX_WORKSPACE)):
-            return False
-        return any(
-            other is not mount
-            and other.mode == "rw"
-            and self._strict_ancestor(other.host_path, path)
-            and self._strict_ancestor(other.sandbox_path, path)
-            for other in binds
-        )
 
     @staticmethod
     def _reserved_workspace_error(path: str) -> PolicyValidationError:
@@ -202,15 +165,14 @@ class PolicyEngine:
                 raise PolicyValidationError(
                     "Filesystem bind mount paths must be absolute paths"
                 )
+            # A parent bind that shows the server home is covered by the
+            # runtime's tmpfs; a bind that names it is never needed.
             if (
                 self._is_reserved_workspace_path(mount.host_path, workspace_root)
                 or self._is_reserved_workspace_path(
                     mount.sandbox_path,
                     workspace_root,
                 )
-            ) and not self._is_readonly_reserved_cover(
-                mount,
-                list(policy.filesystem_policy.bind_mounts),
             ):
                 reserved_path = (
                     mount.host_path
@@ -223,6 +185,17 @@ class PolicyEngine:
             if mount.sandbox_path in file_paths:
                 raise PolicyValidationError(
                     f"Filesystem file path '{mount.sandbox_path}' conflicts with a bind mount"
+                )
+
+        for path in policy.filesystem_policy.hidden_host_paths:
+            if not self._is_absolute_sandbox_path(path):
+                raise PolicyValidationError(
+                    "Filesystem hidden host paths must be absolute paths"
+                )
+            # ``//`` is its own root to PurePosixPath, so compare the parts.
+            if len(PurePosixPath(path).parts) <= 1:
+                raise PolicyValidationError(
+                    "Filesystem hidden host paths cannot include '/'"
                 )
 
         for device in policy.filesystem_policy.device:

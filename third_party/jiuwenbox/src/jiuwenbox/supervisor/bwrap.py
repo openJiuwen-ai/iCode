@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import posixpath
 import stat as stat_module
 from dataclasses import dataclass, field
@@ -65,6 +66,43 @@ def _exact_destination(path: str) -> str:
 def _append_unique(paths: list[str], path: str) -> None:
     if path not in paths:
         paths.append(path)
+
+
+def _same_or_inside(root: str, path: str) -> bool:
+    """Whether normalized absolute ``path`` is ``root`` or below it, by component."""
+    return root == "/" or path == root or path.startswith(root + "/")
+
+
+def _mask_destinations(binds: list[tuple[str, str]], hidden_dirs: list[str]) -> list[str]:
+    """Sandbox locations at which ``binds`` show one of ``hidden_dirs``.
+
+    ``binds`` are in emission order and ``hidden_dirs`` are real host paths.
+    A bind whose real source is a hidden directory or one of its ancestors
+    shows it at the destination plus the remaining components. A later bind
+    whose destination holds that location decides what is there, so the
+    earlier bind's location is dropped. A location inside another one is
+    dropped too: the outer tmpfs already hides it, and bwrap could not create
+    the inner mount point on a read-only tmpfs.
+    """
+    found: list[str] = []
+    for index, (src, dst) in enumerate(binds):
+        real_src = os.path.realpath(src)
+        for hidden in hidden_dirs:
+            if not _same_or_inside(real_src, hidden):
+                continue
+            relative = posixpath.relpath(hidden, real_src)
+            target = posixpath.normpath(posixpath.join(dst, relative))
+            if any(
+                _same_or_inside(_exact_destination(later), target)
+                for _later_src, later in binds[index + 1 :]
+            ):
+                continue
+            _append_unique(found, target)
+    kept: list[str] = []
+    for target in sorted(found, key=_path_depth):
+        if not any(_same_or_inside(outer, target) for outer in kept):
+            kept.append(target)
+    return kept
 
 
 def _bind_parent_dirs(binds: list[tuple[str, str]], existing_dirs: set[str]) -> list[str]:
@@ -130,6 +168,9 @@ class BwrapConfig:
     dir_mounts: list[tuple[str, str | None]] = field(default_factory=list)
     tmpfs_mounts: list[str] = field(default_factory=list)
     remount_ro: list[str] = field(default_factory=list)
+    # Real host directories. Each place a path bind shows one gets an empty
+    # read-only tmpfs, mounted after everything else.
+    hidden_host_dirs: list[str] = field(default_factory=list)
     dev_path: str = "/dev"
     proc_path: str = "/proc"
 
@@ -353,7 +394,7 @@ class BwrapConfig:
         suppresses the read-only bind and ``--remount-ro`` of that same
         path; a deeper read-only child still applies. Root binds stay
         before ``--proc`` and ``--dev``. Device binds stay after the path
-        binds.
+        binds. The tmpfs covers of ``hidden_host_dirs`` follow ``extra_args``.
         """
         args: list[str] = [BWRAP_BINARY]
         bwrap_managed_mounts: set[str] = {
@@ -527,6 +568,16 @@ class BwrapConfig:
             args.extend(["--chdir", self.workdir])
 
         args.extend(self.extra_args)
+
+        # Last of the mounts, after the private runtime tmpfs and its rebinds
+        # in ``extra_args``, so no later mount shows a hidden directory again.
+        emitted_binds = [
+            *root_ro_binds,
+            *root_rw_binds,
+            *[(src, dst) for src, dst, _flag in ordered_binds],
+        ]
+        for path in _mask_destinations(emitted_binds, self.hidden_host_dirs):
+            args.extend(["--tmpfs", path, "--remount-ro", path])
 
         # environment variables
         for key, value in self.env.items():

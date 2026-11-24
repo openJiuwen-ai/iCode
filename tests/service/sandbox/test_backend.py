@@ -276,12 +276,21 @@ def _exec_ids(script: _Script) -> list[str]:
     return ids
 
 
+def _hidden_host_paths() -> list[str]:
+    """The per-test config directory and session store, which the isolation keeps apart."""
+    from chrys.foundation.config.settings import resolve_sessions_dir
+    from chrys.foundation.platform import get_platform
+
+    return [os.path.realpath(get_platform().config_dir), os.path.realpath(resolve_sessions_dir(create=False))]
+
+
 def _mount_body_paths(paths: tuple[str, ...], mode: str) -> dict[str, object]:
     return {
         "policy_mode": "append",
         "policy": {
             "filesystem_policy": {
                 "bind_mounts": [{"host_path": path, "sandbox_path": path, "mode": mode} for path in paths],
+                "hidden_host_paths": _hidden_host_paths(),
             }
         },
     }
@@ -559,7 +568,10 @@ async def test_create_then_exec_and_second_call_reuses_the_sandbox_id(monkeypatc
     assert creates[0][2] == {
         "policy_mode": "append",
         "policy": {
-            "filesystem_policy": {"bind_mounts": [{"host_path": "/work", "sandbox_path": "/work", "mode": "rw"}]}
+            "filesystem_policy": {
+                "bind_mounts": [{"host_path": "/work", "sandbox_path": "/work", "mode": "rw"}],
+                "hidden_host_paths": _hidden_host_paths(),
+            }
         },
     }
     assert creates[0][3] is None
@@ -947,6 +959,7 @@ async def test_create_body_is_an_append_fragment_for_the_cwd_bind(monkeypatch: p
         "policy": {
             "filesystem_policy": {
                 "bind_mounts": [{"host_path": cwd, "sandbox_path": cwd, "mode": "rw"}],
+                "hidden_host_paths": _hidden_host_paths(),
             }
         },
     }

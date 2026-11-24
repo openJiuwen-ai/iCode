@@ -526,14 +526,16 @@ async def test_cancelled_creates_do_not_leave_ready_sandboxes(
     assert set(runtime.cleaned) == {"cancel-raise", "cancel-race"}
 
 
-def test_home_read_only_engine_dir_is_allowed_and_a_direct_mount_is_not(
+def test_any_bind_naming_the_engine_home_is_reserved_and_a_parent_bind_is_not(
     jiuwenbox_importable: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Starting in the account home may cover ~/.jiuwenbox read-only.
+    """A parent bind of ~/.jiuwenbox is allowed; the runtime hides the home under it.
 
-    The same directory mounted on its own, or mounted read-write, stays reserved.
+    A bind that names the home itself, read-only cover included, is reserved:
+    a cover inside a writable parent would be dropped by a writable root bind
+    and leave the home readable.
     """
     from jiuwenbox.models.policy import BindMount, FilesystemPolicy, SecurityPolicy
     from jiuwenbox.server import policy_engine as policy_engine_module
@@ -554,11 +556,15 @@ def test_home_read_only_engine_dir_is_allowed_and_a_direct_mount_is_not(
             mode=mode,
         )
 
+    parent = SecurityPolicy(filesystem_policy=FilesystemPolicy(bind_mounts=[_bind(home, "rw")]))
+    warnings = engine.validate_policy(parent)
+    assert all("reserved" not in item for item in warnings)
+
     covered = SecurityPolicy(
         filesystem_policy=FilesystemPolicy(bind_mounts=[_bind(home, "rw"), _bind(engine_home, "ro")])
     )
-    warnings = engine.validate_policy(covered)
-    assert all("reserved" not in item for item in warnings)
+    with pytest.raises(PolicyValidationError, match="reserved"):
+        engine.validate_policy(covered)
 
     direct = SecurityPolicy(filesystem_policy=FilesystemPolicy(bind_mounts=[_bind(engine_home, "rw")]))
     with pytest.raises(PolicyValidationError, match="reserved"):
@@ -575,6 +581,41 @@ def test_home_read_only_engine_dir_is_allowed_and_a_direct_mount_is_not(
     )
     with pytest.raises(PolicyValidationError, match="reserved"):
         engine.validate_policy(remapped)
+
+
+def test_hidden_host_paths_must_be_absolute_and_not_the_root(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+) -> None:
+    from jiuwenbox.models.policy import FilesystemPolicy, SecurityPolicy
+    from jiuwenbox.server.policy_engine import PolicyEngine, PolicyValidationError
+
+    engine = PolicyEngine(policies_dir=tmp_path / "policies")
+
+    def _policy(*paths: str) -> SecurityPolicy:
+        return SecurityPolicy(filesystem_policy=FilesystemPolicy(hidden_host_paths=list(paths)))
+
+    engine.validate_policy(_policy("/home/user/.chrys"))
+    with pytest.raises(PolicyValidationError, match="absolute"):
+        engine.validate_policy(_policy("relative/.chrys"))
+    with pytest.raises(PolicyValidationError, match="'/'"):
+        engine.validate_policy(_policy("//"))
+
+
+def test_hidden_host_paths_survive_an_append_merge_and_are_not_expanded(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+) -> None:
+    from jiuwenbox.models.policy import FilesystemPolicy, SecurityPolicy
+    from jiuwenbox.server.policy_engine import PolicyEngine
+
+    engine = PolicyEngine(policies_dir=tmp_path / "policies")
+    base = SecurityPolicy(filesystem_policy=FilesystemPolicy(hidden_host_paths=["/srv/base"]))
+    merged = engine.merge_policy(
+        base,
+        {"filesystem_policy": {"hidden_host_paths": ["/home/user/$HOME/~x", "/srv/base"]}},
+    )
+    assert merged.filesystem_policy.hidden_host_paths == ["/srv/base", "/home/user/$HOME/~x"]
 
 
 def test_clear_persistent_state_leaves_the_other_managers_files(

@@ -136,6 +136,72 @@ async def test_realpath_into_a_protected_tree_is_rejected(
     assert _create_bodies(script) == []
 
 
+_HIDDEN_WORKDIR = (
+    "Sandbox command working directory is inside the iCode config or session directory, which the sandbox hides."
+)
+
+
+def _config_dir_in(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    config = home / ".chrys"
+    (config / "skills").mkdir(parents=True)
+    monkeypatch.setattr(backend, "_icode_config_dir", lambda: os.path.realpath(config))
+    return config
+
+
+async def test_cwd_in_the_config_dir_under_a_home_workspace_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The home mount shows the config directory only as an empty tmpfs, so the cwd would not exist."""
+    home = tmp_path / "home"
+    config = _config_dir_in(home, monkeypatch)
+    script = _Script()
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError) as caught:
+        await _run_workspace(_Settings(), cwd=str(config / "skills"), workspace_root=str(home))
+    assert str(caught.value) == _HIDDEN_WORKDIR
+    assert _create_bodies(script) == []
+    assert _exec_ids(script) == []
+
+
+async def test_a_workspace_inside_the_config_dir_keeps_its_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A mount that starts below the hidden directory is a bind of its own and stays visible."""
+    config = _config_dir_in(tmp_path / "home", monkeypatch)
+    skills = config / "skills"
+    script = _Script()
+    _install(monkeypatch, script)
+    result = await _run_workspace(_Settings(), cwd=str(skills), workspace_root=str(skills))
+    assert result.exit_code == 0
+    assert _exec_workdirs(script) == [os.path.realpath(skills)]
+
+
+async def test_the_config_dir_itself_as_the_workspace_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = _config_dir_in(tmp_path / "home", monkeypatch)
+    script = _Script()
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError) as caught:
+        await _run_workspace(_Settings(), cwd=str(config), workspace_root=str(config))
+    assert str(caught.value) == _HIDDEN_WORKDIR
+    assert _create_bodies(script) == []
+
+
+async def test_legacy_cwd_in_the_config_dir_under_the_writable_root_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    home = tmp_path / "home"
+    config = _config_dir_in(home, monkeypatch)
+    script = _Script()
+    _install(monkeypatch, script)
+    settings = _Settings()
+    first = await run_shell(settings, argv=("echo", "one"), cwd=str(home), timeout_seconds=12, linux=True)
+    assert first.exit_code == 0
+    with pytest.raises(SandboxError) as caught:
+        await run_shell(settings, argv=("echo", "two"), cwd=str(config / "skills"), timeout_seconds=12, linux=True)
+    assert str(caught.value) == _HIDDEN_WORKDIR
+    assert len(_exec_ids(script)) == 1
+
+
 async def test_symlink_into_a_protected_tree_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A real symlink whose target is under /tmp is not mounted."""
     work = tmp_path / "work"

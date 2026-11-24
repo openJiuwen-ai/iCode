@@ -389,6 +389,12 @@ class FilesystemPolicy(BaseModel):
     bind_mounts: list[BindMount] = Field(default_factory=list)
     bind_root_entries: list[BindRootEntries] = Field(default_factory=list)
     device: list[DeviceMount] = Field(default_factory=list)
+    # Host directories the sandbox must not see through any bind. Wherever a
+    # bind exposes one, the runtime mounts an empty read-only tmpfs over it.
+    # The server's own home is always hidden this way. Paths are taken
+    # literally (no ``~`` or ``$VAR`` expansion), since an expanded spelling
+    # would hide some other directory.
+    hidden_host_paths: list[str] = Field(default_factory=list)
 
     @field_validator("directories", mode="before")
     @classmethod

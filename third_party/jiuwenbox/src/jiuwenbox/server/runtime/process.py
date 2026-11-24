@@ -51,7 +51,7 @@ from jiuwenbox.server.runtime.base import (
     RuntimeFileOpResult,
 )
 from jiuwenbox.server.runtime.errors import BackgroundJobNotFoundError
-from jiuwenbox.server.workspace import SANDBOX_WORKSPACE
+from jiuwenbox.server.workspace import JIUWENBOX_HOME, SANDBOX_WORKSPACE
 from jiuwenbox.supervisor import cgroup as cgroup_module
 from jiuwenbox.supervisor import network as network_module
 from jiuwenbox.supervisor.bwrap import BwrapConfig
@@ -288,6 +288,27 @@ def _cover_host_runtime_directories(config: BwrapConfig) -> None:
         if path == "/var/run" and _var_run_follows_private_run():
             continue
         config.extra_args.extend(("--tmpfs", path))
+
+
+def _hidden_host_dirs(policy: SecurityPolicy) -> list[str]:
+    """Real paths of the server home and the policy's existing hidden directories.
+
+    The engine binds its own scripts and backing directories from inside the
+    server home; those binds start below it and stay visible. A missing path
+    hides nothing and is skipped. An existing path that is not a directory
+    cannot take a tmpfs, and covering ``/`` would leave no sandbox, so either
+    refuses the sandbox rather than leaving the path exposed.
+    """
+    found: list[str] = []
+    for path in (str(JIUWENBOX_HOME), *policy.filesystem_policy.hidden_host_paths):
+        real = os.path.realpath(path)
+        if not os.path.exists(real):
+            continue
+        if not os.path.isdir(real) or real == "/":
+            raise RuntimeError(f"Hidden host path {path!r} cannot be covered")
+        if real not in found:
+            found.append(real)
+    return found
 
 
 def _rebind_under_private_tmpfs(config: BwrapConfig) -> None:
@@ -1654,6 +1675,7 @@ class ProcessRuntime(RuntimeAdapter):
                 # mounted earlier.
                 config.extra_args.extend(("--bind", str(proxy.path), "/run/guarded-proxy.sock"))
         _drop_host_session_env(config)
+        config.hidden_host_dirs = _hidden_host_dirs(policy)
         if self._needs_privdrop_for_process_identity(
             process_uid,
             use_user_namespace=policy.namespace.user,

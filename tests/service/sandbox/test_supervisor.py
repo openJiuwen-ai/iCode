@@ -360,6 +360,75 @@ def test_child_env_sets_policy_listen_and_token(monkeypatch: pytest.MonkeyPatch)
     assert "JIUWENBOX_API_TOKEN" not in empty
 
 
+def test_child_env_sets_the_engine_home_or_drops_an_inherited_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENBOX_HOME", "/inherited/home")
+    env = supervisor._child_env("policy.yaml", "http://127.0.0.1:9", "t", home="/own/home")
+    assert env["JIUWENBOX_HOME"] == "/own/home"
+    assert "JIUWENBOX_HOME" not in supervisor._child_env("policy.yaml", "http://127.0.0.1:9", "t")
+
+
+async def test_each_child_gets_its_own_home_and_it_is_removed_after_the_childs_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from chrys.foundation.platform import get_platform
+
+    homes: list[Path] = []
+    modes: list[int] = []
+    present_at_close: list[bool] = []
+
+    @asynccontextmanager
+    async def spawn(env: dict[str, str]) -> AsyncIterator[_FakeProcess]:
+        home = Path(env["JIUWENBOX_HOME"])
+        homes.append(home)
+        modes.append(home.stat().st_mode & 0o777)
+        (home / "sandboxes").mkdir()
+        try:
+            yield _FakeProcess()
+        finally:
+            present_at_close.append(home.is_dir())
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_spawn_launcher", spawn)
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    await supervisor.ensure_started(network_mode="offline")
+    await supervisor.ensure_started(network_mode="host")
+    assert len(homes) == 2
+    assert homes[0] != homes[1]
+    root = get_platform().config_dir / "sandbox-engine"
+    for home in homes:
+        assert home.parent == root
+        assert home.name.startswith(f"{os.getpid()}-")
+    if sys.platform != "win32":
+        assert modes == [0o700, 0o700]
+    assert present_at_close == [True]
+    assert not homes[0].exists()
+    assert homes[1].is_dir()
+    await supervisor._shutdown()
+    assert present_at_close == [True, True]
+    assert not homes[1].exists()
+
+
+def test_a_start_removes_only_the_homes_of_processes_that_are_gone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import psutil
+
+    root = tmp_path / "sandbox-engine"
+    gone = root / "4242-old"
+    other = root / "5151-running"
+    mine = root / f"{os.getpid()}-earlier"
+    unrelated = root / "notes"
+    for path in (gone, other, mine, unrelated):
+        (path / "sandboxes").mkdir(parents=True)
+    monkeypatch.setattr(supervisor, "_engine_homes_root", lambda: root)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid != 4242)
+    created = Path(supervisor._new_engine_home())
+    assert sorted(path.name for path in root.iterdir()) == sorted([other.name, mine.name, unrelated.name, created.name])
+
+
 def test_network_mode_keeps_known_values_and_falls_back_to_guarded() -> None:
     assert [supervisor._network_mode(mode) for mode in ("offline", "guarded", "host")] == [
         "offline",

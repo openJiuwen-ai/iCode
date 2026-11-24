@@ -14,6 +14,12 @@ is still alive is killed by that close. Each start creates a bearer token
 and keeps it only in memory. This module does not run the user's command
 on the host.
 
+Each child gets its own owner-only engine home directory under
+``<config_dir>/sandbox-engine``, named after this process's pid, so children
+of one or several iCode processes never share state, policy or workspace
+files. The home is removed after the child's close. A start also removes
+homes whose iCode process no longer exists.
+
 Each child keeps the ``sandbox.network`` value it was started with. The
 caller passes the value from its own settings, so a change reaches a
 session when its agent reloads, like the other sandbox settings. A command
@@ -34,14 +40,17 @@ import asyncio
 import contextlib
 import os
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import AsyncGenerator, Awaitable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import NoReturn, Protocol
 
 from chrys.foundation.util.once_close import finish_close
@@ -67,6 +76,8 @@ _STOP_GRACE_SECONDS = 5.0
 # Process exit waits this long for leased commands to end, then stops their
 # servers anyway: a server left behind would outlive this process.
 _LEASE_DRAIN_SECONDS = 5.0
+# Under the config directory, which the backend hides from every sandbox.
+_ENGINE_HOMES_DIRNAME = "sandbox-engine"
 
 
 class _ReturnCode(Protocol):
@@ -114,9 +125,40 @@ _retired: list[_RunningServer] = []
 _lock: asyncio.Lock | None = None
 
 
-def sandbox_engine_home_dirname() -> str:
-    """Directory name of the sandbox engine home, under the account home."""
-    return ".jiuwenbox"
+def _engine_homes_root() -> Path:
+    from chrys.foundation.platform import get_platform
+
+    return get_platform().config_dir / _ENGINE_HOMES_DIRNAME
+
+
+def _new_engine_home() -> str:
+    """Create an owner-only home for one child, named after this process."""
+    root = _engine_homes_root()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _sweep_stale_engine_homes(root)
+    return tempfile.mkdtemp(prefix=f"{os.getpid()}-", dir=root)
+
+
+def _sweep_stale_engine_homes(root: Path) -> None:
+    """Remove homes whose iCode process is gone; it could not remove them itself."""
+    import psutil
+
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        owner, _sep, _rest = entry.name.partition("-")
+        if not owner.isdecimal():
+            continue
+        pid = int(owner)
+        if pid == os.getpid() or psutil.pid_exists(pid):
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+
+
+async def _remove_engine_home(home: str) -> None:
+    await asyncio.to_thread(shutil.rmtree, home, True)
 
 
 def uds_http_base() -> str:
@@ -334,10 +376,15 @@ def _child_env(
     token: str,
     *,
     network_mode: str = "host",
+    home: str | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
     env["JIUWENBOX_POLICY_PATH"] = policy_path
     env["JIUWENBOX_LISTEN"] = listen
+    if home is not None:
+        env["JIUWENBOX_HOME"] = home
+    else:
+        env.pop("JIUWENBOX_HOME", None)
     # On Linux the launcher gets SIGTERM if this process dies without stopping it.
     env["JIUWENBOX_PARENT_PID"] = str(os.getpid())
     if token:
@@ -570,15 +617,14 @@ async def _current_server(network_mode: str, health_timeout: float) -> _RunningS
     # Fresh credential for this child. Not the user's sandbox.token, and
     # not placed in argv, a policy file, or the listen URL.
     token = secrets.token_urlsafe()
-    env = _child_env(
-        _bundled_policy_path(),
-        listen,
-        token,
-        network_mode=network_mode,
-    )
+    policy_path = _bundled_policy_path()
     proc: _LauncherProcess | None = None
     stack = contextlib.AsyncExitStack()
     try:
+        home = await asyncio.to_thread(_new_engine_home)
+        # Registered first, so it runs after the child's close.
+        stack.push_async_callback(_remove_engine_home, home)
+        env = _child_env(policy_path, listen, token, network_mode=network_mode, home=home)
         proc = await stack.enter_async_context(_spawn_launcher(env))
         await _wait_until_healthy(listen, token, proc, health_timeout=health_timeout)
     except BaseException as exc:

@@ -5417,9 +5417,8 @@
         ["wrapper", "await _retire(client, previous)", "unresolved", "chrys.service.sandbox.backend._retire"]
       ],
       "_ready_legacy_sandbox": [
-        ["wrapper", "await _reuse_legacy_writable(client)", "unresolved", "chrys.service.sandbox.backend._reuse_legacy_writable"],
-        ["wrapper", "await _reuse_legacy_writable(client)", "unresolved", "chrys.service.sandbox.backend._reuse_legacy_writable"],
-        ["wrapper", "await _create_legacy_writable(client, cwd)", "unresolved", "chrys.service.sandbox.backend._create_legacy_writable"]
+        ["wrapper", "await _create_legacy_writable(client, cwd)", "unresolved", "chrys.service.sandbox.backend._create_legacy_writable"],
+        ["wrapper", "await _reuse_legacy_writable(client)", "unresolved", "chrys.service.sandbox.backend._reuse_legacy_writable"]
       ],
       "_ready_sandbox": [
         ["wrapper", "await _ready_legacy_sandbox(client, cwd)", "unresolved", "chrys.service.sandbox.backend._ready_legacy_sandbox"],
@@ -5491,6 +5490,7 @@
       ],
       "_current_server": [
         ["wrapper", "await _retire_current()", "unresolved", "chrys.service.sandbox.supervisor._retire_current"],
+        ["thread_pool", "await asyncio.to_thread(_new_engine_home)", "unresolved"],
         ["awaitable", "await stack.enter_async_context(_spawn_launcher(env))", "unresolved"],
         ["wrapper", "await _wait_until_healthy(listen, token, proc, health_timeout=health_timeout)", "unresolved", "chrys.service.sandbox.supervisor._wait_until_healthy"],
         ["wrapper", "await _discard(stack, proc)", "unresolved", "chrys.service.sandbox.supervisor._discard"]
@@ -5514,6 +5514,9 @@
       ],
       "_pump_stream": [
         ["awaitable", "await stream.read(_READ_CHUNK_BYTES)", "unresolved"]
+      ],
+      "_remove_engine_home": [
+        ["thread_pool", "await asyncio.to_thread(shutil.rmtree, home, True)", "unresolved"]
       ],
       "_request_exit": [
         ["timeout", "await asyncio.wait_for(proc.wait(), _STOP_GRACE_SECONDS)", "unresolved"],
