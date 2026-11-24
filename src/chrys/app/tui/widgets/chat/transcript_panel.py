@@ -26,6 +26,10 @@ class ChatTranscriptPanelMarker:
         """An entry folded, or gave rows up: show the transcript at its new height in the layout that places it."""
         raise NotImplementedError
 
+    def process_guide_for(self, member: Widget) -> Widget | None:
+        """Return the open process whose guide can fold from beside this member."""
+        raise NotImplementedError
+
 
 def note_fold(widget: Widget) -> None:
     """Tell the chat transcript *widget* is in that it folded, or gave rows up, before a layout shows it.

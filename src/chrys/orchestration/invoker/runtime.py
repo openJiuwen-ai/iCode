@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.foundation.retry import RetryAttemptInfo
+    from chrys.foundation.util.chrys_headers import RequestScope
     from chrys.kernel.client import BaseChatClient
     from chrys.kernel.middleware import ChatMiddleware
     from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
@@ -85,6 +86,7 @@ class ReminderInputs(TypedDict):
     automatic_compaction: NotRequired[bool]
     sub_agent_names: NotRequired[list[str] | None]
     shell_tool_enabled: NotRequired[bool]
+    workspace_section: NotRequired[bool]
     tool_names: NotRequired[list[str] | None]
     session_root: NotRequired[Path | None]
     file_read_available: NotRequired[bool]
@@ -108,6 +110,7 @@ class LastWordsInputs(TypedDict):
     session_id: NotRequired[str | None]
     parent_session_id: NotRequired[str | None]
     session_dir: NotRequired[Path | None]
+    request_scope: NotRequired[RequestScope | None]
     max_transient_retries: NotRequired[int | None]
     publish_retry: NotRequired[Callable[[RetryAttemptInfo], Awaitable[None]] | None]
     publish_status: NotRequired[Callable[[CompactionStatus], Awaitable[None]] | None]

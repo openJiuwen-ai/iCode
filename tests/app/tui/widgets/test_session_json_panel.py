@@ -12,6 +12,7 @@ from rich.console import Console
 from textual.app import App, ComposeResult
 from textual.color import Color
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.theme_loader import load_user_themes
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from tests.support.tui_helpers import click_widget
@@ -36,6 +37,7 @@ async def test_session_json_border_click_copies_to_terminal_and_os_clipboards(
         click_widget(panel)
 
         assert pilot.app.clipboard == session_path
+        await wait_for_clipboard(pilot.app)
         assert copied == [session_path]
 
 

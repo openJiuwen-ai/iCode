@@ -15,6 +15,7 @@ from textual.widgets import Button, TextArea
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.main.screen import MainScreen
+from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
 from chrys.app.tui.widgets.chat.messages import (
     InterruptedMessage,
     MessageCopyButton,
@@ -28,12 +29,14 @@ from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.welcome import WelcomeWidget
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import RollbackResult, UserRetry, UserRollback
+from chrys.foundation.events.types import RollbackResult, SessionRestored, UserRetry, UserRollback
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import Content, Message
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
+from chrys.service.state.folds import FoldItem
+from chrys.service.state.store import JsonFileStateStore
 from tests.support.tui_app_harness import ShutdownOnlyEngine, make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, click_when_settled, rich_plain
 from tests.support.waiting import wait_for
@@ -80,6 +83,44 @@ class _FirstTurnEngine(ShutdownOnlyEngine):
         assert owner == "first-turn-projection"
         assert self.fenced
         self.fenced = False
+
+
+@pytest.mark.parametrize("keep_fold", [False, True])
+async def test_rollback_rebuilds_chat_from_restored_folds(tmp_path: Path, keep_fold: bool) -> None:
+    bus = EventBus()
+    app = make_chrys_app(tmp_path / "state", engine=_FirstTurnEngine(tmp_path / "mutations"), event_bus=bus)
+    store = JsonFileStateStore(tmp_path / "state")
+    prompt = Message("user", ["before compression"])
+    summary = Message(
+        "assistant",
+        ["Summary: folded"],
+        additional_properties={HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY, "_block_id": "fold"},
+    )
+    after = {
+        "messages": [summary, Message("user", ["after compression"])],
+        "compressed_msgs": [CompressedBlock("fold", [prompt], "folded", "turn_1", (1, 1))],
+    }
+    await store.save_session("s1", after, primary_cwd=str(tmp_path))
+    restored = SessionRestored(session_id="s1", agent_profile="Code", message_count=2, primary_cwd=str(tmp_path))
+
+    async with app.run_test(size=(80, 32)) as pilot:
+        panel = pilot.app.screen.query_one(ChatPanel)
+        await bus.publish(restored, raise_handler_errors=True)
+        await panel.wait_replay_complete()
+        assert [message.text for message in panel.query(UserMessage)] == ["before compression", "after compression"]
+        assert len(panel.query(ContextFoldWidget)) == 1
+
+        # The engine publishes SessionRestored after replacing the current checkpoint.
+        snapshot = after if keep_fold else {"messages": [prompt]}
+        await store.save_session("s1", snapshot, primary_cwd=str(tmp_path))
+        await bus.publish(restored, raise_handler_errors=True)
+        await bus.publish(RollbackResult(session_id="s1", target_turn=2 if keep_fold else 1), raise_handler_errors=True)
+        await panel.wait_replay_complete()
+        assert len(panel.query(ContextFoldWidget)) == int(keep_fold)
+        assert [message.text for message in panel.query(UserMessage)] == [
+            "before compression",
+            *(["after compression"] if keep_fold else []),
+        ]
 
 
 @pytest.mark.parametrize("entry", ["interrupted", "message"])
@@ -297,7 +338,7 @@ async def test_long_archived_tool_history_keeps_tail_first_bounded_mounting(
         try:
             await panel.replay_history(
                 [summary.to_dict()],
-                compressed_blocks={"long-archive": block},
+                folds=[FoldItem("long-archive", "condensed", block=block)],
                 rollback_targets=set(range(count)),
             )
             assert panel.replay_in_progress

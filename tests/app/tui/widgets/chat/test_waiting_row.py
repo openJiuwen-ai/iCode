@@ -16,6 +16,7 @@ from chrys.app.tui.widgets.chat.chrome import ChatBottomSpacer
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
 from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
 from chrys.app.tui.widgets.chat.fold_gap import FOLD_GAP_ROWS
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     ErrorMessage,
@@ -29,7 +30,7 @@ from chrys.app.tui.widgets.chat.waiting_row import WaitingRow, waits_after
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import ChatPanelApp
+from tests.support.tui_helpers import ChatPanelApp, click_when_settled
 from tests.support.waiting import wait_for, wait_until
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ def _compaction(status: str) -> CompactionCard:
         pytest.param(lambda: AgentMessage("Next.", is_intermediate=True), True, id="text-between-tool-calls"),
         pytest.param(ToolGroup, False, id="tool-group-running"),
         pytest.param(lambda: ToolGroup(live=False), True, id="tool-group-done"),
+        pytest.param(LiveProcessRow, False, id="live-process"),
         pytest.param(lambda: _compaction("running"), False, id="compaction-running"),
         pytest.param(lambda: _compaction("ok"), True, id="compaction-done"),
         pytest.param(lambda: ErrorMessage("failed"), False, id="error"),
@@ -137,6 +139,7 @@ async def test_the_row_shows_below_the_transcript_a_moment_after_the_turn_last_m
         await panel.add_thinking_delta("r1", "reasoning", "The file says yes.")
         assert _hidden_with_none_due(panel)
         panel.finish_thinking_segment("r1")
+        await click_when_settled(pilot, panel.query_one(LiveProcessRow))
         _start_the_moment(panel)
         await wait_for(lambda: _row(panel).display, pilot=pilot, description="the row after complete thinking")
         children = list(panel.children)
@@ -157,6 +160,55 @@ async def test_a_turn_that_ends_before_the_moment_passes_never_shows_the_row(mon
         assert _hidden_with_none_due(panel)
         # Past the moment it would have shown at.
         assert not await wait_until(lambda: _row(panel).display, timeout=_WAITING_ROW_DELAY_SECONDS * 2, pilot=pilot)
+
+
+@pytest.mark.parametrize("member", ["thinking", "tool"])
+async def test_waiting_uses_the_last_shown_entry_after_activity_finishes(member: str) -> None:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        panel.agent_running = True
+        await panel.add_user_message("prompt")
+        if member == "thinking":
+            await panel.add_thinking_delta("r1", "reasoning", "Look at the file.")
+            panel.finish_thinking_segment("r1")
+            last = panel.query_one(ThinkingMessage)
+        else:
+            await panel.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, args={"path": "/tmp/a.py"})
+            await panel.add_tool_result("c1", "read_file", "ok")
+            panel._end_tool_group()
+            last = panel.query_one(ToolGroup)
+        process = panel.query_one(LiveProcessRow)
+        assert process.collapsed and not last.display
+        assert _hidden_with_none_due(panel)
+        assert not await wait_until(lambda: _row(panel).display, timeout=_WAITING_ROW_DELAY_SECONDS * 2, pilot=pilot)
+        await click_when_settled(pilot, process)
+        assert last.display
+
+        await wait_for(
+            lambda: _row(panel).display and _row(panel).region.height > 0,
+            pilot=pilot,
+            description="shown completed activity has a waiting dot",
+        )
+        assert last.region.bottom <= _row(panel).region.y
+        panel.toggle_fold_all()
+        assert process.collapsed and _hidden_with_none_due(panel)
+        assert not await wait_until(lambda: _row(panel).display, timeout=_WAITING_ROW_DELAY_SECONDS * 2, pilot=pilot)
+
+
+async def test_a_blank_new_segment_still_leaves_a_waiting_row_after_thinking() -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        panel.agent_running = True
+        await panel.add_user_message("prompt")
+        await panel.add_thinking_delta("r1", "reasoning", "Thinking aloud.")
+        await click_when_settled(pilot, panel.query_one(LiveProcessRow))
+        assert not _row(panel).display
+
+        await panel.add_thinking_delta("r2", "reasoning", " ")
+        await wait_for(lambda: _row(panel).display, pilot=pilot, description="the previous thought has ended")
+        assert len(panel.query(ThinkingMessage)) == 1
 
 
 async def test_a_moment_that_passed_as_the_turn_moved_on_leaves_the_row_to_the_newer_one(
@@ -233,6 +285,7 @@ async def test_a_turn_that_ends_as_the_row_shows_moves_the_view_in_the_frame_tha
         panel.finish_thinking_segment("r1")
         thinking = panel.query_one(ThinkingMessage)
         row = _row(panel)
+        await click_when_settled(pilot, panel.query_one(LiveProcessRow))
         await wait_for(
             lambda: row.display and panel.scroll_y == panel.max_scroll_y and screen_is_settled(app, panel.screen),
             pilot=pilot,
@@ -327,7 +380,7 @@ async def test_an_entry_in_the_rows_place_under_a_tall_prompt_takes_the_view_dow
         reply: Widget
         if entry == "thinking":
             await panel.add_thinking_delta("r1", "reasoning", "Looking at the file.")
-            reply = panel.query_one(ThinkingMessage)
+            reply = panel.query_one(LiveProcessRow)
         else:
             await panel.add_compaction_start("k1")
             reply = panel.query_one(CompactionCard)
@@ -339,3 +392,114 @@ async def test_an_entry_in_the_rows_place_under_a_tall_prompt_takes_the_view_dow
         assert panel.virtual_size.height == height + (FOLD_GAP_ROWS if entry == "thinking" else 0)
         assert panel._anchor_released is False
         assert panel.scroll_y == panel.max_scroll_y > prompt.virtual_region_with_margin.y
+
+
+async def test_open_activity_waits_after_thinking_that_followed_the_displayed_answer() -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        panel.agent_running = True
+        await panel.add_user_message("prompt")
+        await panel.add_answer_delta("a1", "Answer already shown.")
+        panel.finish_answer_segment("a1", completed=True)
+        await panel.add_thinking_delta("r1", "reasoning", "Preparing a tool.")
+        title = panel.query_one(LiveProcessRow)
+        await click_when_settled(pilot, title)
+        panel.finish_thinking_segment("r1")
+        await wait_for(
+            lambda: _row(panel).display and _row(panel).region.height > 0,
+            pilot=pilot,
+            description="waiting for the next tool",
+        )
+        assert panel.mounted_agent_messages()[-1].region.bottom <= _row(panel).region.y
+        await click_when_settled(pilot, title)
+        assert not _row(panel).display
+
+
+async def test_waiting_sync_and_live_member_mount_ignore_earlier_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def measure(earlier_turns: int) -> tuple[int, int]:
+        async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
+            panel = pilot.app.query_one(ChatPanel)
+            await panel.mount(
+                *(
+                    entry
+                    for index in range(earlier_turns)
+                    for entry in (UserMessage(f"Earlier prompt {index}"), AgentMessage("Done.", profile_name="Agent"))
+                )
+            )
+            panel.agent_running = True
+            await panel.add_user_message("Current prompt")
+            await panel.add_thinking_delta("r1", "reasoning", "First thought.")
+            panel.finish_thinking_segment("r1")
+            await panel.add_answer_delta("a1", "Visible answer.")
+            await click_when_settled(pilot, panel.query_one(LiveProcessRow))
+
+            display = UserMessage.display
+            visits = 0
+
+            def read_display(message: UserMessage) -> bool:
+                nonlocal visits
+                visits += 1
+                return display.__get__(message)
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(UserMessage, "display", property(read_display, display.fset))
+                panel._sync_waiting_row()
+            with patch.object(panel, "transcript_occurrence", wraps=panel.transcript_occurrence) as occurrence:
+                await panel.add_thinking_delta("r2", "reasoning", "Next thought.")
+
+            thought = panel.query(ThinkingMessage).last()
+            answer = panel.query(AgentMessage).last()
+            await wait_for(
+                lambda: thought.region.height > 0 and thought.region.y < answer.region.y,
+                pilot=pilot,
+                description="the new thought appears above the visible answer",
+            )
+            assert not _row(panel).display
+            return visits, occurrence.call_count
+
+    assert await measure(1) == await measure(64)
+
+
+async def test_waiting_checks_the_same_number_of_entries_in_short_and_long_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def measure(entries: int) -> int:
+        async with ChatPanelApp().run_test() as pilot:
+            panel = pilot.app.query_one(ChatPanel)
+            await panel.add_user_message("Prompt")
+            await panel.mount(*(SystemMessage("Notice.") for _ in range(entries)))
+            panel.agent_running = True
+            display = SystemMessage.display
+            visits = 0
+
+            def read_display(notice: SystemMessage) -> bool:
+                nonlocal visits
+                visits += 1
+                return display.__get__(notice)
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(SystemMessage, "display", property(read_display, display.fset))
+                assert panel._turn_waits()
+            return visits
+
+    assert await measure(16) == await measure(4096)
+
+
+@pytest.mark.parametrize("notice", [False, True], ids=["without-notice", "with-notice"])
+async def test_folded_activity_suppresses_waiting_after_a_new_thought(notice: bool) -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        panel.agent_running = True
+        await panel.add_user_message("Prompt")
+        await panel.add_thinking_delta("r1", "reasoning", "First thought.")
+        panel.finish_thinking_segment("r1")
+        if notice:
+            await panel.add_system("A notice.")
+            await wait_for(lambda: _row(panel).display, pilot=pilot, description="waiting after the notice")
+
+        await panel.add_thinking_delta("r2", "reasoning", "Next thought.")
+        panel.finish_thinking_segment("r2")
+        await pilot.pause()
+        assert panel.query_one(LiveProcessRow).display
+        assert not panel.query(ThinkingMessage).last().display
+        assert not _row(panel).display

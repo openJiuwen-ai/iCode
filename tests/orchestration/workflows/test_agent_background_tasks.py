@@ -21,7 +21,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -46,7 +46,7 @@ async def test_a_nodes_background_command_stops_when_its_attempt_ends(
     shell = (get_platform().shell.name, "call-1", {"command": command, "reason": "serve", "timeout": 1})
     client = MockChatClient(responses=[MockResponse(tool_calls=[shell]), MockResponse(text="served")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client], builtin_tools=True)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "serve", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=[make_profile(builtins=["shell"])])
     try:

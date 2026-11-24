@@ -23,7 +23,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.service.workflows.layout import SOURCE_FILE
 from chrys.service.workflows.store import node_value_path, read_run_header
 from tests.app.tui.screens.main._workflow_support import select_archived_run, workflow_notice_text, workflow_selecting
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -38,11 +38,13 @@ from ._workflow_support import (
     workflow_selection,
 )
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_restored_node_shows_previous_output_without_live_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
@@ -78,7 +80,7 @@ async def test_restored_node_shows_previous_output_without_live_source(
 async def test_history_uses_snapshots_after_source_is_changed_or_removed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_change: str
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 36)) as pilot:
         main = app._main_screen
@@ -118,7 +120,7 @@ async def test_history_uses_snapshots_after_source_is_changed_or_removed(
 async def test_archived_output_ignores_input_and_handles_invalid_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damaged_output: bool
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 36)) as pilot:
         main = app._main_screen
@@ -151,7 +153,7 @@ async def test_archived_output_ignores_input_and_handles_invalid_output(
 async def test_source_read_cannot_cross_session_restore_with_same_run_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus)

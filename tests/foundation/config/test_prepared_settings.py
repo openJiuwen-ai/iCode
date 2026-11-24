@@ -217,7 +217,7 @@ def test_a_value_the_users_file_refused_keeps_the_choice_but_another_layers_refu
     outcome = invalid("nope", CoerceReason.EXPECTED_TEXT)
     file = Path("settings.yaml")
     in_file = SettingsWarning("ui.theme", SettingOrigin(layer=Source.USER, path=file), outcome)
-    in_project = SettingsWarning("ui.theme", SettingOrigin(layer=Source.PROJECT, path=file), outcome)
+    in_project = SettingsWarning("ui.theme", SettingOrigin(layer=Source.WORKDIR, path=file), outcome)
     in_env = SettingsWarning("ui.theme", SettingOrigin(layer=Source.ENV), outcome)
 
     handle = _saved_choice()

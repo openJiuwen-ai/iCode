@@ -272,7 +272,7 @@ def test_unreadable_workspace_capture_is_degraded_instead_of_recording_absence(
     target = root / "README.md"
     target.write_bytes(b"dirty content")
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(Workspace.from_cwd(str(root)))
+    tracker.apply_retarget(tracker.resolve_retarget(Workspace.from_cwd(str(root))))
     root_key = canonical_path(str(root))
     healthy = tracker.capture_baseline(1)
     assert healthy.roots[root_key].mode is (BaselineMode.GIT if git_mode else BaselineMode.SCAN)

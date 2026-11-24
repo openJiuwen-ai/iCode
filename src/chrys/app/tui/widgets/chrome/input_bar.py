@@ -6,7 +6,7 @@ Enter submits. Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline.
 Cross-platform system clipboard support (macOS pbcopy/pbpaste,
 Win32 ``SetClipboardData``/``GetClipboardData`` on Windows,
 xclip/xsel on Linux).
-When the agent is running, nonempty input offers Send beside Interrupt; a queued draft offers Steer and Cancel.
+When the agent is running, nonempty input offers Send beside Interrupt; a queued draft offers Send Now and Cancel.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ INPUT_BTW_OPEN = msg("tui.btw.open", fallback="Open side questions")
 INPUT_NEW = msg("tui.input.new", fallback="New")
 INPUT_NEW_DESCRIPTION = msg("tui.input.new_description", fallback="Create a new session")
 INPUT_QUEUED = msg("tui.input.queued", fallback="Queued")
-INPUT_STEER = msg("tui.input.steer", fallback="Steer")
+INPUT_STEER = msg("tui.input.steer", fallback="Send Now")
 INPUT_CANCEL_QUEUE = msg("tui.input.cancel_queue", fallback="Cancel")
 _INPUT_QUEUED_HINT = msg("tui.input.queued_hint", fallback="Queued · Esc to cancel · Ctrl+B to interrupt")
 _INPUT_STEERING = msg("tui.input.steering", fallback="Steering…")
@@ -626,7 +626,7 @@ class _InputBarButton(NonSelectableTextMixin, Button):
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "enter":
             # Resolve this button's Enter binding before another message-pump
-            # hop can turn a queued Steer into Interrupt or an idle Send.
+            # hop can turn a queued Send Now into Interrupt or an idle Send.
             event.stop()
             event.prevent_default()
             if self._gesture_actions.pop(event, None) == self._capture_action():
@@ -638,7 +638,7 @@ class InputBar(Widget):
 
     - Enter or clicking Send submits the message.
     - Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline for multi-line input.
-    - While running, nonempty input offers Send beside Interrupt; a queued draft offers Steer and Cancel.
+    - While running, nonempty input offers Send beside Interrupt; a queued draft offers Send Now and Cancel.
     """
 
     DEFAULT_CSS = """

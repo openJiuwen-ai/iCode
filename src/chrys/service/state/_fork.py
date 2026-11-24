@@ -78,7 +78,7 @@ class SessionForkMixin:
         def _read_json_file(path: Path) -> dict[str, Any] | None: ...
 
         def _record_mru(self, session_id: str, updated_at: datetime | None) -> None: ...
-        def _migrate_if_needed_unlocked(self, session_id: str) -> None: ...
+        def _migrate_if_needed_unlocked(self, session_id: str) -> Path | None: ...
 
     def fork_session(self, parent_session_id: str, *, last_surface: SessionSurface | None = None) -> str:
         """Create an independent copy of *parent_session_id* with a new canonical id.
@@ -168,7 +168,7 @@ class SessionForkMixin:
         if include_write_lock:
             paths.append(session_write_lock_path(self._dir, session_id))
         for path in paths:
-            if path.exists():
+            if os.path.lexists(path):
                 raise SessionForkError(f"Fork destination collision at {path}")
 
     def _new_fork_temp_dir(self, session_id: str) -> Path:
@@ -594,6 +594,7 @@ class SessionForkMixin:
         meta["parent_session_id"] = parent_session_id
         meta["updated_at"] = updated_at
         meta["service_session_id"] = ""
+        meta.pop("service_session_workspace_fingerprint", None)
         if last_surface is not None:
             meta["last_surface"] = last_surface.value
         # The fork is a new on-disk revision: derived summaries must not be

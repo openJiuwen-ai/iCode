@@ -26,6 +26,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_chat_modal_resume_skips_source_checks_and_lease_updates_need_no_timer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -117,6 +117,7 @@ class Selection:
 # the test is selected by normal imports, direct edits, or a focused special
 # rule below rather than by a filesystem-wide watch.
 ARCHITECTURE_RULES = (
+    TestRule("tests/architecture/test_hygiene_workspace_plans.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_analytics_facts.py", ("src/chrys/service/analytics/**",)),
     TestRule(
         "tests/architecture/test_chrys_test.py",
@@ -156,6 +157,10 @@ ARCHITECTURE_RULES = (
     TestRule(
         "tests/architecture/test_python_pin.py",
         (".python-version", ".github/workflows/**", "scripts/build.sh", "scripts/build.ps1"),
+    ),
+    TestRule(
+        "tests/architecture/test_project_vocabulary.py",
+        ("src/**", "docs/**", "locales/**", "tests/*.py"),
     ),
     TestRule("tests/architecture/test_quarantine.py"),
     TestRule("tests/architecture/test_test_file_size.py", ("tests/**",)),
@@ -206,6 +211,14 @@ _LLM_CLIENT_SOURCES = (
 # those dependency edges explicit: subprocess fixtures, filesystem scanners,
 # and import-every-module checks are invisible to the AST import graph.
 REGULAR_RULES = (
+    TestRule(
+        "tests/service/session/test_workspace_persistence.py", ("tests/support/fixtures/workspace_legacy/chat-*.json",)
+    ),
+    TestRule(
+        "tests/orchestration/workflows/test_session_workspace.py",
+        ("tests/support/fixtures/workspace_legacy/workflow-*.json",),
+    ),
+    TestRule("tests/app/tui/support/test_clipboard_process.py", ("src/chrys/foundation/platform/clipboard_worker.py",)),
     TestRule("tests/service/mcp/test_cache_e2e.py", ("tests/service/mcp/mcp_cache_probe_server.py",)),
     TestRule("tests/orchestration/engine/build/test_initialization.py", ("tests/support/mcp_reload_probe_server.py",)),
     TestRule("tests/app/tui/behaviors/test_startup_imports.py", ("src/chrys/**",)),

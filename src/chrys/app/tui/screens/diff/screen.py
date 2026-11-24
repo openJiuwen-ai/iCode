@@ -17,7 +17,7 @@ Layout:
   │  │  (flat list)  │                                           ││
   │  └──────────────┴───────────────────────────────────────────┘│
   ├──────────────────────────────────────────────────────────────┤
-  │  Footer: Esc Back │ Space Split View │ Ctrl+G Change List     │
+  │  Footer: Space Split View │ Ctrl+G Change List       Esc Back │
   └──────────────────────────────────────────────────────────────┘
 """
 
@@ -44,7 +44,7 @@ from textual.widget import Widget
 from textual.widgets import Static, TabbedContent, TabPane, Tree
 
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
-from chrys.app.tui.binding_display import localized_binding
+from chrys.app.tui.binding_display import BACK_BINDING, localized_binding
 from chrys.app.tui.i18n import LocaleController, render_str, widget_localizer
 from chrys.app.tui.util.diff_comments import CONTEXT_OMITTED, DiffComment, DiffDraft, LineIdentity, line_hash
 from chrys.app.tui.util.diff_content import DiffContent, read_diff_content
@@ -94,7 +94,6 @@ _CHECK_TOGGLE_META = {_CHECK_TOGGLE_META_KEY: True}
 # Constants
 # ---------------------------------------------------------------------------
 
-_BACK_BINDING = msg("tui.binding.back", fallback="Back")
 _TOGGLE_SPLIT_VIEW_BINDING = msg("tui.binding.toggle_split_view", fallback="Toggle Split View")
 _TOGGLE_CHANGE_LIST_BINDING = msg("tui.binding.toggle_change_list", fallback="Toggle Change List")
 _DIFF_VIEWER_TITLE = msg("tui.diff.title", fallback="Diff Viewer")
@@ -1312,7 +1311,7 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
     _CONTENT_ACTIONS: ClassVar[frozenset[str]] = frozenset({"toggle_view", "toggle_change_list"})
 
     BINDINGS: ClassVar[list] = [
-        localized_binding("escape", "go_back", _BACK_BINDING, priority=True),
+        localized_binding("escape", "go_back", BACK_BINDING, priority=True),
         localized_binding("space", "toggle_view", _TOGGLE_SPLIT_VIEW_BINDING, priority=True),
         localized_binding("ctrl+g", "toggle_change_list", _TOGGLE_CHANGE_LIST_BINDING, priority=True),
     ]
@@ -1387,7 +1386,7 @@ class DiffScreen(RightClickScreenCopyMixin, Screen):
         container.border_subtitle = Text(self._cwd)
         with container, VerticalGroup(id="diff-loading-state"):
             yield ChrysLoadingIndicator(id="diff-loading")
-        yield ChrysFooter(locale_controller=self._locale_controller)
+        yield ChrysFooter(locale_controller=self._locale_controller, corner_key="escape")
 
     def on_mount(self) -> None:
         if not composed_live(self):

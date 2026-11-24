@@ -14,7 +14,14 @@ from chrys.service.analytics import Precision, SessionCounterSamples, analyze_tr
 from chrys.service.analytics.export import analysis_json, perfetto_trace
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.trajectory.session import trajectory_events_path
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import (
+    confirm,
+    make_host,
+    make_workdir,
+    patch_runtime,
+    run,
+    write_workflow,
+)
 from tests.support.trajectory_invariants import assert_trajectory_accounted, assert_trajectory_operation_settlement
 
 
@@ -39,7 +46,7 @@ wf.output(b)
 workflow = wf.build()
 """
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="done")])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "recorded", source)
     host = make_host(tmp_path, project=project)
     try:

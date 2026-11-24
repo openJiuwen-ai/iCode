@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -128,6 +129,7 @@ from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 from chrys.foundation.text.draft_references import image_labels_to_paths
 from chrys.foundation.tool_result_metadata import canonical_tool_result_status
 from chrys.orchestration.engine.run.attachments import replace_image_mentions_with_paths
+from chrys.orchestration.workdir_migration import MIGRATION_NOTICE
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mutations.types import FileHashDiff
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
@@ -208,11 +210,14 @@ def _chat_sub_agent(origin: InvocationOrigin) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class _WarningDedupeKey:
-    """Session-scoped identity for one screen-lifetime warning toast."""
+    """Warning identity; membership failures also distinguish each session opening."""
 
     session_id: str | None
     code: str
     message: str
+    session_generation: int = 0
+    request_id: str = ""
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,6 +443,9 @@ class BackendEventHandler:
         return self._state.run.agent_loading
 
     def set_agent_loading(self, loading: bool) -> None:
+        if not loading and self._state.session.load_owner is not None:
+            self._state.session.load_owner = None
+            self.restoring_session = False
         self._state.run.agent_loading = loading
         self._callbacks.set_agent_loading(loading)
 
@@ -856,6 +864,10 @@ class BackendEventHandler:
     # -------------------------------------------------------------- #
 
     async def on_agent_load_started(self, event: AgentLoadStarted) -> None:
+        if self._state.session.load_owner is not None and event.operation != "restore":
+            self.restoring_session = False
+        # The backend now owns the dialog, which it may reuse in place.
+        self._state.session.load_owner = object()
         if event.operation not in _SOFT_AGENT_LOAD_OPERATIONS:
             # Fail-closed for guard/picker reads, but don't repaint the tag
             # yet: that flashes the select label between the old and new
@@ -882,7 +894,8 @@ class BackendEventHandler:
 
     async def on_agent_load_failed(self, event: AgentLoadFailed) -> None:
         s = self
-
+        if event.operation == "new_session" and s.creating_new_session:
+            self._state.session.failed_new_session_id = event.session_id
         label = event.display_name or event.agent_profile
         if label and not (event.operation == "settings_reload" and self._state.runtime.details_confirmed):
             s.profile = label
@@ -912,9 +925,11 @@ class BackendEventHandler:
     async def on_session_ready(self, event: SessionReady) -> None:
         s = self
         ui = self._ui()
+        session_changed = (event.session_id or "") != s.main_usage_source_id
+        workspace_transition = event.workspace is not None or self._state.workspace.workspace_id is not None
 
-        self._state.workspace.roots = [event.primary_cwd, *event.working_dirs]
-        if (event.session_id or "") != s.main_usage_source_id:
+        session_dirs_changed = self._services.apply_workspace(self._state.workspace, event)
+        if session_changed:
             # The list was the previous session's: its commands ended with it.
             self._state.runtime.background_tasks = None
         s.main_usage_source_id = event.session_id or ""
@@ -945,7 +960,11 @@ class BackendEventHandler:
         )
         ui.set_tool_info(trail)
         # During a restore, _on_session_restored handles the chat panel
-        if s.creating_new_session:
+        # Outside a restore, a different session's chat still on screen (a restore that failed after
+        # closing it) is stale once another session is ready.
+        if s.creating_new_session or (
+            session_changed and not s.restoring_session and ui.chat_session_id() not in ("", event.session_id)
+        ):
             from chrys.foundation.platform import safe_getcwd
 
             s.creating_new_session = False
@@ -958,6 +977,7 @@ class BackendEventHandler:
             ui.set_input_retry_mode(False)
             s.chdir_original_cwd = None
             cwd = event.primary_cwd or safe_getcwd()
+            previous_cwd = s.chdir_current_cwd
             s.chdir_current_cwd = cwd
             ui.set_context_usage_state(
                 ContextUsageState.with_window(
@@ -966,6 +986,8 @@ class BackendEventHandler:
                 )
             )
             ui.set_terminal_title_for_cwd(cwd)
+            if workspace_transition and previous_cwd and previous_cwd != cwd and os.path.isdir(cwd):
+                await ui.change_shell_directory(cwd)
             ui.set_input_paste_cwd(cwd)
             await ui.clear_chat()
             s.update_toc()
@@ -981,7 +1003,10 @@ class BackendEventHandler:
             from chrys.foundation.platform import safe_getcwd
 
             cwd = event.primary_cwd or safe_getcwd()
+            previous_cwd = s.chdir_current_cwd
             s.chdir_current_cwd = cwd
+            if workspace_transition and session_changed and previous_cwd and previous_cwd != cwd and os.path.isdir(cwd):
+                await ui.change_shell_directory(cwd)
             ui.set_chat_workspace_cwd(cwd)
             ui.set_input_paste_cwd(cwd)
             ui.update_welcome(profile=s.profile, cwd=cwd)
@@ -1023,12 +1048,13 @@ class BackendEventHandler:
 
         # Backend-confirmed workspace roots: record them in the MRU as a
         # detached background task (never inline — publish awaits handlers).
-        schedule_workspace_mru_touches(
-            [event.primary_cwd, *event.working_dirs],
-            max_entries=self._services.workspace_mru_max_entries,
-            session_id=event.session_id or "",
-            used_at=event.timestamp,
-        )
+        if not workspace_transition or session_changed or session_dirs_changed:
+            schedule_workspace_mru_touches(
+                [event.primary_cwd, *event.working_dirs],
+                max_entries=self._services.workspace_mru_max_entries,
+                session_id=event.session_id or "",
+                used_at=event.timestamp,
+            )
         self._callbacks.refresh_diff_preview(True)
         s.debug("SessionReady", f"{event.agent_profile} [{session_short_id(event.session_id or '')}]")
         if not s.restoring_session:
@@ -1997,20 +2023,39 @@ class BackendEventHandler:
             session_id=None if event.code == "hosted_web_tools_preferred" else event.session_id,
             code=event.code,
             message=event.message,
+            request_id=event.request_id if event.code == "workspace_membership_write_failed" else "",
+            reason=event.reason if event.code == "workspace_membership_write_failed" else "",
+            session_generation=(
+                self._services.session_generation() if event.code == "workspace_membership_write_failed" else 0
+            ),
         )
         # Each rejected user action needs feedback, even when the reason is
         # unchanged. Only background warnings share the screen-lifetime cache.
-        if key in self._seen_warnings and not submit_rejected:
+        # The registry reader owns once-per-open dedupe: restoring the same
+        # session id starts another cycle that this screen must still show.
+        if (
+            key in self._seen_warnings
+            and not submit_rejected
+            and event.code not in {"workspace_registry_unreadable", "workspace_inherited_missing"}
+        ):
             return
         self._seen_warnings.add(key)
-        # A capability handover is worth one modal per configuration, not a toast the
-        # user can miss; the dedupe key already scopes it to the producing fingerprint.
-        if event.code == "hosted_web_tools_preferred":
+        if event.code == MIGRATION_NOTICE:
+            message = event.message if event.display_message is None else self._render_display(event.display_message)
+            await self._ui().add_system(message)
+            return
+        # A capability handover and a membership write failure need explicit
+        # acknowledgement; the key scopes them to their configuration or session.
+        if event.code in {"hosted_web_tools_preferred", "workspace_membership_write_failed"}:
             from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 
             dialog = ConfirmDialog(
                 title=_WARNING_TITLE.bind(),
-                message=event.display_message or event.message,
+                message=(
+                    self._render_display_with_hint(event.display_message, event.display_hint)
+                    if event.display_message is not None and event.display_hint is not None
+                    else event.display_message or event.message
+                ),
                 confirm_label=_HOSTED_WEB_TOOLS_OK.bind(),
                 cancel_label=None,
                 confirm_variant="warning",
@@ -2080,6 +2125,30 @@ class BackendEventHandler:
             if event.display_message is None
             else self._render_display_with_hint(event.display_message, event.display_hint)
         )
+        if event.code == "session_new_failed":
+            shown_session = self._state.session.failed_new_session_id
+            self._state.session.failed_new_session_id = None
+            s.creating_new_session = False
+            if shown_session is not None and shown_session == event.session_id:
+                return
+            if s.agent_loading:
+                self.cancel_agent_load()
+            s.notify(display_full, title=_WARNING_TITLE.bind(), severity="warning", timeout=8)
+            return
+        if not s.in_pending_submit_publish and (
+            event.code
+            in {
+                "workspace_leave_confirmation_required",
+                "workspace_selection_failed",
+                "workspace_primary_missing",
+            }
+            or (event.code == "workspace_change_failed" and self._state.workspace.workspace_id is not None)
+        ):
+            if s.agent_loading:
+                self.cancel_agent_load()
+            s.notify(display_full, title=_WARNING_TITLE.bind(), severity="warning", timeout=8)
+            s.debug("Error", f"[{event.code}] {full_msg[:60]}")
+            return
         if event.code == "session_in_use":
             if s.agent_loading:
                 self.cancel_agent_load()

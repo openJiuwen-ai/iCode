@@ -641,7 +641,7 @@ async def test_session_runtime_extension_returns_runtime_payload() -> None:
         skill_sources={"builtin": ["skill1"]},
         hook_sources=[
             RuntimeHookSourceDetails(
-                scope="project",
+                scope="workdir",
                 source_path="/repo/.chrys/hooks/hooks.yaml",
                 hooks=[
                     RuntimeHookDetails(
@@ -682,7 +682,7 @@ async def test_session_runtime_extension_returns_runtime_payload() -> None:
     assert result["runtimeDetails"]["model"]["selection_source"] == "active"
     assert result["runtimeDetails"]["hook_sources"] == [
         {
-            "scope": "project",
+            "scope": "workdir",
             "source_path": "/repo/.chrys/hooks/hooks.yaml",
             "hooks": [
                 {

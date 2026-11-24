@@ -4,16 +4,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.platform.files import atomic_write_text
 from chrys.foundation.util.lock import FileLock
+from chrys.foundation.util.once_close import finish_close
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.service.state.store import (
     SESSION_ACTIVE_LOCK_TIMEOUT_SECONDS,
@@ -35,17 +38,20 @@ class ActiveSessionGuard:
     def __init__(self, state_store: StateStore | None) -> None:
         self._state_store = state_store
         self._lock: FileLock | None = None
-        self._session_id: str | None = None
 
     def owns(self, session_id: str) -> bool:
         """Return whether this guard currently owns *session_id*."""
-        if self._lock is None or self._session_id is None:
+        if self._lock is None:
             return False
-        if self._session_id == session_id:
+        requested = self._lock_path(session_id)
+        if requested is None:
+            return False
+        if requested == self._lock.path:
             return True
-        owned_path = self._lock_path(self._session_id)
-        requested_path = self._lock_path(session_id)
-        return owned_path is not None and owned_path == requested_path
+        try:
+            return requested.samefile(self._lock.path)
+        except FileNotFoundError:
+            return False
 
     def ensure(self, session_id: str) -> bool:
         """Ensure this process owns *session_id* or report lock contention."""
@@ -74,28 +80,40 @@ class ActiveSessionGuard:
         lock.acquire()
         return lock
 
+    async def acquire_for_restore_async(self, session_id: str, *, timeout: float) -> FileLock | None:
+        """Transfer the acquired lock to the waiter, releasing it if that waiter is cancelled."""
+        # An executor future survives asyncio.Runner cancelling every task on exit.
+        worker = asyncio.get_running_loop().run_in_executor(
+            None, partial(self.acquire_for_restore, session_id, timeout=timeout)
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # The thread may acquire the lock after cancellation. Drain first,
+            # then reclaim its result even if the waiter was cancelled again.
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await finish_close(worker)
+            if not worker.cancelled() and worker.exception() is None and (lock := worker.result()) is not None:
+                with contextlib.suppress(OSError):
+                    lock.release()
+            raise
+
     def install(self, session_id: str, lock: FileLock | None) -> None:
         """Make *lock* the active lock held by this guard."""
         if lock is None:
             return
         self.release()
         self._lock = lock
-        self._session_id = session_id
-        self._write_owner(session_id)
+        self._write_owner(session_id, lock.path.with_suffix(".json"))
 
     def release(self) -> None:
         """Release the active-session lock held by this guard."""
         lock = self._lock
-        session_id = self._session_id
         if lock is None:
             return
-        if session_id is not None:
-            owner_path = self._owner_path(session_id)
-            if owner_path is not None:
-                with contextlib.suppress(OSError):
-                    owner_path.unlink()
+        with contextlib.suppress(OSError):
+            lock.path.with_suffix(".json").unlink()
         self._lock = None
-        self._session_id = None
         lock.release()
 
     def conflict_message(self, session_id: str) -> str:
@@ -126,10 +144,7 @@ class ActiveSessionGuard:
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _write_owner(self, session_id: str) -> None:
-        path = self._owner_path(session_id)
-        if path is None:
-            return
+    def _write_owner(self, session_id: str, path: Path) -> None:
         owner = {
             "session_id": session_id,
             "pid": os.getpid(),

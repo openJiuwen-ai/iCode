@@ -17,6 +17,7 @@ from tests.foundation.i18n._trajectory_catalog_oracle_ids import TRAJECTORY_MESS
 from tests.foundation.i18n._usage_catalog_oracle_ids import USAGE_MESSAGE_IDS
 from tests.foundation.i18n._web_catalog_oracle_ids import WEB_MESSAGE_IDS
 from tests.foundation.i18n._workflow_catalog_oracle_ids import WORKFLOW_MESSAGE_IDS
+from tests.foundation.i18n._workspace_catalog_oracle_ids import WORKSPACE_MESSAGE_IDS
 
 # Adding or removing a msg() definition means editing this set, or an area file
 # imported above, in the SAME commit: the oracle test compares the POT and PO
@@ -89,7 +90,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "builder.extension_unavailable",
     "construction.global_hooks_invalid",
     "construction.hook_skipped",
-    "construction.project_hooks_invalid",
+    "construction.workdir_hooks_invalid",
     "construction.service_session_incompatible",
     "construction.trajectory_activation_failed",
     "controls.model_profile_not_found",
@@ -206,7 +207,10 @@ _message_ids: set[str | tuple[str, str]] = {
     "session_host.no_final_response",
     "session_host.session_id_ambiguous",
     "session_host.session_not_found",
-    "session_host.session_not_found_with_recent",
+    "startup.workdir_data_migrated",
+    ("startup.workdir_data_migration_failed", "startup.workdir_data_migration_failed#plural"),
+    ("startup.workdir_grants_unmigrated", "startup.workdir_grants_unmigrated#plural"),
+    "startup.workdir_trust_conflict",
     "startup.invalid_no_proxy_env",
     "startup.invalid_proxy_env",
     "startup.notifications_migration_failed",
@@ -439,6 +443,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.commands.unavailable_while_running",
     "tui.commands.unknown_agents_target",
     "tui.commands.unknown_command",
+    "tui.clipboard.copy_failed",
     "tui.compaction.copy.summary",
     "tui.compaction.copy.summary_unavailable",
     "tui.config.agent.loading",
@@ -819,7 +824,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.runtime_details.section.inline_skills",
     "tui.runtime_details.section.mcp_servers",
     "tui.runtime_details.section.model_profile",
-    "tui.runtime_details.section.project_hooks",
+    "tui.runtime_details.section.workdir_hooks",
     "tui.runtime_details.section.sub_agent_tools",
     "tui.runtime_details.section.unavailable_extensions",
     "tui.runtime_details.skills",
@@ -942,12 +947,18 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.sidebar.tasks.title",
     "tui.sidebar.toc.empty",
     "tui.sidebar.toc.title",
+    "tui.startup.session.in_use",
+    "tui.startup.session.workspace_restore_declined",
+    "tui.startup.session.workspace_restore_restart",
     "tui.startup.session.not_found",
     "tui.startup.session.read_failed",
     "tui.startup.session.restore_failed",
     "tui.startup.session.restore_fallback",
+    "tui.startup.session.retry",
+    "tui.startup.session.start_new",
     "tui.startup.title.agent_failed",
     "tui.startup.title.session",
+    "tui.startup.workspace.restart",
     "tui.status.agent_load_failed",
     "tui.status.agent_selector_label",
     "tui.status.agent_startup_failed",
@@ -1023,6 +1034,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.workspace.missing.message",
     "tui.workspace.missing.message_restore",
     "tui.workspace.missing.message_submit",
+    "tui.workspace.missing.workspace_restore",
     "tui.workspace.missing.title",
     "tui.workspace.title.busy",
     "tui.workspace.title.invalid_path",
@@ -1275,6 +1287,7 @@ EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
     | SETTINGS_MESSAGE_IDS
     | TOOL_CARD_MESSAGE_IDS
     | PROMPT_MESSAGE_IDS
+    | WORKSPACE_MESSAGE_IDS
     | USAGE_MESSAGE_IDS
     | PROFILE_CONFIG_MESSAGE_IDS
     | TRAJECTORY_MESSAGE_IDS

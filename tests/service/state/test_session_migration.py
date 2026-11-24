@@ -341,6 +341,8 @@ def test_a_session_dir_swapped_for_a_link_after_planning_is_not_followed(tmp_pat
     _make_session(src, "bbbbbbbbbbbb")
     victim = tmp_path / "victim"
     victim.mkdir()
+    outside_locks = victim.parent / ".locks"
+    outside_locks.mkdir()
     (victim / SESSION_FILE_NAME).write_text(json.dumps({"secret": True}))
     plan = plan_session_migration(src, dst)
     assert [item.session_id for item in plan.items] == ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]
@@ -352,6 +354,7 @@ def test_a_session_dir_swapped_for_a_link_after_planning_is_not_followed(tmp_pat
     assert report.copied == ("bbbbbbbbbbbb",)
     assert report.failed == ((src / "aaaaaaaaaaaa", "linked entry"),)
     assert not (dst / "aaaaaaaaaaaa").exists()
+    assert not list(outside_locks.iterdir())
     assert _partials(dst) == []
 
 

@@ -176,7 +176,7 @@ async def test_main_screen_queue_controls_keep_one_message_and_the_original_draf
         assert bar.query_one(TextArea).has_focus
         assert not bar.query_one("#running-send-btn", Button).display
         assert bar.value == "  keep the original draft  "
-        assert str(bar.query_one("#send-btn", Button).label) == "Steer"
+        assert str(bar.query_one("#send-btn", Button).label) == "Send Now"
         injection_id = messages[0].injection_id
         assert injection_id is not None
 

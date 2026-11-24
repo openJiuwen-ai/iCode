@@ -63,7 +63,7 @@ def _origin(layer: Source) -> SettingOrigin:
 def test_greyed_layers_are_exactly_project_and_env() -> None:
     greyed = {layer for layer in Source if is_greyed_layer(_origin(layer))}
 
-    assert greyed == {Source.PROJECT, Source.ENV}
+    assert greyed == {Source.WORKDIR, Source.ENV}
     for layer in Source:
         loaded = LoadedSettings(settings=Settings(), provenance={_KEY: _origin(layer)})
         assert provenance_view(loaded, _KEY).editable is (layer not in greyed)

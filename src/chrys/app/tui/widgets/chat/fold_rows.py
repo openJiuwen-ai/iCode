@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from operator import add
+from operator import add, sub
 from typing import TYPE_CHECKING, Final, Literal
 
 from rich.cells import cell_len
@@ -265,6 +265,14 @@ class ToolTally:
             failed=self.failed + other.failed,
             interrupted=self.interrupted + other.interrupted,
             slept_ms=self.slept_ms + other.slept_ms,
+        )
+
+    def __sub__(self, other: ToolTally) -> ToolTally:
+        return ToolTally(
+            tuple(map(sub, self.counts, other.counts, strict=True)),
+            failed=self.failed - other.failed,
+            interrupted=self.interrupted - other.interrupted,
+            slept_ms=self.slept_ms - other.slept_ms,
         )
 
     @property

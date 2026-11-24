@@ -11,6 +11,7 @@ from textual.screen import Screen
 from textual.widgets import Static
 
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
+from chrys.app.tui.clipboard import wait_for_clipboard
 from tests.support.waiting import wait_for
 
 
@@ -44,6 +45,7 @@ async def test_right_click_copies_a_drag_that_starts_on_a_trailing_blank_row(mon
         await wait_for(lambda: set(screen.selections) == {trailing, following}, pilot=pilot)
         await pilot.click(offset=(0, following.region.y), button=3)
 
+        await wait_for_clipboard(app)
         assert copied == ["\nnex"]
         assert app.clipboard == "\nnex"
         assert screen.selections == {}

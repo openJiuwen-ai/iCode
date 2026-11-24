@@ -100,7 +100,6 @@ class CopyActionController:
             return
 
         selected = messages if count is None else messages[-min(count, len(messages)) :]
-        self._view.copy_text(format_chat_copy_payload(selected))
         count = len(selected)
         if target == "all":
             message = _COPIED_MESSAGES.bind(count=count)
@@ -108,7 +107,7 @@ class CopyActionController:
             message = _COPIED_USER_TURNS.bind(count=count)
         else:
             message = _COPIED_RESPONSES.bind(count=count)
-        self._view.notify(message, title=COPIED_TITLE.bind(), timeout=2)
+        self._view.copy_text(format_chat_copy_payload(selected), message=message, title=COPIED_TITLE.bind())
 
     def toggle_fold(self) -> None:
         """Collapse or expand all process sections, tool groups and thinking."""

@@ -46,6 +46,8 @@ from tests.app.acp._server_fakes import (
     _plan_updates,
     _WarningRejectingClient,
 )
+from tests.support.async_tasks import running_task, wait_for_started
+from tests.support.waiting import wait_for
 
 # ACP carries the client's ``messageId`` as a UUID: the server rejects anything
 # else with ``invalid_params`` before it starts a turn.
@@ -448,16 +450,16 @@ async def test_request_input_propagates_its_own_cancellation() -> None:
     await host.event_bus.subscribe(AskUserResponse, lambda event: _append_async(responses, event))
     event = QuestionToUser(request_id="r", questions=(AskUserQuestion("Continue?"),), session_id="s1")
 
-    task = asyncio.create_task(server._request_input("s1", event))
-    await asyncio.wait_for(started.wait(), timeout=5)
-    task.cancel()
-    # The owner tearing the prompt down must see its cancellation, not a
-    # synthetic "cancelled" answer that would let the turn carry on.
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    await asyncio.wait_for(callback_cancelled.wait(), timeout=5)
-    assert responses == []
-    assert ("s1", "r") not in server._pending_input_cancels
+    async with running_task(server._request_input("s1", event)) as task:
+        await wait_for_started(started, task, description="client input request started")
+        task.cancel()
+        # The owner tearing the prompt down must see its cancellation, not a
+        # synthetic "cancelled" answer that would let the turn carry on.
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await wait_for(callback_cancelled.is_set, description="client input callback cancelled")
+        assert responses == []
+        assert ("s1", "r") not in server._pending_input_cancels
 
 
 @pytest.mark.anyio
@@ -479,6 +481,21 @@ async def test_settings_reload_tells_the_client_which_values_were_dropped() -> N
     assert ("chrys/warning", {"sessionId": "s1", "code": "setting_rejected", "message": "Ignoring CHRYS_THEME=x"}) in [
         (method, params) for method, params in client.ext_notifications
     ]
+
+
+@pytest.mark.anyio
+async def test_startup_migration_notifies_once_without_a_session() -> None:
+    client = _FakeClient()
+    warning = Warning(code="workdir_data_migrated", message="Migrated working directory data.")
+    server = ChrysAcpServer(
+        _FakeManager(_FakeHost(event_bus=EventBus())),  # type: ignore[arg-type]
+        initial_vision=False,
+        startup_warnings=(warning,),
+    )
+    server.on_connect(client)
+    await server.initialize(1)
+    await server.initialize(1)
+    assert client.ext_notifications == [("chrys/warning", {"code": warning.code, "message": warning.message})]
 
 
 @pytest.mark.anyio
@@ -649,7 +666,9 @@ async def test_new_session_forwards_the_loads_settings_warnings() -> None:
     host = _FakeHost(event_bus=EventBus())
     client = _FakeClient()
     manager = _FakeManager(host)
-    manager.session_warnings.append(Warning(code="project_config_dormant", message="Project settings found but idle"))
+    manager.session_warnings.append(
+        Warning(code="workdir_config_dormant", message="Working directory settings found but idle")
+    )
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(client)
 
@@ -657,14 +676,16 @@ async def test_new_session_forwards_the_loads_settings_warnings() -> None:
 
     assert (
         "chrys/warning",
-        {"sessionId": "s1", "code": "project_config_dormant", "message": "Project settings found but idle"},
+        {"sessionId": "s1", "code": "workdir_config_dormant", "message": "Working directory settings found but idle"},
     ) in [(method, params) for method, params in client.ext_notifications]
 
 
 @pytest.mark.anyio
 async def test_load_session_forwards_the_loads_settings_warnings(monkeypatch) -> None:
     manager = _FakeLoadManager()
-    manager.session_warnings.append(Warning(code="project_config_dormant", message="Project settings found but idle"))
+    manager.session_warnings.append(
+        Warning(code="workdir_config_dormant", message="Working directory settings found but idle")
+    )
     client = _FakeClient()
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(client)
@@ -675,7 +696,7 @@ async def test_load_session_forwards_the_loads_settings_warnings(monkeypatch) ->
 
     assert (
         "chrys/warning",
-        {"sessionId": "s1", "code": "project_config_dormant", "message": "Project settings found but idle"},
+        {"sessionId": "s1", "code": "workdir_config_dormant", "message": "Working directory settings found but idle"},
     ) in [(method, params) for method, params in client.ext_notifications]
 
 
@@ -684,7 +705,9 @@ async def test_load_session_closes_loaded_host_when_warning_send_fails() -> None
     """The warning forwarding sits in the same cleanup scope as the replay:
     a send failure must not leave the freshly loaded session in the map."""
     manager = _FakeLoadManager()
-    manager.session_warnings.append(Warning(code="project_config_dormant", message="Project settings found but idle"))
+    manager.session_warnings.append(
+        Warning(code="workdir_config_dormant", message="Working directory settings found but idle")
+    )
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(_WarningRejectingClient())
 
@@ -697,7 +720,9 @@ async def test_load_session_closes_loaded_host_when_warning_send_fails() -> None
 @pytest.mark.anyio
 async def test_load_session_keeps_existing_host_when_warning_send_fails() -> None:
     manager = _FakeLoadManager(reused_existing=True)
-    manager.session_warnings.append(Warning(code="project_config_dormant", message="Project settings found but idle"))
+    manager.session_warnings.append(
+        Warning(code="workdir_config_dormant", message="Working directory settings found but idle")
+    )
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(_WarningRejectingClient())
 
@@ -714,7 +739,9 @@ async def test_new_session_closes_created_host_when_warning_send_fails() -> None
     failed send must close it rather than strand it."""
     host = _FakeHost(event_bus=EventBus())
     manager = _FakeManager(host)
-    manager.session_warnings.append(Warning(code="project_config_dormant", message="Project settings found but idle"))
+    manager.session_warnings.append(
+        Warning(code="workdir_config_dormant", message="Working directory settings found but idle")
+    )
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(_WarningRejectingClient())
 

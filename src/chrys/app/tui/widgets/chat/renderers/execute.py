@@ -439,7 +439,9 @@ class ExecuteToolCall(BaseToolCard):
                 display_text = output_body
 
         with suppress(Exception):
-            panel.update(Text(sanitize_source_text(display_text, tab_size=8), no_wrap=True, overflow="ellipsis"))
+            update_static_in_place(
+                panel, Text(sanitize_source_text(display_text, tab_size=8), no_wrap=True, overflow="ellipsis")
+            )
         self.add_class("-done")
         self._show_tool_copy_button()
 
@@ -454,6 +456,6 @@ class ExecuteToolCall(BaseToolCard):
         panel.border_subtitle = render_text(widget_localizer(self), TOOL_CARD_ERRORED.bind())
         self.add_class("-error")
         with suppress(Exception):
-            panel.update(Text(sanitize_source_text(error, tab_size=8)))
+            update_static_in_place(panel, Text(sanitize_source_text(error, tab_size=8)))
         self.add_class("-done")
         self._show_tool_copy_button()

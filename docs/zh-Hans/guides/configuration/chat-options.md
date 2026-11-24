@@ -140,7 +140,7 @@ GPT-5.6 及之后的模型使用 `prompt_cache_options`，有效期为 `30m`，�
 | 其他地址上较早模型的交错思考 | `additional_beta_flags` | `["interleaved-thinking-2025-05-14"]` |
 
 - 只有支持自适应思考的模型才能使用 `adaptive`；较新的模型会拒绝旧的 `enabled` / `budget_tokens` 形式。普通固定预算思考要求“最大输出词元数”大于 `budget_tokens`，手动交错思考的预算规则有所不同。
-- `display: "summarized"` 用于请求服务返回可读的思考摘要。较新的 Claude 模型（包括 Opus 5.5 和 Fable 5.1）默认隐藏这部分文字。请在已有的 `thinking` 对象中加入 `"display": "summarized"`；iCode 的“默认展开思考”设置只决定返回的文字在写出时完整展开还是只显示一行，不会向服务请求摘要。如需让接口隐藏摘要，可改为 `"display": "omitted"`；这不会关闭思考，也不会减少思考词元的费用。
+- `display: "summarized"` 用于请求服务返回可读的思考摘要。较新的 Claude 模型（包括 Opus 5.5 和 Fable 5.1）默认隐藏这部分文字。请在已有的 `thinking` 对象中加入 `"display": "summarized"`。如需让接口隐藏摘要，可改为 `"display": "omitted"`；这不会关闭思考，也不会减少思考词元的费用。
 - 较新的 Claude 模型会拒绝非默认的 `temperature`、`top_p` 和 `top_k` 值，请不要设置。
 - `additional_beta_flags` 和 `betas` 用于给请求增加 Beta 标志，“HTTP 附加请求头”中的 `anthropic-beta` 也一样。iCode 会把它们排在自己的标志之后，合并到同一个 `anthropic-beta` 请求头中发送。`extra_headers` 行中的 `anthropic-beta` 会替换所有这些标志，包括 iCode 自己的标志；此时 iCode 只补上思考设置所需的标志。
 - 在 Anthropic 官方地址上使用固定预算的思考时，iCode 会自动添加交错思考的标志，详见 [Claude 思考设置](./models.md#claude-思考设置)。在其他地址上，请按上表自行添加。自适应思考已自动支持交错思考，无需该标志。交错思考的支持情况因模型而异，服务接受某个 Beta 标志并不代表它实际生效。

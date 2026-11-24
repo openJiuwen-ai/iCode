@@ -270,12 +270,12 @@ class HookManager:
 
         Empty when no source had a path (e.g. a synthetic empty
         config). Populated by :class:`MergedHooksFile` with both
-        project and global paths in load order. Used for log lines
+        working directory and global paths in load order. Used for log lines
         and the future ``/hooks`` TUI screen.
         """
         return list(self._file.sources)
 
-    def has_hooks_for(self, event: HookEvent) -> bool:
+    def has_hooks_for(self, event: HookEvent, *, blocking_only: bool = False) -> bool:
         """Cheap fast-path check.
 
         Wire-up sites guard with this so we don't even build payloads
@@ -283,7 +283,10 @@ class HookManager:
         call when hooks are unused — and "no hooks at all" is the
         common case.
         """
-        return any(h.enabled and h.event == event for h in self._file.hooks)
+        return any(
+            h.enabled and h.event == event and (not blocking_only or h.execution.mode == "blocking")
+            for h in self._file.hooks
+        )
 
     def executions(self) -> tuple[HookExecutionView, ...]:
         """The runs in flight now (queued or running, waited on or not), oldest first."""
@@ -626,7 +629,6 @@ class HookManager:
         override_before = decision.args_override
         reminders_before = len(decision.system_reminders)
         contexts_before = len(decision.extra_context)
-        override_text_before = decision.result_override
         try:
             ask = _merge_blocking_result(
                 decision,
@@ -661,7 +663,6 @@ class HookManager:
                 args_after=_tool_args(envelope),
                 reminders_before=reminders_before,
                 contexts_before=contexts_before,
-                override_before=override_text_before,
             )
         except Exception:
             # The hook's result, written by the hook, could not be taken: its run ended all
@@ -1002,6 +1003,8 @@ class HookManager:
         max_retries = self._file.settings.outbox_max_retries
         queued = 0
         for job in stale:
+            if self._outbox.skip_pending(job.job_id):
+                continue
             if job.retries >= max_retries:
                 logger.warning(
                     "Outbox job %s (hook=%s) exceeded max_retries=%d; moving to failed/",
@@ -1069,7 +1072,7 @@ class HookManager:
         return matches[0], ""
 
     def _resolve_legacy_recovery_hook_by_source(self, job: OutboxJob) -> HookConfig | None:
-        """Resolve pre-source-path jobs that only recorded project/global."""
+        """Resolve pre-source-path jobs that only recorded working directory/global."""
         matches = [
             hook
             for hook in self._hooks_by_id.get(job.hook_id, [])
@@ -1212,8 +1215,10 @@ class HookManager:
         # fire_and_forget
         if hook.execution.detach:
             try:
-                if job is not None:
-                    self._outbox.mark_started(job)
+                if job is not None and not self._outbox.mark_started(job):
+                    if trace is not None:
+                        trace.finished_soon(outcome=HookOutcome.ABANDONED)
+                    return
                 log_path = await self._runner.spawn_detached(hook, payload, job=job, payload_text=run.payload_text)
             except asyncio.CancelledError:
                 if trace is not None:
@@ -1330,8 +1335,10 @@ class HookManager:
             # took a step only this handler closes it.
             async with self._sem:
                 await self._report(self._take_slot(run))
-                if job is not None:
-                    self._outbox.mark_started(job)
+                if job is not None and not self._outbox.mark_started(job):
+                    if trace is not None:
+                        trace.finished_soon(outcome=HookOutcome.CANCELLED)
+                    return HookResult(hook_id=hook.id, exit_code=None)
                 run.output = HookResult(hook_id=hook.id, exit_code=None)
                 result = await self._runner.run_and_wait(
                     hook, payload, payload_text=run.payload_text, result=run.output
@@ -1396,9 +1403,9 @@ def _build_envelope(event: HookEvent, payload: dict[str, Any]) -> dict[str, Any]
 def _hook_sources(file: MergedHooksFile) -> dict[int, str]:
     """Map hook object identity to its merged configuration layer."""
     sources: dict[int, str] = {}
-    if file.project is not None:
-        for hook in file.project.hooks:
-            sources[id(hook)] = "project"
+    if file.workdir is not None:
+        for hook in file.workdir.hooks:
+            sources[id(hook)] = "workdir"
     if file.global_ is not None:
         for hook in file.global_.hooks:
             sources[id(hook)] = "global"
@@ -1408,9 +1415,9 @@ def _hook_sources(file: MergedHooksFile) -> dict[int, str]:
 def _hook_source_paths(file: MergedHooksFile) -> dict[int, str]:
     """Map hook object identity to the hooks config file that supplied it."""
     sources: dict[int, str] = {}
-    if file.project is not None and file.project.source:
-        for hook in file.project.hooks:
-            sources[id(hook)] = file.project.source
+    if file.workdir is not None and file.workdir.source:
+        for hook in file.workdir.hooks:
+            sources[id(hook)] = file.workdir.source
     if file.global_ is not None and file.global_.source:
         for hook in file.global_.hooks:
             sources[id(hook)] = file.global_.source
@@ -1506,14 +1513,14 @@ def _asks_unsupported(event: HookEvent, decision: dict[str, Any], *, unusable: s
         or (action == "modify" and event not in _ARGS_OVERRIDE_EVENTS)
         or (bool(decision.get("system_reminder")) and event not in _SYSTEM_REMINDER_EVENTS)
         or (bool(decision.get("extra_context")) and event not in _EXTRA_CONTEXT_EVENTS)
-        or (bool(decision.get("result_override")) and event not in _RESULT_OVERRIDE_EVENTS)
+        or (decision.get("result_override") is not None and event not in _RESULT_OVERRIDE_EVENTS)
     )
 
 
 def _asks_anything(decision: dict[str, Any]) -> bool:
     action = _decision_action(decision)
     return action in ("block", "modify", "ask") or bool(
-        decision.get("system_reminder") or decision.get("extra_context") or decision.get("result_override"),
+        decision.get("system_reminder") or decision.get("extra_context") or decision.get("result_override") is not None,
     )
 
 
@@ -1528,7 +1535,6 @@ def _blocking_effect(
     args_after: Any,
     reminders_before: int,
     contexts_before: int,
-    override_before: str,
 ) -> tuple[HookRunEffect | None, HookRunApplied]:
     """What iCode took from one blocking run, folded into *decision*; at most one effect.
 
@@ -1551,8 +1557,12 @@ def _blocking_effect(
         return "modified_args", HookRunApplied(args=indented_json(args_after))
     if len(decision.system_reminders) > reminders_before:
         return "added_reminder", HookRunApplied(reminder=decision.system_reminders[-1])
-    if decision.result_override and decision.result_override != override_before:
-        return "replaced_result", HookRunApplied(result_override=decision.result_override)
+    # Attribute an explicit replacement to the run that wrote it, even if two
+    # consecutive hooks chose the same text (including the empty string).
+    override = result.decision.get("result_override")
+    if event in _RESULT_OVERRIDE_EVENTS and isinstance(override, str):
+        extra = decision.extra_context[-1] if len(decision.extra_context) > contexts_before else ""
+        return "replaced_result", HookRunApplied(result_override=override, extra_context=extra)
     if len(decision.extra_context) > contexts_before:
         return "added_context", HookRunApplied(extra_context=decision.extra_context[-1])
     if _asks_unsupported(event, result.decision, unusable=result.unusable):
@@ -1662,7 +1672,7 @@ def _merge_blocking_result(
     if event in _EXTRA_CONTEXT_EVENTS and isinstance(extra, str) and extra:
         decision.extra_context.append(extra)
     override = result.decision.get("result_override")
-    if event in _RESULT_OVERRIDE_EVENTS and isinstance(override, str) and override:
+    if event in _RESULT_OVERRIDE_EVENTS and isinstance(override, str):
         decision.result_override = override
         # Write it back so the next hook reads the text this one produced, as an
         # argument override already does for ``tool.args``. Without this each hook

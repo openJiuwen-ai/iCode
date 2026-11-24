@@ -15,7 +15,7 @@ async def record_workflow_run(directory: Path, *, session_id: str, title: str, o
         run_id=directory.name,
         session_id=session_id,
         workflow_id="archived",
-        source_kind="project",
+        source_kind="workdir",
         canonical_path=str(directory.parent / "removed-workflow.py"),
         title=title,
         input_excerpt="workflow input only",

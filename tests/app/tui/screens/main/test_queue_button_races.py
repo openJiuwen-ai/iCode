@@ -90,7 +90,7 @@ async def test_steer_press_during_delivery_does_not_interrupt_the_turn(
                 await delivery
             assert ready.is_set() and not delivery.done()
             send = bar.query_one("#send-btn", Button)
-            assert str(send.label) == "Steer"
+            assert str(send.label) == "Send Now"
             # Button.press is the pointer/keyboard activation path. Its Pressed
             # message is queued while the consumed result releases the draft.
             send.press()

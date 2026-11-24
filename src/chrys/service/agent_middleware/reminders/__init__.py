@@ -63,6 +63,7 @@ def build_sources(
     warn_threshold_pct: float,
     automatic_compaction: bool,
     shell_tool_enabled: bool,
+    workspace_section: bool,
     sub_agent_names: Sequence[str] | None,
     todo_state_provider: Callable[[], str | None] | None,
     background_tasks_provider: Callable[[], str | None] | None,
@@ -84,7 +85,9 @@ def build_sources(
             warn_threshold_pct=warn_threshold_pct,
             automatic_compaction=automatic_compaction,
         ),
-        runtime_env=RuntimeEnvSource(runtime, shell_tool_enabled=shell_tool_enabled),
+        runtime_env=RuntimeEnvSource(
+            runtime, shell_tool_enabled=shell_tool_enabled, workspace_section=workspace_section
+        ),
         sub_agents=SubAgentsSource(sub_agent_names),
         todo=TodoSource(todo_state_provider),
         background_tasks=BackgroundTasksSource(background_tasks_provider),

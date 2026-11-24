@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The persisted session-listing catalog: its v2 record format, versioning and locked merges."""
+"""The persisted session-listing catalog: its v3 record format, versioning and locked merges."""
 
 from __future__ import annotations
 
@@ -72,6 +72,7 @@ _CHAT = ChatSessionMeta(
     model_base_url="https://example.invalid",
     model_profile_fingerprint="fp-model",
     service_session_id="svc",
+    service_session_workspace_fingerprint="fp-workspace",
     parent_session_id="parent",
     user_prompt_search_text="fix the parser",
 )
@@ -107,6 +108,7 @@ _CHAT_RECORD = {
         "model_base_url": "https://example.invalid",
         "model_profile_fingerprint": "fp-model",
         "service_session_id": "svc",
+        "service_session_workspace_fingerprint": "fp-workspace",
         "parent_session_id": "parent",
         "user_prompt_search_text": "fix the parser",
     },
@@ -167,9 +169,9 @@ def _read_raw(catalog: SessionCatalogFile) -> dict:
     return json.loads(catalog.path.read_text(encoding="utf-8"))
 
 
-def test_v2_records_are_pinned() -> None:
-    """Golden v2 records: a change here must bump ``CATALOG_DERIVATION_VERSION``."""
-    assert CATALOG_DERIVATION_VERSION == 2
+def test_v3_records_are_pinned() -> None:
+    """Golden v3 records: a change here must bump ``CATALOG_DERIVATION_VERSION``."""
+    assert CATALOG_DERIVATION_VERSION == 3
     assert encode_entry(CatalogEntry((11, 22, 33), _CHAT)) == _CHAT_RECORD
     assert encode_entry(_WORKFLOW_ENTRY) == _WORKFLOW_RECORD
     # Size and run status are never recorded; everything else round-trips.
@@ -212,13 +214,13 @@ def _derivation_envelope() -> dict:
     return {"meta": {**meta, "message_count": 4}, "state": state}
 
 
-def test_v2_derivation_is_pinned() -> None:
-    """Golden v2 derived values: changing how any is computed must bump ``CATALOG_DERIVATION_VERSION``.
+def test_v3_derivation_is_pinned() -> None:
+    """Golden v3 derived values: changing how any is computed must bump ``CATALOG_DERIVATION_VERSION``.
 
     Recorded entries outlive processes, so a derivation change without a bump
     would serve the old values for every unchanged session indefinitely.
     """
-    assert CATALOG_DERIVATION_VERSION == 2
+    assert CATALOG_DERIVATION_VERSION == 3
     collapsed = " ".join(_LONG_PROMPT.split())
     record = encode_meta(JsonFileStateStore._session_meta_from_envelope(_derivation_envelope(), size_bytes=0))
 

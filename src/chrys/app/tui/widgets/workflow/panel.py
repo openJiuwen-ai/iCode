@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Button, Static, Tab, TabbedContent, TabPane, Tabs
 
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.util.formatting import format_elapsed
 from chrys.app.tui.util.git_branch import format_workspace_subtitle
@@ -534,9 +534,11 @@ class WorkflowPanel(Vertical):
         run_input = self._painted_input
         if not run_input or not run_input.strip():
             return
-        copy_text_to_clipboards(self.app, run_input)
-        self.notify(
+        dispatched = copy_text_to_clipboards(self.app, run_input)
+        notify_after_copy(
+            self,
             text.render(text.RUN_INPUT_COPIED.bind(), self.locale_controller),
+            dispatched=dispatched,
             title=text.render(COPIED_TITLE.bind(), self.locale_controller),
             timeout=2,
             markup=False,

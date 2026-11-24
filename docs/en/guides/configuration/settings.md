@@ -22,7 +22,7 @@ You can also open a tab directly with `/settings <tab>`:
 | --- | --- | --- |
 | General | `general` | Appearance, input and updates |
 | Models & Agents | `models` | Default agent, model roles, and request retries |
-| Safety | `safety` | Approval, project trust, credentials, diagnostics, and telemetry |
+| Safety | `safety` | Approval, working directory trust, credentials, diagnostics, and telemetry |
 | Sessions | `sessions` | Session titles, storage, and rollback snapshots |
 | Tools | `tools` | File search, images, web tools, agent questions, tool detail display, and workspace notices |
 | Notifications | `notifications` | Notification toggles, delivery methods, and events |
@@ -59,9 +59,6 @@ The "Takes effect" column in the following tables describes each setting's usual
 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
-| Expand thinking by default | Disabled by default (`ui.chat.show_thinking`). When enabled, new thinking is expanded above the reply while the model writes it, when the model service returns it as readable text. When disabled, the folded row shows the estimated token count for that thinking and, once enough text has arrived, the speed in tokens per second. Either way, it folds to one line showing how the thinking begins once the model moves on to a tool call or its reply. You can click it at any time to read it in full. Thinking the service returns only in encrypted form is never shown. Thinking already in the conversation keeps its state when you change this. | Immediately |
-| Expand tool details by default | Disabled by default (`ui.chat.tool_groups_expanded`). When enabled, new tool groups are expanded by default. When disabled, they are collapsed and show only a summary and the current operation. You can click a tool group at any time to expand its details. | Immediately |
-| Automatically fold completed turns | Enabled by default (`ui.chat.fold_finished_turns`). After a successful reply, folds thinking, tool calls and intermediate replies under a header that counts the tool calls by kind, such as `12 tool calls: 8 reads · 4 commands`, or **Activity** when there were no tools. User messages, including mid-turn additions, and the final reply remain visible. Click the header to toggle one section, or type `/fold` to collapse or expand activity sections, tool groups, thinking and text between tool calls with the keyboard. Errors, interruptions and the last turn recovered after a crash stay visible; a turn without a visible final reply is not automatically folded. Existing folds keep your choice. | Future completed turns and sessions you open afterwards |
 | Full-color images | Enabled by default (`ui.chat.image_graphics`). In Ghostty, kitty and iTerm2 3.7.5 or later, images in the conversation, such as attached screenshots and images that tools return, are shown in full color at the terminal's own resolution; in WezTerm, VS Code and Windows Terminal 1.22 or later, at 10 by 20 pixels to a character cell. VS Code shows them only with `terminal.integrated.enableImages` on and GPU acceleration (`terminal.integrated.gpuAcceleration`) not turned off. Over SSH, Ghostty, kitty and iTerm2 show them in full color too when `COLORTERM=truecolor` is set on the remote host, for example in its shell profile. To tell which terminal it runs in, iCode asks the terminal as it starts; a terminal that never answers delays the start by up to a second and a half. In other terminals, inside tmux, screen or Zellij, or with this setting off, images are drawn with colored blocks, two pixels to a character cell. In WezTerm, VS Code and Windows Terminal, an image shows as colored blocks while the conversation scrolls and sharpens once it stops. If images still show as blocks in Windows Terminal, start iCode from a Windows Terminal tab rather than from a console window that Windows opened in Windows Terminal. | After restart |
 
 #### Input
@@ -113,15 +110,17 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 | Human approval timeout (seconds) | Defaults to `0` (no timeout); positive values set a deadline in seconds. Negative values are adjusted to `0`. Applies to TUI and ACP human approvals. Timeout rejects the call. | After restarting iCode |
 | Show the approval dialog only when Auto-Review flags a call | On by default. In automatic mode, no dialog opens while the approval judge model evaluates a call, and calls it judges safe run without one; the dialog opens only for flagged calls or when evaluation fails. When disabled, the dialog opens at once and shows **Evaluating**, so you can decide before evaluation finishes. Requests already waiting keep the behavior they started with. See [Handle approval requests in the TUI](./approval.md#handle-approval-requests-in-the-tui). | Immediately |
 
-#### Project trust
+#### Working directory trust
 
-Project settings, hooks, and skills come with the repository you open, so all three are off by default. When the working directory has any of them that are not loaded, iCode shows a notice naming the setting to turn on.
+These user-level switches control what iCode loads from each session’s primary working directory. All three are off by default. When a switch keeps a source unloaded, iCode shows a notice identifying the switch.
+
+If iCode cannot save a backup during upgrade, it leaves the older trust keys in place and reads them at startup. The notification, theme, and Buddy settings can still be upgraded. If the older and renamed keys for a switch disagree, iCode turns the switch off and names it in a warning.
 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
-| Load project settings | Reads `.chrys/settings.yaml` in the current working directory and applies its project settings, such as request retries, automatic session titles, and working directory notices. See [Project-level settings](../../reference/settings.md#project-level-settings) for allowed keys and override restrictions. | On close |
-| Load project hooks | Controls whether iCode loads hooks from `.chrys/hooks` in the current working directory; it does not affect user-level hooks. To create and validate hooks, see [Configure and write hooks](../extensions/hooks.md). For the complete configuration fields, see the [Hooks configuration reference](../../reference/hooks.md). | On close |
-| Load project skills | Controls whether iCode loads skills from `.agents/skills` in the current working directory; it does not affect your own skills directories. See [Install and use skills](../extensions/skills.md). | On close |
+| Load working directory settings | Reads `.chrys/settings.yaml` in the current working directory and applies supported settings such as request retries, automatic session titles, and working directory notices. See [Working-directory settings](../../reference/settings.md#working-directory-settings) for allowed keys and override restrictions. | On close |
+| Load working directory hooks | Controls whether iCode loads hooks from `.chrys/hooks` in the current working directory; it does not affect user-level hooks. To create and validate hooks, see [Configure and write hooks](../extensions/hooks.md). For the complete configuration fields, see the [Hooks configuration reference](../../reference/hooks.md). | On close |
+| Load working directory skills | Controls whether iCode loads skills from `.agents/skills` in the current working directory; it does not affect your own skills directories. See [Install and use skills](../extensions/skills.md). | On close |
 
 #### Credentials
 
@@ -198,7 +197,7 @@ For telemetry data types, storage locations, endpoint precedence, and collector 
 
 #### Web search
 
-These settings apply to agents that include the web tools, which are off by default. See [Configure web tools](./web-tools.md). An agent profile that sets its own mode, result count, or timeout overrides these values for that agent. Project settings cannot change them.
+These settings apply to agents that include the web tools, which are off by default. See [Configure web tools](./web-tools.md). An agent profile that sets its own mode, result count, or timeout overrides these values for that agent. Working directory settings cannot change them.
 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |

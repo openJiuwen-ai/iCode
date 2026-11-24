@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from chrys.service.profiles.agents.loader import load_profile_from_yaml
+from chrys.service.profiles.agents.loader import is_filename_safe_profile_name, load_profile_from_yaml
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.profiles.agents.serializer import save_profile
 from chrys.service.rsi.errors import RsiBadRequest, RsiNotFound
@@ -125,7 +125,15 @@ def load_candidate(store: RsiTaskStore, task_id: str, candidate_id: str) -> Cand
     profile_name = str(meta.get("profile_name") or "").strip()
     if not profile_name:
         raise RsiBadRequest(f"candidate {candidate_id}: missing profile_name")
-    profile_path = directory / f"{profile_name}.yaml"
+    if not is_filename_safe_profile_name(profile_name):
+        # meta.json is on-disk state: separators, device names or ``..`` would read a profile
+        # outside the candidate.
+        raise RsiBadRequest(f"candidate {candidate_id}: invalid profile_name: {profile_name!r}")
+    try:
+        # Resolve the link target too: a YAML symlink pointing outside the candidate must not be read.
+        profile_path = resolve_under(directory, f"{profile_name}.yaml")
+    except ValueError as exc:
+        raise RsiBadRequest(f"candidate {candidate_id}: {exc}") from exc
     if not profile_path.is_file():
         raise RsiNotFound(f"candidate {candidate_id}: profile YAML missing")
     profile = load_profile_from_yaml(profile_path)
@@ -255,7 +263,7 @@ def best_export_path(store: RsiTaskStore, task_id: str, profile_name: str) -> Pa
     """Default install target: ``<task>/export/<name>.yaml`` (never auto-writes user agents)."""
     export_dir = ensure_directory(task_dir(store.tasks_root, task_id) / "export")
     safe = profile_name.strip() or "candidate"
-    if "/" in safe or "\\" in safe or Path(safe).name != safe:
+    if not is_filename_safe_profile_name(safe):
         raise RsiBadRequest(f"invalid profile name for export: {profile_name!r}")
     return export_dir / f"{safe}.yaml"
 

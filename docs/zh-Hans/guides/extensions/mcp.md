@@ -69,11 +69,11 @@ iCode 会忽略此字段首尾的空白字符，YAML 中的配置也一样；仅
 | `~/mcp-server` | 用户主目录内的 `mcp-server` 文件夹 |
 | 绝对路径，例如 `/opt/mcp-server` 或 `D:\mcp-server` | 指定的文件夹 |
 
-例如，会话的工作目录为 `/project`，将服务器的“工作目录”设为 `tools/mcp`、“命令”设为 `python server.py`，就会在 `/project/tools/mcp` 中运行 `/project/tools/mcp/server.py`。该文件夹和脚本必须已存在，且 `python` 能从 `PATH` 中找到。
+例如，会话的工作目录为 `/work/demo`，将服务器的“工作目录”设为 `tools/mcp`、“命令”设为 `python server.py`，就会在 `/work/demo/tools/mcp` 中运行 `/work/demo/tools/mcp/server.py`。该文件夹和脚本必须已存在，且 `python` 能从 `PATH` 中找到。
 
 相对路径可以用 `..` 指向会话工作目录之外，例如 `../shared-mcp`。
 
-用 `/chdir` 切换会话工作目录后，留空或填写相对路径的服务器会根据新的会话工作目录确定启动位置。例如，填写 `tools/mcp` 时，从项目 A 切换到项目 B 后，会使用项目 B 下的 `tools/mcp`。`~/` 和绝对路径指定的启动位置不变。
+用 `/chdir` 切换会话工作目录后，留空或填写相对路径的服务器会根据新的会话工作目录确定启动位置。例如，填写 `tools/mcp` 时，从目录 A 切换到目录 B 后，会使用目录 B 下的 `tools/mcp`。`~/` 和绝对路径指定的启动位置不变。
 
 命令填写为 `./bin/server` 这样的相对路径时，会从服务器的工作目录查找程序；只填写 `python` 这样的程序名称时，会从 `PATH` 中查找。
 

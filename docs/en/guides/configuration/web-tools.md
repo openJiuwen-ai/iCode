@@ -234,7 +234,7 @@ DeepSeek's Fetch API is a separate endpoint. iCode's `web_fetch` reads pages dir
 
 ## Control network access
 
-Network access for web tools is set only in your user settings. Project settings and agent profiles cannot change it, so a repository you open cannot widen what the tools may reach. The common search options are on the **Tools** tab of **Settings**; the fetch lists are set in the user `settings.yaml`. For every key, see the [settings file reference](../../reference/settings.md#web-tools).
+Network access for web tools is set only in your user settings. Working directory settings and agent profiles cannot change it, so a repository you open cannot widen what the tools may reach. The common search options are on the **Tools** tab of **Settings**; the fetch lists are set in the user `settings.yaml`. For every key, see the [settings file reference](../../reference/settings.md#web-tools).
 
 ```yaml
 tools:

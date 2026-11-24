@@ -36,7 +36,7 @@ from tests.app.tui.screens.main._workflow_support import (
     select_workflow_view,
     switch_mode,
 )
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
@@ -44,12 +44,14 @@ from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, open_workflow, run_store, value_text, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_global_shadowed_symlink_delete_forgets_ledger_but_keeps_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     source = python_workflow("def fn(value):\n    return value\n", "fn")
     target = tmp_path / "target.py"
@@ -110,7 +112,7 @@ async def test_global_shadowed_symlink_delete_forgets_ledger_but_keeps_target(
 
 
 async def test_notice_is_recorded_hidden_and_shown_on_return(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus)
     async with app.run_test(size=(120, 45)) as pilot:
@@ -139,7 +141,7 @@ async def test_changed_source_disables_start_and_code_escape_is_local(
     monkeypatch: pytest.MonkeyPatch,
     trigger: str,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     source = python_workflow("def fn(value):\n    return value\n", "fn")
     path = write_workflow(project, "wf", source)
@@ -188,7 +190,7 @@ async def test_historical_run_source_and_unavailable_agent_transcript(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     source = b"from chrys.workflows import WorkflowBuilder\nwf=WorkflowBuilder('old')\na=wf.agent('agent', profile='Code')\nwf.start(a)\nwf.output(a)\nworkflow=wf.build()\n"
     path = write_workflow(project, "wf", source)
@@ -257,7 +259,7 @@ async def test_workflow_question_answers_and_run_terminal_owns_dialog(
     monkeypatch: pytest.MonkeyPatch,
     end: str,
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     answers: list[events.WorkflowNodeAnswer] = []
 
@@ -345,7 +347,7 @@ async def test_project_file_delete_confirmation_and_active_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     source = python_workflow("def fn(value):\n    return value\n", "fn")
     write_workflow(project, "demo-workflow", source)
@@ -371,7 +373,7 @@ async def test_project_file_delete_confirmation_and_active_guard(
             if row.workflow_id == "demo-workflow" and not row.shadowed
         )
         row = main._workflow.browser._picker.selection.selected_row()
-        assert row is not None and isinstance(row.source, WorkflowSource) and row.source.source_kind == "project"
+        assert row is not None and isinstance(row.source, WorkflowSource) and row.source.source_kind == "workdir"
         path = Path(row.source.canonical_path)
         assert path.read_bytes() == source
         picker.focus()
@@ -385,7 +387,7 @@ async def test_project_file_delete_confirmation_and_active_guard(
             pilot=pilot,
         )
         body = str(app.screen.query_one("#confirm-message", Static).content)
-        assert str(path) in body and "Git" in body and "project" in body
+        assert str(path) in body and "Git" in body and "workdir" in body
         confirm = app.screen
         await click_when_settled(pilot, "#confirm-no")
         await wait_for(

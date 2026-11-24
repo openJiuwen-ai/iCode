@@ -50,7 +50,7 @@ from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE
 from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY
 from chrys.service.mutations.store import SnapshotStore
 from tests.support.paths import SRC_ROOT
-from tests.support.tui_helpers import ChatPanelApp
+from tests.support.tui_helpers import ChatPanelApp, open_process_for
 from tests.support.waiting import wait_for
 
 _CHRYS_CSS = SRC_ROOT / "chrys" / "app" / "tui" / "chrys.tcss"
@@ -922,6 +922,8 @@ async def test_disk_backed_snapshot_mounts_when_group_is_expanded(
         # and replaying the card whose completion is under test.
         await panel.add_tool_start("sibling", "plain_tool", "", args={})
         group = panel.query_one(ToolGroup)
+        open_process_for(group)
+        group.collapsed = False
         assert not group.collapsed
         tool = group.query_one(tool_cls)
         if mode == "collapsed":
@@ -969,6 +971,8 @@ async def test_inline_diff_wait_does_not_finish_while_visible_child_is_still_mou
         # A live sibling keeps the collapsed card mounted instead of pruning it.
         await panel.add_tool_start("sibling", "plain_tool", "", args={})
         group = panel.query_one(ToolGroup)
+        open_process_for(group)
+        group.collapsed = False
         tool = group.query_one(EditFileToolCall)
         group.collapsed = True
         group.complete_tool("file1", "Edited src/app.py", 25, file_snapshot=("old\n", "new\n"))

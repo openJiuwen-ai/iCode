@@ -15,7 +15,7 @@ from chrys.app.tui.screens.dialogs.workflow_picker import WorkflowPickerDialog
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.orchestration.workflows.catalog import WorkflowCatalog
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
@@ -24,12 +24,14 @@ from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import WorkflowEngine, open_workflow, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_new_workflow_picker_uses_current_workspace_and_cancel_keeps_bound_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original_project = make_project(tmp_path / "original")
-    current_project = make_project(tmp_path / "current")
+    original_project = make_workdir(tmp_path / "original")
+    current_project = make_workdir(tmp_path / "current")
     source = python_workflow("def echo(value):\n    return value\n", "echo")
     write_workflow(original_project, "original_only", source)
     write_workflow(current_project, "current_only", source)
@@ -64,12 +66,10 @@ async def test_new_workflow_picker_uses_current_workspace_and_cancel_keeps_bound
         )
         await bus.publish(events.WorkflowRunFinished(run_id="old-run", session_id=session_id, outcome="completed"))
         await bus.publish(events.WorkspaceUpdated(primary_cwd=str(current_project)))
-        assert controller.browser.catalog.project_cwd == original_project
-        assert controller.project_cwd == str(original_project)
+        assert controller.browser.catalog.workdir == original_project
+        assert controller.workdir == str(original_project)
 
-        catalog = WorkflowCatalog(
-            config_dir=controller.browser.catalog.config_dir, project_cwd=current_project, bus=bus
-        )
+        catalog = WorkflowCatalog(config_dir=controller.browser.catalog.config_dir, workdir=current_project, bus=bus)
         current_preview = await catalog.preview("current_only", trust=True)
         catalog.confirm(current_preview)
         for cancel in (True, False):
@@ -109,13 +109,13 @@ async def test_new_workflow_picker_uses_current_workspace_and_cancel_keeps_bound
             )
             assert not any(row.workflow_id == "original_only" for row in main._workflow.browser._picker.selection.rows)
             assert controller.session_id == session_id
-            assert controller.project_cwd == str(original_project)
+            assert controller.workdir == str(original_project)
             if cancel:
                 await pilot.press("escape")
                 await wait_for(lambda: app.screen is main, pilot=pilot)
                 assert panel.preview == preview and panel.run_ids == ["old-run"]
                 assert controller.session_id == session_id
-                assert controller.browser.catalog.project_cwd == original_project
+                assert controller.browser.catalog.workdir == original_project
                 continue
             picker = main._workflow.browser._picker.selection.list
             picker.highlighted = next(
@@ -135,7 +135,7 @@ async def test_new_workflow_picker_uses_current_workspace_and_cancel_keeps_bound
                 timeout=ENGINE_TURN_TIMEOUT,
             )
         assert not controller.session_id and not panel.run_ids
-        assert controller.browser.catalog.project_cwd == current_project
+        assert controller.browser.catalog.workdir == current_project
         async with capture_event_sequence(bus, events.WorkflowRunRequest) as requests:
             assert controller.run_control.start("new run")
             await wait_for(lambda: bool(requests), pilot=pilot)

@@ -28,6 +28,7 @@ from chrys.kernel import Content, Message
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
 from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
+from chrys.service.state.folds import FoldItem
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, GcMessageChatPanelApp, chat_content_children, click_when_settled
 from tests.support.waiting import wait_for
@@ -92,6 +93,8 @@ def _shape(panel: ChatPanel) -> list[tuple[str, str]]:
     """Each transcript entry as (kind, text); a tool group gives the number of its calls."""
     shape: list[tuple[str, str]] = []
     for child in chat_content_children(panel):
+        if isinstance(child, ProcessBlock):
+            continue
         if isinstance(child, ThinkingMessage):
             shape.append(("thinking", child.text))
         elif isinstance(child, AgentMessage):
@@ -134,6 +137,7 @@ async def test_replayed_thinking_shows_folded_where_it_showed_live() -> None:
         await panel.replay_history(_A_TURN_WITH_THINKING)
         await panel.wait_replay_complete()
 
+        await click_when_settled(pilot, panel.query_one(ProcessBlock))
         assert _shape(panel) == [
             ("user", "prompt"),
             ("thinking", "Let me look first."),
@@ -161,7 +165,9 @@ async def test_thinking_and_text_folded_inside_a_hidden_activity_section_read_no
         return text_preview(text)
 
     monkeypatch.setattr(messages_module, "text_preview", counting_preview)
-    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(
+        thinking_expanded=lambda: True,
+    ).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(_A_TURN_WITH_THINKING)
         await panel.wait_replay_complete()
@@ -214,7 +220,7 @@ async def test_replayed_thinking_before_tools_ends_the_tool_group_above_it(
     [
         pytest.param(
             [_text("First look.", "a1"), _think("Hmm.")],
-            [("answer", "First look."), ("thinking", "Hmm.")],
+            [("thinking", "Hmm."), ("answer", "First look.")],
             id="no-answer-after",
         ),
         pytest.param(
@@ -269,6 +275,7 @@ async def test_replayed_thinking_and_its_summary_show_as_blocks_of_their_own() -
             ("thinking", "In short."),
             ("answer", "A."),
         ]
+        await click_when_settled(pilot, panel.query_one(ProcessBlock))
         headers = [str(message.query_one(_AgentHeader).render()) for message in panel.query(ThinkingMessage)]
         assert headers == ["▸ Thought: Step one. Step two.", "▸ Thinking summary: In short."]
 
@@ -356,7 +363,7 @@ async def test_replayed_thinking_in_a_compressed_part_shows_as_compressed() -> N
 
     async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history([fold], compressed_blocks={"ctx-1": block})
+        await panel.replay_history([fold], folds=[FoldItem("ctx-1", "condensed", block=block)])
         await panel.wait_replay_complete()
 
         assert _shape(panel)[1:5] == [
@@ -422,6 +429,7 @@ async def test_replayed_text_between_tool_calls_builds_its_body_only_once_opened
         assert not between.query(VirtualizedMarkdown)
         assert [body.shown_source for body in answer.query(VirtualizedMarkdown)] == ["Done."]
 
+        await click_when_settled(pilot, panel.query_one(ProcessBlock))
         await click_when_settled(pilot, between.query_one(_AgentHeader))
         await wait_for(
             lambda: [body.shown_source for body in between.query(VirtualizedMarkdown)] == ["Let me look."],

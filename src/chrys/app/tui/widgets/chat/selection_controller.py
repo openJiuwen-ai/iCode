@@ -12,8 +12,8 @@ drag pegs a CPU core.
 This module replaces the geometric walk with a *logical* selection model for
 drags whose both endpoints live in the same :class:`ChatPanel`:
 
-- Every top-level transcript widget gets a monotonically increasing mount
-  sequence (stamped by ``ChatPanel.mount``). A leaf's *document key* is the
+- Every top-level transcript widget gets an order stamp. New entries can
+  append or take a stamp between their neighbors. A leaf's *document key* is the
   tuple ``(top_seq, *sibling_indices)`` down to the leaf, so document order
   comparisons never touch the compositor.
 - Selection anchors are (leaf, content offset) pairs. Membership of any leaf
@@ -180,20 +180,21 @@ class ChatSelectionController:
         """
         if not self.active or panel is not self._panel or self._reproject_scheduled:
             return
-        if self._screen._selecting:
-            # Mid-drag updates run through handle_select_state with fresh
-            # pointer data; stock Textual also leaves wheel scrolls mid-drag
-            # to the next mouse move.
-            return
         self._reproject_scheduled = True
 
     def on_screen_layout_refreshed(self) -> None:
         """Consume a pending re-projection right after a compositor reflow."""
-        if not self._reproject_scheduled:
+        if not self._reproject_scheduled or self._screen._selecting:
             return
         self._reproject_scheduled = False
         panel = self._panel
         if panel is not None:
+            self.reproject(panel)
+
+    def finish_drag(self) -> None:
+        """Refresh the anchored range before its text is offered as a quote."""
+        if self._reproject_scheduled and (panel := self._panel) is not None:
+            # Keep the request for the next layout in case release beat the reflow.
             self.reproject(panel)
 
     def reproject(self, panel: ChatPanel) -> None:
@@ -205,7 +206,7 @@ class ChatSelectionController:
         """
         if not self.active or panel is not self._panel or self._screen._selecting:
             return
-        if not self._anchors_alive(panel):
+        if not self._refresh_range_keys(panel):
             self.clear()
             return
         self._screen.selections = self._project(panel)
@@ -274,6 +275,10 @@ class ChatSelectionController:
 
     def _commit_range(self, panel: ChatPanel, start: _Anchor | _GapAnchor | None, end: _Anchor | _GapAnchor) -> bool:
         """Order the raw endpoints and collapse gaps into leaf anchors."""
+        if isinstance(start, _GapAnchor):
+            start = _GapAnchor(self._rekey(panel, start.before), self._rekey(panel, start.after))
+        else:
+            start = self._rekey(panel, start)
         if start is None:
             return False
         start_key = start.rep_key if isinstance(start, _GapAnchor) else start.key
@@ -328,12 +333,14 @@ class ChatSelectionController:
         if not self.active:
             return None
         panel = self._panel
-        first, last = self._first, self._last
-        if panel is None or first is None or last is None:
-            raise RuntimeError("An active chat selection requires its panel and both anchors.")
-        if not self._anchors_alive(panel):
+        if panel is None:
+            raise RuntimeError("An active chat selection requires its panel.")
+        if not self._refresh_range_keys(panel):
             self.clear()
             return None
+        first, last = self._first, self._last
+        if first is None or last is None:
+            raise RuntimeError("An active chat selection requires both anchors.")
 
         widget_text: list[str] = []
         for leaf, selection in self._iter_range(panel, first, last):
@@ -394,11 +401,18 @@ class ChatSelectionController:
             return SELECT_ALL
         return Selection(start, end)
 
-    def _anchors_alive(self, panel: ChatPanel) -> bool:
-        first, last = self._first, self._last
+    def _rekey(self, panel: ChatPanel, anchor: _Anchor | None) -> _Anchor | None:
+        if anchor is None or (key := self._doc_key(panel, anchor.leaf)) is None:
+            return None
+        return anchor if key == anchor.key else _Anchor(anchor.leaf, key, anchor.offset)
+
+    def _refresh_range_keys(self, panel: ChatPanel) -> bool:
+        """Keep a selection bound to its leaves if their transcript order changes."""
+        first, last = self._rekey(panel, self._first), self._rekey(panel, self._last)
         if first is None or last is None:
             return False
-        return chat_panel_ancestor(first.leaf) is panel and chat_panel_ancestor(last.leaf) is panel
+        self._first, self._last = (first, last) if first.key <= last.key else (last, first)
+        return True
 
     def _visible_leaves(self, panel: ChatPanel) -> Iterator[tuple[Widget, Region]]:
         """Selectable chat leaves in the last composited frame, with regions."""

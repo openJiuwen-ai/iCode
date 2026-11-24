@@ -16,6 +16,7 @@ from textual.selection import SELECT_ALL
 from textual.widgets import OptionList, Static
 
 from chrys.app.tui.behaviors.click_outside_dismiss import ClickOutsideDismissMixin
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from tests.app.tui.screens.themes.helpers import wait_for_themes
 
@@ -216,6 +217,7 @@ async def test_base_dialog_right_click_copies_selection(monkeypatch: pytest.Monk
         await pilot.pause()
 
         assert pilot.app.clipboard == "hi"
+        await wait_for_clipboard(pilot.app)
         assert copied == ["hi"]
         assert dialog.selections == {}
         assert not pilot.app.dismissed

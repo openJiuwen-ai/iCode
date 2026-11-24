@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from chrys.foundation.util.chrys_headers import RequestRole
 from chrys.kernel import EXCLUDED_KEY, Content, Message
 from chrys.service.llm import side_question
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -53,9 +54,15 @@ async def test_side_call_has_no_tools_or_service_conversation_and_closes_client(
 
     @asynccontextmanager
     async def scoped(
-        profile: ModelProfile, *, session_id: str | None, parent_session_id: str | None, session_dir: Path | None
+        profile: ModelProfile,
+        *,
+        session_id: str | None,
+        parent_session_id: str | None,
+        session_dir: Path | None,
+        request_role: RequestRole,
     ) -> AsyncIterator[MockChatClient]:
         nonlocal closed
+        assert request_role is RequestRole.SIDE_QUESTION
         captured.append((session_id, parent_session_id))
         try:
             yield client

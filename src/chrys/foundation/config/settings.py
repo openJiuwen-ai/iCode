@@ -36,8 +36,8 @@ from chrys.foundation.config.spec import (
     ChoiceProvider,
     InvalidPolicy,
     Kind,
-    ProjectMerge,
     Risk,
+    WorkdirMerge,
     spec,
 )
 from chrys.foundation.config.web_values import (
@@ -59,7 +59,7 @@ RENAMED_THEMES: Final[dict[str, str]] = {"chrys-dark": "chrys"}
 """Built-in theme names that are gone, and the name each of them goes by now.
 
 The ``ui.theme`` coercer follows this at every layer, so a retired name in an
-environment variable or a project file still selects the theme it meant. A
+environment variable or a working directory file still selects the theme it meant. A
 retired name saved in the user document is also rewritten there, by
 :func:`chrys.foundation.config.migrations.migrate_renamed_theme`. The old names
 stay reserved: a user theme taking one would be renamed away on the next start.
@@ -609,7 +609,7 @@ def _history_disable_coercer() -> Coercer:
 def _semantic_max_transient_retries(settings: Settings, ctx: EvalContext) -> int:
     """Comparable retry budget: ``None`` means "whatever this frontend uses".
 
-    The stored value cannot be compared directly — a project value of 10 is a
+    The stored value cannot be compared directly — a working directory value of 10 is a
     tightening against headless (15) and a loosening against the TUI (7), and
     ``None`` is neither until the frontend is known.
     """
@@ -698,14 +698,6 @@ _LABEL_SEARCH_RESPECT_GITIGNORE = msg("settings.tools.search.respect_gitignore.l
 _LABEL_TOOLS_IMAGE_SEND_LIMIT_KB = msg("settings.tools.image.send_limit_kb.label", fallback="Image size limit (KB)")
 _LABEL_UI_THEME = msg("settings.ui.theme.label", fallback="Theme")
 _LABEL_UI_LOCALE = msg("settings.ui.locale.label", fallback="UI Language")
-_LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
-    "settings.ui.chat.tool_groups_expanded.label",
-    fallback="Expand tool details by default",
-)
-_LABEL_UI_CHAT_THINKING_EXPANDED = msg("settings.ui.chat.show_thinking.label", fallback="Expand thinking by default")
-_LABEL_UI_CHAT_FOLD_FINISHED_TURNS = msg(
-    "settings.ui.chat.fold_finished_turns.label", fallback="Automatically fold completed turns"
-)
 _LABEL_UI_CHAT_IMAGE_GRAPHICS = msg("settings.ui.chat.image_graphics.label", fallback="Full-color images")
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
@@ -755,9 +747,9 @@ _LABEL_MODEL_ROLE_BUDDY = msg("settings.model.role.buddy.label", fallback="Buddy
 _LABEL_LOG_RAW_HTTP_CAPTURE = msg("settings.log.raw_http_capture.label", fallback="Capture raw model HTTP requests")
 _LABEL_MUTATIONS_TRACE_MODE = msg("settings.mutations.trace.mode.label", fallback="Mutation trace mode")
 _LABEL_MUTATIONS_TRACE_FSATRACE_PATH = msg("settings.mutations.trace.fsatrace_path.label", fallback="fsatrace path")
-_LABEL_PROJECT_CONFIG_ENABLED = msg("settings.project.config_enabled.label", fallback="Load project settings")
-_LABEL_PROJECT_HOOKS_ENABLED = msg("settings.project.hooks_enabled.label", fallback="Load project hooks")
-_LABEL_PROJECT_SKILLS_ENABLED = msg("settings.project.skills_enabled.label", fallback="Load project skills")
+_LABEL_WORKDIR_CONFIG_ENABLED = msg("settings.workdir.config_enabled.label", fallback="Load working directory settings")
+_LABEL_WORKDIR_HOOKS_ENABLED = msg("settings.workdir.hooks_enabled.label", fallback="Load working directory hooks")
+_LABEL_WORKDIR_SKILLS_ENABLED = msg("settings.workdir.skills_enabled.label", fallback="Load working directory skills")
 _LABEL_NOTIFICATIONS_ENABLED = msg("settings.notifications.enabled.label", fallback="Enable notifications")
 _LABEL_NOTIFICATIONS_DELIVERY_DESKTOP = msg("settings.notifications.delivery.desktop.label", fallback="Desktop popup")
 _LABEL_NOTIFICATIONS_DELIVERY_SOUND = msg("settings.notifications.delivery.sound.label", fallback="Sound")
@@ -821,7 +813,7 @@ class Settings:
     """Application settings.
 
     Field defaults are plain literals: every source (built-in default, user
-    YAML, project layer, real process env, CLI, session pin) is merged
+    YAML, working directory layer, real process env, CLI, session pin) is merged
     by :func:`chrys.foundation.config.settings_store.load_settings`, which is
     the only thing that reads the environment. A bare ``Settings()`` is
     therefore a pure value with no hidden process dependency.
@@ -898,7 +890,7 @@ class Settings:
             kind=Kind.TEXT,
             # A profile carries its own approval policy, which ``builder.py``
             # adopts wholesale — a repository must not get to pick it.
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.CAUTION,
         ),
     )
@@ -950,7 +942,7 @@ class Settings:
             group="session",
             kind=Kind.BOOL,
             # A repository may switch the extra LLM traffic off, never back on.
-            project_merge=ProjectMerge.DISABLE_ONLY,
+            workdir_merge=WorkdirMerge.DISABLE_ONLY,
         ),
     )
 
@@ -967,12 +959,12 @@ class Settings:
             apply=Apply.RELOAD,
             group="context",
             kind=Kind.FLOAT,
-            project_merge=ProjectMerge.FREE,
+            workdir_merge=WorkdirMerge.FREE,
         ),
     )
 
     # Comma-separated rather than a list so Settings remains an all-scalar
-    # value object and project-layer FREE replacement has unambiguous
+    # value object and working directory-layer FREE replacement has unambiguous
     # override semantics.
     trajectory_verify_commands: str = field(
         default=DEFAULT_TRAJECTORY_VERIFY_COMMANDS,
@@ -983,7 +975,7 @@ class Settings:
             apply=Apply.LIVE,
             group="trajectory",
             kind=Kind.TEXT,
-            project_merge=ProjectMerge.FREE,
+            workdir_merge=WorkdirMerge.FREE,
         ),
     )
 
@@ -1003,7 +995,7 @@ class Settings:
             kind=Kind.OPTIONAL_INT,
             # Raising it multiplies cost and wait against the backoff (up to
             # 600 s a retry), so a repository may only lower it.
-            project_merge=ProjectMerge.TIGHTEN_ONLY,
+            workdir_merge=WorkdirMerge.TIGHTEN_ONLY,
             semantic_value=_semantic_max_transient_retries,
         ),
     )
@@ -1049,7 +1041,7 @@ class Settings:
             # to a lower layer a posture reversal rather than a preference
             # question: a rejected value must not uncap the backstop.
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
-            project_merge=ProjectMerge.TIGHTEN_ONLY,
+            workdir_merge=WorkdirMerge.TIGHTEN_ONLY,
             semantic_value=_semantic_tool_result_ceiling,
         ),
     )
@@ -1275,7 +1267,7 @@ class Settings:
             kind=Kind.BOOL,
             # Setting it false buys stronger /diff attribution; a repository
             # must not undo a user who chose that.
-            project_merge=ProjectMerge.DISABLE_ONLY,
+            workdir_merge=WorkdirMerge.DISABLE_ONLY,
         ),
     )
 
@@ -1295,7 +1287,7 @@ class Settings:
             group="mutations",
             kind=Kind.BOOL,
             # Turning it off loses cross-session attribution.
-            project_merge=ProjectMerge.ENABLE_ONLY,
+            workdir_merge=WorkdirMerge.ENABLE_ONLY,
         ),
     )
 
@@ -1352,7 +1344,7 @@ class Settings:
             group="workspace",
             kind=Kind.BOOL,
             # A repository must not hide file changes from the user.
-            project_merge=ProjectMerge.ENABLE_ONLY,
+            workdir_merge=WorkdirMerge.ENABLE_ONLY,
         ),
     )
     workspace_change_notice_max_entries: int = field(
@@ -1366,7 +1358,7 @@ class Settings:
             group="workspace",
             kind=Kind.INT,
             # Already clamped to 1..100, so there is no room to hide in.
-            project_merge=ProjectMerge.FREE,
+            workdir_merge=WorkdirMerge.FREE,
         ),
     )
 
@@ -1506,7 +1498,7 @@ class Settings:
             group="storage",
             kind=Kind.PATH,
             # Where a user's sessions live is not a repository's business.
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.CAUTION,
         ),
     )
@@ -1534,48 +1526,6 @@ class Settings:
     )
 
     # ── Chat rendering ────────────────────────────────────────────
-    tool_groups_expanded: bool = field(
-        default=False,
-        metadata=spec(
-            key="ui.chat.tool_groups_expanded",
-            label=_LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED,
-            coerce=bool_coercer(),
-            apply=Apply.LIVE,
-            group="ui",
-            kind=Kind.BOOL,
-            project_merge=ProjectMerge.DENY,
-        ),
-    )
-
-    # TUI presentation only: whether the model's readable thinking opens in the
-    # main chat as it arrives, or stays folded to its one-line row. The key keeps
-    # the name it shipped under, when turning it off left thinking out.
-    chat_thinking_expanded: bool = field(
-        default=False,
-        metadata=spec(
-            key="ui.chat.show_thinking",
-            label=_LABEL_UI_CHAT_THINKING_EXPANDED,
-            coerce=bool_coercer(),
-            apply=Apply.LIVE,
-            group="ui",
-            kind=Kind.BOOL,
-            project_merge=ProjectMerge.DENY,
-        ),
-    )
-
-    chat_fold_finished_turns: bool = field(
-        default=True,
-        metadata=spec(
-            key="ui.chat.fold_finished_turns",
-            label=_LABEL_UI_CHAT_FOLD_FINISHED_TURNS,
-            coerce=bool_coercer(),
-            apply=Apply.LIVE,
-            group="ui",
-            kind=Kind.BOOL,
-            project_merge=ProjectMerge.DENY,
-        ),
-    )
-
     # Whether chat images use the terminal's own graphics (kitty protocol, Sixel) where the terminal
     # is known to have them; off, every terminal shows the half-block approximation. Read once, when
     # the TUI starts: what the terminal already holds is not redrawn.
@@ -1588,7 +1538,7 @@ class Settings:
             apply=Apply.RESTART,
             group="ui",
             kind=Kind.BOOL,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -1674,29 +1624,29 @@ class Settings:
             kind=Kind.PATH,
             # This value becomes a subprocess argv[0]. A cloned repository
             # naming its own binary here would have Chrys execute it.
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.DANGEROUS,
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
         ),
     )
 
-    # ── Project layer ─────────────────────────────────────────────
-    # Master switch for the project trust domain: whether
+    # ── Working directory layer ─────────────────────────────────────────────
+    # Master switch for the working directory trust domain: whether
     # ``<root>/.chrys/settings.yaml`` is consulted at all.  Off by
     # default — cloning a repository must not hand it configuration
     # authority.
-    project_config_enabled: bool = field(
+    workdir_config_enabled: bool = field(
         default=False,
         metadata=spec(
-            key="project.config_enabled",
-            label=_LABEL_PROJECT_CONFIG_ENABLED,
+            key="workdir.config_enabled",
+            label=_LABEL_WORKDIR_CONFIG_ENABLED,
             coerce=bool_coercer(),
             apply=Apply.RELOAD,
-            group="project",
+            group="workdir",
             kind=Kind.BOOL,
-            # Read only from DEFAULT/USER: letting a project enable the
-            # project layer would be the layer authorising itself.
-            project_merge=ProjectMerge.DENY,
+            # Read only from DEFAULT/USER: letting a working directory enable the
+            # working directory layer would be the layer authorising itself.
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.CAUTION,
         ),
     )
@@ -1704,17 +1654,17 @@ class Settings:
     # Whether ``<root>/.chrys/hooks/hooks.{yaml,yml,json}`` is loaded.  Off
     # by default: a hook is a command that runs on its own, outside tool
     # approval, so a cloned repository must not get to run one unasked.
-    project_hooks_enabled: bool = field(
+    workdir_hooks_enabled: bool = field(
         default=False,
         metadata=spec(
-            key="project.hooks_enabled",
-            label=_LABEL_PROJECT_HOOKS_ENABLED,
+            key="workdir.hooks_enabled",
+            label=_LABEL_WORKDIR_HOOKS_ENABLED,
             coerce=bool_coercer(),
             apply=Apply.RELOAD,
-            group="project",
+            group="workdir",
             kind=Kind.BOOL,
-            # A project must not be able to switch its own hooks back on.
-            project_merge=ProjectMerge.DENY,
+            # A working directory must not be able to switch its own hooks back on.
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.CAUTION,
         ),
     )
@@ -1723,17 +1673,17 @@ class Settings:
     # same reason: a skill's instructions and scripts come from whoever
     # wrote the repository.  The agent profile's own working-folder switch
     # still applies on top of this one.
-    project_skills_enabled: bool = field(
+    workdir_skills_enabled: bool = field(
         default=False,
         metadata=spec(
-            key="project.skills_enabled",
-            label=_LABEL_PROJECT_SKILLS_ENABLED,
+            key="workdir.skills_enabled",
+            label=_LABEL_WORKDIR_SKILLS_ENABLED,
             coerce=bool_coercer(),
             apply=Apply.RELOAD,
-            group="project",
+            group="workdir",
             kind=Kind.BOOL,
-            # A project must not be able to switch its own skills back on.
-            project_merge=ProjectMerge.DENY,
+            # A working directory must not be able to switch its own skills back on.
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.CAUTION,
         ),
     )
@@ -1849,7 +1799,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.ENUM,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
             choices=("off", "auto"),
         ),
     )
@@ -1863,7 +1813,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.INT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -1876,7 +1826,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.INT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -1889,7 +1839,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.ENUM,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
             choices=("off", "on"),
         ),
     )
@@ -1903,7 +1853,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.INT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -1916,7 +1866,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.INT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -1929,7 +1879,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.TEXT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -1943,7 +1893,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.ENUM,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
             choices=("local", "remote"),
         ),
     )
@@ -1957,7 +1907,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.TEXT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -1970,7 +1920,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.TEXT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -1983,7 +1933,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.TEXT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -1996,7 +1946,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.TEXT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -2009,7 +1959,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.TEXT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -2022,7 +1972,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.TEXT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -2035,7 +1985,7 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.TEXT,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 
@@ -2055,7 +2005,7 @@ class Settings:
             group="sandbox",
             kind=Kind.BOOL,
             # A cloned repository must not move the user's shell into a sandbox.
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.DANGEROUS,
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
         ),
@@ -2073,8 +2023,8 @@ class Settings:
             apply=Apply.RELOAD,
             group="sandbox",
             kind=Kind.TEXT,
-            # A project naming a URL would send the user's shell there.
-            project_merge=ProjectMerge.DENY,
+            # A working directory naming a URL would send the user's shell there.
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.DANGEROUS,
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
         ),
@@ -2091,8 +2041,8 @@ class Settings:
             apply=Apply.RELOAD,
             group="sandbox",
             kind=Kind.TEXT,
-            # A project must not plant a credential the process would send.
-            project_merge=ProjectMerge.DENY,
+            # A working directory must not plant a credential the process would send.
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.CAUTION,
         ),
     )
@@ -2111,7 +2061,7 @@ class Settings:
             group="sandbox",
             kind=Kind.ENUM,
             choices=_SANDBOX_NETWORK_MODES,
-            project_merge=ProjectMerge.DENY,
+            workdir_merge=WorkdirMerge.DENY,
             risk=Risk.DANGEROUS,
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
         ),
@@ -2158,8 +2108,8 @@ class Settings:
         """Whether the loader rejected ``sandbox.enabled`` and sealed it to the default.
 
         The sealed value is ``False``, the same spelling as a real choice to run
-        on the host. A shell must treat this as unavailable. A project value is
-        refused by ``ProjectMerge.DENY`` and is not this: the user value, or the
+        on the host. A shell must treat this as unavailable. A working-directory value is
+        refused by ``WorkdirMerge.DENY`` and is not this: the user value, or the
         default, still stands, and the loader's own warning is unchanged.
         """
         return id(self) in _SANDBOX_ENABLED_REJECTIONS
@@ -2240,11 +2190,6 @@ def persist_locale(locale: str) -> Exception | None:
     """Write ``ui.locale`` to the user settings document without raising."""
     # Content-free logging by design: the requested value must not reach the log.
     return _persist_one("ui.locale", locale, log_value=False)
-
-
-def persist_tool_groups_expanded(value: bool) -> Exception | None:
-    """Persist whether newly created live tool groups start expanded."""
-    return _persist_one("ui.chat.tool_groups_expanded", value)
 
 
 def persist_approval_mode(mode: str) -> Exception | None:

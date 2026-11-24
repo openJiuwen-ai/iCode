@@ -16,7 +16,7 @@ from chrys.foundation.config.coercion import CoerceReason
 from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import load_settings
-from chrys.foundation.config.spec import Apply, InvalidPolicy, ProjectMerge, Risk, Source, specs_by_field
+from chrys.foundation.config.spec import Apply, InvalidPolicy, Risk, Source, WorkdirMerge, specs_by_field
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def _clean_chrys_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def project_root(tmp_path: Path) -> Path:
+def workdir(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
     return root
@@ -52,7 +52,7 @@ def _write_user_yaml(config_dir: Path, text: str) -> Path:
     return path
 
 
-def _write_project_yaml(root: Path, text: str) -> Path:
+def _write_workdir_yaml(root: Path, text: str) -> Path:
     (root / ".chrys").mkdir(parents=True, exist_ok=True)
     path = root / ".chrys" / "settings.yaml"
     path.write_text(text, encoding="utf-8")
@@ -60,7 +60,7 @@ def _write_project_yaml(root: Path, text: str) -> Path:
 
 
 def _enable_gate(config_dir: Path) -> Path:
-    return _write_user_yaml(config_dir, "project:\n  config_enabled: true\n")
+    return _write_user_yaml(config_dir, "workdir:\n  config_enabled: true\n")
 
 
 def test_a_fresh_load_leaves_the_sandbox_off_with_blank_url_and_token(config_dir: Path) -> None:
@@ -208,16 +208,16 @@ def test_an_invalid_sandbox_url_seals_and_an_invalid_token_falls_through(config_
         assert warnings[key].outcome.reason is CoerceReason.EXPECTED_TEXT
 
 
-def test_a_project_cannot_set_sandbox_url_or_token(config_dir: Path, project_root: Path) -> None:
-    """``sandbox.enabled`` is already covered by the project-layer test.
+def test_a_workdir_cannot_set_sandbox_url_or_token(config_dir: Path, workdir: Path) -> None:
+    """``sandbox.enabled`` is already covered by the workdir-layer test.
 
     A repository must not name the address the shell connects to, or a token
     the process would send.
     """
     freeze_process_env()
     _enable_gate(config_dir)
-    path = _write_project_yaml(
-        project_root,
+    path = _write_workdir_yaml(
+        workdir,
         dedent(
             """\
             sandbox:
@@ -227,7 +227,7 @@ def test_a_project_cannot_set_sandbox_url_or_token(config_dir: Path, project_roo
         ),
     )
 
-    loaded = load_settings(project_root=project_root)
+    loaded = load_settings(workdir=workdir)
 
     assert loaded.settings.sandbox_url == ""
     assert loaded.settings.sandbox_token == ""
@@ -236,9 +236,9 @@ def test_a_project_cannot_set_sandbox_url_or_token(config_dir: Path, project_roo
     warnings = {warning.key: warning for warning in loaded.warnings}
     assert set(warnings) == {"sandbox.url", "sandbox.token"}
     for key in ("sandbox.url", "sandbox.token"):
-        assert warnings[key].origin.layer is Source.PROJECT
+        assert warnings[key].origin.layer is Source.WORKDIR
         assert warnings[key].origin.path == path
-        assert warnings[key].outcome.reason is CoerceReason.NOT_ALLOWED_IN_PROJECT
+        assert warnings[key].outcome.reason is CoerceReason.NOT_ALLOWED_IN_WORKDIR
 
 
 def test_a_loaded_sandbox_enabled_does_not_reread_the_environment(
@@ -279,7 +279,7 @@ def test_sandbox_network_defaults_to_guarded_and_accepts_offline(config_dir: Pat
     assert spec.key == "sandbox.network"
     assert spec.env == "CHRYS_SANDBOX_NETWORK"
     assert spec.group == "sandbox"
-    assert spec.project_merge is ProjectMerge.DENY
+    assert spec.workdir_merge is WorkdirMerge.DENY
     assert spec.risk is Risk.DANGEROUS
     assert spec.invalid_policy is InvalidPolicy.SAFE_DEFAULT
     assert spec.choices == ("guarded", "host", "offline")
@@ -320,17 +320,17 @@ def test_an_invalid_sandbox_network_seals_to_guarded(config_dir: Path) -> None:
     assert warning.outcome.reason is CoerceReason.NOT_A_CHOICE
 
 
-def test_a_project_cannot_set_sandbox_network(config_dir: Path, project_root: Path) -> None:
+def test_a_workdir_cannot_set_sandbox_network(config_dir: Path, workdir: Path) -> None:
     freeze_process_env()
     _enable_gate(config_dir)
-    path = _write_project_yaml(project_root, "sandbox:\n  network: offline\n")
+    path = _write_workdir_yaml(workdir, "sandbox:\n  network: offline\n")
 
-    loaded = load_settings(project_root=project_root)
+    loaded = load_settings(workdir=workdir)
 
     assert loaded.settings.sandbox_network == "guarded"
     assert loaded.source_for("sandbox.network").layer is Source.DEFAULT
     (warning,) = loaded.warnings
     assert warning.key == "sandbox.network"
-    assert warning.origin.layer is Source.PROJECT
+    assert warning.origin.layer is Source.WORKDIR
     assert warning.origin.path == path
-    assert warning.outcome.reason is CoerceReason.NOT_ALLOWED_IN_PROJECT
+    assert warning.outcome.reason is CoerceReason.NOT_ALLOWED_IN_WORKDIR

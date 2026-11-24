@@ -30,7 +30,6 @@ from chrys.app.tui.screens.dialogs.usage import (
     _heat_level,
     _model_time,
     _MonthGrid,
-    _project_labels,
     _RangeTabs,
     _share_bar,
     _tokens,
@@ -38,6 +37,7 @@ from chrys.app.tui.screens.dialogs.usage import (
     _TrendColumn,
     _UsageRows,
     _week_columns,
+    _workdir_labels,
 )
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.chat.messages import AgentMessage, UserMessage
@@ -84,7 +84,7 @@ def _call(day: date = _TODAY, **overrides: Any) -> UsageCall:
         "model": "model-a",
         "profile": "",
         "source": "main",
-        "project": "/w/alpha",
+        "workdir": "/w/alpha",
         "new_input": 1000,
         "cache_read": 3000,
         "output": 200,
@@ -115,7 +115,7 @@ def _report(*calls: UsageCall, today: date = _TODAY, unreadable: int = 0) -> Usa
 def _sample_report() -> UsageReport:
     return _report(
         _call(),
-        _call(_TODAY - timedelta(days=1), model="model-b", source="sub_agent", project="/w/beta", new_input=9000),
+        _call(_TODAY - timedelta(days=1), model="model-b", source="sub_agent", workdir="/w/beta", new_input=9000),
         _call(_TODAY - timedelta(days=40), new_input=50_000, source="title_gen"),
     )
 
@@ -510,9 +510,11 @@ async def test_the_trend_and_group_buttons_choose_by_click() -> None:
         await click_when_settled(pilot, dialog.query_one("#usage-trend-weekly", _ChoiceButton))
         await wait_for(lambda: _chosen(dialog, "usage-trend") == "Weekly", pilot=pilot, description="weekly")
 
-        await click_when_settled(pilot, dialog.query_one("#usage-group-project", _ChoiceButton))
-        await wait_for(lambda: _chosen(dialog, "usage-groups") == "Project", pilot=pilot, description="project")
-        assert _headers(dialog)[0] == "Project"
+        await click_when_settled(pilot, dialog.query_one("#usage-group-working-dir", _ChoiceButton))
+        await wait_for(
+            lambda: _chosen(dialog, "usage-groups") == "Working directory", pilot=pilot, description="workdir"
+        )
+        assert _headers(dialog)[0] == "Working directory"
         assert _row_names(dialog) == ["beta", "alpha"]
 
 
@@ -765,7 +767,7 @@ async def test_the_groups_list_their_numbers_and_cycle_with_g() -> None:
         assert _row_names(dialog)[0] == "Sub-agent"
 
         await pilot.press("g")
-        assert _chosen(dialog, "usage-groups") == "Project"
+        assert _chosen(dialog, "usage-groups") == "Working directory"
         assert _row_names(dialog)[0] == "beta"
 
         await pilot.press("g")
@@ -909,7 +911,7 @@ async def test_a_day_of_another_year_shows_its_year() -> None:
 
 
 async def test_labels_from_the_logs_stay_literal_and_clean() -> None:
-    report = _report(_call(model="[red]x\x1b[31m[/oops]", project="/w/[bold]p\udcff"))
+    report = _report(_call(model="[red]x\x1b[31m[/oops]", workdir="/w/[bold]p\udcff"))
     async with _HostApp().run_test(size=(100, 30)) as pilot:
         dialog = await _open(pilot, report)
 
@@ -927,7 +929,7 @@ async def test_labels_from_the_logs_stay_literal_and_clean() -> None:
 
 
 async def test_the_unknown_cases_read_as_words() -> None:
-    report = _report(_call(model="", project="", source="new_role"))
+    report = _report(_call(model="", workdir="", source="new_role"))
     async with _HostApp().run_test(size=(100, 30)) as pilot:
         dialog = await _open(pilot, report)
 
@@ -935,13 +937,13 @@ async def test_the_unknown_cases_read_as_words() -> None:
         await pilot.press("g")
         assert _row_names(dialog) == ["new_role"]
         await pilot.press("g")
-        assert _row_names(dialog) == ["Other workspaces"]
+        assert _row_names(dialog) == ["Other working directories"]
         await pilot.press("g")
         assert _row_names(dialog) == ["Other profiles"]
 
 
-def test_project_labels_widen_only_as_far_as_needed() -> None:
-    assert _project_labels(["/a/one", "/a/two", "/b/two", "/x/y/same", "/z/y/same", ""]) == {
+def test_workdir_labels_widen_only_as_far_as_needed() -> None:
+    assert _workdir_labels(["/a/one", "/a/two", "/b/two", "/x/y/same", "/z/y/same", ""]) == {
         "/a/one": "one",
         "/a/two": "a/two",
         "/b/two": "b/two",

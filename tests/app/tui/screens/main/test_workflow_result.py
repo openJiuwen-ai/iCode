@@ -30,7 +30,7 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.service.workflows.store import RunRecord
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
@@ -55,6 +55,8 @@ if TYPE_CHECKING:
     from chrys.app.tui.app import ChrysApp
     from chrys.app.tui.screens.main.screen import MainScreen
     from chrys.orchestration.workflows.preview import WorkflowPreview
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 _SUMMARY_ONLY = "Full output is unavailable. Only the saved summary is shown."
 
@@ -186,7 +188,7 @@ def _finished(run_id: str, summary: str = "Tour summary") -> events.WorkflowRunF
 
 
 async def test_result_opens_each_final_output_in_its_own_tab(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(140, 42)) as pilot:
         main = app._main_screen
@@ -247,7 +249,7 @@ async def test_result_opens_each_final_output_in_its_own_tab(tmp_path: Path, mon
 async def test_a_restored_run_with_one_result_opens_it_without_tabs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
@@ -276,7 +278,7 @@ async def test_a_restored_run_with_one_result_opens_it_without_tabs(
 async def test_damaged_and_missing_results_do_not_hide_the_others(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     original = workflow_result.read_node_output
 
     def read_node_output(directory: Path, activation_id: str, attempt: int, *, node_kind: str = "") -> Any:
@@ -317,7 +319,7 @@ async def test_damaged_and_missing_results_do_not_hide_the_others(
 
 
 async def test_result_follows_the_selected_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(140, 42)) as pilot:
         main = app._main_screen
@@ -356,7 +358,7 @@ async def test_result_follows_the_selected_run(tmp_path: Path, monkeypatch: pyte
 async def test_a_refreshed_preview_keeps_the_result_and_the_next_run_hides_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine, bus = WorkflowEngine(), EventBus()
     requests = await _requests(bus)
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
@@ -396,7 +398,7 @@ async def test_a_refreshed_preview_keeps_the_result_and_the_next_run_hides_it(
 
 
 async def test_result_and_its_dialog_are_translated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
     engine, bus = WorkflowEngine(), EventBus()
     requests = await _requests(bus)
@@ -551,7 +553,7 @@ async def test_app_shutdown_does_not_wait_for_a_held_result_read(
 async def test_showing_result_and_its_dialog_leaves_a_populated_main_screen_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine, bus = WorkflowEngine(), EventBus()
     requests = await _requests(bus)
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)

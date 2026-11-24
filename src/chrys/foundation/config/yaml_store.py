@@ -136,8 +136,8 @@ _INVALID_YAML_AT = msg(
 )
 _UNREADABLE = msg("settings.document_unreadable", fallback="Cannot read {path}: {detail}")
 _LOCK_TIMEOUT = msg("settings.document_lock_timeout", fallback="Timed out waiting for the lock on {path}.")
-_INVALID_PROJECT = msg(
-    "settings.document_invalid_project", fallback="{path}: unreadable or invalid project YAML document."
+_INVALID_WORKDIR = msg(
+    "settings.document_invalid_workdir", fallback="{path}: unreadable or invalid working directory YAML document."
 )
 
 
@@ -293,22 +293,24 @@ def _container_tree_within_bounds(doc: dict[str, Any]) -> bool:
 
 
 # Owned config documents are few. Remember each independently of sessions so a
-# workspace switch can combine the last valid user layer with the new project.
+# workspace switch can combine the last valid user layer with the new working directory.
 _last_valid: dict[Path, dict[str, Any]] = {}
 
 
-def _primary(path: Path) -> tuple[dict[str, Any] | None, bytes | None]:
+def _primary(path: Path, *, remember: bool = True) -> tuple[dict[str, Any] | None, bytes | None]:
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
-        _last_valid.pop(path, None)
+        if remember:
+            _last_valid.pop(path, None)
         return None, None
     except OSError as exc:
         raise ConfigDocumentError(_UNREADABLE.bind(path=DisplayPath(path), detail=exc.strerror or str(exc))) from exc
     doc = _parse(raw, required_at=path)
     if doc is None:
         raise ConfigDocumentError(_INVALID_YAML.bind(path=DisplayPath(path)))
-    _last_valid[path] = deepcopy(doc)
+    if remember:
+        _last_valid[path] = deepcopy(doc)
     return doc, raw
 
 
@@ -316,7 +318,7 @@ def _dump(doc: dict[str, Any]) -> str:
     return yaml.safe_dump(doc, sort_keys=True, allow_unicode=True)
 
 
-def _commit(path: Path, payload: str) -> None:
+def _commit(path: Path, target: Path, payload: str) -> None:
     """Write *payload* to the primary, then mirror it to the backup.
 
     Primary first, on purpose: writing the backup first would leave a recovery
@@ -324,7 +326,7 @@ def _commit(path: Path, payload: str) -> None:
     The backup is best-effort — a full disk must not fail an otherwise good
     primary write.
     """
-    atomic_write_text(path, payload)
+    atomic_write_text(target, payload)
     with contextlib.suppress(OSError):
         atomic_write_text(backup_path_for(path), payload)
 
@@ -382,12 +384,12 @@ def read_yaml_doc(
     return read_yaml_document(path, backup=backup, lock_timeout=lock_timeout).doc
 
 
-def read_yaml_doc_readonly(path: Path, *, strict: bool = False) -> dict[str, Any] | None:
+def read_yaml_doc_readonly(path: Path, *, strict: bool = False, shown_as: Path | None = None) -> dict[str, Any] | None:
     """Read the YAML mapping at *path* with no lock, no backup and no repair.
 
     For documents Chrys does not own — a repository's ``.chrys/settings.yaml``
     lives in someone's working tree, where taking the owned-document lock would create a sidecar.
-    Project configuration has no backup or remembered user layer.
+    Working directory configuration has no backup or remembered user layer.
 
     Because the file is also not the *user's*, the read is defensive where the
     owned readers are trusting: only a regular file, never through a symlink,
@@ -396,13 +398,15 @@ def read_yaml_doc_readonly(path: Path, *, strict: bool = False) -> dict[str, Any
     The distrust covers both hops a repository controls: the file itself and
     the directory that holds it — a committed ``.chrys`` symlink must not
     carry the read out of the tree. Ancestors above the parent are the
-    caller's trust domain (the project root the user chose to open).
+    caller's trust domain (the working directory the user chose to open).
 
     Missing files return ``None``. For refused or malformed files strict
-    reads raise and ordinary reads return ``None``.
+    reads raise and ordinary reads return ``None``; the error names the file
+    as *shown_as* when the caller reads it through another spelling.
     """
+    shown = shown_as if shown_as is not None else path
     raw = _read_bytes_untrusted(path)
-    result = _parse(raw, required_at=path if strict else None)
+    result = _parse(raw, required_at=shown if strict else None)
     if strict and result is None:
         try:
             path.lstat()
@@ -410,9 +414,9 @@ def read_yaml_doc_readonly(path: Path, *, strict: bool = False) -> dict[str, Any
             return None
         except OSError as exc:
             raise ConfigDocumentError(
-                _UNREADABLE.bind(path=DisplayPath(path), detail=exc.strerror or str(exc))
+                _UNREADABLE.bind(path=DisplayPath(shown), detail=exc.strerror or str(exc))
             ) from exc
-        raise ConfigDocumentError(_INVALID_PROJECT.bind(path=DisplayPath(path)))
+        raise ConfigDocumentError(_INVALID_WORKDIR.bind(path=DisplayPath(shown)))
     return result
 
 
@@ -477,7 +481,7 @@ def _read_bytes_untrusted(path: Path) -> bytes | None:
 
 def update_yaml_doc(
     path: Path,
-    mutator: Callable[[dict[str, Any]], dict[str, Any]],
+    mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
     *,
     lock_timeout: float = LOCK_TIMEOUT_SECONDS,
     committed: Callable[[], None] | None = None,
@@ -489,16 +493,58 @@ def update_yaml_doc(
     last-writer-wins, different keys both survive.
 
     *mutator* receives the freshly read primary (an empty dict when absent) and returns the document to commit. If
-    it raises, the lock is released and **neither** file is touched.
+    it raises or returns None, neither file is written.
 
     Returns the committed document.
     """
+    return _update_yaml_doc(path, mutator, _dump, lock_timeout=lock_timeout, committed=committed)
+
+
+def migrate_yaml_doc(
+    path: Path,
+    mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    *,
+    needs_edit: Callable[[dict[str, Any]], bool] | None = None,
+    before_write: Callable[[Path, bytes | None], None] | None = None,
+    committed: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Preserve key order and optionally look for migration candidates before locking."""
+    if needs_edit is not None:
+        # A probe cannot seed fallback settings while another writer owns the lock.
+        current, _ = _primary(path.resolve(), remember=False)
+        if current is None or not needs_edit(current):
+            return current if current is not None else {}
+    return _update_yaml_doc(
+        path,
+        mutator,
+        lambda doc: yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+        resolve_target=Path.resolve,
+        before_write=before_write,
+        committed=committed,
+    )
+
+
+def _update_yaml_doc(
+    path: Path,
+    mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    serialize: Callable[[dict[str, Any]], str],
+    *,
+    lock_timeout: float = LOCK_TIMEOUT_SECONDS,
+    committed: Callable[[], None] | None = None,
+    resolve_target: Callable[[Path], Path] | None = None,
+    before_write: Callable[[Path, bytes | None], None] | None = None,
+) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(lock_path_for(path), timeout=lock_timeout):
-        current, _ = _primary(path)
+        target = resolve_target(path) if resolve_target is not None else path
+        current, raw = _primary(target)
         updated = mutator(dict(current) if current is not None else {})
-        payload = _dump(updated)
-        _commit(path, payload)
+        if updated is None:
+            return current if current is not None else {}
+        payload = serialize(updated)
+        if before_write is not None:
+            before_write(target, raw)
+        _commit(path, target, payload)
         _last_valid[path] = deepcopy(updated)
         if committed is not None:
             committed()

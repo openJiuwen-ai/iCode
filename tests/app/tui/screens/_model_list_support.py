@@ -191,12 +191,14 @@ def overlay_expanded(screen: ModelConfigScreen) -> bool:
     return any(node.has_class("-expanded") for node in screen.query("#mc-model-overlay"))
 
 
-def assert_overlay_visible(screen: ModelConfigScreen) -> None:
-    """The menu is really drawn: focus alone passes for a ``display: none`` OptionList."""
+async def wait_for_overlay_visible(screen: ModelConfigScreen, pilot: Pilot) -> None:
+    """Wait for layout: focus and the expanded class can precede the menu's first paint."""
     menu = overlay(screen)
-    assert menu.display, "overlay has display: none"
-    assert menu.region.height > 0, menu.region
-    assert screen.region.contains_region(menu.region), (menu.region, screen.region)
+    await wait_for(
+        lambda: menu.display and menu.region.height > 0 and screen.region.contains_region(menu.region),
+        pilot=pilot,
+        description="model overlay laid out inside the screen",
+    )
 
 
 def overlay_texts(screen: ModelConfigScreen) -> list[str]:

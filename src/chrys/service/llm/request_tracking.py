@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Per-HTTP-attempt identity, carried by an explicitly bound wire-call scope.
+"""HTTP attempt identity and routing headers from an explicitly bound wire call.
 
 Hooks observe preparation and response headers, not stream completion. A
 prepared attempt without received headers may have failed before reaching the
@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
-from chrys.foundation.util.chrys_headers import REQUEST_ATTEMPT_ID_HEADER
+from chrys.foundation.util.chrys_headers import REQUEST_ATTEMPT_ID_HEADER, REQUEST_ROLE_HEADER, REQUEST_SCOPE_HEADER
 from chrys.service.llm.provider_request_ids import read_provider_request_id
 
 if TYPE_CHECKING:
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     import httpx
 
     from chrys.foundation.trajectory.context import TrajectoryContext
+    from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 
 REQUEST_ATTEMPT_ID_EXTENSION = "chrys_request_attempt_id"
 REQUEST_ATTEMPT_ID_METADATA = "_chrys_request_attempt_id"
@@ -41,6 +42,8 @@ class RequestTracking:
     context: TrajectoryContext | None = None
     request_attempt_id: str | None = None
     provider_request_id: str | None = None
+    request_role: RequestRole | None = None
+    request_scope: RequestScope | None = None
 
     @contextmanager
     def scope(self) -> Generator[None]:
@@ -67,6 +70,16 @@ def build_request_tracking_hooks() -> dict[str, list[Callable[..., Any]]]:
         request.headers[REQUEST_ATTEMPT_ID_HEADER] = attempt_id
         request.extensions[REQUEST_ATTEMPT_ID_EXTENSION] = attempt_id
         tracking = _CURRENT.get()
+        # The SDK has already merged its own default headers. Replace every
+        # spelling of our routing headers, including on redirects and polls.
+        for name, value in (
+            (REQUEST_ROLE_HEADER, tracking.request_role if tracking is not None else None),
+            (REQUEST_SCOPE_HEADER, tracking.request_scope if tracking is not None else None),
+        ):
+            if value is None:
+                request.headers.pop(name, None)
+            else:
+                request.headers[name] = value
         context = tracking.context if tracking is not None else None
         # Redirects copy extensions: always replace the previous hop's scope.
         request.extensions[_CONTEXT_EXTENSION] = context

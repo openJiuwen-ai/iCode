@@ -19,8 +19,8 @@ from textual.worker import WorkerCancelled
 
 from chrys.app.tui.screens.main import suggestions as suggestions_module
 from chrys.app.tui.screens.main.suggestions import SuggestionHandler
-from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex, WorkspacePathIndex
-from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
+from chrys.app.tui.widgets.chrome.file_index import WorkdirPathIndex, WorkspacePathIndex
+from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult, WorkdirPathSuggestion
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem, SuggestionList
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import (
@@ -40,15 +40,15 @@ if TYPE_CHECKING:
     from chrys.app.tui.app import ChrysApp
     from chrys.app.tui.screens.main.screen import MainScreen
 
-_SCAN_TARGET = "chrys.app.tui.widgets.chrome.file_scanner.scan_project_paths"
+_SCAN_TARGET = "chrys.app.tui.widgets.chrome.file_scanner.scan_workdir_paths"
 
-type _ScanFake = Callable[[str], Awaitable[ProjectPathScanResult]]
+type _ScanFake = Callable[[str], Awaitable[WorkdirPathScanResult]]
 
 
 def _install_file_rows(
     handler: SuggestionHandler,
     root: str,
-    rows: Sequence[ProjectPathSuggestion],
+    rows: Sequence[WorkdirPathSuggestion],
 ) -> WorkspacePathIndex:
     """Install a snapshot for *root* so ``@`` needs no scan to answer."""
     handler._state.workspace_marker.current_cwd = root
@@ -69,7 +69,7 @@ def _patch_scan(
     *,
     roots: list[str] | None = None,
 ) -> None:
-    """Point the project-path scanner at a fake.
+    """Point the workdir-path scanner at a fake.
 
     ``source`` is either a coroutine function taking the scan root, or a
     mapping from root to the file paths that root yields. Every scanned root
@@ -78,12 +78,12 @@ def _patch_scan(
     if isinstance(source, Mapping):
         paths_by_root = source
 
-        async def scan(root: str) -> ProjectPathScanResult:
-            return scan_result(root, [ProjectPathSuggestion(path=path, kind="file") for path in paths_by_root[root]])
+        async def scan(root: str) -> WorkdirPathScanResult:
+            return scan_result(root, [WorkdirPathSuggestion(path=path, kind="file") for path in paths_by_root[root]])
     else:
         scan = source
 
-    async def record(root: str) -> ProjectPathScanResult:
+    async def record(root: str) -> WorkdirPathScanResult:
         if roots is not None:
             roots.append(root)
         return await scan(root)
@@ -108,10 +108,10 @@ def _hold_cold_scan(
     """Block the cold scan until ``gate.release`` is set."""
     gate = _ColdScanGate()
 
-    async def scan(root: str) -> ProjectPathScanResult:
+    async def scan(root: str) -> WorkdirPathScanResult:
         gate.started.set()
         await gate.release.wait()
-        return scan_result(root, [ProjectPathSuggestion(path=path, kind="file") for path in paths])
+        return scan_result(root, [WorkdirPathSuggestion(path=path, kind="file") for path in paths])
 
     _patch_scan(monkeypatch, scan, roots=gate.roots)
     return gate
@@ -134,16 +134,16 @@ def _hold_index_build(
 ) -> _IndexBuildGate:
     """Block the off-loop index build until ``gate.release`` is set."""
     gate = _IndexBuildGate()
-    original_build = ProjectPathIndex.build
+    original_build = WorkdirPathIndex.build
 
-    def build(scan: ProjectPathScanResult) -> ProjectPathIndex:
+    def build(scan: WorkdirPathScanResult) -> WorkdirPathIndex:
         gate.builds += 1
         if not first_build_only or gate.builds == 1:
             gate.started.set()
             gate.release.wait(timeout=1)
         return original_build(scan)
 
-    monkeypatch.setattr(ProjectPathIndex, "build", build)
+    monkeypatch.setattr(WorkdirPathIndex, "build", build)
     return gate
 
 
@@ -203,10 +203,10 @@ def test_file_suggestions_show_disabled_truncation_row(monkeypatch) -> None:
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
 
-    async def truncated_scan(root: str) -> ProjectPathScanResult:
+    async def truncated_scan(root: str) -> WorkdirPathScanResult:
         return scan_result(
             root,
-            [ProjectPathSuggestion(path="a.py", kind="file")],
+            [WorkdirPathSuggestion(path="a.py", kind="file")],
             truncated=True,
             file_budget=1,
             suggestion_budget=1,
@@ -266,11 +266,11 @@ def test_file_suggestions_discard_scan_when_cwd_changes_mid_scan(monkeypatch) ->
     def fake_getcwd() -> str:
         raise AssertionError("tracked workspace cwd should be used before process cwd")
 
-    async def scan_and_chdir(root: str) -> ProjectPathScanResult:
+    async def scan_and_chdir(root: str) -> WorkdirPathScanResult:
         if root == "/repo-a":
             screen._set_workspace_cwd("/repo-b")
-            return scan_result(root, [ProjectPathSuggestion(path="stale.py", kind="file")])
-        return scan_result(root, [ProjectPathSuggestion(path="fresh.py", kind="file")])
+            return scan_result(root, [WorkdirPathSuggestion(path="stale.py", kind="file")])
+        return scan_result(root, [WorkdirPathSuggestion(path="fresh.py", kind="file")])
 
     monkeypatch.setattr("chrys.foundation.platform.safe_getcwd", fake_getcwd)
     _patch_scan(monkeypatch, scan_and_chdir, roots=scans)
@@ -290,9 +290,9 @@ async def test_file_suggestions_filter_directory_query() -> None:
         handler,
         "/repo",
         [
-            ProjectPathSuggestion(path="src/chrys/app/tui/", kind="directory"),
-            ProjectPathSuggestion(path="src/chrys/app/tui/widgets/chrome/file_scanner.py", kind="file"),
-            ProjectPathSuggestion(path="src/chrys/orchestration/engine/engine.py", kind="file"),
+            WorkdirPathSuggestion(path="src/chrys/app/tui/", kind="directory"),
+            WorkdirPathSuggestion(path="src/chrys/app/tui/widgets/chrome/file_scanner.py", kind="file"),
+            WorkdirPathSuggestion(path="src/chrys/orchestration/engine/engine.py", kind="file"),
         ],
     )
     handler._suggestion_mode = "files"
@@ -312,15 +312,15 @@ async def test_file_suggestions_filter_full_relative_path_from_injected_cache(
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)
     injected = [
-        ProjectPathSuggestion(path="src/chrys/app/tui/widgets/chrome/", kind="directory"),
-        ProjectPathSuggestion(path="src/chrys/app/tui/widgets/chrome/file_scanner.py", kind="file"),
-        ProjectPathSuggestion(path="src/chrys/orchestration/engine/engine.py", kind="file"),
+        WorkdirPathSuggestion(path="src/chrys/app/tui/widgets/chrome/", kind="directory"),
+        WorkdirPathSuggestion(path="src/chrys/app/tui/widgets/chrome/file_scanner.py", kind="file"),
+        WorkdirPathSuggestion(path="src/chrys/orchestration/engine/engine.py", kind="file"),
     ]
     installed = _install_file_rows(handler, "/repo", injected)
     handler._suggestion_mode = "files"
 
     def fail_fuzzy_filter(*_args, **_kwargs) -> list[str]:
-        raise AssertionError("file suggestions should query ProjectPathIndex")
+        raise AssertionError("file suggestions should query WorkdirPathIndex")
 
     monkeypatch.setattr("chrys.app.tui.widgets.chrome.file_scanner.fuzzy_filter", fail_fuzzy_filter)
 
@@ -339,7 +339,7 @@ async def test_file_suggestions_filter_full_relative_path_from_injected_cache(
 async def test_discard_file_index_drops_the_resident_snapshot() -> None:
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)
-    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")])
+    _install_file_rows(handler, "/repo", [WorkdirPathSuggestion(path="src/chrome/file.py", kind="file")])
     handler._suggestion_mode = "files"
 
     handler.on_text_changed("@chrome")
@@ -356,7 +356,7 @@ async def test_a_workspace_switch_replaces_the_resident_snapshot() -> None:
     """The snapshot belongs to one root: another root starts cold instead of reusing it."""
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)
-    old = _install_file_rows(handler, "/repo-a", [ProjectPathSuggestion(path="a.py", kind="file")])
+    old = _install_file_rows(handler, "/repo-a", [WorkdirPathSuggestion(path="a.py", kind="file")])
 
     screen._set_workspace_cwd("/repo-b")
 
@@ -374,7 +374,7 @@ async def test_dismissed_suggestions_do_not_receive_stale_file_rows(
     screen = make_suggestion_screen()
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
-    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")])
+    _install_file_rows(handler, "/repo", [WorkdirPathSuggestion(path="src/chrome/file.py", kind="file")])
     handler._suggestion_mode = "files"
 
     handler.on_text_changed("@chrome")
@@ -392,7 +392,7 @@ async def test_switching_modes_invalidates_pending_file_query(
     screen = make_suggestion_screen()
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
-    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")])
+    _install_file_rows(handler, "/repo", [WorkdirPathSuggestion(path="src/chrome/file.py", kind="file")])
     handler._suggestion_mode = "files"
 
     handler.on_text_changed("@chrome")
@@ -411,15 +411,15 @@ async def test_rapid_file_typing_keeps_one_active_query_and_runs_latest(
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     handler._suggestion_mode = "files"
-    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="placeholder.py", kind="file")])
+    _install_file_rows(handler, "/repo", [WorkdirPathSuggestion(path="placeholder.py", kind="file")])
 
     lock = threading.Lock()
     active = 0
     max_active = 0
     calls: list[str] = []
 
-    class SlowIndex(ProjectPathIndex):
-        def query(self, query: str, *, limit: int = 30) -> list[ProjectPathSuggestion]:
+    class SlowIndex(WorkdirPathIndex):
+        def query(self, query: str, *, limit: int = 30) -> list[WorkdirPathSuggestion]:
             nonlocal active, max_active
             with lock:
                 active += 1
@@ -427,7 +427,7 @@ async def test_rapid_file_typing_keeps_one_active_query_and_runs_latest(
             try:
                 calls.append(query)
                 time.sleep(0.03)
-                return [ProjectPathSuggestion(path=f"{query}.py", kind="file")]
+                return [WorkdirPathSuggestion(path=f"{query}.py", kind="file")]
             finally:
                 with lock:
                     active -= 1
@@ -476,9 +476,9 @@ async def test_cache_invalidation_during_index_build_discards_stale_warmup(
     handler = make_suggestion_handler(screen)
     scans: list[str] = []
 
-    async def stale_then_fresh_scan(root: str) -> ProjectPathScanResult:
+    async def stale_then_fresh_scan(root: str) -> WorkdirPathScanResult:
         path = "stale.py" if len(scans) == 1 else "fresh.py"
-        return scan_result(root, [ProjectPathSuggestion(path=path, kind="file")])
+        return scan_result(root, [WorkdirPathSuggestion(path=path, kind="file")])
 
     _patch_scan(monkeypatch, stale_then_fresh_scan, roots=scans)
     gate = _hold_index_build(monkeypatch, handler, first_build_only=True)
@@ -646,7 +646,7 @@ async def test_detached_screen_does_not_receive_file_query_result(
     screen = make_suggestion_screen()
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
-    _install_file_rows(handler, "/repo", [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")])
+    _install_file_rows(handler, "/repo", [WorkdirPathSuggestion(path="src/chrome/file.py", kind="file")])
     handler._suggestion_mode = "files"
 
     handler.on_text_changed("@chrome")
@@ -660,17 +660,17 @@ async def test_index_warmup_build_does_not_starve_event_loop(monkeypatch: pytest
     screen = make_suggestion_screen()
     screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
-    original_build = ProjectPathIndex.build
+    original_build = WorkdirPathIndex.build
 
-    async def large_scan(root: str) -> ProjectPathScanResult:
+    async def large_scan(root: str) -> WorkdirPathScanResult:
         return scan_result(
             root,
-            [ProjectPathSuggestion(path=f"src/file_{index:04d}.py", kind="file") for index in range(1000)],
+            [WorkdirPathSuggestion(path=f"src/file_{index:04d}.py", kind="file") for index in range(1000)],
         )
 
     loop_kept_ticking = threading.Event()
 
-    def slow_build_file_index(scan: ProjectPathScanResult):
+    def slow_build_file_index(scan: WorkdirPathScanResult):
         # Block the worker until the event loop has demonstrably kept
         # ticking underneath the build.  If the build ran on the loop
         # thread instead, this could never be set — the timeout path
@@ -681,7 +681,7 @@ async def test_index_warmup_build_does_not_starve_event_loop(monkeypatch: pytest
         return original_build(scan)
 
     _patch_scan(monkeypatch, large_scan)
-    monkeypatch.setattr(ProjectPathIndex, "build", slow_build_file_index)
+    monkeypatch.setattr(WorkdirPathIndex, "build", slow_build_file_index)
 
     handler._suggestion_mode = "files"
     warmup = asyncio.create_task(handler.show_file_suggestions_async())
@@ -727,8 +727,8 @@ def _screen_at(root: str) -> SuggestionScreen:
     return screen
 
 
-def _rows(*paths: str) -> list[ProjectPathSuggestion]:
-    return [ProjectPathSuggestion(path=path, kind="file") for path in paths]
+def _rows(*paths: str) -> list[WorkdirPathSuggestion]:
+    return [WorkdirPathSuggestion(path=path, kind="file") for path in paths]
 
 
 @dataclass(slots=True)
@@ -740,7 +740,7 @@ class _ScanSequence:
     started: asyncio.Event = field(default_factory=asyncio.Event)
     release: asyncio.Event | None = None
 
-    async def __call__(self, root: str) -> ProjectPathScanResult:
+    async def __call__(self, root: str) -> WorkdirPathScanResult:
         self.roots.append(root)
         self.started.set()
         if self.release is not None:
@@ -903,15 +903,15 @@ async def test_a_keystroke_racing_the_rescan_still_resets_the_highlight(
     handler.mark_file_index_stale()
     searching = threading.Event()
     release_search = threading.Event()
-    original_query = ProjectPathIndex.query
+    original_query = WorkdirPathIndex.query
 
-    def query(index: ProjectPathIndex, text: str, *, limit: int = 30) -> list[ProjectPathSuggestion]:
+    def query(index: WorkdirPathIndex, text: str, *, limit: int = 30) -> list[WorkdirPathSuggestion]:
         if not searching.is_set():
             searching.set()
             release_search.wait(timeout=5)
         return original_query(index, text, limit=limit)
 
-    monkeypatch.setattr(ProjectPathIndex, "query", query)
+    monkeypatch.setattr(WorkdirPathIndex, "query", query)
     handler._callbacks = replace(handler._callbacks, start_worker=lambda _work: None)
     handler.on_file_triggered()
     try:
@@ -1194,7 +1194,7 @@ async def test_a_query_typed_before_the_trigger_is_handled_filters_the_list(
     The list must still show what was typed, or Enter picks a file nobody chose.
     """
 
-    async def scan(root: str) -> ProjectPathScanResult:
+    async def scan(root: str) -> WorkdirPathScanResult:
         return scan_result(root, _rows("aaa.py", "notes.md"))
 
     _patch_scan(monkeypatch, scan)

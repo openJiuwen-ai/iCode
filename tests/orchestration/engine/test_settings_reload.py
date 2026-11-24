@@ -29,6 +29,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.models.workspace import Workspace
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.state import controls as engine_controls
+from chrys.orchestration.engine.workspaces import MembershipWrite, WorkspacePlan
 from chrys.service.profiles.agents.schema import (
     AgentProfile,
 )
@@ -39,6 +40,7 @@ from tests.orchestration.engine._recovery_helpers import (
     _registry,
     stub_engine_start,
 )
+from tests.support.components import plan_workspace
 from tests.support.event_capture import capture_events, collect_events
 from tests.support.loaded_agents import install_loaded_agent
 
@@ -69,9 +71,9 @@ async def test_settings_reload_disables_baseline_but_preserves_safety_notice(
     workspace_root.mkdir()
     engine = assemble_agent_engine(EventBus(), settings=Settings(workspace_change_notice=True))
     engine.session.agent_profile = profile
-    engine.session.workspace = Workspace.from_cwd(str(workspace_root))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(workspace_root))))
     tracker = engine_services(engine).workspace_change_tracker
-    tracker.retarget_roots(engine.session.workspace)
+    tracker.apply_retarget(tracker.resolve_retarget(engine.session.workspace))
     tracker.capture_baseline(1)
     tracker.queue_safety_notice("retained files")
 
@@ -95,9 +97,9 @@ async def test_failed_settings_reload_keeps_workspace_baseline(
     workspace_root.mkdir()
     engine = assemble_agent_engine(EventBus(), settings=Settings(workspace_change_notice=True))
     engine.session.agent_profile = profile
-    engine.session.workspace = Workspace.from_cwd(str(workspace_root))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(workspace_root))))
     tracker = engine_services(engine).workspace_change_tracker
-    tracker.retarget_roots(engine.session.workspace)
+    tracker.apply_retarget(tracker.resolve_retarget(engine.session.workspace))
     baseline = tracker.capture_baseline(1)
 
     async def failing_start(
@@ -106,7 +108,8 @@ async def test_failed_settings_reload_keeps_workspace_baseline(
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
         _ = operation
         raise RuntimeError("rebuild failed")
@@ -148,11 +151,11 @@ async def test_settings_reload_with_missing_registry_entry_reuses_active_profile
     assert calls == [(active, "settings_reload")]
 
 
-async def test_settings_reload_derives_the_project_root_from_the_session_workspace(
+async def test_settings_reload_derives_the_workdir_root_from_the_session_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The project trust domain is root-derived, and the pinned model plus the
+    """The workdir trust domain is root-derived, and the pinned model plus the
     launch mode's retry policy travel *into* the load, not after it."""
     profile = _profile()
     root = tmp_path / "workspace"
@@ -162,7 +165,7 @@ async def test_settings_reload_derives_the_project_root_from_the_session_workspa
         settings=Settings(model_profile="pinned-model", frontend_default_max_transient_retries=15),
     )
     engine.session.agent_profile = profile
-    engine.session.workspace = Workspace.from_cwd(str(root))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(root))))
     engine.pin_model_profile()
     load_kwargs: dict[str, Any] = {}
 
@@ -175,7 +178,7 @@ async def test_settings_reload_derives_the_project_root_from_the_session_workspa
 
     await engine._on_settings_reload(SettingsReload())
 
-    assert load_kwargs["project_root"] == Path(engine.session.workspace.primary_cwd)
+    assert load_kwargs["workdir"] == Path(engine.session.workspace.primary_cwd)
     assert load_kwargs["eval_context"].frontend_default_max_transient_retries == 15
     assert load_kwargs["model_profile"] == "pinned-model"
 

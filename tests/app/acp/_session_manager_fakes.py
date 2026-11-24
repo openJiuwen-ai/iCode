@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -26,6 +27,7 @@ from chrys.service.profiles.agents.schema import (
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import SessionMeta, StateStore
+from chrys.service.workspaces.registry import WorkspaceRegistry
 from tests.support.platform_fakes import platform_with_config_dir
 
 
@@ -33,6 +35,8 @@ class _PinnableEngine:
     """Stand-in for the engine the manager pins the ask_user timeout on."""
 
     def __init__(self) -> None:
+        self.workspace = None
+        self.session = SimpleNamespace(workspace_plan=None)
         self.timeout_pinned = False
         self.snapshot: ProfileSwitched | None = None
         self.recovered_from_sidecar = False
@@ -95,6 +99,7 @@ class _StartedHost:
 class _StaticListStore:
     def __init__(self, sessions: list[SessionMeta]) -> None:
         self._sessions = sessions
+        self.workspace_registry = WorkspaceRegistry()
 
     async def list_sessions(self, *, kind=None) -> list[SessionMeta]:
         return [meta for meta in self._sessions if kind is None or meta.kind == kind]
@@ -113,8 +118,10 @@ class _StaticListStore:
         _ = prefer_recovery
         raise NotImplementedError
 
-    async def load_session_transcript(self, _session_id: str, *, prefer_recovery: bool = False):
-        _ = prefer_recovery
+    async def load_session_transcript(
+        self, _session_id: str, *, prefer_recovery: bool = False, include_folds: bool = False
+    ):
+        _ = prefer_recovery, include_folds
         raise NotImplementedError
 
     async def delete_session(self, _session_id: str, *, allow_active: bool = False) -> None:
@@ -242,6 +249,7 @@ class _SettingsScopeHost:
 
 class _EngineStub:
     def __init__(self, *, is_turn_active: bool) -> None:
+        self.workspace = None
         self.is_turn_active = is_turn_active
 
 

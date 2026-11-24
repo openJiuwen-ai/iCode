@@ -157,7 +157,7 @@ class SkillsConfig:
     ``~/.chrys/skills``. Default True so new profiles opt in by default."""
     auto_load_cwd_agents_skills: bool = True
     """When True, also auto-load skills from ``<cwd>/.agents/skills`` — the
-    project-local agents skills directory under the current working directory.
+    agents skills directory under the current working directory.
     Reloaded automatically when the workspace cwd changes (``/chdir`` or the
     file picker) because the agent is rebuilt with a fresh ``SessionEnvironment``.
     Default True; harmless when the directory does not exist."""

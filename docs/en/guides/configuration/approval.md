@@ -83,7 +83,7 @@ Tool calls that require approval open an **Approval Required** dialog showing th
 You can let iCode remember a Shell command or a file change you approve, so the same request does not ask you again. The approval dialog for a Shell command or a file write or edit shows a **Remember Approval** box:
 
 1. Check **Don't ask again for this command** (for files: **Don't ask again to modify these files**).
-2. Choose **This session** or **This project**. **This session** also applies after you restore the session; **This project** also applies in your other sessions in the same project.
+2. Choose **This session** or **This working directory**. **This session** also applies after you restore the session; **This working directory** also applies in your other sessions using the same physical directory that are not in a workspace. In a session that belongs to a [workspace](../daily-use/workspaces.md#workspaces), the second choice is **This workspace**, which applies in the workspace's other sessions; leaving the workspace ends reuse of its approvals in the session. The original command and path constraints still apply.
 3. Select **Approve**.
 
 The next time the agent makes the same request, it runs without a dialog. Only that command, or those files, are remembered; other operations still ask. Approving without checking the box approves this one call only. A few cases are never remembered:
@@ -105,15 +105,20 @@ Use the `icode approval` command to see and remove what you have remembered:
 
 ```bash
 icode approval list                          # everything you have remembered
-icode approval list --project /work/demo     # only one project
+icode approval list --workdir /work/demo     # only one working directory
 icode approval list --session SESSION_ID --json
 icode approval revoke GRANT_ID               # remove one approval by its ID from the list
-icode approval clear --project /work/demo    # remove all approvals for one project
+icode approval clear --workdir /work/demo    # remove all approvals for one working directory
 icode approval clear --session SESSION_ID    # remove all approvals for one session
+icode approval clear --workspace NAME       # remove all shared approvals for one workspace
 icode approval clear --all                   # remove everything
 ```
 
-Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a project stay until you remove them.
+Pass `--workdir` with `--session` to limit the selection to that session’s grants for the directory. A removed directory can still be used as a filter.
+
+Both filters require a non-empty value. Use `clear --all` on its own to remove every grant.
+
+Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a working directory or a workspace stay until you remove them. Pass a workspace name or ID to `--workspace` to select its shared approvals; for a deleted workspace, use its full ID.
 
 ## Understand automatic approval and safety protections
 

@@ -16,8 +16,8 @@ from chrys.app.tui.widgets.chrome.commands import (
     ManPageVerbatimBlock,
     is_slash_command_candidate,
 )
-from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
-from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathSuggestion
+from chrys.app.tui.widgets.chrome.file_index import WorkdirPathIndex
+from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathSuggestion
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeSkillDetails
@@ -532,13 +532,13 @@ async def test_suggestion_chrome_renders_chinese_at_show_boundary_without_transl
     assert screen.suggestion_list.last_title == "/repo/[literal] 下的文件"
     scan = scan_result(
         "/repo/[literal]",
-        [ProjectPathSuggestion(path="a.py", kind="file")],
+        [WorkdirPathSuggestion(path="a.py", kind="file")],
         truncated=True,
         file_budget=1,
         suggestion_budget=1,
         source_truncations={"rg": True},
     )
-    index = ProjectPathIndex.build(scan)
+    index = WorkdirPathIndex.build(scan)
     truncation = handler._file_suggestion_items([], index=index)[0]
     assert truncation.label == "此有限索引之外还有更多文件"
     assert truncation.disabled_reason == "已索引 1 个文件 / 1 行"

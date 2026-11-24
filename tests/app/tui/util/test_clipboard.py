@@ -4,14 +4,26 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from types import ModuleType
+
 import pytest
 
+from chrys.app.tui import clipboard as clipboard_module
 from chrys.app.tui.clipboard import BROWSER_CLIPBOARD_META_TYPE, copy_text_to_clipboards, paste_text_from_clipboards
 
 
 class _ClipboardApp:
     def __init__(self) -> None:
-        self.clipboard = ""
+        self._clipboard = ""
+
+    @property
+    def clipboard(self) -> str:
+        return self._clipboard
+
+    @clipboard.setter
+    def clipboard(self, text: str) -> None:
+        self._clipboard = text
 
     def copy_to_clipboard(self, text: str) -> None:
         self.clipboard = text
@@ -32,8 +44,22 @@ class _BrowserClipboardApp(_ClipboardApp):
 
 
 class _FailingClipboardApp:
+    _clipboard = ""
+
     def copy_to_clipboard(self, _text: str) -> None:
         raise RuntimeError("terminal clipboard unavailable")
+
+
+@pytest.fixture(autouse=True)
+def _local_posix_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These existing cases exercise the POSIX OS fallback independently of
+    # the runner; Windows routing has its own asynchronous regression cases.
+    platform = clipboard_module.platform_helpers
+    shadow = ModuleType(platform.__name__)
+    shadow.__dict__.update(platform.__dict__)
+    info = replace(platform.get_platform(), os_name="macos")
+    shadow.get_platform = lambda: info
+    monkeypatch.setattr(clipboard_module, "platform_helpers", shadow)
 
 
 def test_paste_text_from_clipboards_prefers_os_clipboard_for_native_tui(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -111,14 +137,27 @@ def test_copy_text_to_clipboards_suppresses_os_copy_errors(monkeypatch: pytest.M
     assert app.clipboard == "text"
 
 
-def test_copy_text_to_clipboards_dispatches_browser_clipboard_meta(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("os_name", ["windows", "macos", "linux"])
+@pytest.mark.parametrize("terminal_path", ["normal", "too-large", "unavailable"])
+def test_copy_text_to_clipboards_dispatches_browser_meta_without_touching_server_clipboard(
+    monkeypatch: pytest.MonkeyPatch, os_name: str, terminal_path: str
+) -> None:
     copied: list[str] = []
-    monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
+    platform = clipboard_module.platform_helpers
+    info = replace(platform.get_platform(), os_name=os_name)
+    monkeypatch.setattr(platform, "get_platform", lambda: info)
+    monkeypatch.setattr(platform, "clipboard_copy", copied.append)
     monkeypatch.setenv("TEXTUAL_DRIVER", "textual.drivers.web_driver:WebDriver")
     app = _BrowserClipboardApp()
 
-    assert copy_text_to_clipboards(app, "browser text")
+    def reject(text: str) -> None:
+        raise RuntimeError("terminal unavailable")
+
+    if terminal_path == "unavailable":
+        monkeypatch.setattr(app, "copy_to_clipboard", reject)
+
+    assert copy_text_to_clipboards(app, "browser text", max_terminal_bytes=1 if terminal_path == "too-large" else None)
 
     assert app.clipboard == "browser text"
     assert app._driver.meta == [{"type": BROWSER_CLIPBOARD_META_TYPE, "text": "browser text"}]
-    assert copied == ["browser text"]
+    assert copied == []

@@ -19,6 +19,7 @@ from textual.widgets import Static
 
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard, CompactionCardTitle
 from chrys.app.tui.widgets.chat.fold_gap import FOLD_GAP_ROWS
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     MessageHeaderRow,
@@ -99,6 +100,8 @@ async def _following_a_tool_group(cp: ChatPanel, pilot: object, tools: int) -> T
             f"c-{index}", "read_file", KIND_FILESYSTEM_READ, f"f{index}.py", {"path": f"f{index}.py"}
         )
         await cp.add_tool_result(f"c-{index}", "read_file", "line\n" * 3, 10)
+    cp._toggle_live_process_row(cp.query_one(LiveProcessRow))
+    cp.query(ToolGroup).last().collapsed = False
     await wait_for(
         lambda: cp.scroll_y == cp.max_scroll_y and screen_is_settled(app, cp.screen),
         pilot=pilot,
@@ -129,6 +132,8 @@ async def _ended_by(cp: ChatPanel, pilot: object, end: str) -> Widget:
         return cp.query_one(CompactionCard)
     cp.agent_running = True
     await cp.add_thinking_delta("r1", "reasoning", "Think one.\n\nThink two.")
+    cp._toggle_live_process_row(cp.query_one(LiveProcessRow))
+    cp.query_one(ThinkingMessage).collapsed = False
     if end == "thinking":
         # Still streaming: the turn moves.
         return cp.query_one(ThinkingMessage)
@@ -358,12 +363,14 @@ async def _foldable_entry(
     if entry == "thinking":
         await cp.add_thinking_delta("r1", "reasoning", "Think one.\n\nThink two.\n\nThink three.")
         cp.finish_thinking_segment("r1")
+        cp._toggle_live_process_row(cp.query_one(LiveProcessRow))
         message: StreamedMarkdownMessage = cp.query_one(ThinkingMessage)
         return message, message.query_one(_FoldRowHeader)
     if entry == "text between tool calls":
         await cp.add_answer_delta("a1", "Let me look.\n\nAt both files.")
         cp.finish_answer_segment("a1", completed=True)
         await cp.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, "a.py", {"path": "a.py"})
+        cp._toggle_live_process_row(cp.query_one(LiveProcessRow))
         message = cp.mounted_agent_messages()[-1]
         return message, message.query_one(_FoldRowHeader)
     await cp.add_compaction_start("k1")
@@ -392,6 +399,9 @@ async def test_an_entry_the_user_folds_gives_its_rows_up_at_the_bottom_in_the_la
         app = pilot.app
         cp = app.query_one(ChatPanel)
         folded, title = await _foldable_entry(cp, pilot, entry)
+        if how == "fold all":
+            folded = cp.query_one(LiveProcessRow)
+            title = folded
         if how == "click once the turn ended":
             cp.agent_running = False
         # Thinking and a compaction that ended wait for what comes next: the waiting row shows after a moment.
@@ -502,9 +512,7 @@ async def test_a_turn_with_its_tool_groups_folded_shows_its_end_on_the_bottom_bo
     """Long text, a tool call that folds it, its result, then thinking that ends the call's group: as the display
     settings have it by default, no frame shows a blank row under the transcript's last line."""
     text = "\n\n".join(f"Paragraph {index} of the text between calls." for index in range(8))
-    async with ChatPanelApp(thinking_expanded=lambda: thinking_expanded, tool_groups_expanded=lambda: False).run_test(
-        size=(100, 40)
-    ) as pilot:
+    async with ChatPanelApp(thinking_expanded=lambda: thinking_expanded).run_test(size=(100, 40)) as pilot:
         app = pilot.app
         cp = app.query_one(ChatPanel)
         await scrolled_to_bottom(cp, pilot)
@@ -525,6 +533,7 @@ async def test_a_turn_with_its_tool_groups_folded_shows_its_end_on_the_bottom_bo
         blank_rows = _record_blank_rows(monkeypatch, cp)
 
         await cp.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, "a.py", {"path": "a.py"})
+        cp._toggle_live_process_row(cp.query_one(LiveProcessRow))
         await cp.add_tool_result("c1", "read_file", "ok", 5)
         await cp.add_thinking_delta("r1", "reasoning", "Think one.\n\nThink two.")
         cp.finish_thinking_segment("r1")
@@ -550,6 +559,8 @@ async def test_text_that_starts_while_the_turn_waits_shows_the_thinking_folded_a
         await scrolled_to_bottom(cp, pilot)
         cp.agent_running = True
         await cp.add_thinking_delta("r1", "reasoning", "Line one.\n\nLine two.")
+        cp._toggle_live_process_row(cp.query_one(LiveProcessRow))
+        cp.query_one(ThinkingMessage).collapsed = False
         cp.finish_thinking_segment("r1")
         thinking = cp.query_one(ThinkingMessage)
         row = cp.query_one(WaitingRow)
@@ -600,6 +611,8 @@ async def test_a_tool_call_that_starts_while_the_turn_waits_shows_the_thinking_f
         await scrolled_to_bottom(cp, pilot)
         cp.agent_running = True
         await cp.add_thinking_delta("r1", "reasoning", text)
+        cp._toggle_live_process_row(cp.query_one(LiveProcessRow))
+        cp.query_one(ThinkingMessage).collapsed = False
         cp.finish_thinking_segment("r1")
         thinking = cp.query_one(ThinkingMessage)
         row = cp.query_one(WaitingRow)
@@ -646,14 +659,12 @@ async def _start(cp: ChatPanel, follows: str) -> Callable[[], bool]:
 
 @pytest.mark.parametrize("thinking_expanded", [False, True], ids=["folded-thinking", "open-thinking"])
 @pytest.mark.parametrize("follows", ["tool-call", "text"])
-async def test_text_folding_above_thinking_that_takes_a_gap_below_it_shows_the_end_on_the_bottom_border(
+async def test_text_restored_above_thinking_keeps_the_end_on_the_bottom_border(
     monkeypatch: pytest.MonkeyPatch, thinking_expanded: bool, follows: str
 ) -> None:
-    """Text, then thinking, then a tool call or more text: the text folds above the thinking, which takes a gap below
-    it, and no frame shows a blank row under the transcript's last line."""
-    async with ChatPanelApp(thinking_expanded=lambda: thinking_expanded, tool_groups_expanded=lambda: False).run_test(
-        size=(80, 40)
-    ) as pilot:
+    """Thinking appears above the possible answer. When the answer folds into the process, no frame has a blank
+    row under the transcript's last line."""
+    async with ChatPanelApp(thinking_expanded=lambda: thinking_expanded).run_test(size=(80, 40)) as pilot:
         app = pilot.app
         cp = app.query_one(ChatPanel)
         await scrolled_to_bottom(cp, pilot)
@@ -664,20 +675,25 @@ async def test_text_folding_above_thinking_that_takes_a_gap_below_it_shows_the_e
         await cp.add_thinking_delta("r1", "reasoning", "Think one.\n\nThink two.")
         cp.finish_thinking_segment("r1")
         thinking = cp.query_one(ThinkingMessage)
+        cp._toggle_live_process_row(cp.query_one(LiveProcessRow))
+        thinking.collapsed = not thinking_expanded
         await wait_for(
             lambda: cp.scroll_y == cp.max_scroll_y and screen_is_settled(app, cp.screen),
             pilot=pilot,
-            description="the thinking laid out below the note",
+            description="the thinking laid out above the note",
         )
-        assert not thinking.gap_above
+        title = cp.query_one(LiveProcessRow)
+        assert title.region.y < thinking.region.y < note.region.y
+        assert thinking.gap_above
         blank_rows = _record_blank_rows(monkeypatch, cp)
 
         started = await _start(cp, follows)
         await wait_for(
             lambda: note.collapsed and thinking.collapsed and started() and screen_is_settled(app, cp.screen),
             pilot=pilot,
-            description="what follows started below the folded note and thinking",
+            description="what follows started below the folded thinking and note",
         )
+        assert title.region.y < note.region.y < thinking.region.y
         assert thinking.gap_above
         assert _ends_on_the_border(cp)
         assert blank_rows

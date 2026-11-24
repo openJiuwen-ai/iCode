@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""In-memory search index for project path suggestions.
+"""In-memory search index for working directory path suggestions.
 
-``ProjectPathIndex`` is one immutable, pre-normalized snapshot of a scan.  Its
+``WorkdirPathIndex`` is one immutable, pre-normalized snapshot of a scan.  Its
 query returns a bounded top-k result with the same ordering semantics as
 ``fuzzy_filter``: match position, original path length, then original path text.
 
@@ -20,8 +20,8 @@ from collections.abc import Awaitable, Callable
 
 from chrys.app.tui.widgets.chrome import file_scanner
 from chrys.app.tui.widgets.chrome.file_scanner import (
-    ProjectPathScanResult,
-    ProjectPathSuggestion,
+    WorkdirPathScanResult,
+    WorkdirPathSuggestion,
     _normalize_for_search,
 )
 
@@ -29,13 +29,13 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_QUERY_LIMIT = 30
 
-type ScanProjectPaths = Callable[[str], Awaitable[ProjectPathScanResult]]
+type ScanWorkdirPaths = Callable[[str], Awaitable[WorkdirPathScanResult]]
 
 
-class ProjectPathIndex:
+class WorkdirPathIndex:
     """Pre-normalized substring index for ``@`` file suggestions."""
 
-    def __init__(self, scan: ProjectPathScanResult) -> None:
+    def __init__(self, scan: WorkdirPathScanResult) -> None:
         self.root = scan.root
         self.file_count = scan.file_count
         self.suggestion_count = scan.suggestion_count
@@ -48,17 +48,17 @@ class ProjectPathIndex:
         self._normalized = [_normalize_for_search(suggestion.path) for suggestion in self._suggestions]
 
     @classmethod
-    def build(cls, scan: ProjectPathScanResult) -> ProjectPathIndex:
+    def build(cls, scan: WorkdirPathScanResult) -> WorkdirPathIndex:
         """Build an index from a scan result."""
         return cls(scan)
 
-    def head(self, *, limit: int = _DEFAULT_QUERY_LIMIT) -> list[ProjectPathSuggestion]:
+    def head(self, *, limit: int = _DEFAULT_QUERY_LIMIT) -> list[WorkdirPathSuggestion]:
         """Return the first suggestions in insertion order."""
         if limit <= 0:
             return []
         return self._suggestions[:limit]
 
-    def query(self, query: str, *, limit: int = _DEFAULT_QUERY_LIMIT) -> list[ProjectPathSuggestion]:
+    def query(self, query: str, *, limit: int = _DEFAULT_QUERY_LIMIT) -> list[WorkdirPathSuggestion]:
         """Return exact current fuzzy-filter ordering for the best file matches."""
         if limit <= 0:
             return []
@@ -95,7 +95,7 @@ class WorkspacePathIndex:
 
     def __init__(self, root: str) -> None:
         self.root = root
-        self.snapshot: ProjectPathIndex | None = None
+        self.snapshot: WorkdirPathIndex | None = None
         self.stale = False
         self._generation = 0
 
@@ -104,9 +104,9 @@ class WorkspacePathIndex:
         """Whether an installed snapshot covers every change marked so far."""
         return self.snapshot is not None and not self.stale
 
-    def install(self, scan: ProjectPathScanResult) -> None:
+    def install(self, scan: WorkdirPathScanResult) -> None:
         """Install *scan* as this root's current snapshot."""
-        self.snapshot = ProjectPathIndex.build(scan)
+        self.snapshot = WorkdirPathIndex.build(scan)
         self.stale = False
 
     def mark_stale(self) -> None:
@@ -114,7 +114,7 @@ class WorkspacePathIndex:
         self.stale = True
         self._generation += 1
 
-    async def rescan(self, scan: ScanProjectPaths | None = None) -> bool:
+    async def rescan(self, scan: ScanWorkdirPaths | None = None) -> bool:
         """Scan the root and install the result; ``True`` when a snapshot was installed.
 
         The installed snapshot keeps answering while the scan runs, and a failed
@@ -122,8 +122,8 @@ class WorkspacePathIndex:
         """
         generation = self._generation
         try:
-            result = await (scan or file_scanner.scan_project_paths)(self.root)
-            snapshot = await asyncio.to_thread(ProjectPathIndex.build, result)
+            result = await (scan or file_scanner.scan_workdir_paths)(self.root)
+            snapshot = await asyncio.to_thread(WorkdirPathIndex.build, result)
         except Exception:
             logger.warning("Scanning %s for @ file suggestions failed", self.root, exc_info=True)
             return False

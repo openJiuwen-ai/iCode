@@ -83,7 +83,7 @@
 你可以让 iCode 记住你批准过的 Shell 命令或文件修改，之后智能体发出相同请求时不再询问。Shell 命令和文件写入、编辑的审批窗口中会出现“记住审批”框：
 
 1. 勾选“相同命令不再询问”（文件为“修改这些文件不再询问”）。
-2. 选择“本会话”或“本项目”。“本会话”在恢复该会话后仍然有效；“本项目”在同一项目的其他会话中也有效。
+2. 选择“本会话”或“此工作目录”。“本会话”在恢复该会话后仍然有效；“此工作目录”在使用同一实际目录、且不属于任何工作区的其他会话中也有效。属于[工作区](../daily-use/workspaces.md#工作区)的会话中，第二项是“此工作区”，在同一工作区的其他会话中也有效；离开工作区后，会话停止复用该工作区的审批。原有的命令和路径限制仍然适用。
 3. 选择“批准”。
 
 之后智能体再发出相同请求时会直接运行，不再弹出审批窗口。只会记住这条命令或这些文件，其他操作仍会询问。不勾选直接批准，只批准本次调用。以下情况不会被记住：
@@ -105,15 +105,20 @@
 
 ```bash
 icode approval list                          # 列出所有已记住的审批
-icode approval list --project /work/demo     # 只看某个项目
+icode approval list --workdir /work/demo     # 只看某个工作目录
 icode approval list --session SESSION_ID --json
 icode approval revoke GRANT_ID               # 按列表中的 ID 删除一条
-icode approval clear --project /work/demo    # 删除某个项目的全部审批
+icode approval clear --workdir /work/demo    # 删除某个工作目录的全部审批
 icode approval clear --session SESSION_ID    # 删除某个会话的全部审批
+icode approval clear --workspace NAME       # 删除某个工作区的全部共享审批
 icode approval clear --all                   # 全部删除
 ```
 
-会话的审批会随该会话一起删除，用 `/fork` 创建分支时不会被复制到分支。项目的审批会一直保留，直到你删除。
+同时指定 `--workdir` 和 `--session` 可以只选中该会话在指定目录的审批记录。目录移除后仍可按原路径筛选。
+
+两个筛选选项都必须提供非空值。要删除所有审批，请单独使用 `clear --all`。
+
+会话的审批会随该会话一起删除，用 `/fork` 创建分支时不会被复制到分支。工作目录和工作区的审批会一直保留，直到你删除。向 `--workspace` 传入工作区名称或 ID 可选中该工作区的共享审批；工作区已删除时，请使用完整 ID。
 
 ## 了解自动放行与安全保护
 

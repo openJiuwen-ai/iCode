@@ -226,6 +226,11 @@ def _mixed_markdown_result(
 
 
 def _expand_all_groups(panel: ChatPanel) -> None:
+    from chrys.app.tui.widgets.chat.process_block import ProcessBlock
+
+    for process in panel.query(ProcessBlock):
+        if process.collapsed:
+            panel._toggle_process_block(process)
     for group in panel.query("ToolGroup"):
         group.collapsed = False
 

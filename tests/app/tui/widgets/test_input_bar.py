@@ -21,7 +21,7 @@ from chrys.app.tui.screens.main.state import MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome import input_bar as input_bar_module
-from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult
+from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult
 from chrys.app.tui.widgets.chrome.input_bar import (
     INPUT_RETRY,
     INPUT_SEND,
@@ -615,7 +615,7 @@ async def test_main_screen_reactive_sources_apply_existing_side_effects() -> Non
         input_bar = app.main_screen.query_one(InputBar)
         suggestions = app.main_screen._suggestions
         file_index = suggestions._file_index_for(suggestions._current_file_root())
-        file_index.install(ProjectPathScanResult.from_suggestions(root=file_index.root, paths=[]))
+        file_index.install(WorkdirPathScanResult.from_suggestions(root=file_index.root, paths=[]))
         app.main_screen._live_diff.call_paths["call"] = "src/app.py"
         app.main_screen._live_diff.file_mutations["src/app.py"] = object()
 
@@ -978,7 +978,7 @@ async def test_input_bar_relocalizes_semantic_state_and_cell_width_in_place(
         input_bar.retry_mode = False
         input_bar.agent_running = True
         input_bar.lock_with_text()
-        assert str(send.label) == "引导"
+        assert str(send.label) == "立刻发送"
 
     assert input_bar is not None
     assert input_bar not in controller._surfaces
@@ -1624,7 +1624,7 @@ async def test_input_bar_queued_draft_keeps_focus_until_unlock() -> None:
         assert text_area.disabled is False
         assert text_area.has_focus
         assert send_btn.disabled is False
-        assert str(send_btn.label) == "Steer"
+        assert str(send_btn.label) == "Send Now"
         assert ib.query_one("#cancel-btn", Button).display
         assert ib.query_one("#editor-btn", Button).render().plain == ">"
 

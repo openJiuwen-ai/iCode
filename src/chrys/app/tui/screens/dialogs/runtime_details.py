@@ -106,7 +106,7 @@ _NO_HOOKS_IN_SOURCE = msg(
     "tui.runtime_details.empty.hooks_in_source",
     fallback="No hooks configured in this source.",
 )
-_PROJECT_HOOKS = msg("tui.runtime_details.section.project_hooks", fallback="Project hooks")
+_WORKDIR_HOOKS = msg("tui.runtime_details.section.workdir_hooks", fallback="Working directory hooks")
 _GLOBAL_HOOKS = msg("tui.runtime_details.section.global_hooks", fallback="Global hooks")
 _EVENT = msg("tui.runtime_details.label.event", fallback="Event")
 _MODE = msg("tui.runtime_details.label.mode", fallback="Mode")
@@ -403,7 +403,7 @@ class RuntimeDetailsDialog(BaseDialog[None]):
     def _hook_sections(self) -> list[Static]:
         sections: list[Static] = []
         for source in self._details.hook_sources:
-            title = _PROJECT_HOOKS.bind() if source.scope == "project" else _GLOBAL_HOOKS.bind()
+            title = _WORKDIR_HOOKS.bind() if source.scope == "workdir" else _GLOBAL_HOOKS.bind()
             lines: list[str] = []
             if source.hooks:
                 for hook in source.hooks:

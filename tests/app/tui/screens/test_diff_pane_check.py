@@ -214,6 +214,27 @@ async def test_diff_screen_hides_approval_badge() -> None:
 
 
 @pytest.mark.asyncio
+async def test_diff_screen_footer_puts_back_in_the_right_corner() -> None:
+    """Esc Back takes the corner the main screen gives its quit key, and leaves the left row."""
+    async with _DiffScreenApp().run_test() as pilot:
+        await _wait_for_diff_screen(
+            pilot,
+            lambda: (
+                isinstance(pilot.app.screen, DiffScreen)
+                and {"toggle_view", "toggle_change_list"} <= {key.action for key in pilot.app.screen.query("FooterKey")}
+            ),
+            message="diff footer keys never rendered",
+        )
+        keys = list(pilot.app.screen.query("FooterKey"))
+
+        assert [key.action for key in keys if key.has_class("-corner")] == ["go_back"]
+        assert [key.action for key in keys if not key.has_class("-corner")] == [
+            "toggle_view",
+            "toggle_change_list",
+        ]
+
+
+@pytest.mark.asyncio
 async def test_diff_screen_paints_centered_loading_state_before_mounting_content() -> None:
     load_started = asyncio.Event()
     release_load = asyncio.Event()
@@ -920,3 +941,20 @@ async def test_badge_alignment_after_pane_removed_is_noop() -> None:
         assert pane._initialized
         await pane.remove()
         pane._refresh_badge_alignment()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_narrow_diff_footer_leaves_a_cell_before_back() -> None:
+    async with _DiffScreenApp().run_test(size=(44, 20)) as pilot:
+        await _wait_for_diff_screen(
+            pilot,
+            lambda: (
+                {"go_back", "toggle_view", "toggle_change_list"}
+                <= {key.action for key in pilot.app.screen.query("FooterKey")}
+            ),
+            message="back shortcut rendered",
+        )
+        await pilot.pause()
+        line = pilot.app.screen._compositor.render_strips()[-1].text
+        back = line.index("esc Back")
+        assert line[back - 1] == " ", line

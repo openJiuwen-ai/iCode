@@ -16,6 +16,8 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_workflow_command_is_discoverable_and_disabled_during_a_chat_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

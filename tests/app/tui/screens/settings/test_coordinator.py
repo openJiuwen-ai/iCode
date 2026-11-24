@@ -114,10 +114,7 @@ class _Harness:
         self.themes: list[str] = []
         self.locales: list[str] = []
         self.verify_commands: list[str] = []
-        self.tool_groups_expanded: list[bool] = []
         self.defer_while_judging: list[bool] = []
-        self.thinking_expanded: list[bool] = []
-        self.fold_finished_turns: list[bool] = []
         self.saved_notifications: list[NotificationSettings] = []
         self.notification_service = _NotificationService()
         self.turn_task: asyncio.Task[None] | None = None
@@ -142,10 +139,7 @@ class _Harness:
                 apply_theme=self.themes.append,
                 switch_locale=self.locales.append,
                 apply_trajectory_verify_commands=self.verify_commands.append,
-                apply_tool_groups_expanded=self.tool_groups_expanded.append,
                 apply_approval_defer_while_judging=self.defer_while_judging.append,
-                apply_thinking_expanded=self.thinking_expanded.append,
-                apply_fold_finished_turns=self.fold_finished_turns.append,
                 list_themes=lambda: ["textual-dark", "chrys", "chrys-legacy"],
                 save_notifications=self.saved_notifications.append,
                 notification_service=lambda: self.notification_service,
@@ -195,12 +189,10 @@ async def test_live_keys_route_to_their_writers_and_never_to_the_queue(monkeypat
     h.coordinator.apply_live("ui.theme", "chrys-legacy")
     h.coordinator.apply_live("ui.locale", "zh-Hans")
     h.coordinator.apply_live("trajectory.verify_commands", "pytest,ruff")
-    h.coordinator.apply_live("ui.chat.tool_groups_expanded", True)
 
     assert h.themes == ["chrys-legacy"]
     assert h.locales == ["zh-Hans"]
     assert h.verify_commands == ["pytest,ruff"]
-    assert h.tool_groups_expanded == [True]
     assert h.recorder.calls == []
     # The locale row is reprojected after the switch: a bundle that failed to
     # load keeps the old locale in force and the row must show that.
@@ -230,35 +222,6 @@ async def test_the_approval_deferral_choice_applies_at_once_and_saves_without_a_
     assert h.coordinator.reload_dirty() is False
 
 
-async def test_the_expand_thinking_choice_applies_at_once_and_saves_without_a_reload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    h = _Harness(monkeypatch)
-    await h.install_engine()
-
-    h.coordinator.apply_live("ui.chat.show_thinking", True)
-
-    assert h.thinking_expanded == [True]
-    assert h.recorder.calls == []
-
-    await h.close_and_settle()
-
-    assert h.recorder.calls == [({"ui.chat.show_thinking": True}, ())]
-    assert h.reloads == 0
-    assert h.coordinator.reload_dirty() is False
-
-
-async def test_process_folding_choice_applies_live_and_saves_without_reload(monkeypatch: pytest.MonkeyPatch) -> None:
-    h = _Harness(monkeypatch)
-    await h.install_engine()
-    h.coordinator.apply_live("ui.chat.fold_finished_turns", False)
-    assert h.fold_finished_turns == [False]
-    await h.close_and_settle()
-    assert h.recorder.calls == [({"ui.chat.fold_finished_turns": False}, ())]
-    assert h.reloads == 0
-    assert h.coordinator.reload_dirty() is False
-
-
 async def test_written_values_project_until_the_live_settings_catch_up(monkeypatch: pytest.MonkeyPatch) -> None:
     h = _Harness(monkeypatch)
     assert h.coordinator.projected_value(_RELOAD_KEY) is True
@@ -274,6 +237,19 @@ async def test_written_values_project_until_the_live_settings_catch_up(monkeypat
     h.coordinator.on_reloaded()
     assert h.coordinator._desired == {}
     assert h.coordinator.projected_value(_RELOAD_KEY) is False
+
+
+async def test_trust_switch_shows_the_effective_value_after_reload(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = "workdir.hooks_enabled"
+    h = _Harness(monkeypatch)
+    await h.install_engine(reinstall=Settings(workdir_hooks_enabled=False))
+    h.coordinator.on_written(_written(**{key: True}))
+    assert h.coordinator.projected_value(key) is True
+
+    await h.close_and_settle()
+
+    assert h.reloads == 1
+    assert h.coordinator.projected_value(key) is False
 
 
 async def test_search_ignore_setting_reloads_on_dialog_close(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -433,13 +409,13 @@ async def test_a_reclose_during_finalize_reloads_again_when_more_edits_landed(mo
     await asyncio.sleep(0.05)
     # The dialog was reopened and closed again with a second reload edit while
     # the first close still waited on the turn: still one finalize task.
-    h.coordinator.schedule_persist({"project.config_enabled": True})
+    h.coordinator.schedule_persist({"workdir.config_enabled": True})
     h.coordinator.on_dialog_closed()
     assert h.coordinator._finalize_task is finalize
 
     release.set()
     await finalize
-    assert h.recorder.calls == [({_RELOAD_KEY: False}, ()), ({"project.config_enabled": True}, ())]
+    assert h.recorder.calls == [({_RELOAD_KEY: False}, ()), ({"workdir.config_enabled": True}, ())]
     # Both edits were flushed before the reload, so one reload covered them.
     assert h.reloads == 1
     assert h.coordinator.reload_dirty() is False
@@ -484,7 +460,7 @@ async def test_reopening_during_the_turn_defers_the_reload_to_the_next_close(mon
     await asyncio.sleep(0.05)
     # Reopened while the turn still runs, and edited again.
     h.coordinator.attach_dialog(h.dialog)
-    h.coordinator.schedule_persist({"project.config_enabled": True})
+    h.coordinator.schedule_persist({"workdir.config_enabled": True})
 
     release.set()
     await finalize
@@ -495,7 +471,7 @@ async def test_reopening_during_the_turn_defers_the_reload_to_the_next_close(mon
 
     # Closing the reopened panel reloads once, covering both edits.
     await h.close_and_settle()
-    assert h.recorder.calls == [({_RELOAD_KEY: False}, ()), ({"project.config_enabled": True}, ())]
+    assert h.recorder.calls == [({_RELOAD_KEY: False}, ()), ({"workdir.config_enabled": True}, ())]
     assert h.reloads == 1
     assert h.coordinator.reload_dirty() is False
 

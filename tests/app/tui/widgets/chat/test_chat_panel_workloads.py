@@ -22,6 +22,7 @@ from scripts.chat_panel_workloads import (
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard
 from tests.support.tui_helpers import ChatPanelApp
+from tests.support.waiting import wait_for
 
 _TURN = ["intermediate", "answer"]
 
@@ -76,4 +77,9 @@ async def test_a_workload_builds_its_turns_through_the_live_chat_api(
         shown = panel.mounted_agent_messages()
         assert ["intermediate" if message.has_class("--intermediate") else "answer" for message in shown] == messages
         assert not any(message.has_class("--streaming") for message in shown)
+        await wait_for(
+            lambda: len(panel.query(BaseToolCard)) == tool_calls,
+            pilot=pilot,
+            description="expanded workloads restored their completed tool cards",
+        )
         assert len(panel.query(BaseToolCard)) == tool_calls

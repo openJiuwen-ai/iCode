@@ -42,17 +42,17 @@ def test_confirm_then_reload_answers_for_the_exact_triple_only(tmp_path: Path) -
     assert not reloaded.is_confirmed(_entry(entry_digest="x" * 64))
     assert not reloaded.is_confirmed(_entry(spec_digest="x" * 64))
     assert not reloaded.is_confirmed(_entry(environment_fingerprint="x" * 64))
-    assert not reloaded.is_confirmed(_entry(source_kind="project"))
+    assert not reloaded.is_confirmed(_entry(source_kind="workdir"))
 
 
 def test_confirming_the_same_file_again_replaces_its_earlier_entry(tmp_path: Path) -> None:
     path = ledger_path(tmp_path)
     ledger = ConfirmationLedger(path)
     ledger.confirm(_entry())
-    ledger.confirm(_entry(canonical_path="/elsewhere/review.py", source_kind="project"))
+    ledger.confirm(_entry(canonical_path="/elsewhere/review.py", source_kind="workdir"))
     ledger.confirm(_entry(spec_digest="n" * 64))
     reloaded = ConfirmationLedger(path)
-    assert reloaded.is_confirmed(_entry(canonical_path="/elsewhere/review.py", source_kind="project"))
+    assert reloaded.is_confirmed(_entry(canonical_path="/elsewhere/review.py", source_kind="workdir"))
     assert reloaded.is_confirmed(_entry(spec_digest="n" * 64))
     assert not reloaded.is_confirmed(_entry())
 
@@ -117,7 +117,7 @@ def test_a_confirmation_recorded_by_another_ledger_since_loading_is_kept(tmp_pat
     path = ledger_path(tmp_path)
     first = ConfirmationLedger(path)
     second = ConfirmationLedger(path)
-    other = _entry(canonical_path="/elsewhere/other.py", source_kind="project", workflow_id="other")
+    other = _entry(canonical_path="/elsewhere/other.py", source_kind="workdir", workflow_id="other")
     first.confirm(_entry())
     second.confirm(other)
     reloaded = ConfirmationLedger(path)
@@ -139,3 +139,75 @@ def test_remove_reloads_under_lock_and_forgets_only_the_requested_path(tmp_path:
     first.remove("/never-confirmed.py")
     assert ConfirmationLedger(path).is_confirmed(other)
     assert not ConfirmationLedger(path).is_confirmed(_entry())
+
+
+def test_compact_ledger_stays_readable_if_either_writer_would_exceed_the_limit(tmp_path):
+    from chrys.service.workflows.ledger import MAX_LEDGER_BYTES, migrate_ledger
+
+    path = ledger_path(tmp_path)
+    entry = _entry(source_kind="project", title="")
+    payload = {"version": LEDGER_VERSION, "entries": [entry.to_dict()]}
+    compact = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    title = "x" * (MAX_LEDGER_BYTES - len(compact) - 1)
+    payload["entries"][0]["title"] = title
+    original = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    assert len(original) == MAX_LEDGER_BYTES - 1
+    atomic_write_owner_only_bytes(path, original)
+    confirmed = replace(entry, source_kind="workdir", title=title)
+
+    def unexpected(*_args):
+        pytest.fail("A valid ledger should be left alone when the new bytes would exceed the size limit")
+
+    assert not migrate_ledger(path, backup=unexpected, on_read_error=unexpected)
+    assert path.read_bytes() == original
+
+    ledger = ConfirmationLedger(path)
+    other = _entry(canonical_path="/other.py")
+    assert ledger.is_confirmed(confirmed)
+    with pytest.raises(ValueError, match="too large") as error:
+        ledger.confirm(other)
+    assert str(path) in str(error.value)
+    assert f"{MAX_LEDGER_BYTES:,} bytes" in str(error.value)
+    assert ledger.is_confirmed(confirmed)
+    assert not ledger.is_confirmed(other)
+    assert path.read_bytes() == original
+
+
+def test_ledger_migration_skips_a_read_only_file(tmp_path):
+    from chrys.service.workflows.ledger import migrate_ledger
+
+    path = ledger_path(tmp_path)
+    original = json.dumps({"version": LEDGER_VERSION, "entries": [_entry(source_kind="project").to_dict()]}).encode()
+    atomic_write_owner_only_bytes(path, original)
+    path.chmod(0o400)
+    try:
+        assert not migrate_ledger(path, backup=lambda *_: pytest.fail("read-only"), on_read_error=lambda *_: None)
+    finally:
+        path.chmod(0o600)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("newer_source", ["project", "workdir"])
+def test_legacy_and_current_confirmations_keep_only_the_last_entry(tmp_path, newer_source):
+    from chrys.service.workflows.ledger import migrate_ledger
+
+    path = ledger_path(tmp_path)
+    older_source = "workdir" if newer_source == "project" else "project"
+    older = _entry(source_kind=older_source, spec_digest="old")
+    newer = _entry(source_kind=newer_source, spec_digest="new")
+    unrelated = _entry(source_kind="global")
+    payload = {"version": LEDGER_VERSION, "entries": [older.to_dict(), unrelated.to_dict(), newer.to_dict()]}
+    original = json.dumps(payload).encode("utf-8")
+    atomic_write_owner_only_bytes(path, original)
+    expected = replace(newer, source_kind="workdir")
+    stale = replace(older, source_kind="workdir")
+    ledger = ConfirmationLedger(path)
+    assert ledger.recorded(newer.canonical_path, "workdir") == expected
+    assert ledger.is_confirmed(expected)
+    assert not ledger.is_confirmed(stale)
+    assert ledger.is_confirmed(unrelated)
+
+    backups = {}
+    assert migrate_ledger(path, backup=backups.__setitem__, on_read_error=lambda *_: pytest.fail("invalid"))
+    assert backups == {path: original}
+    assert json.loads(path.read_bytes())["entries"] == [unrelated.to_dict(), expected.to_dict()]

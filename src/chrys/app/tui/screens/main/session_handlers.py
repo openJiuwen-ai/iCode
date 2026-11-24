@@ -27,7 +27,7 @@ from chrys.app.tui.screens.main.ports import (
     StatusTrail,
 )
 from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider, enabled_hook_count
-from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, WorkspaceActionOwner
 from chrys.app.tui.screens.sessions import WorkflowSessionPick
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
@@ -52,6 +52,7 @@ from chrys.foundation.events.types import (
     ProfileSwitched,
     SessionFork,
     SessionForked,
+    SessionRestore,
     SessionRestored,
     SessionSaved,
     SessionTitleUpdated,
@@ -61,10 +62,16 @@ from chrys.foundation.i18n import DisplayPath, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.todos import parse_todo_items
+from chrys.foundation.models.workspace import Workspace, WorkspaceConfirmation
+from chrys.foundation.models.workspace_operations import WorkspaceOperation
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.trajectory.metadata import OPERATION_ID_KEY
 from chrys.foundation.util.session_ids import session_short_id
+from chrys.orchestration.engine.workspaces import validate_workspace_primary
 from chrys.service.session.persistence import has_real_messages
+from chrys.service.state.store import store_workspace_snapshot
+from chrys.service.workspaces.paths import MissingWorkspacePrimary
+from chrys.service.workspaces.registry import RegistrySnapshot
 
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
@@ -72,8 +79,8 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.ports import StartWorker
     from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
     from chrys.foundation.events.bus import EventBus
-    from chrys.service.context.providers.history import CompressedBlock
-    from chrys.service.state.store import StateStore
+    from chrys.foundation.events.types import SessionNew
+    from chrys.service.state.store import SessionTranscript, StateStore
 
 
 logger = logging.getLogger(__name__)
@@ -130,17 +137,29 @@ class RestoreRequest(Enum):
     REQUESTED = "requested"
     """A restore was published; ``SessionRestored`` or an ``Error`` follows."""
     DECLINED = "declined"
-    """The session's folder is gone and the user chose no other one, or kept its background commands running."""
+    """The user declined a choice, or the session owning the choice changed."""
     SKIPPED = "skipped"
     """Nothing was published (busy, or the loading UI could not open)."""
 
 
-async def _decline_missing_working_dir(_missing: str) -> str | None:
+@dataclass(eq=False, slots=True)
+class _RestoreAttempt:
+    source: tuple[int, str]
+    loading: bool = False
+
+
+async def _decline_missing_working_dir(_missing: str, _workspace_restore: bool) -> str | None:
     return None
 
 
 async def _stop_background_tasks_unasked() -> bool:
     return True
+
+
+async def _confirm_workspace_leave_unasked(
+    _cwd: str, _session_id: str, _workspace: Workspace | None
+) -> tuple[bool, WorkspaceConfirmation | None]:
+    return True, None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,9 +180,13 @@ class SessionCallbacks:
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]
     debug: Callable[[str, str], None]
     refresh_model_indicator: Callable[[], None]
-    choose_missing_working_dir: Callable[[str], Awaitable[str | None]] = _decline_missing_working_dir
+    choose_missing_working_dir: Callable[[str, bool], Awaitable[str | None]] = _decline_missing_working_dir
+    confirm_workspace_leave: Callable[
+        [str, str, Workspace | None], Awaitable[tuple[bool, WorkspaceConfirmation | None]]
+    ] = _confirm_workspace_leave_unasked
     confirm_stopping_background_tasks: Callable[[], Awaitable[bool]] = _stop_background_tasks_unasked
     """Whether the user lets the running background commands stop as the session ends."""
+    workflow_mode: Callable[[], bool] = lambda: False
 
     refresh_diff_preview: Callable[[bool], None] = lambda _reread: None
     reset_rollback_request: Callable[[], None] = lambda: None
@@ -207,6 +230,8 @@ class SessionHandler:
         self._profile_descriptions = profile_descriptions or runtime_info
         self._locale_controller = locale_controller
         self._fork_dialog: ForkSessionDialog | None = None
+        self._restore_awaiting_cwd: SessionRestore | None = None
+        self._restore_missing_cwd: tuple[str, str | None] | None = None
         self._fork_session_id = ""
         self._fork_new_session_id = ""
         # Serializes custom-title saves: FileLock acquisition is not FIFO,
@@ -422,7 +447,8 @@ class SessionHandler:
         :meth:`on_session_clear_error`) and never starts a new session.
         """
         s = self
-        if not await self._callbacks.confirm_stopping_background_tasks():
+        source = self._session_action_owner()
+        if not await self._callbacks.confirm_stopping_background_tasks() or source != self._session_action_owner():
             return
         # Guard and claim the UI synchronously — no await between them — so
         # the /clear preflight and "input blocked" are one step: a submit that
@@ -443,29 +469,43 @@ class SessionHandler:
             if event.session_id == session_id:
                 deleted = True
 
-        await s.bus.subscribe(SessionDeleted, _on_deleted)
         try:
-            await s.bus.publish(SessionClear(session_id=session_id))
+            await s.bus.subscribe(SessionDeleted, _on_deleted)
+            if source == self._session_action_owner():
+                await s.bus.publish(SessionClear(session_id=session_id))
         finally:
             await s.bus.unsubscribe(SessionDeleted, _on_deleted)
-            if not deleted:
+            if not deleted and source == self._session_action_owner():
                 # Nothing was deleted, so no fresh session was started: undo the
                 # optimistic new-session/loading state (idempotent with the
                 # ``session_clear_failed`` toast path).
                 s.creating_new_session = False
                 s.set_agent_loading(False)
 
-    async def create_new_session(self) -> None:
+    async def create_new_session(
+        self, event: SessionNew | None = None, *, confirmation_is_current: Callable[[], bool] | None = None
+    ) -> None:
         s = self
-        if not await self._callbacks.confirm_stopping_background_tasks():
+        source = self._session_action_owner()
+        if not await self._callbacks.confirm_stopping_background_tasks() or source != self._session_action_owner():
             return
-        if s.agent_loading or s.agent_running or self._services.execution_busy():
+        if (
+            s.agent_loading
+            or s.agent_running
+            or self._services.execution_busy()
+            or (confirmation_is_current is not None and not confirmation_is_current())
+        ):
             return
         from chrys.foundation.events.types import SessionNew
 
         self._callbacks.reset_rollback_request()
         s.creating_new_session = True
-        await s.bus.publish(SessionNew())
+        try:
+            await s.bus.publish(event or SessionNew())
+        finally:
+            # The duplicate failure marker belongs only to this synchronous dispatch.
+            if source == self._session_action_owner():
+                self._state.session.failed_new_session_id = None
 
     async def resume_last_session(self) -> None:
         """Resume the most recent chat session.
@@ -473,28 +513,37 @@ class SessionHandler:
         The restore modal opens before the lookup so a slow first-time index
         backfill still shows progress.
         """
-        s = self
-        if not s.state_store or s.agent_running or s.agent_loading or self._services.execution_busy():
+        store = self.state_store
+        attempt = _RestoreAttempt(self._session_action_owner())
+        if store is None or not self._can_restore(attempt):
             return
-        s.restoring_session = True
+        if not await self._begin_chat_restore_load("", attempt):
+            return
+        if not self._can_restore(attempt):
+            self._cancel_restore_load(attempt)
+            return
         try:
-            # Empty id: the modal opens with a blank subtitle and the resolved
-            # id fills it in via ``do_session_restore`` (same dialog).
-            await self._agent_load.begin_session_restore_load("")
-            selection = await s.state_store.load_latest_session_id(chat_only=True)
+            selection = await store.load_latest_session_id(chat_only=True)
+        except asyncio.CancelledError:
+            self._cancel_restore_load(attempt)
+            raise
         except Exception as exc:
-            s.restoring_session = False
-            with contextlib.suppress(Exception):
-                self._agent_load.cancel_agent_load()
-            s.debug("SessionRestore", f"failed to look up latest session: {exc}")
+            self._cancel_restore_load(attempt)
+            self.debug("SessionRestore", f"failed to look up latest session: {exc}")
+            return
+        if not self._can_restore(attempt):
+            self._cancel_restore_load(attempt)
             return
         if selection is None:
-            s.restoring_session = False
-            self._agent_load.cancel_agent_load()
-            s.notify(_NO_SAVED_SESSIONS.bind(), title=_RESUME_TITLE.bind(), severity="warning", timeout=3)
+            self._cancel_restore_load(attempt)
+            self.notify(_NO_SAVED_SESSIONS.bind(), title=_RESUME_TITLE.bind(), severity="warning", timeout=3)
             return
-        # The lookup modal already marked the screen as loading.
-        await self.do_session_restore(selection, allow_while_loading=True)
+        # The resolved id fills in the subtitle on the lookup dialog.
+        try:
+            await self._restore_chat_session(selection, attempt)
+        except Exception, asyncio.CancelledError:
+            self._cancel_restore_load(attempt)
+            raise
 
     async def fork_current_session(self) -> None:
         """Request a backend-managed fork of the current saved session."""
@@ -586,82 +635,260 @@ class SessionHandler:
         *,
         allow_while_loading: bool = False,
         primary_cwd: str = "",
+        saved_cwd: str | None = None,
+        workspace_id: str | None = None,
+        confirmation: WorkspaceConfirmation | None = None,
+        workspace_snapshot: RegistrySnapshot | None = None,
     ) -> RestoreRequest:
         """Restore *session_id*, in *primary_cwd* when given instead of its saved folder.
 
         A session whose saved folder is gone is restored only in a folder the
         user picks; declining leaves the current session as it was.
         """
-        s = self
-        if s.agent_running or self._services.execution_busy() or (s.agent_loading and not allow_while_loading):
+        attempt = _RestoreAttempt(self._session_action_owner())
+        if not self._can_restore(attempt, allow_while_loading=allow_while_loading):
             return RestoreRequest.SKIPPED
+        if allow_while_loading and self.agent_loading:
+            # Startup has already marked the UI loading for this restore.
+            attempt.loading = True
+            self._state.session.load_owner = attempt
         if isinstance(session_id, WorkflowSessionPick):
             self._callbacks.reset_rollback_request()
-            await self._restore_workflow_session(session_id)
+            await self._restore_workflow_session(session_id, attempt)
             return RestoreRequest.REQUESTED
-        from chrys.foundation.events.types import SessionRestore
-
-        if not primary_cwd and (missing := await self._missing_saved_cwd(session_id)) is not None:
-            # /resume and startup open their loading UI first; the prompt replaces it.
-            if s.agent_loading:
-                with contextlib.suppress(Exception):
-                    self._agent_load.cancel_agent_load()
-            s.restoring_session = False
-            chosen = await self._callbacks.choose_missing_working_dir(missing)
-            if chosen is None:
-                return RestoreRequest.DECLINED
-            return await self.do_session_restore(
-                session_id, allow_while_loading=allow_while_loading, primary_cwd=chosen
+        try:
+            return await self._restore_chat_session(
+                session_id,
+                attempt,
+                primary_cwd=primary_cwd,
+                workspace_id=workspace_id,
+                confirmation=confirmation,
+                workspace_snapshot=workspace_snapshot,
+                saved_cwd=saved_cwd,
             )
-        # Restoring the current session keeps its background commands.
-        if session_id != s.main_usage_source_id and not await self._callbacks.confirm_stopping_background_tasks():
-            if s.agent_loading:
-                with contextlib.suppress(Exception):
-                    self._agent_load.cancel_agent_load()
-            s.restoring_session = False
+        except Exception, asyncio.CancelledError:
+            self._cancel_restore_load(attempt)
+            raise
+
+    def _session_action_owner(self) -> tuple[int, str]:
+        return self._services.session_action_owner(self._state)
+
+    def _can_restore(self, attempt: _RestoreAttempt, *, allow_while_loading: bool = False) -> bool:
+        return (
+            attempt.source == self._session_action_owner()
+            and self._state.session.load_owner is (attempt if attempt.loading else None)
+            and not self.agent_running
+            and not self._services.execution_busy()
+            and (not self.agent_loading or attempt.loading or allow_while_loading)
+        )
+
+    async def _restore_chat_session(
+        self,
+        session_id: str,
+        attempt: _RestoreAttempt,
+        *,
+        primary_cwd: str = "",
+        workspace_id: str | None = None,
+        confirmation: WorkspaceConfirmation | None = None,
+        workspace_snapshot: RegistrySnapshot | None = None,
+        saved_cwd: str | None = None,
+    ) -> RestoreRequest:
+        snapshot = workspace_snapshot
+        if snapshot is None:
+            snapshot = store_workspace_snapshot(self.state_store)
+        workspace = snapshot.session_workspace(session_id)
+        workspace_restore = workspace_id is not None or workspace is not None or confirmation is not None
+        owner = self._workspace_action_owner() if workspace_restore else None
+
+        def is_current() -> bool:
+            return self._can_restore(attempt) and (owner is None or owner == self._workspace_action_owner())
+
+        def decline() -> RestoreRequest:
+            self._cancel_restore_load(attempt)
             return RestoreRequest.DECLINED
 
-        self._callbacks.reset_rollback_request()
-        s.restoring_session = True
-        try:
-            await self._agent_load.begin_session_restore_load(session_id)
-        except Exception as exc:
-            s.restoring_session = False
+        saved = None
+        if workspace_id is None and not primary_cwd:
+            saved = await self._saved_cwd(session_id, snapshot, saved_cwd)
+            if not is_current():
+                return decline()
+        opened_cwd = ""
+        if saved is not None:
+            path, saved_workspace_id = saved
+            try:
+                if saved_workspace_id is not None:
+                    opened_cwd = validate_workspace_primary(path)
+                elif not os.path.isdir(path):
+                    raise MissingWorkspacePrimary(path)
+            except MissingWorkspacePrimary:
+                return await self._choose_restore_directory(session_id, *saved, attempt=attempt, snapshot=snapshot)
+
+        if workspace_restore and workspace_id is None and primary_cwd and confirmation is None:
+            allowed, confirmation = await self._callbacks.confirm_workspace_leave(primary_cwd, session_id, workspace)
+            if not allowed or not is_current():
+                return decline()
+        # Restoring the current session keeps its background commands.
+        if session_id != self.main_usage_source_id and not await self._callbacks.confirm_stopping_background_tasks():
+            return decline()
+        if not is_current():
+            return decline()
+        if not await self._begin_chat_restore_load(session_id, attempt):
+            return RestoreRequest.SKIPPED
+        if not is_current():
+            return decline()
+        request = SessionRestore(
+            session_id=session_id,
+            primary_cwd=primary_cwd,
+            workspace_operation=WorkspaceOperation.SELECT if workspace_id else WorkspaceOperation.NONE,
+            workspace_id=workspace_id,
+            confirmation=confirmation,
+            workspace_snapshot=snapshot,
+            opened_cwd=opened_cwd,
+            apply_saved_model=self._services.apply_saved_model_on_restore,
+        )
+        if workspace_id is not None:
+            await self.bus.publish(request, raise_handler_errors=True)
+            return RestoreRequest.REQUESTED
+        return await self._publish_restore_with_cwd_check(request, session_id, attempt)
+
+    def _workspace_action_owner(self) -> WorkspaceActionOwner:
+        # The attempt may open its own loading dialog while checking the same workspace choice.
+        return self._services.workspace_action_owner(
+            self._state, workflow_mode=self._callbacks.workflow_mode(), ignore_loading=True
+        )
+
+    def _claim_restore_ui(self, attempt: _RestoreAttempt) -> None:
+        self._state.session.load_owner = attempt
+        self.restoring_session = True
+
+    def _release_restore_ui(self, attempt: _RestoreAttempt) -> bool:
+        if self._state.session.load_owner is not attempt:
+            return False
+        self._state.session.load_owner = None
+        self.restoring_session = False
+        return True
+
+    def _cancel_restore_load(self, attempt: _RestoreAttempt) -> None:
+        attempt.loading = False
+        if self._release_restore_ui(attempt):
             with contextlib.suppress(Exception):
                 self._agent_load.cancel_agent_load()
-            s.debug("SessionRestore", f"failed to open loading UI: {exc}")
-            return RestoreRequest.SKIPPED
-        await s.bus.publish(
-            SessionRestore(
-                session_id=session_id,
-                primary_cwd=primary_cwd,
-                apply_saved_model=self._services.apply_saved_model_on_restore,
+
+    async def _begin_chat_restore_load(self, session_id: str, attempt: _RestoreAttempt) -> bool:
+        if session_id:
+            self._callbacks.reset_rollback_request()
+        attempt.loading = True
+        self._claim_restore_ui(attempt)
+        try:
+            await self._agent_load.begin_session_restore_load(session_id)
+        except asyncio.CancelledError:
+            self._cancel_restore_load(attempt)
+            raise
+        except Exception as exc:
+            self._cancel_restore_load(attempt)
+            self.debug("SessionRestore", f"failed to open loading UI: {exc}")
+            return False
+        return True
+
+    async def _publish_restore_with_cwd_check(
+        self, request: SessionRestore, session_id: str, attempt: _RestoreAttempt
+    ) -> RestoreRequest:
+        if request.primary_cwd:
+            await self.bus.publish(request)
+            return RestoreRequest.REQUESTED
+
+        self._restore_awaiting_cwd = request
+        self._restore_missing_cwd = None
+        missing = None
+        try:
+            await self.bus.publish(request)
+        finally:
+            if self._restore_awaiting_cwd is request:
+                missing = self._restore_missing_cwd
+                self._restore_awaiting_cwd = None
+                self._restore_missing_cwd = None
+        if missing is not None:
+            if not self._can_restore(attempt):
+                self._cancel_restore_load(attempt)
+                return RestoreRequest.DECLINED
+            return await self._choose_restore_directory(
+                session_id,
+                *missing,
+                attempt=attempt,
+                snapshot=request.workspace_snapshot or RegistrySnapshot(),
             )
-        )
         return RestoreRequest.REQUESTED
 
-    async def _missing_saved_cwd(self, session_id: str) -> str | None:
-        """The saved folder of *session_id* when it no longer exists, read the way restore reads it.
+    def capture_restore_missing_cwd(self, event: Error) -> bool:
+        request = self._restore_awaiting_cwd
+        if (
+            event.code != "session_cwd_missing"
+            or event.session_id is None
+            or request is None
+            or request.session_id != event.session_id
+            or event.display_message is None
+        ):
+            return False
+        path = dict(event.display_message.args).get("path")
+        if not isinstance(path, DisplayPath):
+            return False
+        workspace_id = (request.workspace_snapshot or RegistrySnapshot()).workspace_id_for_session(event.session_id)
+        self._restore_missing_cwd = (path.value, workspace_id)
+        return True
 
-        Restoring another session prefers its crash-recovery copy, so this
-        does too. Read failures are left for the restore itself to report.
+    async def _choose_restore_directory(
+        self,
+        session_id: str,
+        path: str,
+        workspace_id: str | None,
+        *,
+        attempt: _RestoreAttempt,
+        snapshot: RegistrySnapshot,
+    ) -> RestoreRequest:
+        # Replace this attempt's loading dialog with the directory prompt.
+        self._cancel_restore_load(attempt)
+        owner = self._workspace_action_owner()
+        chosen = await self._callbacks.choose_missing_working_dir(path, workspace_id is not None)
+        if chosen is None or not self._can_restore(attempt) or owner != self._workspace_action_owner():
+            return RestoreRequest.DECLINED
+        return await self._restore_chat_session(
+            session_id,
+            attempt,
+            primary_cwd=chosen,
+            confirmation=WorkspaceConfirmation.capture(workspace_id, chosen) if workspace_id is not None else None,
+            workspace_snapshot=snapshot,
+        )
+
+    async def _saved_cwd(
+        self, session_id: str, snapshot: RegistrySnapshot, saved_cwd: str | None
+    ) -> tuple[str, str | None] | None:
+        """The effective folder of *session_id* and whether membership supplies it.
+
+        Startup passes the folder it already read without the session lock;
+        otherwise this reads it, preferring the crash-recovery copy as restore
+        does. Read failures are left for the restore itself to report.
         """
-        store = self.state_store
-        if store is None:
-            return None
-        try:
-            meta = await store.load_session_meta(session_id, prefer_recovery=True)
-        except Exception:
-            return None
-        saved = meta.primary_cwd if meta is not None else ""
-        return saved if saved and not os.path.isdir(saved) else None
+        if saved_cwd is None:
+            store = self.state_store
+            if store is None:
+                return None
+            try:
+                meta = await store.load_session_meta(session_id, prefer_recovery=True)
+            except Exception:
+                return None
+            if meta is None:
+                return None
+            session_id, saved_cwd = meta.session_id, meta.primary_cwd
+        workspace = snapshot.session_workspace(session_id)
+        effective = workspace.primary_cwd if workspace is not None else saved_cwd
+        return (effective, workspace.id if workspace is not None else None) if effective else None
 
-    async def _restore_workflow_session(self, selection: WorkflowSessionPick) -> None:
-        self.restoring_session = True
+    async def _restore_workflow_session(self, selection: WorkflowSessionPick, attempt: _RestoreAttempt) -> None:
+        self._claim_restore_ui(attempt)
         try:
             await self._view.restore_workflow_session(selection.session_id)
         finally:
-            self.restoring_session = False
+            self._release_restore_ui(attempt)
 
     def load_file_edit_snapshots(
         self,
@@ -748,7 +975,10 @@ class SessionHandler:
         ui = self._ui()
         self._callbacks.reset_rollback_request()
 
-        self._state.workspace.roots = [event.primary_cwd, *event.working_dirs]
+        s.main_usage_source_id = event.session_id
+        self._state.session.load_owner = None
+        restored_owner = self._session_action_owner()
+        self._services.apply_workspace(self._state.workspace, event)
         s.restoring_session = False
         restored_has_messages = event.message_count > 0
         s.chdir_original_cwd = None
@@ -768,32 +998,35 @@ class SessionHandler:
             self._state.runtime.keep_hook_snapshot_of(event.session_id)
             restored_hooks = self._state.runtime.hook_snapshots.get(event.session_id)
             ui.set_hook_executions(restored_hooks.executions if restored_hooks is not None else ())
-        s.main_usage_source_id = event.session_id
         await ui.clear_chat()
         ui.set_chat_workspace_cwd(cwd)
         ui.update_welcome(profile=display, cwd=cwd)
         ui.set_chat_session_id(event.session_id)
-        await self._restore_session_title_state(
-            event.session_id,
-            prefer_recovery=event.recovered_from_sidecar,
-        )
+        ui.reset_session_title_state()
 
-        # Load compressed blocks (needed for both replay and Context Panel)
-        compressed_blocks_map: dict[str, CompressedBlock] = {}
         loaded_state: dict[str, Any] | None = None
+        transcript: SessionTranscript | None = None
         with contextlib.suppress(Exception):
             ui.clear_compressed_blocks()
-        prefer_recovery = event.recovered_from_sidecar
-        if s.state_store:
+        loaded = event.replay
+        if loaded is not None or s.state_store is not None:
             try:
-                loaded = await s.state_store.load_session(event.session_id, prefer_recovery=prefer_recovery)
-                if loaded:
-                    loaded_state = loaded
+                if loaded is None and s.state_store is not None:
+                    loaded = await s.state_store.load_session_for_replay(
+                        event.session_id, prefer_recovery=event.recovered_from_sidecar
+                    )
+                if loaded is not None:
+                    loaded_state, transcript = loaded.state, loaded.transcript
+                    if loaded.meta is not None:
+                        ui.set_session_title_state(
+                            custom=loaded.meta.custom_title,
+                            generated=loaded.meta.generated_title,
+                            fallback=loaded.meta.title,
+                        )
                     restored_has_messages = has_real_messages(loaded_state)
                     for block in loaded_state.get("compressed_msgs", []):
                         ctx_id = block.compressed_context_id
                         if ctx_id:
-                            compressed_blocks_map[ctx_id] = block
                             ui.add_compressed_block(
                                 ctx_id,
                                 block.summary_text,
@@ -801,9 +1034,7 @@ class SessionHandler:
                                 block.turn_range,
                             )
             except Exception:
-                logger.debug(
-                    "Session restore: failed to replay compressed blocks for %s", event.session_id, exc_info=True
-                )
+                logger.debug("Session restore: failed to load replay for %s", event.session_id, exc_info=True)
         s.set_has_messages(restored_has_messages)
 
         # Reseed the Tasks panel from the restored state (covers session
@@ -811,33 +1042,30 @@ class SessionHandler:
         # ad-hoc parse could crash the sidebar on malformed/legacy state.
         ui.set_todo_state(parse_todo_items(loaded_state.get("chrys_todos") if loaded_state else None))
 
-        # Replay conversation history from saved state
-        messages: list[dict[str, Any]] | None = None
-        if s.state_store:
-            messages = await s.state_store.load_session_raw(event.session_id, prefer_recovery=prefer_recovery)
-            if messages:
-                file_snapshots = self.load_file_edit_snapshots(event.session_id, messages, loaded_state)
-                rollback_targets: set[int] = set()
-                try:
-                    provider = self._services.engine_provider
-                    engine = provider() if provider is not None else None
-                    if engine is not None:
-                        rollback_targets = set(await asyncio.to_thread(engine.available_rollback_turns))
-                except Exception:
-                    logger.warning("Unable to load restored rollback targets", exc_info=True)
+        messages = transcript.messages if transcript is not None else []
+        folds = transcript.folds if transcript is not None else []
+        if folds or messages:
+            file_snapshots = self.load_file_edit_snapshots(event.session_id, messages, loaded_state)
+            rollback_targets: set[int] = set()
+            try:
+                provider = self._services.engine_provider
+                engine = provider() if provider is not None else None
+                if engine is not None:
+                    rollback_targets = set(await asyncio.to_thread(engine.available_rollback_turns))
+            except Exception:
+                logger.warning("Unable to load restored rollback targets", exc_info=True)
 
-                await ui.replay_history(
-                    messages,
-                    initial_profile=event.initial_agent_profile or display,
-                    file_snapshots=file_snapshots or None,
-                    compressed_blocks=compressed_blocks_map or None,
-                    recovered_from_sidecar=event.recovered_from_sidecar,
-                    rollback_targets=rollback_targets,
-                )
-                s.update_toc()
+            await ui.replay_history(
+                messages,
+                initial_profile=event.initial_agent_profile or display,
+                file_snapshots=file_snapshots or None,
+                folds=folds,
+                recovered_from_sidecar=event.recovered_from_sidecar,
+                rollback_targets=rollback_targets,
+            )
+            s.update_toc()
 
-        # Check if the session ended with an error/interrupt — enable retry
-        if messages:
+            # Check if the session ended with an error/interrupt — enable retry.
             for m in reversed(messages):
                 ct = m.get("additional_properties", {}).get(HistoryMarkerKind.KEY)
                 if ct == HistoryMarkerKind.TURN:
@@ -858,7 +1086,8 @@ class SessionHandler:
         short_id = session_short_id(event.session_id)
         info = STATUS_SESSION_RESTORED.bind(session_id=short_id)
         ui.flash_status(info)
-        self._agent_load.finish_agent_load(_FINISH_SESSION_RESTORED.bind(session_id=short_id))
+        if restored_owner == self._session_action_owner() and self._state.session.load_owner is None:
+            self._agent_load.finish_agent_load(_FINISH_SESSION_RESTORED.bind(session_id=short_id))
         self._callbacks.refresh_diff_preview(True)
         s.debug("SessionRestored", short_id)
         self._callbacks.post_gc_message(GcReclaimRequested(GcReclaimReason.SESSION_RESTORED, prompt=True))
@@ -867,31 +1096,6 @@ class SessionHandler:
         self.debug("SessionSaved", session_short_id(event.session_id or ""))
         if event.session_id == self._ui().chat_session_id():
             self._callbacks.refresh_diff_preview(True)
-
-    async def _restore_session_title_state(self, session_id: str, *, prefer_recovery: bool = False) -> None:
-        """Reload title overlays from the session meta into the UI.
-
-        A crash-recovered session's history comes from the recovery
-        sidecar; its meta (title patches are mirrored into a live sidecar,
-        and a never-saved session has no primary at all) must come from
-        the same source.
-        """
-        s = self
-        ui = self._ui()
-        ui.reset_session_title_state()
-        if not s.state_store:
-            return
-        try:
-            meta = await s.state_store.load_session_meta(session_id, prefer_recovery=prefer_recovery)
-        except Exception:
-            return
-        if meta is None:
-            return
-        ui.set_session_title_state(
-            custom=meta.custom_title,
-            generated=meta.generated_title,
-            fallback=meta.title,
-        )
 
     async def apply_custom_session_title(self, custom_title: str, session_id: str) -> None:
         """Persist a user-edited custom title (empty clears it) and refresh the UI.
@@ -1137,31 +1341,15 @@ class SessionHandler:
         self._agent_load.finish_agent_load(_FINISH_PROFILE_SWITCHED.bind(from_label=from_label, to_label=to_label))
         self._callbacks.post_gc_message(GcAbsorbRequested(GcAbsorbReason.PROFILE_UI_UPDATED))
 
-    async def on_workspace_updated(self, event: WorkspaceUpdated) -> None:
-        """Handle workspace update — refresh all cwd-dependent TUI state."""
+    async def _update_chat_workspace_marker(self, ui: MainScreenPresenter, cwd: str, previous_cwd: str) -> None:
         s = self
-        ui = self._ui()
-
-        self._state.workspace.roots = [event.primary_cwd, *event.working_dirs]
-        s.discard_suggestion_file_index()
-        ui.set_input_paste_cwd(event.primary_cwd)
-        ui.set_chat_workspace_cwd(event.primary_cwd)
-        if os.path.isdir(event.primary_cwd):
-            await ui.change_shell_directory(event.primary_cwd)
-        # Always track the latest cwd so callers (e.g. agent config screen)
-        # can see the live workspace, even before the first message.
-        previous_cwd = s.chdir_current_cwd
-        s.chdir_current_cwd = event.primary_cwd
-        self._callbacks.refresh_diff_preview(True)
-        ui.set_terminal_title_for_cwd(event.primary_cwd)
-
         panel_key = "chdir"
         if s.has_messages:
             if s.chdir_original_cwd is None:
                 await ui.remove_system(panel_key)
                 s.chdir_original_cwd = previous_cwd
                 await ui.add_system(
-                    self._render_message(_WORKING_DIRECTORY_INDICATOR.bind(path=DisplayPath(event.primary_cwd))),
+                    self._render_message(_WORKING_DIRECTORY_INDICATOR.bind(path=DisplayPath(cwd))),
                     key=panel_key,
                 )
             else:
@@ -1171,18 +1359,50 @@ class SessionHandler:
                 else:
                     await ui.update_system(
                         panel_key,
-                        self._render_message(_WORKING_DIRECTORY_INDICATOR.bind(path=DisplayPath(event.primary_cwd))),
+                        self._render_message(_WORKING_DIRECTORY_INDICATOR.bind(path=DisplayPath(cwd))),
                     )
         else:
-            ui.update_welcome(profile=s.profile, cwd=event.primary_cwd)
+            ui.update_welcome(profile=s.profile, cwd=cwd)
 
-        # The workspace change is backend-confirmed at this point — record it
-        # in the MRU as a detached background task (never inline).
-        schedule_workspace_mru_touches(
-            [event.primary_cwd, *event.working_dirs],
-            max_entries=self._services.workspace_mru_max_entries,
-            session_id=event.session_id or "",
-            used_at=event.timestamp,
-        )
-        s.debug("WorkspaceUpdated", event.primary_cwd)
+    async def on_workspace_updated(self, event: WorkspaceUpdated) -> None:
+        """Handle workspace update — refresh all cwd-dependent TUI state."""
+        ui = self._ui()
+        previously_had_workspace = self._state.workspace.workspace_id is not None
+        ordinary = event.workspace is None and not previously_had_workspace
+        session_dirs_changed = self._services.apply_workspace(self._state.workspace, event)
+        roots = self._state.workspace.session_roots
+        self.discard_suggestion_file_index()
+
+        if ordinary:
+            await ui.sync_workspace_cwd(event.primary_cwd)
+        previous_cwd = self.chdir_current_cwd
+        cwd_changed = not ordinary and not _samepath(previous_cwd, event.primary_cwd)
+        has_workspace = self._state.workspace.workspace_id is not None
+        refresh_directory = ordinary or previously_had_workspace != has_workspace or previous_cwd != event.primary_cwd
+        if refresh_directory and not ordinary:
+            await ui.sync_workspace_cwd(event.primary_cwd, change_shell=cwd_changed)
+        self._refresh_workspace_diff(event.primary_cwd)
+        if refresh_directory:
+            ui.set_terminal_title_for_cwd(event.primary_cwd)
+            if ordinary or not self.has_messages or cwd_changed:
+                await self._update_chat_workspace_marker(ui, event.primary_cwd, previous_cwd)
+
+        if ordinary:
+            roots = [event.primary_cwd, *event.working_dirs]
+        self._finish_workspace_update(event, roots if refresh_directory or session_dirs_changed else None)
+
+    def _refresh_workspace_diff(self, cwd: str) -> None:
+        self.chdir_current_cwd = cwd
+        self._callbacks.refresh_diff_preview(True)
+
+    def _finish_workspace_update(self, event: WorkspaceUpdated, roots: list[str] | None) -> None:
+        # The backend has committed the change. Record it in the MRU off the event path.
+        if roots is not None:
+            schedule_workspace_mru_touches(
+                roots,
+                max_entries=self._services.workspace_mru_max_entries,
+                session_id=event.session_id or "",
+                used_at=event.timestamp,
+            )
+        self.debug("WorkspaceUpdated", event.primary_cwd)
         self._callbacks.post_gc_message(GcAbsorbRequested(GcAbsorbReason.WORKSPACE_UI_UPDATED))

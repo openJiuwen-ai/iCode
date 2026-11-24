@@ -1396,7 +1396,7 @@ async def test_sub_agent_event_middleware_hook_denial_metadata_split():
         def __init__(self) -> None:
             self.after_payloads: list[dict[str, object]] = []
 
-        def has_hooks_for(self, event: HookEvent) -> bool:
+        def has_hooks_for(self, event: HookEvent, *, blocking_only: bool = False) -> bool:
             return event in {HookEvent.BEFORE_TOOL_CALL, HookEvent.AFTER_TOOL_CALL}
 
         async def fire(self, event: HookEvent, payload: dict[str, object], **_kwargs: object) -> HookDecision:

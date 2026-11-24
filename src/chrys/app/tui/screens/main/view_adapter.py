@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from textual.css.query import NoMatches
 
 from chrys.app.tui.buddy_messages import BUDDY_TITLE
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.notifications import NotificationEvent
 from chrys.app.tui.screens.main.dialog_controllers import (
     AgentLoadDialogHandle,
@@ -103,7 +103,7 @@ if TYPE_CHECKING:
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.judge import JudgeVerdict
-    from chrys.service.context.providers.history import CompressedBlock
+    from chrys.service.state.folds import FoldItem
     from chrys.service.state.store import StateStore
 
 logger = logging.getLogger(__name__)
@@ -616,8 +616,16 @@ class MainScreenViewAdapter:
             return list(panel.get_user_messages())
         return list(panel.get_agent_responses())
 
-    def copy_text(self, text: str) -> None:
-        copy_text_to_clipboards(self._screen.app, text)
+    def copy_text(self, text: str, *, message: StatusMessage, title: StatusMessage) -> None:
+        dispatched = copy_text_to_clipboards(self._screen.app, text)
+        notify_after_copy(
+            self._screen,
+            self._render_status_message(message),
+            dispatched=dispatched,
+            title=self._render_status_message(title),
+            timeout=2,
+            markup=False,
+        )
 
     def toggle_chat_fold_all(self) -> bool:
         return self._screen.query_one(ChatPanel).toggle_fold_all()
@@ -684,10 +692,12 @@ class MainScreenViewAdapter:
         )
         self._screen.query_one(TrajectoryDashboard).show_session(session_id, path)
         self.sync_main_surface()
+        self._screen.refresh_bindings()  # Esc Back shows only while the trajectory is in front.
 
     def hide_trajectory_dashboard(self) -> None:
         self._screen.query_one(TrajectoryDashboard).hide_dashboard()
         self.sync_main_surface()
+        self._screen.refresh_bindings()
         self._screen.query_one(InputBar).focus_input()
 
     def select_trajectory_turn(self, turn_id: str) -> None:
@@ -712,7 +722,8 @@ class MainScreenViewAdapter:
         self._screen.query_one("#footer-row").display = not shell
         # It shows the chat session's hook runs only: a workflow's hooks run on
         # the workflow's own manager, which reports nothing.
-        self._screen.query_one(HookIndicator).display = not workflow
+        # Esc Back takes the right end while the trajectory fills the main area.
+        self._screen.query_one(HookIndicator).display = not workflow and not dashboard.foreground
         self._screen._sync_workflow_timer()
 
     def open_confirm_dialog(
@@ -882,7 +893,7 @@ class MainScreenViewAdapter:
         *,
         initial_profile: str,
         file_snapshots: dict[FileSnapshotKey, list[FileSnapshotPayload]] | None,
-        compressed_blocks: dict[str, CompressedBlock] | None,
+        folds: list[FoldItem] | None,
         recovered_from_sidecar: bool = False,
         rollback_targets: set[int] | None = None,
     ) -> None:
@@ -890,7 +901,7 @@ class MainScreenViewAdapter:
             messages,
             initial_profile=initial_profile,
             file_snapshots=file_snapshots,
-            compressed_blocks=compressed_blocks,
+            folds=folds,
             recovered_from_sidecar=recovered_from_sidecar,
             rollback_targets=rollback_targets,
         )

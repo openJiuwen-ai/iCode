@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +16,6 @@ import chrys.orchestration.engine.session_lifecycle as session_lifecycle
 from chrys.foundation.config.settings import (
     Settings,
 )
-from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     SessionRestore,
@@ -51,8 +49,10 @@ from tests.orchestration.engine._recovery_helpers import (
     _seed_checkpoint_engine,
     _tracker_with_todos,
 )
+from tests.support.components import plan_workspace
 from tests.support.event_capture import collect_events
 from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent, reminder_resources
+from tests.support.workspace_engine import stub_workspace_start
 
 
 async def test_save_session_sets_and_pops_workspace_baseline(tmp_path: Path, *, engine_services) -> None:
@@ -62,8 +62,10 @@ async def test_save_session_sets_and_pops_workspace_baseline(tmp_path: Path, *, 
     workspace.mkdir()
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "workspace_baseline"
-    engine.session.workspace = Workspace.from_cwd(str(workspace))
-    engine_services(engine).workspace_change_tracker.retarget_roots(engine.session.workspace)
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(workspace))))
+    engine_services(engine).workspace_change_tracker.apply_retarget(
+        engine_services(engine).workspace_change_tracker.resolve_retarget(engine.session.workspace)
+    )
     engine_services(engine).workspace_change_tracker.capture_baseline(1)
     install_loaded_agent(
         engine,
@@ -317,22 +319,11 @@ async def test_restore_rearms_persisted_last_words_for_retry(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(**_):
         install_loaded_agent(engine, bindings=_HistoryStateExecutor())  # type: ignore[assignment]
         install_loaded_agent(engine, **reminder_resources())
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         await engine.on_session_restore(SessionRestore(session_id="restore_lw"))
@@ -430,15 +421,7 @@ async def test_restore_reconciles_spill_quota_manifest_and_availability(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(**_):
         install_loaded_agent(engine, bindings=_HistoryStateExecutor())  # type: ignore[assignment]
         install_loaded_agent(
             engine,
@@ -448,10 +431,7 @@ async def test_restore_reconciles_spill_quota_manifest_and_availability(
             ),
         )
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         await engine.on_session_restore(SessionRestore(session_id=session_id))
@@ -499,7 +479,7 @@ def test_reset_for_restart_preserves_but_clears_workspace_tracker(tmp_path: Path
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     workspace = Workspace.from_cwd(str(tmp_path))
     tracker = engine_services(engine).workspace_change_tracker
-    tracker.retarget_roots(workspace)
+    tracker.apply_retarget(tracker.resolve_retarget(workspace))
     tracker.capture_baseline(1)
     tracker.queue_safety_notice("old safety")
     engine.session.mutation_tracker = MutationTracker(SnapshotStore(tmp_path / "mutations"))
@@ -590,15 +570,7 @@ async def test_restore_hydrates_todo_tracker_before_last_words(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(**_):
         install_loaded_agent(engine, bindings=_HistoryStateExecutor())  # type: ignore[assignment]
         # Mirror the builder wiring: the provider reads the engine's tracker,
         # which _hydrate_restored_session must have populated already.
@@ -609,10 +581,7 @@ async def test_restore_hydrates_todo_tracker_before_last_words(
             ),
         )
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         await engine.on_session_restore(SessionRestore(session_id="restore_todo"))
@@ -658,21 +627,10 @@ async def test_restore_without_todos_leaves_tracker_empty(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(**_):
         install_loaded_agent(engine, bindings=_HistoryStateExecutor())  # type: ignore[assignment]
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         await engine.on_session_restore(SessionRestore(session_id="restore_no_todo"))
@@ -712,7 +670,7 @@ async def test_reset_session_to_welcome_delete_failure_restores_todo_tracker(
             staged=staged,
             settings=engine.settings_handle.prepare(staged.loaded),
             workspace_retarget=engine_services(engine).workspace_change_tracker.resolve_retarget(
-                staged.workspace,
+                staged.workspace_plan.workspace,
                 resolve_scope=engine.settings_handle.prepare(staged.loaded).effective.settings.workspace_change_notice,
             ),
             loaded=make_loaded_agent(

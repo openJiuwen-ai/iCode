@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,6 +16,7 @@ from acp import schema as acp_schema
 from acp.helpers import text_block
 
 from chrys.app.acp.bridge import AcpEventBridge
+from chrys.app.acp.content import ContentBlock, ConvertedPrompt
 from chrys.app.acp.server import ChrysAcpServer
 from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.events.bus import EventBus
@@ -33,6 +35,8 @@ from chrys.foundation.models.ask_user import AskUserQuestion
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.orchestration.session_host import Cancelled, EndTurn
 from tests.app.acp._server_fakes import _FakeClient, _FakeHost, _FakeManager, _FakeSession
+from tests.support.async_tasks import running_task, wait_for_completion, wait_for_started
+from tests.support.waiting import DEFAULT_WAIT_TIMEOUT
 
 # ACP carries the client's ``messageId`` as a UUID: the server rejects anything
 # else with ``invalid_params`` before it starts a turn.
@@ -51,13 +55,14 @@ class _BlockedPermission:
     responses: list[ApprovalResponse]
 
 
+@asynccontextmanager
 async def blocked_permission_prompt(
     *,
     text: str = "run",
     message_id: str | None = None,
     on_response: Callable[[ApprovalResponse], None] | None = None,
-) -> _BlockedPermission:
-    """Start a turn whose permission request wedges in the client, and return once it is pending.
+) -> AsyncIterator[_BlockedPermission]:
+    """Start a turn whose permission request wedges in the client, and yield once it is pending.
 
     ``on_response`` runs inside the ``ApprovalResponse`` subscriber before the
     event is recorded, so delivery-ordering invariants can be asserted there.
@@ -86,9 +91,9 @@ async def blocked_permission_prompt(
         responses.append(event)
 
     await host.event_bus.subscribe(ApprovalResponse, _collect)
-    prompt_task = asyncio.create_task(server.prompt([text_block(text)], session_id="s1", message_id=message_id))
-    await asyncio.wait_for(started.wait(), timeout=1)
-    return _BlockedPermission(host, manager, server, client, prompt_task, responses)
+    async with running_task(server.prompt([text_block(text)], session_id="s1", message_id=message_id)) as prompt_task:
+        await wait_for_started(started, prompt_task, description="client request started")
+        yield _BlockedPermission(host, manager, server, client, prompt_task, responses)
 
 
 @pytest.mark.anyio
@@ -222,20 +227,20 @@ async def test_cancel_resolves_pending_request_input() -> None:
         responses.append(event)
 
     await host.event_bus.subscribe(AskUserResponse, _collect)
-    prompt_task = asyncio.create_task(
+    async with running_task(
         server.prompt([text_block("ask")], session_id="s1", message_id=_CLIENT_MESSAGE_ID)
-    )
-    await asyncio.wait_for(started.wait(), timeout=1)
+    ) as prompt_task:
+        await wait_for_started(started, prompt_task, description="client request started")
 
-    await server.cancel("s1")
-    response = await asyncio.wait_for(prompt_task, timeout=1)
+        await server.cancel("s1")
+        response = await wait_for_completion(prompt_task)
 
-    assert response.stop_reason == "cancelled"
-    assert manager.cancelled_sessions == ["s1"]
-    assert client.input_requests[0][0] == "chrys/request_input"
-    assert len(responses) == 1
-    assert responses[0].request_id == "q1"
-    assert responses[0].cancelled is True
+        assert response.stop_reason == "cancelled"
+        assert manager.cancelled_sessions == ["s1"]
+        assert client.input_requests[0][0] == "chrys/request_input"
+        assert len(responses) == 1
+        assert responses[0].request_id == "q1"
+        assert responses[0].cancelled is True
 
 
 @pytest.mark.anyio
@@ -243,25 +248,25 @@ async def test_cancel_interrupts_before_rejecting_pending_permission_and_allows_
     def _engine_interrupted_first(_event: ApprovalResponse) -> None:
         assert pending.manager.cancelled_sessions == ["s1"], "engine interruption must precede bridge rejection"
 
-    pending = await blocked_permission_prompt(message_id=_CLIENT_MESSAGE_ID, on_response=_engine_interrupted_first)
+    async with blocked_permission_prompt(
+        message_id=_CLIENT_MESSAGE_ID, on_response=_engine_interrupted_first
+    ) as pending:
+        await pending.server.cancel("s1")
+        response = await wait_for_completion(pending.prompt_task)
 
-    await pending.server.cancel("s1")
-    response = await asyncio.wait_for(pending.prompt_task, timeout=1)
+        assert response.stop_reason == "cancelled"
+        assert len(pending.responses) == 1
+        assert pending.responses[0].approved is False
+        assert pending.responses[0].reason == "ACP permission request was cancelled."
+        assert pending.server._pending_permission_cancels == {}
+        assert pending.server._pending_permission_tasks == {}
 
-    assert response.stop_reason == "cancelled"
-    assert len(pending.responses) == 1
-    assert pending.responses[0].approved is False
-    assert pending.responses[0].reason == "ACP permission request was cancelled."
-    assert pending.server._pending_permission_cancels == {}
-    assert pending.server._pending_permission_tasks == {}
-
-    pending.host.events = []
-    pending.host.outcome = EndTurn()
-    following = await asyncio.wait_for(
-        pending.server.prompt([text_block("next")], session_id="s1", message_id=_CLIENT_MESSAGE_ID),
-        timeout=1,
-    )
-    assert following.stop_reason == "end_turn"
+        pending.host.events = []
+        pending.host.outcome = EndTurn()
+        following = await wait_for_completion(
+            pending.server.prompt([text_block("next")], session_id="s1", message_id=_CLIENT_MESSAGE_ID)
+        )
+        assert following.stop_reason == "end_turn"
 
 
 @pytest.mark.anyio
@@ -269,16 +274,17 @@ async def test_late_permission_allow_after_cancel_is_ignored() -> None:
     started = asyncio.Event()
     cancellation_seen = asyncio.Event()
     release_late_reply = asyncio.Event()
-    late_reply_returned = asyncio.Event()
+    permission_task: asyncio.Task[Any] | None = None
 
     async def _late_allow(_session_id: str, _tool_call: Any) -> acp_schema.RequestPermissionResponse:
+        nonlocal permission_task
+        permission_task = asyncio.current_task()
         started.set()
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
             cancellation_seen.set()
             await release_late_reply.wait()
-        late_reply_returned.set()
         return acp_schema.RequestPermissionResponse(
             outcome=acp_schema.AllowedOutcome(outcome="selected", optionId="allow")
         )
@@ -296,18 +302,25 @@ async def test_late_permission_allow_after_cancel_is_ignored() -> None:
         responses.append(event)
 
     await host.event_bus.subscribe(ApprovalResponse, _collect)
-    prompt_task = asyncio.create_task(server.prompt([text_block("run")], session_id="s1"))
-    await asyncio.wait_for(started.wait(), timeout=1)
+    try:
+        async with running_task(server.prompt([text_block("run")], session_id="s1")) as prompt_task:
+            await wait_for_started(started, prompt_task, description="client request started")
+            assert permission_task is not None
 
-    await server.cancel("s1")
-    await asyncio.wait_for(prompt_task, timeout=1)
-    await asyncio.wait_for(cancellation_seen.wait(), timeout=1)
-    release_late_reply.set()
-    await asyncio.wait_for(late_reply_returned.wait(), timeout=1)
-    await asyncio.sleep(0)
+            await server.cancel("s1")
+            await wait_for_completion(prompt_task)
+            await wait_for_started(cancellation_seen, permission_task, description="client observed cancellation")
+            release_late_reply.set()
+            await wait_for_completion(permission_task)
 
-    assert len(responses) == 1
-    assert responses[0].approved is False
+            assert len(responses) == 1
+            assert responses[0].approved is False
+    finally:
+        release_late_reply.set()
+        if permission_task is not None:
+            if not permission_task.done():
+                permission_task.cancel()
+            await asyncio.gather(permission_task, return_exceptions=True)
 
 
 @pytest.mark.anyio
@@ -336,7 +349,7 @@ async def test_wedged_permission_client_times_out_with_configured_seconds() -> N
 
     await host.event_bus.subscribe(ApprovalResponse, _collect)
 
-    response = await asyncio.wait_for(server.prompt([text_block("run")], session_id="s1"), timeout=3)
+    response = await wait_for_completion(server.prompt([text_block("run")], session_id="s1"))
 
     assert response.stop_reason == "end_turn"
     assert len(responses) == 1
@@ -379,19 +392,17 @@ async def test_wedged_permission_in_one_session_does_not_block_another_session_p
     manager = _MultiSessionManager()
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(_FakeClient(permission_responder=_block_permission))
-    first_prompt = asyncio.create_task(server.prompt([text_block("block")], session_id="s1"))
-    await asyncio.wait_for(permission_started.wait(), timeout=1)
+    async with running_task(server.prompt([text_block("block")], session_id="s1")) as first_prompt:
+        await wait_for_started(permission_started, first_prompt, description="permission request started")
 
-    second_response = await asyncio.wait_for(
-        server.prompt([text_block("independent")], session_id="s2"),
-        timeout=0.2,
-    )
+        second_response = await wait_for_completion(server.prompt([text_block("independent")], session_id="s2"))
 
-    assert second_response.stop_reason == "end_turn"
-    await server.cancel("s1")
-    first_response = await asyncio.wait_for(first_prompt, timeout=1)
-    assert first_response.stop_reason == "cancelled"
-    assert manager.cancelled == ["s1"]
+        assert second_response.stop_reason == "end_turn"
+        assert not first_prompt.done(), "the independent session must finish while permission is still pending"
+        await server.cancel("s1")
+        first_response = await wait_for_completion(first_prompt)
+        assert first_response.stop_reason == "cancelled"
+        assert manager.cancelled == ["s1"]
 
 
 @pytest.mark.anyio
@@ -460,7 +471,7 @@ async def test_out_of_band_cancellation_tombstone_prevents_lost_early_cancel(kin
                 session_id="s1",
             ),
         )
-    await asyncio.wait_for(wait, timeout=1)
+    await wait_for_completion(wait)
 
     assert ("s1", request_id) not in tombstones()
     assert (server._pending_permission_cancels if permission else server._pending_input_cancels) == {}
@@ -502,7 +513,7 @@ async def test_prompt_turn_end_sweeps_tombstone_of_judge_aborted_approval() -> N
 
     host.iter_turn_events = _judged_then_cancelled  # type: ignore[method-assign]
 
-    response = await asyncio.wait_for(server.prompt([text_block("run")], session_id="s1"), timeout=1)
+    response = await wait_for_completion(server.prompt([text_block("run")], session_id="s1"))
 
     assert response.stop_reason == "cancelled"
     assert client.permission_requests == []
@@ -571,103 +582,118 @@ async def test_close_releases_pending_ask_user_before_waiting_for_prompt_lock() 
     manager = _FakeManager(host)
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(_FakeClient(input_responder=_block_input))
-    prompt_task = asyncio.create_task(server.prompt([text_block("ask")], session_id="s1"))
-    await asyncio.wait_for(started.wait(), timeout=1)
+    async with running_task(server.prompt([text_block("ask")], session_id="s1")) as prompt_task:
+        await wait_for_started(started, prompt_task, description="client request started")
 
-    await asyncio.wait_for(server.close_session("s1"), timeout=1)
-    response = await asyncio.wait_for(prompt_task, timeout=1)
+        await wait_for_completion(server.close_session("s1"))
+        response = await wait_for_completion(prompt_task)
 
-    assert response.stop_reason == "cancelled"
-    assert manager.lifecycle_calls == ["begin_close:s1", "cancel:s1", "close:s1"]
-    assert server._pending_input_cancels == {}
+        assert response.stop_reason == "cancelled"
+        assert manager.lifecycle_calls == ["begin_close:s1", "cancel:s1", "close:s1"]
+        assert server._pending_input_cancels == {}
 
 
 @pytest.mark.anyio
 async def test_close_releases_pending_permission_before_waiting_for_prompt_lock() -> None:
-    pending = await blocked_permission_prompt()
+    async with blocked_permission_prompt() as pending:
+        await wait_for_completion(pending.server.close_session("s1"))
+        response = await wait_for_completion(pending.prompt_task)
 
-    await asyncio.wait_for(pending.server.close_session("s1"), timeout=1)
-    response = await asyncio.wait_for(pending.prompt_task, timeout=1)
-
-    assert response.stop_reason == "cancelled"
-    assert pending.manager.lifecycle_calls == ["begin_close:s1", "cancel:s1", "close:s1"]
-    assert len(pending.responses) == 1
-    assert pending.responses[0].approved is False
-    assert pending.server._pending_permission_cancels == {}
-    assert pending.server._pending_permission_tasks == {}
+        assert response.stop_reason == "cancelled"
+        assert pending.manager.lifecycle_calls == ["begin_close:s1", "cancel:s1", "close:s1"]
+        assert len(pending.responses) == 1
+        assert pending.responses[0].approved is False
+        assert pending.server._pending_permission_cancels == {}
+        assert pending.server._pending_permission_tasks == {}
 
 
 @pytest.mark.anyio
 async def test_delete_releases_pending_permission_before_waiting_for_prompt_lock() -> None:
-    pending = await blocked_permission_prompt()
+    async with blocked_permission_prompt() as pending:
+        await wait_for_completion(pending.server.delete_session("s1", cwd="/tmp/project"))
+        response = await wait_for_completion(pending.prompt_task)
 
-    await asyncio.wait_for(pending.server.delete_session("s1", cwd="/tmp/project"), timeout=1)
-    response = await asyncio.wait_for(pending.prompt_task, timeout=1)
-
-    assert response.stop_reason == "cancelled"
-    assert pending.manager.lifecycle_calls == ["begin_delete:s1", "cancel:s1", "delete:s1"]
-    assert pending.manager.deleted_sessions == [("/tmp/project", "s1")]
-    assert len(pending.responses) == 1
-    assert pending.responses[0].approved is False
-    assert pending.server._pending_permission_cancels == {}
-    assert pending.server._pending_permission_tasks == {}
+        assert response.stop_reason == "cancelled"
+        assert pending.manager.lifecycle_calls == ["begin_delete:s1", "cancel:s1", "delete:s1"]
+        assert pending.manager.deleted_sessions == [("/tmp/project", "s1")]
+        assert len(pending.responses) == 1
+        assert pending.responses[0].approved is False
+        assert pending.server._pending_permission_cancels == {}
+        assert pending.server._pending_permission_tasks == {}
 
 
 @pytest.mark.anyio
-async def test_delete_by_short_id_releases_waits_under_the_canonical_session_id() -> None:
-    pending = await blocked_permission_prompt()
+@pytest.mark.parametrize("stall_before_permission", [False, True])
+async def test_delete_by_short_id_releases_waits_under_the_canonical_session_id(
+    monkeypatch: pytest.MonkeyPatch, stall_before_permission: bool
+) -> None:
+    if stall_before_permission:
+        from chrys.app.acp import server as server_module
 
-    await asyncio.wait_for(pending.server.delete_session("short1", cwd="/tmp/project"), timeout=1)
-    response = await asyncio.wait_for(pending.prompt_task, timeout=1)
+        convert = server_module.convert_prompt_blocks
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
 
-    assert response.stop_reason == "cancelled"
-    assert pending.manager.lifecycle_calls == ["begin_delete:short1", "cancel:s1", "delete:s1"]
-    assert pending.manager.deleted_sessions == [("/tmp/project", "s1")]
-    assert pending.server._pending_permission_cancels == {}
-    assert pending.server._pending_permission_tasks == {}
+        def stalled_conversion(
+            blocks: list[ContentBlock], *, vision_enabled: bool, max_image_bytes: int
+        ) -> ConvertedPrompt:
+            # Simulate a descheduled CI worker before the permission task is
+            # queued. Both the old 1s timer and the shared wait are overdue;
+            # observing readiness must still win once the client is waiting.
+            monkeypatch.setattr(loop, "time", lambda: real_time() + 2 * DEFAULT_WAIT_TIMEOUT)
+            return convert(blocks, vision_enabled=vision_enabled, max_image_bytes=max_image_bytes)
+
+        monkeypatch.setattr(server_module, "convert_prompt_blocks", stalled_conversion)
+
+    async with blocked_permission_prompt() as pending:
+        await wait_for_completion(pending.server.delete_session("short1", cwd="/tmp/project"))
+        response = await wait_for_completion(pending.prompt_task)
+
+        assert response.stop_reason == "cancelled"
+        assert pending.manager.lifecycle_calls == ["begin_delete:short1", "cancel:s1", "delete:s1"]
+        assert pending.manager.deleted_sessions == [("/tmp/project", "s1")]
+        assert pending.server._pending_permission_cancels == {}
+        assert pending.server._pending_permission_tasks == {}
 
 
 @pytest.mark.anyio
 async def test_delete_rejected_for_workspace_scope_does_not_interrupt_the_active_turn() -> None:
-    pending = await blocked_permission_prompt()
+    async with blocked_permission_prompt() as pending:
+        with pytest.raises(RequestError):
+            await pending.server.delete_session("s1", cwd="/somewhere/else")
 
-    with pytest.raises(RequestError):
-        await pending.server.delete_session("s1", cwd="/somewhere/else")
+        assert pending.manager.lifecycle_calls == ["begin_delete:s1"]
+        assert pending.manager.cancelled_sessions == []
+        assert pending.manager.deleted_sessions == []
+        assert pending.manager._session.closing is False
+        assert list(pending.server._pending_permission_cancels) == [("s1", "r1")]
 
-    assert pending.manager.lifecycle_calls == ["begin_delete:s1"]
-    assert pending.manager.cancelled_sessions == []
-    assert pending.manager.deleted_sessions == []
-    assert pending.manager._session.closing is False
-    assert list(pending.server._pending_permission_cancels) == [("s1", "r1")]
-
-    await pending.server.cancel("s1")
-    response = await asyncio.wait_for(pending.prompt_task, timeout=1)
-    assert response.stop_reason == "cancelled"
+        await pending.server.cancel("s1")
+        response = await wait_for_completion(pending.prompt_task)
+        assert response.stop_reason == "cancelled"
 
 
 @pytest.mark.anyio
 async def test_delete_rejects_a_second_prompt_instead_of_admitting_it_into_a_new_turn() -> None:
-    pending = await blocked_permission_prompt(text="one")
-    second_prompt = asyncio.create_task(pending.server.prompt([text_block("two")], session_id="s1"))
-    # Pure scheduler ticks (no wall-clock): the second prompt only has to reach
-    # the session's admission, which refuses it outright — a prompt waiting for
-    # the running turn's lock would be admitted the moment that turn drains.
-    for _ in range(5):
-        await asyncio.sleep(0)
-    with pytest.raises(RequestError) as second_exc:
-        await asyncio.wait_for(second_prompt, timeout=1)
-    assert second_exc.value.code == -32602
+    async with (
+        blocked_permission_prompt(text="one") as pending,
+        running_task(pending.server.prompt([text_block("two")], session_id="s1")) as second_prompt,
+    ):
+        with pytest.raises(RequestError) as second_exc:
+            await wait_for_completion(second_prompt)
+        assert second_exc.value.code == -32602
+        assert not pending.prompt_task.done()
 
-    # Deleting then releases the first prompt's permission wait and drains it,
-    # with no second turn left to be admitted behind the teardown.
-    await asyncio.wait_for(pending.server.delete_session("s1", cwd="/tmp/project"), timeout=1)
+        # Deleting then releases the first prompt's permission wait and drains it,
+        # with no second turn left to be admitted behind the teardown.
+        await wait_for_completion(pending.server.delete_session("s1", cwd="/tmp/project"))
 
-    first_response = await asyncio.wait_for(pending.prompt_task, timeout=1)
-    assert first_response.stop_reason == "cancelled"
-    assert pending.manager.lifecycle_calls == ["begin_delete:s1", "cancel:s1", "delete:s1"]
-    assert pending.manager.deleted_sessions == [("/tmp/project", "s1")]
-    assert pending.server._pending_permission_cancels == {}
-    assert pending.server._pending_permission_tasks == {}
+        first_response = await wait_for_completion(pending.prompt_task)
+        assert first_response.stop_reason == "cancelled"
+        assert pending.manager.lifecycle_calls == ["begin_delete:s1", "cancel:s1", "delete:s1"]
+        assert pending.manager.deleted_sessions == [("/tmp/project", "s1")]
+        assert pending.server._pending_permission_cancels == {}
+        assert pending.server._pending_permission_tasks == {}
 
 
 @pytest.mark.anyio
@@ -766,23 +792,20 @@ async def test_unlimited_permission_wait_accepts_a_later_response(monkeypatch, e
         responses.append(event)
 
     await host.event_bus.subscribe(ApprovalResponse, collect)
-    task = asyncio.create_task(server.prompt([text_block("run")], session_id="s1"))
-    try:
-        await asyncio.wait_for(entered.wait(), timeout=1)
-        assert timeouts == [None]
-        assert not responses
-        assert not task.done()
-        release.set()
-        await asyncio.wait_for(task, timeout=1)
-        assert len(responses) == 1
-        assert responses[0].approved is True
-        assert not server._pending_permission_tasks
-        assert not server._pending_permission_cancels
-    finally:
-        release.set()
-        if not task.done():
-            task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    async with running_task(server.prompt([text_block("run")], session_id="s1")) as task:
+        try:
+            await wait_for_started(entered, task, description="permission wait installed")
+            assert timeouts == [None]
+            assert not responses
+            assert not task.done()
+            release.set()
+            await wait_for_completion(task)
+            assert len(responses) == 1
+            assert responses[0].approved is True
+            assert not server._pending_permission_tasks
+            assert not server._pending_permission_cancels
+        finally:
+            release.set()
 
 
 @pytest.mark.parametrize("seconds", [-1, float("inf"), float("nan")])

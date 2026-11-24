@@ -16,7 +16,7 @@ from rich.style import Style as RichStyle
 from textual.events import Click
 from textual.strip import Strip
 
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.widgets.markdown.blocks import MarkdownBlock, _BlockLineInfo
@@ -148,9 +148,11 @@ class CopyableMarkdown(VirtualizedMarkdown):
 
         if button_start <= offset.x < button_end:
             code = block.content.plain
-            copy_text_to_clipboards(self.app, code)
-            self.notify(
+            dispatched = copy_text_to_clipboards(self.app, code)
+            notify_after_copy(
+                self,
                 self._render_toast(self._copy_success_text),
+                dispatched=dispatched,
                 title=self._render_toast(self._copy_success_title),
                 markup=False,
             )

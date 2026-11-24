@@ -28,13 +28,15 @@ from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.workflow import WorkflowSessionState
 from chrys.service.workflows.layout import run_dir
 from chrys.service.workflows.store import RunHeader, RunSpec, WorkflowRunStore
-from tests.orchestration.workflows._hosting import make_profile, make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_profile, make_workdir, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, dismiss_workflow_notice, open_workflow, switch_mode, workflow_selection
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 MODEL_A = WorkflowModelSelection("model-a", "Workflow [A]", "model-a-id")
 MODEL_B = WorkflowModelSelection("model-b", "Workflow B", "model-b-id")
@@ -48,8 +50,8 @@ def registries() -> tuple[AgentProfileRegistry, ModelProfileRegistry]:
     return agents, models
 
 
-def project_workflow(tmp_path: Path) -> Path:
-    project = make_project(tmp_path)
+def workdir_workflow(tmp_path: Path) -> Path:
+    project = make_workdir(tmp_path)
     write_workflow(
         project,
         "review",
@@ -64,7 +66,7 @@ def project_workflow(tmp_path: Path) -> Path:
 async def test_workflow_remembers_its_model_across_mode_switches_and_new_sessions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(project_workflow(tmp_path))
+    monkeypatch.chdir(workdir_workflow(tmp_path))
     agents, models = registries()
     bus = EventBus()
     app = make_chrys_app(
@@ -106,7 +108,7 @@ async def test_workflow_remembers_its_model_across_mode_switches_and_new_session
 async def test_unset_workflow_model_waits_for_a_usable_chat_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chat_selector: str
 ) -> None:
-    monkeypatch.chdir(project_workflow(tmp_path))
+    monkeypatch.chdir(workdir_workflow(tmp_path))
     agents, models = registries()
     app = make_chrys_app(
         tmp_path / "sessions",
@@ -139,7 +141,7 @@ async def test_model_picker_is_workflow_local_and_locked_through_run_drain(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(project_workflow(tmp_path))
+    monkeypatch.chdir(workdir_workflow(tmp_path))
     agents, models = registries()
     engine, bus = WorkflowEngine(), EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus, model_registry=models)
@@ -204,7 +206,7 @@ async def test_model_picker_is_workflow_local_and_locked_through_run_drain(
 
 
 async def test_model_change_ack_and_picker_target_are_guarded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(project_workflow(tmp_path))
+    monkeypatch.chdir(workdir_workflow(tmp_path))
     agents, models = registries()
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus, model_registry=models)
@@ -262,7 +264,7 @@ async def test_model_change_ack_and_picker_target_are_guarded(tmp_path: Path, mo
 async def test_start_waits_for_session_model_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, save_ok: bool
 ) -> None:
-    monkeypatch.chdir(project_workflow(tmp_path))
+    monkeypatch.chdir(workdir_workflow(tmp_path))
     agents, models = registries()
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus, model_registry=models)
@@ -310,7 +312,7 @@ async def test_resume_and_run_tabs_show_saved_models_even_after_profile_deletion
     monkeypatch: pytest.MonkeyPatch,
     saved_model: WorkflowModelSelection | None,
 ) -> None:
-    project = project_workflow(tmp_path)
+    project = workdir_workflow(tmp_path)
     monkeypatch.chdir(project)
     agents, models = registries()
     app = make_chrys_app(
@@ -388,7 +390,7 @@ async def test_resume_and_run_tabs_show_saved_models_even_after_profile_deletion
 async def test_start_refreshes_changed_profile_and_chat_picker_cannot_change_workflow(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(project_workflow(tmp_path))
+    monkeypatch.chdir(workdir_workflow(tmp_path))
     agents, models = registries()
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus, model_registry=models)
@@ -423,7 +425,7 @@ async def test_enter_restarts_model_resolution_cancelled_by_leaving(
 ) -> None:
     from chrys.orchestration.workflows import settings as workflow_settings
 
-    monkeypatch.chdir(project_workflow(tmp_path))
+    monkeypatch.chdir(workdir_workflow(tmp_path))
     agents, models = registries()
     app = make_chrys_app(
         tmp_path / "sessions",

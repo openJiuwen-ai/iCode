@@ -39,7 +39,7 @@ from chrys.orchestration.session_host import WorkflowRunRejectedError
 from chrys.orchestration.workflows.catalog import WorkflowNotFoundError
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.state.store import JsonFileStateStore
-from chrys.service.workflows.discovery import SOURCE_KIND_BUILTIN, SOURCE_KIND_PROJECT
+from chrys.service.workflows.discovery import SOURCE_KIND_BUILTIN, SOURCE_KIND_WORKDIR
 from chrys.service.workflows.layout import HEADER_FILE, run_dir
 from chrys.service.workflows.orphans import read_run_terminal
 from chrys.service.workflows.store import (
@@ -56,7 +56,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -102,13 +102,13 @@ async def test_a_python_chain_runs_to_completion_with_a_durable_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     path = write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     try:
         found = host.list_workflows()
         assert [(s.workflow_id, s.source_kind, s.canonical_path) for s in found.sources][:1] == [
-            ("chain", SOURCE_KIND_PROJECT, str(path.resolve()))
+            ("chain", SOURCE_KIND_WORKDIR, str(path.resolve()))
         ]
         assert {s.source_kind for s in found.sources[1:]} <= {SOURCE_KIND_BUILTIN}
         with pytest.raises(WorkflowNotFoundError):
@@ -132,7 +132,11 @@ async def test_a_python_chain_runs_to_completion_with_a_durable_record(
         assert accepted[0].run_id == result.run_id
         started = of_type(events, WorkflowRunStarted)
         assert len(started) == 1
-        assert (started[0].workflow_id, started[0].source_kind, started[0].title) == ("chain", SOURCE_KIND_PROJECT, "t")
+        assert (started[0].workflow_id, started[0].source_kind, started[0].title) == (
+            "chain",
+            SOURCE_KIND_WORKDIR,
+            "t",
+        )
         assert started[0].spec_digest == preview.spec_digest
         assert started[0].resolved_nodes == []
         states = [(e.node_id, e.attempt, e.state) for e in of_type(events, WorkflowNodeStateChanged)]
@@ -182,7 +186,7 @@ async def test_an_agent_node_runs_on_the_bound_profile_and_its_invocation_is_pin
     patch_runtime(
         monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="LGTM, ship it")])]
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _agent_workflow())
     host = make_host(tmp_path, project=project)
     try:
@@ -215,7 +219,7 @@ async def test_an_agent_node_runs_on_the_bound_profile_and_its_invocation_is_pin
 async def test_node_activity_reaches_the_stream_only_on_request_and_only_for_this_runs_invocations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")
 
@@ -280,7 +284,7 @@ async def test_an_approval_mode_change_during_the_run_reaches_the_live_agent_nod
         ],
         builtin_tools=True,
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", _agent_workflow())
     host = make_host(tmp_path, project=project, profiles=[make_profile(builtins=["filesystem.write"])])
     asked: list[str] = []
@@ -318,7 +322,7 @@ async def test_structured_data_is_dropped_at_the_agent_boundary_and_noticed_once
             MockChatClient(responses=[MockResponse(text="judged")]),
         ],
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "data", _agent_workflow(second=True, data=True))
     host = make_host(tmp_path, project=project)
     try:
@@ -363,7 +367,7 @@ async def test_a_second_agent_boundary_with_data_does_not_repeat_the_notice(
             MockChatClient(responses=[MockResponse(text="judged")]),
         ],
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "data2", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -403,7 +407,7 @@ wf.output(_loop)
 workflow = wf.build()
 """
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "loop", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -454,7 +458,7 @@ wf.output(_loop)
 workflow = wf.build()
 """
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "loop", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -479,7 +483,7 @@ async def test_a_long_emit_is_summarised_live_and_kept_whole_in_the_record(
         "def fn(value, ctx):\n    ctx.emit('x' * 600 + 'TAIL')\n    ctx.emit('short')\n    return 'done'\n", "fn"
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "emits", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -498,7 +502,7 @@ async def test_a_long_emit_is_summarised_live_and_kept_whole_in_the_record(
 async def test_a_headless_ask_fails_the_node_and_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = python_workflow("async def fn(value, ctx):\n    return await ctx.ask('colour?')\n", "fn")
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "ask", source)
     host = make_host(tmp_path, project=project)
     try:
@@ -539,7 +543,7 @@ def _answer(run_id: str, ask: WorkflowNodeAskUser, answers: tuple[AskUserAnswer,
 
 async def test_an_interactive_ask_round_trips_through_the_bus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "ask", STRUCTURED_ASK)
     host = make_host(tmp_path, project=project, allow_user_interaction=True)
     open_answers = [
@@ -618,7 +622,7 @@ async def test_a_failed_node_auto_retries_then_awaits_a_manual_retry_in_interact
         "fn",
     ).replace(b"wf.python('fn', fn)", b"wf.python('fn', fn, retry=Retry(max_attempts=2, backoff=0.01))")
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "retry", source)
     host = make_host(tmp_path, project=project, allow_user_interaction=True)
     try:
@@ -649,7 +653,7 @@ async def test_a_failed_node_auto_retries_then_awaits_a_manual_retry_in_interact
 
 
 async def test_a_byo_interpreter_runs_the_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     venv = create_venv(project / ".chrys" / "workflows" / "venv")
     source = b"# /// script\n# [tool.chrys]\n# python = 'venv'\n# ///\n" + python_workflow(
         "import sys\ndef fn(text):\n    return sys.executable\n", "fn"
@@ -675,7 +679,7 @@ async def test_a_workflow_only_session_is_saved_and_restores_into_a_new_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="Hello")])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "chain", CHAIN)
     host = make_host(tmp_path, project=project)
     await confirm(host, "chain")
@@ -721,7 +725,7 @@ async def test_a_restored_session_discovers_workflows_in_its_own_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     path = write_workflow(project, "only_here", CHAIN)
     host = make_host(tmp_path, project=project)
     await confirm(host, "only_here")
@@ -740,7 +744,7 @@ async def test_a_restored_session_discovers_workflows_in_its_own_project(
         assert restored.workflow_session_id == session_id
         found = restored.list_workflows().find("only_here")
         assert found is not None
-        assert (found.source_kind, found.canonical_path) == (SOURCE_KIND_PROJECT, str(path.resolve()))
+        assert (found.source_kind, found.canonical_path) == (SOURCE_KIND_WORKDIR, str(path.resolve()))
         preview = await restored.preview_workflow(restored.workflow_target("only_here"))
         assert preview.preview.source.canonical_path == str(path.resolve())
         second, _events = await run(restored, "only_here", input_text="y")
@@ -759,7 +763,7 @@ async def test_new_workflow_node_reads_later_model_editor_save_after_profile_rel
     monkeypatch.setenv("CHRYS_MODEL_PROFILE", "mock-profile")
     freeze_process_env()
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(
         project, "review", _agent_workflow().replace(b"instructions_suffix=", b"model='disk', instructions_suffix=")
     )

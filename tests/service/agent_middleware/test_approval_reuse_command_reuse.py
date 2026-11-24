@@ -45,7 +45,7 @@ def shell_binding(runtime, *, shell=None):
     return tool, ApprovalReuseBinding(runtime, tools)
 
 
-@pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_PROJECT", "PREFIX_SESSION", "PREFIX_PROJECT"])
+@pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_WORKSPACE", "PREFIX_SESSION", "PREFIX_WORKSPACE"])
 async def test_human_command_grant_survives_rebuild_and_environment_change(runtime, monkeypatch, choice):
     monkeypatch.setenv("APPROVAL_REUSE_TEST_ENV", "before")
     tool, binding = shell_binding(runtime)
@@ -69,7 +69,7 @@ async def test_human_command_grant_survives_rebuild_and_environment_change(runti
         await bus.unsubscribe(ApprovalRequest, approve)
 
     monkeypatch.setenv("APPROVAL_REUSE_TEST_ENV", "after")
-    runtime = replace(runtime, session_id="session-b" if choice.endswith("PROJECT") else runtime.session_id)
+    runtime = replace(runtime, session_id="session-b" if choice.endswith("WORKSPACE") else runtime.session_id)
     rebuilt_tool, rebuilt = shell_binding(runtime)
     middleware = ApprovalMiddleware(policy, bus, session_id=runtime.session_id, reuse=rebuilt)
 
@@ -97,7 +97,7 @@ async def test_human_command_grant_survives_rebuild_and_environment_change(runti
         await bus.unsubscribe(ApprovalRequest, decline)
 
 
-@pytest.mark.parametrize("choice", ["EXACT_PROJECT", "PREFIX_SESSION", "PREFIX_PROJECT"])
+@pytest.mark.parametrize("choice", ["EXACT_WORKSPACE", "PREFIX_SESSION", "PREFIX_WORKSPACE"])
 @pytest.mark.parametrize("change", ["name", "path", "args", "cwd"])
 def test_command_grant_binds_active_shell_and_cwd(runtime, choice, change):
     # Exercise an extra shell: runtime.platform.shell is not the executing one.
@@ -144,7 +144,7 @@ async def test_judge_review_preserves_explicit_human_remember_choice(runtime, mo
     async def remember(event: ApprovalReviewed):
         if human_remembers:
             await bus.publish(
-                ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_PROJECT")
+                ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_WORKSPACE")
             )
 
     await bus.subscribe(ApprovalReviewed, remember)

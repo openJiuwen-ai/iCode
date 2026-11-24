@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
 
+from chrys.foundation.config.errors import RELOAD_SESSION_CHANGED
+from chrys.foundation.config.runtime_pointer import StaleModelFileChange
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
@@ -24,14 +27,18 @@ from chrys.orchestration.engine import assembly as assembly_module
 from chrys.orchestration.engine import loader as loader_module
 from chrys.orchestration.engine.build.construction import StagedBuild
 from chrys.orchestration.engine.build.loaded import CompletedBuild
+from chrys.orchestration.engine.workspaces import MembershipWrite
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.mcp.cache import MCPConnectionCache
 from chrys.service.mutations.coordination import MutationCoordinator
 from chrys.service.profiles.agents.schema import AgentProfile, CompactionConfig, ToolsConfig
+from chrys.service.workspaces.registry import WorkspaceRegistry
 from tests.orchestration.engine.build.test_lifecycle_close import _fresh_approval, _make_build_result
+from tests.support.components import plan_workspace
 from tests.support.loaded_agents import make_loaded_agent, make_manifest
 from tests.support.reminder_stack import reminder_pair
 from tests.support.waiting import await_run_task_chain
+from tests.support.workspace_engine import build_workspace_candidate
 
 
 def _candidate_result(bus):
@@ -64,18 +71,14 @@ async def test_loader_build_install_release_handoff_preserves_live_until_install
     engine = agent_engine(bus, settings=Settings())
     loader = engine.loader
     profile = _profile()
-    first = await loader.build(
-        profile, loader.stage(loaded=engine.loaded_settings, agent_profile=profile, workspace=None, hook_manager=None)
-    )
+    first = await build_workspace_candidate(engine, profile)
     assert engine.current.loaded is None
     replaced = loader.install(first)
     assert replaced.loaded is None
     assert engine.current.loaded is first.loaded
     await loader.release(replaced)
     generation = engine.build_generation
-    second = await loader.build(
-        profile, loader.stage(loaded=engine.loaded_settings, agent_profile=profile, workspace=None, hook_manager=None)
-    )
+    second = await build_workspace_candidate(engine, profile)
     assert engine.current.loaded is first.loaded
     assert calls[0].bindings.closed is False
     replaced = loader.install(second)
@@ -86,6 +89,48 @@ async def test_loader_build_install_release_handoff_preserves_live_until_install
     await loader.release(replaced)
     assert calls[0].bindings.closed is True
     assert calls[1].bindings.closed is False
+
+
+@pytest.mark.parametrize("failure", ["membership", "stale-model", "install"])
+async def test_candidate_cleanup_preserves_the_install_failure_contract(
+    monkeypatch, tmp_path, agent_engine, failure
+) -> None:
+    bus = EventBus()
+    build_candidate = create_autospec(assembly_module.build_agent, return_value=_candidate_result(bus))
+
+    monkeypatch.setattr(assembly_module, "build_agent", build_candidate)
+    engine = agent_engine(bus, settings=Settings())
+    loader = engine.loader
+    profile = _profile()
+    completed = await build_workspace_candidate(engine, profile)
+    error = StaleModelFileChange(RELOAD_SESSION_CHANGED.bind()) if failure == "stale-model" else RuntimeError(failure)
+    installs = []
+
+    def install(candidate):
+        installs.append(candidate)
+        raise error
+
+    def write_membership(_cid, _wid):
+        if failure == "membership":
+            raise error
+
+    monkeypatch.setattr(loader, "install", install)
+    registry = WorkspaceRegistry(tmp_path / "workspaces.json")
+    monkeypatch.setattr(registry, "set_session_workspace", write_membership)
+    engine.session.session_id = "session"
+    try:
+        with pytest.raises(type(error)) as caught:
+            await loader._install_candidate(
+                completed,
+                owner=engine.permits.capture_control_token(),
+                commit_workspace=MembershipWrite(registry, Workspace.from_cwd()),
+            )
+        assert caught.value is error
+        assert installs == ([] if failure == "membership" else [completed])
+        assert completed.loaded.bindings.closed
+        assert engine.current.loaded is None
+    finally:
+        await loader.discard_candidate(completed)
 
 
 @pytest.mark.parametrize("reuse_coordinator", [True, False])
@@ -99,7 +144,7 @@ async def test_loader_release_closes_only_coordinator_displaced_at_install(
     staged = StagedBuild(
         prepared=engine.settings_handle.prepare(engine.settings_handle.base),
         agent_profile=_profile(),
-        workspace=None,
+        workspace_plan=plan_workspace(Workspace.from_cwd()),
         hook_manager=None,
         mutation_coordinator=new_coordinator,
     )
@@ -213,7 +258,8 @@ async def test_hook_replacement_follows_release_and_only_closes_displaced_manage
     monkeypatch.setattr(engine.loader, "build_hook_manager", build_hook)
     try:
         await engine.loader.reload(
-            _profile("Explore"), workspace=Workspace(primary_cwd=str(tmp_path)) if replace_hook else None
+            _profile("Explore"),
+            workspace_plan=plan_workspace(Workspace(primary_cwd=str(tmp_path))) if replace_hook else None,
         )
         assert order == (["resource_closed", "hook_closed"] if replace_hook else ["resource_closed"])
         assert engine.session.hook_manager is (new_hook if replace_hook else old_hook)
@@ -252,7 +298,8 @@ async def test_terminal_ready_subscriber_can_admit_a_user_message_inline(
     await bus.subscribe(SessionReady, ready)
     await engine.prepare()
     profile = _profile()
-    engine.session.begin(agent_profile=profile, workspace=None)
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd()))
+    engine.session.begin(agent_profile=profile)
     trajectory = engine_services(engine).trajectory_recorder.bind_session(
         session_id=engine.session.session_id,
         session_dir=None,
@@ -262,7 +309,7 @@ async def test_terminal_ready_subscriber_can_admit_a_user_message_inline(
     await asyncio.wait_for(
         engine.loader.load(
             profile,
-            workspace=engine.session.workspace,
+            workspace_plan=engine.session.workspace_plan or plan_workspace(Workspace.from_cwd()),
             hook_manager=None,
             old_hook_manager=None,
             trajectory=trajectory,
@@ -321,3 +368,42 @@ def test_only_a_load_that_starts_a_session_fires_session_start() -> None:
 def test_a_session_start_operation_is_what_the_set_names() -> None:
     # Pinned apart from the function so renaming one without the other is a failure.
     assert frozenset({"startup", "new_session", "reset"}) == loader_module.SESSION_START_OPERATIONS
+
+
+@pytest.mark.parametrize("owner_changes", [False, True])
+async def test_build_scope_probe_runs_off_loop_and_cannot_install_for_a_stale_owner(
+    monkeypatch, tmp_path, agent_engine, engine_services, owner_changes
+):
+    bus = EventBus()
+    result = _candidate_result(bus)
+    monkeypatch.setattr(
+        assembly_module, "build_agent", create_autospec(assembly_module.build_agent, return_value=result)
+    )
+    engine = agent_engine(bus, settings=Settings(workspace_change_notice=True))
+    tracker = engine_services(engine).workspace_change_tracker
+    real_resolve = tracker.resolve_retarget
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    ownership_changed = threading.Event()
+
+    def change_owner():
+        engine.permits.advance_session_generation()
+        ownership_changed.set()
+
+    def resolve(workspace, **kwargs):
+        assert threading.get_ident() != loop_thread, "scope probe blocked the event loop"
+        if owner_changes:
+            loop.call_soon_threadsafe(change_owner)
+            assert ownership_changed.wait(5), "event loop could not advance session ownership during scope probe"
+        return real_resolve(workspace, **kwargs)
+
+    monkeypatch.setattr(tracker, "resolve_retarget", resolve)
+    workspace = Workspace(str(tmp_path), id="team", name="Team")
+    if owner_changes:
+        with pytest.raises(RuntimeError, match="active session changed"):
+            await engine.start(_profile(), workspace=workspace)
+        assert engine.current.loaded is None
+        assert result.bindings.closed
+    else:
+        await engine.start(_profile(), workspace=workspace)
+        assert engine.current.loaded is not None

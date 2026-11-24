@@ -19,7 +19,14 @@ from chrys.service.llm.mock import MockChatClient
 from chrys.service.workflows.protocol import LIMITS
 from chrys.service.workflows.scheduler import AttemptRef
 from chrys.service.workflows.sdk import WorkflowValue
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import (
+    confirm,
+    make_host,
+    make_workdir,
+    patch_runtime,
+    run,
+    write_workflow,
+)
 from tests.orchestration.workflows.conftest import FAKE_WORKER, Launcher
 from tests.support.waiting import wait_for
 from tests.support.workflow_workers import python_workflow
@@ -89,7 +96,7 @@ async def test_admission_load_deadline_rejects_and_releases_the_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     source = python_workflow(
         "import os, threading\nif os.environ.get('CHRYS_TEST_BLOCK_LOAD'):\n    threading.Event().wait()\ndef fn(value):\n    return value\n",
         "fn",

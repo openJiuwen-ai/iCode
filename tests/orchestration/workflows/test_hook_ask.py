@@ -28,7 +28,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -95,7 +95,7 @@ async def test_a_node_s_tool_call_asks_where_someone_can_answer(
     child_client = MockChatClient(responses=[MockResponse(text="looked")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
     _hand_out_child_client(monkeypatch, child_client)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "delegate", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=_profiles(), allow_user_interaction=interactive)
     frontend = FakeConfirmationFrontend(host.event_bus, session_id=None, answer_inline="approved")
@@ -149,7 +149,7 @@ async def test_a_tool_call_of_a_node_s_sub_agent_asks_the_same_way(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interactive: bool
 ) -> None:
     _write_read_ask_hook()
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     notes = project / "notes.txt"
     notes.write_text("the build is green", encoding="utf-8")
     node_client = MockChatClient(
@@ -197,7 +197,7 @@ async def test_cancelling_a_run_withdraws_a_node_s_question_once(
     child_client = MockChatClient(responses=[MockResponse(text="looked")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
     _hand_out_child_client(monkeypatch, child_client)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "delegate", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=_profiles(), allow_user_interaction=True)
     # Claims the question and never answers it.

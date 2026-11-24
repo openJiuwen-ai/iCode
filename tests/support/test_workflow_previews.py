@@ -17,7 +17,7 @@ from chrys.orchestration.workflows.worker_client import CapturedOutput, LoadResu
 from chrys.service.workflows import environment as environment_module
 from chrys.service.workflows.discovery import (
     SOURCE_KIND_BUILTIN,
-    SOURCE_KIND_PROJECT,
+    SOURCE_KIND_WORKDIR,
     WorkflowPackage,
     WorkflowSource,
 )
@@ -30,7 +30,7 @@ _SDK = SdkArtifact(path=Path("sdk"), digest="sdk-digest")
 _CACHE = Path("/pycache")
 
 
-def _source(kind: str = SOURCE_KIND_PROJECT, body: bytes = b"workflow = 1\n") -> WorkflowSource:
+def _source(kind: str = SOURCE_KIND_WORKDIR, body: bytes = b"workflow = 1\n") -> WorkflowSource:
     return WorkflowSource("wf", kind, "/workflows/wf.py", body)
 
 
@@ -128,7 +128,7 @@ async def test_other_bytes_sdk_or_workspace_preview_again(real_preview: _RealPre
 async def test_a_folder_with_other_covered_files_previews_again(real_preview: _RealPreview) -> None:
     def folder(digest: str) -> WorkflowSource:
         package = WorkflowPackage("/workflows/wf", digest, file_count=2, total_bytes=20)
-        return WorkflowSource("wf", SOURCE_KIND_PROJECT, "/workflows/wf/wf.py", b"workflow = 1\n", package)
+        return WorkflowSource("wf", SOURCE_KIND_WORKDIR, "/workflows/wf/wf.py", b"workflow = 1\n", package)
 
     await reused_preview_workflow(folder("one"), sdk=_SDK, workspace=Path("/w"), bytecode_cache=_CACHE)
     await reused_preview_workflow(folder("one"), sdk=_SDK, workspace=Path("/w"), bytecode_cache=_CACHE)

@@ -34,9 +34,9 @@ from chrys.service.skills.loader import FRONTMATTER_RE, parse_frontmatter
 logger = logging.getLogger(__name__)
 
 SHORTCUTS_DIR_NAME = "shortcuts"
-"""The directory under the config dir or a project's ``.chrys`` dir holding prompt shortcuts."""
+"""The directory under the config dir or a working directory's ``.chrys`` dir holding prompt shortcuts."""
 
-PROJECT_CONFIG_DIR_NAME = ".chrys"
+CHRYS_DIR_NAME = ".chrys"
 
 MAX_COMMAND_FILE_BYTES = 256 * 1024
 """Larger files are skipped: a prompt this long is almost certainly not one."""
@@ -65,8 +65,8 @@ _WARNED_OUTSIDE: set[str] = set()
 _CACHE_LOCK = threading.Lock()
 """Loads run off the event loop and may overlap; each prunes both caches to what it read."""
 
-type _SourceKind = Literal["project", "global"]
-"""Where a folder comes from: a project's ``.chrys``, or the user's own folder."""
+type _SourceKind = Literal["workdir", "global"]
+"""Where a folder comes from: a working directory's ``.chrys``, or the user's own folder."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,15 +89,15 @@ def global_shortcuts_dir(config_dir: Path) -> Path:
     return config_dir / SHORTCUTS_DIR_NAME
 
 
-def project_shortcuts_dir(root: Path) -> Path:
-    """Return the prompt shortcut directory of the project at *root*."""
-    return root / PROJECT_CONFIG_DIR_NAME / SHORTCUTS_DIR_NAME
+def workdir_shortcuts_dir(root: Path) -> Path:
+    """Return the shortcut path for a searched directory."""
+    return root / CHRYS_DIR_NAME / SHORTCUTS_DIR_NAME
 
 
-def project_roots(workspace: str) -> list[Path]:
+def shortcut_search_dirs(workspace: str) -> list[Path]:
     """Return *workspace* and its parents up to the enclosing Git repository's top, nearest first.
 
-    Outside a repository only *workspace* itself is a project root. A ``.git``
+    Outside a Git repository search only *workspace*. A ``.git``
     file (worktree, submodule) marks a top as a ``.git`` directory does.
     """
     start = Path(workspace)
@@ -155,19 +155,19 @@ def prompt_shortcut_sources(
 
     Like skills, the first shortcut loaded with a name (compared
     case-insensitively) is kept and later ones are skipped with a warning, so
-    the user's own shortcuts win over a project's and a nearer project folder
+    the user's own shortcuts win over those found by walking ancestors, and a nearer folder
     wins over a farther one. A folder is read at most once, and the user
-    folder is never read as a project folder (a workspace at the user's home
+    folder is never read a second time as a local source (a workspace at the user's home
     on macOS/Linux).
     """
     user_dirs = [global_shortcuts_dir(config_dir)]
     sources: list[tuple[list[Path], _SourceKind]] = [(user_dirs, "global")]
-    # A project folder reads nothing a link leads out of its repository: the folder itself
+    # A local directory reads nothing a link leads out of its Git repository: the folder itself
     # (``working_folder_dirs``) and each linked file in it (``_load_file``).
-    project_top: Path | None = None
+    shortcut_boundary: Path | None = None
     if workspace:
-        project_top = project_roots(workspace)[-1]
-        sources.extend(([directory], "project") for directory in working_folder_dirs(workspace))
+        shortcut_boundary = shortcut_search_dirs(workspace)[-1]
+        sources.extend(([directory], "workdir") for directory in working_folder_dirs(workspace))
     seen_dirs: list[Path] = []
     kept: dict[str, PromptShortcut] = {}
     by_folder: dict[Path, list[PromptShortcut]] = {}
@@ -175,11 +175,11 @@ def prompt_shortcut_sources(
     duplicates: set[tuple[str, str]] = set()
     for dirs, scope in sources:
         for directory in dirs:
-            skip = (*seen_dirs, *user_dirs) if scope == "project" else seen_dirs
+            skip = (*seen_dirs, *user_dirs) if scope == "workdir" else seen_dirs
             if not directory.is_dir() or any(_same_directory(directory, other) for other in skip):
                 continue
             seen_dirs.append(directory)
-            inside = project_top if scope == "project" else None
+            inside = shortcut_boundary if scope == "workdir" else None
             for command in _load_directory(directory, scope, read, inside):
                 key = command.name.casefold()
                 if key in kept:
@@ -218,10 +218,10 @@ def working_folder_dirs(workspace: str) -> list[Path]:
     it, not what is read elsewhere on the machine. The user's own folders can
     point anywhere.
     """
-    roots = project_roots(workspace)
+    roots = shortcut_search_dirs(workspace)
     found: list[Path] = []
     for root in roots:
-        directory = project_shortcuts_dir(root)
+        directory = workdir_shortcuts_dir(root)
         if directory.is_dir() and _inside(directory, roots[-1]):
             found.append(directory)
     return found

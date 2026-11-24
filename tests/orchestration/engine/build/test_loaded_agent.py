@@ -16,6 +16,7 @@ import pytest
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AgentRuntimeUpdated, SessionReady, Warning
+from chrys.foundation.models.workspace import Workspace
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.build.loaded import AgentManifest, CompletedBuild
 from chrys.orchestration.engine.loader import AgentLoader
@@ -23,6 +24,7 @@ from chrys.orchestration.engine.run.runtime_skills import CommittedSkillRefresh,
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.orchestration.engine.build.test_lifecycle_close import _fresh_approval, _make_build_result
+from tests.support.components import plan_workspace
 from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent, make_manifest
 
 
@@ -158,7 +160,7 @@ async def test_session_ready_payload_survives_refresh_and_shutdown(
             staged=staged,
             settings=engine.settings_handle.prepare(staged.loaded),
             workspace_retarget=engine_services(engine).workspace_change_tracker.resolve_retarget(
-                staged.workspace,
+                staged.workspace_plan.workspace,
                 resolve_scope=engine.settings_handle.prepare(staged.loaded).effective.settings.workspace_change_notice,
             ),
             loaded=make_loaded_agent(),
@@ -219,7 +221,10 @@ async def test_successful_rebuild_keeps_pending_injection_notification(monkeypat
     try:
         for _ in range(2):
             staged = engine.loader.stage(
-                loaded=engine.loaded_settings, agent_profile=profile, workspace=None, hook_manager=None
+                loaded=engine.loaded_settings,
+                agent_profile=profile,
+                workspace_plan=plan_workspace(Workspace.from_cwd()),
+                hook_manager=None,
             )
             completed = await engine.loader.build(profile, staged)
             replaced = engine.loader.install(completed)
@@ -250,7 +255,10 @@ async def test_failed_rebuild_preserves_live_resource_and_manifest(monkeypatch: 
     profile = AgentProfile(name="Code")
 
     staged = engine.loader.stage(
-        loaded=engine.loaded_settings, agent_profile=profile, workspace=None, hook_manager=None
+        loaded=engine.loaded_settings,
+        agent_profile=profile,
+        workspace_plan=plan_workspace(Workspace.from_cwd()),
+        hook_manager=None,
     )
     with pytest.raises(RuntimeError, match="candidate rejected"):
         await engine.loader.build(profile, staged)
@@ -330,7 +338,10 @@ async def test_multiple_notifications_survive_rebuild_and_close_until_each_finis
     try:
         for _ in range(2):
             staged = engine.loader.stage(
-                loaded=engine.loaded_settings, agent_profile=profile, workspace=None, hook_manager=None
+                loaded=engine.loaded_settings,
+                agent_profile=profile,
+                workspace_plan=plan_workspace(Workspace.from_cwd()),
+                hook_manager=None,
             )
             completed = await engine.loader.build(profile, staged)
             replaced = engine.loader.install(completed)

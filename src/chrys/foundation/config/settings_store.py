@@ -4,15 +4,15 @@
 
 ``Settings`` is a plain value object; this module is what turns the layered
 sources into one: the user document, the process
-environment as it stood before bootstrap, the project trust domain under the
-caller's ``project_root``, and the pins a frontend passes in.
+environment as it stood before bootstrap, the working directory trust domain under the
+caller's ``workdir``, and the pins a frontend passes in.
 
 The load runs in two phases. Phase one reads every file whole and audits the
-project layers completely — policy filter, per-key coercion, tighten/loosen
+working directory layers completely — policy filter, per-key coercion, tighten/loosen
 verdicts — whether or not anything above will shadow them, because a rejected
-project value must warn even when it would have lost anyway. Phase two picks
+working directory value must warn even when it would have lost anyway. Phase two picks
 each key's winner from the highest layer down; it is the only phase
-``InvalidPolicy.SAFE_DEFAULT`` terminates. The non-project layers keep their
+``InvalidPolicy.SAFE_DEFAULT`` terminates. The non-working directory layers keep their
 established warning scope (a layer below the winner stays unexamined), so
 effective values and existing warnings are unchanged by the split.
 
@@ -55,14 +55,19 @@ from chrys.foundation.config.spec import (
     Apply,
     InvalidPolicy,
     Kind,
-    ProjectMerge,
     SettingOrigin,
     SettingSpec,
     Source,
+    WorkdirMerge,
     kind_accepts,
     specs_by_field,
 )
-from chrys.foundation.config.user_settings import apply_settings_patch, flatten_user_doc, user_settings_path
+from chrys.foundation.config.user_settings import (
+    apply_settings_patch,
+    flatten_user_doc,
+    settings_edit,
+    user_settings_path,
+)
 from chrys.foundation.config.yaml_store import (
     LOCK_TIMEOUT_SECONDS,
     read_yaml_doc_readonly,
@@ -70,6 +75,7 @@ from chrys.foundation.config.yaml_store import (
     update_yaml_doc,
 )
 from chrys.foundation.i18n import DisplayPath, MessageRef
+from chrys.foundation.models.workspace import path_identity
 from chrys.foundation.platform.runtime_paths import same_path
 
 logger = logging.getLogger(__name__)
@@ -109,11 +115,11 @@ class SettingsWarning:
 
 
 @dataclass(frozen=True, slots=True)
-class DormantProjectConfig:
-    """Project-layer configuration found on disk while the gate was off.
+class DormantWorkdirConfig:
+    """Working directory-layer configuration found on disk while the gate was off.
 
     Reported as a whole file rather than key by key: the user's decision here
-    is a single one — enable ``project.config_enabled`` or leave it — and a
+    is a single one — enable ``workdir.config_enabled`` or leave it — and a
     warning per key would say the same thing as many times as the repository
     has opinions.
     """
@@ -124,11 +130,11 @@ class DormantProjectConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class DormantProjectSource:
-    """Project hooks or skills found on disk while their own setting was off."""
+class DormantWorkdirSource:
+    """Working directory hooks or skills found on disk while their own setting was off."""
 
     key: str
-    """The setting that loads them: ``project.hooks_enabled`` or ``project.skills_enabled``."""
+    """The setting that loads them: ``workdir.hooks_enabled`` or ``workdir.skills_enabled``."""
 
     path: Path
 
@@ -139,6 +145,15 @@ class LoadedSettings:
 
     settings: Settings
     provenance: Mapping[str, SettingOrigin]
+    workdir_identity: tuple[int, int] | str | None = None
+    """The directory this load belongs to, by identity, or ``None`` when it serves none.
+
+    Recorded whatever ``workdir.config_enabled`` says: *which* directory a load
+    was made for decides whether its layer is read at all, so a rebuild for a
+    different directory has to reload rather than keep this one. ``None`` means
+    there is nothing to check against — a load made without a directory, or one
+    a caller assembled by hand.
+    """
     warnings: tuple[SettingsWarning, ...] = ()
     sealed_keys: frozenset[str] = frozenset()
     """Keys forced to their built-in default by :attr:`InvalidPolicy.SAFE_DEFAULT`.
@@ -157,16 +172,19 @@ class LoadedSettings:
     key looking configured forever.
     """
 
-    dormant_project: tuple[DormantProjectConfig, ...] = ()
-    """Project configuration discovered while ``project.config_enabled`` is off.
+    trust_conflicts: tuple[str, ...] = ()
+    """Trust switches disabled because the saved legacy and current keys disagree."""
+
+    dormant_workdir: tuple[DormantWorkdirConfig, ...] = ()
+    """Working directory configuration discovered while ``workdir.config_enabled`` is off.
 
     Carried rather than dropped for the same reason warnings are: a repository
     shipped configuration, the user never authorised it, and silence would
     leave them believing it is in force. The caller says so once per file.
     """
 
-    dormant_project_sources: tuple[DormantProjectSource, ...] = ()
-    """Project hooks and skills discovered while their setting is off, reported the same way."""
+    dormant_workdir_sources: tuple[DormantWorkdirSource, ...] = ()
+    """Working directory hooks and skills discovered while their setting is off, reported the same way."""
 
     file_values: Mapping[str, Any] = field(default_factory=dict)
     """Typed values requested on disk, keyed by field name for manual reload reporting."""
@@ -226,7 +244,7 @@ class LoadedSettings:
     def source_for(self, key: str) -> SettingOrigin:
         """Where *key*'s effective value came from, including which file.
 
-        Scoped to this instance on purpose: with per-session project roots and
+        Scoped to this instance on purpose: with per-session working directory and
         model pins, a process-global ``effective_source(key)`` could not answer
         honestly for more than one session at a time.
         """
@@ -269,7 +287,7 @@ class SettingsHandle:
     and so that a session's own choice can end without a reload.
 
     Per session, never process-global. ACP runs many sessions in one process
-    with their own project roots and model pins, so a shared cell above the
+    with their own working directory and model pins, so a shared cell above the
     session is a cell where one session's pin becomes another's.
     """
 
@@ -344,6 +362,16 @@ class SettingsHandle:
             runtime_revision=self._runtime_revision,
             released=released,
         )
+
+    def check_prepared(self, prepared: PreparedSettings) -> None:
+        """Raise now what :meth:`install_prepared` would raise, so a commit made after this cannot be stranded."""
+        base = prepared.base
+        if base.session_scoped_model or base.manual_model_revision is None:
+            return
+        if base.model_edit is None:
+            check_model_selection_revision(base.manual_model_revision)
+        else:
+            base.model_edit.check()
 
     def install_prepared(self, prepared: PreparedSettings) -> None:
         """Install values whose overlays have already succeeded, with the session's own choices they carry.
@@ -465,7 +493,7 @@ class SettingsHandle:
         edit leaves the overlay and every value it decides exactly as they were.
         A value refused in the user's file keeps the choice in force: the warning
         names the bad edit, and the screen has no better value to follow. Another
-        layer's refusal (a project may not set most of these keys) says nothing
+        layer's refusal (a working directory may not set most of these keys) says nothing
         about that edit.
         """
         rejected = {
@@ -500,7 +528,7 @@ class SettingsHandle:
 
 def load_settings(
     *,
-    project_root: Path | None = None,
+    workdir: Path | None = None,
     eval_context: EvalContext = DEFAULT_EVAL_CONTEXT,
     env: Mapping[str, str] | None = None,
     manual_reload: bool = False,
@@ -511,14 +539,14 @@ def load_settings(
     """Assemble settings from every source, resolving each key downwards.
 
     Args:
-        project_root: Workspace root whose project layer applies —
-            ``<root>/.chrys/settings.yaml``, behind ``project.config_enabled``.
-            ``None`` loads without a project layer, which is what a caller
+        workdir: Directory whose settings layer applies —
+            ``<root>/.chrys/settings.yaml``, behind ``workdir.config_enabled``.
+            ``None`` loads without a working directory layer, which is what a caller
             that serves no particular root (the ACP manager base) means by it.
             The root a caller passes is a trust decision, not a discovery
             hint: there is deliberately no walk upwards from it.
         eval_context: Frontend policy in force. Must be passed at load time —
-            the project layer is evaluated *during* the load, so substituting
+            the working directory layer is evaluated *during* the load, so substituting
             it afterwards would arrive after the verdicts it informs.
         env: Environment to read instead of ``os.environ``. Tests inject here;
             production passes nothing.
@@ -549,7 +577,7 @@ def load_settings(
 
     if _FRONTEND_DEFAULT_FIELD in pins:
         # It is an input to the load, not a value the load produces, and the
-        # project layer's tighten/loosen verdicts are evaluated against it. A
+        # working directory layer's tighten/loosen verdicts are evaluated against it. A
         # pin would arrive after those verdicts and be silently overwritten
         # here, so say so instead.
         msg = f"{_FRONTEND_DEFAULT_FIELD} is set through eval_context, not as a pin"
@@ -560,24 +588,31 @@ def load_settings(
     specs = specs_by_field(Settings)
     # An injected environment asks for a hermetic load, so it turns the file
     # layers off along with the real environment — a test passing ``env={}``
-    # must not read the developer's own ``~/.chrys`` *or* the project files:
+    # must not read the developer's own ``~/.chrys`` *or* the working directory files:
     # hermetic means hermetic, whatever root was passed alongside.
     revision = model_selection_revision() if manual_reload else None
-    file_layers = _read_file_layers(specs, project_root, strict=manual_reload) if env is None else None
-    # Phase one: the project trust domain is audited completely before any
-    # winner is chosen, so a project value a higher layer shadows still gets
+    # Resolved once: the layer is read from this directory and the load carries
+    # its identity, so a link retargeted during the load cannot pair one
+    # folder's values with another folder's identity.
+    directory = _resolved_directory(workdir) if workdir is not None else None
+    workdir_identity = path_identity(directory) if directory is not None else None
+    file_layers = _read_file_layers(specs, workdir, directory=directory, strict=manual_reload) if env is None else None
+    # Phase one: the working directory trust domain is audited completely before any
+    # winner is chosen, so a working directory value a higher layer shadows still gets
     # its policy verdict and its warning.
-    project = _project_layers(specs, file_layers, eval_context) if file_layers is not None else _NO_PROJECT_LAYERS
+    directory_layer = (
+        _workdir_layers(specs, file_layers, eval_context) if file_layers is not None else _NO_WORKDIR_LAYERS
+    )
 
-    warnings: list[SettingsWarning] = list(project.warnings)
+    warnings: list[SettingsWarning] = list(directory_layer.warnings)
     sealed: set[str] = set()
 
     for name, entry in specs.items():
-        for coerced, origin in _layers(name, entry, pins, source, real_process, file_layers, project):
+        for coerced, origin in _layers(name, entry, pins, source, real_process, file_layers, directory_layer):
             if coerced.status is CoerceStatus.INVALID:
-                # Project verdicts were already reported whole in phase one
+                # Working directory verdicts were already reported whole in phase one
                 # (shadowed-still-warns); consulting one here only decides.
-                if origin.layer is not Source.PROJECT:
+                if origin.layer is not Source.WORKDIR:
                     warnings.append(SettingsWarning(key=entry.key, origin=origin, outcome=coerced))
                 if entry.invalid_policy is InvalidPolicy.SAFE_DEFAULT:
                     # Stop the walk. The built-in default is the safe landing
@@ -628,8 +663,8 @@ def load_settings(
         for name, entry in specs.items():
             if not entry.persist:
                 continue
-            if name in project.values:
-                file_values[name] = project.values[name]
+            if name in directory_layer.values:
+                file_values[name] = directory_layer.values[name]
             elif entry.key in file_layers.user_yaml:
                 verdict = _user_doc_verdict(entry, file_layers.user_yaml[entry.key])
                 if verdict.usable:
@@ -639,6 +674,7 @@ def load_settings(
     settings = Settings(**values)
     return LoadedSettings(
         settings=settings,
+        workdir_identity=workdir_identity,
         file_values=file_values,
         file_model=file_model,
         model_edit=edit,
@@ -650,16 +686,15 @@ def load_settings(
         warnings=tuple(warnings),
         sealed_keys=frozenset(sealed),
         unknown_keys=file_layers.unknown_keys if file_layers is not None else (),
-        dormant_project=project.dormant,
-        dormant_project_sources=(
-            _dormant_project_sources(settings, project_root)
-            if file_layers is not None and project_root is not None
-            else ()
+        trust_conflicts=file_layers.trust_conflicts if file_layers is not None else (),
+        dormant_workdir=directory_layer.dormant,
+        dormant_workdir_sources=(
+            _dormant_workdir_sources(settings, workdir) if file_layers is not None and workdir is not None else ()
         ),
     )
 
 
-_PROJECT_HOOKS_FILE_NAMES: Final = ("hooks.yaml", "hooks.yml", "hooks.json")
+_WORKDIR_HOOKS_FILE_NAMES: Final = ("hooks.yaml", "hooks.yml", "hooks.json")
 
 
 def _holds_skill(directory: Path, depth: int = 0) -> bool:
@@ -687,29 +722,29 @@ def _is_same_entry(left: Path, right: Path) -> bool:
         return same_path(left, right)
 
 
-def _dormant_project_sources(settings: Settings, project_root: Path) -> tuple[DormantProjectSource, ...]:
-    """The project hooks and skills *project_root* holds that their setting keeps unloaded.
+def _dormant_workdir_sources(settings: Settings, workdir: Path) -> tuple[DormantWorkdirSource, ...]:
+    """The working directory hooks and skills *workdir* holds that their setting keeps unloaded.
 
     A workspace rooted at the user's home names the user's own hooks and skills
     folders again; those load as the user's and are never reported.
     """
-    found: list[DormantProjectSource] = []
+    found: list[DormantWorkdirSource] = []
     try:
-        if not settings.project_hooks_enabled:
-            hooks_dir = project_root / ".chrys" / "hooks"
+        if not settings.workdir_hooks_enabled:
+            hooks_dir = workdir / ".chrys" / "hooks"
             if not _is_same_entry(hooks_dir, user_settings_path().parent / "hooks"):
                 hooks_file = next(
-                    (hooks_dir / name for name in _PROJECT_HOOKS_FILE_NAMES if (hooks_dir / name).is_file()), None
+                    (hooks_dir / name for name in _WORKDIR_HOOKS_FILE_NAMES if (hooks_dir / name).is_file()), None
                 )
                 if hooks_file is not None:
-                    found.append(DormantProjectSource(key="project.hooks_enabled", path=hooks_file))
-        if not settings.project_skills_enabled:
-            skills_dir = project_root / ".agents" / "skills"
+                    found.append(DormantWorkdirSource(key="workdir.hooks_enabled", path=hooks_file))
+        if not settings.workdir_skills_enabled:
+            skills_dir = workdir / ".agents" / "skills"
             if not _is_same_entry(skills_dir, Path.home() / ".agents" / "skills") and _holds_skill(skills_dir):
-                found.append(DormantProjectSource(key="project.skills_enabled", path=skills_dir))
+                found.append(DormantWorkdirSource(key="workdir.skills_enabled", path=skills_dir))
     except OSError:
         # A notice, never a reason to fail a settings load.
-        logger.debug("Could not check %s for project hooks or skills", project_root, exc_info=True)
+        logger.debug("Could not check %s for working directory hooks or skills", workdir, exc_info=True)
     return tuple(found)
 
 
@@ -727,20 +762,40 @@ class _FileLayers:
 
     user_yaml_path: Path
     unknown_keys: tuple[str, ...]
+    trust_conflicts: tuple[str, ...]
 
     error: MessageRef | None = None
-    project_yaml: Mapping[str, Any] = _EMPTY_MAP
+    workdir_yaml: Mapping[str, Any] = _EMPTY_MAP
     """Dotted key → raw value, from ``<root>/.chrys/settings.yaml``."""
 
-    project_yaml_unknown: tuple[str, ...] = ()
-    project_yaml_path: Path | None = None
-    """``None`` when no distinct project document applies."""
+    workdir_yaml_unknown: tuple[str, ...] = ()
+    workdir_yaml_path: Path | None = None
+    """``None`` when no distinct working directory document applies."""
+
+
+def _resolved_directory(workdir: Path) -> Path:
+    """Return the physical directory *workdir* names, or *workdir* as spelled.
+
+    A path the system cannot open as spelled (``missing/..``, or an
+    extended-length Windows path, which Windows does not fold) is kept as spelled, so the file
+    read fails or succeeds as it would unresolved instead of reading whichever
+    folder lexical folding lands on.
+    """
+    if not os.path.isdir(workdir):
+        return workdir
+    try:
+        return Path(os.path.realpath(workdir, strict=True))
+    except OSError:
+        return workdir
 
 
 def _read_file_layers(
-    specs: Mapping[str, SettingSpec], project_root: Path | None, *, strict: bool = False
+    specs: Mapping[str, SettingSpec], workdir: Path | None, *, directory: Path | None, strict: bool = False
 ) -> _FileLayers | None:
     """Read the file-borne layers, or ``None`` before bootstrap froze the env.
+
+    The working directory layer is read from *directory*, the resolved
+    *workdir*; its path is reported as spelled under *workdir*.
 
     The snapshot gate is the hermeticity gate: a process that never called
     :func:`freeze_process_env` — every test that constructs settings directly —
@@ -753,41 +808,45 @@ def _read_file_layers(
     yaml_path = user_settings_path()
     read = read_yaml_document(yaml_path, strict=strict)
     doc = read.doc or {}
+    trust_conflicts: list[str] = []
+    settings_edit(doc, on_conflict=trust_conflicts.append)
     known_keys = frozenset(entry.key for entry in specs.values())
     values, unknown = flatten_user_doc(doc, known_keys)
 
-    project_yaml: Mapping[str, Any] = _EMPTY_MAP
-    project_yaml_unknown: tuple[str, ...] = ()
-    project_yaml_path: Path | None = None
-    if project_root is not None:
-        candidate = project_root / ".chrys" / "settings.yaml"
+    workdir_yaml: Mapping[str, Any] = _EMPTY_MAP
+    workdir_yaml_unknown: tuple[str, ...] = ()
+    workdir_yaml_path: Path | None = None
+    if workdir is not None and directory is not None:
+        candidate = directory / ".chrys" / "settings.yaml"
         # A workspace rooted at the user's home names the user document again.
         # It remains the trusted USER layer; reading it a second time as an
-        # untrusted PROJECT layer would reject preferences and, with the gate
-        # off, report the user's own settings as dormant project configuration.
+        # untrusted WORKDIR layer would reject preferences and, with the gate
+        # off, report the user's own settings as dormant working directory configuration.
         if not _is_same_entry(candidate, yaml_path):
-            project_yaml_path = candidate
+            workdir_yaml_path = workdir / ".chrys" / "settings.yaml"
             # Same empty-on-unparseable rule as the user document, read without
             # lock, backup or repair — the file lives in someone's working tree.
-            gate = specs["project_config_enabled"]
+            gate = specs["workdir_config_enabled"]
             trusted = _user_doc_verdict(gate, values.get(gate.key)).value is True
-            project_doc = read_yaml_doc_readonly(project_yaml_path, strict=strict and trusted) or {}
-            project_yaml, project_yaml_unknown = flatten_user_doc(project_doc, known_keys)
+            workdir_doc = read_yaml_doc_readonly(candidate, strict=strict and trusted, shown_as=workdir_yaml_path) or {}
+            settings_edit(workdir_doc)
+            workdir_yaml, workdir_yaml_unknown = flatten_user_doc(workdir_doc, known_keys)
 
     return _FileLayers(
         error=read.error,
         user_yaml=values,
         user_yaml_path=yaml_path,
         unknown_keys=unknown,
-        project_yaml=project_yaml,
-        project_yaml_unknown=project_yaml_unknown,
-        project_yaml_path=project_yaml_path,
+        trust_conflicts=tuple(trust_conflicts),
+        workdir_yaml=workdir_yaml,
+        workdir_yaml_unknown=workdir_yaml_unknown,
+        workdir_yaml_path=workdir_yaml_path,
     )
 
 
 @dataclass(frozen=True, slots=True)
-class _ProjectLayers:
-    """Phase-one verdicts for the project trust domain, taken whole.
+class _WorkdirLayers:
+    """Phase-one verdicts for the working directory trust domain, taken whole.
 
     ``values`` holds only what survived the policy — already coerced to
     canonical, so phase two contributes it without a second verdict and a
@@ -800,10 +859,10 @@ class _ProjectLayers:
     """Field name → canonical value accepted from ``<root>/.chrys/settings.yaml``."""
 
     rejected: Mapping[str, Coerced] = _EMPTY_MAP
-    """Field name → the phase-one verdict on a value the project may set but wrote wrong.
+    """Field name → the phase-one verdict on a value the working directory may set but wrote wrong.
 
     Only genuine value invalids — a policy rejection
-    (:attr:`CoerceReason.NOT_ALLOWED_IN_PROJECT`,
+    (:attr:`CoerceReason.NOT_ALLOWED_IN_WORKDIR`,
     :attr:`CoerceReason.LOOSENS_USER_BASELINE`) means the layer had no standing
     for the key at all and stays mute in phase two. A garbage value on a key the
     whitelist *does* grant is a different thing: the layer had standing and
@@ -813,10 +872,10 @@ class _ProjectLayers:
     """
 
     warnings: tuple[SettingsWarning, ...] = ()
-    dormant: tuple[DormantProjectConfig, ...] = ()
+    dormant: tuple[DormantWorkdirConfig, ...] = ()
 
 
-_NO_PROJECT_LAYERS = _ProjectLayers()
+_NO_WORKDIR_LAYERS = _WorkdirLayers()
 
 
 def _user_doc_verdict(entry: SettingSpec, raw: Any) -> Coerced:
@@ -840,14 +899,14 @@ def _user_doc_verdict(entry: SettingSpec, raw: Any) -> Coerced:
 
 
 def _default_user_baseline(specs: Mapping[str, SettingSpec], file_layers: _FileLayers) -> Settings:
-    """``DEFAULT + USER`` merged — what every project verdict compares against.
+    """``DEFAULT + USER`` merged — what every working directory verdict compares against.
 
     The *semantic* baseline, never the effective value: the layers above the
-    project (env, CLI, pins) are other people's decisions for this process,
+    working directory (env, CLI, pins) are other people's decisions for this process,
     and measuring a repository's tightening against them would let the
     environment move the fence the user set. This is also where the gate is
-    read — ``project.config_enabled`` counts only from here, because reading
-    it from any layer a project file feeds would let the layer authorise
+    read — ``workdir.config_enabled`` counts only from here, because reading
+    it from any layer a working directory file feeds would let the layer authorise
     itself.
     """
     values: dict[str, Any] = {}
@@ -860,11 +919,11 @@ def _default_user_baseline(specs: Mapping[str, SettingSpec], file_layers: _FileL
     return Settings(**values)
 
 
-_PROJECT_POLICY_REASONS = frozenset({CoerceReason.NOT_ALLOWED_IN_PROJECT, CoerceReason.LOOSENS_USER_BASELINE})
-"""Rejections that mean "the project has no standing here", not "bad value"."""
+_WORKDIR_POLICY_REASONS = frozenset({CoerceReason.NOT_ALLOWED_IN_WORKDIR, CoerceReason.LOOSENS_USER_BASELINE})
+"""Rejections that mean "the working directory has no standing here", not "bad value"."""
 
 
-def _project_verdict(
+def _workdir_verdict(
     name: str,
     entry: SettingSpec,
     raw: Any,
@@ -873,7 +932,7 @@ def _project_verdict(
     baseline_values: Mapping[str, Any],
     eval_context: EvalContext,
 ) -> Coerced:
-    """One project value through the whole gauntlet, in the fixed order.
+    """One working directory value through the whole gauntlet, in the fixed order.
 
     Policy first (a denied key's value is not worth a grammar opinion), then
     the coercer to a canonical value, then the direction check against the
@@ -883,17 +942,17 @@ def _project_verdict(
     the written-``null`` reading belongs to the document the panel writes,
     and nothing writes these).
     """
-    if entry.project_merge is ProjectMerge.DENY or not entry.persist:
-        return invalid(raw, CoerceReason.NOT_ALLOWED_IN_PROJECT)
+    if entry.workdir_merge is WorkdirMerge.DENY or not entry.persist:
+        return invalid(raw, CoerceReason.NOT_ALLOWED_IN_WORKDIR)
     coerced = entry.coerce(raw)
     if not coerced.usable:
         return coerced
-    if not _within_project_bounds(name, entry, coerced.value, baseline, baseline_values, eval_context):
+    if not _within_workdir_bounds(name, entry, coerced.value, baseline, baseline_values, eval_context):
         return invalid(raw, CoerceReason.LOOSENS_USER_BASELINE)
     return coerced
 
 
-def _within_project_bounds(
+def _within_workdir_bounds(
     name: str,
     entry: SettingSpec,
     value: Any,
@@ -902,13 +961,13 @@ def _within_project_bounds(
     eval_context: EvalContext,
 ) -> bool:
     """Whether *value* respects the field's merge direction over the baseline."""
-    merge = entry.project_merge
-    if merge is ProjectMerge.FREE:
+    merge = entry.workdir_merge
+    if merge is WorkdirMerge.FREE:
         return True
     current = baseline_values[name]
-    if merge is ProjectMerge.ENABLE_ONLY:
+    if merge is WorkdirMerge.ENABLE_ONLY:
         return bool(value) or not bool(current)
-    if merge is ProjectMerge.DISABLE_ONLY:
+    if merge is WorkdirMerge.DISABLE_ONLY:
         return not bool(value) or bool(current)
     # TIGHTEN_ONLY — the spec's ``__post_init__`` guarantees the comparator.
     semantic = entry.semantic_value
@@ -917,41 +976,41 @@ def _within_project_bounds(
     return semantic(replace(baseline, **{name: value}), eval_context) <= semantic(baseline, eval_context)
 
 
-def _project_layers(
+def _workdir_layers(
     specs: Mapping[str, SettingSpec],
     file_layers: _FileLayers,
     eval_context: EvalContext,
-) -> _ProjectLayers:
-    """Audit the project document completely — phase one of the load."""
-    yaml_path = file_layers.project_yaml_path
+) -> _WorkdirLayers:
+    """Audit the working directory document completely — phase one of the load."""
+    yaml_path = file_layers.workdir_yaml_path
     if yaml_path is None:
-        return _NO_PROJECT_LAYERS
+        return _NO_WORKDIR_LAYERS
 
     baseline = _default_user_baseline(specs, file_layers)
-    if not baseline.project_config_enabled:
-        keys = (*file_layers.project_yaml, *file_layers.project_yaml_unknown)
+    if not baseline.workdir_config_enabled:
+        keys = (*file_layers.workdir_yaml, *file_layers.workdir_yaml_unknown)
         if not keys:
-            return _NO_PROJECT_LAYERS
-        return _ProjectLayers(dormant=(DormantProjectConfig(path=yaml_path, keys=keys),))
+            return _NO_WORKDIR_LAYERS
+        return _WorkdirLayers(dormant=(DormantWorkdirConfig(path=yaml_path, keys=keys),))
 
     baseline_values = asdict(baseline)
     warnings: list[SettingsWarning] = []
-    origin = SettingOrigin(layer=Source.PROJECT, path=yaml_path)
+    origin = SettingOrigin(layer=Source.WORKDIR, path=yaml_path)
 
     # An unknown key in the *user* document is tolerated as a downgrade
-    # artefact; in a project file it is simply not something a repository
+    # artefact; in a working directory file it is simply not something a repository
     # may configure, and the warning has to name which file said so.
     warnings.extend(
-        SettingsWarning(key=dotted, origin=origin, outcome=invalid("", CoerceReason.NOT_ALLOWED_IN_PROJECT))
-        for dotted in file_layers.project_yaml_unknown
+        SettingsWarning(key=dotted, origin=origin, outcome=invalid("", CoerceReason.NOT_ALLOWED_IN_WORKDIR))
+        for dotted in file_layers.workdir_yaml_unknown
     )
 
     by_key = {entry.key: (name, entry) for name, entry in specs.items()}
     values: dict[str, Any] = {}
     rejected: dict[str, Coerced] = {}
-    for dotted, raw in file_layers.project_yaml.items():
+    for dotted, raw in file_layers.workdir_yaml.items():
         name, entry = by_key[dotted]
-        coerced = _project_verdict(
+        coerced = _workdir_verdict(
             name,
             entry,
             raw,
@@ -965,10 +1024,10 @@ def _project_layers(
             warnings.append(SettingsWarning(key=dotted, origin=origin, outcome=coerced))
         if coerced.usable:
             values[name] = coerced.value
-        elif coerced.reason not in _PROJECT_POLICY_REASONS:
+        elif coerced.reason not in _WORKDIR_POLICY_REASONS:
             rejected[name] = coerced
 
-    return _ProjectLayers(values=values, rejected=rejected, warnings=tuple(warnings))
+    return _WorkdirLayers(values=values, rejected=rejected, warnings=tuple(warnings))
 
 
 def _layers(
@@ -978,7 +1037,7 @@ def _layers(
     source: Mapping[str, str],
     real_process: bool,
     file_layers: _FileLayers | None,
-    project: _ProjectLayers,
+    workdir: _WorkdirLayers,
 ) -> Iterator[tuple[Coerced, SettingOrigin]]:
     """Yield each layer's verdict for one field, **highest precedence first**.
 
@@ -993,7 +1052,7 @@ def _layers(
     Note what this is *not*: it is not where a file gets read. A settings
     document is parsed once, whole, for every key it mentions — one pinned
     field cannot excuse the loader from reading the rest of the file — and the
-    project layer's values must be policy-checked and their rejections reported
+    working directory layer's values must be policy-checked and their rejections reported
     even when a higher layer shadows them. The reading happens in
     :func:`_read_file_layers` before this function is ever called, and it keeps
     the one job it has: picking the winner.
@@ -1029,20 +1088,23 @@ def _layers(
     if file_layers is None:
         return
 
-    # The project layer contributes what phase one already judged, at the
-    # verdict it judged it — a shadowed project value was audited there, so
+    # The working directory layer contributes what phase one already judged, at the
+    # verdict it judged it — a shadowed working directory value was audited there, so
     # nothing here may warn a second time. Accepted values arrive canonical;
     # a value invalid arrives as its ``INVALID`` verdict, because the walk is
     # where ``SAFE_DEFAULT`` turns "this layer wrote garbage on a dangerous
     # key" into a seal, and a verdict that never enters the walk can never
     # seal (the exact uncap-the-backstop path the policy exists to close).
-    if name in project.values:
+    if name in workdir.values:
         yield (
-            Coerced(status=CoerceStatus.VALID, value=project.values[name]),
-            SettingOrigin(layer=Source.PROJECT, path=file_layers.project_yaml_path),
+            Coerced(status=CoerceStatus.VALID, value=workdir.values[name]),
+            SettingOrigin(layer=Source.WORKDIR, path=file_layers.workdir_yaml_path),
         )
-    elif name in project.rejected:
-        yield project.rejected[name], SettingOrigin(layer=Source.PROJECT, path=file_layers.project_yaml_path)
+    elif name in workdir.rejected:
+        yield (
+            workdir.rejected[name],
+            SettingOrigin(layer=Source.WORKDIR, path=file_layers.workdir_yaml_path),
+        )
 
     # ``persist=False`` marks a field runtime-only: :func:`persist` refuses to
     # write it, and for the same reason a hand-written spelling does not load.

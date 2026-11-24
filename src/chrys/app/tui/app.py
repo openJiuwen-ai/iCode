@@ -33,11 +33,26 @@ from textual.theme import Theme
 from textual.widget import Widget
 
 from chrys import __version__
-from chrys.app.cli.launch_cwd import launch_cwd_missing_message
+from chrys.app.cli.launch_cwd import launch_cwd_missing_message, open_launch_workspace
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
-from chrys.app.parsing import SanitizingArgumentParser
+from chrys.app.parsing import (
+    WORKDIR_OPTIONS,
+    SanitizingArgumentParser,
+    WorkspaceHelpFormatter,
+    add_startup_session_option,
+)
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, copy_with_insert, paste_with_insert
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
+from chrys.app.tui.clipboard import (
+    ClipboardWriteFailed,
+    clipboard_failure_is_current,
+    close_clipboard,
+    copy_text_to_clipboards,
+    open_clipboard,
+    stop_clipboard,
+    uses_native_windows_clipboard,
+)
+from chrys.app.tui.copy_messages import COPY_FAILED
 from chrys.app.tui.graphics.detect import ask_terminal
 from chrys.app.tui.i18n import LocaleController, render_str
 from chrys.app.tui.notifications import NotificationService, NotificationSettings
@@ -72,6 +87,7 @@ from chrys.app.tui.widgets.chrome.status_bar import STATUS_AGENT_STARTUP_FAILED
 from chrys.foundation import platform as chrys_platform
 from chrys.foundation.branding import APP_DISPLAY_NAME, format_app_version_title
 from chrys.foundation.config.errors import ConfigError
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.runtime_pointer import set_model_pointer
 from chrys.foundation.config.settings import (
     DEFAULT_AGENT_PROFILE,
@@ -80,15 +96,18 @@ from chrys.foundation.config.settings import (
     persist_theme,
     resolve_sessions_dir,
 )
-from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
+from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, load_settings
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import Warning
+from chrys.foundation.events.types import Error, Warning
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.models.session_surface import SessionSurface
+from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform.signals import HANGUP_SIGNALS
 from chrys.foundation.util.session_ids import session_short_id
+from chrys.orchestration.engine.workspaces import workspace_error_display
 from chrys.orchestration.startup import catalog_load_warning
+from chrys.orchestration.workdir_migration import MIGRATION_NOTICE
 from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import (
@@ -99,6 +118,8 @@ from chrys.service.profiles.models.resolver import (
     resolve_profile_selector as resolve_model_profile_selector,
 )
 from chrys.service.tools.background.crash import find_left_behind, forget_left_behind, stop_left_behind
+from chrys.service.workspaces.paths import MissingWorkspacePrimary
+from chrys.service.workspaces.registry import RegistrySnapshot, WorkspaceRegistryError
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +138,35 @@ _SESSION_NOT_FOUND = msg(
 )
 _SESSION_RESTORE_FALLBACK = msg(
     "tui.startup.session.restore_fallback",
-    fallback="Could not restore session {session_id}; started a new session instead.",
+    fallback="Could not open session {session_id}.",
 )
+_SESSION_IN_USE = msg(
+    "tui.startup.session.in_use", fallback="Session {session_id} is open in another window or process."
+)
+_START_NEW = msg("tui.startup.session.start_new", fallback="Start new session")
+_RETRY = msg("tui.startup.session.retry", fallback="Retry")
 _SESSION_RESTORE_FAILED = msg(
     "tui.startup.session.restore_failed",
     fallback="Could not restore session {session_id}: {error}",
+)
+_WORKSPACE_SESSION_RESTORE_FAILED = msg(
+    "tui.startup.session.workspace_restore_failed",
+    fallback="Could not restore session {session_id}.",
+)
+_WORKSPACE_SESSION_RESTORE_DECLINED = msg(
+    "tui.startup.session.workspace_restore_declined",
+    fallback="Session restore was cancelled.",
+)
+_WORKSPACE_SESSION_RESTORE_RESTART = msg(
+    "tui.startup.session.workspace_restore_restart",
+    fallback=(
+        "If the workspace's primary folder is missing, restore it, then start again with --workspace and -s. "
+        "To choose another folder, start with -s alone."
+    ),
+)
+_WORKSPACE_RESTART = msg(
+    "tui.startup.workspace.restart",
+    fallback="Restore the workspace's primary folder, then start again with --workspace.",
 )
 _QUIT_HELP = msg("tui.app.quit_help", fallback="Press {key} to quit the app")
 _QUIT_HELP_TITLE = msg("tui.app.quit_help_title", fallback="Do you want to quit?")
@@ -250,6 +295,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         startup_warnings: list[Warning] | None = None,
         settings_warnings: list[Warning] | None = None,
         startup_session_id: str = "",
+        startup_workspace_id: str | None = None,
+        startup_workspace_snapshot: RegistrySnapshot | None = None,
+        startup_workspace_cwd: str = "",
         apply_saved_model_on_restore: bool = True,
         session_title_updater: SessionTitleUpdater | None = None,
         *,
@@ -291,6 +339,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         # MainScreen subscribes to ``Warning`` so the user sees them as
         # toast notifications.
         self._startup_session_id = startup_session_id.strip()
+        self._startup_workspace_id = startup_workspace_id
+        self._startup_workspace_snapshot = startup_workspace_snapshot
+        self._startup_workspace_cwd = startup_workspace_cwd
         self._startup_warnings: list[Warning] = list(startup_warnings or [])
         # Settings-derived warnings describe the bootstrap load rooted at the
         # process cwd. A startup restore replaces those settings with ones
@@ -960,6 +1011,18 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             return
         self.exit()
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """Include stock Textual copy/cut actions in the native Windows queue."""
+        if uses_native_windows_clipboard():
+            copy_text_to_clipboards(self, text)
+        else:
+            super().copy_to_clipboard(text)
+
+    def on_clipboard_write_failed(self, event: ClipboardWriteFailed) -> None:
+        event.stop()
+        if self.is_running and clipboard_failure_is_current(self, event):
+            self.notify(render_str(self.localizer, COPY_FAILED.bind()), severity="error", markup=False)
+
     def action_copy_with_insert(self) -> None:
         """Copy the focused editor selection, then fall back to the screen selection."""
         copy_with_insert(self)
@@ -1011,9 +1074,6 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             localization=self.localizer,
             locale_controller=self._locale_controller,
             on_editor_keymap_changed=self._record_editor_keymap_override,
-            tool_groups_expanded=lambda: self._settings_handle.settings.tool_groups_expanded,
-            thinking_expanded=lambda: self._settings_handle.settings.chat_thinking_expanded,
-            fold_finished_turns=lambda: self._settings_handle.settings.chat_fold_finished_turns,
             approval_mode=self._engine.approval_mode,
             reset_program_status=self._program_status_reporter.reset_context,
         )
@@ -1037,6 +1097,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def on_mount(self) -> None:
         """Start the main screen after the optional loading shell paints."""
+        open_clipboard(self)
         await self._program_status_reporter.subscribe()
         self._set_terminal_title_for_cwd()
         # Closing the terminal or SIGTERM quits without asking, so the session's background commands stop.
@@ -1096,15 +1157,19 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         if self._gc_freeze.started:
             self._gc_freeze_watchdog = self.set_interval(GC_FREEZE_WATCHDOG_PERIOD_SECONDS, self._gc_freeze.on_tick)
 
-        # MainScreen has now subscribed to ``Warning``; flush any
-        # warnings collected before the bus had listeners.
-        for w in self._startup_warnings:
-            await self._bus.publish(w)
-        self._startup_warnings.clear()
+        # A restore replaces the transcript. Add its startup notice afterwards.
+        await self._publish_startup_warnings(defer_migration_notice=True)
 
         registry = self._agent_registry
         if not registry.list_profiles():
-            registry.load_all()
+            if self._startup_workspace_id is not None:
+                try:
+                    registry.load_all_readonly()
+                except ConfigError as exc:
+                    self.exit(return_code=1, message=render_str(self.localizer, exc.display))
+                    return screen, None
+            else:
+                registry.load_all()
 
         profile = resolve_launch_profile(registry, self._profile_name)
 
@@ -1114,12 +1179,22 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             # No engine start means no restore either: the bootstrap settings
             # stay in force, so their warnings are due after all.
             await self._flush_deferred_settings_warnings()
+            await self._publish_startup_warnings()
         return screen, profile
 
     async def _start_engine_after_refresh(self, profile: AgentProfile, screen: MainScreen) -> None:
         """Let the main screen paint before agent construction imports its tools."""
         if await self._wait_for_startup_refresh():
             await self._start_engine(profile, screen)
+            await self._publish_startup_warnings()
+
+    async def _publish_startup_warnings(self, *, defer_migration_notice: bool = False) -> None:
+        warnings, self._startup_warnings = self._startup_warnings, []
+        for warning in warnings:
+            if defer_migration_notice and warning.code == MIGRATION_NOTICE:
+                self._startup_warnings.append(warning)
+            else:
+                await self._bus.publish(warning)
 
     async def _wait_for_startup_refresh(self) -> bool:
         """Wait for a paint while tolerating shutdown and a late callback."""
@@ -1180,95 +1255,132 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def _start_engine(self, profile: AgentProfile, screen: MainScreen) -> None:
         """Start the backend without holding Textual's mount path."""
+        restoring_session = bool(self._startup_session_id)
         try:
-            if self._startup_session_id:
-                # Session restore builds the saved profile/runtime itself. Preparing
-                # subscriptions first avoids building the default agent only to tear
-                # it down immediately in the restore path.
+            while self._startup_session_id:
                 await self._engine.prepare(profile)
-                if await self._restore_startup_session(screen):
-                    # The restore republished the warnings of its own settings
-                    # load; the bootstrap ones no longer describe anything live.
+                problem = await self._restore_startup_session(screen, self._startup_session_id)
+                if problem is None:
+                    self._startup_session_id = ""
                     self._deferred_settings_warnings.clear()
                     return
+                screen.cancel_startup_session_restore()
+                screen.set_startup_agent_loading(True)
                 await self._engine.reset_after_failed_startup_restore()
-                await self._flush_deferred_settings_warnings()
-            await self._engine.start(profile)
+                if await self._choose_new_startup_session(screen, problem):
+                    self._startup_session_id = ""
+                    await self._flush_deferred_settings_warnings()
+            if self._startup_workspace_id is None:
+                await self._engine.start(profile)
+            else:
+                await self._engine.start(
+                    profile,
+                    workspace_id=self._startup_workspace_id,
+                    workspace=Workspace.from_cwd(self._startup_workspace_cwd),
+                    workspace_snapshot=self._startup_workspace_snapshot,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if self._startup_workspace_id is not None:
+                display = workspace_error_display(exc)
+                message = render_str(self.localizer, display) if display is not None else str(exc)
+                if isinstance(exc, MissingWorkspacePrimary):
+                    message = _workspace_restart_message(self.localizer, message, restoring_session=restoring_session)
+                self.exit(return_code=1, message=message)
+                return
             if screen.is_startup_agent_loading():
                 screen.set_startup_agent_loading(False)
                 self._show_startup_failure(screen, exc)
             logger.exception("Engine startup failed")
 
-    async def _restore_startup_session(self, screen: MainScreen) -> bool:
-        """Restore the requested startup session, returning whether it succeeded."""
-        session_id = self._startup_session_id
-        if not session_id:
-            return False
-        self._startup_session_id = ""
+    async def _restore_startup_session(self, screen: MainScreen, selector: str) -> MessageRef | None:
+        from chrys.service.state.store import AmbiguousSessionIdError, StartupSessionInUseError
+
+        workspace_start = self._startup_workspace_id is not None
         screen.set_startup_agent_loading(True)
         try:
-            meta = await self._state_store.load_session_meta(session_id)
+            meta = await self._state_store.resolve_startup_session(selector, require_inactive=True)
+        except StartupSessionInUseError:
+            return _SESSION_IN_USE.bind(session_id=selector)
+        except AmbiguousSessionIdError as exc:
+            return exc.display_message or _SESSION_READ_FAILED.bind(session_id=selector, error=str(exc))
         except Exception as exc:
-            screen.set_startup_agent_loading(False)
-            logger.warning("Failed to read startup session %s", session_id, exc_info=True)
-            self._show_startup_session_warning(
-                screen,
-                _SESSION_READ_FAILED.bind(session_id=session_short_id(session_id), error=str(exc)),
-            )
-            return False
+            logger.warning("Failed to read startup session %s", selector, exc_info=True)
+            return _SESSION_READ_FAILED.bind(session_id=selector, error=str(exc))
         if meta is None:
-            screen.set_startup_agent_loading(False)
-            self._show_startup_session_warning(
-                screen,
-                _SESSION_NOT_FOUND.bind(session_id=session_short_id(session_id)),
-            )
-            return False
-        session_id = meta.session_id or session_id
+            return _SESSION_NOT_FOUND.bind(session_id=selector)
         await self._dismiss_startup_load_dialog_before_restore(screen)
         try:
-            outcome = await screen.restore_startup_session(session_id)
-            if outcome == "restored":
-                return True
-            screen.cancel_startup_session_restore()
-            if outcome == "declined":
-                # The user chose no folder for a session whose folder is gone: start fresh, quietly.
-                return False
-            logger.warning("Startup session restore produced no SessionRestored event for %s", session_id)
-            self._show_startup_session_warning(
-                screen,
-                _SESSION_RESTORE_FALLBACK.bind(session_id=session_short_id(session_id)),
+            outcome = (
+                await screen.restore_startup_session(
+                    meta.session_id,
+                    saved_cwd=meta.primary_cwd,
+                    workspace_id=self._startup_workspace_id,
+                    workspace_snapshot=self._startup_workspace_snapshot,
+                    primary_cwd=self._startup_workspace_cwd,
+                )
+                if workspace_start
+                else await screen.restore_startup_session(meta.session_id, saved_cwd=meta.primary_cwd)
             )
-            return False
         except Exception as exc:
-            screen.cancel_startup_session_restore()
-            screen.set_startup_agent_loading(False)
-            logger.warning("Failed to restore startup session %s", session_id, exc_info=True)
-            self._show_startup_session_warning(
-                screen,
-                _SESSION_RESTORE_FAILED.bind(session_id=session_short_id(session_id), error=str(exc)),
+            if workspace_start:
+                raise
+            logger.warning("Failed to restore startup session %s", selector, exc_info=True)
+            return _SESSION_RESTORE_FAILED.bind(session_id=selector, error=str(exc))
+        if outcome == "restored":
+            return None
+        if isinstance(outcome, Error) and outcome.code == "session_in_use":
+            return _SESSION_IN_USE.bind(session_id=selector)
+        if isinstance(outcome, Error) and outcome.code == "session_not_found":
+            return _SESSION_NOT_FOUND.bind(session_id=selector)
+        if workspace_start:
+            # --workspace never falls back to another folder or workspace: it exits.
+            if outcome == "declined":
+                status = render_str(self.localizer, _WORKSPACE_SESSION_RESTORE_DECLINED.bind())
+                restart = render_str(self.localizer, _WORKSPACE_SESSION_RESTORE_RESTART.bind())
+                raise RuntimeError(f"{status}\n{restart}")
+            raise RuntimeError(
+                render_str(
+                    self.localizer,
+                    _WORKSPACE_SESSION_RESTORE_FAILED.bind(session_id=session_short_id(meta.session_id)),
+                )
             )
-            return False
+        if isinstance(outcome, Error):
+            # A workspace or settings error carries its own text; the startup message still names the session.
+            error = (
+                outcome.message
+                if outcome.display_message is None
+                else render_str(self.localizer, outcome.display_message)
+            )
+            return _SESSION_RESTORE_FAILED.bind(session_id=selector, error=error)
+        return _SESSION_RESTORE_FALLBACK.bind(session_id=selector)
 
     async def _dismiss_startup_load_dialog_before_restore(self, screen: MainScreen) -> None:
-        """Clear the startup loading modal before opening the restore modal."""
         await screen.dismiss_startup_load_dialog_before_restore()
 
-    def _show_startup_session_warning(self, screen: MainScreen, message: MessageRef | str) -> None:
-        with contextlib.suppress(Exception):
-            from chrys.app.tui.widgets.chrome.status_bar import StatusBar
+    async def _choose_new_startup_session(self, screen: MainScreen, problem: MessageRef) -> bool:
+        """Only the explicit new-session action may abandon the requested session."""
+        from chrys.app.tui.screens.dialogs.confirm import StartupSessionChoiceDialog
 
-            screen.query_one(StatusBar).flash(message, error=True)
-        with contextlib.suppress(Exception):
-            screen.notify(
-                message if isinstance(message, str) else render_str(self.localizer, message),
-                title=render_str(self.localizer, _SESSION_NOTIFICATION_TITLE.bind()),
-                severity="warning",
-                timeout=6,
-                markup=False,
-            )
+        await screen.dismiss_startup_load_dialog_before_restore()
+        answer: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+
+        def settle(start_new: bool | None) -> None:
+            if not answer.done():
+                answer.set_result(start_new is True)
+
+        await self.push_screen(
+            StartupSessionChoiceDialog(
+                title=_SESSION_NOTIFICATION_TITLE.bind(),
+                message=problem,
+                confirm_label=_START_NEW.bind(),
+                cancel_label=_RETRY.bind(),
+                locale_controller=self._locale_controller,
+            ),
+            settle,
+        )
+        return await answer
 
     def _set_terminal_title_for_cwd(self) -> None:
         """Set the terminal title for the active workspace directory."""
@@ -1301,43 +1413,52 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def on_unmount(self) -> None:
         """Shutdown engine on exit."""
-        # While the terminal can still be written (Unmount precedes the
-        # driver close), settle the OSC 7501 record on idle and stop
-        # reporting; the engine shutdown below then cannot overwrite it.
-        await self._program_status_reporter.close()
-        if self._terminal_graphics is not None:
-            # Its images were freed when the app exited or crashed; this also ends the payload job.
-            await self._terminal_graphics.close()
-        self._gc_freeze.close()
-        if self._gc_freeze_watchdog is not None:
-            self._gc_freeze_watchdog.stop()
-            self._gc_freeze_watchdog = None
-        if self._startup_task is not None and not self._startup_task.done():
-            self._startup_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._startup_task
-        self._startup_task = None
-        if self._update_check_task is not None and not self._update_check_task.done():
-            self._update_check_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._update_check_task
-        self._update_check_task = None
-        if self._left_behind_task is not None and not self._left_behind_task.done():
-            self._left_behind_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._left_behind_task
-        self._left_behind_task = None
-        await self._engine.shutdown()
-        # Only now: a second SIGHUP or SIGTERM while the engine stops its
-        # background commands must not end the process before it has.
-        for signum in HANGUP_SIGNALS:
-            asyncio.get_running_loop().remove_signal_handler(signum)
-        # After the engine: its shutdown drains a still-finalizing run
-        # whose success callback can schedule one last title task; the
-        # updater must be the last thing torn down so that task is
-        # cancelled and awaited (its closed flag backstops other hosts).
-        if self._session_title_updater is not None:
-            await self._session_title_updater.shutdown()
+        stop_clipboard(self)
+        try:
+            # While the terminal can still be written (Unmount precedes the
+            # driver close), settle the OSC 7501 record on idle and stop
+            # reporting; the engine shutdown below then cannot overwrite it.
+            await self._program_status_reporter.close()
+            if self._terminal_graphics is not None:
+                # Its images were freed when the app exited or crashed; this also ends the payload job.
+                await self._terminal_graphics.close()
+            self._gc_freeze.close()
+            if self._gc_freeze_watchdog is not None:
+                self._gc_freeze_watchdog.stop()
+                self._gc_freeze_watchdog = None
+            if self._startup_task is not None and not self._startup_task.done():
+                self._startup_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._startup_task
+            self._startup_task = None
+            if self._update_check_task is not None and not self._update_check_task.done():
+                self._update_check_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._update_check_task
+            self._update_check_task = None
+            if self._left_behind_task is not None and not self._left_behind_task.done():
+                self._left_behind_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._left_behind_task
+            self._left_behind_task = None
+            await self._engine.shutdown()
+            # After the engine: its shutdown drains a still-finalizing run
+            # whose success callback can schedule one last title task; the
+            # updater must outlive the engine so that task is
+            # cancelled and awaited (its closed flag backstops other hosts).
+            if self._session_title_updater is not None:
+                await self._session_title_updater.shutdown()
+        finally:
+            # Clipboard failures must not prevent engine, signal or title cleanup.
+            try:
+                await close_clipboard(self)
+            except Exception:
+                logger.debug("Clipboard shutdown failed", exc_info=True)
+            finally:
+                # Keep repeat hangups handled through the last bounded drain,
+                # including cancellation or failure of clipboard cleanup.
+                for signum in HANGUP_SIGNALS:
+                    asyncio.get_running_loop().remove_signal_handler(signum)
 
     def _handle_exception(self, error: Exception) -> None:
         """Mirror Textual's crash handling, but also dump the traceback to a file.
@@ -1433,6 +1554,11 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             f.write("\n")
 
 
+def _workspace_restart_message(localizer: Localizer, message: str, *, restoring_session: bool) -> str:
+    restart = _WORKSPACE_SESSION_RESTORE_RESTART if restoring_session else _WORKSPACE_RESTART
+    return f"{message}\n{render_str(localizer, restart.bind())}"
+
+
 def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
     """Entry point for the ``chrys`` console script.
 
@@ -1453,9 +1579,10 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
 
     # Early argparse prose remains English; dynamic error details are sanitized.
     parser = SanitizingArgumentParser(
-        description=f"{APP_DISPLAY_NAME} - A general-purpose extensible agent platform for rapidly building and evolving custom agents."
+        formatter_class=WorkspaceHelpFormatter,
+        description=f"{APP_DISPLAY_NAME} - A general-purpose extensible agent platform for rapidly building and evolving custom agents.",
     )
-    parser.add_argument("-s", "--session", default="", help="Restore the given session id after startup.")
+    add_startup_session_option(parser)
     parser.add_argument(
         "-a", "--agent", default="", help="Start with the given agent profile id, name, or display name."
     )
@@ -1465,9 +1592,31 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
         default="",
         help="Start with the given active model profile id or name.",
     )
-    parser.add_argument("-C", "--workdir", default="", metavar="DIR", help="Start in the given working directory.")
+    workspace_flags = parser.add_mutually_exclusive_group()
+    workspace_flags.add_argument("--workspace", metavar="WORKSPACE", help="Open a workspace by name or ID prefix")
+    workspace_flags.add_argument(
+        *WORKDIR_OPTIONS, default="", metavar="DIR", help="Start in the given working directory."
+    )
     args = parser.parse_args()
-    if (missing_cwd := launch_cwd_missing_message(workdir_flag=True, workdir=args.workdir)) is not None:
+    selected = None
+    workspace_snapshot = None
+    workspace_cwd = ""
+    if args.workspace is not None:
+        try:
+            selected, workspace_snapshot, workspace_cwd = open_launch_workspace(args.workspace)
+        except (MissingWorkspacePrimary, WorkspaceRegistryError) as exc:
+            freeze_process_env()
+            localizer = Localizer(load_settings().settings.locale)
+            display = render_str(localizer, exc.display_message)
+            if isinstance(exc, MissingWorkspacePrimary):
+                display = _workspace_restart_message(localizer, display, restoring_session=bool(args.session))
+            parser.exit(1, f"{display}\n")
+        except (OSError, ValueError) as exc:
+            parser.exit(1, f"Error: {exc}\n")
+    if (
+        selected is None
+        and (missing_cwd := launch_cwd_missing_message(workdir_flag=True, workdir=args.workdir)) is not None
+    ):
         parser.exit(1, f"Error: {missing_cwd}\n")
     if args.workdir:
         workdir = Path(args.workdir).expanduser()
@@ -1491,11 +1640,17 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
 
         install_log_handler()
 
-        bootstrap = bootstrap_runtime(project_root=Path(os.getcwd()))
+        bootstrap = bootstrap_runtime(workdir=Path(workspace_cwd or os.getcwd()))
 
         bus = EventBus()
         registry = AgentProfileRegistry()
-        registry.load_all()
+        if selected is not None:
+            try:
+                registry.load_all_readonly()
+            except ConfigError as exc:
+                parser.exit(1, f"{render_str(Localizer(bootstrap.loaded.settings.locale), exc.display)}\n")
+        else:
+            registry.load_all()
         model_registry = ModelProfileRegistry()
         model_registry.load_all()
         loaded = _apply_startup_active_model_selection(parser, bootstrap.loaded, model_registry, args.model)
@@ -1530,7 +1685,10 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             model_registry=model_registry,
             startup_warnings=[*bootstrap.warnings],
             settings_warnings=settings_warning_events(loaded),
-            startup_session_id=args.session,
+            startup_session_id=args.session or "",
+            startup_workspace_id=selected.id if selected is not None else None,
+            startup_workspace_snapshot=workspace_snapshot,
+            startup_workspace_cwd=workspace_cwd,
             apply_saved_model_on_restore=not bool(args.model.strip()),
             session_title_updater=session_title_updater,
             update_check=for_this_copy(enabled=loaded.settings.update_check, served=running_under_textual_web_driver()),
@@ -1543,6 +1701,8 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             # runner cleanup.  The app has already exited at this point — safe to suppress.
             with contextlib.suppress(KeyboardInterrupt):
                 app.run()
+            if selected is not None and app.return_code:
+                raise SystemExit(app.return_code)
         finally:
             # Safety net: ensure terminal is fully restored after native Textual exits.
             # Textual should handle this, but shell PTY activity during shutdown can

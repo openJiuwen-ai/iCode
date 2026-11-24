@@ -393,6 +393,8 @@ class TestPendingRetry:
         first_call_entered = asyncio.Event()
         original_inner = ctx.mock_client._inner_get_response
         first_call_gated = False
+        predecessor: list[asyncio.Task[None] | None] = []
+        predecessor_done: list[bool] = []
 
         def _gate_first_call(*, messages, stream, options, **kwargs):
             nonlocal first_call_gated
@@ -405,6 +407,8 @@ class TestPendingRetry:
                     return await original_inner(messages=messages, stream=stream, options=options, **kwargs)
 
                 return _await_release()
+            # The retry starts only once the pass that queued it, its final save included, has ended.
+            predecessor_done.append(predecessor[0] is not None and predecessor[0].done())
             return original_inner(messages=messages, stream=stream, options=options, **kwargs)
 
         ctx.mock_client._inner_get_response = _gate_first_call
@@ -414,6 +418,7 @@ class TestPendingRetry:
             await ctx.bus.publish(UserMessage(text="Start something"))
             await asyncio.wait_for(first_call_entered.wait(), timeout=5.0)
             assert ctx.engine.current.loaded.bindings.state.running, "TurnBindings should be running (gated LLM call)"
+            predecessor.append(ctx.engine.turns.turn_state.lease.run_task)
 
             # Set interrupt flag (simulates user pressing Stop)
             ctx.engine.current.loaded.bindings._interrupt.set_interrupted()
@@ -432,6 +437,7 @@ class TestPendingRetry:
             assert ctx.mock_client.call_count == 2, (
                 f"Expected 2 LLM calls (original + retry), got {ctx.mock_client.call_count}"
             )
+            assert predecessor_done == [True]
 
             finals = extract_final_messages(ctx.events)
             assert any("Retry completed" in t for t in finals), f"Expected retry response in final messages: {finals}"
