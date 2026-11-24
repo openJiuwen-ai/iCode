@@ -321,6 +321,112 @@ async def test_turn_started_clears_the_previous_interrupted_status(tmp_path: Pat
         assert not panel.query(InterruptedMessage)
 
 
+async def test_deferred_retry_turn_started_keeps_the_new_retry_countdown(tmp_path: Path) -> None:
+    """A retry notice mounted while the retry's TurnStarted waits is newer than that TurnStarted's cleanup."""
+    from textual.widgets import Button
+
+    from chrys.app.tui.widgets.chat.messages import RetryMessage
+    from chrys.foundation.events.types import InvocationRetryAttempt, TurnStarted
+    from chrys.foundation.models.invocations import InvocationOrigin
+
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(80, 28)):
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        panel = main.query_one(ChatPanel)
+        panel.set_session_id("current")
+        await panel.add_user_message("Previous")
+        panel.apply_turn_started(6)
+        await panel.add_interrupted()
+
+        main._state.run.agent_running = True
+        main._state.run.started_at = datetime.now(tz=UTC)
+        main._state.render_gate.begin()
+        await bus.publish(
+            TurnStarted(
+                session_id="current",
+                timestamp=main._state.run.started_at + timedelta(seconds=1),
+                turn_number=7,
+                is_retry=True,
+            ),
+            raise_handler_errors=True,
+        )
+        await bus.publish(
+            InvocationRetryAttempt(
+                message="Stream stalled",
+                attempt=1,
+                max_attempts=5,
+                delay_seconds=30,
+                wait_id="wait-1",
+                origin=InvocationOrigin("turn", "", "turn-test", None),
+            ),
+            raise_handler_errors=True,
+        )
+        retry = panel.query_one(RetryMessage)
+        retry_now = retry.query_one(".retry-now-btn", Button)
+        assert retry_now.is_mounted
+        assert not panel.query(InterruptedMessage)
+
+        main._state.render_gate.finish(rendered=True)
+        await main._input_flow.flush_deferred_agent_messages()
+
+        assert panel.query_one(RetryMessage) is retry
+        assert retry.query_one(".retry-now-btn", Button) is retry_now
+
+
+@pytest.mark.parametrize("is_retry", [False, True])
+@pytest.mark.parametrize("deferred", [False, True])
+async def test_turn_started_keeps_an_interruption_mounted_while_it_waited(
+    tmp_path: Path, *, is_retry: bool, deferred: bool
+) -> None:
+    """An interrupt while the TurnStarted waits, or before a late one, mounts a newer card that must stay."""
+    from chrys.foundation.events.types import TurnStarted
+
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(80, 28)):
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        panel = main.query_one(ChatPanel)
+        panel.set_session_id("current")
+        await panel.add_user_message("Previous")
+        panel.apply_turn_started(6)
+        await panel.add_interrupted()
+
+        main._state.run.agent_running = True
+        main._state.run.started_at = datetime.now(tz=UTC)
+        if deferred:
+            main._state.render_gate.begin()
+            await bus.publish(
+                TurnStarted(
+                    session_id="current",
+                    timestamp=main._state.run.started_at + timedelta(seconds=1),
+                    turn_number=7,
+                    is_retry=is_retry,
+                ),
+                raise_handler_errors=True,
+            )
+        await main._input_flow.publish_interrupt()
+        interrupted = panel.query_one(InterruptedMessage)
+        assert len(panel.query(InterruptedMessage)) == 1
+        if not deferred:
+            await bus.publish(
+                TurnStarted(
+                    session_id="current",
+                    timestamp=main._state.run.started_at + timedelta(seconds=1),
+                    turn_number=7,
+                    is_retry=is_retry,
+                ),
+                raise_handler_errors=True,
+            )
+        else:
+            main._state.render_gate.finish(rendered=True)
+            await main._input_flow.flush_deferred_agent_messages()
+
+        assert panel.query_one(InterruptedMessage) is interrupted
+
+
 @pytest.mark.parametrize("deferred", [False, True])
 @pytest.mark.parametrize("scenario", ["matching", "foreign", "previous-run", "retry", "session-changed", "run-changed"])
 async def test_turn_facts_share_filters_before_and_after_render_gate_replay(

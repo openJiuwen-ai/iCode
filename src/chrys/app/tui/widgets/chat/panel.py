@@ -14,7 +14,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from fractions import Fraction
 from functools import partial
 from typing import TYPE_CHECKING, Any
-from weakref import WeakKeyDictionary, WeakSet
+from weakref import ReferenceType, WeakKeyDictionary, WeakSet
+from weakref import ref as weakref_ref
 
 from rich.text import Text
 from textual import events as textual_events
@@ -1861,16 +1862,35 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         if isinstance(last, (ErrorMessage, InterruptedMessage)):
             last.hide_action()
 
-    async def clear_settled_status(self) -> None:
-        """Remove the settled run's trailing terminal card when the next run starts.
+    def settled_status(self) -> object | None:
+        """Return the settled terminal card a retry may dismiss, as an opaque weak handle.
 
-        A retry/continue starts without mounting a new user message, so the
-        interrupted/error card would otherwise stay above the new thinking and
-        tool output until the first answer segment lands. Removal happens only
-        after the backend accepts the new run (its ``TurnStarted``); a refused
-        retry keeps the card.
+        A retry captures this before its ``TurnStarted`` can wait in the render
+        gate. The handle holds no strong reference, so a card replaced in the
+        meantime dies with its widget instead of pinning the transcript.
         """
-        await self._remove_trailing_status()
+        status = self._find_trailing_status()
+        if isinstance(status, (ErrorMessage, InterruptedMessage)):
+            return weakref_ref(status)
+        return None
+
+    async def clear_settled_status(self, status: object) -> None:
+        """Remove exactly the captured settled card, if it is still the trailing one.
+
+        The retry attempt or an interrupt may mount a newer card while the
+        retry's ``TurnStarted`` waits in the render gate. Such a card is newer
+        than the event that names the old one and must stay.
+        """
+        if not isinstance(status, ReferenceType):
+            return
+        captured = status()
+        if (
+            isinstance(captured, (ErrorMessage, InterruptedMessage))
+            and captured.is_mounted
+            and self._find_trailing_status() is captured
+        ):
+            await remove_shielded(captured)
+            self._sync_waiting_row()
 
     async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
         """Remove the answer text a Continue, Retry or steer dropped from history: the messages these segments showed.

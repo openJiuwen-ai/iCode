@@ -343,8 +343,11 @@ class MainScreenViewAdapter:
     def apply_retry_started(self, note_message_id: str | None, opening_item_id: str | None) -> None:
         self._screen.query_one(ChatPanel).apply_retry_started(note_message_id, opening_item_id)
 
-    async def clear_settled_status(self) -> None:
-        await self._screen.query_one(ChatPanel).clear_settled_status()
+    def settled_status(self) -> object | None:
+        return self._screen.query_one(ChatPanel).settled_status()
+
+    async def clear_settled_status(self, status: object) -> None:
+        await self._screen.query_one(ChatPanel).clear_settled_status(status)
 
     def hide_trailing_status_action(self) -> None:
         self._screen.query_one(ChatPanel).hide_trailing_status_action()

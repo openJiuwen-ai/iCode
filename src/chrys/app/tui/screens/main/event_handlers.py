@@ -350,6 +350,9 @@ class BackendEventHandler:
         # Chat sub-agents paused for the user's Retry/Abort decision.
         self._paused_sub_agents: set[str] = set()
         self._sub_agent_answers = AnswerSegments()
+        # The settled card a retry's TurnStarted may dismiss, captured before
+        # the event can wait in the render gate (keyed by the event's id()).
+        self._retry_settled_status: dict[int, tuple[TurnStarted, object]] = {}
 
     def attention_mark(self) -> AttentionMark:
         """Why the live run waits for the user: ``!`` a paused sub-agent, ``?`` an approval or question."""
@@ -1086,23 +1089,45 @@ class BackendEventHandler:
     async def apply_turn_event(self, event: UnansweredInputDropped | TurnStarted) -> None:
         """Filter and apply a live or deferred turn fact through the same render gate."""
         if self._predates_active_run(event) or (event.session_id or "") != self._ui().chat_session_id():
+            if isinstance(event, TurnStarted):
+                self._retry_settled_status.pop(id(event), None)
             return
+        if isinstance(event, TurnStarted) and event.is_retry:
+            self._remember_retry_settled_status(event)
         if self._state.render_gate.defers(event):
             self._state.render_gate.defer(event)
             return
-        if isinstance(event, TurnStarted):
-            # A retry/continue starts without mounting a new user message, so the
-            # previous run's interrupted/error card would otherwise sit above the
-            # new thinking and tool output until the first answer segment lands.
-            await self._ui().clear_settled_status()
         if isinstance(event, UnansweredInputDropped):
             await self._ui().apply_fresh_turn_cleanup(
                 retired_previous_turn=event.retired_previous_turn, removed_item_ids=event.removed_item_ids
             )
         elif event.is_retry:
             self._ui().apply_retry_started(event.note_message_id, event.opening_item_id)
+            await self._clear_retry_settled_status(event)
         else:
             self._ui().apply_turn_started(event.turn_number, opening_item_id=event.opening_item_id)
+
+    def _remember_retry_settled_status(self, event: TurnStarted) -> None:
+        """Capture the previous run's terminal card before *event* may wait in the render gate."""
+        if id(event) in self._retry_settled_status:
+            return
+        started_at = self._state.run.started_at
+        if started_at is not None:
+            self._retry_settled_status = {
+                key: pending
+                for key, pending in self._retry_settled_status.items()
+                if pending[0].timestamp >= started_at
+            }
+        status = self._ui().settled_status()
+        if status is not None:
+            self._retry_settled_status[id(event)] = (event, status)
+
+    async def _clear_retry_settled_status(self, event: TurnStarted) -> None:
+        """Dismiss only the card captured for *event*, and only while its run is still live."""
+        captured = self._retry_settled_status.pop(id(event), None)
+        if captured is None or captured[0] is not event or not self.agent_running:
+            return
+        await self._ui().clear_settled_status(captured[1])
 
     async def on_agent_thinking(self, _event: AgentThinking) -> None:
         s = self
