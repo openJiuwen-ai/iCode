@@ -160,3 +160,32 @@ async def test_sessions_opens_workflow_history_from_chat(
             assert session.main._workflow.session_id == target
         assert session.main.chat_session_id == original
         assert not session.bar.agent_loading
+
+
+async def test_workflow_recheck_failure_preserves_the_history_error(
+    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+        store = session.main._services.state_store
+        assert store is not None
+        target = str(uuid4())
+        run_dir = store.session_dir(target) / "workflows" / uuid4().hex
+        await record_workflow_run(run_dir, session_id=target, title="Saved workflow", outcome="completed")
+        await save_workflow_session(store, target, tmp_path)
+        run_dir.rename(tmp_path / "removed-run")
+
+        lookup = store.resolve_startup_session
+        selectors: list[str] = []
+
+        async def fail_recheck(selector: str, *, require_inactive: bool = False) -> SessionMeta | None:
+            selectors.append(selector)
+            if selector == target:
+                raise RuntimeError("Existence check unavailable")
+            return await lookup(selector, require_inactive=require_inactive)
+
+        monkeypatch.setattr(store, "resolve_startup_session", fail_recheck)
+        short_id = session_short_id(target)
+        await enter_command(session, f"/sessions {short_id}")
+        await wait_for(lambda: "No record available." in workflow_notice_text(session.main), pilot=session.pilot)
+        assert selectors == [short_id, target]
+        assert session.main._workflow.workflow_mode

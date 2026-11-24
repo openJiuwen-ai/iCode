@@ -197,7 +197,7 @@ class WorkflowSessionView:
             if on_missing is not None and self.restore_flow.current(token):
                 # A missing run snapshot alone does not mean the session was deleted.
                 missing = False
-                with suppress(OSError, ValueError, TypeError, KeyError):
+                with suppress(Exception):
                     missing = await store.resolve_startup_session(session_id) is None
                 if missing:
                     if self.restore_flow.current(token):
