@@ -38,7 +38,7 @@ rules:
 
 要由结构化规则 ALLOW，必须所有可执行 AST 节点匹配 ALLOW、命令 `argv` 完整且语法覆盖完整。未匹配、语法损坏、动态展开或不支持的构造均返回 DEFER，继续进入原有审批流程，包括只读快捷审批和敏感数据检查。例如，没有 ALLOW 规则匹配的 `rm x` 会进入正常审批，而不会被 Pre-Judge 拒绝。`ls *.py`、`ls 2>/dev/null`、`sort f` 等原有只读审批仍然有效，配置 `rules: []` 时也是如此。静态前缀不能用于证明 ALLOW；`echo "rm"` 中的 `rm` 是参数，不是另一个可执行命令。
 
-推荐使用 `mode: "off"`、`mode: "shadow"` 或 `mode: "enforce"`。未加引号的 `mode: off`（YAML 将其解析为布尔值 `False`）、`mode: false` 和空文件也会关闭功能，且不会加载 Tree-sitter。`shadow` 只记录建议的 ALLOW/DEFER，不执行快捷审批；`enforce` 执行符合条件的 ALLOW。**YAML 语法本身损坏**时，正常审批启动会报包含文件路径的错误，即使原本意图声明 `shadow`。可正常解析且明确声明 `shadow` 的配置，若规则或依赖无效，会记录含文件路径（和适用时规则 ID）的警告并停止观察；无效的 `enforce` 规则会报包含文件路径和规则 ID 的错误。BYPASS 不会加载或验证 `prejudge.yaml`；如果此会话随后切换到 MANUAL/AUTO，届时才加载配置。
+推荐使用 `mode: "off"`、`mode: "shadow"` 或 `mode: "enforce"`。未加引号的 `mode: off`（YAML 将其解析为布尔值 `False`）、`mode: false` 和空文件也会关闭功能，且不会加载 Tree-sitter。`shadow` 记录建议的 ALLOW/DEFER，审批行为保持不变。`enforce` 执行符合条件的 ALLOW。**YAML 语法本身损坏**时，正常审批启动会报包含文件路径的错误，即使原本意图声明 `shadow`。可正常解析的 `shadow` 配置若有无效规则或依赖，会告警并停止观察。无效的 `enforce` 配置会加载失败。诊断包含文件路径、错误类别和适用时的规则序号。BYPASS 跳过配置加载。如果此会话随后切换到 MANUAL/AUTO，届时才加载配置。
 
 AST Matcher 当前只支持 Bash/Git Bash。zsh、sh、dash、PowerShell、cmd.exe、动态展开、重定向、通配符及多数控制流构造均 DEFER。不支持的 Shell 方言会发出警告，说明结构化 ALLOW 不生效，但原有只读快捷审批仍会应用。例如，zsh 的 `ls` 和 PowerShell 的 `Get-ChildItem` 保留原有只读审批行为。匹配采用字面量命令名，不自动规范化可执行文件路径：`rm` 的规则不会匹配 `/bin/rm`。`command`、`env`、`time` 等包装命令也会 DEFER 到原有审批流程。Pre-Judge 是快捷审批层，不是 Shell 安全边界。
 
@@ -62,7 +62,7 @@ AST Matcher 当前只支持 Bash/Git Bash。zsh、sh、dash、PowerShell、cmd.e
 
 只要有一个 `PATH` 目录位于工作区内，该启动环境下的命令就无法使用结构化 ALLOW。常见情况包括激活项目的 `.venv`，或以用户主目录作为 iCode 工作区。可在诊断日志中查看 `reason=untrusted_launch_context`。这些调用会继续走普通审批，满足条件时仍可使用原有的只读快捷审批。自定义 Shell 启动参数也可能在执行前触发 DEFER（`reason=unsupported_shell_configuration`）。
 
-iCode 检查原始路径及每一跳链接的文件系统身份。工作区路径的大小写别名和工作区内的链接都会 DEFER，包括指向工作区外的链接。路径缺失或无法检查时也会 DEFER。启动 Shell 前会再次检查，如果身份发生变化，则原审批失效。最后一次检查和操作系统启动是两个独立操作，请确保可信目录、链接和可执行文件位于 Agent 无法修改的位置。
+iCode 检查原始路径及每一跳链接的文件系统身份。工作区路径的大小写别名和工作区内的链接都会 DEFER，包括指向工作区外的链接。绝对 PATH 项即使不存在，只要已有的上级路径可信，仍可继续判断。PATH 中可信的普通文件不会参与查找。Shell 和显式可执行文件路径必须存在，无法检查的路径仍会 DEFER。iCode 记录已有的目录身份、缺失的后缀和普通文件，并在启动 Shell 前重新检查这些记录及候选可执行文件。任何变化都会使原审批失效。最后一次检查和操作系统启动是两个独立操作，请确保可信目录、链接和可执行文件位于 Agent 无法修改的位置。
 
 `cd` 会改变解析命令和检查敏感目标所用的目录。因此，`cd sub && git status` 这样的复合命令会 DEFER。
 
@@ -78,11 +78,11 @@ iCode 检查原始路径及每一跳链接的文件系统身份。工作区路�
 
 如果首次切换时策略加载失败，所选的 MANUAL/AUTO 模式仍然生效。TUI 或 ACP 客户端会收到含配置路径的警告。此策略快照停用结构化 ALLOW，原有审批流程及其只读快捷审批继续工作。修复 YAML 或解析器安装后，重启 iCode 即可重试加载。正常启动时，无效的已启用策略会抛出包含路径的错误。
 
-**Shadow 日志。** Shadow 和 enforce 使用相同的资格判断，审批结果保持不变。TUI 用户可在 iCode 配置目录的 `logs/debug.log` 中搜索 `shadow route=`。ACP 的 stderr 不输出 INFO。需要查看 ACP 的 Shadow 判定时，可设置 `CHRYS_OTEL=true`，同时保持遥测端点和敏感数据采集未配置，然后查看会话的 `otel/logs.jsonl`。诊断包含判定、原因、策略及规则 ID、匹配范围和分析摘要。所有日志级别均省略命令预览。无界面 CLI 使用 BYPASS。
+**Shadow 日志。** Shadow 和 enforce 使用相同的资格判断，审批结果保持不变。TUI 用户可在 iCode 配置目录的 `logs/debug.log` 中搜索 `shadow route=`。ACP 的 stderr 不输出 INFO。需要查看 ACP 的 Shadow 判定时，可设置 `CHRYS_OTEL=true`，同时保持遥测端点和敏感数据采集未配置，然后查看会话的 `otel/logs.jsonl`。诊断包含判定、原因、策略及规则 ID、匹配范围和分析摘要。判断失败时只记录模式和异常类型。所有日志级别均省略命令预览和策略内容片段。无界面 CLI 使用 BYPASS。
 
 INFO 日志的 `policy_candidate` 表示 AST 和 YAML 规则在敏感目标及启动检查之前的结果，`route` 则预测是否能使用结构化快捷审批。`decoded_sensitive_target=true` 表示解码参数检查发现了原始文本检查遗漏的敏感目标。在 enforce 模式下，即使没有 YAML 规则匹配，过去自动运行的调用也可能进入普通审批。原有只读快捷审批和已有授权复用也不会自动通过这次调用。Shadow 会记录该发现，实际审批行为保持原样。
 
-Bash 展开在原始命令文本中检查。例如，`grep -F '$DEMO_TOKEN' README.md` 搜索的是字面文本。解码参数中发现的敏感路径仍然需要审批。
+Bash 展开在原始命令文本中检查。例如，`grep -F '$DEMO_TOKEN' README.md` 搜索的是字面文本。解码参数中发现的敏感路径仍然需要审批。敏感数据检查也会分析显式传给 `eval` 或已识别 Shell 的 `-c` 参数的源码，包括常见的 `timeout`、`nice` 和 `xargs` 用法。这些命令会从结构化快捷审批 DEFER。
 
 ### 兼容性与当前限制
 

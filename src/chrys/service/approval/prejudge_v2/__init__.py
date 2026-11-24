@@ -20,6 +20,7 @@ import yaml
 from yaml.resolver import BaseResolver
 
 from chrys.service.approval.safety_classifier import (
+    POSIX_SHELL_NAMES,
     shell_argv_may_access_sensitive_data,
     shell_command_may_access_sensitive_data,
 )
@@ -31,6 +32,10 @@ from ._analysis import covered
 logger = logging.getLogger(__name__)
 
 
+class _PolicyValidationError(ValueError):
+    """Validation detail consisting only of fixed messages and rule positions."""
+
+
 class _UniqueKeyLoader(yaml.SafeLoader):
     """Reject duplicate YAML keys instead of silently replacing a rule field."""
 
@@ -40,7 +45,7 @@ def _construct_unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) 
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=True)
         if key in result:
-            raise ValueError(f"Duplicate YAML policy key: {key!r}")
+            raise _PolicyValidationError("Duplicate YAML policy key")
         result[key] = loader.construct_object(value_node, deep=True)
     return result
 
@@ -105,17 +110,15 @@ def _warn_unsupported_dialect(dialect: str) -> None:
 
 
 _BASH_DIALECTS = frozenset({"bash", "git_bash"})
-_OPAQUE = frozenset(
+_OPAQUE = POSIX_SHELL_NAMES | frozenset(
     {
         ".",
         "[",
         "alias",
-        "bash",
         "builtin",
         "cd",
         "chrt",
         "command",
-        "dash",
         "doas",
         "declare",
         "enable",
@@ -140,7 +143,6 @@ _OPAQUE = frozenset(
         "readarray",
         "readonly",
         "set",
-        "sh",
         "shopt",
         "source",
         "stdbuf",
@@ -454,19 +456,19 @@ def _ensure_bash_parser() -> None:
 
 def _compile_matcher(raw: object) -> Matcher:
     if not isinstance(raw, dict) or len(raw) != 1:
-        raise ValueError("Each match must have exactly one matcher field")
+        raise _PolicyValidationError("Each match must have exactly one matcher field")
     field, tokens = next(iter(raw.items()))
     if field not in {"argv_exact", "argv_first"}:
-        raise ValueError(f"Unsupported matcher field: {field!r}")
+        raise _PolicyValidationError("Unsupported matcher field")
     if (
         not isinstance(tokens, list)
         or not tokens
         or len(tokens) > 128
         or any(type(token) is not str or not token or len(token) > 4096 for token in tokens)
     ):
-        raise ValueError(f"Matcher {field} needs a non-empty list of literal string tokens")
+        raise _PolicyValidationError(f"Matcher {field} needs a non-empty list of literal string tokens")
     if field != "argv_exact" and len(tokens) != 1:
-        raise ValueError(f"Matcher {field} requires exactly one token")
+        raise _PolicyValidationError(f"Matcher {field} requires exactly one token")
     return Matcher(field, tuple(tokens))
 
 
@@ -474,25 +476,22 @@ def _compile_enabled_policy(content: dict[str, Any], mode: str) -> Policy:
     ident = content.get("policy_id")
     raw_rules = content.get("rules")
     if not isinstance(ident, str) or not ident or not isinstance(raw_rules, list) or len(raw_rules) > 1000:
-        raise ValueError("Invalid pre-judge policy_id or rules")
+        raise _PolicyValidationError("Invalid pre-judge policy_id or rules")
     _ensure_bash_parser()
     rules: list[Rule] = []
     seen: set[str] = set()
-    for raw in raw_rules:
-        # A policy author needs to know which rule failed, including rules
-        # whose match expression is not well formed.
-        rid = raw.get("id", "<missing>") if isinstance(raw, dict) else "<invalid>"
+    for position, raw in enumerate(raw_rules, start=1):
         try:
             if not isinstance(raw, dict) or set(raw) != {"id", "effect", "target", "match"}:
-                raise ValueError("Invalid pre-judge rule fields; expected id, effect, target, match")
+                raise _PolicyValidationError("Invalid pre-judge rule fields; expected id, effect, target, match")
             rid, effect, target = (raw[key] for key in ("id", "effect", "target"))
             if not isinstance(rid, str) or not rid or rid in seen:
-                raise ValueError("Duplicate or invalid pre-judge rule ID")
+                raise _PolicyValidationError("Duplicate or invalid pre-judge rule ID")
             if effect != "allow" or target != "command":
-                raise ValueError("Pre-Judge rules require effect: allow and target: command")
+                raise _PolicyValidationError("Pre-Judge rules require effect: allow and target: command")
             matcher = _compile_matcher(raw["match"])
-        except (ValueError, KeyError, TypeError, StopIteration) as exc:
-            raise ValueError(f"rule {rid!r}: {exc}") from exc
+        except _PolicyValidationError as exc:
+            raise _PolicyValidationError(f"rule {position}: {exc}") from None
         seen.add(rid)
         rules.append(Rule(rid, Route.ALLOW, matcher))
     return Policy(mode, ident, tuple(rules))
@@ -509,33 +508,47 @@ def _matches(matcher: Matcher, node: CommandNode) -> bool:
 
 def load_policy(path: Path, *, report_shadow_failure: bool = False) -> Policy:
     """Load the trusted policy; never require a parser to turn it off."""
-    if not path.exists():
-        return Policy("off", "", ())
     content: Any = None
+    parser_failure = False
     try:
+        try:
+            source = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return Policy("off", "", ())
         # _UniqueKeyLoader derives from SafeLoader and rejects duplicate keys.
-        content = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)  # noqa: S506
+        content = yaml.load(source, Loader=_UniqueKeyLoader)  # noqa: S506
         # PyYAML's YAML 1.1 resolver turns unquoted 'off' into False.
         if content is None or content is False:
             return Policy("off", "", ())
         if not isinstance(content, dict) or set(content) - {"schema_version", "mode", "policy_id", "rules"}:
-            raise ValueError("Invalid pre-judge configuration")
+            raise _PolicyValidationError("Invalid pre-judge configuration")
         mode = content.get("mode")
         if mode is False or mode == "off":
             return Policy("off", "", ())
         if not isinstance(mode, str) or mode not in ("shadow", "enforce"):
-            raise ValueError("mode must be 'off', 'shadow', or 'enforce'")
+            raise _PolicyValidationError("mode must be 'off', 'shadow', or 'enforce'")
         if type(content.get("schema_version")) is not int or content["schema_version"] != 1:
-            raise ValueError("Invalid pre-judge schema_version")
+            raise _PolicyValidationError("Invalid pre-judge schema_version")
         return _compile_enabled_policy(content, mode)
-    except Exception as exc:
-        message = f"Pre-Judge policy {path}: {exc}"
-        if not report_shadow_failure and isinstance(content, dict) and content.get("mode") == "shadow":
-            logger.warning("%s; disabling shadow observation", message)
-            return Policy("off", "", ())
-        if isinstance(exc, RuntimeError):
-            raise RuntimeError(message) from exc
-        raise ValueError(message) from exc
+    except _PolicyValidationError as exc:
+        detail = str(exc)
+    except yaml.YAMLError:
+        detail = "Invalid YAML syntax"
+    except OSError, UnicodeError:
+        detail = "Could not read UTF-8 policy"
+    except RuntimeError:
+        parser_failure = True
+        detail = "Parser unavailable; check tree-sitter==0.25.1 and tree-sitter-bash==0.25.1"
+    except Exception:
+        detail = "Could not validate policy"
+    # Startup callers can log the exception. Keep parser and YAML internals out of its chain.
+    message = f"Pre-Judge policy {path}: {detail}. Check the YAML and parser installation, then restart iCode."
+    if not report_shadow_failure and isinstance(content, dict) and content.get("mode") == "shadow":
+        logger.warning("%s Disabling shadow observation.", message)
+        return Policy("off", "", ())
+    if parser_failure:
+        raise RuntimeError(message)
+    raise ValueError(message)
 
 
 def _opaque(argv: tuple[str, ...]) -> bool:

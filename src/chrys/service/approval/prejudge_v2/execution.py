@@ -21,7 +21,15 @@ if TYPE_CHECKING:
 
 _BASH_DIALECTS = frozenset({"bash", "git_bash"})
 type _Identity = tuple[int, int]
-type _Locations = tuple[tuple[str, tuple[_Identity, ...]], ...]
+type _Locations = tuple[tuple[str, _PathState], ...]
+type _LaunchSnapshot = tuple[_Locations, _Locations, _Locations]
+
+
+@dataclass(frozen=True, slots=True)
+class _PathState:
+    identities: tuple[_Identity, ...]
+    mode: int = 0
+    missing_suffix: tuple[str, ...] = ()
 
 
 class ApprovalInvalidatedError(PermissionError):
@@ -34,7 +42,7 @@ def _identity(info: os.stat_result) -> _Identity:
     return info.st_dev, info.st_ino
 
 
-def _path_chain(path: Path, workspace: set[_Identity]) -> tuple[_Identity, ...]:
+def _path_chain(path: Path, workspace: set[_Identity], *, allow_missing: bool) -> _PathState:
     """Check each visited entry, including each hop in a link's target."""
     if not path.is_absolute():
         raise ValueError("Relative launch path")
@@ -43,7 +51,19 @@ def _path_chain(path: Path, workspace: set[_Identity]) -> tuple[_Identity, ...]:
     identities: list[_Identity] = []
     links = 0
     while True:
-        info = current.lstat()
+        if sys.platform == "win32" and ".." in remaining:
+            raise ValueError("Ambiguous Windows parent path")
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if not allow_missing or current == current.parent:
+                raise
+            # The original spelling must also be absent under the OS's resolution rules.
+            try:
+                path.stat()
+            except FileNotFoundError:
+                return _PathState(tuple(identities), missing_suffix=(current.name, *remaining))
+            raise ValueError("Launch path resolution changed") from None
         identity = _identity(info)
         if identity in workspace:
             raise ValueError("Workspace-controlled launch path")
@@ -66,26 +86,28 @@ def _path_chain(path: Path, workspace: set[_Identity]) -> tuple[_Identity, ...]:
             if not stat.S_ISDIR(info.st_mode):
                 raise ValueError("Invalid launch path ancestor")
             part = remaining.popleft()
-            if part == ".." and sys.platform == "win32":
-                raise ValueError("Ambiguous Windows parent path")
             current = current.parent if part == ".." else current / part
         else:
             if _identity(path.stat()) != identity:
                 raise ValueError("Launch path resolution changed")
-            return tuple(identities)
+            return _PathState(tuple(identities), stat.S_IFMT(info.st_mode))
 
 
-def _trusted_locations(locations: tuple[str, ...], roots: tuple[str, ...]) -> _Locations | None:
+def _trusted_locations(
+    locations: tuple[str, ...], roots: tuple[str, ...], *, allow_missing: bool = False
+) -> _Locations | None:
     """Record trusted path identities or defer when they cannot be certified."""
     try:
         workspace = {_identity(Path(root).stat()) for root in roots}
-        return tuple((location, _path_chain(Path(location), workspace)) for location in locations)
+        return tuple(
+            (location, _path_chain(Path(location), workspace, allow_missing=allow_missing)) for location in locations
+        )
     except OSError, ValueError, RuntimeError:
         return None
 
 
-def _trusted_lookup(env: dict[str, str], executables: tuple[str, ...], roots: tuple[str, ...]) -> _Locations | None:
-    directories = env.get("PATH", "").split(os.pathsep)
+def _trusted_lookup(search_path: _Locations, executables: tuple[str, ...], roots: tuple[str, ...]) -> _Locations | None:
+    directories = tuple(Path(location) for location, state in search_path if stat.S_ISDIR(state.mode))
     try:
         candidates = []
         for word in dict.fromkeys(executables):
@@ -94,7 +116,7 @@ def _trusted_lookup(env: dict[str, str], executables: tuple[str, ...], roots: tu
             names = (word, word + ".exe") if os.name == "nt" else (word,)
             for directory in directories:
                 for name in names:
-                    candidate = Path(directory) / name
+                    candidate = directory / name
                     try:
                         candidate.lstat()
                     except FileNotFoundError:
@@ -103,6 +125,21 @@ def _trusted_lookup(env: dict[str, str], executables: tuple[str, ...], roots: tu
         return _trusted_locations(tuple(candidates), roots)
     except OSError, ValueError:
         return None
+
+
+def _launch_snapshot(
+    locations: tuple[str, ...], env: dict[str, str], executables: tuple[str, ...], roots: tuple[str, ...]
+) -> _LaunchSnapshot | None:
+    required = _trusted_locations(locations, roots)
+    if required is None or any(not stat.S_ISREG(state.mode) for _, state in required):
+        return None
+    search_path = _trusted_locations(tuple(env.get("PATH", "").split(os.pathsep)), roots, allow_missing=True)
+    if search_path is None or any(
+        not (state.missing_suffix or stat.S_ISDIR(state.mode) or stat.S_ISREG(state.mode)) for _, state in search_path
+    ):
+        return None
+    lookup = _trusted_lookup(search_path, executables, roots)
+    return None if lookup is None else (required, search_path, lookup)
 
 
 @dataclass(slots=True)
@@ -116,8 +153,7 @@ class ApprovedShell:
     executables: tuple[str, ...] = ()
     shell_path: str = ""
     shell_args: tuple[str, ...] = ()
-    location_identities: _Locations = ()
-    lookup_identities: _Locations = ()
+    snapshot: _LaunchSnapshot | None = None
     active: bool = True
     claimed: bool = False
     issued: bool = False
@@ -141,8 +177,8 @@ class ApprovedShell:
             not self.claimed
             or self.issued
             or not self._matches(shell, source)
-            or _trusted_locations(self.locations, self.roots) != self.location_identities
-            or _trusted_lookup(self.environment, self.executables, self.roots) != self.lookup_identities
+            or self.snapshot is None
+            or _launch_snapshot(self.locations, self.environment, self.executables, self.roots) != self.snapshot
         ):
             raise ApprovalInvalidatedError("The structured approval no longer binds this shell launch.")
         self.issued = True
@@ -158,14 +194,10 @@ def prepare_shell(
     env = build_shell_subprocess_env()
     locations = (
         shell.path,
-        *env.get("PATH", "").split(os.pathsep),
         *(word for word in executables if "/" in word or "\\" in word),
     )
-    location_identities = _trusted_locations(locations, roots)
-    if location_identities is None:
-        return None
-    lookup_identities = _trusted_lookup(env, executables, roots)
-    if lookup_identities is None:
+    snapshot = _launch_snapshot(locations, env, executables, roots)
+    if snapshot is None:
         return None
     for key in tuple(env):
         if key in {"BASH_ENV", "ENV"} or key.startswith("BASH_FUNC_"):
@@ -180,8 +212,7 @@ def prepare_shell(
         executables,
         shell_path=shell.path,
         shell_args=tuple(shell.args),
-        location_identities=location_identities,
-        lookup_identities=lookup_identities,
+        snapshot=snapshot,
     )
 
 

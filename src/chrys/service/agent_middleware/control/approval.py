@@ -481,10 +481,10 @@ class ApprovalMiddleware(FunctionMiddleware):
                         observed.policy_candidate,
                         "true" if observed.decoded_sensitive_target else "false",
                     )
-                except Exception:
+                except Exception as exc:
                     prepared_shell = None
                     # Exceptions from source processing can embed the full command.
-                    _prejudge_logger.warning("%s pre-judge evaluation failed; deferring", mode)
+                    _prejudge_logger.warning("%s pre-judge evaluation failed (%s); deferring", mode, type(exc).__name__)
             else:
                 _prejudge_logger.info("%s route=defer reason=no_command_text policy=%s", mode, self._prejudge.policy_id)
             if mode == "shadow":

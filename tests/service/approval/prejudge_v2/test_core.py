@@ -44,12 +44,14 @@ def test_block_rules_are_rejected_instead_of_silently_ignored(tmp_path, monkeypa
         with pytest.raises(ValueError, match="effect: allow") as failure:
             pj.load_policy(path)
         assert str(path) in str(failure.value)
-        assert "old-block" in str(failure.value)
+        assert "rule 1" in str(failure.value)
+        assert "old-block" not in str(failure.value)
     else:
         with caplog.at_level("WARNING"):
             assert pj.load_policy(path).mode == "off"
         assert str(path) in caplog.text
-        assert "old-block" in caplog.text
+        assert "rule 1" in caplog.text
+        assert "old-block" not in caplog.text
         assert "effect: allow" in caplog.text
 
 
@@ -318,7 +320,7 @@ def test_off_config_never_requires_parser(tmp_path, monkeypatch, config):
     assert pj.load_policy(path).mode == "off"
 
 
-def test_invalid_enforce_rule_reports_file_and_id(tmp_path, monkeypatch):
+def test_invalid_enforce_rule_reports_file_and_rule_position(tmp_path, monkeypatch):
     monkeypatch.setattr(pj, "_ensure_bash_parser", lambda: None)
     path = tmp_path / "prejudge.yaml"
     path.write_text(
@@ -330,7 +332,8 @@ def test_invalid_enforce_rule_reports_file_and_id(tmp_path, monkeypatch):
     with pytest.raises(ValueError) as failure:
         pj.load_policy(path)
     assert str(path) in str(failure.value)
-    assert "typo-deny" in str(failure.value)
+    assert "rule 1" in str(failure.value)
+    assert "typo-deny" not in str(failure.value)
 
 
 def test_invalid_shadow_yaml_parse_error_is_not_suppressed(tmp_path):
@@ -352,7 +355,8 @@ def test_invalid_shadow_rule_warns_with_rule_context(tmp_path, monkeypatch, capl
     with caplog.at_level("WARNING"):
         assert pj.load_policy(path).mode == "off"
     assert str(path) in caplog.text
-    assert "bad-shadow" in caplog.text
+    assert "rule 1" in caplog.text
+    assert "bad-shadow" not in caplog.text
 
 
 def test_unsupported_dialect_warns_allow_is_inactive(caplog):

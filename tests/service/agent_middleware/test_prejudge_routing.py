@@ -23,13 +23,14 @@ from chrys.kernel.tools import FunctionTool
 from chrys.service.agent_middleware.control import approval as approval_module
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.agent_middleware.events.tool_events import ToolEventMiddleware
+from chrys.service.approval import prejudge_v2
 from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.approval.prejudge_v2 import Matcher, Policy, PreJudgeResult, Route, Rule, load_policy, route
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from tests.support.event_capture import capture_events
-from tests.support.prejudge import bound_bash_tool, require_grammars
+from tests.support.prejudge import bound_bash_tool, require_grammars, set_fixture_search_path
 
 
 @pytest.mark.parametrize(
@@ -42,7 +43,7 @@ from tests.support.prejudge import bound_bash_tool, require_grammars
     ],
 )
 async def test_shell_allow_and_defer_follow_existing_approval(
-    monkeypatch, mode, suggestion, expected_executions, expected_requests
+    tmp_path, monkeypatch, mode, suggestion, expected_executions, expected_requests
 ):
     monkeypatch.setattr(approval_module, "load_policy", lambda _: Policy(mode, "pilot", ()))
     monkeypatch.setattr(
@@ -50,7 +51,8 @@ async def test_shell_allow_and_defer_follow_existing_approval(
         "route",
         lambda cmd, dialect, policy: PreJudgeResult(suggestion, "test", (), (), policy.policy_id, "digest"),
     )
-    tool = bound_bash_tool(monkeypatch)
+    await set_fixture_search_path(monkeypatch, tmp_path)
+    tool = bound_bash_tool()
     bus = EventBus()
     requests = []
 
@@ -298,7 +300,8 @@ async def test_real_parser_yaml_policy_and_approval_integration(
     )
     policy = load_policy(policy_file)
     monkeypatch.setattr(approval_module, "load_policy", lambda _: policy)
-    tool = bound_bash_tool(monkeypatch)
+    await set_fixture_search_path(monkeypatch, tmp_path)
+    tool = bound_bash_tool()
     bus = EventBus()
     requests: list[ApprovalRequest] = []
 
@@ -349,7 +352,7 @@ async def test_decoded_target_changes_only_enforce_approval(tmp_path, monkeypatc
     policy_file.write_text(f'schema_version: 1\nmode: "{mode}"\npolicy_id: fixture\n{rules}', encoding="utf-8")
     policy = load_policy(policy_file)
     monkeypatch.setattr(approval_module, "load_policy", lambda _: policy)
-    tool = bound_bash_tool(monkeypatch)
+    tool = bound_bash_tool()
     context = FunctionInvocationContext(tool, {"command": command, "reason": "Classify an inert test string"})
     require = path in {"legacy-readonly", "daa"}
     config = ApprovalPolicy(
@@ -467,7 +470,7 @@ async def test_real_parser_empty_policy_keeps_readonly_approval(tmp_path, monkey
 @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
 @pytest.mark.parametrize("matches", [False, True])
 @pytest.mark.parametrize("quote", ["'", '"'], ids=["literal", "expansion"])
-async def test_literal_dollar_argv_preserves_readonly_approval(monkeypatch, mode, matches, quote):
+async def test_literal_dollar_argv_preserves_readonly_approval(tmp_path, monkeypatch, mode, matches, quote):
     require_grammars("tree_sitter", "tree_sitter_bash")
     argv = ("grep", "-F", "$DEMO_TOKEN", "README.md")
     command = f"grep -F {quote}$DEMO_TOKEN{quote} README.md"
@@ -479,7 +482,8 @@ async def test_literal_dollar_argv_preserves_readonly_approval(monkeypatch, mode
     assert result.sensitive is (mode != "off" and not literal)
     assert result.decoded_sensitive_target is False
     assert (result.route is Route.ALLOW) is (mode != "off" and matches and literal)
-    tool = bound_bash_tool(monkeypatch)
+    await set_fixture_search_path(monkeypatch, tmp_path)
+    tool = bound_bash_tool()
     bus = EventBus()
     requests = []
 
@@ -504,6 +508,62 @@ async def test_literal_dollar_argv_preserves_readonly_approval(monkeypatch, mode
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, reject)
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+@pytest.mark.parametrize("matches", [False, True])
+@pytest.mark.parametrize(
+    ("command", "head", "source_sensitive"),
+    [
+        ("eval 'echo' '$DEMO_TOKEN'", "eval", False),
+        ("timeout -s TERM 5 bash -c 'echo $DEMO_TOKEN'", "timeout", False),
+        ("bash --noprofile -c 'echo $DEMO_TOKEN'", "bash", True),
+        ("nice -n 5 /bin/bash -c 'echo $DEMO_TOKEN'", "nice", False),
+        ("xargs -n1 bash -c 'echo $DEMO_TOKEN'", "xargs", False),
+    ],
+)
+async def test_carrier_source_sensitivity_is_enforce_only(
+    monkeypatch, caplog, mode, matches, command, head, source_sensitive
+):
+    require_grammars("tree_sitter", "tree_sitter_bash")
+    rules = (Rule("carrier", Route.ALLOW, Matcher("argv_first", (head,))),) if matches else ()
+    policy = Policy(mode, "carrier-policy", rules)
+    monkeypatch.setattr(approval_module, "load_policy", lambda _: policy)
+    observed = route(command, "bash", policy)
+    assert observed.route is Route.DEFER
+    assert observed.policy_candidate is Route.DEFER
+    assert observed.sensitive is (mode != "off")
+    assert observed.decoded_sensitive_target is (mode != "off" and not source_sensitive)
+
+    tool = bound_bash_tool()
+    bus = EventBus()
+    requests = []
+
+    async def reject(request: ApprovalRequest) -> None:
+        requests.append(request)
+        await bus.publish(ApprovalResponse(request_id=request.request_id, approved=False))
+
+    await bus.subscribe(ApprovalRequest, reject)
+    config = ApprovalConfig(default="auto", overrides={"shell": "auto"})
+    middleware = ApprovalMiddleware(ApprovalPolicy(config, tools=[tool]), bus)
+    execute = AsyncMock(spec=lambda: None)
+    try:
+        with caplog.at_level(logging.INFO, logger=approval_module._prejudge_logger.name):
+            await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
+        if mode == "enforce" or source_sensitive:
+            assert len(requests) == 1
+            (decision,) = middleware.drain_decisions()
+            assert decision["status"] == "user_rejected"
+            execute.assert_not_awaited()
+        else:
+            assert not requests
+            assert not middleware.drain_decisions()
+            execute.assert_awaited_once()
+        if mode != "off":
+            assert f"{mode} route=defer reason=sensitive_target" in caplog.text
+            assert f"decoded_sensitive_target={str(not source_sensitive).lower()}" in caplog.text
+    finally:
+        await middleware.close()
 
 
 async def test_bypass_skips_invalid_policy_loading_and_shadow(monkeypatch, caplog):
@@ -656,7 +716,7 @@ def loopback_otlp_logs():
             assert server.stop(0).wait(timeout=5)
 
 
-async def test_shadow_debug_and_exception_records_are_safe_for_otlp(monkeypatch, caplog, loopback_otlp_logs):
+async def test_shadow_debug_and_exception_records_are_safe_for_otlp(monkeypatch, caplog, loopback_otlp_logs, tmp_path):
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.observability import setup as otel
     from chrys.foundation.observability.gate import TELEMETRY_GATE
@@ -674,14 +734,18 @@ async def test_shadow_debug_and_exception_records_are_safe_for_otlp(monkeypatch,
     provider = otel._INSTALLED_LOGGER_PROVIDER
     assert TELEMETRY_GATE.enabled and not TELEMETRY_GATE.sensitive_enabled
 
-    command = "echo ICODE_PREJUDGE_SECRET_MARKER_20261124"
+    marker = "ICODE_PREJUDGE_SECRET_MARKER_20261124"
+    command = f"echo {marker}"
     monkeypatch.setattr(approval_module, "load_policy", lambda _: Policy("shadow", "otel-fixture", ()))
-    tool = bound_bash_tool(monkeypatch)
+    tool = bound_bash_tool()
     middleware = ApprovalMiddleware(ApprovalPolicy(ApprovalConfig(default="skip"), tools=[tool]), EventBus())
     execute = AsyncMock(spec=lambda: None)
 
     def fail_with_source(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
         raise ValueError(command)
+
+    def fail_parser_initialization() -> None:
+        raise RuntimeError(marker)
 
     try:
         with caplog.at_level(logging.DEBUG, logger=approval_module._prejudge_logger.name):
@@ -689,15 +753,45 @@ async def test_shadow_debug_and_exception_records_are_safe_for_otlp(monkeypatch,
             await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
             monkeypatch.setattr(approval_module, "route", fail_with_source)
             await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
+            path = tmp_path / "test-prejudge.yaml"
+            # Startup can log an exception. Exercise the public error, including its chain.
+            await asyncio.to_thread(path.write_text, f'mode: "shadow"\nrules: [{marker}\n', encoding="utf-8")
+            with pytest.raises(ValueError, match="Invalid YAML syntax") as failure:
+                load_policy(path)
+            assert failure.value.__context__ is None
+            startup_logger = logging.getLogger(approval_module._prejudge_logger.name)
+            startup_logger.warning("Startup failure", exc_info=failure.value)
+
+            header = 'schema_version: 1\nmode: "shadow"\npolicy_id: privacy\n'
+            invalid_rule = (
+                f"rules:\n  - id: {marker}\n    effect: allow\n    target: command\n"
+                f"    match:\n      {marker}: [echo]\n"
+            )
+            await asyncio.to_thread(path.write_text, header + invalid_rule, encoding="utf-8")
+            assert load_policy(path).mode == "off"
+            with pytest.raises(ValueError, match="rule 1: Unsupported matcher field") as failure:
+                load_policy(path, report_shadow_failure=True)
+            assert marker not in str(failure.value)
+
+            monkeypatch.setattr(prejudge_v2, "_language", fail_parser_initialization)
+            await asyncio.to_thread(path.write_text, header + "rules: []\n", encoding="utf-8")
+            assert load_policy(path).mode == "off"
+            with pytest.raises(RuntimeError, match="Parser unavailable") as failure:
+                load_policy(path, report_shadow_failure=True)
+            assert failure.value.__context__ is None
         assert execute.await_count == 2
         assert [entry["status"] for entry in middleware.drain_decisions()] == ["auto_approved", "auto_approved"]
         assert await asyncio.to_thread(provider.force_flush, timeout_millis=5000)
         data = b"".join(received)
         assert b"OTLP DEBUG control" in data
         assert b"shadow route=defer reason=unmatched_unit policy=otel-fixture" in data
-        assert b"shadow pre-judge evaluation failed; deferring" in data
-        assert b"ICODE_PREJUDGE_SECRET_MARKER_20261124" not in data
-        assert "ICODE_PREJUDGE_SECRET_MARKER_20261124" not in caplog.text
+        assert b"shadow pre-judge evaluation failed (ValueError); deferring" in data
+        assert b"Invalid YAML syntax" in data
+        assert b"rule 1: Unsupported matcher field" in data
+        assert b"Parser unavailable" in data
+        assert marker.encode() not in data
+        assert "shadow pre-judge evaluation failed (ValueError); deferring" in caplog.text
+        assert marker not in caplog.text
     finally:
         await middleware.close()
         await asyncio.to_thread(otel._revoke_previous_setup)

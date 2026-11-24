@@ -565,9 +565,116 @@ async def test_explicit_workspace_executable_defers_and_unavailable_path_invalid
     assert approved is not None
     assert approved.claim(bash_tool.shell, "echo fixture")
     await asyncio.to_thread(directory.rmdir)
-    assert prepare_shell(bash_tool.shell, "echo fixture", ("echo",), roots) is None
+    assert prepare_shell(bash_tool.shell, "echo fixture", ("echo",), roots) is not None
     with pytest.raises(ApprovalInvalidatedError):
         approved.require_launch(bash_tool.shell, "echo fixture")
+
+
+async def test_bash_approval_uses_realistic_path_with_missing_and_inert_entries(
+    bash_tool, tmp_path, monkeypatch, caplog
+):
+    first, second, workspace = (tmp_path / name for name in ("system-bin", "extra-bin", "workspace"))
+    inert = tmp_path / "not-a-directory"
+    for directory in (first, second, workspace):
+        await asyncio.to_thread(directory.mkdir)
+    await asyncio.to_thread(inert.touch)
+    search_path = (first, tmp_path / "removed-bin", second, tmp_path / "uninstalled" / "bin", inert)
+    monkeypatch.setenv("PATH", os.pathsep.join(str(path) for path in search_path))
+    source = "echo configured-bash"
+    await _write_policy([{"argv_exact": source.split()}])
+    roots = [str(workspace)]
+    assert prepare_shell(bash_tool.shell, source, ("echo",), tuple(roots)) is not None
+    tool = bash_tool.tools()[0]
+    async with _approval(tool, workspace_roots=roots) as (middleware, requests):
+        result = await _invoke(middleware, tool, source)
+        assert _stdout(result.result) == "configured-bash"
+        assert not requests
+        assert [entry["status"] for entry in middleware.drain_decisions()] == ["prejudge_approved"]
+        monkeypatch.setenv("PATH", os.pathsep.join((os.environ["PATH"], str(workspace))))
+        with caplog.at_level(logging.INFO, logger="chrys.service.agent_middleware.control.approval.prejudge"):
+            result = await _invoke(middleware, tool, source)
+        assert _stdout(result.result) == "configured-bash"
+        assert not requests
+        assert [entry["status"] for entry in middleware.drain_decisions()] == ["auto_approved"]
+        assert "enforce route=defer reason=untrusted_launch_context" in caplog.text
+
+
+async def test_bash_path_tolerance_excludes_workspace_and_required_locations(bash_tool, tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    await asyncio.to_thread(workspace.mkdir)
+    await asyncio.to_thread(outside.mkdir)
+    workspace_link = workspace / "alias"
+    await asyncio.to_thread(_directory_alias, workspace_link, outside)
+    roots = (str(workspace),)
+    source = "echo fixture"
+    for path in ("", "relative", str(workspace), str(workspace / "missing" / "bin"), str(workspace_link / "missing")):
+        monkeypatch.setenv("PATH", os.pathsep.join((str(outside), path)))
+        assert prepare_shell(bash_tool.shell, source, ("echo",), roots) is None
+    monkeypatch.setenv("PATH", str(outside))
+    missing = str(outside / "missing")
+    for required in (missing, str(outside)):
+        assert prepare_shell(replace(bash_tool.shell, path=required), source, ("echo",), roots) is None
+        assert prepare_shell(bash_tool.shell, required, (required,), roots) is None
+    assert prepare_shell(bash_tool.shell, source, ("echo",), (missing,)) is None
+
+    lstat = Path.lstat
+
+    def uninspectable(path: Path) -> os.stat_result:
+        if str(path) == missing:
+            raise PermissionError("Uninspectable path")
+        return lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", uninspectable)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(outside), missing)))
+    assert prepare_shell(bash_tool.shell, source, ("echo",), roots) is None
+
+
+@pytest.mark.parametrize("change", ["missing-created", "inert-replaced", "candidate-added", "ancestor-replaced"])
+async def test_bash_path_changes_invalidate_approval_before_subprocess(bash_tool, tmp_path, monkeypatch, change):
+    parent = tmp_path / "external"
+    directory = parent / "search-bin"
+    await asyncio.to_thread(parent.mkdir)
+    if change == "inert-replaced":
+        await asyncio.to_thread(directory.touch)
+    elif change == "candidate-added":
+        await asyncio.to_thread(directory.mkdir)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(directory), os.environ["PATH"])))
+    source = "echo approved-source"
+    await _write_policy([{"argv_exact": source.split()}])
+    tool = bash_tool.tools()[0]
+    context = FunctionInvocationContext(tool, {"command": source, "reason": "Recheck recorded PATH state"})
+
+    def forbidden(shell: ShellInfo, command: str, *, startup_args: tuple[str, ...] = ()):
+        pytest.fail("A changed PATH snapshot reached the subprocess boundary")
+
+    def change_path() -> None:
+        if change == "inert-replaced":
+            directory.unlink()
+        if change in {"inert-replaced", "missing-created"}:
+            directory.mkdir()
+        elif change == "candidate-added":
+            (directory / "echo").touch()
+        else:
+            parent.rename(tmp_path / "old-external")
+            parent.mkdir()
+
+    monkeypatch.setattr(shell_module, "_shell_argv_variants", forbidden)
+
+    async def execute() -> None:
+        assert isolated_shell_call.get() is not None
+        await asyncio.to_thread(change_path)
+        context.result = await tool.invoke(context=context, skip_parsing=True)
+
+    async with _approval(tool) as (middleware, requests):
+        metadata: dict[str, object] = {}
+        token = tool_result_metadata.set(metadata)
+        try:
+            await middleware.process(context, execute)
+        finally:
+            tool_result_metadata.reset(token)
+        assert not requests
+        assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "approval_invalidated"
 
 
 @pytest.mark.parametrize("new_target", ["workspace", "outside"])

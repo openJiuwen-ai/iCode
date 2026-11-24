@@ -21,7 +21,7 @@ from chrys.service.approval import prejudge_v2
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.tools.builtins import shell_filter
-from tests.support.prejudge import bound_bash_tool, require_grammars
+from tests.support.prejudge import bound_bash_tool, require_grammars, set_fixture_search_path
 
 
 def _write_policy() -> Path:
@@ -120,7 +120,8 @@ async def test_structured_allow_precedes_legacy_readonly(allow_policy: Path, mon
         pytest.fail("An eligible structured ALLOW must return before the legacy readonly shortcut")
 
     monkeypatch.setattr(shell_filter, "is_safe_readonly_command", forbidden_readonly)
-    tool = bound_bash_tool(monkeypatch)
+    await set_fixture_search_path(monkeypatch, allow_policy.parent)
+    tool = bound_bash_tool()
     middleware = ApprovalMiddleware(ApprovalPolicy(ApprovalConfig(default="require"), tools=[tool]), EventBus())
     context = FunctionInvocationContext(tool, {"command": "configured_tool --version"})
     executed = False
