@@ -86,7 +86,6 @@ from chrys.foundation.models.workflow_session import (
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory.ids import new_analytics_id
-from chrys.foundation.util.session_ids import SESSION_SHORT_ID_LEN, session_short_id
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.workflows.catalog import WorkflowCatalog
@@ -96,7 +95,8 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile, MCPServerConfig
 from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.state.store import JsonFileStateStore, StateStore
+from chrys.service.state.store import AmbiguousSessionIdError as AmbiguousSessionIdError
+from chrys.service.state.store import JsonFileStateStore, StartupSessionInUseError, StateStore
 from chrys.service.workflows.discovery import Discovery
 from chrys.service.workflows.outcomes import REASON_DEADLINE_EXCEEDED
 
@@ -111,14 +111,6 @@ _AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE = msg(
 _SESSION_NOT_FOUND = msg(
     "session_host.session_not_found",
     fallback="Session not found: {session_id}",
-)
-_SESSION_NOT_FOUND_WITH_RECENT = msg(
-    "session_host.session_not_found_with_recent",
-    fallback="Session not found: {session_id}. Recent sessions: {recent}",
-)
-_SESSION_ID_AMBIGUOUS = msg(
-    "session_host.session_id_ambiguous",
-    fallback="Session id '{session_id}' is ambiguous.",
 )
 _NO_FINAL_RESPONSE = msg(
     "session_host.no_final_response",
@@ -300,14 +292,6 @@ class SessionNotFoundError(KeyError):
         super().__init__(message)
 
 
-class AmbiguousSessionIdError(ValueError):
-    """Raised when a session-id prefix matches more than one stored session."""
-
-    def __init__(self, message: str, *, display_message: MessageRef | None = None) -> None:
-        self.display_message = display_message
-        super().__init__(message)
-
-
 def _normalize_cwd(cwd: str | None) -> str:
     raw = (cwd or "").strip()
     if not raw:
@@ -345,6 +329,7 @@ class ChrysSessionHost:
         surface: SessionSurface | None = None,
         pause_failed_sub_agents: bool = True,
     ) -> None:
+        self._surface = surface
         self._profile_name = profile_name.strip()
         self._restore_session_id = (session_id or "").strip() or None
         if not self._profile_name and not self._restore_session_id:
@@ -736,13 +721,8 @@ class ChrysSessionHost:
 
     async def load_workflow_session(self, session_id: str) -> None:
         """Select workflow history and workspace without constructing a chat agent."""
-        normalized = session_id.strip().replace("-", "").lower()
-        meta = await self._state_store.load_session_meta(normalized, strict=True)
-        if meta is None or normalized != (
-            session_short_id(meta.session_id).lower()
-            if len(normalized) <= SESSION_SHORT_ID_LEN
-            else meta.session_id.replace("-", "").lower()
-        ):
+        meta = await self._state_store.resolve_startup_session(session_id)
+        if meta is None:
             raise ValueError(f"No workflow session {session_id!r} exists.")
         if meta.kind != "workflow":
             raise ValueError(f"Session {session_id!r} is a Chat session, not a Workflow session.")
@@ -966,36 +946,13 @@ class ChrysSessionHost:
         raw = (session_id or "").strip()
         if not raw:
             return ""
-        sessions = await self._state_store.list_sessions()
-        normalized = raw.replace("-", "").lower()
-        if len(normalized) <= SESSION_SHORT_ID_LEN:
-            matches = [meta.session_id for meta in sessions if session_short_id(meta.session_id).lower() == normalized]
-        else:
-            matches = [
-                meta.session_id
-                for meta in sessions
-                if meta.session_id == raw or meta.session_id.replace("-", "").lower() == normalized
-            ]
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            error_message = f"Session id '{raw}' is ambiguous."
-            raise AmbiguousSessionIdError(
-                error_message,
-                display_message=_SESSION_ID_AMBIGUOUS.bind(session_id=raw),
-            )
-        recent_ids = [session_short_id(meta.session_id) for meta in sessions[:5]]
-        recent = ", ".join(recent_ids)
-        error_message = f"Session not found: {raw}"
-        if recent_ids:
-            error_message = f"{error_message}. Recent sessions: {recent}"
-            display_message = _SESSION_NOT_FOUND_WITH_RECENT.bind(
-                session_id=raw,
-                recent=DisplaySequence(recent_ids),
-            )
-        else:
-            display_message = _SESSION_NOT_FOUND.bind(session_id=raw)
-        raise SessionNotFoundError(error_message, display_message=display_message)
+        try:
+            meta = await self._state_store.resolve_startup_session(raw)
+        except StartupSessionInUseError as exc:
+            raise HeadlessRunError(Error(code="session_in_use", message=str(exc), session_id=raw)) from exc
+        if meta is not None:
+            return meta.session_id
+        raise SessionNotFoundError(f"Session not found: {raw}", display_message=_SESSION_NOT_FOUND.bind(session_id=raw))
 
     @staticmethod
     def _event_belongs_to_session(

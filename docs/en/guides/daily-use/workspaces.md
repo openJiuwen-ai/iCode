@@ -46,6 +46,6 @@ If the working directory is deleted or moved outside iCode, for example in a fil
 - A message you sent stays in the input field. Send it again after switching.
 - If you close the dialog without choosing a folder, it appears again the next time you send a message. You can also switch with `/chdir`, or move the folder back to where it was.
 
-When you resume a session whose working directory no longer exists, iCode asks you to choose a folder to open the session in. If you cancel, the session is not resumed; if you started iCode with `-s`, iCode starts a new session instead.
+When you resume a session whose working directory no longer exists, iCode asks you to choose a folder to open the session in. If you cancel during startup with `-s`, you can retry or choose **Start new session**.
 
 If you start iCode from a directory that no longer exists, iCode shows an error and exits. Enter an existing directory, or pass `-C` with the full path of the working directory, such as `icode -C ~/projects/my-app`.

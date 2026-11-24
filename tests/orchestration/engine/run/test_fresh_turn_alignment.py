@@ -22,6 +22,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     RollbackResult,
     SessionRestore,
+    SessionRestored,
     TurnStarted,
     UnansweredInputDropped,
     UserInterrupt,
@@ -31,6 +32,7 @@ from chrys.foundation.events.types import (
     Warning,
 )
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
@@ -356,8 +358,12 @@ async def test_restore_closes_the_last_unfinished_turn_before_numbering(
     monkeypatch.setattr(
         builder_module, "create_client", create_autospec(builder_module.create_client, return_value=client)
     )
+    bus = EventBus()
+    events: list[SessionRestored] = []
+    await bus.subscribe(SessionRestored, lambda event: collect_events(events, event))
     engine = agent_engine(
-        EventBus(),
+        bus,
+        surface=SessionSurface.TUI,
         settings=settings,
         agent_registry=_make_registry(),
         model_registry=models,
@@ -384,6 +390,9 @@ async def test_restore_closes_the_last_unfinished_turn_before_numbering(
     await engine.on_session_restore(SessionRestore(session_id=sid))
 
     state = engine.current.require_loaded().bindings.backend.history_state
+    [restored] = events
+    assert restored.replay is not None
+    assert restored.replay.state["messages"][-1].additional_properties[HistoryMarkerKind.KEY] == HistoryMarkerKind.TURN
     assert state["turn_counter"] == engine.session.turn_number == 2
     assert state["messages"][-1].additional_properties[HistoryMarkerKind.KEY] == HistoryMarkerKind.TURN
     assert engine_services(engine).history.trailing_status_marker() is not None

@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     # (top of file) keeps all annotations as strings, so this import never
     # executes at runtime.
     from chrys.service.mutations.types import RestoreResult
+    from chrys.service.state.store import SessionReplay
 
 AGENT_LOAD_PHASE_MODEL = "model"
 AGENT_LOAD_PHASE_RUNTIME = "runtime"
@@ -1587,6 +1588,8 @@ class SessionRestored(Event):
     # such as the workspace MRU can record secondary roots without an
     # engine query.
     working_dirs: list[str] = field(default_factory=list)
+    # In-process TUI replay of the checkpoint the backend actually restored.
+    replay: SessionReplay | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

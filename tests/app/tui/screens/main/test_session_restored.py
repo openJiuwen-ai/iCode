@@ -7,7 +7,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import create_autospec
 
+import pytest
 from rich.text import Text
 
 from chrys.app.tui.screens.main.session_handlers import (
@@ -44,14 +46,8 @@ async def test_replay_reads_title_and_transcript_from_the_same_recovery_envelope
     store = JsonFileStateStore(tmp_path)
     await store.save_session("s1", {"messages": [Message("user", ["primary"])]}, title="Primary title")
     store.save_recovery_session("s1", {"messages": [Message("user", ["recovery"])]}, title="Recovery title")
-    resolve = store._resolve_effective_envelope
-    reads = []
-
-    def count_read(session_id: str, *, prefer_recovery: bool = False):
-        reads.append((session_id, prefer_recovery))
-        return resolve(session_id, prefer_recovery=prefer_recovery)
-
-    monkeypatch.setattr(store, "_resolve_effective_envelope", count_read)
+    select = create_autospec(store._select_checkpoint, side_effect=store._select_checkpoint)
+    monkeypatch.setattr(store, "_select_checkpoint", select)
     loaded = await store.load_session_for_replay("s1", prefer_recovery=True)
 
     assert loaded is not None
@@ -59,7 +55,9 @@ async def test_replay_reads_title_and_transcript_from_the_same_recovery_envelope
     assert loaded.meta.title == "Recovery title"
     assert loaded.transcript.messages[0]["contents"][0]["text"] == "recovery"
     assert [message.text for message in loaded.state["messages"]] == ["recovery"]
-    assert reads == [("s1", True)]
+    select.assert_called_once()
+    assert select.call_args.args == ("s1",)
+    assert select.call_args.kwargs["prefer_recovery"] is True
 
 
 def test_apply_custom_title_clear_publishes_resolved_display_title() -> None:
@@ -621,12 +619,15 @@ def test_workspace_update_with_missing_cwd_does_not_change_shell_directory(tmp_p
     assert terminal_title_cwds == [str(missing_cwd)]
 
 
-def test_session_restore_reseeds_todo_state_from_saved_state_tolerantly(tmp_path: Path) -> None:
-    """Restoring a session reseeds the Tasks panel, skipping malformed entries."""
+@pytest.mark.parametrize("backend_replay", [True, False])
+async def test_session_restore_projects_one_recovery_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend_replay: bool
+) -> None:
+    """Title, replay and lenient task decoding use the same read-only checkpoint."""
 
     calls: list[tuple[str, object]] = []
     state = {
-        "messages": [],
+        "messages": [Message("user", ["recovered history"])],
         "chrys_todos": [
             {"content": "restored", "status": "completed", "active_form": ""},
             {"content": "", "status": "pending"},
@@ -635,6 +636,14 @@ def test_session_restore_reseeds_todo_state_from_saved_state_tolerantly(tmp_path
             {"content": "kept"},
         ],
     }
+    store = JsonFileStateStore(tmp_path / "sessions")
+    session_id = "session-with-todos"
+    store.save_recovery_session(session_id, state, title="Recovered title")
+    recovery = store.session_dir(session_id) / "session.recovery.json"
+    original = recovery.read_bytes()
+    replay = await store.load_session_for_replay(session_id, prefer_recovery=True) if backend_replay else None
+    select = create_autospec(store._select_checkpoint, side_effect=store._select_checkpoint)
+    monkeypatch.setattr(store, "_select_checkpoint", select)
 
     class _FakePanel:
         border_subtitle = None
@@ -657,6 +666,9 @@ def test_session_restore_reseeds_todo_state_from_saved_state_tolerantly(tmp_path
         async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
             return
 
+        async def replay_history(self, messages, **kwargs) -> None:
+            calls.append(("history", messages))
+
     class _FakeInputBar:
         retry_mode = True
 
@@ -676,17 +688,6 @@ def test_session_restore_reseeds_todo_state_from_saved_state_tolerantly(tmp_path
 
     class _FakeSidebarPanel:
         context_panel = _FakeContextPanel()
-
-    class _FakeStateStore:
-        def session_dir(self, session_id: str) -> Path:
-            return tmp_path / "sessions" / session_id
-
-        async def load_session_for_replay(self, session_id: str, *, prefer_recovery: bool = False):
-            calls.append(("load_session", (session_id, prefer_recovery)))
-            return SessionReplay(state, SessionTranscript([], []))
-
-        async def list_sessions(self) -> list[object]:
-            return []
 
     panel = _FakePanel()
     input_bar = _FakeInputBar()
@@ -711,26 +712,38 @@ def test_session_restore_reseeds_todo_state_from_saved_state_tolerantly(tmp_path
             max_context_tokens=100_000,
             total_session_tokens=0,
         ),
-        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
+        _services=MainScreenServices(bus=EventBus(), state_store=store),
         query_one=query_one,
         _set_has_messages=lambda value: calls.append(("has_messages", value)),
-        _session_title=fake_session_title(set_terminal_title_for_cwd=lambda cwd: None),
+        _session_title=fake_session_title(
+            set_session_title_state=lambda **titles: calls.append(("title", titles["fallback"])),
+        ),
         _events=SimpleNamespace(finish_agent_load=lambda message: None),
         _debug=lambda *_args: None,
     )
 
-    asyncio.run(
-        make_session_handler(screen).on_session_restored(
-            SessionRestored(
-                session_id="session-with-todos",
-                agent_profile="Code",
-                display_name="Code Agent",
-                message_count=0,
-                primary_cwd="/old/missing/path",
-            )
+    await make_session_handler(screen).on_session_restored(
+        SessionRestored(
+            session_id=session_id,
+            agent_profile="Code",
+            display_name="Code Agent",
+            primary_cwd="/old/missing/path",
+            recovered_from_sidecar=True,
+            replay=replay,
         )
     )
 
+    if backend_replay:
+        select.assert_not_called()
+    else:
+        select.assert_called_once()
+        assert select.call_args.args == (session_id,)
+        assert select.call_args.kwargs["prefer_recovery"] is True
+    assert ("title", "Recovered title") in calls
+    [history] = [payload for name, payload in calls if name == "history"]
+    assert history[0]["contents"][0]["text"] == "recovered history"
+    assert recovery.read_bytes() == original
+    assert not recovery.with_name("session.json").exists()
     assert screen.todo_state == TodoListState(
         items=(
             TodoItem(content="restored", status="completed"),

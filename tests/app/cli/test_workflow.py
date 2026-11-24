@@ -536,7 +536,7 @@ def test_run_with_a_closed_stderr_still_writes_the_report(
 def test_run_json_reports_the_full_result(fake_host: type[FakeHost], capsys: pytest.CaptureFixture[str]) -> None:
     fake_host.result = _result(RunOutcome.COMPLETED)
 
-    assert workflow_cli.main(["run", "chain", "--json", "--session", " abc "]) == 0
+    assert workflow_cli.main(["run", "chain", "--json", "--session", " abc123abc123 "]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["duration"] >= 0
@@ -551,7 +551,7 @@ def test_run_json_reports_the_full_result(fake_host: type[FakeHost], capsys: pyt
         "diagnostics": None,
         "outputs": [{"node_id": "report", "activation_id": "act-1", "text": "the report", "data": {"k": 1}}],
     }
-    assert fake_host.instances[0].loaded_workflow_session == "abc"
+    assert fake_host.instances[0].loaded_workflow_session == "abc123abc123"
 
 
 @pytest.mark.parametrize(
@@ -1115,7 +1115,7 @@ def test_workflow_command_uses_headless_retry_policy(
     monkeypatch.setattr(headless, "bootstrap_runtime", bootstrap)
     monkeypatch.setattr(headless, "prepare_runtime", _stub_runtime)
     fake_host.result = _result(RunOutcome.COMPLETED)
-    assert workflow_cli.main(["run", "chain", "--json", *(["--session", "old"] if restoring else [])]) == 0
+    assert workflow_cli.main(["run", "chain", "--json", *(["--session", "abc123abc123"] if restoring else [])]) == 0
     loaded = fake_host.instances[0].kwargs["loaded_settings"]
     assert loaded.settings.frontend_default_max_transient_retries == 18
     assert loaded.settings.effective_max_transient_retries() == expected

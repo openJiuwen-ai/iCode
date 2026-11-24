@@ -512,14 +512,19 @@ class SessionMetaMixin:
         return total if isinstance(total, int) and total > 0 else 0
 
     @staticmethod
-    def _session_meta_from_envelope(envelope: dict[str, Any], *, size_bytes: int) -> SessionMeta:
+    def _session_meta_from_envelope(envelope: object, *, size_bytes: int) -> SessionMeta:
         """Build the purpose-specific metadata without reading any run artifacts."""
-        meta = envelope["meta"]
+        if not isinstance(envelope, dict):
+            raise ValueError("Session checkpoint is not an object.")
+        meta = envelope.get("meta")
         if not isinstance(meta, dict):
             # A hand-edited or truncated file can put anything here. Refuse it
             # on the same path as an unreadable stamp — the caller skips this
             # session — rather than let an AttributeError take down the page.
             raise ValueError("Session meta is not an object.")
+        session_id = meta.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("Session meta has no valid session ID.")
         # The one place persisted stamps become datetimes, so it is the one
         # place they are normalized: consumers (relative-time rendering, MRU
         # ordering, ACP session/list) compare them with aware UTC values.
@@ -533,7 +538,7 @@ class SessionMetaMixin:
         if created_at is None or updated_at is None:
             raise ValueError("Session meta carries no readable creation or update timestamp.")
         common: dict[str, Any] = {
-            "session_id": meta["session_id"],
+            "session_id": session_id,
             "created_at": created_at,
             "updated_at": updated_at,
             "total_tokens": SessionMetaMixin._envelope_total_tokens(envelope),

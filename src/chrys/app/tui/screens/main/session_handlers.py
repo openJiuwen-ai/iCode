@@ -585,6 +585,7 @@ class SessionHandler:
         *,
         allow_while_loading: bool = False,
         primary_cwd: str = "",
+        saved_cwd: str | None = None,
     ) -> RestoreRequest:
         """Restore *session_id*, in *primary_cwd* when given instead of its saved folder.
 
@@ -600,7 +601,7 @@ class SessionHandler:
             return RestoreRequest.REQUESTED
         from chrys.foundation.events.types import SessionRestore
 
-        if not primary_cwd and (missing := await self._missing_saved_cwd(session_id)) is not None:
+        if not primary_cwd and (missing := await self._missing_saved_cwd(session_id, saved_cwd)) is not None:
             # /resume and startup open their loading UI first; the prompt replaces it.
             if s.agent_loading:
                 with contextlib.suppress(Exception):
@@ -639,21 +640,20 @@ class SessionHandler:
         )
         return RestoreRequest.REQUESTED
 
-    async def _missing_saved_cwd(self, session_id: str) -> str | None:
-        """The saved folder of *session_id* when it no longer exists, read the way restore reads it.
-
-        Restoring another session prefers its crash-recovery copy, so this
-        does too. Read failures are left for the restore itself to report.
-        """
-        store = self.state_store
-        if store is None:
-            return None
-        try:
-            meta = await store.load_session_meta(session_id, prefer_recovery=True)
-        except Exception:
-            return None
-        saved = meta.primary_cwd if meta is not None else ""
-        return saved if saved and not os.path.isdir(saved) else None
+    async def _missing_saved_cwd(self, session_id: str, saved_cwd: str | None) -> str | None:
+        """Return a missing workspace, reusing the read-only startup result when available."""
+        if saved_cwd is None:
+            # Ordinary /resume can reach this point with only a session ID.
+            # Match its recovery preference and leave read errors to restore.
+            store = self.state_store
+            if store is None:
+                return None
+            try:
+                meta = await store.load_session_meta(session_id, prefer_recovery=True)
+            except Exception:
+                return None
+            saved_cwd = meta.primary_cwd if meta is not None else ""
+        return saved_cwd if saved_cwd and not os.path.isdir(saved_cwd) else None
 
     async def _restore_workflow_session(self, selection: WorkflowSessionPick) -> None:
         self.restoring_session = True
@@ -778,10 +778,13 @@ class SessionHandler:
         transcript: SessionTranscript | None = None
         with contextlib.suppress(Exception):
             ui.clear_compressed_blocks()
-        prefer_recovery = event.recovered_from_sidecar
-        if s.state_store:
+        loaded = event.replay
+        if loaded is not None or s.state_store is not None:
             try:
-                loaded = await s.state_store.load_session_for_replay(event.session_id, prefer_recovery=prefer_recovery)
+                if loaded is None and s.state_store is not None:
+                    loaded = await s.state_store.load_session_for_replay(
+                        event.session_id, prefer_recovery=event.recovered_from_sidecar
+                    )
                 if loaded is not None:
                     loaded_state, transcript = loaded.state, loaded.transcript
                     if loaded.meta is not None:
