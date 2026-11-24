@@ -22,7 +22,7 @@ from chrys.foundation.text.model_json import model_json
 from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
 from chrys.kernel import Message
 from chrys.kernel.compaction import GROUP_ANNOTATION_KEY, SUMMARY_OF_GROUP_IDS_KEY, SUMMARY_OF_MESSAGE_IDS_KEY
-from chrys.kernel.exchanges import TOOL_CALL_CONTENT_TYPES
+from chrys.kernel.exchanges import TOOL_CALL_CONTENT_TYPES, LiveAccessor, iter_exchanges
 from chrys.kernel.middleware import active_tool_batch_messages
 from chrys.service.approval.predicate import (
     PredicateAsset,
@@ -114,19 +114,21 @@ def build_formal_user_prompt(
 
     # Parallel sibling calls are not history. Include only landed narration before this call.
     if call_id:
-        narration: list[dict[str, Any]] = []
-        for message in response:
-            if message.role != "assistant":
-                continue
-            for item in message.contents:
-                if item.type == "function_call" and item.call_id == call_id:
-                    entries.extend(narration)
+        for exchange in iter_exchanges(response, LiveAccessor()):
+            narration: list[dict[str, Any]] = []
+            pending_found = False
+            for index in exchange.response_indices:
+                for item in response[index].contents:
+                    if item.type == "function_call" and item.call_id == call_id:
+                        pending_found = True
+                        break
+                    if item.type == "text" and item.text:
+                        narration.append({"assistant": item.text})
+                if pending_found:
                     break
-                if item.type == "text" and item.text:
-                    narration.append({"assistant": item.text})
-            else:
-                continue
-            break
+            if pending_found:
+                entries.extend(narration)
+                break
 
     context = "\n".join(map(_formal_json, entries))
     pending = _formal_json({request.tool_name: request.args})
