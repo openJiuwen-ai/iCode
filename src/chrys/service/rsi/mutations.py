@@ -103,19 +103,41 @@ def apply_mutations(profile: AgentProfile, mutations: list[Mutation] | tuple[Mut
     return current
 
 
+def _split_blocks(text: str) -> list[str]:
+    """Split *text* into paragraph blocks.
+
+    Line endings are normalised first (CRLF and bare CR become LF), then any
+    line that is empty or holds only spaces/tabs separates two blocks.  Each
+    block keeps its own lines verbatim, so leading indentation survives; only
+    the blank separator lines are dropped.
+    """
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line.strip():
+            current.append(line)
+        elif current:
+            blocks.append("\n".join(current))
+            current = []
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
 def _already_appended(base: str, addition: str) -> bool:
     """Whether *addition* already sits in *base* as a run of whole blocks.
 
     A plain substring check drops a new instruction that happens to occur inside
-    an existing one without appending anything.
+    an existing one without appending anything.  Blocks are compared with their
+    internal indentation preserved; only surrounding newlines are trimmed.
     """
-    blocks = [block.strip() for block in addition.split("\n\n") if block.strip()]
+    blocks = _split_blocks(addition)
     if not blocks:
         return False
-    base_blocks = [block.strip() for block in base.split("\n\n") if block.strip()]
+    base_blocks = _split_blocks(base)
     return any(
-        base_blocks[start : start + len(blocks)] == blocks
-        for start in range(len(base_blocks) - len(blocks) + 1)
+        base_blocks[start : start + len(blocks)] == blocks for start in range(len(base_blocks) - len(blocks) + 1)
     )
 
 
@@ -123,7 +145,7 @@ def _apply_one(profile: AgentProfile, mutation: Mutation) -> AgentProfile:
     if isinstance(mutation, AppendInstructions):
         base = profile.instructions or ""
         addition = mutation.text.strip("\n")
-        if not addition:
+        if not addition.strip():
             return profile
         if _already_appended(base, addition):
             return profile
