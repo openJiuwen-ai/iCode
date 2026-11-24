@@ -2974,6 +2974,8 @@ class ProcessRuntime(RuntimeAdapter):
         self._teardown_cgroup(sandbox_id)
 
     async def stop(self, sandbox_id: str, timeout: float = 10.0) -> None:
+        # A stopped sandbox has no client for the proxy; a later start opens a new one.
+        self._close_guarded_proxy(sandbox_id)
         await self._stop_background_processes(sandbox_id)
         proc = self._processes.get(sandbox_id)
         if proc is None:
@@ -4373,6 +4375,7 @@ class ProcessRuntime(RuntimeAdapter):
         control_dir = self._control_dirs.get(sandbox_id)
         if control_dir is None:
             raise OSError("sandbox control directory is missing")
+        self._close_guarded_proxy(sandbox_id)
         proxy = GuardedProxy()
         proxy.serve(control_dir / "guarded-proxy.sock")
         self._guarded_proxies[sandbox_id] = proxy

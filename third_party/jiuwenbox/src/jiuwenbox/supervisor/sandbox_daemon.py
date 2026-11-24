@@ -83,6 +83,7 @@ import logging
 import marshal
 import os
 import select
+import selectors
 import shutil
 import signal
 import socket
@@ -629,6 +630,9 @@ def _join_cgroup_procs(procs_paths: list[str]) -> None:
 _OUTPUT_FILE_BYTES = 4 * 1024 * 1024 * 1024
 _GUARDED_PROXY_SOCKET = "/run/guarded-proxy.sock"
 _GUARDED_PROXY_PORT = 3128
+# Longer than the host proxy's idle limit, so the host side ends an idle
+# connection first and this relay only reclaims one the host never closed.
+_GUARDED_BRIDGE_IDLE_SECONDS = 330.0
 
 
 def _limit_output_file_size() -> None:
@@ -672,35 +676,47 @@ def _make_command_preexec(
 
 
 def _bridge_guarded_client(client: socket.socket) -> None:
+    """Relay one sandbox connection to the host proxy socket.
+
+    A side that closes its write half passes that on while the other
+    direction keeps flowing, so a half-closed client still gets a slow
+    response. The relay ends once both sides closed or nothing moved for
+    ``_GUARDED_BRIDGE_IDLE_SECONDS``; a peer that stops reading fails the
+    send after the same wait.
+    """
     remote = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         remote.connect(_GUARDED_PROXY_SOCKET)
     except OSError:
+        remote.close()
         client.close()
         return
     try:
-
-        def pump(src: socket.socket, dst: socket.socket) -> None:
-            try:
-                while True:
-                    chunk = src.recv(65536)
-                    if not chunk:
-                        break
-                    dst.sendall(chunk)
-            except OSError:
-                pass
-            finally:
-                try:
-                    dst.shutdown(socket.SHUT_WR)
-                except OSError:
-                    pass
-
-        worker = threading.Thread(target=pump, args=(remote, client), daemon=True)
-        worker.start()
-        pump(client, remote)
-        # The side that finishes first has half-closed. The other direction
-        # still has to deliver a slow response; a short join drops it.
-        worker.join()
+        idle = _GUARDED_BRIDGE_IDLE_SECONDS
+        client.settimeout(idle)
+        remote.settimeout(idle)
+        with selectors.DefaultSelector() as selector:
+            selector.register(client, selectors.EVENT_READ, (client, remote))
+            selector.register(remote, selectors.EVENT_READ, (remote, client))
+            reading = 2
+            while reading:
+                events = selector.select(idle)
+                if not events:
+                    return
+                for key, _mask in events:
+                    source, target = key.data
+                    chunk = source.recv(65536)
+                    if chunk:
+                        target.sendall(chunk)
+                        continue
+                    selector.unregister(source)
+                    reading -= 1
+                    try:
+                        target.shutdown(socket.SHUT_WR)
+                    except OSError:
+                        pass
+    except OSError:
+        pass
     finally:
         remote.close()
         client.close()

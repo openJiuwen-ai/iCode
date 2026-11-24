@@ -69,7 +69,7 @@ The sandbox limits the command's process. It is not a restore point for the work
 
 `sandbox.network` chooses what network the command has.
 
-- `guarded`, the default: the command is not on this computer's network. Programs that use `HTTP_PROXY` can reach public addresses, so package installs still work. The proxy refuses this computer, private networks, and the cloud metadata address `169.254.169.254`. A program that ignores the proxy has no network.
+- `guarded`, the default: the command is not on this computer's network. Programs that use `HTTP_PROXY` can reach public addresses, so package installs still work. The proxy refuses this computer, private networks, and the cloud metadata address `169.254.169.254`. A proxy connection with no data moving in either direction for five minutes is closed; a slow download that keeps moving is not cut off. A program that ignores the proxy has no network.
 - `host`: the command uses this computer's network. It can reach services on this computer and addresses on the internet, including a cloud instance's metadata address.
 - `offline`: the command has no network. It cannot reach services on this computer, the internet, or the proxy.
 

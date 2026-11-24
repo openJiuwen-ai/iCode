@@ -341,6 +341,7 @@ REGULAR_RULES = (
             "test_daemon_orphan_sweep",
             "test_daemon_process_tree",
             "test_disk_floor_watcher",
+            "test_guarded_proxy_protocol",
             "test_guarded_proxy_timeout",
             "test_hidden_host_dirs",
             "test_launcher_host_exit",
