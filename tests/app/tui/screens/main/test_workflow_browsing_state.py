@@ -16,7 +16,7 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.models.workspace import Workspace
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
@@ -42,7 +42,7 @@ pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 async def test_failed_selection_keeps_the_committed_preview_ready_to_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(
         project,
@@ -92,7 +92,7 @@ async def test_failed_selection_keeps_the_committed_preview_ready_to_start(
 async def test_following_draft_reconciles_workspace_changes_received_in_chat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     other = tmp_path / "other"
     other.mkdir()
     monkeypatch.chdir(project)
@@ -108,20 +108,20 @@ async def test_following_draft_reconciles_workspace_changes_received_in_chat(
         await main._services.bus.publish(events.WorkspaceUpdated(primary_cwd=str(other)))
         await switch_mode(main, pilot)
         await wait_for(
-            lambda: main._workflow.project_cwd == str(other) and not main._workflow.browser.workspace_busy,
+            lambda: main._workflow.workdir == str(other) and not main._workflow.browser.workspace_busy,
             pilot=pilot,
             timeout=ENGINE_TURN_TIMEOUT,
         )
         assert main._workflow.browser.draft.follows_workspace
         assert main._workflow.browser.loaded is not None
-        assert main._workflow.browser.loaded.catalog.project_cwd == other
+        assert main._workflow.browser.loaded.catalog.workdir == other
         assert not main._workflow_panel.stale
 
 
 async def test_history_tab_can_stop_the_active_run_of_its_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(120, 40)) as pilot:
@@ -162,7 +162,7 @@ async def test_history_tab_can_stop_the_active_run_of_its_session(
 async def test_session_pick_announces_fallback_to_the_newest_readable_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
@@ -192,7 +192,7 @@ async def test_localization_reprojects_the_current_run_without_a_preview_reset(
     from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
     from chrys.app.tui.widgets.workflow.node_view import NodeView
 
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main = app._main_screen

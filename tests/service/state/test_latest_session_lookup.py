@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import threading
+from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -131,6 +132,49 @@ async def test_latest_session_survives_corrupt_primary_via_backup(tmp_path: Path
     assert await store.load_latest_session_id() == "top"
     (tmp_path / "top" / "session.json").write_text("{corrupt", encoding="utf-8")
     assert await store.load_latest_session_id() == "top"
+
+
+@pytest.mark.parametrize(
+    ("filename", "deny_by_mode", "reopen_store"),
+    [
+        ("newer.json", False, False),
+        ("newer.json", True, False),
+        ("imported.json", False, False),
+        ("imported.json", False, True),
+    ],
+)
+async def test_latest_session_skips_an_unreadable_legacy_flat_until_it_can_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str, deny_by_mode: bool, reopen_store: bool
+) -> None:
+    store = JsonFileStateStore(tmp_path)
+    await _save(store, "older", "a")
+    await _save(store, "newer", "b")
+    assert await store.load_latest_session_id(chat_only=True) == "newer"
+    directory = store.session_dir("newer")
+    flat = (directory / "session.json").rename(tmp_path / filename)
+    (directory / "session.json.bak").unlink()
+    directory.rmdir()
+    assert {meta.session_id for meta in await store.list_sessions()} == {"older", "newer"}
+    if reopen_store:
+        store = JsonFileStateStore(tmp_path)
+    open_file = Path.open
+
+    def denied(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+        if path == flat:
+            raise PermissionError("archive temporarily unavailable")
+        return open_file(path, mode, buffering, encoding, errors, newline)
+
+    with ExitStack() as cleanup:
+        if deny_by_mode:
+            cleanup.callback(flat.chmod, flat.stat().st_mode)
+            flat.chmod(0)
+            if os.access(flat, os.R_OK):
+                pytest.skip("This filesystem allows reading a mode-000 file")
+        else:
+            cleanup.enter_context(monkeypatch.context()).setattr(Path, "open", denied)
+        assert await store.load_latest_session_id(chat_only=True) == "older"
+        assert flat.is_file() and "newer" in _mru_ids(tmp_path)
+    assert await store.load_latest_session_id(chat_only=True) == "newer"
 
 
 async def test_fork_enters_index_first_and_delete_removes(tmp_path: Path) -> None:

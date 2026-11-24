@@ -37,6 +37,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import DisplayBlock, DisplayPath, DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import SUB_AGENT_STATE_DISCARDED_MESSAGE, HistoryMarkerKind
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import WorkingDir, Workspace
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.platform.files import surrogate_safe_text, unlink_with_retry
@@ -65,9 +66,13 @@ from chrys.service.state.store import (
     SESSION_FILE_NAME,
     SESSION_RECOVERY_FILE_NAME,
     SESSION_WRITE_LOCK_TIMEOUT_SECONDS,
+    ChatRestoreData,
+    ChatRestoreKindError,
     ChatSessionMeta,
     SessionForkError,
     SessionNotFoundError,
+    SessionReplay,
+    StartupSessionInUseError,
     parse_snapshot_turn,
 )
 from chrys.service.todos.tracker import TodoTracker
@@ -1177,7 +1182,7 @@ class SessionLifecycle:
             old_loaded = self._settings_handle.base
             candidate = await asyncio.to_thread(
                 load_settings,
-                project_root=Path(safe_getcwd()),
+                workdir=Path(safe_getcwd()),
                 eval_context=self._reload_eval_context(),
                 **self._session_pin_overrides(),
             )
@@ -1449,42 +1454,67 @@ class SessionLifecycle:
             )
             return
 
-        restoring_current = self._session.guard.owns(event.session_id)
         target_lock: FileLock | None = None
         transition_owner: str | None = None
-        if not restoring_current:
+
+        def release_restore_boundaries() -> None:
+            nonlocal target_lock, transition_owner
             try:
-                target_lock = await asyncio.to_thread(
-                    self._session.guard.acquire_for_restore,
-                    event.session_id,
-                    timeout=SESSION_RESTORE_ACTIVE_LOCK_TIMEOUT_SECONDS,
-                )
-            except TimeoutError:
-                await self._bus.publish(
-                    Error(
-                        code="session_in_use",
-                        message=self._session.guard.conflict_message(event.session_id),
-                        session_id=event.session_id,
-                    ),
-                )
-                return
+                if target_lock is not None:
+                    lock, target_lock = target_lock, None
+                    lock.release()
+            finally:
+                if transition_owner is not None:
+                    owner, transition_owner = transition_owner, None
+                    self._permits.finish_session_transition(owner)
+
+        async def reject_restore(error: Error) -> None:
+            # EventBus handlers may request another transition inline.
+            release_restore_boundaries()
+            await self._bus.publish(error)
 
         try:
-            if event.ignore_recovery:
+            # Fence session changes before deciding whether to borrow the current
+            # lock. In particular, SessionNew cannot release it during file repair.
+            # Keep the transition uncommitted until checkpoint and settings validation.
+            if not self._permits.current_task_owns_session_transition_permit():
+                transition_owner = await self._permits.prepare_session_transition("restore")
+                if transition_owner is None:  # No owner filter was given, so this cannot happen.
+                    raise RuntimeError("Session transition acquisition unexpectedly failed")
+            restoring_current = self._session.guard.owns(event.session_id)
+            if not restoring_current:
                 try:
-                    await asyncio.to_thread(self._persistence.state_store.delete_recovery_session, event.session_id)
-                except Exception:
-                    logger.debug("Failed to delete ignored recovery sidecar for %s", event.session_id, exc_info=True)
+                    target_lock = await self._session.guard.acquire_for_restore_async(
+                        event.session_id, timeout=SESSION_RESTORE_ACTIVE_LOCK_TIMEOUT_SECONDS
+                    )
+                except TimeoutError:
+                    await reject_restore(
+                        Error(
+                            code="session_in_use",
+                            message=self._session.guard.conflict_message(event.session_id),
+                            session_id=event.session_id,
+                        ),
+                    )
+                    return
 
             prefer_recovery = not event.ignore_recovery and (
                 not restoring_current or self._session.recovered_from_sidecar
             )
 
-            state = await self._persistence.load_session(event.session_id, prefer_recovery=prefer_recovery)
-            if state is None:
+            try:
+                checkpoint = await self._persistence.load_chat_for_restore(
+                    event.session_id, prefer_recovery=prefer_recovery, ignore_recovery=event.ignore_recovery
+                )
+            except StartupSessionInUseError as exc:
+                await reject_restore(Error(code="session_in_use", message=str(exc), session_id=event.session_id))
+                return
+            except ChatRestoreKindError as exc:
+                await reject_restore(Error(code="session_kind_mismatch", message=str(exc), session_id=event.session_id))
+                return
+            if checkpoint is None:
                 if event.ignore_recovery and not restoring_current:
                     cleanup_empty_session_dir_path(self._persistence.state_store.session_dir(event.session_id))
-                await self._bus.publish(
+                await reject_restore(
                     Error(
                         code="session_not_found",
                         message=f"Session '{event.session_id}' not found",
@@ -1493,22 +1523,7 @@ class SessionLifecycle:
                 )
                 return
 
-            # Resolve meta by id directly. ``list_sessions`` relies on
-            # ``iterdir`` which can briefly miss a just-written session
-            # folder on Windows; a direct envelope read avoids that race.
-            meta = await self._persistence.load_session_meta(event.session_id, prefer_recovery=prefer_recovery)
-            if meta is not None and meta.kind == "workflow":
-                await self._bus.publish(
-                    Error(
-                        code="session_kind_mismatch",
-                        message="Open this session in Workflow mode.",
-                        session_id=event.session_id,
-                    )
-                )
-                return
-            recovered_from_sidecar = (
-                await self._persistence.recovery_session_wins(event.session_id) if prefer_recovery else False
-            )
+            state, meta = checkpoint.state, checkpoint.meta
 
             cwd_warning = ""
             saved_cwd = meta.primary_cwd if meta and meta.primary_cwd else ""
@@ -1520,7 +1535,7 @@ class SessionLifecycle:
                     # Never switch to a session whose directory is gone; the
                     # frontend lets the user pick another one (``primary_cwd``).
                     # Rolling back the current session keeps it and only warns.
-                    await self._bus.publish(
+                    await reject_restore(
                         Error(
                             code="session_cwd_missing",
                             message=(
@@ -1571,7 +1586,7 @@ class SessionLifecycle:
                             "Requested agent profile '%s' could not be resolved; stopping session restore",
                             event.profile_name,
                         )
-                        await self._bus.publish(
+                        await reject_restore(
                             Error(
                                 code="requested_agent_profile_unresolved",
                                 message=(
@@ -1616,7 +1631,7 @@ class SessionLifecycle:
                             saved_profile_id,
                             saved_profile_name,
                         )
-                        await self._bus.publish(
+                        await reject_restore(
                             Error(
                                 code="saved_agent_profile_unresolved",
                                 message=(
@@ -1661,22 +1676,6 @@ class SessionLifecycle:
                 working_dirs=_working_dirs_from_paths(merged_dirs, target_cwd),
             )
 
-            # The transition boundary is taken in two phases. The *prepared* fence
-            # comes first: it shares the rebuild gate with settings reloads and
-            # model switches, so everything read below — loaded settings, eval
-            # context, session pins — is a committed state no concurrent rebuild
-            # can move. Snapshotting before the fence would let a reload commit
-            # during the load's thread hop and then be silently overwritten by a
-            # staged load routed against the stale copy. But the *commit* — which
-            # bumps the session generation and invalidates the old session's turn
-            # state, retries and injection — waits until the load has succeeded:
-            # an unreadable config file must abort the restore with the current
-            # session genuinely intact, not admission-open but generation-dead.
-            if not self._permits.current_task_owns_session_transition_permit():
-                transition_owner = await self._permits.prepare_session_transition("restore")
-                if transition_owner is None:  # No owner filter was given, so this cannot happen.
-                    raise RuntimeError("Session transition acquisition unexpectedly failed")
-
             # The restore crosses into the target session's project trust domain:
             # its settings are re-derived for that root so the build below reads
             # them, exactly as a workspace change would. Loaded here — before
@@ -1685,7 +1684,7 @@ class SessionLifecycle:
             old_loaded = self._settings_handle.base
             candidate = await asyncio.to_thread(
                 load_settings,
-                project_root=Path(target_cwd),
+                workdir=Path(target_cwd),
                 eval_context=self._reload_eval_context(),
                 **self._session_pin_overrides(),
             )
@@ -1713,21 +1712,17 @@ class SessionLifecycle:
 
             await self._hydrate_restored_session(
                 event=event,
-                state=state,
-                meta=meta,
+                checkpoint=checkpoint,
                 profile=profile,
                 profile_name=profile_name,
                 profile_switch=profile_switch,
                 profile_resolution_warning=profile_resolution_warning,
-                recovered_from_sidecar=recovered_from_sidecar,
                 cwd_warning=cwd_warning,
                 target_cwd=target_cwd,
                 staged_loaded=staged_loaded,
             )
         except BaseException as exc:
-            if transition_owner is not None:
-                self._permits.finish_session_transition(transition_owner)
-                transition_owner = None
+            release_restore_boundaries()
             if isinstance(exc, Exception):
                 # The interactive callers publish this event with the bus's
                 # default swallow-and-log delivery: without a terminal event the
@@ -1739,22 +1734,17 @@ class SessionLifecycle:
                 )
             raise
         finally:
-            if target_lock is not None:
-                target_lock.release()
-            if transition_owner is not None:
-                self._permits.finish_session_transition(transition_owner)
+            release_restore_boundaries()
 
     async def _hydrate_restored_session(
         self,
         *,
         event: SessionRestore,
-        state: dict[str, Any],
-        meta: ChatSessionMeta | None,
+        checkpoint: ChatRestoreData,
         profile: AgentProfile | None,
         profile_name: str,
         profile_switch: tuple[str, str] | None,
         profile_resolution_warning: Warning | None,
-        recovered_from_sidecar: bool,
         cwd_warning: str,
         target_cwd: str,
         staged_loaded: LoadedSettings,
@@ -1762,6 +1752,8 @@ class SessionLifecycle:
         """Hydrate live engine state after restore shutdown while admission remains closed."""
         if event.session_id is None:
             raise ValueError("This session event requires a session ID.")
+        state, meta = checkpoint.state, checkpoint.meta
+        recovered_from_sidecar = checkpoint.recovered_from_sidecar
         self._fsm.reset()
         self._session.adopt_restore_identity(session_id=event.session_id, recovered_from_sidecar=recovered_from_sidecar)
         session_dir = self._session.session_dir
@@ -1958,8 +1950,8 @@ class SessionLifecycle:
         restored_state = self._history.state if self._history.is_bound else state or {}
         self._session.turn_number = restored_state.get("turn_counter", 0)
 
+        saved = False
         if restored_history_changed:
-            saved = False
             try:
                 saved = await self._writer.save_current_session(raise_on_error=bool(paused_records))
             except Exception:
@@ -1968,6 +1960,15 @@ class SessionLifecycle:
                 artifact_service.finalize_restored_paused_records(paused_records)
         elif paused_records and artifact_service is not None:
             artifact_service.archive_unconsumed_restored_paused_records(paused_records)
+
+        replay = None
+        if self._session.surface == SessionSurface.TUI:
+            # A linked source may change owners while the agent is being built.
+            # Only a successful local repair supersedes the checkpoint we accepted.
+            if saved and (store := self._persistence.state_store) is not None:
+                replay = await store.load_session_for_replay(event.session_id)
+            if replay is None:
+                replay = await asyncio.to_thread(SessionReplay.from_saved_state, checkpoint.saved_state, meta)
 
         await self._bus.publish(
             SessionRestored(
@@ -1985,6 +1986,7 @@ class SessionLifecycle:
                 cwd_warning=cwd_warning,
                 primary_cwd=target_cwd,
                 recovered_from_sidecar=recovered_from_sidecar,
+                replay=replay,
                 working_dirs=(
                     [working_dir.path for working_dir in self._session.workspace.working_dirs]
                     if self._session.workspace is not None

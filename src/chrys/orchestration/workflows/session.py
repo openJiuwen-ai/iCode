@@ -56,7 +56,7 @@ if TYPE_CHECKING:
 
 class HookFactory(Protocol):
     async def __call__(
-        self, *, project_root: str, project_hooks_enabled: bool, session_id: str, request_id: str = ""
+        self, *, workdir: str, workdir_hooks_enabled: bool, session_id: str, request_id: str = ""
     ) -> HookManager | None: ...
 
 
@@ -211,8 +211,8 @@ class WorkflowSessionOwner:
             )
             self._resources.own(session.background_tasks.close)
         session.hook_manager = await hooks(
-            project_root=workspace.primary_cwd,
-            project_hooks_enabled=settings.project_hooks_enabled,
+            workdir=workspace.primary_cwd,
+            workdir_hooks_enabled=settings.workdir_hooks_enabled,
             session_id=session_id,
             request_id=request_id,
         )

@@ -1159,7 +1159,7 @@ class AcpSessionManager:
         )
 
     async def session_history(self, *, cwd: str | None, session_id: str) -> tuple[str, SessionTranscript | None]:
-        """Return persisted messages and turn records, scoped to the requesting workspace cwd.
+        """Return persisted messages, folds and turn records, scoped to the requesting workspace cwd.
 
         Mirrors ``load``/``delete`` scoping so a client cannot read another
         workspace's session history just by knowing its id.
@@ -1171,13 +1171,14 @@ class AcpSessionManager:
             transcript = await self._state_store.load_session_transcript(
                 existing.session_id,
                 prefer_recovery=existing.host.engine.recovered_from_sidecar,
+                include_folds=True,
             )
             return existing.session_id, transcript
         canonical_id, meta = await self._resolve_session_meta(session_id)
         self._validate_saved_cwd(meta, resolved_cwd)
         prefer_recovery = await self._meta_resolved_from_recovery(canonical_id, meta)
         return canonical_id, await self._state_store.load_session_transcript(
-            canonical_id, prefer_recovery=prefer_recovery
+            canonical_id, prefer_recovery=prefer_recovery, include_folds=True
         )
 
     async def session_turn_context(self, *, cwd: str | None, session_id: str) -> tuple[str, Path, list[TurnRecord]]:
@@ -1552,7 +1553,7 @@ class AcpSessionManager:
     def _session_loaded_settings(self, cwd: str) -> LoadedSettings:
         """Derive one session's settings under its own project trust domain.
 
-        The manager's base settings are deliberately project-free — a
+        The manager's base settings are deliberately workdir-free — a
         manager-level project layer would leak one session's trust decisions
         into every other — so each session re-loads with its resolved cwd as
         the project root. Everything process-wide still flows from the base:
@@ -1566,7 +1567,7 @@ class AcpSessionManager:
         with self._global_settings_lock:
             base = self._loaded_settings
             candidate = load_settings(
-                project_root=Path(cwd),
+                workdir=Path(cwd),
                 eval_context=EvalContext(
                     frontend_default_max_transient_retries=base.settings.frontend_default_max_transient_retries
                 ),

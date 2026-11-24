@@ -437,10 +437,14 @@ async def test_trajectory_puts_esc_back_in_the_footer_corner_and_the_chat_gets_t
 
         assert escape_keys() == []
         assert indicator.display is True
+        await wait_for(lambda: indicator.region.width > 0, pilot=pilot)
         hooks_width = indicator.region.width
 
         await pilot.press("f12")
-        await wait_for(lambda: dashboard.foreground and len(escape_keys()) == 1, pilot=pilot)
+        await wait_for(
+            lambda: dashboard.foreground and len(keys := escape_keys()) == 1 and keys[0].region.width > 0,
+            pilot=pilot,
+        )
         (back,) = escape_keys()
         assert back.has_class("-corner")
         assert back_label in str(back.render())

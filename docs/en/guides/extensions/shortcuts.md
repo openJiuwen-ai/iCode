@@ -9,13 +9,13 @@ iCode reads shortcuts from two places:
 | Folder | macOS and Linux | Windows |
 | --- | --- | --- |
 | Your shortcuts | `~/.chrys/shortcuts` | `%APPDATA%\chrys\shortcuts` |
-| The project's shortcuts | `.chrys/shortcuts` in the working directory and its parent directories up to the repository root | Same |
+| Working directory and ancestors | `.chrys/shortcuts` in the working directory and its parent directories up to the Git repository root | Same |
 
 New and changed files show the next time you type `/`, or after `/reload`.
 
-A project's `.chrys/shortcuts` must stay inside the repository: if it is a link to a folder outside it, iCode skips it.
+iCode skips shortcut directories that link outside the Git repository. Outside a Git repository, iCode searches only the working directory for local shortcuts.
 
-The file name is the shortcut's name: `review.md` is `/review`. A file in a subfolder keeps the folder in its name: `git/commit-msg.md` is `/git/commit-msg`. When two folders hold a shortcut with the same name, the first one read is used: your own shortcuts, then the nearest project folder.
+The file name is the shortcut's name: `review.md` is `/review`. A file in a subfolder keeps the folder in its name: `git/commit-msg.md` is `/git/commit-msg`. When two folders hold a shortcut with the same name, the first one read is used: your own shortcuts, then the closest matching directory, starting at the working directory.
 
 Some files are not loaded: a name with spaces (it could not be typed after `/`), a file or folder whose name starts with `.`, and a subfolder that is a link. If a shortcut you expect is missing, check its file name.
 

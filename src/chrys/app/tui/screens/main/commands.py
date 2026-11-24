@@ -443,7 +443,7 @@ _MAN_USAGE_BODY = msg(
     fallback=(
         "Open the token usage dialog, read from every saved session.\n\n"
         "    Overview: new tokens by date range, their trend over time,\n"
-        "    and totals by model, source, project or model profile, with each\n"
+        "    and totals by model, source, working directory or model profile, with each\n"
         "    model's speed. A model used through several of your profiles is\n"
         "    shown once for each.\n"
         "    Calendar: new tokens day by day, and one day's details.\n\n"

@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -15,8 +17,10 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from chrys.foundation.models.workdir_migration import BackupOriginal, ReportReadError, source_edit
 from chrys.foundation.platform.files import _atomic_write_bytes as _common_atomic_write_bytes
 from chrys.foundation.platform.files import atomic_write_text as _common_atomic_write_text
+from chrys.foundation.platform.files import require_writable_file
 from chrys.foundation.util.lock import FileLock as FileLock
 from chrys.foundation.util.session_ids import session_short_id as _session_short_id
 from chrys.service.state.session_mru import SESSION_MRU_FILE_NAME
@@ -72,19 +76,42 @@ class SessionForkError(RuntimeError):
     """Raised when a session cannot be forked safely."""
 
 
-def session_write_lock_path(sessions_dir: Path, session_id: str) -> Path:
+def _session_lock_path(sessions_dir: Path, session_id: str, suffix: str, *, follow_session_links: bool = True) -> Path:
+    name = _session_short_id(session_id)
+    directory = sessions_dir / name
+    # Root-level locks survive a session delete/recreate. All directory links
+    # and Windows junctions to a writable archive must use its physical root.
+    if follow_session_links and name and (directory.is_symlink() or directory.is_junction()):
+        target = directory.resolve()
+        sessions_dir, name = target.parent, target.name
+    return sessions_dir / ".locks" / f"{name}.{suffix}"
+
+
+def session_write_lock_path(sessions_dir: Path, session_id: str, *, follow_session_links: bool = True) -> Path:
     """Return the root-level write lock path for *session_id*."""
-    return sessions_dir / ".locks" / f"{_session_short_id(session_id)}.write.lock"
+    return _session_lock_path(sessions_dir, session_id, "write.lock", follow_session_links=follow_session_links)
 
 
-def session_active_lock_path(sessions_dir: Path, session_id: str) -> Path:
+def session_active_lock_path(sessions_dir: Path, session_id: str, *, follow_session_links: bool = True) -> Path:
     """Return the root-level active-session lock path for *session_id*."""
-    return sessions_dir / ".locks" / f"{_session_short_id(session_id)}.active.lock"
+    return _session_lock_path(sessions_dir, session_id, "active.lock", follow_session_links=follow_session_links)
 
 
 def session_active_owner_path(sessions_dir: Path, session_id: str) -> Path:
     """Return the owner metadata path paired with the active-session lock."""
-    return sessions_dir / ".locks" / f"{_session_short_id(session_id)}.active.json"
+    return _session_lock_path(sessions_dir, session_id, "active.json")
+
+
+def linked_recovery_active_lock(path: Path, target: Path) -> Path | None:
+    """Find the physical archive that writes an individually linked recovery file."""
+    candidate = target.with_name(SESSION_RECOVERY_FILE_NAME)
+    if (
+        target.name == candidate.name or (candidate.is_file() and target.samefile(candidate))
+    ) and not path.parent.samefile(target.parent):
+        # A relocated session directory may have any name. Use that whole name
+        # just as a writer reaching it through a directory link would.
+        return target.parent.parent / ".locks" / f"{target.parent.name}.active.lock"
+    return None
 
 
 def parse_snapshot_turn(path: Path) -> int:
@@ -113,6 +140,70 @@ def atomic_copy_file(source: Path, dest: Path) -> None:
 
 def _atomic_write_text(path: Path, payload: str, *, encoding: str = "utf-8") -> bytes:
     return _common_atomic_write_text(path, payload, encoding=encoding)
+
+
+def dump_session_envelope(envelope: dict[str, Any]) -> str:
+    """Serialize a session checkpoint for the atomic text writer."""
+    return json.dumps(envelope, indent=2, ensure_ascii=False)
+
+
+def read_session_envelope(path: Path, *, probe_legacy_source: bool = False) -> tuple[bytes, dict[str, Any] | None]:
+    """Read a session file using normal filesystem access, including symlink resolution."""
+    raw = path.read_bytes()
+    # Session writers spell both tokens literally. Escapes can hide either token in imported JSON.
+    if probe_legacy_source and (b'"source_kind"' not in raw or b'"project"' not in raw) and b"\\u" not in raw:
+        return raw, None
+    envelope = json.loads(raw.decode("utf-8"))
+    if probe_legacy_source and not isinstance(envelope, dict):
+        raise ValueError("Expected a JSON object")
+    return raw, envelope if isinstance(envelope, dict) else None
+
+
+def migrate_session_envelopes(session_dir: Path, *, backup: BackupOriginal, on_read_error: ReportReadError) -> bool:
+    """Upgrade each saved envelope without touching the other checkpoint or recovery files."""
+
+    def candidate(path: Path) -> tuple[bytes, dict[str, Any]] | None:
+        try:
+            # Leave linked checkpoints in place. Normal restore can read either spelling through the link.
+            if path.is_symlink():
+                return None
+            raw, envelope = read_session_envelope(path, probe_legacy_source=True)
+            if envelope is None:
+                return None
+        except (OSError, ValueError, RecursionError) as error:
+            if not isinstance(error, OSError) or error.errno not in {errno.ENOENT, errno.ENOTDIR}:
+                on_read_error(path, error)
+            return None
+        meta, state = envelope.get("meta"), envelope.get("state")
+        if (
+            isinstance(meta, dict)
+            and meta.get("kind") == "workflow"
+            and isinstance(state, dict)
+            and source_edit(state.get("identity"))
+        ):
+            return raw, envelope
+        return None
+
+    changed = False
+    for name in (SESSION_FILE_NAME, SESSION_BACKUP_FILE_NAME):
+        path = session_dir / name
+        if candidate(path) is None:
+            continue
+        try:
+            lock = session_write_lock_path(session_dir.parent, session_dir.name)
+            _ensure_lock_parent(lock)
+            with FileLock(lock, timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
+                record = candidate(path)
+                if record is None:
+                    continue
+                raw, envelope = record
+                require_writable_file(path)
+                backup(path, raw)
+                _common_atomic_write_text(path, dump_session_envelope(envelope), create_parents=False)
+                changed = True
+        except OSError, ValueError, TypeError, RecursionError:
+            continue
+    return changed
 
 
 def session_checkpoint_of(envelope: dict[str, Any], written: bytes) -> SessionCheckpoint:

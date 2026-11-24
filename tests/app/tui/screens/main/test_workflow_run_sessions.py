@@ -27,7 +27,7 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from tests.app.tui.screens.main._workflow_support import workflow_selecting
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import BusyWidget, assert_app_handles_messages, click_when_settled
@@ -64,7 +64,7 @@ class _Cover(ModalScreen[None]):
 async def test_overlapping_run_tabs_keep_latest_request_and_append_existing_tabs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 36)):
         main = app._main_screen
@@ -93,7 +93,7 @@ async def test_overlapping_run_tabs_keep_latest_request_and_append_existing_tabs
 async def test_a_cancelled_run_tab_update_finishes_clearing_before_the_next_one_reads_the_tabs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 36)):
         main = app._main_screen
@@ -124,7 +124,7 @@ async def test_a_cancelled_run_tab_update_finishes_clearing_before_the_next_one_
 
 
 async def test_run_tab_updates_activate_no_tab_of_their_own(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 36)):
         main = app._main_screen
@@ -152,7 +152,7 @@ async def test_run_tab_updates_activate_no_tab_of_their_own(tmp_path: Path, monk
 async def test_a_run_tab_update_leaves_other_tab_bars_working_while_it_waits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 36)):
         main = app._main_screen
@@ -215,7 +215,7 @@ async def test_the_run_tab_underline_follows_clicks_that_open_archived_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Each click opens a loading dialog over the bar before the underline moves."""
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(145, 45)) as pilot:
         main = app._main_screen
@@ -233,7 +233,7 @@ async def test_the_run_tab_underline_follows_clicks_that_open_archived_runs(
 async def test_a_run_shown_once_its_covered_loading_dialog_closes_keeps_its_tab(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(145, 45)) as pilot:
         main = app._main_screen
@@ -274,7 +274,7 @@ async def test_a_run_shown_once_its_covered_loading_dialog_closes_keeps_its_tab(
 async def test_start_adds_runs_retry_does_not_and_history_controls_are_read_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     requests: list[events.WorkflowRunRequest] = []
     retries: list[events.WorkflowNodeRetryRequest] = []
@@ -366,7 +366,7 @@ async def test_start_adds_runs_retry_does_not_and_history_controls_are_read_only
 async def test_pending_run_admission_is_independent_of_browsing_an_older_definition(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, accepted: bool
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(145, 45)) as pilot:
@@ -437,7 +437,7 @@ async def test_pending_run_admission_is_independent_of_browsing_an_older_definit
 async def test_workflow_selection_requires_new_after_any_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str, chosen: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "alternate", python_workflow("def fn(value):\n    return value\n", "fn"))
     monkeypatch.chdir(project)
     bus, engine = EventBus(), WorkflowEngine()
@@ -539,7 +539,7 @@ async def test_workflow_selection_requires_new_after_any_run(
 async def test_workflow_restore_reads_archives_without_chat_restore_or_source_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus)
     restores: list[events.SessionRestore] = []
@@ -609,7 +609,7 @@ async def test_workflow_restore_reads_archives_without_chat_restore_or_source_ex
 async def test_start_from_history_preserves_the_bound_workflow_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: bool
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     source = python_workflow("def echo(value):\n    return value\n", "echo")
     write_workflow(project, "echo", source)

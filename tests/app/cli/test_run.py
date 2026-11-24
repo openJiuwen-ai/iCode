@@ -58,6 +58,7 @@ from chrys.orchestration.session_host import (
     SessionNotFoundError,
 )
 from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.state.store import SESSION_ID_AMBIGUOUS
 from tests.support.streams import FailingTextStream
 
 
@@ -220,10 +221,10 @@ def _fake_bootstrap(
     """
 
     def _bootstrap(
-        *, configure_stdio: bool, eval_context: EvalContext, project_root: Path | None
+        *, configure_stdio: bool, eval_context: EvalContext, workdir: Path | None
     ) -> startup_module.RuntimeBootstrap:
         assert configure_stdio is True
-        loaded = load_settings(eval_context=eval_context, project_root=project_root)
+        loaded = load_settings(eval_context=eval_context, workdir=workdir)
         return startup_module.RuntimeBootstrap(loaded=loaded, warnings=list(warnings or []))
 
     return _bootstrap
@@ -315,13 +316,13 @@ def test_run_command_accepts_short_flags(monkeypatch: pytest.MonkeyPatch, capsys
     _patch_runtime(monkeypatch)
     _patch_model_registry(monkeypatch)
 
-    rc = run_cli.main(["hello", "-a", "Headless", "-m", "Friendly Model", "-s", "abc"])
+    rc = run_cli.main(["hello", "-a", "Headless", "-m", "Friendly Model", "-s", "abc123abc123"])
 
     out = capsys.readouterr()
     assert rc == 0
     assert out.out == "final text\n"
     assert FakeHost.instances[0].kwargs["profile_name"] == "Headless"
-    assert FakeHost.instances[0].kwargs["session_id"] == "abc"
+    assert FakeHost.instances[0].kwargs["session_id"] == "abc123abc123"
     assert FakeHost.instances[0].kwargs["loaded_settings"].settings.model_profile == "model-id"
     assert FakeHost.instances[0].kwargs["loaded_settings"].settings.model_profile_override == ""
 
@@ -456,7 +457,7 @@ def test_run_command_task_file_resolves_relative_to_workdir(
     outside_task_dir = tmp_path / "tasks"
     outside_task_dir.mkdir()
     (outside_task_dir / "x.md").write_text("outside", encoding="utf-8")
-    workdir = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     inside_task_dir = workdir / "tasks"
     inside_task_dir.mkdir(parents=True)
     (inside_task_dir / "x.md").write_text("inside", encoding="utf-8")
@@ -484,7 +485,7 @@ def test_run_command_changes_directory_before_bootstrapping(
     tmp_path: Path,
     capsys,
 ) -> None:
-    """Bootstrap reads project settings, so ``-C`` must land before it runs."""
+    """Bootstrap reads workdir settings, so ``-C`` must land before it runs."""
     _patch_host(monkeypatch)
     seen: list[Path] = []
 
@@ -493,7 +494,7 @@ def test_run_command_changes_directory_before_bootstrapping(
         return _prepared_runtime()
 
     monkeypatch.setattr(headless, "prepare_runtime", recording_prepare)
-    workdir = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     workdir.mkdir()
     monkeypatch.chdir(tmp_path)
 
@@ -507,7 +508,7 @@ def test_run_command_changes_directory_before_bootstrapping(
 def test_run_command_json_output(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     _patch_runtime(monkeypatch)
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "--session", "abc", "--json"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "--session", "abc123abc123", "--json"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -518,7 +519,7 @@ def test_run_command_json_output(monkeypatch: pytest.MonkeyPatch, capsys) -> Non
     assert payload["result"] == "final text"
     assert isinstance(payload["duration"], (int, float))
     assert payload["duration"] >= 0
-    assert FakeHost.instances[0].kwargs["session_id"] == "abc"
+    assert FakeHost.instances[0].kwargs["session_id"] == "abc123abc123"
 
 
 def test_run_command_bootstrap_warning_text_mode(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
@@ -548,7 +549,7 @@ def test_prepare_runtime_applies_headless_retry_default(monkeypatch: pytest.Monk
     assert settings.effective_max_transient_retries() == 18
 
 
-def test_prepare_runtime_bootstraps_project_free_for_a_session_restore(
+def test_prepare_runtime_bootstraps_workdir_free_for_a_session_restore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A restore's settings come from the saved session's root, not the cwd."""
@@ -558,7 +559,7 @@ def test_prepare_runtime_bootstraps_project_free_for_a_session_restore(
     headless.prepare_runtime(restoring_session=True)
     headless.prepare_runtime()
 
-    assert [call.kwargs["project_root"] for call in bootstrap.call_args_list] == [None, Path.cwd()]
+    assert [call.kwargs["workdir"] for call in bootstrap.call_args_list] == [None, Path.cwd()]
 
 
 def test_run_command_marks_the_runtime_as_restoring_only_with_a_session(
@@ -574,16 +575,12 @@ def test_run_command_marks_the_runtime_as_restoring_only_with_a_session(
 
     monkeypatch.setattr(headless, "prepare_runtime", _record)
 
-    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc"]) == 0
+    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123"]) == 0
     assert run_cli.main(["hello", "--agent", "Headless"]) == 0
-    # A blank id is "no session" to the host, so it must be one here too —
-    # a project-free bootstrap ahead of a fresh session would silently drop
-    # the working directory's project layer.
-    assert run_cli.main(["hello", "--agent", "Headless", "-s", "   "]) == 0
+    with pytest.raises(SystemExit):
+        run_cli.main(["hello", "--agent", "Headless", "-s", "   "])
     capsys.readouterr()
-    assert seen == [True, False, False]
-    assert FakeHost.instances[2].kwargs["session_id"] is None
-    assert not FakeHost.instances[2].started
+    assert seen == [True, False]
 
 
 def test_prepare_runtime_composes_the_same_root_independent_warnings_for_a_restore(
@@ -605,10 +602,10 @@ def test_prepare_runtime_composes_the_same_root_independent_warnings_for_a_resto
     assert [warning.code for warning in fresh.pending_warnings] == expected
 
 
-def _project_rejection() -> SettingsWarning:
+def _workdir_rejection() -> SettingsWarning:
     return SettingsWarning(
         key="approval.default_mode",
-        origin=SettingOrigin(layer=Source.PROJECT, path=Path("/repo/.chrys/settings.yaml")),
+        origin=SettingOrigin(layer=Source.WORKDIR, path=Path("/repo/.chrys/settings.yaml")),
         outcome=invalid("bypass", CoerceReason.LOOSENS_USER_BASELINE),
     )
 
@@ -628,14 +625,14 @@ def test_restore_delta_warnings_reports_only_what_the_bootstrap_could_not_see() 
     restored_loaded = LoadedSettings(
         settings=Settings(),
         provenance={},
-        warnings=(user_warning, retry_env_warning, _project_rejection()),
+        warnings=(user_warning, retry_env_warning, _workdir_rejection()),
     )
     pending = settings_warning_events(bootstrap_loaded)
 
     delta = headless.restore_delta_warnings(restored_loaded, pending)
 
     # The shared user verdict is already printed, and the env-var retry verdict
-    # keeps its compatibility wording in the pending list — only the project
+    # keeps its compatibility wording in the pending list — only the workdir
     # layer's rejection is new.
     assert [warning.code for warning in delta] == ["setting_rejected"]
     assert f"approval.default_mode in {Path('/repo/.chrys/settings.yaml')}" in delta[0].message
@@ -646,10 +643,10 @@ def test_run_command_writes_the_target_roots_warnings_in_text_mode(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _patch_runtime(monkeypatch)
-    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
+    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
     FakeHost.restored_loaded = restored_loaded
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -657,7 +654,7 @@ def test_run_command_writes_the_target_roots_warnings_in_text_mode(
     (expected,) = settings_warning_events(restored_loaded)
     lines = out.err.splitlines()
     assert lines[:3] == [
-        "• Restoring session abc…",
+        "• Restoring session abc123abc123…",
         f"Warning: {expected.message}",
         "• Restored session session1 · Fake Model",
     ]
@@ -672,10 +669,10 @@ def test_run_command_quiet_restore_writes_only_the_target_roots_warnings(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _patch_runtime(monkeypatch)
-    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
+    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
     FakeHost.restored_loaded = restored_loaded
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--quiet"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123", "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -689,10 +686,10 @@ def test_run_command_writes_the_target_roots_warnings_in_json_mode(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _patch_runtime(monkeypatch)
-    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
+    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
     FakeHost.restored_loaded = restored_loaded
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--json"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123", "--json"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -708,7 +705,7 @@ def test_run_command_without_a_session_does_not_drive_an_early_start(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _patch_runtime(monkeypatch)
-    FakeHost.restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
+    FakeHost.restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
 
     rc = run_cli.main(["hello", "--agent", "Headless", "--quiet"])
 
@@ -938,19 +935,19 @@ def test_run_command_reports_session_not_found_with_typed_code(monkeypatch: pyte
             timeout: float | None = None,
             on_event: Callable[[Event], None] | None = None,
         ) -> HeadlessRunResult:
-            raise SessionNotFoundError("Session not found: deadbeef. Recent sessions: aabbcc")
+            raise SessionNotFoundError("Session not found: deadbeef0000")
 
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(run_cli, "ChrysSessionHost", SessionNotFoundHost)
 
-    rc = run_cli.main(["hello", "-a", "Headless", "-s", "deadbeef", "--json"])
+    rc = run_cli.main(["hello", "-a", "Headless", "-s", "deadbeef0000", "--json"])
 
     out = capsys.readouterr()
     assert rc == 1
     assert out.out == ""
     payload = json.loads(out.err)
     assert payload == {
-        "error": "Session not found: deadbeef. Recent sessions: aabbcc",
+        "error": "Session not found: deadbeef0000",
         "code": "session_not_found",
     }
     assert SessionNotFoundHost.instances[0].shutdown_called
@@ -965,19 +962,19 @@ def test_run_command_reports_session_ambiguous_with_typed_code(monkeypatch: pyte
             timeout: float | None = None,
             on_event: Callable[[Event], None] | None = None,
         ) -> HeadlessRunResult:
-            raise AmbiguousSessionIdError("Session id 'abc' is ambiguous.")
+            raise AmbiguousSessionIdError("Session id 'abc123abc123' is ambiguous.")
 
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(run_cli, "ChrysSessionHost", AmbiguousHost)
 
-    rc = run_cli.main(["hello", "-a", "Headless", "-s", "abc", "--json"])
+    rc = run_cli.main(["hello", "-a", "Headless", "-s", "abc123abc123", "--json"])
 
     out = capsys.readouterr()
     assert rc == 1
     assert out.out == ""
     payload = json.loads(out.err)
     assert payload == {
-        "error": "Session id 'abc' is ambiguous.",
+        "error": "Session id 'abc123abc123' is ambiguous.",
         "code": "session_ambiguous",
     }
 
@@ -1009,7 +1006,7 @@ def test_run_command_reports_profile_not_found_with_typed_code(monkeypatch: pyte
 
 
 def test_run_command_changes_working_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
-    workdir = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     workdir.mkdir()
     _patch_runtime(monkeypatch)
     monkeypatch.chdir(tmp_path)
@@ -1024,7 +1021,7 @@ def test_run_command_changes_working_directory(monkeypatch: pytest.MonkeyPatch, 
 
 
 def test_run_command_accepts_short_workdir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
-    workdir = tmp_path / "project"
+    workdir = tmp_path / "workdir"
     workdir.mkdir()
     _patch_runtime(monkeypatch)
     monkeypatch.chdir(tmp_path)
@@ -1213,13 +1210,13 @@ def test_run_command_restore_progress_shows_what_the_start_publishes_once(
         AgentLoadFinished(agent_profile="Headless", session_id="session-1"),
     ]
 
-    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc"]) == 0
+    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123"]) == 0
 
     out = capsys.readouterr()
     assert out.out == "final text\n"
     lines = out.err.splitlines()
     assert lines[:4] == [
-        "• Restoring session abc…",
+        "• Restoring session abc123abc123…",
         "• Connecting MCP server github…",
         "Warning: github: refused",
         "• Restored session session1 · Reviewer · Fake Model",
@@ -1241,7 +1238,7 @@ def test_run_command_quiet_restore_shows_a_warning_the_start_publishes_once(
     ]
     FakeHost.run_events = [Warning(code=refused.code, message=refused.message)]
 
-    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--quiet"]) == 0
+    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123", "--quiet"]) == 0
 
     out = capsys.readouterr()
     assert out.out == "final text\n"
@@ -1803,27 +1800,15 @@ def test_fixed_failures_stay_english_across_locales(
             ),
             "session_not_found",
             "Session not found: deadbeef",
-            id="session-without-recent",
-        ),
-        pytest.param(
-            lambda: SessionNotFoundError(
-                "Session not found: deadbeef. Recent sessions: aabbcc, ddeeff",
-                display_message=session_host_module._SESSION_NOT_FOUND_WITH_RECENT.bind(
-                    session_id="deadbeef",
-                    recent=DisplaySequence(("aabbcc", "ddeeff")),
-                ),
-            ),
-            "session_not_found",
-            "Session not found: deadbeef. Recent sessions: aabbcc, ddeeff",
-            id="session-with-recent",
+            id="session-not-found",
         ),
         pytest.param(
             lambda: AmbiguousSessionIdError(
-                "Session id 'abc' is ambiguous.",
-                display_message=session_host_module._SESSION_ID_AMBIGUOUS.bind(session_id="abc"),
+                "Session id 'abc123abc123' is ambiguous.",
+                display_message=SESSION_ID_AMBIGUOUS.bind(session_id="abc123abc123"),
             ),
             "session_ambiguous",
-            "Session id 'abc' is ambiguous.",
+            "Session id 'abc123abc123' is ambiguous.",
             id="ambiguous-session",
         ),
         pytest.param(

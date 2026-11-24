@@ -103,7 +103,7 @@ if TYPE_CHECKING:
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.judge import JudgeVerdict
-    from chrys.service.context.providers.history import CompressedBlock
+    from chrys.service.state.folds import FoldItem
     from chrys.service.state.store import StateStore
 
 logger = logging.getLogger(__name__)
@@ -893,7 +893,7 @@ class MainScreenViewAdapter:
         *,
         initial_profile: str,
         file_snapshots: dict[FileSnapshotKey, list[FileSnapshotPayload]] | None,
-        compressed_blocks: dict[str, CompressedBlock] | None,
+        folds: list[FoldItem] | None,
         recovered_from_sidecar: bool = False,
         rollback_targets: set[int] | None = None,
     ) -> None:
@@ -901,7 +901,7 @@ class MainScreenViewAdapter:
             messages,
             initial_profile=initial_profile,
             file_snapshots=file_snapshots,
-            compressed_blocks=compressed_blocks,
+            folds=folds,
             recovered_from_sidecar=recovered_from_sidecar,
             rollback_targets=rollback_targets,
         )

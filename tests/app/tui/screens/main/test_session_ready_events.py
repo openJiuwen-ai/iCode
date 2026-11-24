@@ -282,7 +282,7 @@ def test_agent_runtime_updated_refreshes_resource_counts_without_model_trail() -
         skill_details=[RuntimeSkillDetails(name="unit-converter", description="Convert units")],
         hook_sources=[
             RuntimeHookSourceDetails(
-                scope="project",
+                scope="workdir",
                 hooks=[
                     RuntimeHookDetails(id="guard", enabled=True),
                     RuntimeHookDetails(id="disabled", enabled=False),

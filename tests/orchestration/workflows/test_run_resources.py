@@ -20,7 +20,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -34,7 +34,7 @@ async def test_file_writes_share_one_period_across_retries_then_open_a_new_perio
 ) -> None:
     # The timeout is retried in place; its production backoff would only add seconds.
     monkeypatch.setattr(agent_node_build_module, "RETRY_BACKOFF_SCHEDULE", (0,))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     file = project / "target.txt"
     file.write_text("before")
     client = MockChatClient(responses=[])
@@ -100,7 +100,7 @@ async def test_history_selection_does_not_change_the_executing_event_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     host = make_host(tmp_path, project=project)
     try:

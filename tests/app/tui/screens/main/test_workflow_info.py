@@ -22,7 +22,7 @@ from chrys.app.tui.screens.main import workflow_content
 from chrys.app.tui.widgets.workflow.info import WorkflowInfo
 from chrys.foundation.config.settings import Settings
 from chrys.service.workflows.layout import SPEC_FILE
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, resize_when_settled, rich_plain
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -51,7 +51,7 @@ def _nodes(info: WorkflowInfo) -> str:
 async def test_loaded_info_reuses_metadata_and_preserves_reading_position(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locale: str, theme: str, size: tuple[int, int]
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), settings=Settings(locale=locale, theme=theme))
     async with app.run_test(size=size) as pilot:
@@ -130,7 +130,7 @@ async def test_loaded_info_reuses_metadata_and_preserves_reading_position(
 async def test_info_uses_selected_runs_saved_environment_and_discards_late_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     entered, release = Event(), Event()
@@ -201,7 +201,7 @@ async def test_info_uses_selected_runs_saved_environment_and_discards_late_reads
 async def test_new_preview_cannot_replace_selected_runs_info_or_poison_its_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(
         project, "sample", python_workflow("def original(value):\n    return value\n", "original", title="Original R1")

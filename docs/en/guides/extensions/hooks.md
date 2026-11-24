@@ -8,13 +8,13 @@ To check or change tool calls with Python functions that run inside iCode, a Pyt
 
 > **Security notice**
 >
-> Hooks run directly with the current user's permissions, without tool approval or sandbox restrictions. Before enabling hooks included in a project, inspect their configuration files and the scripts and commands they run.
+> Hooks run directly with the current user's permissions, without tool approval or sandbox restrictions. Before enabling hooks included in a working directory, inspect their configuration files and the scripts and commands they run.
 >
 > Hooks may receive conversation content, tool arguments, and tool results. If a hook sends this data to an external service, check whether it contains sensitive information.
 
 ## Create your first hook
 
-The following steps create a project hook in the working directory of the current iCode session. It applies only to this working directory and appends the turn status to `hook-events.log` in that directory after each turn ends.
+The following steps add a hook for the current session’s working directory. After each turn, it appends the turn status to `hook-events.log` in that directory.
 
 ### 1. Create the configuration
 
@@ -59,15 +59,15 @@ To check the configuration, run this in a terminal in the working directory:
 icode hook validate
 ```
 
-It checks the project and global hook files without running any hook. It lists each problem with its file and line, then ends with `PASS` when no errors are found, or `FAIL` and the number of errors. Fix what it reports and run it again until it prints a line like this:
+It checks the working directory and global hook files without running any hook. It lists each problem with its file and line, then ends with `PASS` when no errors are found, or `FAIL` and the number of errors. Fix what it reports and run it again until it prints a line like this:
 
 ```text
 PASS 1 file · 1 hook
 ```
 
-Project hooks are not loaded by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Safety**. If it is already on, run `/reload` while idle, switch sessions, or restart iCode to apply the configuration on disk.
+Working directory hooks are not loaded by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn on **Load working directory hooks** in the **Working directory trust** section of **Safety**. If it is already on, run `/reload` while idle, switch sessions, or restart iCode to apply the configuration on disk.
 
-Run `icode hook list` to see the hooks a session started in this directory loads. The `Project hooks` line should end with `(loaded)`, with `record-turn` listed below it.
+Run `icode hook list` to see the hooks a session started in this directory loads. The `Working directory hooks` line should end with `(loaded)`, with `record-turn` listed below it.
 
 In the TUI, enter `/runtime` and open the **Hooks** tab. You should see `record-turn`. Submit a message and wait for the current turn to end, then check `hook-events.log` in the working directory. It should contain a line like this:
 
@@ -211,12 +211,12 @@ An asynchronous hook (`async`) does not delay the event that triggered it or the
 
 ## Apply edits with /reload
 
-After you edit a hooks file, run `/reload` while the session is idle. It reads the global hooks file and, if **Load project hooks** is on, the project one. The next event uses what you saved.
+After you edit a hooks file, run `/reload` while the session is idle. It reads the global hooks file and, if **Load working directory hooks** is on, the working directory one. The next event uses what you saved.
 
 - **Nothing changed**: your hooks carry on undisturbed, including any `async` hook that is still running.
 - **Rules changed**: the new rules replace the old ones. iCode ends the old set the way it does when a session ends: it waits for running `async` hooks within the wait limit, then stops any that remain. `session_start` hooks don't run again.
 - **A file can't be read, or a rule in it is invalid**: iCode keeps every rule now in effect, so a rule that was blocking an operation goes on blocking it. The summary names the file and the rule. Fix the file and run `/reload` again. To remove a rule on purpose, delete it or set `enabled: false`.
-- **The same edit turns project hooks on or off, and a hooks file has a problem**: the reload stops and nothing changes, settings included. The message names the problem and says whether project hooks are still loaded.
+- **The same edit turns working directory hooks on or off, and a hooks file has a problem**: the reload stops and nothing changes, settings included. The message names the problem and says whether working directory hooks are still loaded.
 
 A `/btw` question doesn't hold up the reload. If its hook check is still running when the rules are replaced, the question ends with a failure and nothing is sent to the model, so ask it again. A question that has already passed its check finishes as usual.
 
@@ -237,4 +237,4 @@ The examples above all live in `.chrys/hooks` in the current working directory a
 | macOS and Linux | `~/.chrys/hooks/hooks.yaml` |
 | Windows | `%APPDATA%\chrys\hooks\hooks.yaml` |
 
-Project and global configurations can be loaded together. For execution order across both locations, duplicate IDs, and `settings` merge rules, see [Execution order and configuration merging for multiple hooks](../../reference/hooks.md#execution-order-and-configuration-merging-for-multiple-hooks).
+Working directory and global configurations can be loaded together. For execution order across both locations, duplicate IDs, and `settings` merge rules, see [Execution order and configuration merging for multiple hooks](../../reference/hooks.md#execution-order-and-configuration-merging-for-multiple-hooks).

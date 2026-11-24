@@ -19,7 +19,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     of_type,
     patch_runtime,
     run,
@@ -50,7 +50,7 @@ async def test_workflow_agent_node_passes_profile_web_configuration(
         return original(categories, settings, search, fetch, **kwargs)
 
     monkeypatch.setattr(web_build, "assemble_web_tools", capture)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "web", _workflow("WebOff"))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])
     try:
@@ -71,7 +71,7 @@ async def test_workflow_agent_node_warns_when_hosted_web_suppresses_local_tool(
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="done")])])
     monkeypatch.setattr(agent_node_build, "effective_chat_options", lambda _model: {"tools": [{"type": "web_search"}]})
     profile = make_profile(name="HostedWeb", builtins=("web_search",))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "hosted-web", _workflow(profile.name))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])
     try:
@@ -97,7 +97,7 @@ async def test_workflow_agent_node_rejects_duplicate_hosted_web_names(
         lambda _model: {"tools": [{"type": "web_search"}, {"type": "web_search_preview"}]},
     )
     profile = make_profile(name="DuplicateHostedWeb")
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "duplicate-hosted-web", _workflow(profile.name))
     host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])
     try:

@@ -24,7 +24,7 @@ from tests.app.tui.screens.main._workflow_support import (
     switch_mode,
     workflow_selection,
 )
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
@@ -68,7 +68,7 @@ async def _requests(bus: EventBus) -> list[events.WorkflowRunRequest]:
 async def test_workflow_tab_follows_its_run_through_waits_to_the_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     tab = _Tab(monkeypatch)
     engine, bus = WorkflowEngine(), EventBus()
     requests = await _requests(bus)
@@ -156,7 +156,7 @@ async def test_workflow_tab_settles_on_the_run_result(
     started: bool,
     mark: str,
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     tab = _Tab(monkeypatch)
     engine, bus = WorkflowEngine(), EventBus()
     requests = await _requests(bus)
@@ -190,7 +190,7 @@ async def test_workflow_tab_settles_on_the_run_result(
 async def test_switching_app_mode_swaps_the_tab_and_drops_the_chat_mark(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     tab = _Tab(monkeypatch)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=EventBus())
     async with app.run_test(size=(140, 45)) as pilot:

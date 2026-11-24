@@ -317,7 +317,7 @@ async def test_workspace_change_derives_settings_from_the_new_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A workspace change is a settings reload in disguise: the new root's
-    project layer rides the same rebuild that installs the new workspace."""
+    workdir layer rides the same rebuild that installs the new workspace."""
     profile = _profile()
     old_root = tmp_path / "old"
     old_root.mkdir()
@@ -338,7 +338,7 @@ async def test_workspace_change_derives_settings_from_the_new_root(
 
     await engine._on_workspace_change(WorkspaceChange(primary_cwd=str(new_root)))
 
-    assert load_kwargs["project_root"] == Path(Workspace.from_cwd(str(new_root)).primary_cwd)
+    assert load_kwargs["workdir"] == Path(Workspace.from_cwd(str(new_root)).primary_cwd)
     assert engine.settings is replacement_settings
 
 

@@ -82,7 +82,7 @@ async def test_main_marks_durable_job_done_and_cleans_temp_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     outbox_root = tmp_path / "outbox"
-    job = Outbox(outbox_root).write_pending(hook_id="done", event="after_turn", payload={"x": 1})
+    job = Outbox(outbox_root).write_pending(hook_id="done", event="after_turn", payload={"x": 1}, hook_source="project")
     invocation, payload, result = _write_invocation(tmp_path, outbox_root=outbox_root, job=job)
 
     async def _success(_cmd: list[str], *, cwd: str, env: dict[str, str]) -> int:
@@ -94,8 +94,45 @@ async def test_main_marks_durable_job_done_and_cleans_temp_files(
 
     assert await detached_worker._main(invocation) == 0
     assert _job_file(outbox_root, DONE, job)["state"] == DONE
+    assert _job_file(outbox_root, DONE, job)["hook_source"] == "workdir"
     assert not (outbox_root / PENDING / f"{job.job_id}.json").exists()
     assert all(not path.exists() for path in (invocation, payload, result))
+
+
+@pytest.mark.asyncio
+async def test_detached_worker_skips_a_job_completed_after_handoff(tmp_path, monkeypatch):
+    outbox = Outbox(tmp_path / "outbox")
+    job = outbox.write_pending(hook_id="done", event="after_turn", payload={})
+    invocation, payload, result = _write_invocation(tmp_path, outbox_root=outbox.root, job=job)
+    pending = outbox.root / PENDING / f"{job.job_id}.json"
+    pending_bytes = pending.read_bytes()
+    outbox.mark_done(job, exit_code=0)
+    pending.write_bytes(pending_bytes)
+    terminal = outbox.root / DONE / f"{job.job_id}.json"
+    original = terminal.read_bytes()
+
+    async def run_child(*args, **kwargs):
+        pytest.fail("worker re-executed a terminal job")
+
+    monkeypatch.setattr(detached_worker, "_run_child", run_child)
+    assert await detached_worker._main(invocation) == 0
+    assert terminal.read_bytes() == original
+    assert pending.read_bytes() == pending_bytes
+    assert all(not path.exists() for path in (invocation, payload, result))
+
+
+async def test_main_launches_the_hook_before_recreating_the_outbox(tmp_path, monkeypatch):
+    root = tmp_path / "missing-outbox"
+    job = OutboxJob(job_id="0123456789abcdef", hook_id="done", event="after_turn", payload={}, created_at="")
+    invocation, _, _ = _write_invocation(tmp_path, outbox_root=root, job=job)
+
+    async def run_child(*args, **kwargs):
+        assert not root.exists()
+        return 0
+
+    monkeypatch.setattr(detached_worker, "_run_child", run_child)
+    assert await detached_worker._main(invocation) == 0
+    assert _job_file(root, DONE, job)["state"] == DONE
 
 
 @pytest.mark.asyncio
@@ -165,8 +202,16 @@ async def test_main_reports_unreadable_invocation(tmp_path: Path, capsys: pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "job",
+    [
+        {"unexpected": "field"},
+        {"job_id": "invalid", "hook_id": "h", "event": "after_turn", "payload": {}, "created_at": ""},
+    ],
+)
 async def test_main_tolerates_malformed_outbox_job_dict(
     tmp_path: Path,
+    job: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -175,7 +220,7 @@ async def test_main_tolerates_malformed_outbox_job_dict(
     invocation, _payload, _result = _write_invocation(
         tmp_path,
         outbox_root=outbox_root,
-        job={"unexpected": "field"},
+        job=job,
     )
 
     async def _success(_cmd: list[str], *, cwd: str, env: dict[str, str]) -> int:

@@ -72,8 +72,8 @@ from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolGroup
-from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
-from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
+from chrys.app.tui.widgets.chrome.file_index import WorkdirPathIndex
+from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult, WorkdirPathSuggestion
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.diff_view import DiffView
 from chrys.app.tui.widgets.diff_view.code import CodeColumn
@@ -412,15 +412,15 @@ def _build_app(
     return app, updater
 
 
-def _build_file_cache(count: int) -> tuple[ProjectPathScanResult, ProjectPathIndex]:
+def _build_file_cache(count: int) -> tuple[WorkdirPathScanResult, WorkdirPathIndex]:
     paths = [
-        ProjectPathSuggestion(f"src/package_{index // 100:04d}/module_{index:06d}.py", "file") for index in range(count)
+        WorkdirPathSuggestion(f"src/package_{index // 100:04d}/module_{index:06d}.py", "file") for index in range(count)
     ]
-    scan = ProjectPathScanResult.from_suggestions(root="/calibration", paths=paths)
-    return scan, ProjectPathIndex.build(scan)
+    scan = WorkdirPathScanResult.from_suggestions(root="/calibration", paths=paths)
+    return scan, WorkdirPathIndex.build(scan)
 
 
-def _install_file_cache(screen: MainScreen, count: int) -> ProjectPathIndex:
+def _install_file_cache(screen: MainScreen, count: int) -> WorkdirPathIndex:
     _scan, index = _build_file_cache(count)
     suggestions = screen._suggestions
     suggestions._file_index_for(suggestions._current_file_root()).snapshot = index
@@ -688,7 +688,7 @@ async def _exercise_fixed_latency_generation(
     pilot,
     panel: ChatPanel,
     terminal: Terminal,
-    file_index: ProjectPathIndex,
+    file_index: WorkdirPathIndex,
     generation: int,
     background: _BackgroundState,
 ) -> None:
@@ -723,7 +723,7 @@ async def _measure_absorb_latency_samples(
     pilot,
     panel: ChatPanel,
     terminal: Terminal,
-    file_index: ProjectPathIndex,
+    file_index: WorkdirPathIndex,
     background: _BackgroundState,
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
     samples: list[float] = []
@@ -750,7 +750,7 @@ async def _exercise_generation(
     pilot,
     panel: ChatPanel,
     terminal: Terminal,
-    file_index: ProjectPathIndex,
+    file_index: WorkdirPathIndex,
     generation: int,
     theme_invalidation: bool,
     viewport_invalidation: bool,
@@ -807,7 +807,7 @@ async def _measure_interval(
     pilot,
     panel: ChatPanel,
     terminal: Terminal,
-    file_index: ProjectPathIndex,
+    file_index: WorkdirPathIndex,
     absorbs: int,
     exercise_final_generation: bool,
     theme_invalidation: bool,

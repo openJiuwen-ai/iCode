@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.36.0\n"
+"Project-Id-Version: Chrys 0.37.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -168,13 +168,6 @@ msgstr "无法加载全局钩子配置：{detail}。已禁用全局钩子。"
 msgid "construction.hook_skipped"
 msgstr "已跳过 {path} 中的钩子“{hook_id}”：{detail}。该文件中的其他钩子仍会运行。"
 
-#. English: Project hooks config could not be loaded: {detail}. Project hooks
-#. disabled; global hooks unaffected.
-#. chrys-meta={"fingerprint":"9839468e9ee83c7dc2f6f497db1b93d2ffe39523039e736b1af7248098a200f4","multiline":true,"placeholders":["detail"]}
-#: src/chrys/orchestration/session_hooks.py
-msgid "construction.project_hooks_invalid"
-msgstr "无法加载项目钩子配置：{detail}。已禁用项目钩子；全局钩子不受影响。"
-
 #. English: The previous OpenAI Responses service session is not compatible
 #. with the active agent profile, workspace, model profile, service endpoint,
 #. or storage is disabled. {app_name} will continue from local history only.
@@ -189,6 +182,13 @@ msgstr "先前的 OpenAI Responses 服务会话与当前智能体配置、工作
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "construction.trajectory_activation_failed"
 msgstr "此会话的详细轨迹记录已关闭，任务可以继续。"
+
+#. English: Working directory hooks config could not be loaded: {detail}.
+#. Working directory hooks disabled; global hooks unaffected.
+#. chrys-meta={"fingerprint":"45003c9e83e2484f615093cf835736a8e180f8a70e1b34ff7897e5f014fc6705","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/session_hooks.py
+msgid "construction.workdir_hooks_invalid"
+msgstr "无法加载工作目录钩子配置：{detail}。已禁用工作目录钩子；全局钩子不受影响。"
 
 #. English: Model profile '{profile_id}' not found
 #. chrys-meta={"fingerprint":"5a33b040dd79831725bbe1011477eb6f0fe317752443876f63310bc532486969","multiline":false,"placeholders":["profile_id"]}
@@ -258,27 +258,27 @@ msgstr "等待刷新设置时，上一回合已被取消。"
 msgid "controls.reload_drain_failed"
 msgstr "刷新设置前无法完成上一回合的收尾：{detail}"
 
-#. English: Reload stopped: the hooks the new project trust setting needs can't
-#. be used. {detail} Settings and hooks stay as they were, with project hooks
-#. still loaded.
-#. chrys-meta={"fingerprint":"6c046aaeb3be103e7340a9bf62d5ad06359c3a76b0a21d842348b24fe608fc35","multiline":true,"placeholders":["detail"]}
+#. English: Reload stopped: the hooks the new working directory trust setting
+#. needs can't be used. {detail} Settings and hooks stay as they were, with
+#. working directory hooks still loaded.
+#. chrys-meta={"fingerprint":"5cd3ab03bd6fbe060d2a77f45b3bab946588e4a6b32c916b5d64579d93560049","multiline":true,"placeholders":["detail"]}
 #: src/chrys/orchestration/engine/reload_resources.py
 msgid "controls.reload_hook_trust_failed_loaded"
 msgstr ""
-"刷新已停止：新的项目信任设置所需的钩子无法使用。\n"
+"刷新已停止：新的工作目录信任设置所需的钩子无法使用。\n"
 "{detail}\n"
-"设置和钩子保持原样，项目钩子仍然加载。"
+"设置和钩子保持原样，工作目录钩子仍然加载。"
 
-#. English: Reload stopped: the hooks the new project trust setting needs can't
-#. be used. {detail} Settings and hooks stay as they were, with project hooks
-#. still not loaded.
-#. chrys-meta={"fingerprint":"43d62042627309f1d98fc56b9f0b0547c2b98cd1d05cf09a73bde3b73c1fc8ba","multiline":true,"placeholders":["detail"]}
+#. English: Reload stopped: the hooks the new working directory trust setting
+#. needs can't be used. {detail} Settings and hooks stay as they were, with
+#. working directory hooks still not loaded.
+#. chrys-meta={"fingerprint":"08347ad8bfd320af92f1db9c5d617ab98f63df2768ac565696d4bdb0897098e0","multiline":true,"placeholders":["detail"]}
 #: src/chrys/orchestration/engine/reload_resources.py
 msgid "controls.reload_hook_trust_failed_not_loaded"
 msgstr ""
-"刷新已停止：新的项目信任设置所需的钩子无法使用。\n"
+"刷新已停止：新的工作目录信任设置所需的钩子无法使用。\n"
 "{detail}\n"
-"设置和钩子保持原样，项目钩子仍未加载。"
+"设置和钩子保持原样，工作目录钩子仍未加载。"
 
 #. English: Hooks were not updated; the previous rules stay in effect. {detail}
 #. chrys-meta={"fingerprint":"aabb75f0f22eb539222b8d19f7751517d251f21e6dcb061bdb59e498af8eadf1","multiline":true,"placeholders":["detail"]}
@@ -1149,7 +1149,7 @@ msgstr "智能体运行结束，但未产生最终响应。"
 
 #. English: Session id '{session_id}' is ambiguous.
 #. chrys-meta={"fingerprint":"7a4b38c8e36f7b43409958f620a82031a04f677667fcbd35dbc80e38f1a414cd","multiline":false,"placeholders":["session_id"]}
-#: src/chrys/orchestration/session_host.py
+#: src/chrys/service/state/store.py
 msgid "session_host.session_id_ambiguous"
 msgstr "会话 ID“{session_id}”存在歧义。"
 
@@ -1158,12 +1158,6 @@ msgstr "会话 ID“{session_id}”存在歧义。"
 #: src/chrys/orchestration/session_host.py
 msgid "session_host.session_not_found"
 msgstr "未找到会话：{session_id}"
-
-#. English: Session not found: {session_id}. Recent sessions: {recent}
-#. chrys-meta={"fingerprint":"c6f535c1d40398747bd66b1b7e6837d061de9f2ad4d5e2a7dbb71f6971b11582","multiline":false,"placeholders":["recent","session_id"]}
-#: src/chrys/orchestration/session_host.py
-msgid "session_host.session_not_found_with_recent"
-msgstr "未找到会话：{session_id}。最近的会话：{recent}"
 
 #. English: Default agent
 #. chrys-meta={"fingerprint":"800a58a17262c78efa6122e11e8aa85790deaef7285325ca159e0f50e71e52d9","multiline":false,"placeholders":[]}
@@ -1226,11 +1220,11 @@ msgstr "上下文警告阈值"
 msgid "settings.document_invalid_mapping"
 msgstr "{path}：需要符合配置大小限制的 YAML 映射。"
 
-#. English: {path}: unreadable or invalid project YAML document.
-#. chrys-meta={"fingerprint":"15a37c04d7af60e8771c143eea5df927b6a5194b6337a16ca1ec0f59b69a4a36","multiline":false,"placeholders":["path"]}
+#. English: {path}: unreadable or invalid working directory YAML document.
+#. chrys-meta={"fingerprint":"46691db4d4fcdd8e34fb301797af5eba025c5a24faa55542c03da29b5970b8b6","multiline":false,"placeholders":["path"]}
 #: src/chrys/foundation/config/yaml_store.py
-msgid "settings.document_invalid_project"
-msgstr "{path}：项目 YAML 文件不可读或格式无效。"
+msgid "settings.document_invalid_workdir"
+msgstr "{path}：工作目录 YAML 文件不可读或格式无效。"
 
 #. English: {path}: invalid YAML or text encoding.
 #. chrys-meta={"fingerprint":"3985e4208171c02cddda226d697dcdc8006c5ee3993618bfcc1d3ac9a84ca027","multiline":false,"placeholders":["path"]}
@@ -1444,49 +1438,6 @@ msgstr "遥测端点"
 msgid "settings.otel.sensitive_data.label"
 msgstr "遥测中包含敏感数据"
 
-#. English: Load project settings
-#. chrys-meta={"fingerprint":"2a87f33f6c3c6354f36d0b6af25cea969f5d50769c8cff67a1730759ba21be09","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.project.config_enabled.label"
-msgstr "加载项目设置"
-
-#. English: Load project hooks
-#. chrys-meta={"fingerprint":"2aaab6464ac86e0c96020b41474a39b035a75875637a6a78b74e9e9fb75df16b","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.project.hooks_enabled.label"
-msgstr "加载项目钩子"
-
-#. English: Load project skills
-#. chrys-meta={"fingerprint":"b61cadb426631200c2b3bae39f2d7327581e11726f2d5bc6dd1f029a5c5805c5","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.project.skills_enabled.label"
-msgstr "加载项目 Skills"
-
-#. English: Found project settings in {path} ({keys}), but they are not loaded.
-#. To apply them, turn on Load project settings under Settings → Safety →
-#. Project trust (project.config_enabled).
-#. chrys-meta={"fingerprint":"0da01f2749b1cbfc944e1ebe38724c1ca1797004a728fb60dccd5a169e91a645","multiline":false,"placeholders":["keys","path"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.project_config_dormant"
-msgstr "在 {path} 中发现项目设置（{keys}），但尚未加载。如需应用，请在 设置 → 安全管控 → 项目信任 中勾选“加载项目设置”（project.config_enabled）。"
-
-#. English: Found project hooks in {path}, but they are not loaded. To run
-#. them, turn on Load project hooks under Settings → Safety → Project trust
-#. (project.hooks_enabled).
-#. chrys-meta={"fingerprint":"cd4a080a5c645b5c000b009e2f3b7981fad1f1a623166d31bd3594ae47020d2e","multiline":false,"placeholders":["path"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.project_hooks_dormant"
-msgstr "在 {path} 中发现项目钩子，但尚未加载。如需运行，请在 设置 → 安全管控 → 项目信任 中勾选“加载项目钩子”（project.hooks_enabled）。"
-
-#. English: Found project skills in {path}. They are not loaded automatically;
-#. to load them, turn on Load project skills under Settings → Safety → Project
-#. trust (project.skills_enabled) and keep the agent's Load skills from working
-#. folder option on.
-#. chrys-meta={"fingerprint":"4c94c15d7a79a9735c3584fae604120142833197ede868e8ee4e071a4072fc6c","multiline":false,"placeholders":["path"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.project_skills_dormant"
-msgstr "在 {path} 中发现项目 Skills，不会自动加载。如需加载，请在 设置 → 安全管控 → 项目信任 中勾选“加载项目 Skills”（project.skills_enabled），并保持智能体的“从工作文件夹加载 Skills”选项开启。"
-
 #. English: Ignoring {source}={raw}: expected a boolean.
 #. chrys-meta={"fingerprint":"f804369b50e63015f7f5a7096b0d54c6de66e96fd168736853c1690d0ad9c6e2","multiline":false,"placeholders":["raw","source"]}
 #: src/chrys/foundation/config/warnings.py
@@ -1542,19 +1493,6 @@ msgstr "已忽略 {source}={raw}：应为非负整数。"
 msgid "settings.rejected.number"
 msgstr "已忽略 {source}={raw}：应为数值。"
 
-#. English: Ignoring {source}: projects may not set this key.
-#. chrys-meta={"fingerprint":"b6855da737c500323618337ec2fb2d033c9ce9521e6904500c99510af7e88b00","multiline":false,"placeholders":["source"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.rejected.project_key"
-msgstr "已忽略 {source}：项目不可设置此键。"
-
-#. English: Ignoring {source}={raw}: a project may only tighten this setting,
-#. not loosen it.
-#. chrys-meta={"fingerprint":"9ee589c3aaceb4e4212e896acbe9855a3b94aef7d3dbec35642bbe2f8b66a7ed","multiline":false,"placeholders":["raw","source"]}
-#: src/chrys/foundation/config/warnings.py
-msgid "settings.rejected.project_loosens"
-msgstr "已忽略 {source}={raw}：项目只能收紧此设置，不能放宽。"
-
 #. English: Ignoring {source}={raw}: expected text.
 #. chrys-meta={"fingerprint":"0ae0fe6c721a479b0ac3021484667308b6d57d531ae1afcd941e97ada85a14f6","multiline":false,"placeholders":["raw","source"]}
 #: src/chrys/foundation/config/warnings.py
@@ -1567,6 +1505,19 @@ msgstr "已忽略 {source}={raw}：应为文本。"
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.rejected.web_origin"
 msgstr "已忽略 {source}={raw}：每个地址都必须是 http(s) 来源，例如 https://example.com，不能包含路径或凭据。"
+
+#. English: Ignoring {source}: working directories may not set this key.
+#. chrys-meta={"fingerprint":"94a18068f6e67846f746dc55339354f1d3759eec2215d7d8b4f023296144b0fe","multiline":false,"placeholders":["source"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.rejected.workdir_key"
+msgstr "已忽略 {source}：工作目录设置不能覆盖此键。"
+
+#. English: Ignoring {source}={raw}: a working directory may only tighten this
+#. setting, not loosen it.
+#. chrys-meta={"fingerprint":"45646c5a81445e79da5abc292de9faed6663f2231481804e08ea43147827bada","multiline":false,"placeholders":["raw","source"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.rejected.workdir_loosens"
+msgstr "已忽略 {source}={raw}：工作目录设置只能收紧此键。"
 
 #. English: Rollback snapshots to keep
 #. chrys-meta={"fingerprint":"55a31d3a59a160b084b2c00427b9b4009b1c6974d00ce8a18793394ff3d1fb95","multiline":false,"placeholders":[]}
@@ -1754,6 +1705,49 @@ msgstr "主题"
 msgid "settings.unknown_keys"
 msgstr "已忽略 {path} 中的未知设置键：{keys}。"
 
+#. English: Load working directory settings
+#. chrys-meta={"fingerprint":"27441e229fc05ab3b1a21f9ba211090c013bdef3e1b52f4b719a2e96ed8e04db","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.workdir.config_enabled.label"
+msgstr "加载工作目录设置"
+
+#. English: Load working directory hooks
+#. chrys-meta={"fingerprint":"5572c3a67b01ff2e45ab5f0ce459f9b6514eb1f0b9ac9a6cdec23993cc271fc8","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.workdir.hooks_enabled.label"
+msgstr "加载工作目录钩子"
+
+#. English: Load working directory skills
+#. chrys-meta={"fingerprint":"ecd3b2bff3afe93c14c4cf9439ffbb0e642558093d278b835dc127d34fa4f370","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.workdir.skills_enabled.label"
+msgstr "加载工作目录 Skills"
+
+#. English: Found working directory settings in {path} ({keys}), but they are
+#. not loaded. To apply them, turn on Load working directory settings under
+#. Settings → Safety → Working directory trust (workdir.config_enabled).
+#. chrys-meta={"fingerprint":"d4ea2bf11a982fbe64fbfaa7395ae4edd616e7376a2e25586234920fbb98110d","multiline":false,"placeholders":["keys","path"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.workdir_config_dormant"
+msgstr "在 {path} 中发现工作目录设置（{keys}），但尚未加载。如需应用，请在 设置 → 安全管控 → 工作目录信任 中勾选“加载工作目录设置”（workdir.config_enabled）。"
+
+#. English: Found working directory hooks in {path}, but they are not loaded.
+#. To run them, turn on Load working directory hooks under Settings → Safety →
+#. Working directory trust (workdir.hooks_enabled).
+#. chrys-meta={"fingerprint":"57a5337db2813842616aed7c368512c007dcc3a88276f8dcd387d29ed2b1abb0","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.workdir_hooks_dormant"
+msgstr "在 {path} 中发现工作目录钩子，但尚未加载。如需运行，请在 设置 → 安全管控 → 工作目录信任 中勾选“加载工作目录钩子”（workdir.hooks_enabled）。"
+
+#. English: Found working directory skills in {path}. They are not loaded
+#. automatically; to load them, turn on Load working directory skills under
+#. Settings → Safety → Working directory trust (workdir.skills_enabled) and
+#. keep the agent's Load skills from working folder option on.
+#. chrys-meta={"fingerprint":"31eef15589a88494ebc8e113c924c5d8a2408a9d675c5ce374dee32bd03e3698","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.workdir_skills_dormant"
+msgstr "在 {path} 中发现工作目录 Skills，不会自动加载。如需加载，请在 设置 → 安全管控 → 工作目录信任 中勾选“加载工作目录 Skills”（workdir.skills_enabled），并保持智能体的“从工作文件夹加载 Skills”选项开启。"
+
 #. English: Workspace change notices
 #. chrys-meta={"fingerprint":"5a97c1c496d19d152fde8fb46c8b00d790b570e106aaadba7f89a2cbc893dd51","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -1809,6 +1803,36 @@ msgstr "无法导入以往的通知偏好，下次启动时将重试。"
 #: src/chrys/orchestration/startup.py
 msgid "startup.raw_http_capture_on"
 msgstr "原始 HTTP 抓包已开启（{source}）：请求与响应日志会原样记录 API key、提示词和模型输出。用完请及时关闭。"
+
+#. English: Migrated working directory data in {files}. Backups are in
+#. {backup}.
+#. chrys-meta={"fingerprint":"e24e55b484e7ab1922fef0d92f86d3f11f6d873d73dcb72ca413a1915a09577f","multiline":false,"placeholders":["backup","files"]}
+#: src/chrys/orchestration/workdir_migration.py
+msgid "startup.workdir_data_migrated"
+msgstr "已迁移工作目录数据（{files}）。备份位于 {backup}。"
+
+#. English: Could not read working directory data at {path} ({error}).
+#. English-plural: Could not read working directory data at {count} paths,
+#. including {path} ({error}).
+#. chrys-meta={"fingerprint":"47a264c468640e403bd29364af0e1fb7b4eb24c376ee27ece7ac8a1623b11ed1","multiline":false,"placeholders":["error","path"]}
+#: src/chrys/orchestration/workdir_migration.py
+msgid "startup.workdir_data_migration_failed"
+msgid_plural "startup.workdir_data_migration_failed#plural"
+msgstr[0] "有 {count} 处工作目录数据无法读取，其中包括 {path}（{error}）。"
+
+#. English: Left {count} malformed approval row unmigrated in {path}.
+#. English-plural: Left {count} malformed approval rows unmigrated in {path}.
+#. chrys-meta={"fingerprint":"2de8c89505cd37e67fd661e2bd1ec0baa9de870b48f90dd5e3195a002943b94a","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/workdir_migration.py
+msgid "startup.workdir_grants_unmigrated"
+msgid_plural "startup.workdir_grants_unmigrated#plural"
+msgstr[0] "{path} 中有 {count} 条格式错误的审批记录未迁移。"
+
+#. English: Disabled conflicting working directory trust settings ({keys}).
+#. chrys-meta={"fingerprint":"add94e06d8f05fa5dd64d5244b93cf59287af9f374f7dd4ac56235b9ef295d30","multiline":false,"placeholders":["keys"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "startup.workdir_trust_conflict"
+msgstr "已关闭取值冲突的工作目录信任开关（{keys}）。"
 
 #. English: Continue
 #. chrys-meta={"fingerprint":"167e575361c5e16ba03f613cc29c5da6ba716b02f2d070a5e8a84325e46e1e26","multiline":false,"placeholders":[]}
@@ -2677,11 +2701,11 @@ msgid "tui.agent_config.skills.allowed_extensions"
 msgstr "允许的脚本扩展名"
 
 #. English: Also auto-loaded when Load skills from working folder and Load
-#. project skills are on
-#. chrys-meta={"fingerprint":"368fd9084cf4958687877508adc37f6530c8653bbe63de9ed4599f65424275c8","multiline":false,"placeholders":[]}
+#. working directory skills are on
+#. chrys-meta={"fingerprint":"a0d79e763a4cc9abe788ed755de87506630af4f7ef530b265e44bf426150af65","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/skills.py
 msgid "tui.agent_config.skills.auto_load_covered"
-msgstr "开启“从工作文件夹加载 Skills”和“加载项目 Skills”后，也会自动加载"
+msgstr "开启“从工作文件夹加载 Skills”和“加载工作目录 Skills”后，也会自动加载"
 
 #. English: Current: {path}{note}
 #. chrys-meta={"fingerprint":"ee8d7834268ff7bbfeb4c2af55076f6d2688400865331e6ed66bb14dec4f39d5","multiline":false,"placeholders":["note","path"]}
@@ -2733,13 +2757,13 @@ msgid "tui.agent_config.skills.load_working_folder"
 msgstr "从工作文件夹加载 Skills（如果存在）"
 
 #. English: Auto-load skills from the agents skills directory under the current
-#. working folder when Load project skills is on under Settings → Safety →
-#. Project trust. Reloaded automatically when the workspace cwd changes (/chdir
-#. or file picker).
-#. chrys-meta={"fingerprint":"01ee7f4d82049a5eec12eceb6435cd810664d38141638a5d6ac2dfdd04668e68","multiline":false,"placeholders":[]}
+#. working folder when Load working directory skills is on under Settings →
+#. Safety → Working directory trust. Reloaded automatically when the working
+#. directory changes (/chdir or file picker).
+#. chrys-meta={"fingerprint":"668ea359999c6ce8799f9f43bb9914ff7ca4bfc01a97d048c380b287ef4eb519","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/skills.py
 msgid "tui.agent_config.skills.load_working_folder_tooltip"
-msgstr "在 设置 → 安全管控 → 项目信任 中勾选“加载项目 Skills”后，从当前工作文件夹下的 agents Skill 目录自动加载 Skills。工作区 cwd 发生变化（/chdir 或文件选择器）时会自动重新加载。"
+msgstr "在 设置 → 安全管控 → 工作目录信任 中勾选“加载工作目录 Skills”后，从当前工作文件夹下的 agents Skill 目录自动加载 Skills。工作区 cwd 发生变化（/chdir 或文件选择器）时会自动重新加载。"
 
 #. English: Missing in current workspace
 #. chrys-meta={"fingerprint":"f3a14b222d8a443dd8b95290a39d6cae1867d4662251bbdc08514b69acb073f5","multiline":false,"placeholders":[]}
@@ -4353,18 +4377,6 @@ msgstr "修改这些文件不再询问"
 msgid "tui.approval.reuse.prefix_warning"
 msgstr "新增的危险参数（如 --force）也会免确认。"
 
-#. English: This project
-#. chrys-meta={"fingerprint":"7637c4c84143125b13e6f8e527c5ff9128977bfeb8384623411a3439fcad7511","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.reuse.project"
-msgstr "本项目"
-
-#. English: Also applies in other sessions in this project.
-#. chrys-meta={"fingerprint":"37794bc95bdcd98ec09e232ecacf9d6be3f1634327f8b6ac30bb1696a5ee4b01","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.reuse.project_hint"
-msgstr "在本项目的其他会话中也生效。"
-
 #. English: This session
 #. chrys-meta={"fingerprint":"12b3b02a90d375bfcac56fa2e2e2480dfaa6d8b3403623740039d86b07fad1d9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
@@ -4382,6 +4394,18 @@ msgstr "恢复同一会话后仍然有效。"
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.title"
 msgstr "记住审批"
+
+#. English: This working directory
+#. chrys-meta={"fingerprint":"73c1f271073a585f6a3e9402b7d4c55df975c62b4134f1d5bee46765a7f051aa","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.workdir"
+msgstr "此工作目录"
+
+#. English: Also applies in other sessions in this working directory.
+#. chrys-meta={"fingerprint":"49bb89c7a881534e18d057af5bd18567bc711a5bbc43f394ecb98d29ab3407b9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.workdir_hint"
+msgstr "同一工作目录中的其他会话也可复用。"
 
 #. English: The risk definitions could not be loaded.
 #. chrys-meta={"fingerprint":"1bb7592ee2026f1ec271d16fd198cb4be1e1677c0077172fdf0ebb09bfb07d96","multiline":false,"placeholders":[]}
@@ -7158,11 +7182,11 @@ msgstr "（未说明原因）"
 msgid "tui.hook_confirmation.source.global"
 msgstr "全局"
 
-#. English: project
-#. chrys-meta={"fingerprint":"bd23bc14344c23c37663fa3d2cbed77723dbdeb192c21123926d683137832e39","multiline":false,"placeholders":[]}
+#. English: working directory
+#. chrys-meta={"fingerprint":"52de2ca9eb66810e1c971cca14b316524a472c3f8152deb88b2ab26f3d8141db","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
-msgid "tui.hook_confirmation.source.project"
-msgstr "项目"
+msgid "tui.hook_confirmation.source.workdir"
+msgstr "工作目录"
 
 #. English: Tool: {tool} (sub-agent {agent})
 #. chrys-meta={"fingerprint":"86948b92913fdfa4875b45da70be1d1ee03c7d8c838a1e47fc8eaee14019ec2f","multiline":false,"placeholders":["agent","tool"]}
@@ -8691,20 +8715,20 @@ msgstr ""
 
 #. English: Open the token usage dialog, read from every saved session.
 #. Overview: new tokens by date range, their trend over time,     and totals by
-#. model, source, project or model profile, with each     model's speed. A
-#. model used through several of your profiles is     shown once for each.
-#. Calendar: new tokens day by day, and one day's details.      New tokens are
-#. the input not served from the provider's cache,     plus the output,
-#. thinking included. Deleted sessions and external     ACP agents are not
-#. counted.
-#. chrys-meta={"fingerprint":"a87aa08d2639c51b43157a086c097d76e872dbba2633ac4b416249d6d2bb8e62","multiline":true,"placeholders":[]}
+#. model, source, working directory or model profile, with each     model's
+#. speed. A model used through several of your profiles is     shown once for
+#. each.     Calendar: new tokens day by day, and one day's details.      New
+#. tokens are the input not served from the provider's cache,     plus the
+#. output, thinking included. Deleted sessions and external     ACP agents are
+#. not counted.
+#. chrys-meta={"fingerprint":"7456c3f79036daf1406c1232b289fe28ab2b0894af6ce364d539b4083f2aae37","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.usage.body"
 msgstr ""
 "打开 token 用量对话框，数据来自所有已保存的会话。\n"
 "\n"
 "    总览：按日期范围查看新增 token 及其趋势，\n"
-"    并按模型、来源、项目或模型配置查看合计，以及每个模型的速度。\n"
+"    并按模型、来源、工作目录或模型配置查看合计，以及每个模型的速度。\n"
 "    同一模型经多个现有的模型配置使用时，按模型配置分行显示。\n"
 "    日历：逐日查看新增 token，以及某一天的详情。\n"
 "\n"
@@ -11087,12 +11111,6 @@ msgstr "MCP 服务器"
 msgid "tui.runtime_details.section.model_profile"
 msgstr "模型配置"
 
-#. English: Project hooks
-#. chrys-meta={"fingerprint":"79d2434de4057eef6609e68b889943fd258ea146a8a269326fb0bafe30b34f42","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/runtime_details.py
-msgid "tui.runtime_details.section.project_hooks"
-msgstr "项目钩子"
-
 #. English: Sub-agent tools
 #. chrys-meta={"fingerprint":"0d6512d36c6052424a18f8c94996fdad6238f65a2149b19e1631ef2e524272e6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
@@ -11104,6 +11122,12 @@ msgstr "子智能体工具"
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
 msgid "tui.runtime_details.section.unavailable_extensions"
 msgstr "不可用的扩展"
+
+#. English: Working directory hooks
+#. chrys-meta={"fingerprint":"21f756d678fc9608a34bf85359436877fa4f8eedbf4470cbe4879d0ea7edb540","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.section.workdir_hooks"
+msgstr "工作目录钩子"
 
 #. English: Shortcuts
 #. chrys-meta={"fingerprint":"85a8e1c1cc90a21e40d54ae7f6a87925bb1028e151d567aa10f3b9c7c35005d2","multiline":false,"placeholders":[]}
@@ -11628,12 +11652,6 @@ msgstr "环境变量"
 msgid "tui.settings.badge.pinned"
 msgstr "已固定"
 
-#. English: project
-#. chrys-meta={"fingerprint":"bd23bc14344c23c37663fa3d2cbed77723dbdeb192c21123926d683137832e39","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.badge.project"
-msgstr "项目"
-
 #. English: sealed
 #. chrys-meta={"fingerprint":"1d8edbfb829fa60982c1a6e333b5a195884251b54360ef7a86d3b517b5612207","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/provenance.py
@@ -11645,6 +11663,12 @@ msgstr "已封存"
 #: src/chrys/app/tui/screens/settings/provenance.py
 msgid "tui.settings.badge.this_session"
 msgstr "本会话"
+
+#. English: working directory
+#. chrys-meta={"fingerprint":"52de2ca9eb66810e1c971cca14b316524a472c3f8152deb88b2ab26f3d8141db","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/provenance.py
+msgid "tui.settings.badge.workdir"
+msgstr "工作目录"
 
 #. English: Auto mode lets a model approve tool calls without asking you.
 #. Continue?
@@ -11882,35 +11906,6 @@ msgstr "把遥测数据发送到收集器，例如 http://localhost:4317。留�
 msgid "tui.settings.hint.otel.sensitive_data"
 msgstr "在遥测数据中记录提示词、模型回复、工具参数和工具结果。"
 
-#. English: Project settings found ({count} key) — enable to apply them.
-#. English-plural: Project settings found ({count} keys) — enable to apply
-#. them.
-#. chrys-meta={"fingerprint":"ce357c8c3e53500591c67a1f3e8d3e3c2d6fd014c289b2d3040beceee4f2b5fb","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.project.config_dormant"
-msgid_plural "tui.settings.hint.project.config_dormant#plural"
-msgstr[0] "发现项目设置（{count} 个键）— 启用后生效。"
-
-#. English: Let <workspace>/.chrys/settings.yaml adjust engineering settings
-#. for that workspace.
-#. chrys-meta={"fingerprint":"9884d643e237794ad469fe31e654f3e0a1a3aa63ad7371536da2a4d099797284","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.project.config_enabled"
-msgstr "允许 <workspace>/.chrys/settings.yaml 调整该工作区的工程设置。"
-
-#. English: Run the hooks defined in <workspace>/.chrys/hooks alongside your
-#. global hooks.
-#. chrys-meta={"fingerprint":"99df1dbc7a7b0f8d3bf942ea97ded135e0e66c9e0658622f106f76092e31f2d4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.project.hooks_enabled"
-msgstr "运行 <workspace>/.chrys/hooks 中定义的钩子，与全局钩子一起生效。"
-
-#. English: Load the skills in <workspace>/.agents/skills alongside your own.
-#. chrys-meta={"fingerprint":"90be5d34d370632b13543da780cdca3ca6d059b2112d5e79c5f17cc39232edbb","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.project.skills_enabled"
-msgstr "加载 <workspace>/.agents/skills 中的 Skills，与你自己的 Skills 一起生效。"
-
 #. English: Per-turn snapshots kept for /rollback; default {default}.
 #. chrys-meta={"fingerprint":"b5c2c2a5af954993106ce8505979f26313b9d0e7836ca9f7e53829db01c3f7dd","multiline":false,"placeholders":["default"]}
 #: src/chrys/app/tui/screens/settings/layout.py
@@ -12040,6 +12035,37 @@ msgstr "菜单、提示和消息使用的语言；更改立即生效。"
 msgid "tui.settings.hint.ui.theme"
 msgstr "用 F9 预览主题。"
 
+#. English: Working directory settings found ({count} key) — enable to apply
+#. them.
+#. English-plural: Working directory settings found ({count} keys) — enable to
+#. apply them.
+#. chrys-meta={"fingerprint":"fc7050f02cace05864056f2dbcab27b965f7cc733ff87dfc05beb9c6c725af6f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.workdir.config_dormant"
+msgid_plural "tui.settings.hint.workdir.config_dormant#plural"
+msgstr[0] "发现工作目录设置（{count} 个键）— 启用后生效。"
+
+#. English: Load settings from .chrys/settings.yaml in each session's primary
+#. working directory.
+#. chrys-meta={"fingerprint":"32674d399ceff9a998e9827d7c121db67d318b0c77158efbc56858310dc9c477","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.workdir.config_enabled"
+msgstr "加载各会话主工作目录中 .chrys/settings.yaml 的设置。"
+
+#. English: Load hooks from .chrys/hooks in each session's primary working
+#. directory, alongside your global hooks.
+#. chrys-meta={"fingerprint":"2df9f8f6edf489970e42f0fc0b2e5533d5adb0e68ac9c18c08a116c02084c29b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.workdir.hooks_enabled"
+msgstr "加载各会话主工作目录中 .chrys/hooks 定义的钩子，与全局钩子一起生效。"
+
+#. English: Allow agents to load skills from .agents/skills in each session's
+#. primary working directory.
+#. chrys-meta={"fingerprint":"a866d875384076ef00937500ad83d33b97d58542755f3b2ddf42ab7d06a60821","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.workdir.skills_enabled"
+msgstr "允许智能体加载各会话主工作目录中 .agents/skills 的 Skills。"
+
 #. English: Tell the agent about files changed outside the conversation at turn
 #. boundaries.
 #. chrys-meta={"fingerprint":"6fa83c9a6753d2a3d67329552af1abbf5a776a60964f742b239096196c9e4423","multiline":false,"placeholders":[]}
@@ -12154,12 +12180,6 @@ msgstr "本会话由命令行选项设定；保存的值在下次启动时生效
 msgid "tui.settings.provenance.env"
 msgstr "由环境变量 {variable} 设定。"
 
-#. English: Set by {path}.
-#. chrys-meta={"fingerprint":"b4955aa7cb0c380c0008d5db4b538e5aa1cedebe1b421b15068ec35655247aa5","multiline":false,"placeholders":["path"]}
-#: src/chrys/app/tui/screens/settings/provenance.py
-msgid "tui.settings.provenance.project"
-msgstr "由 {path} 设定。"
-
 #. English: The saved value was rejected, so the built-in default is in effect.
 #. chrys-meta={"fingerprint":"a6208b007bd14704e8580df8da930d9d47cf50e95a83ada41c5e3a5c3bfdeabc","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/provenance.py
@@ -12171,6 +12191,12 @@ msgstr "保存的值被拒绝，当前使用内置默认值。"
 #: src/chrys/app/tui/screens/settings/provenance.py
 msgid "tui.settings.provenance.session"
 msgstr "已为本会话固定；保存的值适用于新会话。"
+
+#. English: Set by {path}.
+#. chrys-meta={"fingerprint":"b4955aa7cb0c380c0008d5db4b538e5aa1cedebe1b421b15068ec35655247aa5","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/settings/provenance.py
+msgid "tui.settings.provenance.workdir"
+msgstr "由 {path} 设定。"
 
 #. English: Could not finish saving the Settings panel. Reload stopped.
 #. chrys-meta={"fingerprint":"f9d2fd6a83efef08231b569e10f7ac5e98a97805cd8af43ccd8e7dfd644dea4b","multiline":false,"placeholders":[]}
@@ -12280,12 +12306,6 @@ msgstr "模型角色"
 msgid "tui.settings.section.notifications"
 msgstr "通知"
 
-#. English: Project trust
-#. chrys-meta={"fingerprint":"9aaa1b2e975dfd31550ed0cab60b9cbd0c5524d4c5aee59ed034bc113d4b8d87","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.section.project_trust"
-msgstr "项目信任"
-
 #. English: Rollback
 #. chrys-meta={"fingerprint":"a6f676dbe1a7754d87fa0370c0d6c07595a08e6b1721f72fed7bfff7ac125348","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
@@ -12315,6 +12335,12 @@ msgstr "更新"
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.web"
 msgstr "网络搜索"
+
+#. English: Working directory trust
+#. chrys-meta={"fingerprint":"54d870cddd4b080c5354a6219f25e62fcb5e7deb996db0ffeaa29a2996dfdc19","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.section.workdir_trust"
+msgstr "工作目录信任"
 
 #. English: Workspace notice
 #. chrys-meta={"fingerprint":"aa4488f123ca462486e1f2934b0b087a6c09d32ca9c1eea746d3416e720ec426","multiline":false,"placeholders":[]}
@@ -12869,6 +12895,12 @@ msgstr "消息"
 msgid "tui.slash.reload_description"
 msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令"
 
+#. English: Session {session_id} is open in another window or process.
+#. chrys-meta={"fingerprint":"daee48a4ab9abc7fe13f522d94575980593b174a8bd046657c75737ba30de091","multiline":false,"placeholders":["session_id"]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.in_use"
+msgstr "会话 {session_id} 已在其他窗口或进程中打开。"
+
 #. English: Session {session_id} was not found.
 #. chrys-meta={"fingerprint":"a5c2002c8e98be1f6de66c9e7ceb5fd6595b9dcfc1595822cbd0bc7cdf8036c6","multiline":false,"placeholders":["session_id"]}
 #: src/chrys/app/tui/app.py
@@ -12887,12 +12919,23 @@ msgstr "无法读取会话 {session_id}：{error}"
 msgid "tui.startup.session.restore_failed"
 msgstr "无法恢复会话 {session_id}：{error}"
 
-#. English: Could not restore session {session_id}; started a new session
-#. instead.
-#. chrys-meta={"fingerprint":"960d7d3716f44b1cb78d638cf6d43eeb6a23a4b901af1dc812153c61e3618a12","multiline":false,"placeholders":["session_id"]}
+#. English: Could not open session {session_id}.
+#. chrys-meta={"fingerprint":"c6d58fc7577d06eab60c5d7396d4da5d2034cb0272a0e8b82bbcd3e66ab9ffc2","multiline":false,"placeholders":["session_id"]}
 #: src/chrys/app/tui/app.py
 msgid "tui.startup.session.restore_fallback"
-msgstr "无法恢复会话 {session_id}；已改为启动新会话。"
+msgstr "无法打开会话 {session_id}。"
+
+#. English: Retry
+#. chrys-meta={"fingerprint":"8d1f1fcb3503341e5c6f3f3a1b3299129d2fb1258f711734492a20316c6158af","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.retry"
+msgstr "重试"
+
+#. English: Start new session
+#. chrys-meta={"fingerprint":"1230b83ef639c55f05ee763f8af549c15ff193c37211b55d926c81e8671ead6a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.start_new"
+msgstr "开始新会话"
 
 #. English: Agent startup failed
 #. chrys-meta={"fingerprint":"3bd4c9e143fe48c4f75c90bcd4af9c333a90c23175eda1c33d12642d2407de4c","multiline":false,"placeholders":[]}
@@ -16281,17 +16324,17 @@ msgstr "模型"
 msgid "tui.usage.group.profile"
 msgstr "模型配置"
 
-#. English: Project
-#. chrys-meta={"fingerprint":"bb494880de8a82165303fb5db8a2bd69147f6fff4874591b25d51ec1569bafb1","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/usage.py
-msgid "tui.usage.group.project"
-msgstr "项目"
-
 #. English: Source
 #. chrys-meta={"fingerprint":"8a23381b73255be7becb386ff5bf8b4846f3fcba4f6d5404413d16d72d5ed687","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.group.source"
 msgstr "来源"
+
+#. English: Working directory
+#. chrys-meta={"fingerprint":"346d3f271ad750bbf4adb1c857d83e23c6d3deadb9759af7c530d0a5df1f4633","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.group.workdir"
+msgstr "工作目录"
 
 #. English: ←→↑↓ day  {month_keys} month
 #. chrys-meta={"fingerprint":"70046dd55dfcbc816a5a4ca2f75929dc4a54b663b7143f2e41acdca740a2373f","multiline":false,"placeholders":["month_keys"]}
@@ -16410,12 +16453,6 @@ msgstr[0] "{count} 次调用未报告用量"
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.profile.other"
 msgstr "其他模型配置"
-
-#. English: Other workspaces
-#. chrys-meta={"fingerprint":"6d7805200d84a36fdff69306ab89e5d5baf0d2008448aa2166941869367ba36c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/usage.py
-msgid "tui.usage.project.other"
-msgstr "其他工作区"
 
 #. English: All
 #. chrys-meta={"fingerprint":"d24a279dbbad5c28bcf04fa0ca9ee667b53e32c0267123d319c0cee855dbdce8","multiline":false,"placeholders":[]}
@@ -16542,6 +16579,12 @@ msgstr "峰值 {value}"
 #: src/chrys/app/tui/screens/dialogs/usage.py
 msgid "tui.usage.trend.weekly"
 msgstr "按周"
+
+#. English: Other working directories
+#. chrys-meta={"fingerprint":"f56cd728d028472e025133c9c598f9a47f8f94c60f8119b20c545630c063287f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/usage.py
+msgid "tui.usage.workdir.other"
+msgstr "其他工作目录"
 
 #. English: OK
 #. chrys-meta={"fingerprint":"6df638960a5ede1f4a19b118e821e01478abe5fc851a4370ac9574784032e9f0","multiline":false,"placeholders":[]}
@@ -16853,11 +16896,12 @@ msgstr "全局文件删除后无法恢复。运行历史将保留。"
 msgid "tui.workflow.delete_package_note"
 msgstr "只删除 {entry}，{folder} 中的其他文件会保留。"
 
-#. English: Project files may be recoverable in Git. Run history stays.
-#. chrys-meta={"fingerprint":"34bcccf8b90d9c3564b6566599191daa57ef5dfef79679a0e7a05127d1291e7f","multiline":false,"placeholders":[]}
+#. English: Working directory files may be recoverable in Git. Run history
+#. stays.
+#. chrys-meta={"fingerprint":"5c4d42012971c10328a042bfef383ecb7b1b87f05bcdd5743c673f873de6e08e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
-msgid "tui.workflow.delete_project"
-msgstr "项目文件或可通过 Git 恢复。运行历史将保留。"
+msgid "tui.workflow.delete_workdir"
+msgstr "文件或可通过 Git 恢复。运行历史将保留。"
 
 #. English: This session is bound to its working directory.
 #. chrys-meta={"fingerprint":"71aa2a723b8133eceb62922c4e265576ec423c5b93a1561e05e80c12b4f2ef2c","multiline":false,"placeholders":[]}
@@ -17334,11 +17378,11 @@ msgstr "内置"
 msgid "tui.workflow.source.global"
 msgstr "全局"
 
-#. English: project
-#. chrys-meta={"fingerprint":"bd23bc14344c23c37663fa3d2cbed77723dbdeb192c21123926d683137832e39","multiline":false,"placeholders":[]}
+#. English: working directory
+#. chrys-meta={"fingerprint":"52de2ca9eb66810e1c971cca14b316524a472c3f8152deb88b2ab26f3d8141db","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
-msgid "tui.workflow.source.project"
-msgstr "项目"
+msgid "tui.workflow.source.workdir"
+msgstr "工作目录"
 
 #. English: This workflow changed. Reopen it to preview and confirm before
 #. starting.

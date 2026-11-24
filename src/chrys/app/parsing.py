@@ -8,6 +8,7 @@ import argparse
 from typing import Never
 
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
+from chrys.foundation.util.session_ids import normalized_session_id
 
 
 class SanitizingArgumentParser(argparse.ArgumentParser):
@@ -15,6 +16,24 @@ class SanitizingArgumentParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> Never:
         super().error(sanitize_legacy_scalar(message))
+
+
+def startup_session_id(value: str) -> str:
+    """Accept the displayed short ID or a full UUID in either common spelling."""
+    selector = value.strip()
+    if normalized_session_id(selector) is None:
+        raise argparse.ArgumentTypeError("expected a 12-hex session ID or a full UUID")
+    return selector
+
+
+def add_startup_session_option(parser: argparse._ActionsContainer) -> None:
+    parser.add_argument(
+        "-s",
+        "--session",
+        type=startup_session_id,
+        metavar="SESSION",
+        help="Restore a saved session by its 12-character short ID or full UUID",
+    )
 
 
 def add_help_option(parser: argparse.ArgumentParser) -> None:

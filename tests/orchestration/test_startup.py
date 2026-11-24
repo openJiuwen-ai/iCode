@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import dataclasses
-import functools
 import io
 import os
 import sys
@@ -559,25 +558,25 @@ def test_bootstrap_survives_a_settings_document_held_by_another_process(
 ) -> None:
     # A second Chrys must still start while the first is stalled inside the
     # document's lock: the read is on every entry point's startup path.
-    from chrys.foundation.config.yaml_store import lock_path_for, read_yaml_document, update_yaml_doc
+    from chrys.foundation.config import yaml_store
     from chrys.foundation.util.lock import FileLock
 
     _quiet_bootstrap(monkeypatch, tmp_path)
+
     # Real lock, real contention, real ``TimeoutError`` — only the ten-second
     # wait is shortened, at every point on the boot path that reaches for this
     # document, so the test costs milliseconds instead of stalling a worker for
     # three full production timeouts.
-    for target, function in (
-        ("chrys.foundation.config.settings_store.read_yaml_document", read_yaml_document),
-        ("chrys.foundation.config.migrations.update_yaml_doc", update_yaml_doc),
-    ):
-        monkeypatch.setattr(target, functools.partial(function, lock_timeout=0.05))
+    def short_lock(path, *, timeout):
+        return FileLock(path, timeout=min(timeout, 0.05))
+
+    monkeypatch.setattr(yaml_store, "FileLock", short_lock)
     monkeypatch.delenv("CHRYS_THEME", raising=False)
     settings_path = tmp_path / "config" / "settings.yaml"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text("schema_version: 1\nui:\n  theme: solar\n", encoding="utf-8")
 
-    held = FileLock(lock_path_for(settings_path), timeout=0)
+    held = FileLock(yaml_store.lock_path_for(settings_path), timeout=0)
     held.acquire()
     try:
         bootstrap = startup.bootstrap_runtime()
@@ -616,7 +615,7 @@ def test_bootstrap_ignores_and_preserves_dotenv_files(monkeypatch, tmp_path, led
         patch("builtins.open", file_open),
         patch("os.open", wraps=os.open) as fd_open,
     ):
-        bootstrap = startup.bootstrap_runtime(project_root=tmp_path)
+        bootstrap = startup.bootstrap_runtime(workdir=tmp_path)
 
     opened = set()
     for args, kwargs in (*file_open.call_args_list, *fd_open.call_args_list):

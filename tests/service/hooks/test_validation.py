@@ -504,44 +504,44 @@ def test_a_missing_script_path_is_not_quoted(tmp_path: Path, script: str, hint: 
     )
 
 
-def _project_and_global(tmp_path: Path, project_text: str, global_text: str) -> tuple[Path, Path]:
-    project_root = tmp_path / "project"
+def _workdir_and_global(tmp_path: Path, workdir_text: str, global_text: str) -> tuple[Path, Path]:
+    workdir = tmp_path / "workdir"
     config_dir = tmp_path / "config"
-    _write(project_root / ".chrys" / "hooks" / "hooks.yaml", project_text)
+    _write(workdir / ".chrys" / "hooks" / "hooks.yaml", workdir_text)
     _write(config_dir / "hooks" / "hooks.yaml", global_text)
-    return project_root, config_dir
+    return workdir, config_dir
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_the_project_file_comes_first_and_loads_only_when_enabled(tmp_path: Path, enabled: bool) -> None:
-    project_root, config_dir = _project_and_global(tmp_path, _hook("after_turn"), _hook("after_turn"))
+def test_the_workdir_file_comes_first_and_loads_only_when_enabled(tmp_path: Path, enabled: bool) -> None:
+    workdir, config_dir = _workdir_and_global(tmp_path, _hook("after_turn"), _hook("after_turn"))
 
-    report = check_default_sources(config_dir, project_root, project_hooks_enabled=enabled)
+    report = check_default_sources(config_dir, workdir, workdir_hooks_enabled=enabled)
 
-    assert [(f.source.scope, f.source.loaded) for f in report.files] == [("project", enabled), ("global", True)]
+    assert [(f.source.scope, f.source.loaded) for f in report.files] == [("workdir", enabled), ("global", True)]
     # Both use the id ``h``: a session runs both only while both load.
     assert [d.code for d in report.diagnostics] == (["duplicate_id_across_files"] if enabled else [])
-    assert report.searched == (str(project_root / ".chrys" / "hooks"), str(config_dir / "hooks"))
+    assert report.searched == (str(workdir / ".chrys" / "hooks"), str(config_dir / "hooks"))
 
 
-@pytest.mark.parametrize("turned_off", ["project", "global"])
+@pytest.mark.parametrize("turned_off", ["workdir", "global"])
 def test_a_hook_turned_off_in_either_file_does_not_run_twice(tmp_path: Path, turned_off: str) -> None:
     off = "hooks:\n  - id: h\n    event: after_turn\n    enabled: false\n    run: {type: shell, shell: s}\n"
     on = _hook("after_turn")
-    project_root, config_dir = _project_and_global(
-        tmp_path, off if turned_off == "project" else on, off if turned_off == "global" else on
+    workdir, config_dir = _workdir_and_global(
+        tmp_path, off if turned_off == "workdir" else on, off if turned_off == "global" else on
     )
 
-    report = check_default_sources(config_dir, project_root, project_hooks_enabled=True)
+    report = check_default_sources(config_dir, workdir, workdir_hooks_enabled=True)
 
     assert report.diagnostics == ()
 
 
-def test_a_project_folder_that_is_the_users_own_names_one_file(tmp_path: Path) -> None:
+def test_a_workdir_folder_that_is_the_users_own_names_one_file(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _write(home / ".chrys" / "hooks" / "hooks.yaml", _hook("after_turn"))
 
-    sources = default_sources(home / ".chrys", home, project_hooks_enabled=True)
+    sources = default_sources(home / ".chrys", home, workdir_hooks_enabled=True)
 
     assert [(source.scope, source.path) for source in sources] == [("global", home / ".chrys" / "hooks" / "hooks.yaml")]
 
@@ -579,7 +579,7 @@ def test_nothing_to_check_fails(tmp_path: Path, make_dir: bool, code: str) -> No
 
 
 def test_no_hooks_file_anywhere_fails(tmp_path: Path) -> None:
-    report = check_default_sources(tmp_path / "config", tmp_path / "project", project_hooks_enabled=True)
+    report = check_default_sources(tmp_path / "config", tmp_path / "workdir", workdir_hooks_enabled=True)
 
     assert _codes(report) == [("error", "no_config")]
     assert report.files == ()

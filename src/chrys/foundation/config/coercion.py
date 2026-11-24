@@ -22,14 +22,14 @@ value *is*.
   declared bound.
 * ``INVALID`` — unusable. The layer contributes nothing, exactly as if it were
   ``MISSING``, but a record is produced. What to do with that record is the
-  loader's call: user-visible for a project file (which must be able to say
+  loader's call: user-visible for a working directory file (which must be able to say
   "this key of this file was rejected"), a log line for the historical env
   behaviour.
 
 Encoding "invalid" as *the field default* — the shape this module had first —
-makes the project layer undecidable: the loader cannot tell a repository that
+makes the working directory layer undecidable: the loader cannot tell a repository that
 legitimately set the default value from one whose garbage was silently
-swallowed, and would label the default as coming from the project.
+swallowed, and would label the default as coming from the working directory.
 """
 
 from __future__ import annotations
@@ -83,10 +83,10 @@ class CoerceReason(Enum):
     NOT_A_DIRECTORY = auto()
     """Reserved for the operational checks a pure coercer cannot make."""
 
-    NOT_ALLOWED_IN_PROJECT = auto()
-    """The key is outside the project-merge whitelist (or not a key at all).
+    NOT_ALLOWED_IN_WORKDIR = auto()
+    """The key is outside the working directory-merge whitelist (or not a key at all).
 
-    Not produced by a coercer: the project trust domain rejects the key before
+    Not produced by a coercer: the working directory trust domain rejects the key before
     any value question is asked, and rides the verdict type so the one warning
     pipeline carries it.
     """

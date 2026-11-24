@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeGuard
 
@@ -54,7 +54,8 @@ from chrys.service.session.message_metadata import (
     is_compaction_tool_summary,
     persisted_tool_call_kind,
 )
-from chrys.service.state.store import StateStore
+from chrys.service.state.folds import FoldItem, message_properties
+from chrys.service.state.store import SessionTranscript, StateStore, normalize_transcript_message
 from chrys.service.trajectory.state import TurnRecord
 
 from .bridge import acp_tool_kind, with_chrys_metadata, with_hosted_metadata
@@ -115,8 +116,7 @@ class _TurnMessageView:
 
     @property
     def additional_properties(self) -> dict[str, object]:
-        additional = self._message.get("additional_properties")
-        return additional if isinstance(additional, dict) else {}
+        return message_properties(self._message)
 
 
 def index_turns(
@@ -187,8 +187,8 @@ def _paired_result_coordinates(
     # exchange walker above remains the sole pairing authority; this pass
     # merely inventories hosted result occurrences that it did not assign.
     for message_index, message in enumerate(messages):
-        additional = message.get("additional_properties", {})
-        if isinstance(additional, dict) and HistoryMarkerKind.KEY in additional:
+        additional = message_properties(message)
+        if HistoryMarkerKind.KEY in additional:
             continue
         if message.get("role", "") not in {"assistant", "tool"}:
             continue
@@ -217,18 +217,83 @@ async def replay_session_history(
     what a bare retry that drops the segment from history withdraws from
     the client.
     """
-    transcript = await state_store.load_session_transcript(session_id, prefer_recovery=prefer_recovery)
-    if transcript is None:
+    transcript = await state_store.load_session_transcript(
+        session_id, prefer_recovery=prefer_recovery, include_folds=True
+    )
+    if transcript is None or not (transcript.folds or transcript.messages):
         return {}
-    raw_messages = transcript.messages
-    if not raw_messages:
-        return {}
-    # Compaction tool summaries are the model's context, not the client's; as
-    # in the TUI session transcript, neither a summary nor the messages it
-    # replaced replay. Drop them before pairing so coordinates and replay ids
-    # ignore them.
-    raw_messages = [message for message in raw_messages if not is_compaction_tool_summary(message)]
-    turn_for_message, opening_user_message = _turn_labels(raw_messages, transcript.turns)
+
+    segments = [*(_fold_messages(fold) for fold in transcript.folds), transcript.messages]
+    labels = _transcript_turn_labels(segments, transcript.turns)
+    answer_message_ids: dict[str, list[str]] = {}
+    for fold, messages, (owners, openers) in zip(transcript.folds, segments, labels, strict=False):
+        if fold.block is not None:
+            await _replay_segment(
+                client,
+                session_id,
+                messages,
+                owners,
+                openers,
+                answer_message_ids,
+                fold=fold,
+                tool_kind_resolver=tool_kind_resolver,
+            )
+        payload = compressed_context_payload(
+            fold.context_id, fold.summary, len(messages), fold.block.turn_range if fold.block else (0, 0), None
+        )
+        await client.ext_notification("chrys/context_compressed", {"sessionId": session_id, **payload})
+
+    owners, openers = labels[-1]
+    await _replay_segment(
+        client,
+        session_id,
+        transcript.messages,
+        owners,
+        openers,
+        answer_message_ids,
+        tool_kind_resolver=tool_kind_resolver,
+    )
+    return {segment: tuple(message_ids) for segment, message_ids in answer_message_ids.items()}
+
+
+def compressed_context_payload(
+    context_id: str,
+    summary: str,
+    freed_messages: int,
+    turn_range: Sequence[int],
+    source: str | None,
+) -> dict[str, Any]:
+    return {
+        "compressedContextId": context_id,
+        "summary": summary,
+        "freedMessages": freed_messages,
+        "turnRange": list(turn_range),
+        "source": source,
+    }
+
+
+async def _replay_segment(
+    client: Client,
+    session_id: str,
+    messages: list[dict[str, object]],
+    turn_for_message: list[TurnRecord | None],
+    opening_user_message: dict[int, str],
+    answer_message_ids: dict[str, list[str]],
+    *,
+    fold: FoldItem | None = None,
+    tool_kind_resolver: Callable[[str], str] | None = None,
+) -> None:
+    # Preserve active-message replay ids: tool summaries have never counted
+    # towards their positions. In a block, ids use the stored message positions.
+    visible_indices = [index for index, message in enumerate(messages) if not is_compaction_tool_summary(message)]
+    raw_messages = [messages[index] for index in visible_indices]
+
+    def replay_meta(index: int) -> dict[str, Any]:
+        meta = _turn_meta(turn_for_message[visible_indices[index]])
+        if fold is not None:
+            meta["compressedContextId"] = fold.context_id
+        return meta
+
     pairing_index = _paired_result_coordinates(raw_messages)
     replay_id_by_call: dict[tuple[int, int], str] = {}
     replay_id_by_standalone_result: dict[tuple[int, int], str] = {}
@@ -241,14 +306,14 @@ async def replay_session_history(
     call_start_updates: dict[tuple[int, int], Any] = {}
     started_calls: set[tuple[int, int]] = set()
     occurrence_index = 0
-    answer_message_ids: dict[str, list[str]] = {}
+    block_index = fold.block_index if fold is not None else None
 
     # Allocate every call before publishing anything. Results can then find
     # their exchange-scoped card without forcing the normal replay path to
     # emit all starts ahead of the message's text and results.
     for message_index, message in enumerate(raw_messages):
-        additional = message.get("additional_properties", {})
-        if isinstance(additional, dict) and HistoryMarkerKind.KEY in additional:
+        additional = message_properties(message)
+        if HistoryMarkerKind.KEY in additional:
             continue
         role = str(message.get("role", ""))
         if role not in {"assistant", "tool"}:
@@ -260,7 +325,12 @@ async def replay_session_history(
             if not is_call and not is_standalone_hosted_result:
                 continue
             occurrence_index += 1
-            replay_id = _replay_tool_call_id(message_index, content_index, occurrence_index)
+            replay_id = _replay_tool_call_id(
+                visible_indices[message_index] if block_index is not None else message_index,
+                content_index,
+                occurrence_index,
+                block_index=block_index,
+            )
             open_replay_ids[replay_id] = None
             message_index_by_replay_id[replay_id] = message_index
             if is_standalone_hosted_result:
@@ -289,37 +359,37 @@ async def replay_session_history(
         update = call_start_updates.get(coordinate)
         if update is None:
             return
-        meta = _turn_meta(turn_for_message[coordinate[0]])
+        meta = replay_meta(coordinate[0])
         if meta:
             update.field_meta = with_chrys_metadata(update.field_meta, meta)
         await client.session_update(session_id=session_id, update=update)
         started_calls.add(coordinate)
 
     for message_index, message in enumerate(raw_messages):
-        additional = message.get("additional_properties", {})
-        if isinstance(additional, dict) and HistoryMarkerKind.KEY in additional:
+        additional = message_properties(message)
+        if HistoryMarkerKind.KEY in additional:
             # Key presence, matching the grammar's boundary rule: a falsy
             # kind is still chrome, never conversation or tool activity.
             continue
         role = str(message.get("role", ""))
         text = _message_text(message)
-        turn_meta = _turn_meta(turn_for_message[message_index])
+        turn_meta = replay_meta(message_index)
         if role == "user":
             # Skip crash-leftover synthetic ``continue`` nudges: streaming
             # one as a user message misrepresents the conversation to the
             # client.  Injections keep streaming as plain user messages —
             # the update schema has no injection concept.
-            if isinstance(additional, dict) and additional.get(HistoryMarkerKind.CONTINUATION_KEY):
+            if additional.get(HistoryMarkerKind.CONTINUATION_KEY):
                 continue
             # Every user message, a note included, names its history item: the
             # id a later chrys/user_messages_dropped removes it by.
-            item_id = additional.get(ANALYTICS_ITEM_ID_KEY) if isinstance(additional, dict) else None
+            item_id = additional.get(ANALYTICS_ITEM_ID_KEY)
             user_meta = {**turn_meta, "itemId": item_id} if isinstance(item_id, str) else turn_meta
             for update in _user_message_chunks(message, text):
                 # Only the message that OPENED the turn carries the id the
                 # client submitted; an injection or a retry note inside the
                 # turn is a different message and has no client-side id.
-                update.message_id = opening_user_message.get(message_index)
+                update.message_id = opening_user_message.get(visible_indices[message_index])
                 if user_meta:
                     update.field_meta = with_chrys_metadata(update.field_meta, user_meta)
                 await client.session_update(session_id=session_id, update=update)
@@ -451,9 +521,7 @@ async def replay_session_history(
         # These calls get a synthesized terminal update instead of a persisted
         # one, but they are as much a part of their turn as any other record,
         # so the id a client keys its cards by travels with them.
-        meta = _turn_meta(
-            turn_for_message[index] if (index := message_index_by_replay_id.get(replay_id)) is not None else None
-        )
+        meta = replay_meta(message_index_by_replay_id[replay_id])
         hosted = pending_hosted.get(replay_id)
         if hosted is not None:
             view = hosted[1]
@@ -475,7 +543,6 @@ async def replay_session_history(
         if meta:
             update.field_meta = with_chrys_metadata(update.field_meta, meta)
         await client.session_update(session_id=session_id, update=update)
-    return {segment: tuple(message_ids) for segment, message_ids in answer_message_ids.items()}
 
 
 def _answer_segment(content: dict[str, Any]) -> str | None:
@@ -485,17 +552,50 @@ def _answer_segment(content: dict[str, Any]) -> str | None:
     return segment if isinstance(segment, str) and segment else None
 
 
-def _turn_labels(
-    messages: list[dict[str, object]],
+def _transcript_turn_labels(
+    segments: list[list[dict[str, object]]],
     records: list[TurnRecord],
-) -> tuple[list[TurnRecord | None], dict[int, str]]:
-    """Map each message to its turn, and opener indexes to their user message id.
+) -> list[tuple[list[TurnRecord | None], dict[int, str]]]:
+    """Align each run of readable segments across folds, then return labels in original positions.
 
-    Two questions with different answers: which turn a message belongs to
-    (every message inside a slice) and whether an opener has a recorded user
-    message id (only the opener, and only when one was recorded).
+    An empty segment (a summary-only fold) is a gap: no turn may span it, so
+    messages after it and before the next opener the registry recognizes stay
+    unlabelled, exactly as ``turn_slices`` leaves messages before the first
+    opener. Contiguous readable segments keep joint alignment.
     """
-    return _labels_from_alignment(index_turns(messages, records), len(messages))
+    labels: list[tuple[list[TurnRecord | None], dict[int, str]]] = [
+        ([None] * len(messages), {}) for messages in segments
+    ]
+    run: list[dict[str, object]] = []
+    run_coordinates: list[tuple[int, int]] = []
+
+    def flush_run() -> None:
+        if not run:
+            return
+        owners, openers = _labels_from_alignment(index_turns(run, records), len(run))
+        for index, (segment_index, message_index) in enumerate(run_coordinates):
+            segment_owners, segment_openers = labels[segment_index]
+            segment_owners[message_index] = owners[index]
+            if index in openers:
+                segment_openers[message_index] = openers[index]
+        run.clear()
+        run_coordinates.clear()
+
+    for segment_index, messages in enumerate(segments):
+        if not messages:
+            flush_run()
+            continue
+        for message_index, message in enumerate(messages):
+            properties = message_properties(message)
+            if (
+                properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.SUMMARY
+                or HistoryMarkerKind.ARCHIVE_INDEX_KEY in properties
+            ):
+                continue
+            run_coordinates.append((segment_index, message_index))
+            run.append(message)
+    flush_run()
+    return labels
 
 
 def _labels_from_alignment(
@@ -516,21 +616,10 @@ def _labels_from_alignment(
     return turn_for_message, opening_user_message
 
 
-def session_history_payload(
-    session_id: str,
-    messages: list[dict[str, object]],
-    records: list[TurnRecord],
-) -> dict[str, Any]:
-    """Project persisted messages and turn records into the history shape.
-
-    The client gets the raw persisted messages unchanged — this is the
-    debugging surface, not a replay — with the turn each one belongs to named
-    alongside it, plus one entry per turn the session ran. Attribution comes
-    from :func:`index_turns`, the same alignment replay uses, so the two
-    surfaces can never disagree about which turn a message belongs to.
-    """
-    aligned = index_turns(messages, records)
-    turn_for_message, _opening_user_message = _labels_from_alignment(aligned, len(messages))
+def session_history_payload(session_id: str, transcript: SessionTranscript) -> dict[str, Any]:
+    """Return persisted messages in segment order with the same turn labels as replay."""
+    segments = [*(_fold_messages(fold) for fold in transcript.folds), transcript.messages]
+    labels = _transcript_turn_labels(segments, transcript.turns)
 
     def _turn_entry(record: TurnRecord) -> dict[str, Any]:
         turn: dict[str, Any] = {
@@ -542,20 +631,39 @@ def session_history_payload(
             turn["inheritedFrom"] = record.origin_session_id
         return turn
 
-    # One entry per turn the session knows, in start order: a turn with no
-    # message left in the transcript — inherited by a fork, or compacted away —
-    # still ran, and the client needs its id to join live and replayed updates.
-    turns_payload: list[dict[str, Any]] = [_turn_entry(record) for record in records]
+    blocks = []
+    for fold, messages, (owners, _openers) in zip(transcript.folds, segments, labels, strict=False):
+        block = fold.block
+        turn_range = block.turn_range if block is not None else (0, 0)
+        blocks.append(
+            {
+                **compressed_context_payload(fold.context_id, fold.summary, len(messages), turn_range, None),
+                "markerId": block.marker_id if block is not None else None,
+                "createdAt": block.created_at if block is not None else None,
+                "messages": _history_messages(messages, owners),
+            }
+        )
 
-    messages_payload: list[dict[str, Any]] = []
-    for message_index, message in enumerate(messages):
-        record = turn_for_message[message_index] if message_index < len(turn_for_message) else None
-        if record is None:
-            messages_payload.append({"turnId": None, "turnNumber": None, "message": message})
-            continue
-        messages_payload.append({"turnId": record.turn_id, "turnNumber": record.turn_number, "message": message})
+    return {
+        "sessionId": session_id,
+        "turns": [_turn_entry(record) for record in transcript.turns],
+        "messages": _history_messages(transcript.messages, labels[-1][0]),
+        "compressedBlocks": blocks,
+    }
 
-    return {"sessionId": session_id, "turns": turns_payload, "messages": messages_payload}
+
+def _fold_messages(fold: FoldItem) -> list[dict[str, object]]:
+    """A readable block's stored messages, normalized like the top-level transcript."""
+    if fold.raw_block is None:
+        return []
+    return [normalize_transcript_message(message) for message in fold.raw_block.get("messages", [])]
+
+
+def _history_messages(messages: list[dict[str, object]], owners: list[TurnRecord | None]) -> list[dict[str, Any]]:
+    return [
+        {"turnId": None, "turnNumber": None, **_turn_meta(record), "message": message}
+        for message, record in zip(messages, owners, strict=True)
+    ]
 
 
 def _turn_meta(record: TurnRecord | None) -> dict[str, Any]:
@@ -611,9 +719,12 @@ def _indexed_contents(message: dict[str, object]) -> list[tuple[int, dict[str, o
     ]
 
 
-def _replay_tool_call_id(message_index: int, content_index: int, occurrence_index: int) -> str:
+def _replay_tool_call_id(
+    message_index: int, content_index: int, occurrence_index: int, *, block_index: int | None = None
+) -> str:
     """Mint a stable presentation id from persisted transcript coordinates."""
-    return f"history:{message_index}:{content_index}:{occurrence_index}"
+    prefix = "history" if block_index is None else f"history:c{block_index}"
+    return f"{prefix}:{message_index}:{content_index}:{occurrence_index}"
 
 
 def _tool_call_start(content: dict[str, object], replay_id: str, kind: str) -> acp_schema.ToolCallStart:

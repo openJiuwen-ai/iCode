@@ -127,11 +127,11 @@ def test_dependencies_without_a_declared_interpreter_are_refused_up_front(tmp_pa
 def test_a_relative_venv_is_taken_from_the_workflow_files_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    executable = _fake_venv(project / ".venv")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    executable = _fake_venv(workdir / ".venv")
     monkeypatch.chdir(tmp_path)  # the current directory must play no part
-    plan = plan_environment(_request(python=".venv"), entry_path=project / "wf.py")
+    plan = plan_environment(_request(python=".venv"), entry_path=workdir / "wf.py")
     assert plan == ByoPlan(_request(python=".venv"), str(executable))
 
 

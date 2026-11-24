@@ -67,7 +67,7 @@ In this table:
 
 ## Prompt shortcuts
 
-Prompt shortcuts are prompts you save as Markdown files in `~/.chrys/shortcuts` (Windows: `%APPDATA%\chrys\shortcuts`) or `.chrys/shortcuts` in your project. They are listed in the “Prompt Shortcuts” group after you type `/`; choosing one, or typing `/name arguments` and pressing **Tab** or **Enter**, fills its prompt into the input field for you to edit and send. To write them, see [Write and use shortcuts](../guides/extensions/shortcuts.md).
+Prompt shortcuts are prompts you save as Markdown files in `~/.chrys/shortcuts` (Windows: `%APPDATA%\chrys\shortcuts`) or `.chrys/shortcuts` in your working directory. They are listed in the “Prompt Shortcuts” group after you type `/`; choosing one, or typing `/name arguments` and pressing **Tab** or **Enter**, fills its prompt into the input field for you to edit and send. To write them, see [Write and use shortcuts](../guides/extensions/shortcuts.md).
 
 When you type a name, built-in commands come first, then skills, then prompt shortcuts.
 

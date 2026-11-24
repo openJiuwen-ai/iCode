@@ -18,7 +18,7 @@ from tests.orchestration.workflows._hosting import (
     PROFILE,
     confirm,
     make_host,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -74,7 +74,7 @@ async def test_node_attempt_closes_its_client(
     ]
     node_client = _OwnedClient(script, hold=scenario == "cancel")
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "agent", _WORKFLOW)
     host = make_host(tmp_path, project=project)
     running: asyncio.Task[Any] | None = None
@@ -117,7 +117,7 @@ async def test_workflow_session_close_closes_cached_judges(tmp_path: Path, monke
         return judge
 
     monkeypatch.setattr(WorkflowSessionOwner, "judge_for", create_autospec(judge_for, side_effect=record_judge))
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "agent", _WORKFLOW)
     host = make_host(tmp_path, project=project)
     running: asyncio.Task[Any] | None = None

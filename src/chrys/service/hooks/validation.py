@@ -2,7 +2,7 @@
 
 """Static checks of hooks configuration files, for ``icode hook list`` and ``icode hook validate``.
 
-Files are found and read as a session finds and reads them (the project
+Files are found and read as a session finds and reads them (the working directory
 file first, then the global one; in each folder the first of
 ``hooks.yaml``, ``hooks.yml``, ``hooks.json``), but every bad hook entry is
 reported instead of only the first, and nothing is run.  A session refuses
@@ -41,9 +41,9 @@ from chrys.service.hooks.loader import (
     invalid_match_regex,
     parse_hooks_dict,
     parse_hooks_text,
-    project_hooks_dir,
     read_hooks_text,
     same_hooks_file,
+    workdir_hooks_dir,
 )
 from chrys.service.hooks.retired_shell_args import retired_arg_names_warning
 from chrys.service.hooks.runner import TEMPLATE_VARIABLES
@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from chrys.service.hooks.schema import HookConfig, HooksFile
 
 Severity = Literal["error", "warning"]
-Scope = Literal["project", "global", "path"]
+Scope = Literal["workdir", "global", "path"]
 
 _TEMPLATE_RE: Final = re.compile(r"\$\{([^}]*)\}")
 _REJECTING_CODES: Final = frozenset({"unreadable", "decode", "syntax", "schema"})
@@ -154,29 +154,29 @@ class _FileCheck:
         return next((d for d in self.diagnostics if d.code in _REJECTING_CODES), None)
 
 
-def default_sources(config_dir: Path, project_root: Path, *, project_hooks_enabled: bool) -> list[HooksSource]:
-    """The hooks files a session started in *project_root* finds, project first.
+def default_sources(config_dir: Path, workdir: Path, *, workdir_hooks_enabled: bool) -> list[HooksSource]:
+    """The hooks files a session started in *workdir* finds, working directory first.
 
-    A project folder that is the user's own hooks folder (a session started
+    A working directory folder that is the user's own hooks folder (a session started
     in the home directory) names the global file again, which loads once,
     as the user's.
     """
-    project = hooks_file_candidates(project_hooks_dir(project_root))
+    directory_files = hooks_file_candidates(workdir_hooks_dir(workdir))
     global_ = hooks_file_candidates(config_dir / "hooks")
-    if project and global_ and same_hooks_file(project[0], global_[0]):
-        project = []
+    if directory_files and global_ and same_hooks_file(directory_files[0], global_[0]):
+        directory_files = []
     sources: list[HooksSource] = []
-    if project:
-        sources.append(HooksSource("project", project[0], project_hooks_enabled, tuple(project[1:])))
+    if directory_files:
+        sources.append(HooksSource("workdir", directory_files[0], workdir_hooks_enabled, tuple(directory_files[1:])))
     if global_:
         sources.append(HooksSource("global", global_[0], True, tuple(global_[1:])))
     return sources
 
 
-def check_default_sources(config_dir: Path, project_root: Path, *, project_hooks_enabled: bool) -> HooksReport:
-    """Check the project and global hooks files of a session started in *project_root*."""
-    searched = (str(project_hooks_dir(project_root)), str(config_dir / "hooks"))
-    sources = default_sources(config_dir, project_root, project_hooks_enabled=project_hooks_enabled)
+def check_default_sources(config_dir: Path, workdir: Path, *, workdir_hooks_enabled: bool) -> HooksReport:
+    """Check the working directory and global hooks files of a session started in *workdir*."""
+    searched = (str(workdir_hooks_dir(workdir)), str(config_dir / "hooks"))
+    sources = default_sources(config_dir, workdir, workdir_hooks_enabled=workdir_hooks_enabled)
     if not sources:
         missing = HookDiagnostic("error", "no_config", f"no hooks configuration file in {searched[0]} or {searched[1]}")
         return HooksReport((), (missing,), searched)
@@ -431,24 +431,24 @@ def _did_you_mean(value: str, choices: Iterable[str]) -> str:
 
 
 def _collisions(checks: list[_FileCheck]) -> list[HookDiagnostic]:
-    """Ids a session runs twice: defined by an enabled hook in both the project and the global file while both load."""
+    """Ids a session runs twice: defined by an enabled hook in both the working directory and the global file while both load."""
     loaded = {check.source.scope: check for check in checks if check.source.loaded and check.hooks_file is not None}
-    project, global_ = loaded.get("project"), loaded.get("global")
-    if project is None or global_ is None or project.hooks_file is None or global_.hooks_file is None:
+    workdir, global_ = loaded.get("workdir"), loaded.get("global")
+    if workdir is None or global_ is None or workdir.hooks_file is None or global_.hooks_file is None:
         return []
     global_ids = {hook.id for hook in global_.hooks_file.hooks if hook.enabled}
     found: list[HookDiagnostic] = []
-    for hook in project.hooks_file.hooks:
+    for hook in workdir.hooks_file.hooks:
         if not hook.enabled or hook.id not in global_ids:
             continue
-        entry = project.entry_index.get(hook.id)
+        entry = workdir.entry_index.get(hook.id)
         found.append(
             HookDiagnostic(
                 "warning",
                 "duplicate_id_across_files",
-                id_collision_warning(str(project.source.path), str(global_.source.path)),
-                str(project.source.path),
-                project.entry_lines[entry] if entry is not None and entry < len(project.entry_lines) else None,
+                id_collision_warning(str(workdir.source.path), str(global_.source.path)),
+                str(workdir.source.path),
+                workdir.entry_lines[entry] if entry is not None and entry < len(workdir.entry_lines) else None,
                 hook_id=hook.id,
                 entry=entry,
             )

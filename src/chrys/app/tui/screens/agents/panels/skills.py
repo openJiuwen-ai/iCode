@@ -51,7 +51,7 @@ _ALL_EXTENSIONS = [".py", ".ts", ".js", ".sh", ".rb", ".ps1"]
 
 _AUTO_LOAD_COVERED = msg(
     "tui.agent_config.skills.auto_load_covered",
-    fallback="Also auto-loaded when Load skills from working folder and Load project skills are on",
+    fallback="Also auto-loaded when Load skills from working folder and Load working directory skills are on",
 )
 _SKILL_DIRECTORIES = msg("tui.agent_config.skills.title", fallback="Skill Directories")
 _SKILL_DIRECTORIES_DESCRIPTION = msg(
@@ -73,8 +73,8 @@ _LOAD_WORKING_FOLDER = msg(
 _LOAD_WORKING_FOLDER_TOOLTIP = msg(
     "tui.agent_config.skills.load_working_folder_tooltip",
     fallback=(
-        "Auto-load skills from the agents skills directory under the current working folder when Load project "
-        "skills is on under Settings → Safety → Project trust. Reloaded automatically when the workspace cwd "
+        "Auto-load skills from the agents skills directory under the current working folder when Load working directory "
+        "skills is on under Settings → Safety → Working directory trust. Reloaded automatically when the working directory "
         "changes (/chdir or file picker)."
     ),
 )

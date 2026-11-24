@@ -19,7 +19,7 @@ from chrys.service.approval.command_identity import normalize_simple_command
 from chrys.service.approval.grant_store import ApprovalGrantStore
 
 LOCAL_ENVIRONMENT_ID = "local"
-Scope = Literal["SESSION", "PROJECT"]
+Scope = Literal["SESSION", "WORKDIR"]
 _LITERAL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./,:@%+- ")
 
 
@@ -38,8 +38,8 @@ def canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
 
 
-def project_path(path: str) -> str:
-    """A project's real path, never case-folded, like the command directories it scopes."""
+def workdir_path(path: str) -> str:
+    """A working directory's real path, never case-folded, like the command directories it scopes."""
     return os.path.realpath(path)
 
 
@@ -88,11 +88,11 @@ class FileKey(_Key):
 @dataclass(frozen=True)
 class ReuseContext:
     session_id: str
-    project_id: str
+    workdir: str
 
     @property
     def eligible(self) -> bool:
-        return bool(self.session_id and self.project_id)
+        return bool(self.session_id and self.workdir)
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,7 @@ class ApprovalGrant(BaseModel):
     id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
     scope: Scope
     scope_id: Annotated[RawString, Field(min_length=1)]
-    project: RawString
+    workdir: RawString | None = None
     source: Literal["EXPLICIT_USER"]
     created_at: Annotated[float, Field(gt=0, allow_inf_nan=False)]
     prefix: bool = False
@@ -144,7 +144,7 @@ class ApprovalReuseService:
 
     def rules(self) -> list[ApprovalGrant]:
         result = []
-        for store, scope in ((self.store, "PROJECT"), (self.session_store, "SESSION")):
+        for store, scope in ((self.store, "WORKDIR"), (self.session_store, "SESSION")):
             for payload in store.load():
                 try:
                     rule = _GRANT.validate_python(payload)
@@ -159,12 +159,13 @@ class ApprovalReuseService:
         if candidate is None or not candidate.context.eligible:
             return ()
         available = self.rules()
-        for scope in ("SESSION", "PROJECT"):
-            scope_id = candidate.context.session_id if scope == "SESSION" else candidate.context.project_id
+        context = candidate.context
+        for scope, scope_id, workdir in (
+            ("SESSION", context.session_id, context.workdir),
+            ("WORKDIR", context.workdir, None),
+        ):
             rules = [
-                rule
-                for rule in available
-                if rule.scope == scope and rule.scope_id == scope_id and rule.project == candidate.context.project_id
+                rule for rule in available if (rule.scope, rule.scope_id, rule.workdir) == (scope, scope_id, workdir)
             ]
             if isinstance(candidate, FileCandidate):
                 matched = {rule.key: rule.id for rule in rules if isinstance(rule.key, FileKey) and not rule.prefix}
@@ -189,35 +190,35 @@ class ApprovalReuseService:
     def remember(self, candidate: Candidate, choice: ReuseChoice) -> bool:
         if not candidate.context.eligible or choice not in {
             "EXACT_SESSION",
-            "EXACT_PROJECT",
+            "EXACT_WORKDIR",
             "PREFIX_SESSION",
-            "PREFIX_PROJECT",
+            "PREFIX_WORKDIR",
         }:
             return False
-        mode, scope = choice.split("_")
+        prefix = choice.startswith("PREFIX_")
+        session = choice.endswith("_SESSION")
+        context = candidate.context
+        scope: Scope
+        scope, scope_id = ("SESSION", context.session_id) if session else ("WORKDIR", context.workdir)
         if isinstance(candidate, FileCandidate):
-            if mode != "EXACT" or not candidate.keys:
+            if prefix or not candidate.keys:
                 return False
             keys = sorted(candidate.keys, key=lambda key: key.path)
         else:
-            if mode == "PREFIX" and candidate.prefix is None:
+            if prefix and candidate.prefix is None:
                 return False
-            keys = [
-                candidate.key.model_copy(update={"command": candidate.prefix}) if mode == "PREFIX" else candidate.key
-            ]
+            keys = [candidate.key.model_copy(update={"command": candidate.prefix}) if prefix else candidate.key]
         payloads = [
-            ApprovalGrant.model_validate(
-                {
-                    "id": uuid4().hex,
-                    "scope": scope,
-                    "scope_id": candidate.context.session_id if scope == "SESSION" else candidate.context.project_id,
-                    "project": candidate.context.project_id,
-                    "source": "EXPLICIT_USER",
-                    "created_at": datetime.now(UTC).timestamp(),
-                    "prefix": mode == "PREFIX",
-                    "key": key,
-                }
-            ).model_dump(mode="json")
+            ApprovalGrant(
+                id=uuid4().hex,
+                scope=scope,
+                scope_id=scope_id,
+                workdir=context.workdir if session else None,
+                source="EXPLICIT_USER",
+                created_at=datetime.now(UTC).timestamp(),
+                prefix=prefix,
+                key=key,
+            ).model_dump(mode="json", exclude_none=True)
             for key in keys
         ]
-        return (self.session_store if scope == "SESSION" else self.store).add_many(payloads)
+        return (self.session_store if session else self.store).add_many(payloads)

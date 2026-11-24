@@ -33,7 +33,9 @@ from chrys.app.tui.widgets.trajectory.text_view import TrajectoryTextView
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.trajectory.envelope import SegmentedField
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
+from chrys.foundation.util.lock import FileLock
 from chrys.service.analytics import TrajectoryAnalyzer, TrajectoryScanCancelled
+from chrys.service.state.store import JsonFileStateStore
 from tests.app.tui.widgets._trajectory_fixtures import (
     _NS,
     _DashboardApp,
@@ -322,6 +324,44 @@ async def test_session_data_is_only_json_content_and_obeys_lifecycle_order(
         dashboard.hide_dashboard()
         assert session_json.display is False
         assert calls[-1][0] == "hide"
+
+
+async def test_session_data_opens_the_active_sessions_canonical_flat_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("chrys.service.state.store.resolve_sessions_dir", lambda: tmp_path)
+    store = JsonFileStateStore()
+    identity = "12345678-abcd-4111-8222-123456789abc"
+    await store.save_session(identity, {}, title="Visible flat checkpoint")
+    directory = store.session_dir(identity)
+    primary = directory / "session.json"
+    flat = primary.rename(tmp_path / f"{directory.name}.json")
+    (directory / "session.json.bak").unlink()
+    trajectory = directory / "trajectory" / "events.jsonl"
+    trajectory.parent.mkdir()
+    _write_operations(trajectory)
+
+    with FileLock(store.active_lock_path(identity), timeout=0):
+        async with open_dashboard(trajectory, size=(120, 30), session_id=identity) as (dashboard, pilot):
+            panel = dashboard.query_one(SessionJsonPanel)
+            read_bytes = Path.read_bytes
+
+            def denied(path: Path) -> bytes:
+                if path == flat:
+                    raise PermissionError("archive temporarily unavailable")
+                return read_bytes(path)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(Path, "read_bytes", denied)
+                await pilot.click("#session-data")
+                assert panel._status == "Error reading session file: archive temporarily unavailable"
+                assert panel.session_path == "" and not panel.is_loading
+                await pilot.click("#overview")
+            await pilot.click("#session-data")
+            await pilot.app.workers.wait_for_complete()
+            assert "Visible flat checkpoint" in "\n".join(panel._plain_lines)
+            assert dashboard.border_subtitle == str(flat)
+            assert flat.is_file() and not primary.exists()
 
 
 async def test_tab_activation_moves_focus_into_the_visible_content_view(tmp_path: Path) -> None:

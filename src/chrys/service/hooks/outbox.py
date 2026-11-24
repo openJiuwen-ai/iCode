@@ -10,12 +10,13 @@ Job lifecycle::
        └─→  failed/{job_id}.json  on non-zero / timeout
 
 Each job file carries the hook id, event payload, retry count, and
-timestamps.  On chrys startup the manager scans ``pending/`` and
-re-spawns any entry older than ``HookSettings.outbox_retry_age_seconds``
-that hasn't exceeded ``outbox_max_retries``.  Entries that exceed the
-cap move directly to ``failed/`` with no retry — the user is expected
+timestamps. On startup a terminal record takes precedence over any leftover
+pending file for the same job. The manager re-spawns unfinished entries older
+than ``HookSettings.outbox_retry_age_seconds`` that haven't exceeded
+``outbox_max_retries``. Entries that exceed the cap move directly to
+``failed/`` with no retry — the user is expected
 to inspect them, fix the hook, and either delete the file or move it
-back manually.
+back to ``pending/`` so no terminal copy remains.
 
 Semantics are at-least-once.  Hooks marked ``delivery: durable`` must
 be idempotent — if chrys crashes after the subprocess exits 0 but
@@ -30,15 +31,17 @@ import contextlib
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from uuid import uuid4
 
-from chrys.foundation.platform.files import replace_with_retry
+from chrys.foundation.models.workdir_migration import source_edit
+from chrys.foundation.platform.files import replace_with_retry, secure_open_regular_binary
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,62 @@ logger = logging.getLogger(__name__)
 PENDING = "pending"
 DONE = "done"
 FAILED = "failed"
+MAX_TERMINAL_RECORD_BYTES: Final = 64 * 1024 * 1024
+_JOB_ID = re.compile(r"[0-9a-f]{16}")
+
+
+def is_valid_job_id(job_id: object) -> bool:
+    return isinstance(job_id, str) and _JOB_ID.fullmatch(job_id) is not None
+
+
+def _job_filename(job_id: str) -> str:
+    if not is_valid_job_id(job_id):
+        raise ValueError("Invalid outbox job ID")
+    return f"{job_id}.json"
+
+
+def has_terminal_record(root: Path, job_id: str) -> bool:
+    """Check for a valid terminal outcome without touching the outbox."""
+    terminal, _ = _terminal_status(root, _job_filename(job_id), job_id)
+    return terminal
+
+
+def _terminal_status(root: Path, name: str, job_id: str) -> tuple[bool, str | None]:
+    diagnostic = None
+    for folder in (DONE, FAILED):
+        terminal = root / folder / name
+        try:
+            _read_terminal_record(terminal, job_id)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            diagnostic = diagnostic or f"Could not read terminal record {terminal}: {error}"
+            continue
+        except (ValueError, RecursionError) as error:
+            diagnostic = diagnostic or f"Ignoring invalid terminal record {terminal}: {error}"
+            continue
+        return True, diagnostic
+    return False, diagnostic
+
+
+def _read_terminal_bytes(path: Path) -> bytes:
+    with secure_open_regular_binary(path) as stream:
+        raw = stream.read(MAX_TERMINAL_RECORD_BYTES + 1)
+    if len(raw) > MAX_TERMINAL_RECORD_BYTES:
+        raise ValueError("Terminal record exceeds its size limit")
+    return raw
+
+
+def _read_terminal_record(path: Path, job_id: str) -> tuple[bytes, dict[str, Any]]:
+    raw = _read_terminal_bytes(path)
+    data = json.loads(raw)
+    if not isinstance(data, dict) or data.get("job_id") != job_id or data.get("state") != path.parent.name:
+        raise ValueError("Terminal record has an invalid job ID or state")
+    if not isinstance(data.get("payload"), dict) or not all(
+        isinstance(data.get(key), str) for key in ("hook_id", "event", "created_at")
+    ):
+        raise ValueError("Terminal record is missing valid job fields")
+    return raw, data
 
 
 @dataclass
@@ -66,13 +125,13 @@ class OutboxJob:
     created_at: str
     hook_source: str = ""
     """Hook configuration layer that created the job, currently
-    ``"project"`` or ``"global"``. Empty for legacy jobs written before
-    project/global layering existed.
+    ``"workdir"`` or ``"global"``. Empty for legacy jobs written before
+    working directory/global layering existed.
     """
     hook_source_path: str = ""
     """Absolute hooks config file path that created the job.
 
-    This disambiguates project hooks sharing the global outbox across
+    This disambiguates working directory hooks sharing the global outbox across
     workspaces. Empty for legacy jobs written before source paths were
     persisted.
     """
@@ -140,11 +199,15 @@ class Outbox:
         self._write(job)
         return job
 
-    def mark_started(self, job: OutboxJob) -> None:
-        """Stamp the start time on a pending job (still in ``pending/``)."""
+    def mark_started(self, job: OutboxJob) -> bool:
+        """Stamp the pending job, returning whether it is still eligible to run."""
+        if self.skip_pending(job.job_id):
+            return False
         job.last_started_at = _now_iso()
         job.retries += 1
         self._write(job)
+        # Completion may have landed while the pending write was in progress.
+        return not self.skip_pending(job.job_id)
 
     def mark_done(self, job: OutboxJob, *, exit_code: int) -> None:
         """Move the job to ``done/``."""
@@ -171,6 +234,22 @@ class Outbox:
 
     # ── recovery (called once at startup) ────────────────────────────
 
+    def skip_pending(self, job_id: str) -> bool:
+        """Skip a terminal job and discard its leftover pending file when possible."""
+        skip, _ = self._skip_pending_path(self._root / PENDING / _job_filename(job_id))
+        return skip
+
+    def _skip_pending_path(self, pending: Path) -> tuple[bool, str | None]:
+        """Return the skip verdict and a diagnostic for the recovery scan."""
+        if not is_valid_job_id(pending.stem):
+            return True, f"Outbox job {pending} has an invalid filename; ignoring"
+        skip, diagnostic = _terminal_status(self._root, pending.name, pending.stem)
+        if skip:
+            with contextlib.suppress(OSError):
+                pending.unlink()
+                logger.warning("Removed pending hook record %s because a terminal record already exists", pending)
+        return skip, diagnostic
+
     def list_stale_pending(self, *, retry_age_seconds: float) -> list[OutboxJob]:
         """Return pending jobs whose ``last_started_at`` is older than
         *retry_age_seconds* (or that were never started).
@@ -182,7 +261,14 @@ class Outbox:
         out: list[OutboxJob] = []
         now = time.time()
         for path in sorted((self._root / PENDING).glob("*.json")):
+            skip, diagnostic = self._skip_pending_path(path)
+            if diagnostic is not None:
+                logger.warning("%s", diagnostic)
+            if skip:
+                continue
             job = self._read(path)
+            if job is not None and job.hook_source not in {"", "global", "workdir"}:
+                continue
             if job is None:
                 continue
             anchor = job.last_started_at or job.created_at
@@ -208,6 +294,8 @@ class Outbox:
         Used for entries that exceeded ``outbox_max_retries`` — there's
         nothing to wait for, just record the failure and move on.
         """
+        if self.skip_pending(job.job_id):
+            return
         job.state = FAILED
         job.last_finished_at = _now_iso()
         job.error = reason
@@ -217,15 +305,17 @@ class Outbox:
 
     def _write(self, job: OutboxJob) -> None:
         data = asdict(job)
-        path = self._root / PENDING / f"{job.job_id}.json"
+        path = self._root / PENDING / _job_filename(job.job_id)
         _write_json_atomic_owner_only(path, data)
 
     def _move(self, job: OutboxJob, *, src: str, dst: str) -> None:
-        src_path = self._root / src / f"{job.job_id}.json"
-        dst_path = self._root / dst / f"{job.job_id}.json"
-        # Re-write so the state field reflects the move.
-        _write_json_atomic_owner_only(dst_path, asdict(job))
-        # FileNotFoundError happens on retry after a partial crash.
+        name = _job_filename(job.job_id)
+        src_path = self._root / src / name
+        dst_path = self._root / dst / name
+        data = asdict(job)
+        source_edit(data, "hook_source")
+        # Publish the outcome before removing the pending entry.
+        _write_json_atomic_owner_only(dst_path, data)
         with contextlib.suppress(FileNotFoundError):
             src_path.unlink()
 
@@ -238,6 +328,10 @@ class Outbox:
         if not isinstance(data, dict) or "job_id" not in data:
             logger.warning("Outbox job %s is malformed; ignoring", path)
             return None
+        if data["job_id"] != path.stem:
+            logger.warning("Outbox job %s has a job ID that does not match its filename; ignoring", path)
+            return None
+        source_edit(data, "hook_source")
         all_fields = set(OutboxJob.__dataclass_fields__)
         valid_keys = all_fields - {"extra"}
         extra = {k: v for k, v in data.items() if k not in all_fields}

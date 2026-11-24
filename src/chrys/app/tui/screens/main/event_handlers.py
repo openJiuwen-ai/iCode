@@ -128,6 +128,7 @@ from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 from chrys.foundation.text.draft_references import image_labels_to_paths
 from chrys.foundation.tool_result_metadata import canonical_tool_result_status
 from chrys.orchestration.engine.run.attachments import replace_image_mentions_with_paths
+from chrys.orchestration.workdir_migration import MIGRATION_NOTICE
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mutations.types import FileHashDiff
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
@@ -2003,6 +2004,10 @@ class BackendEventHandler:
         if key in self._seen_warnings and not submit_rejected:
             return
         self._seen_warnings.add(key)
+        if event.code == MIGRATION_NOTICE:
+            message = event.message if event.display_message is None else self._render_display(event.display_message)
+            await self._ui().add_system(message)
+            return
         # A capability handover is worth one modal per configuration, not a toast the
         # user can miss; the dedupe key already scopes it to the producing fingerprint.
         if event.code == "hosted_web_tools_preferred":

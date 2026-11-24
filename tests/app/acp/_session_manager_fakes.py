@@ -113,8 +113,10 @@ class _StaticListStore:
         _ = prefer_recovery
         raise NotImplementedError
 
-    async def load_session_transcript(self, _session_id: str, *, prefer_recovery: bool = False):
-        _ = prefer_recovery
+    async def load_session_transcript(
+        self, _session_id: str, *, prefer_recovery: bool = False, include_folds: bool = False
+    ):
+        _ = prefer_recovery, include_folds
         raise NotImplementedError
 
     async def delete_session(self, _session_id: str, *, allow_active: bool = False) -> None:

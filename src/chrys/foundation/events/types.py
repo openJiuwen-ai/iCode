@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     # (top of file) keeps all annotations as strings, so this import never
     # executes at runtime.
     from chrys.service.mutations.types import RestoreResult
+    from chrys.service.state.store import SessionReplay
 
 AGENT_LOAD_PHASE_MODEL = "model"
 AGENT_LOAD_PHASE_RUNTIME = "runtime"
@@ -1219,7 +1220,7 @@ class HookConfirmationRequest(Event):
     """The agent profile that wants the operation."""
     hook_id: str
     hook_source: str = ""
-    """``project`` or ``global``; empty when unknown."""
+    """``workdir`` or ``global``; empty when unknown."""
     reason: str = ""
     """What the hook wrote: plain text, never markup."""
     subject: HookConfirmationSubjectKind
@@ -1349,9 +1350,9 @@ class RuntimeHookDetails:
 
 @dataclass
 class RuntimeHookSourceDetails:
-    """One project or global source contributing runtime hooks."""
+    """One working directory or global source contributing runtime hooks."""
 
-    scope: Literal["project", "global"] = "global"
+    scope: Literal["workdir", "global"] = "global"
     source_path: str = ""
     hooks: list[RuntimeHookDetails] = field(default_factory=list)
 
@@ -1587,6 +1588,8 @@ class SessionRestored(Event):
     # such as the workspace MRU can record secondary roots without an
     # engine query.
     working_dirs: list[str] = field(default_factory=list)
+    # In-process TUI replay of the checkpoint the backend actually restored.
+    replay: SessionReplay | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

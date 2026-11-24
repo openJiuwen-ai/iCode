@@ -84,6 +84,127 @@ async def test_load_recovers_missing_primary_from_backup(tmp_path: Path) -> None
     assert json.loads(session_file.read_text(encoding="utf-8"))["meta"]["session_id"] == "s1"
 
 
+async def test_chat_restore_reads_healthy_checkpoint_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = JsonFileStateStore(tmp_path)
+    await store.save_session("s1", {"messages": [Message("user", ["history"])]}, title="saved title")
+    read = store_module.read_session_envelope
+    paths: list[Path] = []
+
+    def track_read(path: Path, *, probe_legacy_source: bool = False):
+        paths.append(path)
+        return read(path, probe_legacy_source=probe_legacy_source)
+
+    monkeypatch.setattr(store_module, "read_session_envelope", track_read)
+    with FileLock(store.active_lock_path("s1"), timeout=0):
+        restored = await store.load_chat_for_restore("s1", prefer_recovery=True)
+
+    assert restored is not None and restored.meta is not None
+    assert restored.state["messages"][0].text == "history"
+    assert restored.meta.title == "saved title"
+    assert not restored.recovered_from_sidecar
+    assert paths == [store.session_dir("s1") / "session.json"]
+
+
+@pytest.mark.parametrize(
+    ("blocked_file", "deny_stat"),
+    [("session.json", False), (SESSION_RECOVERY_FILE_NAME, False), (SESSION_RECOVERY_FILE_NAME, True)],
+)
+async def test_restore_preserves_unreadable_checkpoints_until_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked_file: str, deny_stat: bool
+) -> None:
+    store = JsonFileStateStore(tmp_path)
+    session_id = "12345678-abcd-4111-8222-123456789abc"
+    await store.save_session(session_id, {"messages": [Message("user", ["committed"])]})
+    if blocked_file == SESSION_RECOVERY_FILE_NAME:
+        await asyncio.to_thread(store.save_recovery_session, session_id, {"messages": [Message("user", ["latest"])]})
+    path = store.session_dir(session_id) / blocked_file
+    before = path.read_bytes()
+    open_file = Path.open
+    stat_file = Path.stat
+
+    def denied(target, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+        if target == path:
+            raise PermissionError("temporary checkpoint read failure")
+        return open_file(target, mode, buffering, encoding, errors, newline)
+
+    def denied_stat(target, *, follow_symlinks=True):
+        if target == path and follow_symlinks:
+            raise PermissionError("temporary checkpoint read failure")
+        return stat_file(target, follow_symlinks=follow_symlinks)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", denied)
+        if deny_stat:
+            patch.setattr(Path, "stat", denied_stat)
+        with pytest.raises(PermissionError, match="checkpoint read failure"):
+            await store.resolve_startup_session(session_id, require_inactive=True)
+        with FileLock(store.active_lock_path(session_id), timeout=0):
+            with pytest.raises(PermissionError, match="checkpoint read failure"):
+                await store.load_chat_for_restore(session_id, prefer_recovery=True)
+            with pytest.raises(PermissionError, match="checkpoint read failure"):
+                await store.load_chat_for_restore(session_id, prefer_recovery=False, ignore_recovery=True)
+
+    assert path.read_bytes() == before
+    with FileLock(store.active_lock_path(session_id), timeout=0):
+        restored = await store.load_chat_for_restore(session_id, prefer_recovery=True)
+    assert restored is not None
+    expected = "latest" if blocked_file == SESSION_RECOVERY_FILE_NAME else "committed"
+    assert restored.state["messages"][0].text == expected
+
+
+@pytest.mark.parametrize("invalid_history", [False, True])
+async def test_rollback_discards_a_sidecar_with_an_equivalent_uuid(tmp_path: Path, invalid_history: bool) -> None:
+    store = JsonFileStateStore(tmp_path)
+    session_id = "12345678-abcd-4111-8222-123456789abc"
+    await store.save_session(session_id, {"messages": [Message("user", ["rolled back"])]})
+    await asyncio.to_thread(store.save_recovery_session, session_id, {"messages": [Message("user", ["old"])]})
+    directory = store.session_dir(session_id)
+    recovery = directory / SESSION_RECOVERY_FILE_NAME
+    sidecar = json.loads(recovery.read_text(encoding="utf-8"))
+    sidecar["meta"].update(session_id=session_id.replace("-", "").upper(), updated_at="2999-01-01T00:00:00Z")
+    recovery.write_text(json.dumps(sidecar), encoding="utf-8")
+    if invalid_history:
+        primary = directory / "session.json"
+        checkpoint = json.loads(primary.read_text(encoding="utf-8"))
+        checkpoint["state"]["compressed_msgs"] = [{}]
+        primary.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    with FileLock(store.active_lock_path(session_id), timeout=0):
+        restored = await store.load_chat_for_restore(session_id, prefer_recovery=False, ignore_recovery=True)
+
+    assert not recovery.exists()
+    if invalid_history:
+        assert restored is None
+    else:
+        assert restored is not None and restored.state["messages"][0].text == "rolled back"
+
+
+@pytest.mark.parametrize("initially_damaged", [True, False])
+async def test_read_does_not_discard_a_replacement_sidecar(
+    tmp_path: Path, monkeypatch, initially_damaged: bool
+) -> None:
+    store = JsonFileStateStore(tmp_path)
+    session_id = "12345678-abcd-4111-8222-123456789abc"
+    await store.save_session(session_id, {"messages": []})
+    directory = store.session_dir(session_id)
+    recovery = directory / SESSION_RECOVERY_FILE_NAME
+    sidecar = json.loads((directory / "session.json").read_text(encoding="utf-8"))
+    sidecar["meta"]["updated_at"] = "2020-01-01T00:00:00Z"
+    recovery.write_text("{" if initially_damaged else json.dumps(sidecar), encoding="utf-8")
+    sidecar["meta"]["session_id"] = session_id[:-1] + "0"
+    replacement = json.dumps(sidecar)
+    clean_up = store._delete_recovery_session_if_not_newer
+
+    def replace_before_cleanup(target: str, cleanup) -> None:
+        with FileLock(store._write_lock_path(target), timeout=0):
+            recovery.write_text(replacement, encoding="utf-8")
+        clean_up(target, cleanup)
+
+    monkeypatch.setattr(store, "_delete_recovery_session_if_not_newer", replace_before_cleanup)
+    assert (await store.load_session_meta(session_id, prefer_recovery=True)).session_id == session_id
+    assert recovery.read_text(encoding="utf-8") == replacement
+
+
 async def test_save_succeeds_when_backup_update_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

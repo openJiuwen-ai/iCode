@@ -157,6 +157,10 @@ ARCHITECTURE_RULES = (
         "tests/architecture/test_python_pin.py",
         (".python-version", ".github/workflows/**", "scripts/build.sh", "scripts/build.ps1"),
     ),
+    TestRule(
+        "tests/architecture/test_project_vocabulary.py",
+        ("src/**", "docs/**", "locales/**", "tests/*.py"),
+    ),
     TestRule("tests/architecture/test_quarantine.py"),
     TestRule("tests/architecture/test_test_file_size.py", ("tests/**",)),
     TestRule("tests/architecture/test_test_hygiene.py"),

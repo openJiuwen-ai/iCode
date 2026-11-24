@@ -32,7 +32,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -103,7 +103,7 @@ class _NodeTranscript:
 async def test_attempt_archive_survives_shutdown_with_reused_call_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str, stream: bool
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     target = project / "input.txt"
     target.write_text("Equal content must survive twice.")
     node_client = ArchiveClient(target, outcome)
@@ -187,7 +187,7 @@ async def test_streamed_prose_of_an_unknown_tool_call_reaches_the_node_transcrip
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unknown tool starts no tool; the prose streamed before it shows once, and the value leaves it out."""
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     node_client = MockChatClient(
         responses=[
             MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})]),
@@ -225,7 +225,7 @@ async def test_prose_before_hosted_output_reaches_the_node_transcript_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream: bool
 ) -> None:
     """The prose precedes the next response's hosted output and shows once."""
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     node_client = HostedMockChatClient(
         responses=[
             MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})]),
@@ -250,7 +250,7 @@ async def test_prose_of_a_failed_pass_reaches_the_node_transcript(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A pass that fails after an unknown call keeps the prose it streamed, and no final message follows."""
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     node_client = MockChatClient(
         responses=[MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})])]
     )
@@ -274,7 +274,7 @@ async def test_a_hosted_card_shown_as_the_response_fails_never_completes_the_ans
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     """Hosted work the failed response ran shows as it fails, and the answer it streamed never completed."""
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     node_client = MockChatClient(responses=[MockResponse(text="unused")])
     if failure == "error_carrying_hosted_work":
         # The error carries hosted work the response ran, which shows as it fails.
@@ -325,7 +325,7 @@ async def test_closing_the_run_settles_prose_a_subscriber_holds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, close: str
 ) -> None:
     """A subscriber that never returns cannot hold a closing node, and nothing it held arrives after the pass."""
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     node_client = MockChatClient(
         responses=[
             MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})]),
@@ -385,7 +385,7 @@ async def test_closing_the_run_settles_prose_a_subscriber_holds(
 async def test_manual_retry_keeps_the_failed_attempt_archive_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     target = project / "input.txt"
     target.write_text("Retained work")
     client = ArchiveClient(target, "failed")
@@ -441,7 +441,7 @@ async def test_kernel_tool_rounds_coalesce_and_final_snapshot_keeps_all_results(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     target = project / "input.txt"
     target.write_text("Retained result")
     client = ArchiveClient(target, "completed", pause_before_final=True)

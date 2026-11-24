@@ -20,7 +20,7 @@
 
 ## 执行任务
 
-在项目目录中运行命令，并通过 `-a` 或 `--agent` 指定智能体。任务文本含空格时使用引号：
+在工作目录中运行命令，并通过 `-a` 或 `--agent` 指定智能体。任务文本含空格时使用引号：
 
 ```shell
 icode run "概述这个项目的目录结构和主要模块" --agent QA
@@ -87,17 +87,17 @@ icode run "概述这个项目" --agent QA --quiet
 `-C` 或 `--workdir` 指定智能体处理文件和执行命令时使用的工作目录，无需先在终端中切换目录：
 
 ```shell
-icode run "检查未提交的变更并说明风险" --agent QA --workdir <project-directory>
+icode run "检查未提交的变更并说明风险" --agent QA --workdir <working-directory>
 ```
 
-将 `<project-directory>` 替换为实际项目路径。可以使用绝对路径，或相对于运行命令时所在目录的路径；路径必须指向一个已有目录。
+将 `<working-directory>` 替换为工作目录的实际路径。可以使用绝对路径，或相对于运行命令时所在目录的路径；路径必须指向一个已有目录。
 
 ## 从文件读取任务
 
 较长、需要版本管理或由脚本生成的任务可以放在文本文件中，再通过 `-t` 或 `--task` 读取：
 
 ```shell
-icode run --task prompts/review.md --agent Code --workdir <project-directory>
+icode run --task prompts/review.md --agent Code --workdir <working-directory>
 ```
 
 `--task` 不要求特定文件后缀。iCode 会读取该文件内容，并将其作为本次任务的提示词。任务文件路径可以是绝对路径，也可以是相对路径；使用相对路径时，iCode 会在 `--workdir` 指定的目录中查找该文件，未指定 `--workdir` 时，则在运行命令时所在的目录中查找。
@@ -162,6 +162,8 @@ icode run --task missing.md -a QA --json
 ## 继续已有会话
 
 需要连续对话时，可使用 `-s` 或 `--session` 恢复已有会话，并基于已有对话继续提交任务。未指定 `-C` 或 `--workdir` 时，恢复后使用该会话保存时的工作目录，而不是执行命令所在的目录；指定 `-C` 或 `--workdir` 会改用指定目录。自动化任务需要确定文件操作位置时，应显式指定 `-C` 或 `--workdir`。如果该会话保存的工作目录已不存在，iCode 会提示错误并停止，此时可使用 `-C` 或 `--workdir` 在另一个目录中继续该会话。
+
+可传 12 位十六进制短 ID 或完整 UUID，大小写均可，完整 UUID 可省略连字符。恢复失败时命令会退出，本次指令不会执行。
 
 在无界面模式下，可从第一轮 JSON 输出的 `session_id` 字段获取会话 ID：
 

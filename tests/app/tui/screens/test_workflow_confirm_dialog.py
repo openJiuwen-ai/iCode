@@ -21,7 +21,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.orchestration.workflows.catalog import WorkflowCatalog
 from chrys.orchestration.workflows.preview import WorkflowInspection
 from chrys.service.workflows.discovery import BUILTIN_DIR, read_source
-from tests.orchestration.workflows._hosting import make_project, write_workflow, write_workflow_package
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow, write_workflow_package
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, rich_plain
 from tests.support.waiting import wait_for
@@ -45,15 +45,15 @@ async def test_trust_tabs_preserve_review_details_and_fixed_actions(
     size: tuple[int, int],
     accept: bool,
 ) -> None:
-    project = make_project(tmp_path / ("long-project-directory-" * 3) / "项目 [literal]")
-    monkeypatch.chdir(project)
+    workdir = make_workdir(tmp_path / ("long-project-directory-" * 3) / "项目 [literal]")
+    monkeypatch.chdir(workdir)
     title = "Workflow Demo · Project Tour"
     source = (BUILTIN_DIR / "demo-workflow.py").read_text(encoding="utf-8")
     assert source.count(f'"{title}",') == 1
     source = source.replace(f'"{title}",', f'"{title} [literal]",')
     source += "\n# " + "Long source line [literal] " * 30 + "\n"
-    write_workflow(project, "review", source.encode())
-    preview = await WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=project).preview("review", trust=True)
+    write_workflow(workdir, "review", source.encode())
+    preview = await WorkflowCatalog(config_dir=tmp_path / "config", workdir=workdir).preview("review", trust=True)
     # A manifest diagnostic stays literal even when it contains markup-like source text.
     preview = replace(
         preview,
@@ -117,12 +117,12 @@ async def test_trust_tabs_preserve_review_details_and_fixed_actions(
 async def test_both_source_views_neutralize_terminal_controls_but_preserve_whitespace_and_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
-    monkeypatch.chdir(project)
+    workdir = make_workdir(tmp_path)
+    monkeypatch.chdir(workdir)
     source = 'if True:\r\n\tvalue = "\x1b[24Dmasked\x07\x9b"\r\n# trailing\r'.encode()
     compile(source, "display-only.py", "exec")  # Control characters can occur in valid Python source.
-    write_workflow(project, "display", source)
-    inspection = WorkflowInspection.read(read_source(project / ".chrys/workflows/display.py", "project", layout="file"))
+    write_workflow(workdir, "display", source)
+    inspection = WorkflowInspection.read(read_source(workdir / ".chrys/workflows/display.py", "workdir", layout="file"))
     app = make_chrys_app(tmp_path / "sessions")
     async with app.run_test(size=(100, 32)) as pilot:
         dialog = WorkflowConfirmDialog(inspection)
@@ -155,14 +155,14 @@ async def test_both_source_views_neutralize_terminal_controls_but_preserve_white
 async def test_the_trust_note_says_what_a_confirmation_covers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str, note: str
 ) -> None:
-    project = make_project(tmp_path)
-    monkeypatch.chdir(project)
+    workdir = make_workdir(tmp_path)
+    monkeypatch.chdir(workdir)
     body = python_workflow("def fn(value):\n    return value\n", "fn")
     if layout == "package":
-        entry = write_workflow_package(project, "kit", body, {"helpers.py": b"VALUE = 1\n"})
+        entry = write_workflow_package(workdir, "kit", body, {"helpers.py": b"VALUE = 1\n"})
     else:
-        entry = write_workflow(project, "kit", body)
-    inspection = WorkflowInspection.read(read_source(entry, "project", layout=layout))
+        entry = write_workflow(workdir, "kit", body)
+    inspection = WorkflowInspection.read(read_source(entry, "workdir", layout=layout))
     app = make_chrys_app(tmp_path / "sessions")
     async with app.run_test(size=(100, 32)) as pilot:
         dialog = WorkflowConfirmDialog(inspection)

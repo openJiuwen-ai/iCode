@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.screens.main.session_handlers import RestoreRequest
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotRef, file_snapshot_inline_char_limit
 from chrys.foundation.branding import APP_DISPLAY_NAME
@@ -91,6 +93,37 @@ def test_do_session_restore_can_bypass_loading_guard_for_startup_restore() -> No
     assert len(published) == 1
     assert published[0].session_id == "startup-session"
     assert published[0].apply_saved_model is True
+
+
+async def test_declining_startup_workspace_keeps_the_legacy_checkpoint_in_place(tmp_path: Path) -> None:
+    store = JsonFileStateStore(tmp_path / "sessions")
+    session_id = "12345678abcd"
+    missing_cwd = tmp_path / "moved"
+    await store.save_session(session_id, {"messages": []}, primary_cwd=str(missing_cwd))
+    primary = store.session_dir(session_id) / "session.json"
+    legacy = store.sessions_root / f"{session_id}.json"
+    primary.replace(legacy)
+    primary.with_suffix(".json.bak").unlink()
+    original = legacy.read_bytes()
+    resolved = await store.resolve_startup_session(session_id)
+    assert resolved is not None
+
+    async def decline(path: str) -> None:
+        assert path == str(missing_cwd)
+        assert legacy.is_file() and not primary.exists()
+
+    async def unexpected_publish(event: object) -> None:
+        pytest.fail(f"Restore was published after the workspace prompt was declined: {event!r}")
+
+    screen = SimpleNamespace(
+        _state=MainScreenState(),
+        _services=MainScreenServices(bus=SimpleNamespace(publish=unexpected_publish), state_store=store),
+    )
+    handler = make_session_handler(screen)
+    handler._callbacks = replace(handler._callbacks, choose_missing_working_dir=decline)
+    result = await handler.do_session_restore(session_id, saved_cwd=resolved.primary_cwd)
+    assert result is RestoreRequest.DECLINED
+    assert legacy.read_bytes() == original and not primary.exists()
 
 
 def test_do_session_restore_disables_saved_model_when_startup_model_is_explicit() -> None:

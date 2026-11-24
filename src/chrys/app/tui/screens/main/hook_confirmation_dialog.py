@@ -4,7 +4,7 @@
 
 Everything the hook and the model wrote (the reason, the tool arguments, the
 user's message) is external text: sanitized and shown as plain text, never
-markup. The hook's source is shown too: a project hook comes from the
+markup. The hook's source is shown too: a working directory hook comes from the
 repository, whose reason may be written to talk the user into continuing.
 
 What it asks about shows whole, as the approval dialog shows a tool call: each
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 _TITLE = msg("tui.hook_confirmation.title", fallback="Hook confirmation")
 _ASKS = msg("tui.hook_confirmation.asks", fallback="Hook {hook} asks you to confirm:")
 _ASKS_FROM = msg("tui.hook_confirmation.asks_from", fallback="Hook {hook} ({source}) asks you to confirm:")
-_SOURCE_PROJECT = msg("tui.hook_confirmation.source.project", fallback="project")
+_SOURCE_WORKDIR = msg("tui.hook_confirmation.source.workdir", fallback="working directory")
 _SOURCE_GLOBAL = msg("tui.hook_confirmation.source.global", fallback="global")
 _NO_REASON = msg("tui.hook_confirmation.no_reason", fallback="(no reason given)")
 _TOOL = msg("tui.hook_confirmation.tool", fallback="Tool: {tool}")
@@ -144,7 +144,7 @@ def hook_confirmation_dialog(
 
 def _header(event: HookConfirmationRequest, render: Callable[[MessageRef], str]) -> Text:
     hook = sanitize_legacy_block(event.hook_id)
-    sources = {"project": _SOURCE_PROJECT, "global": _SOURCE_GLOBAL}
+    sources = {"workdir": _SOURCE_WORKDIR, "global": _SOURCE_GLOBAL}
     source = sources.get(event.hook_source)
     header = (
         render(_ASKS_FROM.bind(hook=hook, source=render(source.bind())))

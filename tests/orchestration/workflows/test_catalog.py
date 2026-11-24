@@ -27,7 +27,7 @@ from chrys.service.workflows.discovery import SOURCE_KIND_BUILTIN, WorkflowSourc
 from chrys.service.workflows.ledger import ledger_path
 from chrys.service.workflows.protocol import LIMITS
 from chrys.service.workflows.store import NODE_RECORD_INPUT, NODE_RECORD_OUTPUT, RunSpec, WorkflowRunStore
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.service.workflows.test_store import header
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
@@ -36,7 +36,7 @@ SOURCE = python_workflow("def fn(text):\n    return text\n", "fn")
 
 
 async def test_catalog_preview_title_confirmation_staleness_and_delete(tmp_path: Path) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     path = write_workflow(project, "mine", SOURCE)
     bus = EventBus()
     stages: list[WorkflowPreviewProgress] = []
@@ -45,7 +45,7 @@ async def test_catalog_preview_title_confirmation_staleness_and_delete(tmp_path:
         stages.append(event)
 
     await bus.subscribe(WorkflowPreviewProgress, progress)
-    catalog = WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=project, bus=bus)
+    catalog = WorkflowCatalog(config_dir=tmp_path / "config", workdir=project, bus=bus)
     source = catalog.discover().find("mine")
     assert source is not None and catalog.title(source) is None
     assert catalog.ledger().recorded(source.canonical_path, source.source_kind) is None
@@ -75,7 +75,7 @@ async def test_catalog_preview_title_confirmation_staleness_and_delete(tmp_path:
 
 
 async def test_builtin_preview_needs_no_confirmation_and_cannot_be_deleted(tmp_path: Path) -> None:
-    catalog = WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=make_project(tmp_path))
+    catalog = WorkflowCatalog(config_dir=tmp_path / "config", workdir=make_workdir(tmp_path))
     source = catalog.discover().find("demo-workflow")
     assert source is not None and source.source_kind == SOURCE_KIND_BUILTIN
     assert catalog.title(source) == "Workflow Demo · Project Tour"
@@ -88,8 +88,8 @@ async def test_builtin_preview_needs_no_confirmation_and_cannot_be_deleted(tmp_p
 
 @pytest.mark.parametrize("location", ["outside.py", "nested/inside.py", "_private.py", "notes.txt", "directory.py"])
 def test_delete_refuses_non_discovery_files(tmp_path: Path, location: str) -> None:
-    project = make_project(tmp_path)
-    catalog = WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=project)
+    project = make_workdir(tmp_path)
+    catalog = WorkflowCatalog(config_dir=tmp_path / "config", workdir=project)
     directory = global_workflows_dir(catalog.config_dir)
     path = (tmp_path if location == "outside.py" else directory) / location
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,8 +103,8 @@ def test_delete_refuses_non_discovery_files(tmp_path: Path, location: str) -> No
 
 
 def test_delete_symlink_removes_only_link(tmp_path: Path) -> None:
-    project = make_project(tmp_path)
-    catalog = WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=project)
+    project = make_workdir(tmp_path)
+    catalog = WorkflowCatalog(config_dir=tmp_path / "config", workdir=project)
     target = tmp_path / "target.py"
     target.write_bytes(SOURCE)
     link = write_workflow(project, "linked", b"")
@@ -120,8 +120,8 @@ def test_delete_symlink_removes_only_link(tmp_path: Path) -> None:
 
 
 async def test_history_reads_only_bounded_headers_then_node_records_on_demand(tmp_path: Path) -> None:
-    project = make_project(tmp_path)
-    source = WorkflowSource("mine", "project", str(write_workflow(project, "mine", SOURCE)), SOURCE)
+    project = make_workdir(tmp_path)
+    source = WorkflowSource("mine", "workdir", str(write_workflow(project, "mine", SOURCE)), SOURCE)
     session = tmp_path / "session"
     for index in range(3):
         run_header = replace(header(), canonical_path=source.canonical_path, started_at=f"2026-09-15T0{index}:00:00Z")
@@ -166,7 +166,7 @@ def test_history_bounds_enumeration_and_header_size(tmp_path: Path, monkeypatch:
     for index in range(4):
         directory = tmp_path / "session" / "workflows" / str(index)
         directory.mkdir(parents=True)
-        atomic_write_owner_only_bytes(directory / "run.json", b'{"canonical_path":"/mine.py","source_kind":"project"}')
+        atomic_write_owner_only_bytes(directory / "run.json", b'{"canonical_path":"/mine.py","source_kind":"workdir"}')
     monkeypatch.setattr(layout_module, "MAX_SCANNED_RUN_DIRS", 2)
     assert len(session_runs(tmp_path / "session")) == 2
     monkeypatch.setattr(store_module, "MAX_HEADER_BYTES", 8)
@@ -174,11 +174,11 @@ def test_history_bounds_enumeration_and_header_size(tmp_path: Path, monkeypatch:
 
 
 def test_delete_shadowed_global_file_keeps_active_source_and_history(tmp_path: Path) -> None:
-    catalog = WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=make_project(tmp_path))
+    catalog = WorkflowCatalog(config_dir=tmp_path / "config", workdir=make_workdir(tmp_path))
     global_file = global_workflows_dir(catalog.config_dir) / "mine.py"
     global_file.parent.mkdir(parents=True)
     atomic_write_owner_only_bytes(global_file, SOURCE)
-    project_file = write_workflow(catalog.project_cwd, "mine", SOURCE)
+    project_file = write_workflow(catalog.workdir, "mine", SOURCE)
     history = tmp_path / "session" / "workflows" / "run" / "source.py"
     history.parent.mkdir(parents=True)
     history.write_bytes(SOURCE)
@@ -194,13 +194,13 @@ def test_delete_shadowed_global_file_keeps_active_source_and_history(tmp_path: P
 async def test_preview_waits_for_cleanup_on_deadline_or_cancellation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, expire: bool
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     marker = tmp_path / "worker-pid"
     source = f"import os, threading\nfrom pathlib import Path\nPath({str(marker)!r}).write_text(str(os.getpid()))\n"
     if phase == "load":
         source += "threading.Event().wait()\n"
     write_workflow(project, "preview", source.encode() + SOURCE)
-    catalog = WorkflowCatalog(config_dir=tmp_path / "config", project_cwd=project)
+    catalog = WorkflowCatalog(config_dir=tmp_path / "config", workdir=project)
     real_timeout = asyncio.timeout
     deadlines: list[asyncio.Timeout] = []
 

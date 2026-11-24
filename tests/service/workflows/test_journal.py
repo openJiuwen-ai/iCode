@@ -61,7 +61,7 @@ def _header(session_id: str) -> RunHeader:
         run_id=new_analytics_id(),
         session_id=session_id,
         workflow_id="wf",
-        source_kind="project",
+        source_kind="workdir",
         canonical_path="/p/wf.py",
         title="t",
         input_excerpt="go",

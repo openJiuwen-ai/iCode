@@ -216,9 +216,9 @@ class WorkflowBrowser:
 
     @property
     def catalog(self) -> WorkflowCatalog:
-        config, cwd = get_platform().config_dir, Path(self.host.project_cwd or self.host.cwd())
-        if self._catalog is None or (self._catalog.config_dir, self._catalog.project_cwd) != (config, cwd):
-            self._catalog = WorkflowCatalog(config_dir=config, project_cwd=cwd, bus=self.host.services.bus)
+        config, cwd = get_platform().config_dir, Path(self.host.workdir or self.host.cwd())
+        if self._catalog is None or (self._catalog.config_dir, self._catalog.workdir) != (config, cwd):
+            self._catalog = WorkflowCatalog(config_dir=config, workdir=cwd, bus=self.host.services.bus)
         return self._catalog
 
     async def on_preview_progress(self, event: events.WorkflowPreviewProgress) -> None:
@@ -246,8 +246,8 @@ class WorkflowBrowser:
         preview = self.host.panel.preview
         if preview is None or preview.source.source_kind == "builtin":
             return False
-        return preview.source.source_kind == "project" or Path(preview.source.canonical_path).is_relative_to(
-            Path(self.host.project_cwd or self.host.cwd()).resolve()
+        return preview.source.source_kind == "workdir" or Path(preview.source.canonical_path).is_relative_to(
+            Path(self.host.workdir or self.host.cwd()).resolve()
         )
 
     async def change_draft_workspace(self, cwd: str) -> bool:
@@ -316,7 +316,7 @@ class WorkflowBrowser:
         rows.extend(
             WorkflowRow(warning, "", shadowed=discovery.find(warning.workflow_id) is not None)
             for warning in discovery.skipped
-            if warning.workflow_id is not None and warning.source_kind in {"global", "project"}
+            if warning.workflow_id is not None and warning.source_kind in {"global", "workdir"}
         )
         return rows, "\n".join(f"⚠ {item.path}: {item.reason}" for item in discovery.skipped)
 
@@ -342,7 +342,7 @@ class WorkflowBrowser:
             self.host.show_error(str(exc))
             return
         source_label = text.render(text.SOURCES[row.source.source_kind].bind(), self.host.locale_controller)
-        note = text.DELETE_GLOBAL if row.source.source_kind == "global" else text.DELETE_PROJECT
+        note = text.DELETE_GLOBAL if row.source.source_kind == "global" else text.DELETE_WORKDIR
         notes = [text.render(note.bind(), self.host.locale_controller)]
         if (folder := row.package_folder) is not None:
             package_note = text.DELETE_PACKAGE_NOTE.bind(
@@ -450,7 +450,7 @@ class WorkflowBrowser:
             if loaded is not None:
                 catalog = WorkflowCatalog(
                     config_dir=self.catalog.config_dir,
-                    project_cwd=Path(workspace.primary_cwd),
+                    workdir=Path(workspace.primary_cwd),
                     bus=self.host.services.bus,
                 )
                 try:
@@ -584,7 +584,7 @@ class WorkflowBrowser:
         catalog = (
             WorkflowCatalog(
                 config_dir=get_platform().config_dir,
-                project_cwd=Path(workspace.primary_cwd),
+                workdir=Path(workspace.primary_cwd),
                 bus=self.host.services.bus,
             )
             if new_session
@@ -729,7 +729,7 @@ class WorkflowBrowser:
         catalog = self.catalog
         source = preview.source
         paths = catalog.candidate_paths(source)
-        signature: list[object] = [catalog.config_dir, catalog.project_cwd, source.canonical_path]
+        signature: list[object] = [catalog.config_dir, catalog.workdir, source.canonical_path]
         for path in paths:
             try:
                 stat = path.stat()

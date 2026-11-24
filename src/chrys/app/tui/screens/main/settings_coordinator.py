@@ -314,7 +314,11 @@ class SettingsCoordinator:
         loaded = self._settings_handle.loaded
         values = _values_by_key(loaded)
         for key in list(self._desired):
-            if is_greyed_layer(loaded.source_for(key)) or values[key] == self._desired[key]:
+            if (
+                is_greyed_layer(loaded.source_for(key))
+                or values[key] == self._desired[key]
+                or (key in self._reload_keys and not self._reload_dirty)
+            ):
                 del self._desired[key]
 
     async def wait_for_finalize(self, failures_before_flush: int) -> str | MessageRef | None:

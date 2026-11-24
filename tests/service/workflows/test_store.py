@@ -45,7 +45,7 @@ def header() -> RunHeader:
         run_id=new_analytics_id(),
         session_id=str(uuid.uuid4()),
         workflow_id="wf",
-        source_kind="project",
+        source_kind="workdir",
         canonical_path="/work/.chrys/workflows/wf.py",
         title="t",
         input_excerpt="go",
@@ -402,3 +402,37 @@ async def test_diagnostics_keep_phases_iterations_and_attempts_separate(
         store.write_node_diagnostics("malformed", 1, phase="body", iteration=0, stdout="diagnostic")
     finally:
         await store.close()
+
+
+def test_header_migration_skips_active_sessions_and_uses_the_bounded_codec(tmp_path, monkeypatch):
+    from chrys.foundation.platform.files import atomic_write_owner_only_bytes
+    from chrys.foundation.util.lock import FileLock
+    from chrys.service.state._session_files import session_active_lock_path
+
+    session = tmp_path / "sessions" / "session-a"
+    path = session / "workflows" / "run" / "run.json"
+    original = b'{"source_kind":"project","title":"Old"}'
+    atomic_write_owner_only_bytes(path, original)
+    lock = session_active_lock_path(session.parent, session.name)
+    lock.parent.mkdir()
+    copies = {}
+    errors = []
+
+    def migrate():
+        return store_module.migrate_run_headers(
+            session, backup=copies.__setitem__, on_read_error=lambda path, err: errors.append((path, err))
+        )
+
+    with FileLock(lock):
+        assert not migrate()
+    assert path.read_bytes() == original
+    with monkeypatch.context() as patch:
+        patch.setattr(store_module, "MAX_HEADER_BYTES", len(original))
+        assert read_run_header(path.parent)["source_kind"] == "workdir"
+        assert not migrate()  # indented output would exceed the shared writer's limit
+    assert path.read_bytes() == original
+    assert not copies and not errors
+
+    assert migrate()
+    assert copies == {path: original}
+    assert json.loads(path.read_bytes())["source_kind"] == "workdir"
