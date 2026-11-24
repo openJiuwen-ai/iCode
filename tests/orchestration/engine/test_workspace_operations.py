@@ -105,7 +105,7 @@ async def test_side_question_keeps_workspace_but_does_not_receive_its_context_or
     client = MockChatClient([MockResponse(text="Side answer")])
 
     @asynccontextmanager
-    async def scoped(profile, *, session_id, parent_session_id, session_dir):
+    async def scoped(profile, *, session_id, parent_session_id, session_dir, request_role):
         try:
             yield client
         finally:

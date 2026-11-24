@@ -56,6 +56,7 @@ from chrys.service.trajectory.revisions import record_context_revision
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
+    from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
     from chrys.kernel.types import ChatResponseUpdate
     from chrys.service.profiles.models.schema import ModelProfile
 
@@ -431,13 +432,21 @@ class WireCall:
         if self._recorder is not None:
             self._recorder.failed(exc)
 
-    def observe(self, result: Any) -> Any:
+    def observe(
+        self,
+        result: Any,
+        *,
+        request_role: RequestRole | None,
+        request_scope: RequestScope | None,
+    ) -> Any:
         """Hook this acquisition's reporting into the request's result.
 
         A stream is returned as is, with hooks added and nothing consumed:
         higher layers rely on its lazy resolution. A pending response is
         wrapped in a coroutine that reports it once it lands.
         """
+        self._requests.request_role = request_role
+        self._requests.request_scope = request_scope
         if self._stream:
             if isinstance(result, ResponseStream):
                 self._observe_stream(result)

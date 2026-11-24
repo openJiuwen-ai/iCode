@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
     from openai import AsyncOpenAI
 
+    from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
     from chrys.kernel import ToolLoopLayer
     from chrys.service.llm.wire_client import WireClient
 
@@ -418,6 +419,9 @@ async def create_client(
     use_route_session_context: bool = False,
     session_dir: Path | None = None,
     tool_result_ceiling_tokens: int | None = None,
+    *,
+    request_role: RequestRole | None = None,
+    request_scope: RequestScope | None = None,
 ) -> Any:
     """Create a chat client stack based on the configured ``ModelProfile``.
 
@@ -446,6 +450,8 @@ async def create_client(
             logging so tests and custom stores can keep logs beside the
             session artifacts.
         tool_result_ceiling_tokens: Optional kernel backstop for local tool results.
+        request_role: Default purpose sent to the model service for this client's calls.
+        request_scope: Optional execution scope sent alongside the request role.
 
     Returns:
         A chat client stack compatible with Chrys' kernel runtime; closing it
@@ -504,6 +510,8 @@ async def create_client(
         session_id=session_id,
         parent_session_id=parent_session_id,
         use_route_session_context=use_route_session_context,
+        request_role=request_role,
+        request_scope=request_scope,
         max_iterations=7777,
         max_consecutive_errors=10,
     )
@@ -622,6 +630,8 @@ def _assemble_stack(
     max_iterations: int,
     max_consecutive_errors: int,
     tool_result_ceiling_tokens: int | None,
+    request_role: RequestRole | None = None,
+    request_scope: RequestScope | None = None,
 ) -> ToolLoopLayer:
     """Wrap the wire client over *sdk_client* in the chrys loop + chat-middleware stack.
 
@@ -643,6 +653,8 @@ def _assemble_stack(
             session_id=session_id,
             parent_session_id=parent_session_id,
             use_route_session_context=use_route_session_context,
+            request_role=request_role,
+            request_scope=request_scope,
         ),
     )
     return ToolLoopLayer(

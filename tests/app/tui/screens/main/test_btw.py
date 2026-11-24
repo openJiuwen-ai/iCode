@@ -926,7 +926,7 @@ async def test_side_question_spanning_rebuild_answers_and_records_usage(
     client.hold = held
 
     @asynccontextmanager
-    async def scoped(profile, *, session_id, parent_session_id, session_dir):
+    async def scoped(profile, *, session_id, parent_session_id, session_dir, request_role):
         try:
             yield client
         finally:

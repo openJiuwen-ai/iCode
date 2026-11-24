@@ -23,6 +23,7 @@ from chrys.foundation.models.workflow_session import (
     WorkspaceSnapshot,
 )
 from chrys.foundation.trajectory.event_types import RuntimeFinishReason
+from chrys.foundation.util.chrys_headers import RequestScope
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.invoker.resources import ResourceScope
 from chrys.orchestration.session_resources import SessionResources
@@ -271,6 +272,7 @@ class WorkflowSessionOwner:
         if judge is None:
             judge = ApprovalJudge(
                 profile,
+                request_scope=RequestScope.WORKFLOW,
                 auto_review=self._auto_review,
                 session_id=derive_llm_route_session_id(session_id, route_kind="approval-judge", model_profile=profile),
                 parent_session_id=session_id,

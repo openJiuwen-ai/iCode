@@ -47,7 +47,7 @@ from chrys.foundation.errors.formatting import clean_error_message
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
 from chrys.foundation.text.reading_order import reading_order
-from chrys.foundation.util.chrys_headers import is_chrys_managed_header_name
+from chrys.foundation.util.chrys_headers import RequestRole, is_chrys_managed_header_name
 from chrys.foundation.util.env_templates import blank_commands
 from chrys.foundation.util.header_charset import (
     api_key_charset_error,
@@ -1795,7 +1795,10 @@ class ModelConfigScreen(BaseDialog[str]):
             profile = self._build_profile_from_form()
             profile.http_max_retries = 0
             started = asyncio.get_running_loop().time()
-            async with asyncio.timeout(self.MODEL_TEST_TIMEOUT_SECONDS), scoped_client(profile) as client:
+            async with (
+                asyncio.timeout(self.MODEL_TEST_TIMEOUT_SECONDS),
+                scoped_client(profile, request_role=RequestRole.MODEL_TEST) as client,
+            ):
                 await get_final_response(
                     client,
                     [Message(role="user", contents=["Reply with OK."])],

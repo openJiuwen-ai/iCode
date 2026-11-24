@@ -12,6 +12,7 @@ import pytest
 
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.orchestration.engine.build import builder
 from chrys.orchestration.sub_agents import tools as children
 from chrys.service.agent_middleware import ResponseBatchCounter
@@ -42,6 +43,9 @@ def _client(
     use_route_session_context: bool = False,
     session_dir: Path | None = None,
     tool_result_ceiling_tokens: int | None = None,
+    *,
+    request_role: RequestRole | None = None,
+    request_scope: RequestScope | None = None,
 ) -> MockChatClient:
     return MockChatClient()
 

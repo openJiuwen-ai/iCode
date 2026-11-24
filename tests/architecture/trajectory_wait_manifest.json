@@ -609,7 +609,7 @@
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_MODEL, 'Resolving model profile', status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_RUNTIME, 'Capturing workspace context', status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
         ["awaitable", "await bus.publish(Warning(code='protected_chat_options_stripped', message=protected_options_warning.message, display_message=_BUILDER_PROTECTED_CHAT_OPTIONS_STRIPPED.bind(keys=', '.join(protected_options_warning.keys)), session_id=session_id))", "unresolved"],
-        ["wrapper", "await create_client(active_profile, on_intermediate_text=on_intermediate, session_id=session_id, session_dir=effective_session_dir, tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
+        ["wrapper", "await create_client(active_profile, request_role=RequestRole.MAIN_AGENT, on_intermediate_text=on_intermediate, session_id=session_id, session_dir=effective_session_dir, tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
         ["awaitable", "await prepared.own_or_release(client.aclose)", "unresolved"],
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_TOOLS, 'Loading built-in tools', status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
         ["wrapper", "await import_off_loop(*tool_packs.IMPLEMENTATION_MODULES)", "unresolved", "chrys.foundation.util.imports.import_off_loop"],
@@ -2905,7 +2905,7 @@
         ["wrapper", "await rollback_resources(prepared)", "unresolved", "chrys.orchestration.invoker.resources.rollback_resources"]
       ],
       "SubAgentTools._prepare._acquire": [
-        ["wrapper", "await create_client(sub_active_profile, session_id=sub_agent_session_id, parent_session_id=self._session_id, use_route_session_context=True, session_dir=self._session_dir, tool_result_ceiling_tokens=self._tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
+        ["wrapper", "await create_client(sub_active_profile, request_role=RequestRole.SUB_AGENT, request_scope=self._request_scope, session_id=sub_agent_session_id, parent_session_id=self._session_id, use_route_session_context=True, session_dir=self._session_dir, tool_result_ceiling_tokens=self._tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
         ["awaitable", "await prepared.own_or_release(client.aclose)", "unresolved"],
         ["awaitable", "await tool_packs.assemble_tools(tool_build)", "unresolved"],
         ["awaitable", "await self._bus.publish(warning)", "unresolved"],
@@ -3106,7 +3106,7 @@
     },
     "chrys.orchestration.workflows.agent_node_build": {
       "_build_kernel_node": [
-        ["wrapper", "await create_client(model, session_id=derive_llm_route_session_id(session_id, route_kind='workflow-node', route_parts=(node_id, profile.name, invocation_id), model_profile=model), parent_session_id=session_id, session_dir=res.session_dir, tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
+        ["wrapper", "await create_client(model, request_role=RequestRole.MAIN_AGENT, request_scope=RequestScope.WORKFLOW, session_id=derive_llm_route_session_id(session_id, route_kind='workflow-node', route_parts=(node_id, profile.name, invocation_id), model_profile=model), parent_session_id=session_id, session_dir=res.session_dir, tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens)", "unresolved", "chrys.service.llm.clients.create_client"],
         ["awaitable", "await conversation.own_or_release(client.aclose)", "unresolved"],
         ["awaitable", "await tool_packs.assemble_tools(tool_build)", "unresolved"],
         ["awaitable", "await res.bus.publish(warning)", "unresolved"],
@@ -4283,7 +4283,7 @@
       ],
       "ApprovalJudge._get_client": [
         ["sync_primitive", "async with self._client_lock", "unresolved"],
-        ["wrapper", "await create_client(self._profile, session_id=self._session_id, parent_session_id=self._parent_session_id, session_dir=self._session_dir)", "unresolved", "chrys.service.llm.clients.create_client"]
+        ["wrapper", "await create_client(self._profile, request_role=RequestRole.APPROVAL_JUDGE, request_scope=self._request_scope, session_id=self._session_id, parent_session_id=self._parent_session_id, session_dir=self._session_dir)", "unresolved", "chrys.service.llm.clients.create_client"]
       ],
       "ApprovalJudge.aclose": [
         ["awaitable", "await self._close()", "unresolved"]
@@ -4400,7 +4400,7 @@
       ],
       "LastWordsGenerator._get_client": [
         ["sync_primitive", "async with self._client_lock", "unresolved"],
-        ["wrapper", "await create_client(self._profile, session_id=self._session_id, parent_session_id=self._parent_session_id, session_dir=self._session_dir)", "unresolved", "chrys.service.llm.clients.create_client"]
+        ["wrapper", "await create_client(self._profile, request_role=RequestRole.COMPACTION, request_scope=self._request_scope, session_id=self._session_id, parent_session_id=self._parent_session_id, session_dir=self._session_dir)", "unresolved", "chrys.service.llm.clients.create_client"]
       ],
       "LastWordsGenerator._publish_retry_attempt": [
         ["awaitable", "await self._publish_retry(RetryAttemptInfo(reason=reason, attempt=attempt, max_attempts=max_attempts, delay_seconds=delay_seconds, facts=facts))", "unresolved"]
@@ -4489,7 +4489,7 @@
     },
     "chrys.service.context.providers.context_management": {
       "ContextManagementProvider._recall_context": [
-        ["wrapper", "async with scoped_client(self._profile, session_id=self._session_id, parent_session_id=self._parent_session_id, session_dir=self._session_dir)", "unresolved", "chrys.service.llm.clients.scoped_client"],
+        ["wrapper", "async with scoped_client(self._profile, request_role=RequestRole.CONTEXT_RECALL, session_id=self._session_id, parent_session_id=self._parent_session_id, session_dir=self._session_dir)", "unresolved", "chrys.service.llm.clients.scoped_client"],
         ["wrapper", "await get_final_response(client, messages, stream=self._profile.stream, options=chat_options, timeout=self._profile.http_read_timeout)", "unresolved", "chrys.service.llm.one_shot.get_final_response"]
       ]
     },
@@ -4849,7 +4849,7 @@
     },
     "chrys.service.llm.side_question": {
       "answer_side_question": [
-        ["wrapper", "async with scoped_client(profile, session_id=derive_llm_route_session_id(session_id, route_kind='side-question', model_profile=profile), parent_session_id=session_id, session_dir=session_dir)", "unresolved", "chrys.service.llm.clients.scoped_client"],
+        ["wrapper", "async with scoped_client(profile, request_role=RequestRole.SIDE_QUESTION, session_id=derive_llm_route_session_id(session_id, route_kind='side-question', model_profile=profile), parent_session_id=session_id, session_dir=session_dir)", "unresolved", "chrys.service.llm.clients.scoped_client"],
         ["wrapper", "await get_final_response(client, messages, stream=profile.stream, options=_options(profile), timeout=profile.http_read_timeout)", "unresolved", "chrys.service.llm.one_shot.get_final_response"]
       ]
     },
@@ -5312,7 +5312,7 @@
         ["awaitable", "await self._complete(surrogate_safe_text(prompt))", "unresolved"]
       ],
       "complete_with_model_profile": [
-        ["wrapper", "async with scoped_client(profile)", "unresolved", "chrys.service.llm.clients.scoped_client"],
+        ["wrapper", "async with scoped_client(profile, request_role=RequestRole.RSI_OPTIMIZER)", "unresolved", "chrys.service.llm.clients.scoped_client"],
         ["wrapper", "await get_final_response(client, [Message('user', [prompt])], stream=False, options=effective_chat_options(profile))", "unresolved", "chrys.service.llm.one_shot.get_final_response"]
       ]
     },

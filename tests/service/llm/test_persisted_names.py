@@ -50,6 +50,7 @@ REQUEST_LOCAL_MARKERS = frozenset(
     {
         "_chrys_hosted_context_summary",
         "_chrys_pending_image_parts",
+        "_chrys_request_role",
     }
 )
 
