@@ -73,7 +73,12 @@ from chrys.foundation.text.yaml_io import dump_yaml
 from chrys.foundation.util.once_close import finish_close
 from chrys.foundation.util.session_ids import SESSION_SHORT_ID_LEN, session_short_id
 from chrys.orchestration.engine.workspaces import registry_unreadable_warning
-from chrys.orchestration.session_host import WORKSPACE_WARNING_CODES, ChrysSessionHost, collect_workspace_warnings
+from chrys.orchestration.session_host import (
+    WORKSPACE_WARNING_CODES,
+    ChrysSessionHost,
+    agent_profile_not_found,
+    collect_workspace_warnings,
+)
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.profiles.agents.loader import AgentProfileLoadError, is_filename_safe_profile_name
@@ -84,7 +89,13 @@ from chrys.service.profiles.agents.serializer import delete_profile as delete_ag
 from chrys.service.profiles.agents.serializer import profile_directory_lock
 from chrys.service.profiles.agents.serializer import profile_to_dict as agent_profile_to_dict
 from chrys.service.profiles.agents.serializer import stored_profile_name as stored_agent_profile_name
+from chrys.service.profiles.diagnostics import (
+    profile_miss_facts,
+    profile_miss_sentence,
+    selectable_model_labels,
+)
 from chrys.service.profiles.models.loader import load_profile_from_yaml as load_model_profile_from_yaml
+from chrys.service.profiles.models.loader import read_profile_dir as read_model_profile_dir
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.profiles.models.serializer import delete_profile as delete_model_profile
@@ -138,6 +149,20 @@ _SUPPORTED_CONFIG_OPTIONS: tuple[AcpConfigOption, ...] = (
 
 class AcpSessionError(RuntimeError):
     """Raised when an ACP session request cannot be fulfilled."""
+
+    def __init__(self, message: str, *, display_message: MessageRef | None = None) -> None:
+        self.display_message = display_message
+        super().__init__(message)
+
+
+def _agent_profile_not_found(name: str, registry: AgentProfileRegistry) -> AcpSessionError:
+    """Share the CLI's diagnostic: name any unreadable file beside the available list.
+
+    The wire path still sends ``str(exc)`` via ``invalid_params``; carrying the
+    formatted text means an ACP client finally sees the path and parse reason.
+    """
+    error = agent_profile_not_found(name, registry)
+    return AcpSessionError(error.args[0], display_message=error.display_message)
 
 
 FULL_RELOAD_BUDGET_SECONDS: Final = 300.0
@@ -307,8 +332,7 @@ class AcpSessionManager:
         self.load_registries()
         profile = self._agent_registry.resolve_selector(name)
         if profile is None:
-            msg = f"Agent profile not found: {name}"
-            raise AcpSessionError(msg)
+            raise _agent_profile_not_found(name, self._agent_registry)
         data = jsonable_dataclass(profile)
         if profile.acp is None:
             data.pop("acp", None)
@@ -497,8 +521,20 @@ class AcpSessionManager:
             self._model_registry.load_all()
         profile = self._model_registry.get(profile_id)
         if profile is None:
-            msg = f"Model profile not found: {profile_id}"
-            raise AcpSessionError(msg)
+            # A model file with a YAML error and an id nobody registered both read as
+            # "not found", so the client cannot tell a typo from a corrupt file.  The
+            # re-read names the file; the whole sentence stays on one line because the
+            # JSON-RPC message is this text's first line.
+            user_dir = self._model_registry.user_directory
+            scan = read_model_profile_dir(user_dir) if user_dir is not None else None
+            facts = profile_miss_facts(profile_id, selectable_model_labels(self._model_registry.list_profiles()), scan)
+            raise AcpSessionError(
+                profile_miss_sentence(
+                    facts,
+                    base=f"Model profile not found: {profile_id}",
+                    available_label="Available model profiles",
+                )
+            )
         return profile
 
     def read_model_profile(self, profile_id: str) -> dict[str, object]:
@@ -737,8 +773,7 @@ class AcpSessionManager:
             self.load_registries()
             profile = self._agent_registry.resolve_selector(self._profile_name)
             if profile is None:
-                msg = f"Agent profile not found: {self._profile_name}"
-                raise AcpSessionError(msg)
+                raise _agent_profile_not_found(self._profile_name, self._agent_registry)
             mcp_overlay = _mcp_overlay(mcp_servers)
             resolved_cwd = self._resolve_requested_cwd(cwd)
             # Off-thread: the load reads settings files. Derived per session
@@ -1140,11 +1175,7 @@ class AcpSessionManager:
             if profile is None:
                 # Invalid profiles publish an Error rather than ProfileSwitched, so reject
                 # here instead of waiting out the 60s timeout for an event that never comes.
-                msg = f"Agent profile not found: {profile_name}"
-                available = ", ".join(sorted(self._agent_registry.list_names()))
-                if available:
-                    msg = f"{msg}. Available profiles: {available}"
-                raise AcpSessionError(msg)
+                raise _agent_profile_not_found(profile_name, self._agent_registry)
             if session.profile_name == profile.name:
                 return session.host.engine.current_profile_snapshot()
             result = await self._await_runtime_mutation_locked(

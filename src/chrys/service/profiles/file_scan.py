@@ -5,10 +5,13 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import stat
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +22,39 @@ from yaml.constructor import ConstructorError
 from chrys.foundation.i18n import DisplaySequence
 from chrys.foundation.platform.files import digest_bytes
 from chrys.foundation.text.encoding import decode_bytes
+
+# A diagnostic re-read — "why did this selector miss?" — must not repeat the
+# WARNING/ERROR the first read already emitted.  One filter per logger, shared
+# by agents and models, keyed off a ContextVar so the normal listing still speaks.
+_SILENT_PROFILE_READ: ContextVar[bool] = ContextVar("chrys_profile_read_silent", default=False)
+
+
+class _SilentProfileReadFilter(logging.Filter):
+    """Drop parse-time records a diagnostic re-read would only repeat."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _SILENT_PROFILE_READ.get()
+
+
+# The legacy-kind WARNING comes from foundation, not from either loader, so a
+# filter on the loader loggers alone leaves it audible during a silent re-read.
+_silent_filter = _SilentProfileReadFilter()
+for _logger_name in (
+    "chrys.service.profiles.agents.loader",
+    "chrys.service.profiles.models.loader",
+    "chrys.foundation.tool_kinds",
+):
+    logging.getLogger(_logger_name).addFilter(_silent_filter)
+
+
+@contextmanager
+def silent_profile_read() -> Generator[None]:
+    """Suppress parse-time logs while re-reading profiles for a diagnostic."""
+    token = _SILENT_PROFILE_READ.set(True)
+    try:
+        yield
+    finally:
+        _SILENT_PROFILE_READ.reset(token)
 
 
 class _ProfileLoader(yaml.SafeLoader):
@@ -66,15 +102,31 @@ class ProfileDirScan[P]:
     invalid: dict[Path, ProfileFileIssue] = field(default_factory=dict)
     fingerprints: dict[Path, str | None] = field(default_factory=dict)
     directory_error: OSError | None = None
+    directory: Path | None = None
+
+
+def unreadable_notes(scan: ProfileDirScan[Any]) -> DisplaySequence | None:
+    """Every reason the scan could not see a selector, or None when it saw everything.
+
+    A file whose YAML does not parse leaves no profile behind, so a selector aimed
+    at it reads exactly like a selector aimed at nothing.  A directory that cannot
+    be listed hides every file inside it the same way, and ``invalid`` stays empty
+    in that case — so the directory error has to be reported on its own.
+    """
+    notes = [f"{path} ({issue.reason})" for path, issue in sorted(scan.invalid.items())]
+    error = scan.directory_error
+    if error is not None:
+        code = errno.errorcode.get(error.errno, type(error).__name__)
+        where = str(scan.directory) if scan.directory is not None else "<profile directory>"
+        notes.append(f"{where} ({code}: {error.strerror or code})")
+    return DisplaySequence(tuple(notes)) if notes else None
 
 
 def unreadable_file_notes(invalid: Mapping[Path, ProfileFileIssue]) -> DisplaySequence | None:
     """One note per profile file the scan could not read, or None when they all loaded.
 
-    A file whose YAML does not parse leaves no profile behind, so a selector aimed
-    at it reads exactly like a selector aimed at nothing: one cause, two symptoms.
-    The pair shown is the one ``profile list`` prints — the path, then coordinates
-    or a field name, both written to stay meaningful in any locale.
+    Kept for callers that already hold only ``scan.invalid``; callers with the full
+    scan should use :func:`unreadable_notes` so a directory error is not lost.
     """
     if not invalid:
         return None
@@ -113,7 +165,7 @@ def scan_profiles[P](
     A genuinely absent directory is empty. A listing failure cannot establish
     deletion, including a failure after the filesystem returned some entries.
     """
-    scan = ProfileDirScan[P]()
+    scan = ProfileDirScan[P](directory=directory)
     try:
         paths = list(directory.iterdir())
     except FileNotFoundError as exc:

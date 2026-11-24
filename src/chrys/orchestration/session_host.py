@@ -99,7 +99,7 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.loader import read_profile_dir
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile, MCPServerConfig
-from chrys.service.profiles.file_scan import unreadable_file_notes
+from chrys.service.profiles.file_scan import unreadable_notes
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.state.store import AmbiguousSessionIdError as AmbiguousSessionIdError
 from chrys.service.state.store import JsonFileStateStore, StartupSessionInUseError, StateStore
@@ -354,7 +354,11 @@ def agent_profile_not_found(name: str, registry: AgentProfileRegistry) -> AgentP
     The list and the unreadable files answer different questions — "which name did
     you mean" and "why was my name not there" — so both are said when both apply.
     """
-    notes = unreadable_file_notes(read_profile_dir(registry.directory).invalid)
+    # Only re-read a directory this registry actually loaded from. A pure in-memory
+    # registry has no user directory; scanning a host default would blame files that
+    # have nothing to do with the selector that missed.
+    user_dir = registry.user_directory
+    notes = unreadable_notes(read_profile_dir(user_dir)) if user_dir is not None else None
     available_names = sorted(registry.list_names())
     if available_names and notes is not None:
         display_message = _AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE_AND_UNREADABLE.bind(

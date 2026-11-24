@@ -211,6 +211,17 @@ class AgentProfileRegistry:
     def directory(self) -> Path:
         return self._user_dir or _default_user_dir()
 
+    @property
+    def user_directory(self) -> Path | None:
+        """The directory this registry actually loaded from, never a host default.
+
+        A registry built only with ``register()`` / ``load_builtins()`` has no user
+        directory.  A diagnostic re-read must not scan the host default in that
+        case: a broken file there would be blamed on a selector this registry
+        never had anything to do with.
+        """
+        return self._user_dir
+
     def reload_base(self) -> AgentProfileRegistry:
         """The builtins and host-injected profiles that survive a complete directory scan."""
         view = AgentProfileRegistry()
@@ -906,6 +917,10 @@ class AgentProfileRegistry:
         self.load_builtins()
         profiles = ProfileReload(self, None)
         profiles.scan()
+        # The scan reads the real user directory even though the base view has no
+        # explicit one; keeping it lets a later miss name the file that failed to parse.
+        if profiles.agents is not None:
+            self._user_dir = profiles.agents.directory
         profiles.install()
 
 

@@ -41,6 +41,11 @@ class ModelProfileRegistry:
     def directory(self) -> Path:
         return self._user_dir or _default_user_dir()
 
+    @property
+    def user_directory(self) -> Path | None:
+        """The directory this registry actually loaded from, never a host default."""
+        return self._user_dir
+
     def reload_base(self) -> ModelProfileRegistry:
         view = ModelProfileRegistry()
         view._user_dir = self._user_dir

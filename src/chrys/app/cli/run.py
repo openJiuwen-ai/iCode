@@ -45,7 +45,7 @@ from chrys.orchestration.session_host import (
     collect_workspace_warnings,
 )
 from chrys.service.approval.policy import ApprovalMode
-from chrys.service.profiles.file_scan import ProfileDirScan, unreadable_file_notes
+from chrys.service.profiles.file_scan import ProfileDirScan, unreadable_notes
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import (
     loaded_with_active_model_profile,
@@ -187,7 +187,7 @@ def _model_profile_not_found(
     Two profiles may share a display name, and then the ids in the list are the only
     way to pick one; naming the unreadable file instead of the list hides that choice.
     """
-    notes = unreadable_file_notes(scan.invalid)
+    notes = unreadable_notes(scan)
     profiles = sorted(registry.list_profiles(), key=lambda item: item.name.casefold())
     labels = DisplaySequence(f"{item.name} ({item.id})" for item in profiles)
     if profiles and notes is not None:

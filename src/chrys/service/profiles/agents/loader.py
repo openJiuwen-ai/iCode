@@ -8,9 +8,6 @@ import logging
 import math
 import ntpath
 import re
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from pathlib import PurePath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -46,35 +43,18 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.profiles.coercion import coerce_bool
-from chrys.service.profiles.file_scan import ProfileDirScan, ProfileLoadError, read_profile_mapping, scan_profiles
+from chrys.service.profiles.file_scan import (
+    ProfileDirScan,
+    ProfileLoadError,
+    read_profile_mapping,
+    scan_profiles,
+    silent_profile_read,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
-
-# Set while a caller re-reads a directory purely to learn why a selector missed.  The
-# parse-time warnings all come from this module's logger, so one filter covers them.
-_SILENT_READ: ContextVar[bool] = ContextVar("chrys_agent_profile_read_silent", default=False)
-
-
-class _SilentReadFilter(logging.Filter):
-    """Drop the records a re-read would only repeat — this one read says nothing new."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return not _SILENT_READ.get()
-
-
-logger.addFilter(_SilentReadFilter())
-
-
-@contextmanager
-def _silent_read() -> Iterator[None]:
-    token = _SILENT_READ.set(True)
-    try:
-        yield
-    finally:
-        _SILENT_READ.reset(token)
 
 
 class AgentProfileLoadError(ProfileLoadError):
@@ -898,7 +878,7 @@ def read_profile_dir(directory: Path) -> ProfileDirScan[AgentProfile]:
     listing — must not repeat what :func:`scan_profile_dir` already logged, and that
     includes the WARNINGs the parser emits while loading a file it keeps.
     """
-    with _silent_read():
+    with silent_profile_read():
         return _scan(directory)
 
 

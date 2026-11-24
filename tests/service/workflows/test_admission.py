@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -164,6 +165,110 @@ def test_a_profile_that_resolves_to_no_usable_model_is_rejected() -> None:
         admit_manifest(_manifest(), agent_registry=agents, model_registry=ModelProfileRegistry(), settings=Settings())
     assert info.value.code == REJECT_MODEL_UNRESOLVABLE
     assert "'Reviewer'" in info.value.message
+
+
+def test_a_broken_agent_yaml_is_named_in_the_admission_rejection(tmp_path: Path) -> None:
+    """A node whose selector missed must name a YAML file that could not be read.
+
+    ``admission`` lives in service and cannot import the orchestration error
+    builder, so it assembles the same facts through the shared diagnostics.
+    """
+    broken = tmp_path / "Reviewer.yaml"
+    broken.write_text("name: [unclosed\n", encoding="utf-8")
+    agents = AgentProfileRegistry()
+    agents.load_user_profiles(tmp_path)
+    _agents, models, settings = _registries()
+
+    with pytest.raises(AdmissionError) as info:
+        admit_manifest(_manifest(), agent_registry=agents, model_registry=models, settings=settings)
+
+    assert info.value.code == REJECT_AGENT_PROFILE_MISSING
+    assert info.value.node_id == "review"
+    assert str(broken) in info.value.message
+    assert "Could not read these profile files" in info.value.message
+
+
+def test_a_broken_model_yaml_is_named_in_the_admission_rejection(tmp_path: Path) -> None:
+    """The model branch gets the same diagnosis as the agent branch."""
+    broken = tmp_path / "nope.yaml"
+    broken.write_text("id: [unclosed\n", encoding="utf-8")
+    models = ModelProfileRegistry()
+    target, scan = models.read_profiles(tmp_path)
+    models.install_profiles(target, scan)
+    agents, _models, settings = _registries()
+
+    with pytest.raises(AdmissionError) as info:
+        admit_manifest(_manifest(model="nope"), agent_registry=agents, model_registry=models, settings=settings)
+
+    assert info.value.code == REJECT_MODEL_UNRESOLVABLE
+    assert info.value.node_id == "review"
+    assert str(broken) in info.value.message
+    assert "Could not read these profile files" in info.value.message
+
+
+def test_a_model_the_agent_resolves_to_names_a_broken_file_it_could_not_parse(tmp_path: Path) -> None:
+    """An agent's own model binding fails exactly like an explicit one, and says why.
+
+    A corrupt model file leaves no profile behind, so the agent's binding falls back
+    to the session default, which is unusable — the same rejection as a machine with
+    nothing configured. Naming the file is the only way to tell the two apart.
+    """
+    broken = tmp_path / "gone.yaml"
+    broken.write_text("id: [unclosed\n", encoding="utf-8")
+    models = ModelProfileRegistry()
+    target, scan = models.read_profiles(tmp_path)
+    models.install_profiles(target, scan)
+    agents, _models, _settings = _registries(agent_model="gone")
+
+    with pytest.raises(AdmissionError) as info:
+        admit_manifest(_manifest(), agent_registry=agents, model_registry=models, settings=Settings())
+
+    assert info.value.code == REJECT_MODEL_UNRESOLVABLE
+    assert info.value.node_id == "review"
+    assert str(broken) in info.value.message
+    assert "Could not read these profile files" in info.value.message
+    assert "'Reviewer'" in info.value.message
+
+
+def test_a_model_the_agent_resolves_to_keeps_the_old_message_when_no_file_is_broken() -> None:
+    """Nothing else reports an unreadable file, so the list stays out of this message.
+
+    Adding the available list here would print it twice — the caller's hint already
+    carries it — and would break every caller that matches this text.
+    """
+    agents, _models, _settings = _registries(agent_model="gone")
+
+    with pytest.raises(AdmissionError) as info:
+        admit_manifest(_manifest(), agent_registry=agents, model_registry=ModelProfileRegistry(), settings=Settings())
+
+    assert info.value.message == ("Node 'review' has no usable model: agent profile 'Reviewer' resolves to no model.")
+
+
+def test_the_available_model_list_leaves_out_profiles_a_node_cannot_select() -> None:
+    """A profile with no model id is rejected at admission, so naming it sends the reader nowhere."""
+    agents, _models, settings = _registries()
+    models = ModelProfileRegistry()
+    models.register(ModelProfile(id="unconfigured", name="Unconfigured"))
+    models.register(ModelProfile(id="ready", name="Ready", provider="mock", model_id="m"))
+
+    with pytest.raises(AdmissionError) as info:
+        admit_manifest(_manifest(model="nope"), agent_registry=agents, model_registry=models, settings=settings)
+
+    assert "Available model profiles: Ready (ready)" in info.value.message
+    assert "Unconfigured" not in info.value.message
+
+
+def test_two_model_profiles_sharing_a_name_are_told_apart_by_id() -> None:
+    """``Same, Same`` says nothing; the id is the only way to choose, as ``workflow validate`` prints it."""
+    agents, _models, settings = _registries()
+    models = ModelProfileRegistry()
+    models.register(ModelProfile(id="first-id", name="Same", provider="mock", model_id="m-one"))
+    models.register(ModelProfile(id="second-id", name="Same", provider="mock", model_id="m-two"))
+
+    with pytest.raises(AdmissionError) as info:
+        admit_manifest(_manifest(model="nope"), agent_registry=agents, model_registry=models, settings=settings)
+
+    assert "Available model profiles: Same (first-id), Same (second-id)" in info.value.message
 
 
 def test_an_agent_node_stripped_of_its_agent_entry_is_a_manifest_error() -> None:

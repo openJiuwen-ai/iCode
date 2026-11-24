@@ -18254,9 +18254,6 @@ msgstr "工作区列表无法保存：{reason}"
 #~ msgid "cli.profiles.models.empty"
 #~ msgstr "未找到模型配置。"
 
-#~ msgid "profiles.files_unreadable"
-#~ msgstr "以下配置文件无法读取：{files}"
-
 #~ msgid "retry.invalid_response"
 #~ msgstr "响应无效：{reason}"
 
