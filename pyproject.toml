@@ -73,9 +73,10 @@ dependencies = [
     # wheel (hatch_build.py), so the published metadata does not depend on a
     # jiuwenbox distribution. pydantic, pyyaml, httpx, python-multipart and mcp
     # are already required above or by mcp. The server also imports fastapi
-    # and selects uvicorn's standard extras, which nothing else pulls in.
+    # and uvicorn. Not uvicorn[standard]: its uvloop takes over SIGCHLD, which
+    # the engine's zombie reaper needs, and the other extras go unused.
     "fastapi==0.162.0",
-    "uvicorn[standard]==0.51.0",
+    "uvicorn==0.51.0",
 ]
 
 [project.urls]

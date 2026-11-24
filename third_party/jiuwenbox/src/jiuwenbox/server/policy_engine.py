@@ -340,7 +340,7 @@ class PolicyEngine:
         # created in ``__init__`` only, so a vanished parent must not turn
         # create_sandbox into FileNotFoundError.
         self.policies_dir.mkdir(parents=True, exist_ok=True)
-        policy_path = self.policies_dir / f"{sandbox_id}_sandbox_policy.yaml"
+        policy_path = self.sandbox_policy_file(sandbox_id)
 
         with open(policy_path, "w") as f:
             yaml.safe_dump(resolved, f, default_flow_style=False, allow_unicode=True)
@@ -355,15 +355,18 @@ class PolicyEngine:
             data = yaml.safe_load(f)
         return SecurityPolicy.model_validate(data)
 
+    def sandbox_policy_file(self, sandbox_id: str) -> Path:
+        """Where a sandbox's resolved policy file lives, whether or not it exists."""
+        return self.policies_dir / f"{sandbox_id}_sandbox_policy.yaml"
+
     def get_sandbox_policy_path(self, sandbox_id: str) -> Path | None:
         """Get the path to a sandbox's resolved policy file."""
-        path = self.policies_dir / f"{sandbox_id}_sandbox_policy.yaml"
+        path = self.sandbox_policy_file(sandbox_id)
         return path if path.exists() else None
 
     def delete_sandbox_policy(self, sandbox_id: str) -> None:
         """Remove the resolved policy file for a sandbox."""
-        path = self.policies_dir / f"{sandbox_id}_sandbox_policy.yaml"
-        path.unlink(missing_ok=True)
+        self.sandbox_policy_file(sandbox_id).unlink(missing_ok=True)
 
     def validate_conch_policy(self, policy: SecurityPolicy) -> list[str]:
         """Validate Conch-specific policy fields used when sandbox_runtime=conch."""

@@ -1,0 +1,11 @@
+[
+  {
+    "Name": "jiuwenbox",
+    "License": "Apache License 2.0",
+    "License File": "LICENSE",
+    "Version Number": "0.1.0",
+    "Owner": "openJiuwen",
+    "Upstream URL": "https://gitcode.com/openJiuwen/agent-security/tree/main/jiuwenbox",
+    "Description": "Jiuwen sandbox engine. iCode vendors it, with modifications, to run shell commands in a local sandbox."
+  }
+]

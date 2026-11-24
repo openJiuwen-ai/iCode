@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 """HTTP-aware inference privacy proxy with path-based routing.
 
 Supports multiple target endpoints through path prefix routing:

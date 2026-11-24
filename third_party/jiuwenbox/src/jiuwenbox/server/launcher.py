@@ -35,6 +35,11 @@ DEFAULT_LISTEN = "http://0.0.0.0:8321"
 # the child is SIGKILL'd. Set to skip the fork (debug / already a child).
 ENV_NO_SUPERVISOR = "JIUWENBOX_NO_SUPERVISOR"
 ENV_SUPERVISOR_CHILD = "JIUWENBOX_SUPERVISOR_CHILD"
+# A host that starts this launcher as its direct child sets this to its own
+# pid. The launcher then gets SIGTERM when that host dies, even by SIGKILL, and
+# stops the server instead of outliving the host. Unset, a launcher started
+# from a shell keeps running after the shell exits.
+ENV_PARENT_PID = "JIUWENBOX_PARENT_PID"
 _PR_SET_PDEATHSIG = 1
 _SUPERVISOR_POLL_SECONDS = 0.05
 
@@ -287,6 +292,20 @@ def _set_parent_death_signal(signum: int, parent_pid: int) -> None:
         os.kill(os.getpid(), signum)
 
 
+def _exit_with_host() -> None:
+    """Follow ``ENV_PARENT_PID``'s host out; popped so the server and sandboxes do not inherit it."""
+    raw = os.environ.pop(ENV_PARENT_PID, "").strip()
+    if not raw:
+        return
+    try:
+        host_pid = int(raw)
+    except ValueError:
+        logger.warning("[launcher] ignoring %s=%r: not a pid", ENV_PARENT_PID, raw)
+        return
+    # Before any handler is installed, so a host already gone ends this launcher.
+    _set_parent_death_signal(signal.SIGTERM, host_pid)
+
+
 def _child_exit_code(status: int) -> int:
     if os.WIFEXITED(status):
         return os.WEXITSTATUS(status)
@@ -428,6 +447,7 @@ def main(argv: list[str] | None = None) -> int:
         uvicorn_kwargs["uds"] = path
         logger.info("[launcher] starting jiuwenbox on unix://%s", path)
 
+    _exit_with_host()
     if _should_supervise():
         try:
             child_pid = os.fork()

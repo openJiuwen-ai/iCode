@@ -300,7 +300,7 @@ REGULAR_RULES = (
     # Scans the source tree for engine imports and reads the dependency pins by path.
     TestRule(
         "tests/service/sandbox/test_supervisor.py",
-        ("src/chrys/**", "pyproject.toml", "uv.lock"),
+        ("src/chrys/**", "pyproject.toml", "uv.lock", "third_party/jiuwenbox/src/jiuwenbox/server/launcher.py"),
     ),
     # These tests import vendored runtime modules; third_party/ is not a module root.
     TestRule(
@@ -333,6 +333,20 @@ REGULAR_RULES = (
     TestRule(
         "tests/service/sandbox/test_server_cors.py",
         ("third_party/jiuwenbox/src/jiuwenbox/server/app.py",),
+    ),
+    # These import modules across the vendored engine, and those import each other.
+    *(
+        TestRule(f"tests/service/sandbox/{name}.py", ("third_party/jiuwenbox/src/jiuwenbox/**",))
+        for name in (
+            "test_daemon_orphan_sweep",
+            "test_daemon_process_tree",
+            "test_disk_floor_watcher",
+            "test_guarded_proxy_timeout",
+            "test_launcher_host_exit",
+            "test_offline_network",
+            "test_sandbox_runtime_fixes",
+            "test_sensitive_binds",
+        )
     ),
 )
 

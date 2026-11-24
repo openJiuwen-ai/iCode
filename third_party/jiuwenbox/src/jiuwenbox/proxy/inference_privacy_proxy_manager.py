@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 """Manager for hot-pluggable inference privacy proxies.
 
 Provides CRUD operations for proxy configurations and runtime management:

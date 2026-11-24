@@ -24,7 +24,7 @@ import pytest
 
 from chrys.service.sandbox import client, supervisor
 from chrys.service.sandbox.backend import SandboxError, run_shell
-from tests.support.waiting import wait_for
+from tests.support.waiting import wait_for, wait_until
 
 _REAL_CHOOSE = supervisor._choose_listen_url
 _REAL_POLICY = supervisor._bundled_policy_path
@@ -506,7 +506,30 @@ async def test_a_network_change_stops_the_old_child_only_after_its_running_comma
         await asyncio.gather(holder, return_exceptions=True)
 
 
-async def test_shutdown_leaves_a_replaced_child_until_its_lease_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+async def _hold_lease(network_mode: str, entered: asyncio.Event, release: asyncio.Event) -> None:
+    async with supervisor.leased_server(network_mode):
+        entered.set()
+        await release.wait()
+
+
+async def _start_lease_holder(network_mode: str) -> tuple[asyncio.Task[None], asyncio.Event]:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    holder = asyncio.create_task(_hold_lease(network_mode, entered, release))
+    await wait_for(lambda: entered.is_set() or holder.done(), description="command holds its server")
+    if holder.done():
+        await holder
+    return holder, release
+
+
+async def _settle(task: asyncio.Task[None]) -> None:
+    if not task.done():
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_shutdown_stops_a_replaced_child_once_its_lease_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Process exit keeps a leased child alive until the lease ends, then closes it exactly once."""
     tokens = iter(["first-token", "second-token"])
     monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: next(tokens))
     events: list[str] = []
@@ -516,15 +539,84 @@ async def test_shutdown_leaves_a_replaced_child_until_its_lease_ends(monkeypatch
         return True
 
     monkeypatch.setattr(supervisor, "_health_ok", healthy)
-    async with supervisor.leased_server("host"):
+    holder, release = await _start_lease_holder("host")
+    stopping: asyncio.Task[None] | None = None
+    try:
         await supervisor.ensure_started(network_mode="offline")
-        await supervisor._shutdown()
-        # Shutdown stops the unleased current child; the replaced one is still leased.
+        stopping = asyncio.create_task(supervisor._shutdown())
+        # Shutdown stops the unleased current child and waits for the replaced one's lease.
+        await wait_for(lambda: "close:1" in events or stopping.done(), description="unleased child stops")
+        assert not stopping.done()
         assert events == ["spawn:0", "spawn:1", "close:1"]
-        assert len(supervisor._retired) == 1
-    assert events == ["spawn:0", "spawn:1", "close:1", "close:0"]
-    assert supervisor._retired == []
-    assert supervisor._server is None
+        release.set()
+        await holder
+        await stopping
+        assert events == ["spawn:0", "spawn:1", "close:1", "close:0"]
+        assert supervisor._retired == []
+        assert supervisor._server is None
+    finally:
+        release.set()
+        await _settle(holder)
+        if stopping is not None:
+            await _settle(stopping)
+
+
+async def test_shutdown_stops_a_still_leased_child_after_the_drain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lease that never ends cannot keep its child past process exit; its later end closes nothing."""
+    events: list[str] = []
+    _patch_recording_spawn(monkeypatch, events)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    monkeypatch.setattr(supervisor, "_LEASE_DRAIN_SECONDS", 0)
+    holder, release = await _start_lease_holder("guarded")
+    try:
+        await supervisor._shutdown()
+        assert events == ["spawn:0", "close:0"]
+        assert supervisor._retired == []
+        release.set()
+        await holder
+        assert events == ["spawn:0", "close:0"]
+    finally:
+        release.set()
+        await _settle(holder)
+
+
+async def test_a_cancelled_lease_release_still_stops_its_retired_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cancelling a command while its release waits for the gate does not strand the lease."""
+    tokens = iter(["first-token", "second-token"])
+    monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: next(tokens))
+    events: list[str] = []
+    _patch_recording_spawn(monkeypatch, events)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    holder, release = await _start_lease_holder("host")
+    gate = supervisor._gate()
+    try:
+        await supervisor.ensure_started(network_mode="offline")
+        await gate.acquire()
+        release.set()
+        # The release is queued behind the held gate; a cold start holds it this way.
+        await wait_for(lambda: bool(gate._waiters) or holder.done(), description="release waits for the gate")
+        assert not holder.done()
+        holder.cancel()
+        await asyncio.sleep(0)
+        assert not holder.done()
+        gate.release()
+        with pytest.raises(asyncio.CancelledError):
+            await holder
+        assert events == ["spawn:0", "spawn:1", "close:0"]
+        assert supervisor._retired == []
+    finally:
+        if gate.locked():
+            gate.release()
+        release.set()
+        await _settle(holder)
 
 
 async def test_run_shell_after_a_network_change_recreates_the_sandbox_on_the_new_server(
@@ -812,15 +904,22 @@ async def test_shutdown_leaves_a_leased_server_until_the_lease_ends(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Engine shutdown must not signal a server a command still holds."""
+    """Process exit must not signal a server a command still holds before that lease ends."""
     marker, running = await _start_signal_child(monkeypatch, tmp_path, _CATCHES_SIGTERM)
+    holder, release = await _start_lease_holder("guarded")
+    stopping = asyncio.create_task(supervisor.shutdown())
     try:
-        async with supervisor.leased_server("guarded") as (_url, _token):
-            await supervisor.shutdown()
-            assert running.proc.returncode is None
-            assert marker.read_text(encoding="utf-8") == "ready"
+        assert not await wait_until(stopping.done, timeout=0.2)
+        assert running.proc.returncode is None
+        assert marker.read_text(encoding="utf-8") == "ready"
+        release.set()
+        await holder
+        await stopping
         _assert_stopped_by_sigterm(marker, running.proc.returncode)
     finally:
+        release.set()
+        await _settle(holder)
+        await _settle(stopping)
         await running.closer.aclose()
 
 
@@ -1077,6 +1176,8 @@ def test_jiuwenbox_is_vendored_and_other_pins_stay_exact() -> None:
     assert "jiuwenbox" not in project["tool"]["uv"].get("sources", {})
     assert parsed["fastapi"] == "==0.162.0"
     assert parsed["uvicorn"] == "==0.51.0"
+    # No [standard] extras: uvloop would take SIGCHLD from the engine's zombie reaper.
+    assert "uvicorn==0.51.0" in project["project"]["dependencies"]
     loosened = sorted(
         name for name, specifier in parsed.items() if name not in _RANGE_PINS and not _is_exact_pin(specifier)
     )

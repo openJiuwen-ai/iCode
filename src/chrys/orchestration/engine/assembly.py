@@ -37,6 +37,7 @@ from chrys.service.hooks.confirmation import HookConfirmationService
 from chrys.service.hooks.run_log import HookRunLog
 from chrys.service.mcp.cache import MCPConnectionCache
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
+from chrys.service.sandbox.runtime_hold import RuntimeHold
 from chrys.service.session.history import SessionHistoryManager
 from chrys.service.session.persistence import SessionPersistence
 from chrys.service.workspaces.registry import RegistrySnapshot
@@ -271,5 +272,6 @@ def assemble_agent_engine(
         hook_runs=hook_runs,
         hook_confirmations=hook_confirmations,
         side_questions=side_questions,
+        sandbox_hold=RuntimeHold(),
     )
     return engine

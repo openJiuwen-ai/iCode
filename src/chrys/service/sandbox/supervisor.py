@@ -21,7 +21,9 @@ asking for another value makes a new child the current one. The replaced
 child takes no new commands and is stopped once the last command holding
 it (``leased_server``) finishes, so a network change never ends a running
 command. The new server does not know the old sandbox ids; the backend
-gets a 404 for a cached id and creates a replacement. A configured
+gets a 404 for a cached id and creates a replacement. Process exit is
+different: once the last runtime releases its ``runtime_hold.RuntimeHold``, every child
+is stopped, a leased one after a bounded wait for its lease. A configured
 ``sandbox.url`` never reaches this module, so ``sandbox.network`` does not
 apply to that service.
 """
@@ -62,6 +64,9 @@ _READ_CHUNK_BYTES = 4096
 # once ``returncode`` is set, so a launcher that exited on SIGTERM is not
 # killed again.
 _STOP_GRACE_SECONDS = 5.0
+# Process exit waits this long for leased commands to end, then stops their
+# servers anyway: a server left behind would outlive this process.
+_LEASE_DRAIN_SECONDS = 5.0
 
 
 class _ReturnCode(Protocol):
@@ -96,6 +101,8 @@ class _RunningServer:
     token: str = field(repr=False)
     # Commands inside ``leased_server`` for this child.
     leases: int = 0
+    # Set once the child's close has finished, whoever ran it.
+    stopped: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
 
 _NETWORK_MODES = frozenset({"offline", "guarded", "host"})
@@ -331,6 +338,8 @@ def _child_env(
     env = dict(os.environ)
     env["JIUWENBOX_POLICY_PATH"] = policy_path
     env["JIUWENBOX_LISTEN"] = listen
+    # On Linux the launcher gets SIGTERM if this process dies without stopping it.
+    env["JIUWENBOX_PARENT_PID"] = str(os.getpid())
     if token:
         env["JIUWENBOX_API_TOKEN"] = token
     else:
@@ -427,6 +436,14 @@ async def _discard(stack: contextlib.AsyncExitStack, proc: _LauncherProcess | No
     await finish_close(asyncio.create_task(_close_retained(stack, proc)))
 
 
+async def _stop_server(running: _RunningServer) -> None:
+    """Close ``running`` and mark it stopped. Callers own ``running`` and run this once."""
+    try:
+        await _close_retained(running.closer, running.proc)
+    finally:
+        running.stopped.set()
+
+
 async def _retire_current() -> None:
     """Take new commands off the current child; stop it unless one still leases it."""
     global _server
@@ -437,21 +454,21 @@ async def _retire_current() -> None:
     if running.leases:
         _retired.append(running)
         return
-    await _discard(running.closer, running.proc)
+    await finish_close(asyncio.create_task(_stop_server(running)))
 
 
 async def shutdown() -> None:
-    """Stop every retained bundled server that no command is leasing.
+    """Stop every bundled server; this process has no runtime left to use one.
 
-    Process exit calls this when no other runtime is still live. A server
-    a command still leases is left running, the same way a network change
-    leaves it. The last lease stops it by SIGTERM and then close.
+    Unleased servers stop at once. A server a command still leases is given
+    ``_LEASE_DRAIN_SECONDS`` for that lease to end and stop it, then is stopped
+    anyway, so no server outlives the process that started it. Each server is
+    closed exactly once, by SIGTERM and then close.
     """
     await _shutdown()
 
 
 async def _shutdown() -> None:
-    """Stop retained children that have no lease. A leased child stays until that lease ends."""
     await finish_close(asyncio.create_task(_shutdown_retained()))
 
 
@@ -460,16 +477,28 @@ async def _shutdown_retained() -> None:
     async with _gate():
         children = [child for child in (_server, *_retired) if child is not None]
         _server = None
-        stopping: list[_RunningServer] = []
-        still_leased: list[_RunningServer] = []
+        leased = [child for child in children if child.leases > 0]
+        _retired[:] = leased
         for child in children:
-            if child.leases > 0:
-                still_leased.append(child)
-            else:
-                stopping.append(child)
-        _retired[:] = still_leased
-        for child in stopping:
-            await _close_retained(child.closer, child.proc)
+            if child.leases == 0:
+                await _stop_server(child)
+    if not leased:
+        return
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(_all_stopped(leased), _LEASE_DRAIN_SECONDS)
+    async with _gate():
+        overdue = [child for child in leased if child in _retired]
+        for child in overdue:
+            _retired.remove(child)
+    for child in overdue:
+        await _stop_server(child)
+    # A lease that ended during the drain closes its own child; wait for that close too.
+    await _all_stopped(leased)
+
+
+async def _all_stopped(children: list[_RunningServer]) -> None:
+    for child in children:
+        await child.stopped.wait()
 
 
 async def ensure_started(
@@ -504,18 +533,22 @@ async def leased_server(
     try:
         yield running.url, running.token
     finally:
-        # The same gate as shutdown. A lease that ends while shutdown is
-        # deciding, and a shutdown that retires a server this lease still
-        # holds, cannot each miss the other and leave the child running
-        # or signal it early.
-        stop = False
-        async with _gate():
-            running.leases -= 1
-            stop = running.leases == 0 and running in _retired
-            if stop:
-                _retired.remove(running)
+        # Its own task: a cancel while the gate is busy (a cold start holds it
+        # for the health timeout) must not skip the decrement and strand the child.
+        await finish_close(asyncio.create_task(_end_lease(running)))
+
+
+async def _end_lease(running: _RunningServer) -> None:
+    # The same gate as shutdown. A lease that ends while shutdown is deciding,
+    # and a shutdown that retires a server this lease still holds, cannot each
+    # miss the other and leave the child running or signal it early.
+    async with _gate():
+        running.leases -= 1
+        stop = running.leases == 0 and running in _retired
         if stop:
-            await _discard(running.closer, running.proc)
+            _retired.remove(running)
+    if stop:
+        await _stop_server(running)
 
 
 async def _current_server(network_mode: str, health_timeout: float) -> _RunningServer:

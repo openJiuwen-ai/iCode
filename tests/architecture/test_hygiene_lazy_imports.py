@@ -37,6 +37,7 @@ _LAZY_IMPORT_ALLOWLIST = {
 # dev dependency group joins them because a user's install never has it.
 _LAZY_BASE_DISTRIBUTIONS = frozenset(
     {
+        "fastapi",
         "openpyxl",
         "opentelemetry-exporter-otlp-proto-grpc",
         "opentelemetry-instrumentation-logging",
@@ -48,6 +49,7 @@ _LAZY_BASE_DISTRIBUTIONS = frozenset(
         "pywinpty",
         "textual",
         "textual-serve",
+        "uvicorn",
         "watchdog",
         "xlrd",
     }

@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
+    from chrys.service.sandbox.runtime_hold import RuntimeHold
     from chrys.service.workspaces.registry import RegistrySnapshot
 
 
@@ -176,6 +177,7 @@ class AgentEngine:
         trajectory_recorder: trajectory_recorder.TrajectoryRecorder,
         workflows: WorkflowCoordinator,
         side_questions: SideQuestions,
+        sandbox_hold: RuntimeHold,
         hook_runs: HookRunLog | None = None,
         hook_confirmations: HookConfirmationService | None = None,
     ) -> None:
@@ -199,6 +201,7 @@ class AgentEngine:
         self._side_questions = side_questions
         self._hook_runs = hook_runs
         self._hook_confirmations = hook_confirmations
+        self._sandbox_hold = sandbox_hold
         self._subscribed = False
         self._release_task: asyncio.Task[None] | None = None
 
@@ -538,6 +541,8 @@ class AgentEngine:
         if self._subscribed:
             return
         self._subscribed = True
+        # Paired with the release at shutdown; an engine that never takes events holds nothing.
+        self._sandbox_hold.acquire()
         await self._bus.subscribe(UserMessage, self._on_user_message)
         await self._bus.subscribe(UserInterrupt, self._on_user_interrupt)
         await self._bus.subscribe(UserRetry, self._on_user_retry)
@@ -615,19 +620,8 @@ class AgentEngine:
                     # After the release: what still waits on a question ends unavailable, and no answer is taken after.
                     await self._hook_confirmations.close()
             finally:
-                await self._stop_bundled_sandbox()
-
-    async def _stop_bundled_sandbox(self) -> None:
-        """Stop the bundled sandbox server when this process's last runtime exits.
-
-        Another live engine may still have a command leasing that server. Leave it
-        until the lease ends. A session switch does not come through here.
-        """
-        if any(registered is not self for registered in _current_engines.values()):
-            return
-        from chrys.service.sandbox.supervisor import shutdown as shutdown_sandbox
-
-        await shutdown_sandbox()
+                # The last runtime to release stops the bundled sandbox server.
+                await self._sandbox_hold.release()
 
     async def _session_operation(
         self,

@@ -750,14 +750,11 @@
         ["awaitable", "await self._side_questions.close()", "unresolved"],
         ["awaitable", "await self._lifecycle.shutdown()", "unresolved"],
         ["awaitable", "await self._hook_confirmations.close()", "unresolved"],
-        ["wrapper", "await self._stop_bundled_sandbox()", "unresolved", "chrys.orchestration.engine.engine.AgentEngine._stop_bundled_sandbox"]
+        ["awaitable", "await self._sandbox_hold.release()", "unresolved"]
       ],
       "AgentEngine._session_operation": [
         ["awaitable", "await self._bus.publish(Error(code='workflow_active', message=f'Cannot {operation} while a workflow run is active. Cancel the workflow run first.', display_message=workflow_active_display, session_id=target_session_id or self._session.session_id))", "unresolved"],
         ["awaitable", "await run()", "unresolved"]
-      ],
-      "AgentEngine._stop_bundled_sandbox": [
-        ["wrapper", "await shutdown_sandbox()", "unresolved", "chrys.service.sandbox.supervisor.shutdown"]
       ],
       "AgentEngine._subscribe_event_handlers": [
         ["awaitable", "await self._bus.subscribe(UserMessage, self._on_user_message)", "unresolved"],
@@ -5473,12 +5470,20 @@
         ["async_context", "async with _new_client(**kwargs)", "unresolved"]
       ]
     },
+    "chrys.service.sandbox.runtime_hold": {
+      "RuntimeHold.release": [
+        ["wrapper", "await shutdown()", "unresolved", "chrys.service.sandbox.supervisor.shutdown"]
+      ]
+    },
     "chrys.service.sandbox.supervisor": {
       "_CapturedLauncher.request_exit": [
         ["wrapper", "await _request_exit(self._proc)", "unresolved", "chrys.service.sandbox.supervisor._request_exit"]
       ],
       "_CapturedLauncher.startup_output": [
         ["multi_wait", "await asyncio.wait({self._drain}, timeout=_EXIT_DRAIN_SECONDS)", "unresolved"]
+      ],
+      "_all_stopped": [
+        ["sync_primitive", "await child.stopped.wait()", "unresolved"]
       ],
       "_close_retained": [
         ["awaitable", "await proc.request_exit()", "unresolved"],
@@ -5496,6 +5501,10 @@
       "_drain_launcher_output": [
         ["gather", "await asyncio.gather(_pump_stream(_as_reader(stdout), stdout_tail), _pump_stream(_as_reader(stderr), stderr_tail))", "unresolved"]
       ],
+      "_end_lease": [
+        ["async_context", "async with _gate()", "unresolved"],
+        ["wrapper", "await _stop_server(running)", "unresolved", "chrys.service.sandbox.supervisor._stop_server"]
+      ],
       "_fail_startup": [
         ["awaitable", "await proc.startup_output()", "unresolved"]
       ],
@@ -5511,18 +5520,25 @@
         ["subprocess", "proc.wait()", "unresolved"]
       ],
       "_retire_current": [
-        ["wrapper", "await _discard(running.closer, running.proc)", "unresolved", "chrys.service.sandbox.supervisor._discard"]
+        ["wrapper", "await finish_close(asyncio.create_task(_stop_server(running)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
       ],
       "_shutdown": [
         ["wrapper", "await finish_close(asyncio.create_task(_shutdown_retained()))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
       ],
       "_shutdown_retained": [
         ["async_context", "async with _gate()", "unresolved"],
-        ["wrapper", "await _close_retained(child.closer, child.proc)", "unresolved", "chrys.service.sandbox.supervisor._close_retained"]
+        ["wrapper", "await _stop_server(child)", "unresolved", "chrys.service.sandbox.supervisor._stop_server"],
+        ["timeout", "await asyncio.wait_for(_all_stopped(leased), _LEASE_DRAIN_SECONDS)", "unresolved"],
+        ["async_context", "async with _gate()", "unresolved"],
+        ["wrapper", "await _stop_server(child)", "unresolved", "chrys.service.sandbox.supervisor._stop_server"],
+        ["wrapper", "await _all_stopped(leased)", "unresolved", "chrys.service.sandbox.supervisor._all_stopped"]
       ],
       "_spawn_launcher": [
         ["async_context", "async with managed_subprocess(*_launcher_argv(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=_launcher_cwd())", "unresolved"],
         ["awaitable", "await drain", "unresolved"]
+      ],
+      "_stop_server": [
+        ["wrapper", "await _close_retained(running.closer, running.proc)", "unresolved", "chrys.service.sandbox.supervisor._close_retained"]
       ],
       "_wait_until_healthy": [
         ["wrapper", "await _fail_startup('Sandbox server exited before it became healthy.', proc, token)", "unresolved", "chrys.service.sandbox.supervisor._fail_startup"],
@@ -5537,8 +5553,7 @@
       "leased_server": [
         ["async_context", "async with _gate()", "unresolved"],
         ["wrapper", "await _current_server(_network_mode(network_mode), health_timeout)", "unresolved", "chrys.service.sandbox.supervisor._current_server"],
-        ["async_context", "async with _gate()", "unresolved"],
-        ["wrapper", "await _discard(running.closer, running.proc)", "unresolved", "chrys.service.sandbox.supervisor._discard"]
+        ["wrapper", "await finish_close(asyncio.create_task(_end_lease(running)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
       ],
       "shutdown": [
         ["wrapper", "await _shutdown()", "unresolved", "chrys.service.sandbox.supervisor._shutdown"]

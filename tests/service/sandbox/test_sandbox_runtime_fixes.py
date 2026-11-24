@@ -616,6 +616,46 @@ def test_clear_persistent_state_leaves_the_other_managers_files(
     assert (policies / "sandbox-b_sandbox_policy.yaml").is_file()
 
 
+def test_clear_persistent_state_leaves_a_reused_id_to_its_new_owner(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+) -> None:
+    """A manager that deleted an id no longer owns its files once another manager reuses it."""
+    from jiuwenbox.models.sandbox import SandboxPhase, SandboxRef
+    from jiuwenbox.server.policy_engine import PolicyEngine
+    from jiuwenbox.server.sandbox_manager import SandboxManager
+
+    class _Audit:
+        def log(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    state = tmp_path / "state"
+    policies = tmp_path / "policies"
+
+    def _manager() -> SandboxManager:
+        return SandboxManager(
+            runtime=object(),  # type: ignore[arg-type]
+            policy_engine=PolicyEngine(policies_dir=policies),
+            audit_logger=_Audit(),  # type: ignore[arg-type]
+            state_dir=state,
+            policy_path=tmp_path / "missing-policy.yaml",
+        )
+
+    first = _manager()
+    second = _manager()
+    first._save_state(SandboxRef(id="reused", phase=SandboxPhase.READY))
+    first._write_policy("reused", first.policy)
+    first._delete_state("reused")
+    first._delete_policy("reused")
+    second._save_state(SandboxRef(id="reused", phase=SandboxPhase.READY))
+    second._write_policy("reused", second.policy)
+
+    first.clear_persistent_state()
+
+    assert (state / "reused.json").is_file()
+    assert (policies / "reused_sandbox_policy.yaml").is_file()
+
+
 async def test_served_create_cancel_does_not_leave_ready_sandboxes(
     jiuwenbox_importable: None,
     tmp_path: Path,

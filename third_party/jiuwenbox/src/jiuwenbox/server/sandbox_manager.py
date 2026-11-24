@@ -576,6 +576,13 @@ class SandboxManager:
     def _delete_state(self, sandbox_id: str) -> None:
         path = self.state_dir / f"{sandbox_id}.json"
         path.unlink(missing_ok=True)
+        # Once deleted the path is no longer this manager's: another manager
+        # may reuse the id, and shutdown must not unlink its file.
+        self._owned_state_files.discard(path)
+
+    def _delete_policy(self, sandbox_id: str) -> None:
+        self.policy_engine.delete_sandbox_policy(sandbox_id)
+        self._owned_policy_files.discard(self.policy_engine.sandbox_policy_file(sandbox_id))
 
     def _get_sandbox(self, sandbox_id: str) -> SandboxRef:
         ref = self._sandboxes.get(sandbox_id)
@@ -654,7 +661,7 @@ class SandboxManager:
                 self._sandboxes.pop(sandbox_id, None)
                 self._policies.pop(sandbox_id, None)
                 self._delete_state(sandbox_id)
-                self.policy_engine.delete_sandbox_policy(sandbox_id)
+                self._delete_policy(sandbox_id)
                 raise
             runtime = self._runtime_for(ref)
 
@@ -864,7 +871,7 @@ class SandboxManager:
         # the global state lock so deleting one sandbox does not block unrelated
         # sandbox operations.
         await runtime.cleanup(sandbox_id)
-        self.policy_engine.delete_sandbox_policy(sandbox_id)
+        self._delete_policy(sandbox_id)
         self.audit.log(AuditEventType.SANDBOX_DELETED, sandbox_id)
 
         async with self._lock:

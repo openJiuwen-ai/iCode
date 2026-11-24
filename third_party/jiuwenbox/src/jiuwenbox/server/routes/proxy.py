@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 """Inference privacy proxy API routes.
 
 Provides hot-pluggable proxy management:
