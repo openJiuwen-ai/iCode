@@ -60,6 +60,7 @@ class ConfirmDialog(BaseDialog[bool]):
 
     CSS_PATH = "confirm.tcss"
     _minimum_width = 43
+    _initial_button = "#confirm-yes"
 
     def __init__(
         self,
@@ -223,7 +224,7 @@ class ConfirmDialog(BaseDialog[bool]):
 
     def _focus_confirm_button(self) -> None:
         with contextlib.suppress(NoMatches):
-            self.query_one("#confirm-yes", Button).focus()
+            self.query_one(self._initial_button, Button).focus()
 
     @on(Button.Pressed, "#confirm-yes")
     def _on_confirm(self, event: Button.Pressed) -> None:
@@ -248,6 +249,13 @@ class ConfirmDialog(BaseDialog[bool]):
 
     def _default_dismiss_result(self) -> bool:  # type: ignore[override]
         return False
+
+
+class StartupSessionChoiceDialog(ConfirmDialog):
+    """Focus Retry so an Enter left in the input queue cannot start a new session."""
+
+    AUTO_FOCUS = "#confirm-no"
+    _initial_button = "#confirm-no"
 
 
 class NoticeDialog(ConfirmDialog):

@@ -40,8 +40,10 @@ class _SeededStore:
     def __init__(self, turns: list[TurnRecord]) -> None:
         self._turns = turns
 
-    async def load_session_transcript(self, session_id: str, *, prefer_recovery: bool = False) -> SessionTranscript:
-        _ = prefer_recovery
+    async def load_session_transcript(
+        self, session_id: str, *, prefer_recovery: bool = False, include_folds: bool = False
+    ) -> SessionTranscript:
+        _ = prefer_recovery, include_folds
         return SessionTranscript(
             messages=[
                 {

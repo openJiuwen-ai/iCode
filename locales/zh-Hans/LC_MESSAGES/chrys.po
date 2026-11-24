@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.36.0\n"
+"Project-Id-Version: Chrys 0.37.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -1149,7 +1149,7 @@ msgstr "智能体运行结束，但未产生最终响应。"
 
 #. English: Session id '{session_id}' is ambiguous.
 #. chrys-meta={"fingerprint":"7a4b38c8e36f7b43409958f620a82031a04f677667fcbd35dbc80e38f1a414cd","multiline":false,"placeholders":["session_id"]}
-#: src/chrys/orchestration/session_host.py
+#: src/chrys/service/state/store.py
 msgid "session_host.session_id_ambiguous"
 msgstr "会话 ID“{session_id}”存在歧义。"
 
@@ -1158,12 +1158,6 @@ msgstr "会话 ID“{session_id}”存在歧义。"
 #: src/chrys/orchestration/session_host.py
 msgid "session_host.session_not_found"
 msgstr "未找到会话：{session_id}"
-
-#. English: Session not found: {session_id}. Recent sessions: {recent}
-#. chrys-meta={"fingerprint":"c6f535c1d40398747bd66b1b7e6837d061de9f2ad4d5e2a7dbb71f6971b11582","multiline":false,"placeholders":["recent","session_id"]}
-#: src/chrys/orchestration/session_host.py
-msgid "session_host.session_not_found_with_recent"
-msgstr "未找到会话：{session_id}。最近的会话：{recent}"
 
 #. English: Default agent
 #. chrys-meta={"fingerprint":"800a58a17262c78efa6122e11e8aa85790deaef7285325ca159e0f50e71e52d9","multiline":false,"placeholders":[]}
@@ -13417,6 +13411,12 @@ msgstr "消息"
 msgid "tui.slash.reload_description"
 msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令"
 
+#. English: Session {session_id} is open in another window or process.
+#. chrys-meta={"fingerprint":"daee48a4ab9abc7fe13f522d94575980593b174a8bd046657c75737ba30de091","multiline":false,"placeholders":["session_id"]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.in_use"
+msgstr "会话 {session_id} 已在其他窗口或进程中打开。"
+
 #. English: Session {session_id} was not found.
 #. chrys-meta={"fingerprint":"a5c2002c8e98be1f6de66c9e7ceb5fd6595b9dcfc1595822cbd0bc7cdf8036c6","multiline":false,"placeholders":["session_id"]}
 #: src/chrys/app/tui/app.py
@@ -13435,12 +13435,23 @@ msgstr "无法读取会话 {session_id}：{error}"
 msgid "tui.startup.session.restore_failed"
 msgstr "无法恢复会话 {session_id}：{error}"
 
-#. English: Could not restore session {session_id}; started a new session
-#. instead.
-#. chrys-meta={"fingerprint":"960d7d3716f44b1cb78d638cf6d43eeb6a23a4b901af1dc812153c61e3618a12","multiline":false,"placeholders":["session_id"]}
+#. English: Could not open session {session_id}.
+#. chrys-meta={"fingerprint":"c6d58fc7577d06eab60c5d7396d4da5d2034cb0272a0e8b82bbcd3e66ab9ffc2","multiline":false,"placeholders":["session_id"]}
 #: src/chrys/app/tui/app.py
 msgid "tui.startup.session.restore_fallback"
-msgstr "无法恢复会话 {session_id}；已改为启动新会话。"
+msgstr "无法打开会话 {session_id}。"
+
+#. English: Retry
+#. chrys-meta={"fingerprint":"8d1f1fcb3503341e5c6f3f3a1b3299129d2fb1258f711734492a20316c6158af","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.retry"
+msgstr "重试"
+
+#. English: Start new session
+#. chrys-meta={"fingerprint":"1230b83ef639c55f05ee763f8af549c15ff193c37211b55d926c81e8671ead6a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.start_new"
+msgstr "开始新会话"
 
 #. English: Agent startup failed
 #. chrys-meta={"fingerprint":"3bd4c9e143fe48c4f75c90bcd4af9c333a90c23175eda1c33d12642d2407de4c","multiline":false,"placeholders":[]}

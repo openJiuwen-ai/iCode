@@ -28,6 +28,7 @@ from chrys.kernel import Content, Message
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
 from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
+from chrys.service.state.folds import FoldItem
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, GcMessageChatPanelApp, chat_content_children, click_when_settled
 from tests.support.waiting import wait_for
@@ -362,7 +363,7 @@ async def test_replayed_thinking_in_a_compressed_part_shows_as_compressed() -> N
 
     async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history([fold], compressed_blocks={"ctx-1": block})
+        await panel.replay_history([fold], folds=[FoldItem("ctx-1", "condensed", block=block)])
         await panel.wait_replay_complete()
 
         assert _shape(panel)[1:5] == [

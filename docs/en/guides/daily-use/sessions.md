@@ -65,6 +65,8 @@ Answers appear before saving finishes. If saving fails, a warning appears and th
 
 ## Resume an existing session
 
+Use `icode -s <id>` to open a saved chat. Copy its 12-digit hexadecimal ID or the full UUID. Both forms accept upper- and lowercase letters, and the full UUID also works without hyphens. If the session cannot be opened, choose **Retry** or **Start new session**.
+
 When the agent is idle, enter `/resume` in the input field to resume the most recent chat session.
 
 To find and resume another session, press **F1**, click `f1 Sessions`, or enter `/sessions` in the input field to open the "Chat Sessions" window. It lists each session's ID, title, directory, last active time, number of conversation turns, and session data size. Each page shows up to 100 sessions, most recently active first.

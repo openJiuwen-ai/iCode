@@ -250,6 +250,11 @@ class SessionJsonPanel(ScrollView):
                 markup=False,
             )
 
+    @property
+    def session_path(self) -> str:
+        """The checkpoint path currently displayed by the viewer."""
+        return self._session_path
+
     def _resolve_session_path(self, session_id: str) -> Path | None:
         """Resolve the on-disk session JSON path for the given session ID."""
         store = JsonFileStateStore()
@@ -278,25 +283,29 @@ class SessionJsonPanel(ScrollView):
         is unchanged. Hiding deliberately releases the formatted content and
         mtime, so reopening performs a fresh load.
         """
-        path = self._resolve_session_path(session_id)
-        if path is None or not path.exists():
+        problem = None
+        try:
+            path = self._resolve_session_path(session_id)
+            mtime = path.stat().st_mtime if path is not None else 0.0
+        except FileNotFoundError, NotADirectoryError:
+            path = None
+        except OSError as exc:
+            path = None
+            problem = _SESSION_JSON_READ_ERROR.bind(error=str(exc))
+        if path is None:
             self._session_id = session_id
             self._session_path = ""
             self._formatted_json = ""
             self._file_mtime = 0.0
             self._update_border_title()
             self.border_subtitle = ""
-            self.set_status(self._render_message(_SESSION_JSON_NOT_FOUND.bind()))
+            self.set_status(self._render_message(problem or _SESSION_JSON_NOT_FOUND.bind()))
             return
-
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
 
         # Fast path: same session, file unchanged, cache populated — nothing to do.
         if (
             session_id == self._session_id
+            and str(path) == self._session_path
             and mtime == self._file_mtime
             and self._formatted_json
             and self._text_lines

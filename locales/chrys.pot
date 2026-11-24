@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.36.0\n"
+"Project-Id-Version: Chrys 0.37.0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -1115,7 +1115,7 @@ msgstr ""
 
 #. English: Session id '{session_id}' is ambiguous.
 #. chrys-meta={"fingerprint":"7a4b38c8e36f7b43409958f620a82031a04f677667fcbd35dbc80e38f1a414cd","multiline":false,"placeholders":["session_id"]}
-#: src/chrys/orchestration/session_host.py
+#: src/chrys/service/state/store.py
 msgid "session_host.session_id_ambiguous"
 msgstr ""
 
@@ -1123,12 +1123,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"c3a7566b3d85bc5ed180316d6403fed8891dfed28367b1af3225547506c72fc2","multiline":false,"placeholders":["session_id"]}
 #: src/chrys/orchestration/session_host.py
 msgid "session_host.session_not_found"
-msgstr ""
-
-#. English: Session not found: {session_id}. Recent sessions: {recent}
-#. chrys-meta={"fingerprint":"c6f535c1d40398747bd66b1b7e6837d061de9f2ad4d5e2a7dbb71f6971b11582","multiline":false,"placeholders":["recent","session_id"]}
-#: src/chrys/orchestration/session_host.py
-msgid "session_host.session_not_found_with_recent"
 msgstr ""
 
 #. English: Default agent
@@ -13212,6 +13206,12 @@ msgstr ""
 msgid "tui.slash.reload_description"
 msgstr ""
 
+#. English: Session {session_id} is open in another window or process.
+#. chrys-meta={"fingerprint":"daee48a4ab9abc7fe13f522d94575980593b174a8bd046657c75737ba30de091","multiline":false,"placeholders":["session_id"]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.in_use"
+msgstr ""
+
 #. English: Session {session_id} was not found.
 #. chrys-meta={"fingerprint":"a5c2002c8e98be1f6de66c9e7ceb5fd6595b9dcfc1595822cbd0bc7cdf8036c6","multiline":false,"placeholders":["session_id"]}
 #: src/chrys/app/tui/app.py
@@ -13230,11 +13230,22 @@ msgstr ""
 msgid "tui.startup.session.restore_failed"
 msgstr ""
 
-#. English: Could not restore session {session_id}; started a new session
-#. instead.
-#. chrys-meta={"fingerprint":"960d7d3716f44b1cb78d638cf6d43eeb6a23a4b901af1dc812153c61e3618a12","multiline":false,"placeholders":["session_id"]}
+#. English: Could not open session {session_id}.
+#. chrys-meta={"fingerprint":"c6d58fc7577d06eab60c5d7396d4da5d2034cb0272a0e8b82bbcd3e66ab9ffc2","multiline":false,"placeholders":["session_id"]}
 #: src/chrys/app/tui/app.py
 msgid "tui.startup.session.restore_fallback"
+msgstr ""
+
+#. English: Retry
+#. chrys-meta={"fingerprint":"8d1f1fcb3503341e5c6f3f3a1b3299129d2fb1258f711734492a20316c6158af","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.retry"
+msgstr ""
+
+#. English: Start new session
+#. chrys-meta={"fingerprint":"1230b83ef639c55f05ee763f8af549c15ff193c37211b55d926c81e8671ead6a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/app.py
+msgid "tui.startup.session.start_new"
 msgstr ""
 
 #. English: Agent startup failed

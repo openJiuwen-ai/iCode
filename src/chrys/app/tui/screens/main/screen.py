@@ -200,7 +200,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-type StartupRestore = Literal["restored", "declined", "failed"]
+type StartupRestore = Literal["restored", "declined", "failed"] | Error
 """Startup restore result; ``declined`` means the user chose no folder for a session whose folder is gone."""
 
 _SHORTCUTS_LOADING = msg(
@@ -360,6 +360,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         approval_mode: ApprovalMode = ApprovalMode.MANUAL,
         reset_program_status: Callable[[], None] | None = None,
     ) -> None:
+        self._startup_restore_target: str | None = None
+        self._startup_restore_error: Error | None = None
         self._services = MainScreenServices(
             bus=event_bus,
             settings_handle=settings_handle,
@@ -1136,7 +1138,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             except Exception:
                 logger.exception("Failed to restore GC-freeze participant %s", type(participant).__name__)
 
-    async def restore_startup_session(self, session_id: str) -> StartupRestore:
+    async def restore_startup_session(self, session_id: str, *, saved_cwd: str) -> StartupRestore:
         """Restore at startup and confirm the matching backend success event."""
         restored = False
 
@@ -1145,13 +1147,18 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             if event.session_id == session_id:
                 restored = True
 
+        self._startup_restore_target = session_id
+        self._startup_restore_error = None
         await self._services.bus.subscribe(SessionRestored, observe_restored)
         try:
-            request = await self._sessions.do_session_restore(session_id, allow_while_loading=True)
+            request = await self._sessions.do_session_restore(session_id, allow_while_loading=True, saved_cwd=saved_cwd)
         finally:
+            self._startup_restore_target = None
             await self._services.bus.unsubscribe(SessionRestored, observe_restored)
         if restored:
             return "restored"
+        if self._startup_restore_error is not None:
+            return self._startup_restore_error
         return "declined" if request is RestoreRequest.DECLINED else "failed"
 
     def cancel_startup_session_restore(self) -> None:
@@ -3119,6 +3126,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return event.session_id is None or event.session_id == self.chat_session_id
 
     def _route_session_error(self, event: Error) -> bool:
+        if event.session_id and event.session_id == self._startup_restore_target:
+            self._startup_restore_error = event
+            return True
         if not event.session_id or event.session_id != self._workflow.session_id:
             return False
         self._workflow.feedback.notify(event.display_message or event.message)

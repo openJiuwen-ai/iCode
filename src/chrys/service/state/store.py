@@ -9,21 +9,31 @@ import contextlib
 import json
 import logging
 import os as os
+import stat
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Never, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Iterable
 
 from chrys.foundation.config.settings import resolve_sessions_dir
+from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.platform.files import atomic_write_text as _common_atomic_write_text
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.util.once_close import finish_close
+from chrys.foundation.util.session_ids import (
+    normalized_session_id,
+    same_session_id,
+    session_id_key,
+)
+from chrys.kernel import EXCLUDED_KEY
 from chrys.service.session.side_questions import SideQuestionSessionSeed, load_side_questions, write_side_questions
 from chrys.service.state._fork import SessionForkMixin
 from chrys.service.state._session_files import _MRU_SWEEP_SLACK as _MRU_SWEEP_SLACK
@@ -47,7 +57,7 @@ from chrys.service.state._session_files import _ensure_lock_parent as _ensure_lo
 from chrys.service.state._session_files import _is_string_keyed_dict as _is_string_keyed_dict
 from chrys.service.state._session_files import _session_short_id as _session_short_id
 from chrys.service.state._session_files import atomic_copy_file as atomic_copy_file
-from chrys.service.state._session_files import dump_session_envelope, read_session_envelope
+from chrys.service.state._session_files import dump_session_envelope, linked_recovery_active_lock, read_session_envelope
 from chrys.service.state._session_files import legacy_session_files as legacy_session_files
 from chrys.service.state._session_files import make_junction_dropping_ignore as make_junction_dropping_ignore
 from chrys.service.state._session_files import parse_snapshot_turn as parse_snapshot_turn
@@ -68,6 +78,7 @@ from chrys.service.state._session_meta import _is_visible_message as _is_visible
 from chrys.service.state._session_meta import _message_created_at as _message_created_at
 from chrys.service.state._session_meta import _parse_session_timestamp as _parse_session_timestamp
 from chrys.service.state._session_meta import recorded_surface as recorded_surface
+from chrys.service.state.folds import FoldItem, message_contents, message_properties, transcript_folds
 from chrys.service.state.serializers import deserialize_state, serialize_state
 from chrys.service.state.session_catalog import (
     CatalogEntry,
@@ -94,17 +105,96 @@ from chrys.service.workflows.layout import EVENTS_FILE, HEADER_FILE, run_dir
 logger = logging.getLogger(__name__)
 
 
+SESSION_ID_AMBIGUOUS = msg("session_host.session_id_ambiguous", fallback="Session id '{session_id}' is ambiguous.")
+
+
+def _valid_startup_id(value: str) -> bool:
+    return value.isascii() and value.replace("-", "").replace("_", "").isalnum()
+
+
+def _matches_startup_id(selector: str, identity: str) -> bool:
+    key = normalized_session_id(selector)
+    if key is None:
+        return selector == identity
+    return key == session_id_key(identity) or key == _session_short_id(identity).lower()
+
+
+class AmbiguousSessionIdError(ValueError):
+    """More than one stored identity has the requested short ID."""
+
+    def __init__(self, message: str, *, display_message: MessageRef | None = None) -> None:
+        self.display_message = display_message
+        super().__init__(message)
+
+
+class StartupSessionInUseError(ValueError):
+    """An active writer already holds the requested session."""
+
+    def __init__(self, selector: str, owner_id: str | None) -> None:
+        self.owner_id = owner_id
+        super().__init__(f"Session '{selector}' is already open in another instance.")
+
+
+class ConflictingSessionCheckpointsError(ValueError):
+    """One folder holds readable checkpoints for different sessions."""
+
+    def __init__(self, identities: tuple[str, str]) -> None:
+        self.identities = {session_id_key(identity) for identity in identities}
+        super().__init__(f"Sessions '{identities[0]}' and '{identities[1]}' share a checkpoint directory.")
+
+
 @dataclass(frozen=True, slots=True)
 class SessionTranscript:
-    """A chat session's replayable history and the turn identity behind it.
-
-    Both come from one read of the session envelope, so the turns always
-    describe the messages beside them — a separate read could see the next
-    turn's registry against this turn's messages.
-    """
+    """Messages, turn identity and any requested folds from one session envelope."""
 
     messages: list[dict[str, Any]]
     turns: list[TurnRecord]
+    folds: list[FoldItem] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionReplay:
+    """Chat state, history and title metadata selected together for the TUI."""
+
+    state: dict[str, Any]
+    transcript: SessionTranscript
+    meta: SessionMeta | None = None
+
+    @classmethod
+    def from_saved_state(cls, state: dict[str, Any], meta: SessionMeta | None) -> SessionReplay:
+        decoded: dict[str, Any] = {}
+        with contextlib.suppress(KeyError, ValueError, TypeError):
+            decoded = deserialize_state(state)
+        folds = transcript_folds(state, decoded_blocks=decoded.get("compressed_msgs"))
+        return cls(decoded, _transcript(state, folds), meta)
+
+
+class ChatRestoreKindError(ValueError):
+    """The requested checkpoint is a workflow, not a chat."""
+
+
+@dataclass(frozen=True, slots=True)
+class ChatRestoreData:
+    """State, metadata and recovery provenance from one verified checkpoint."""
+
+    state: dict[str, Any]
+    meta: ChatSessionMeta | None
+    recovered_from_sidecar: bool
+    saved_state: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckpointFile:
+    path: Path
+    envelope: dict[str, Any]
+    source: Literal["primary", "backup", "snapshot", "recovery", "legacy"]
+    migrate_legacy: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryCleanup:
+    session_id: str | None
+    primary_updated_at: datetime | None
 
 
 # The catalog is rewritten whole, so after its first merge a process merges a
@@ -186,7 +276,12 @@ class StateStore(Protocol):
     def delete_recovery_session(self, session_id: str) -> None: ...
     async def recovery_session_wins(self, session_id: str) -> bool: ...
     async def load_workflow_session(self, session_id: str) -> WorkflowSessionState | None: ...
-    async def load_session(self, session_id: str, *, prefer_recovery: bool = False) -> dict[str, Any] | None: ...
+    async def load_session(
+        self, session_id: str, *, prefer_recovery: bool = False, owns_active_lock: bool = False
+    ) -> dict[str, Any] | None: ...
+    async def load_chat_for_restore(
+        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool = False
+    ) -> ChatRestoreData | None: ...
     async def load_session_raw(
         self,
         session_id: str,
@@ -198,11 +293,16 @@ class StateStore(Protocol):
         session_id: str,
         *,
         prefer_recovery: bool = False,
+        include_folds: bool = False,
     ) -> SessionTranscript | None: ...
+    async def load_session_for_replay(
+        self, session_id: str, *, prefer_recovery: bool = False
+    ) -> SessionReplay | None: ...
     async def load_session_meta(
         self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False
     ) -> SessionMeta | None: ...
 
+    async def resolve_startup_session(self, selector: str, *, require_inactive: bool = False) -> SessionMeta | None: ...
     async def list_sessions(self, *, kind: Literal["chat", "workflow"] | None = None) -> list[SessionMeta]: ...
     async def load_latest_session_id(self, *, chat_only: bool = False) -> str | None: ...
     async def open_session_listing(self, *, kind: Literal["chat", "workflow"]) -> SessionListing: ...
@@ -259,6 +359,35 @@ def _is_run_name(run_id: str) -> bool:
 
 def _newer_of(current: SessionMruEntry | None, candidate: SessionMruEntry) -> SessionMruEntry:
     return candidate if current is None else sort_entries([current, candidate])[0]
+
+
+def normalize_transcript_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the persisted contents used on both sides of a chat transcript."""
+    contents = []
+    for content in message_contents(message.get("contents")):
+        if isinstance(content, str):
+            if content.startswith("Content(type="):
+                contents.append({"type": "legacy", "raw": content})
+            else:
+                contents.append({"type": "text", "text": content})
+        elif isinstance(content, dict):
+            contents.append(content)
+    entry: dict[str, Any] = {"role": message.get("role", ""), "contents": contents}
+    properties = message_properties(message)
+    if properties:
+        entry["additional_properties"] = properties
+    return entry
+
+
+def _transcript(state: dict[str, Any], folds: list[FoldItem]) -> SessionTranscript:
+    # Excluded messages in active context stay hidden. Each block independently
+    # preserves the messages it held at compaction time.
+    messages = [
+        normalize_transcript_message(message)
+        for message in state.get("messages", [])
+        if not message_properties(message).get(EXCLUDED_KEY, False)
+    ]
+    return SessionTranscript(messages, turn_records(state), folds)
 
 
 class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
@@ -403,51 +532,121 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             return
         self._note_mru(lambda: self._mru.record(session_id, updated_at))
 
-    def _migrate_if_needed_unlocked(self, session_id: str) -> None:
-        """Move a legacy flat-file session into folder format on first access."""
+    def _migrate_if_needed_unlocked(self, session_id: str, *, owns_active_lock: bool = False) -> Path | None:
+        """Move a legacy flat into its folder, or return its path if another owner prevents migration."""
         legacy = self._legacy_path(session_id)
-        session_file = self._session_file(session_id)
-        if legacy.exists() and not session_file.exists():
-            session_file.parent.mkdir(parents=True, exist_ok=True)
-            # Record before the rename like every other commit: a backfill
-            # scan racing this migration can miss the file in both its
-            # folder and its legacy enumeration, and only the index entry
-            # keeps the session from vanishing behind a complete index.
-            self._record_mru(session_id, self._envelope_updated_at(self._read_json_file(legacy)))
-            legacy.rename(session_file)
+        if not legacy.exists():
+            return None
+        if not owns_active_lock and self._active_lock_is_held(session_id):
+            return None if self._session_file(session_id).exists() else legacy
+        if self._can_migrate_legacy(session_id, owns_active_lock=owns_active_lock):
+            self._migrate_legacy_checkpoint_unlocked(session_id, self._read_checkpoint_file(legacy))
+        return None
 
-    def _migrate_if_needed(self, session_id: str) -> None:
-        """Move a legacy flat-file session into folder format on first access."""
+    def _migrate_legacy_checkpoint_unlocked(self, session_id: str, envelope: dict[str, Any] | None) -> None:
+        session_file = self._session_file(session_id)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        # Record before the rename: a backfill racing the move can miss the file in both layouts.
+        stored_id = self._checkpoint_session_id(envelope)
+        mru_id = stored_id if stored_id and self._session_dir(stored_id) == session_file.parent else session_id
+        self._record_mru(mru_id, self._envelope_updated_at(envelope))
+        self._legacy_path(session_id).rename(session_file)
+
+    def _can_migrate_legacy(self, session_id: str, *, owns_active_lock: bool = False) -> bool:
+        if self._session_file(session_id).exists():
+            return False
+        # A missing primary can still leave a restorable backup, snapshot or
+        # recovery checkpoint. Keep its folder and its identity in that case.
+        checkpoint, _, busy = self._select_checkpoint(session_id, owns_active_lock=owns_active_lock)
+        return busy is None and (
+            checkpoint is None
+            or self._legacy_supersedes(self._read_checkpoint_file(self._legacy_path(session_id)), checkpoint.envelope)
+        )
+
+    def _legacy_supersedes(self, legacy: dict[str, Any] | None, fallback: dict[str, Any] | None) -> bool:
+        """A newer flat checkpoint may replace a fallback of the same session."""
+        if legacy is None:
+            return False
+        if fallback is None:
+            return True
+        fallback_id = self._checkpoint_session_id(fallback)
+        if fallback_id is None or not same_session_id(self._checkpoint_session_id(legacy), fallback_id):
+            return False
+        legacy_at = self._envelope_updated_at(legacy)
+        fallback_at = self._envelope_updated_at(fallback)
+        return legacy_at is not None and fallback_at is not None and legacy_at > fallback_at
+
+    def _migrate_if_needed(self, session_id: str, *, owns_active_lock: bool = False) -> Path | None:
+        """Move a flat into its folder under the write lock, returning a busy flat for read-only access."""
         if not self._legacy_path(session_id).exists():
-            return
+            return None
         with FileLock(self._write_lock_path(session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
-            self._migrate_if_needed_unlocked(session_id)
+            return self._migrate_if_needed_unlocked(session_id, owns_active_lock=owns_active_lock)
 
     def _resolve_session_file(self, session_id: str) -> Path | None:
         """Return the session.json path, migrating from legacy if needed."""
-        self._migrate_if_needed(session_id)
+        pending = self._migrate_if_needed(session_id)
+        flat = pending if pending is not None and self._read_matching_flat(session_id, pending) is not None else None
         path = self._session_file(session_id)
-        return path if path.exists() else None
+        return path if path.exists() else flat
 
     def resolve_session_file(self, session_id: str) -> Path | None:
-        """The session's ``session.json`` path; None when it has none.
+        """Return the primary checkpoint or a verified flat whose owner prevents migration.
 
-        A session still in the legacy flat layout is migrated first, so this
-        may write to disk and raise the I/O and lock errors migration raises.
+        A session still in the legacy flat layout is migrated when eligible,
+        so this may raise the I/O and lock errors migration raises.
         """
         return self._resolve_session_file(session_id)
 
     @staticmethod
-    def _read_json_file(path: Path) -> dict[str, Any] | None:
-        """Read a JSON object from *path*, returning ``None`` on invalid input."""
+    def _read_checkpoint_json(path: Path) -> dict[str, Any] | None:
+        """An absent or malformed checkpoint permits fallback. An I/O failure must stop repair."""
         try:
             _, envelope = read_session_envelope(path)
-        except json.JSONDecodeError:
+        except ValueError, RecursionError:
             logger.warning("Invalid JSON in session file %s", path)
             return None
-        except OSError:
+        except FileNotFoundError, NotADirectoryError:
             return None
         return envelope
+
+    @classmethod
+    def _read_json_file(cls, path: Path) -> dict[str, Any] | None:
+        """Best-effort read for optional metadata."""
+        try:
+            return cls._read_checkpoint_json(path)
+        except OSError:
+            return None
+
+    def _read_matching_flat(self, session_id: str, path: Path) -> dict[str, Any] | None:
+        flat = self._read_checkpoint_file(path)
+        identity = self._checkpoint_session_id(flat)
+        return flat if identity and _matches_startup_id(session_id, identity) else None
+
+    @classmethod
+    def _read_checkpoint_file(cls, path: Path) -> dict[str, Any] | None:
+        """Read a checkpoint candidate, ignoring objects with a damaged envelope shape."""
+        return cls._validated_checkpoint(cls._read_checkpoint_json(path))
+
+    @staticmethod
+    def _validated_checkpoint(envelope: object) -> dict[str, Any] | None:
+        if not isinstance(envelope, dict):
+            return None
+        meta = envelope.get("meta")
+        if not isinstance(meta, dict) or not meta or not isinstance(envelope.get("state", {}), dict):
+            return None
+        if "session_id" in meta and (not isinstance(meta["session_id"], str) or not meta["session_id"]):
+            return None
+        return envelope
+
+    @staticmethod
+    def _checkpoint_session_id(envelope: dict[str, Any] | None) -> str | None:
+        return envelope["meta"].get("session_id") if envelope is not None else None
+
+    @staticmethod
+    def _check_checkpoint_identities(first: str | None, second: str | None) -> None:
+        if first and second and not same_session_id(first, second):
+            raise ConflictingSessionCheckpointsError((first, second))
 
     def _snapshot_recovery_files(self, session_id: str) -> list[Path]:
         """Return rollback snapshots newest-first for last-ditch session recovery."""
@@ -461,73 +660,49 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             reverse=True,
         )
 
-    def _read_session_envelope(
+    def _read_committed_checkpoint(
         self,
         session_id: str,
         *,
-        heal: bool = True,
-        migrate: bool = True,
         include_snapshots: bool = True,
-    ) -> dict[str, Any] | None:
-        """Read a session envelope, falling back to backup/snapshots if needed."""
-        envelope, _source = self._read_session_envelope_with_source(
-            session_id, heal=heal, migrate=migrate, include_snapshots=include_snapshots
-        )
-        return envelope
-
-    def _read_session_envelope_with_source(
-        self,
-        session_id: str,
-        *,
-        heal: bool = True,
-        migrate: bool = True,
-        include_snapshots: bool = True,
-    ) -> tuple[dict[str, Any] | None, Literal["primary", "backup", "snapshot"]]:
-        """Read a session envelope and name the file it came from."""
-        if migrate:
-            path = self._resolve_session_file(session_id)
-        else:
-            session_file = self._session_file(session_id)
-            path = session_file if session_file.exists() else None
-        backup = self._backup_file(session_id)
-
-        candidates: list[tuple[Path, Literal["primary", "backup", "snapshot"]]] = []
-        if path is not None:
-            candidates.append((path, "primary"))
-        if backup.exists():
-            candidates.append((backup, "backup"))
+        validate_checkpoint: bool = True,
+    ) -> _CheckpointFile | None:
+        """Find a committed checkpoint without migrating or repairing any file."""
+        read_file = self._read_checkpoint_file if validate_checkpoint else self._read_checkpoint_json
+        for path, source in ((self._session_file(session_id), "primary"), (self._backup_file(session_id), "backup")):
+            if (envelope := read_file(path)) is not None:
+                return _CheckpointFile(path, envelope, source)
         if include_snapshots:
-            candidates.extend((snapshot, "snapshot") for snapshot in self._snapshot_recovery_files(session_id))
-        if not candidates:
-            return None, "primary"
-
-        for candidate, source in candidates:
-            envelope = self._read_json_file(candidate)
-            if envelope is None:
-                continue
-            if heal and candidate != path:
-                self._heal_session_file_from_candidate(session_id, self._session_file(session_id), envelope, candidate)
-            return envelope, source
-        return None, "primary"
+            for path in self._snapshot_recovery_files(session_id):
+                if (envelope := read_file(path)) is not None:
+                    return _CheckpointFile(path, envelope, "snapshot")
+        return None
 
     def _heal_session_file_from_candidate(
         self,
         session_id: str,
-        path: Path,
-        envelope: dict[str, Any],
-        candidate: Path,
+        checkpoint: _CheckpointFile,
+        *,
+        owns_active_lock: bool,
     ) -> None:
         """Best-effort repair of a corrupt primary session file."""
         try:
-            payload = json.dumps(envelope, indent=2, ensure_ascii=False)
             with FileLock(self._write_lock_path(session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
-                current = self._read_json_file(path)
-                if current is None:
-                    _atomic_write_text(path, payload)
-                    _atomic_write_text(self._backup_file(session_id), payload)
-                    logger.warning("Recovered corrupt session %s from %s", session_id, candidate)
+                if not owns_active_lock and self._active_lock_is_held(session_id):
+                    return
+                if self._read_checkpoint_file(self._session_file(session_id)) is None:
+                    self._heal_primary_unlocked(session_id, checkpoint)
         except Exception:
-            logger.warning("Failed to heal session %s from %s", session_id, candidate, exc_info=True)
+            logger.warning("Failed to heal session %s from %s", session_id, checkpoint.path, exc_info=True)
+
+    def _heal_primary_unlocked(self, session_id: str, checkpoint: _CheckpointFile) -> None:
+        try:
+            payload = dump_session_envelope(checkpoint.envelope)
+            _atomic_write_text(self._session_file(session_id), payload)
+            _atomic_write_text(self._backup_file(session_id), payload)
+            logger.warning("Recovered corrupt session %s from %s", session_id, checkpoint.path)
+        except Exception:
+            logger.warning("Failed to heal session %s from %s", session_id, checkpoint.path, exc_info=True)
 
     @staticmethod
     def _inheritable_meta(
@@ -538,7 +713,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         if envelope is None:
             return None
         meta = envelope.get("meta")
-        if not isinstance(meta, dict) or meta.get("session_id") != session_id:
+        if not isinstance(meta, dict) or not same_session_id(meta.get("session_id"), session_id):
             return None
         return meta
 
@@ -610,8 +785,11 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         them. Recovery titles outrank live titles only when the primary was
         rejected and the live metadata came from backup (or did not exist).
         """
-        if title_key == "custom_title" and session_id in self._pending_custom_titles:
-            return self._pending_custom_titles[session_id]
+        if (
+            title_key == "custom_title"
+            and (pending := self._pending_custom_titles.get(session_id_key(session_id))) is not None
+        ):
+            return pending
 
         existing_value = existing_meta.get(title_key)
         recovery_value = recovery_meta.get(title_key)
@@ -849,18 +1027,20 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
     def _delete_recovery_session_if_not_newer(
         self,
         session_id: str,
-        *,
-        primary_updated_at: datetime | None,
+        cleanup: _RecoveryCleanup,
     ) -> None:
         """Best-effort stale sidecar GC, rechecking under the write lock."""
         try:
             with FileLock(self._write_lock_path(session_id), timeout=0.0):
-                current = self._read_json_file(self._recovery_file(session_id))
+                current = self._read_checkpoint_file(self._recovery_file(session_id))
+                current_id = self._checkpoint_session_id(current)
+                if current_id is not None and not same_session_id(cleanup.session_id, current_id):
+                    return
                 current_updated_at = self._envelope_updated_at(current)
                 if (
                     current is None
                     or current_updated_at is None
-                    or (primary_updated_at is not None and current_updated_at <= primary_updated_at)
+                    or (cleanup.primary_updated_at is not None and current_updated_at <= cleanup.primary_updated_at)
                 ):
                     self._delete_recovery_session_unlocked(session_id)
         except TimeoutError:
@@ -948,7 +1128,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             checkpoint = self._write_session_envelope_unlocked(session_id, data)
             # The primary envelope now owns the title; a stale pending entry
             # must not resurrect it after a later clear.
-            self._pending_custom_titles.pop(session_id, None)
+            self._pending_custom_titles.pop(session_id_key(session_id), None)
             return checkpoint
 
     async def save_session(
@@ -1129,32 +1309,157 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             return None
         return _parse_session_timestamp(meta.get("updated_at"))
 
+    def _choose_recovery_checkpoint(
+        self, committed: _CheckpointFile | None, recovery: _CheckpointFile | None
+    ) -> _CheckpointFile | None:
+        if recovery is None or committed is None:
+            return recovery or committed
+        self._check_checkpoint_identities(
+            self._checkpoint_session_id(committed.envelope), self._checkpoint_session_id(recovery.envelope)
+        )
+        if committed.source in {"backup", "snapshot"}:
+            return recovery
+        updated = self._envelope_updated_at(committed.envelope)
+        recovered = self._envelope_updated_at(recovery.envelope)
+        return recovery if recovered is not None and (updated is None or recovered > updated) else committed
+
+    def _select_checkpoint(
+        self,
+        session_id: str,
+        *,
+        prefer_recovery: bool = True,
+        include_legacy: bool = False,
+        ignore_recovery: bool = False,
+        owns_active_lock: bool = False,
+        check_recovery_owner: bool = True,
+    ) -> tuple[_CheckpointFile | None, _RecoveryCleanup | None, Path | None]:
+        """Select a checkpoint without repair and report any writer blocking recovery."""
+        committed = self._read_committed_checkpoint(session_id)
+        legacy_path = self._legacy_path(session_id)
+        legacy = None
+        if (
+            include_legacy
+            and (committed is None or committed.source != "primary")
+            and not self._session_file(session_id).exists()
+        ):
+            legacy = self._read_checkpoint_file(legacy_path)
+        recovery_path = self._recovery_file(session_id)
+        read_recovery = not ignore_recovery and (prefer_recovery or legacy is not None)
+        if read_recovery:
+            # Path.exists() also hides permission and device errors. A checkpoint
+            # whose presence cannot be determined must not be superseded by a backup.
+            try:
+                recovery_path.stat()
+            except FileNotFoundError, NotADirectoryError:
+                read_recovery = False
+        recovery_raw = None
+        busy = None
+        if read_recovery:
+            if check_recovery_owner:
+                recovery_raw, busy = self._read_startup_recovery(recovery_path, owns_active_lock=owns_active_lock)
+            else:
+                recovery_raw = self._read_checkpoint_file(recovery_path)
+        recovery = _CheckpointFile(recovery_path, recovery_raw, "recovery") if recovery_raw is not None else None
+        effective = self._choose_recovery_checkpoint(committed, recovery)
+        if legacy is not None:
+            if self._legacy_supersedes(legacy, effective.envelope if effective else None):
+                committed = _CheckpointFile(legacy_path, legacy, "legacy", migrate_legacy=True)
+                effective = self._choose_recovery_checkpoint(committed, recovery)
+            elif (
+                not prefer_recovery
+                and (legacy_id := self._checkpoint_session_id(legacy))
+                and same_session_id(self._checkpoint_session_id(recovery_raw), legacy_id)
+                and self._legacy_supersedes(legacy, committed.envelope if committed else None)
+            ):
+                # A newer recovery of the same session can prevent migration while
+                # leaving the flat as the best committed checkpoint.
+                committed = _CheckpointFile(legacy_path, legacy, "legacy")
+        if not prefer_recovery:
+            return committed, None, busy
+        if busy is not None or not read_recovery or (recovery is not None and effective is recovery):
+            return effective, None, busy
+        if recovery is None:
+            return effective, _RecoveryCleanup(None, None), None
+        cleanup = _RecoveryCleanup(
+            self._checkpoint_session_id(recovery.envelope),
+            self._envelope_updated_at(effective.envelope if effective is not None else None),
+        )
+        return effective, cleanup, None
+
+    @staticmethod
+    def _busy_recovery_lock(locks: Collection[Path]) -> Path | None:
+        for path in locks:
+            try:
+                path.stat()
+            except FileNotFoundError:
+                continue  # A lock file is created on first use and persists after release.
+            try:
+                with FileLock(path, timeout=0):
+                    pass
+            except TimeoutError:
+                return path
+        return None
+
+    def _read_startup_recovery(
+        self, path: Path, *, owns_active_lock: bool
+    ) -> tuple[dict[str, Any] | None, Path | None]:
+        owners = [] if owns_active_lock else [session_active_lock_path(path.parent.parent, path.parent.name)]
+        try:
+            if path.is_symlink() and (foreign := linked_recovery_active_lock(path, path.resolve(strict=True))):
+                owners.append(foreign)
+            if not owners:
+                return self._read_checkpoint_file(path), None
+            if busy := self._busy_recovery_lock(owners):
+                return None, busy
+            # Pin the version before rechecking. Writers replace the file atomically.
+            with path.open("rb") as stream:
+                if busy := self._busy_recovery_lock(owners):
+                    return None, busy
+                payload = stream.read()
+            return self._validated_checkpoint(json.loads(payload.decode("utf-8"))), None
+        except FileNotFoundError, NotADirectoryError, ValueError, RecursionError:
+            return None, None
+
     def _resolve_effective_envelope_with_source(
         self,
         session_id: str,
         *,
         prefer_recovery: bool = False,
-    ) -> tuple[dict[str, Any] | None, Literal["recovery", "primary", "backup", "snapshot"]]:
-        """Return the effective envelope and the file it came from, without healing recovery into primary."""
-        self._migrate_if_needed(session_id)
-        recovery_path = self._recovery_file(session_id)
-        if prefer_recovery and recovery_path.exists():
-            recovery = self._read_json_file(recovery_path)
-            if recovery is not None:
-                primary_path = self._session_file(session_id)
-                primary = self._read_json_file(primary_path) if primary_path.exists() else None
-                recovery_updated_at = self._envelope_updated_at(recovery)
-                primary_updated_at = self._envelope_updated_at(primary)
-                if primary is None:
-                    return recovery, "recovery"
-                if recovery_updated_at is not None and (
-                    primary_updated_at is None or recovery_updated_at > primary_updated_at
-                ):
-                    return recovery, "recovery"
-                self._delete_recovery_session_if_not_newer(session_id, primary_updated_at=primary_updated_at)
-            else:
-                self._delete_recovery_session_if_not_newer(session_id, primary_updated_at=None)
-        return self._read_session_envelope_with_source(session_id)
+        owns_active_lock: bool = False,
+    ) -> tuple[dict[str, Any] | None, Literal["recovery", "primary", "backup", "snapshot", "legacy"]]:
+        """Return the effective envelope, with the usual best-effort repairs for ordinary reads."""
+        busy_flat = self._migrate_if_needed(session_id, owns_active_lock=owns_active_lock)
+        if busy_flat is not None:
+            # Read the source first: its owner may move it into the folder during this lookup.
+            flat = self._read_matching_flat(session_id, busy_flat)
+            committed = self._read_committed_checkpoint(session_id)
+            if committed is not None:
+                return committed.envelope, committed.source
+            return (flat, "legacy") if flat is not None else (None, "primary")
+        if prefer_recovery:
+            checkpoint, cleanup, _ = self._select_checkpoint(
+                session_id, prefer_recovery=True, check_recovery_owner=False
+            )
+        else:
+            checkpoint, cleanup, _ = self._select_checkpoint(
+                session_id, prefer_recovery=False, include_legacy=True, owns_active_lock=owns_active_lock
+            )
+            if checkpoint is not None and checkpoint.source == "legacy":
+                identity = self._checkpoint_session_id(checkpoint.envelope)
+                if not identity or not _matches_startup_id(session_id, identity):
+                    return None, "primary"
+        can_repair = (
+            owns_active_lock
+            or not self._recovery_file(session_id).exists()
+            or not self._active_lock_is_held(session_id)
+        )
+        if can_repair and cleanup is not None:
+            self._delete_recovery_session_if_not_newer(session_id, cleanup)
+        if checkpoint is None:
+            return None, "primary"
+        if can_repair and checkpoint.source in {"backup", "snapshot"}:
+            self._heal_session_file_from_candidate(session_id, checkpoint, owns_active_lock=owns_active_lock)
+        return checkpoint.envelope, checkpoint.source
 
     def _resolve_effective_envelope(
         self,
@@ -1178,9 +1483,9 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """Return whether the crash-recovery sidecar would win when recovery is allowed."""
         return await asyncio.to_thread(self._recovery_session_wins_sync, session_id)
 
-    def _active_lock_is_held(self, session_id: str) -> bool:
+    def _active_lock_is_held(self, session_id: str, *, timeout: float = 0.0) -> bool:
         """Return True when another live owner, or this process, holds the active-session lock."""
-        lock = FileLock(self.active_lock_path(session_id), timeout=0.0)
+        lock = FileLock(self.active_lock_path(session_id), timeout=timeout)
         try:
             lock.acquire()
         except TimeoutError:
@@ -1229,8 +1534,14 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             self._delete_recovery_session_unlocked(session_id)
 
     def _load_workflow_session_sync(self, session_id: str) -> WorkflowSessionState | None:
+        if self._session_is_pending_delete(self._session_dir(session_id)):
+            return None
         raw = self._resolve_effective_envelope(session_id, prefer_recovery=False)
         if raw is None:
+            return None
+        # Old workflow checkpoints could identify themselves only by their
+        # folder. That proves the legacy short ID, never a supplied full UUID.
+        if not same_session_id(raw["meta"].get("session_id", _session_short_id(session_id)), session_id):
             return None
         if resolve_session_kind(raw["meta"]) != "workflow":
             raise ValueError("Workflow loading requires a Workflow session.")
@@ -1240,10 +1551,16 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """Validate the envelope once, then return typed workflow state directly."""
         return await asyncio.to_thread(self._load_workflow_session_sync, session_id)
 
-    def _load_session_sync(self, session_id: str, *, prefer_recovery: bool = False) -> dict[str, Any] | None:
+    def _load_session_sync(
+        self, session_id: str, *, prefer_recovery: bool = False, owns_active_lock: bool = False
+    ) -> dict[str, Any] | None:
         """Sync implementation of session load (runs in a thread)."""
         try:
-            raw = self._resolve_effective_envelope(session_id, prefer_recovery=prefer_recovery)
+            if self._session_is_pending_delete(self._session_dir(session_id)):
+                return None
+            raw, _ = self._resolve_effective_envelope_with_source(
+                session_id, prefer_recovery=prefer_recovery, owns_active_lock=owns_active_lock
+            )
             if raw is None:
                 return None
             if resolve_session_kind(raw["meta"]) != "chat":
@@ -1252,52 +1569,108 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         except KeyError:
             return None
 
-    async def load_session(self, session_id: str, *, prefer_recovery: bool = False) -> dict[str, Any] | None:
-        """Load session state from the session folder."""
-        return await asyncio.to_thread(self._load_session_sync, session_id, prefer_recovery=prefer_recovery)
+    async def load_session(
+        self, session_id: str, *, prefer_recovery: bool = False, owns_active_lock: bool = False
+    ) -> dict[str, Any] | None:
+        """Load saved state. A restore holding the active lock may migrate its own checkpoint."""
+        return await asyncio.to_thread(
+            self._load_session_sync, session_id, prefer_recovery=prefer_recovery, owns_active_lock=owns_active_lock
+        )
+
+    def _load_chat_for_restore_sync(
+        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool
+    ) -> ChatRestoreData | None:
+        with FileLock(self._write_lock_path(session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
+            if self._session_is_pending_delete(self._session_dir(session_id)):
+                return None
+            checkpoint, cleanup, busy = self._select_checkpoint(
+                session_id,
+                prefer_recovery=prefer_recovery,
+                include_legacy=True,
+                ignore_recovery=ignore_recovery,
+                owns_active_lock=True,
+            )
+            if checkpoint is None and busy:
+                raise StartupSessionInUseError(session_id, None)
+            if checkpoint is None:
+                if ignore_recovery:
+                    self._discard_ignored_recovery_unlocked(session_id)
+                return None
+            envelope = checkpoint.envelope
+            if not same_session_id(self._checkpoint_session_id(envelope), session_id):
+                return None
+            if resolve_session_kind(envelope["meta"]) != "chat":
+                raise ChatRestoreKindError("Open this session in Workflow mode.")
+            # Rollback has already swapped the primary. Retire its old sidecar
+            # even if decoding the verified rollback checkpoint fails.
+            if ignore_recovery:
+                self._discard_ignored_recovery_unlocked(session_id)
+            try:
+                state = deserialize_state(envelope.get("state", {}))
+            except KeyError:
+                return None
+            # Preserve the fallback for older chat metadata with missing or damaged
+            # timestamps. The identity was already checked on this exact envelope.
+            meta = self._chat_meta_for_replay(envelope)
+            if checkpoint.migrate_legacy and busy is None:
+                self._migrate_legacy_checkpoint_unlocked(session_id, envelope)
+            elif checkpoint.source in {"backup", "snapshot"}:
+                self._heal_primary_unlocked(session_id, checkpoint)
+            if cleanup is not None:
+                self._delete_recovery_session_unlocked(session_id)
+            return ChatRestoreData(state, meta, checkpoint.source == "recovery", envelope.get("state", {}))
+
+    def _discard_ignored_recovery_unlocked(self, session_id: str) -> None:
+        recovery, busy = self._read_startup_recovery(self._recovery_file(session_id), owns_active_lock=True)
+        if busy is not None:
+            return
+        recovery_id = self._checkpoint_session_id(recovery)
+        if recovery_id is None or same_session_id(recovery_id, session_id):
+            self._delete_recovery_session_unlocked(session_id)
+
+    async def load_chat_for_restore(
+        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool = False
+    ) -> ChatRestoreData | None:
+        """Load and optionally repair a verified chat while the caller owns its active lock."""
+        # Drain the writer before releasing the active lock. Use an executor
+        # future so shutdown's cancellation of all tasks cannot cancel the writer.
+        worker = asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                self._load_chat_for_restore_sync,
+                session_id,
+                prefer_recovery=prefer_recovery,
+                ignore_recovery=ignore_recovery,
+            ),
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # A failure while draining must not replace the caller's cancellation.
+            with contextlib.suppress(Exception):
+                await finish_close(worker)
+            raise
+
+    def _chat_meta_for_replay(self, envelope: dict[str, Any]) -> ChatSessionMeta | None:
+        with contextlib.suppress(KeyError, ValueError, TypeError):
+            meta = self._session_meta_from_envelope(envelope, size_bytes=0)
+            if isinstance(meta, ChatSessionMeta):
+                return meta
+        return None
 
     def _load_session_transcript_sync(
         self,
         session_id: str,
         *,
         prefer_recovery: bool = False,
+        include_folds: bool = False,
     ) -> SessionTranscript | None:
-        """Read the session envelope once into replayable messages and turn identity."""
         try:
             raw = self._resolve_effective_envelope(session_id, prefer_recovery=prefer_recovery)
             if raw is None:
                 return None
             state = raw.get("state", {})
-            messages = state.get("messages", [])
-            # Normalize: ensure each message has role + contents as dicts.
-            # Skip every message compaction excluded, deliberately: tool
-            # calls it summarized or removed, a dropped current turn's
-            # in-between text, and turns folded into a compressed block.
-            # Tool summaries stay in this raw list as the model's context;
-            # transcript replays drop them too (``is_compaction_tool_summary``),
-            # so the reopened session transcript shows neither a summary nor
-            # the messages it replaced. Compressed blocks keep their own
-            # archived copy and render it separately.
-            result = []
-            for msg in messages:
-                ap = msg.get("additional_properties", {})
-                if ap.get("_excluded", False):
-                    continue
-                contents = []
-                for c in msg.get("contents", []):
-                    if isinstance(c, str):
-                        # Legacy plain-string format
-                        if c.startswith("Content(type="):
-                            contents.append({"type": "legacy", "raw": c})
-                        else:
-                            contents.append({"type": "text", "text": c})
-                    elif isinstance(c, dict):
-                        contents.append(c)
-                entry: dict[str, Any] = {"role": msg.get("role", ""), "contents": contents}
-                if msg.get("additional_properties"):
-                    entry["additional_properties"] = msg["additional_properties"]
-                result.append(entry)
-            return SessionTranscript(messages=result, turns=turn_records(state))
+            return _transcript(state, transcript_folds(state) if include_folds else [])
         except KeyError:
             return None
 
@@ -1306,9 +1679,31 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         session_id: str,
         *,
         prefer_recovery: bool = False,
+        include_folds: bool = False,
     ) -> SessionTranscript | None:
-        """Load a chat session's replayable history and turn registry together."""
-        return await asyncio.to_thread(self._load_session_transcript_sync, session_id, prefer_recovery=prefer_recovery)
+        """Load persisted history and its turn registry, with folds when requested."""
+        return await asyncio.to_thread(
+            self._load_session_transcript_sync, session_id, prefer_recovery=prefer_recovery, include_folds=include_folds
+        )
+
+    def _load_session_for_replay_sync(self, session_id: str, *, prefer_recovery: bool = False) -> SessionReplay | None:
+        # The backend owns checkpoint repairs. Replay only reads the selected archive.
+        checkpoint, _, _ = self._select_checkpoint(
+            session_id, prefer_recovery=prefer_recovery, include_legacy=True, owns_active_lock=True
+        )
+        if checkpoint is None or not same_session_id(self._checkpoint_session_id(checkpoint.envelope), session_id):
+            return None
+        raw = checkpoint.envelope
+        if resolve_session_kind(raw["meta"]) != "chat":
+            raise ValueError("Chat loading requires a Chat session.")
+        meta = None
+        with contextlib.suppress(KeyError, OSError, ValueError, TypeError):
+            meta = self._session_meta_from_envelope(raw, size_bytes=_dir_size(self._session_dir(session_id)))
+        return SessionReplay.from_saved_state(raw.get("state", {}), meta)
+
+    async def load_session_for_replay(self, session_id: str, *, prefer_recovery: bool = False) -> SessionReplay | None:
+        """Decode chat state and build the transcript from the same selected envelope."""
+        return await asyncio.to_thread(self._load_session_for_replay_sync, session_id, prefer_recovery=prefer_recovery)
 
     async def load_session_raw(
         self,
@@ -1316,14 +1711,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         *,
         prefer_recovery: bool = False,
     ) -> list[dict[str, Any]] | None:
-        """Load raw serialized messages for replay.
-
-        Returns:
-            A list of message dicts or ``None`` if the session does not
-            exist.  Intermediate text (agent text returned alongside tool
-            calls) is embedded per-message in
-            ``additional_properties["_intermediate_text"]``.
-        """
+        """Load the normalized active messages, with excluded messages filtered out."""
         transcript = await self.load_session_transcript(session_id, prefer_recovery=prefer_recovery)
         return None if transcript is None else transcript.messages
 
@@ -1367,6 +1755,222 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             self._load_session_meta_sync, session_id, prefer_recovery=prefer_recovery, strict=strict
         )
 
+    async def resolve_startup_session(self, selector: str, *, require_inactive: bool = False) -> SessionMeta | None:
+        """Resolve an explicit selector, optionally checking its lock before prompting for a workspace."""
+        return await asyncio.to_thread(self._resolve_startup_session_sync, selector.strip(), require_inactive)
+
+    def _resolve_startup_session_sync(self, selector: str, require_inactive: bool) -> SessionMeta | None:
+        from chrys.service.trajectory.tombstone import pending_delete_intents
+
+        if not _valid_startup_id(selector):
+            return None
+        key = normalized_session_id(selector)
+        short_id = _session_short_id(selector).lower()
+        is_short = key == short_id
+        normalized = key or selector
+        pending = pending_delete_intents(self._dir)
+        # Read addressable flats before looking for folders: a concurrent migration
+        # must be visible on at least one side of its rename. Short selectors also
+        # need noncanonical filenames up front to detect ambiguous imported IDs.
+        exact_uuid = key is not None and not is_short
+        legacy_paths = self._legacy_session_files()
+        identities = self._startup_flat_ids(
+            (path for path in legacy_paths if not exact_uuid or path.stem.lower() == short_id), short_id, pending
+        )
+        # Directory spelling is preserved in old/imported stores. Enumerate matching
+        # spellings, but also probe the expected path directly: on Windows a fresh
+        # directory can open before it appears in a directory listing.
+        names = {p.name for p in self._dir.iterdir() if p.name.lower() == short_id}
+        names.update((short_id, _session_short_id(selector)))
+        accessible_folders: dict[str, SessionMeta] = {}
+        seen_folders: set[tuple[int, int]] = set()
+        unreadable: ValueError | OSError | None = None
+        occupied: StartupSessionInUseError | None = None
+        for name in sorted(names):
+            directory = self._dir / name
+            try:
+                info = directory.stat()
+                location = (info.st_dev, info.st_ino)
+                if not stat.S_ISDIR(info.st_mode) or (info.st_ino and location in seen_folders):
+                    continue
+                if info.st_ino:
+                    seen_folders.add(location)
+                if self._session_is_pending_delete(directory, pending):
+                    continue
+                meta = self._startup_folder_meta(name, selector)
+                if meta is not None and _session_short_id(meta.session_id).lower() == short_id:
+                    identities.add(meta.session_id)
+                    canonical_dir = self._session_dir(meta.session_id)
+                    if directory.name == canonical_dir.name or directory.samefile(canonical_dir):
+                        accessible_folders[meta.session_id] = meta
+            except FileNotFoundError:
+                continue  # A session collected above was removed concurrently.
+            except StartupSessionInUseError as exc:
+                occupied = exc
+                if exc.owner_id is not None:
+                    identities.add(exc.owner_id)
+            except ConflictingSessionCheckpointsError as exc:
+                if is_short:
+                    self._raise_ambiguous_startup_id(selector)
+                if normalized in exc.identities:
+                    raise
+            except (ValueError, OSError) as exc:
+                unreadable = exc
+        if exact_uuid and not any(same_session_id(identity, selector) for identity in identities):
+            # On a miss, preserve the diagnostic for a flat archive renamed away
+            # from its loadable location. Unrelated flats cannot affect an exact hit.
+            identities.update(
+                self._startup_flat_ids(
+                    (path for path in legacy_paths if path.stem.lower() != short_id), short_id, pending
+                )
+            )
+        matches = {
+            identity
+            for identity in identities
+            if _valid_startup_id(identity) and _matches_startup_id(selector, identity)
+        }
+        if len({session_id_key(identity) for identity in matches}) > 1:
+            self._raise_ambiguous_startup_id(selector)
+        if occupied is not None and (not matches or is_short):
+            raise occupied
+        if not matches:
+            if unreadable is not None:
+                raise unreadable
+            return None
+        folder_ids = matches & accessible_folders.keys()
+        if len(folder_ids) > 1:
+            # Distinct usable directories can each contain a copy of this UUID.
+            self._raise_ambiguous_startup_id(selector)
+        if not folder_ids and len(matches) > 1:
+            # Prefer an addressable flat archive over renamed copies. The
+            # envelope spelling must lead back to the file we actually read.
+            flat_ids = {
+                match
+                for match in matches
+                if (meta := self._legacy_meta_for_file(self._legacy_path(match))) is not None
+                and meta.session_id == match
+            }
+            if len(flat_ids) > 1:
+                self._raise_ambiguous_startup_id(selector)
+            matches = flat_ids or matches
+        identity = min(folder_ids or matches)
+        if require_inactive:
+            return self._startup_workspace_meta(identity, selector)
+        # Pick the canonical flat file whenever the normal loader would migrate
+        # it into the folder. A renamed or shadowed file cannot be restored here.
+        canonical = self._legacy_path(identity)
+        if canonical.is_file() and self._can_migrate_legacy(identity):
+            meta = self._legacy_meta_for_file(canonical)
+            if meta is not None and same_session_id(meta.session_id, identity):
+                actual = self._legacy_path(meta.session_id)
+                with contextlib.suppress(FileNotFoundError):
+                    if actual.name == canonical.name or actual.samefile(canonical):
+                        return meta
+        if identity in accessible_folders:
+            return accessible_folders[identity]
+        directory = self._session_dir(identity)
+        if not self._session_is_pending_delete(directory):
+            # If the flat archive moved after its folder was checked, read
+            # the canonical destination again before reporting it missing.
+            meta = self._startup_folder_meta(directory.name, selector)
+            if meta is not None and meta.session_id == identity:
+                return meta
+        if occupied is not None:
+            raise occupied
+        if unreadable is not None:
+            raise unreadable
+        raise ValueError(f"Session {selector!r} cannot be opened from its stored location.")
+
+    def _startup_flat_ids(self, paths: Iterable[Path], short_id: str, pending: frozenset[str]) -> set[str]:
+        return {
+            meta.session_id
+            for path in paths
+            if (meta := self._legacy_meta_for_file(path)) is not None
+            and _session_short_id(meta.session_id).lower() == short_id
+            and not self._session_is_pending_delete(self._session_dir(meta.session_id), pending)
+        }
+
+    def _startup_workspace_meta(self, identity: str, selector: str) -> SessionMeta | None:
+        """Read the same identity again after any active-lock handoff, without repair."""
+        from chrys.service.state.locks import SESSION_RESTORE_ACTIVE_LOCK_TIMEOUT_SECONDS
+
+        lock_path = self.active_lock_path(identity)
+        lock = FileLock(lock_path, timeout=SESSION_RESTORE_ACTIVE_LOCK_TIMEOUT_SECONDS)
+        try:
+            lock.acquire()
+        except TimeoutError as exc:
+            raise StartupSessionInUseError(selector, identity) from exc
+        try:
+            if self._session_is_pending_delete(self._session_dir(identity)):
+                return None
+            checkpoint, _, busy = self._select_checkpoint(identity, include_legacy=True, owns_active_lock=True)
+            if checkpoint is None and busy:
+                raise StartupSessionInUseError(selector, None)
+            if checkpoint is None:
+                return None
+            checkpoint_id = self._checkpoint_session_id(checkpoint.envelope)
+            if checkpoint_id is None or not same_session_id(checkpoint_id, identity):
+                return None
+            checkpoint_lock = session_active_lock_path(self._dir, checkpoint_id)
+            if _session_short_id(checkpoint_id) != _session_short_id(identity) or checkpoint_lock != lock_path:
+                # A normalized alias must still open this archive under this lock.
+                archive_path = self._legacy_path if checkpoint.source == "legacy" else self._session_dir
+                try:
+                    if not lock_path.samefile(checkpoint_lock) or not archive_path(identity).samefile(
+                        archive_path(checkpoint_id)
+                    ):
+                        return None
+                except FileNotFoundError:
+                    return None
+            return self._session_meta_from_envelope(checkpoint.envelope, size_bytes=0)
+        finally:
+            lock.release()
+
+    @staticmethod
+    def _raise_ambiguous_startup_id(selector: str) -> Never:
+        raise AmbiguousSessionIdError(
+            f"Session id '{selector}' is ambiguous.", display_message=SESSION_ID_AMBIGUOUS.bind(session_id=selector)
+        )
+
+    def _session_is_pending_delete(self, directory: Path, pending: frozenset[str] | None = None) -> bool:
+        """Hide an unfinished delete recorded for this entry or its physical archive."""
+        from chrys.service.trajectory.tombstone import pending_delete_intents
+
+        def matches(folder: Path, names: frozenset[str]) -> bool:
+            if folder.name in names:
+                return True
+            for name in names:
+                if name.lower() == folder.name.lower():
+                    with contextlib.suppress(OSError):
+                        if folder.samefile(folder.with_name(name)):
+                            return True
+            return False
+
+        if matches(directory, pending if pending is not None else pending_delete_intents(self._dir)):
+            return True
+        if directory.is_symlink() or directory.is_junction():
+            archive = directory.resolve()
+            return matches(archive, pending_delete_intents(archive.parent))
+        return False
+
+    def _startup_folder_meta(self, name: str, selector: str) -> SessionMeta | None:
+        checkpoint, _, busy = self._select_checkpoint(name)
+        raw = checkpoint.envelope if checkpoint is not None else None
+        if busy:
+            owner = self._read_json_file(busy.with_suffix(".json")) or {}
+            identity = owner.get("session_id")
+            owner_id = identity if isinstance(identity, str) else None
+            self._check_checkpoint_identities(self._checkpoint_session_id(raw), owner_id)
+            if raw is None:
+                if owner_id and not _matches_startup_id(selector, owner_id):
+                    return None
+                raise StartupSessionInUseError(selector, owner_id)
+        if raw is not None:
+            return self._session_meta_from_envelope(raw, size_bytes=0)
+        if session_dir_has_artifacts(self._dir / name):
+            raise ValueError(f"Session {selector!r} has no readable checkpoint.")
+        return None
+
     def _patch_recovery_titles_unlocked(
         self,
         session_id: str,
@@ -1403,15 +2007,12 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         generated_title: str | None = None,
     ) -> SessionMeta | None:
         """Sync implementation of the meta-only title patch (runs in a thread)."""
+        pending_key = session_id_key(session_id)
         session_file = self._session_file(session_id)
         with FileLock(self._write_lock_path(session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
             self._migrate_if_needed_unlocked(session_id)
-            envelope = self._read_session_envelope(
-                session_id,
-                heal=False,
-                migrate=False,
-                include_snapshots=False,
-            )
+            checkpoint = self._read_committed_checkpoint(session_id, include_snapshots=False, validate_checkpoint=False)
+            envelope = checkpoint.envelope if checkpoint is not None else None
             meta = self._title_patch_meta(session_id, envelope)
             if envelope is None or meta is None:
                 # Never materialize or rewrite a session file just for a title
@@ -1433,9 +2034,9 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                         )
                     )
                     if custom_title or has_persisted_target:
-                        self._pending_custom_titles[session_id] = custom_title
+                        self._pending_custom_titles[pending_key] = custom_title
                     else:
-                        self._pending_custom_titles.pop(session_id, None)
+                        self._pending_custom_titles.pop(pending_key, None)
                     self._patch_recovery_titles_unlocked(
                         session_id,
                         custom_title=custom_title,
@@ -1475,7 +2076,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             if not custom_needs_write and not generated_needs_write:
                 # The durable envelope already holds the effective winners;
                 # any pending custom candidate is therefore stale or synced.
-                self._pending_custom_titles.pop(session_id, None)
+                self._pending_custom_titles.pop(pending_key, None)
                 return self._meta_from_patched_envelope(session_id, envelope)
             if custom_needs_write:
                 meta["custom_title"] = final_custom
@@ -1494,7 +2095,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             )
             # The primary now durably contains the effective custom winner,
             # so no in-memory candidate may override a later full save.
-            self._pending_custom_titles.pop(session_id, None)
+            self._pending_custom_titles.pop(pending_key, None)
         return self._meta_from_patched_envelope(session_id, envelope)
 
     def _meta_from_patched_envelope(self, session_id: str, envelope: dict[str, Any]) -> SessionMeta | None:
@@ -1547,9 +2148,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         # still open) is already gone as far as the user is concerned; listing
         # its remains would resurrect a deleted session.
         pending = pending_delete_intents(self._dir)
-        if not pending:
-            return candidates
-        return [candidate for candidate in candidates if candidate.name not in pending]
+        return [candidate for candidate in candidates if not self._session_is_pending_delete(candidate, pending)]
 
     @staticmethod
     def _has_session_artifacts(session_dir: Path) -> bool:
@@ -1745,7 +2344,11 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 return False
             if deleted is None:
                 deleted = pending_delete_intents(self._dir)
-            return short_id not in deleted and file_signature(self._dir / short_id / SESSION_FILE_NAME) is not None
+            directory = self._dir / short_id
+            return (
+                not self._session_is_pending_delete(directory, deleted)
+                and file_signature(directory / SESSION_FILE_NAME) is not None
+            )
 
         return is_live
 
@@ -1782,23 +2385,33 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         the folder-format ids in *seen_session_ids* — keep only the first
         occurrence, matching the pre-cache listing behavior.
         """
+        from chrys.service.trajectory.tombstone import pending_delete_intents
+
         sessions: list[tuple[Path, SessionMeta]] = []
         seen = set(seen_session_ids)
-        for path in self._legacy_session_files():
+        paths = self._legacy_session_files()
+        pending = pending_delete_intents(self._dir) if paths else frozenset()
+        for path in paths:
             meta = self._legacy_meta_for_file(path)
             if meta is None or meta.session_id in seen:
+                continue
+            if self._session_is_pending_delete(self._session_dir(meta.session_id), pending):
                 continue
             seen.add(meta.session_id)
             sessions.append((path, meta))
         return sessions
 
-    def _legacy_meta_for_file(self, path: Path) -> SessionMeta | None:
-        """Load one legacy flat-file session's meta, via its in-process cache."""
+    def _legacy_meta_for_file(self, path: Path, *, strict_io: bool = False) -> SessionMeta | None:
         try:
             signature = file_signature(path)
             with self._meta_cache_lock:
                 cached = self._legacy_meta_cache.get(path.name)
             if signature is not None and cached is not None and cached[0] == signature:
+                # Metadata can still match while permissions or a file-share lock
+                # prevent reads. Probe a single byte without reparsing the archive.
+                with path.open("rb", buffering=0) as stream:
+                    if not stream.read(1):
+                        return None
                 return copy_session_meta(cached[1])
             raw = json.loads(path.read_text(encoding="utf-8"))
             meta = self._session_meta_from_envelope(raw, size_bytes=path.stat().st_size)
@@ -1807,7 +2420,11 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                     self._legacy_meta_cache[path.name] = (signature, meta)
                 return copy_session_meta(meta)
             return meta
-        except json.JSONDecodeError, KeyError, ValueError, TypeError, OSError:
+        except KeyError, ValueError, TypeError, FileNotFoundError, NotADirectoryError, RecursionError:
+            return None
+        except OSError:
+            if strict_io:
+                raise
             return None
 
     def _evict_stale_meta_cache_sync(self) -> None:
@@ -1952,19 +2569,28 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         artifacts but cannot be read right now is only skipped in memory.
         """
         session_dir = self._session_dir(session_id)
+        if self._session_is_pending_delete(session_dir):
+            return None
         if not self._has_session_artifacts(session_dir) and not self._legacy_path(session_id).exists():
             legacy = self._legacy_meta_for_id(session_id)
             if legacy is not None:  # a legacy flat file under a non-canonical name
                 return coerce_utc(legacy.updated_at)
             self._prune_ghost_entry(session_id)
             return None
-        self._migrate_if_needed(session_id)
+        try:
+            self._migrate_if_needed(session_id)
+        except OSError:
+            # The sweep below also ranks flats. Discard its cached observation
+            # so a failed live read cannot be undone by an older listing.
+            with self._meta_cache_lock:
+                self._legacy_meta_cache.pop(self._legacy_path(session_id).name, None)
+            return None  # A temporarily unavailable flat stays indexed for the next lookup.
         meta = self._meta_for_session_dir(session_dir)
         if meta is None:  # unreadable folder: the listing may still attribute a legacy file to the id
             meta = self._legacy_meta_for_id(session_id)
         return None if meta is None else coerce_utc(meta.updated_at)
 
-    def _legacy_meta_for_id(self, session_id: str) -> SessionMeta | None:
+    def _legacy_meta_for_id(self, session_id: str, *, strict_io: bool = False) -> SessionMeta | None:
         """The legacy flat file the listing would attribute to *session_id*, if any.
 
         Legacy files are discovered by ``*.json``, not by name, so a session
@@ -1972,7 +2598,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         the first sorted readable file embedding the id, and so does this.
         """
         for path in self._legacy_session_files():
-            meta = self._legacy_meta_for_file(path)
+            meta = self._legacy_meta_for_file(path, strict_io=strict_io)
             if meta is not None and meta.session_id == session_id:
                 return meta
         return None
@@ -2000,9 +2626,12 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             if (
                 not self._has_session_artifacts(self._session_dir(session_id))
                 and not self._legacy_path(session_id).exists()
-                and self._legacy_meta_for_id(session_id) is None
+                and self._legacy_meta_for_id(session_id, strict_io=True) is None
             ):
                 self._note_mru(lambda: self._mru.remove(session_id))
+        except OSError:
+            # An unreadable flat may carry this ID even under an unrelated name.
+            logger.debug("Skipping ghost prune of %s: archive unavailable", session_id, exc_info=True)
         finally:
             lock.release()
 
@@ -2079,7 +2708,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             return latest_id
         latest = await asyncio.to_thread(self._meta_for_session_dir, self._session_dir(latest_id))
         if latest is not None and latest.kind == "chat":
-            return latest_id
+            return latest.session_id
         # Keep the MRU fast path for ordinary chat use; only a workflow-only
         # winner requires finding the newest eligible chat among older sessions.
         latest_chat = max(
@@ -2167,11 +2796,12 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         deleted = pending_delete_intents(self._dir) if selected else frozenset()
         metas: list[SessionMeta] = []
         for item in selected:
-            meta = self._legacy_meta_for_file(item.source) if item.legacy else None
             # Loading a legacy session since the snapshot moved it into its folder.
             folder = self._session_dir(item.session_id) if item.legacy else item.source
-            # A logical delete may leave the primary pinned.
-            if meta is None and folder.name not in deleted:
+            if self._session_is_pending_delete(folder, deleted):
+                continue
+            meta = self._legacy_meta_for_file(item.source) if item.legacy else None
+            if meta is None:
                 meta = self._meta_for_session_dir(folder)
                 if meta is not None:
                     meta = replace(meta, size_bytes=_dir_size(folder))
@@ -2210,7 +2840,15 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             active_lock.acquire()
         try:
             with FileLock(self._write_lock_path(session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
-                if session_dir.is_dir():
+                # Deleting an archive from this root removes its directory entry.
+                # Taking a trajectory lease or sweeping the target would touch the other root.
+                linked = session_dir.is_symlink() or session_dir.is_junction()
+                if linked:
+                    if session_dir.is_junction():
+                        session_dir.rmdir()
+                    else:
+                        session_dir.unlink()
+                elif session_dir.is_dir():
                     # A live trajectory writer (a stuck worker here, a writer
                     # in another process) turns this into a logical delete:
                     # the directory moves to a tombstone now and is removed
@@ -2227,15 +2865,16 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 # Also clean up legacy flat file if it exists
                 if legacy.exists():
                     legacy.unlink()
-                with contextlib.suppress(OSError):
-                    self.active_owner_path(session_id).unlink()
+                if not linked:
+                    with contextlib.suppress(OSError):
+                        self.active_owner_path(session_id).unlink()
                 # Still under the write lock: a same-id save recreating the
                 # session records before it can commit, so it cannot slip in
                 # between the deletion and this removal and lose its entry.
                 self._note_mru(lambda: self._mru.remove(session_id))
                 # The catalog holds prompt excerpts: they go with the session.
                 self._forget_catalog_entry(session_id)
-                self._pending_custom_titles.pop(session_id, None)
+                self._pending_custom_titles.pop(session_id_key(session_id), None)
                 self._written_recovery_meta.pop(_session_short_id(session_id), None)
         finally:
             if active_lock is not None:

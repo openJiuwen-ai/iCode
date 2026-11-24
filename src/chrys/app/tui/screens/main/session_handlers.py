@@ -72,8 +72,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.ports import StartWorker
     from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
     from chrys.foundation.events.bus import EventBus
-    from chrys.service.context.providers.history import CompressedBlock
-    from chrys.service.state.store import StateStore
+    from chrys.service.state.store import SessionTranscript, StateStore
 
 
 logger = logging.getLogger(__name__)
@@ -586,6 +585,7 @@ class SessionHandler:
         *,
         allow_while_loading: bool = False,
         primary_cwd: str = "",
+        saved_cwd: str | None = None,
     ) -> RestoreRequest:
         """Restore *session_id*, in *primary_cwd* when given instead of its saved folder.
 
@@ -601,7 +601,7 @@ class SessionHandler:
             return RestoreRequest.REQUESTED
         from chrys.foundation.events.types import SessionRestore
 
-        if not primary_cwd and (missing := await self._missing_saved_cwd(session_id)) is not None:
+        if not primary_cwd and (missing := await self._missing_saved_cwd(session_id, saved_cwd)) is not None:
             # /resume and startup open their loading UI first; the prompt replaces it.
             if s.agent_loading:
                 with contextlib.suppress(Exception):
@@ -640,21 +640,20 @@ class SessionHandler:
         )
         return RestoreRequest.REQUESTED
 
-    async def _missing_saved_cwd(self, session_id: str) -> str | None:
-        """The saved folder of *session_id* when it no longer exists, read the way restore reads it.
-
-        Restoring another session prefers its crash-recovery copy, so this
-        does too. Read failures are left for the restore itself to report.
-        """
-        store = self.state_store
-        if store is None:
-            return None
-        try:
-            meta = await store.load_session_meta(session_id, prefer_recovery=True)
-        except Exception:
-            return None
-        saved = meta.primary_cwd if meta is not None else ""
-        return saved if saved and not os.path.isdir(saved) else None
+    async def _missing_saved_cwd(self, session_id: str, saved_cwd: str | None) -> str | None:
+        """Return a missing workspace, reusing the read-only startup result when available."""
+        if saved_cwd is None:
+            # Ordinary /resume can reach this point with only a session ID.
+            # Match its recovery preference and leave read errors to restore.
+            store = self.state_store
+            if store is None:
+                return None
+            try:
+                meta = await store.load_session_meta(session_id, prefer_recovery=True)
+            except Exception:
+                return None
+            saved_cwd = meta.primary_cwd if meta is not None else ""
+        return saved_cwd if saved_cwd and not os.path.isdir(saved_cwd) else None
 
     async def _restore_workflow_session(self, selection: WorkflowSessionPick) -> None:
         self.restoring_session = True
@@ -773,27 +772,31 @@ class SessionHandler:
         ui.set_chat_workspace_cwd(cwd)
         ui.update_welcome(profile=display, cwd=cwd)
         ui.set_chat_session_id(event.session_id)
-        await self._restore_session_title_state(
-            event.session_id,
-            prefer_recovery=event.recovered_from_sidecar,
-        )
+        ui.reset_session_title_state()
 
-        # Load compressed blocks (needed for both replay and Context Panel)
-        compressed_blocks_map: dict[str, CompressedBlock] = {}
         loaded_state: dict[str, Any] | None = None
+        transcript: SessionTranscript | None = None
         with contextlib.suppress(Exception):
             ui.clear_compressed_blocks()
-        prefer_recovery = event.recovered_from_sidecar
-        if s.state_store:
+        loaded = event.replay
+        if loaded is not None or s.state_store is not None:
             try:
-                loaded = await s.state_store.load_session(event.session_id, prefer_recovery=prefer_recovery)
-                if loaded:
-                    loaded_state = loaded
+                if loaded is None and s.state_store is not None:
+                    loaded = await s.state_store.load_session_for_replay(
+                        event.session_id, prefer_recovery=event.recovered_from_sidecar
+                    )
+                if loaded is not None:
+                    loaded_state, transcript = loaded.state, loaded.transcript
+                    if loaded.meta is not None:
+                        ui.set_session_title_state(
+                            custom=loaded.meta.custom_title,
+                            generated=loaded.meta.generated_title,
+                            fallback=loaded.meta.title,
+                        )
                     restored_has_messages = has_real_messages(loaded_state)
                     for block in loaded_state.get("compressed_msgs", []):
                         ctx_id = block.compressed_context_id
                         if ctx_id:
-                            compressed_blocks_map[ctx_id] = block
                             ui.add_compressed_block(
                                 ctx_id,
                                 block.summary_text,
@@ -801,9 +804,7 @@ class SessionHandler:
                                 block.turn_range,
                             )
             except Exception:
-                logger.debug(
-                    "Session restore: failed to replay compressed blocks for %s", event.session_id, exc_info=True
-                )
+                logger.debug("Session restore: failed to load replay for %s", event.session_id, exc_info=True)
         s.set_has_messages(restored_has_messages)
 
         # Reseed the Tasks panel from the restored state (covers session
@@ -811,33 +812,30 @@ class SessionHandler:
         # ad-hoc parse could crash the sidebar on malformed/legacy state.
         ui.set_todo_state(parse_todo_items(loaded_state.get("chrys_todos") if loaded_state else None))
 
-        # Replay conversation history from saved state
-        messages: list[dict[str, Any]] | None = None
-        if s.state_store:
-            messages = await s.state_store.load_session_raw(event.session_id, prefer_recovery=prefer_recovery)
-            if messages:
-                file_snapshots = self.load_file_edit_snapshots(event.session_id, messages, loaded_state)
-                rollback_targets: set[int] = set()
-                try:
-                    provider = self._services.engine_provider
-                    engine = provider() if provider is not None else None
-                    if engine is not None:
-                        rollback_targets = set(await asyncio.to_thread(engine.available_rollback_turns))
-                except Exception:
-                    logger.warning("Unable to load restored rollback targets", exc_info=True)
+        messages = transcript.messages if transcript is not None else []
+        folds = transcript.folds if transcript is not None else []
+        if folds or messages:
+            file_snapshots = self.load_file_edit_snapshots(event.session_id, messages, loaded_state)
+            rollback_targets: set[int] = set()
+            try:
+                provider = self._services.engine_provider
+                engine = provider() if provider is not None else None
+                if engine is not None:
+                    rollback_targets = set(await asyncio.to_thread(engine.available_rollback_turns))
+            except Exception:
+                logger.warning("Unable to load restored rollback targets", exc_info=True)
 
-                await ui.replay_history(
-                    messages,
-                    initial_profile=event.initial_agent_profile or display,
-                    file_snapshots=file_snapshots or None,
-                    compressed_blocks=compressed_blocks_map or None,
-                    recovered_from_sidecar=event.recovered_from_sidecar,
-                    rollback_targets=rollback_targets,
-                )
-                s.update_toc()
+            await ui.replay_history(
+                messages,
+                initial_profile=event.initial_agent_profile or display,
+                file_snapshots=file_snapshots or None,
+                folds=folds,
+                recovered_from_sidecar=event.recovered_from_sidecar,
+                rollback_targets=rollback_targets,
+            )
+            s.update_toc()
 
-        # Check if the session ended with an error/interrupt — enable retry
-        if messages:
+            # Check if the session ended with an error/interrupt — enable retry.
             for m in reversed(messages):
                 ct = m.get("additional_properties", {}).get(HistoryMarkerKind.KEY)
                 if ct == HistoryMarkerKind.TURN:
@@ -867,31 +865,6 @@ class SessionHandler:
         self.debug("SessionSaved", session_short_id(event.session_id or ""))
         if event.session_id == self._ui().chat_session_id():
             self._callbacks.refresh_diff_preview(True)
-
-    async def _restore_session_title_state(self, session_id: str, *, prefer_recovery: bool = False) -> None:
-        """Reload title overlays from the session meta into the UI.
-
-        A crash-recovered session's history comes from the recovery
-        sidecar; its meta (title patches are mirrored into a live sidecar,
-        and a never-saved session has no primary at all) must come from
-        the same source.
-        """
-        s = self
-        ui = self._ui()
-        ui.reset_session_title_state()
-        if not s.state_store:
-            return
-        try:
-            meta = await s.state_store.load_session_meta(session_id, prefer_recovery=prefer_recovery)
-        except Exception:
-            return
-        if meta is None:
-            return
-        ui.set_session_title_state(
-            custom=meta.custom_title,
-            generated=meta.generated_title,
-            fallback=meta.title,
-        )
 
     async def apply_custom_session_title(self, custom_title: str, session_id: str) -> None:
         """Persist a user-edited custom title (empty clears it) and refresh the UI.

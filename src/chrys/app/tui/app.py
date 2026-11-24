@@ -35,7 +35,7 @@ from textual.widget import Widget
 from chrys import __version__
 from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
-from chrys.app.parsing import SanitizingArgumentParser
+from chrys.app.parsing import SanitizingArgumentParser, add_startup_session_option
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, copy_with_insert, paste_with_insert
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
 from chrys.app.tui.clipboard import (
@@ -93,11 +93,10 @@ from chrys.foundation.config.settings import (
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import Warning
+from chrys.foundation.events.types import Error, Warning
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.signals import HANGUP_SIGNALS
-from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.startup import catalog_load_warning
 from chrys.orchestration.workdir_migration import MIGRATION_NOTICE
 from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
@@ -128,8 +127,13 @@ _SESSION_NOT_FOUND = msg(
 )
 _SESSION_RESTORE_FALLBACK = msg(
     "tui.startup.session.restore_fallback",
-    fallback="Could not restore session {session_id}; started a new session instead.",
+    fallback="Could not open session {session_id}.",
 )
+_SESSION_IN_USE = msg(
+    "tui.startup.session.in_use", fallback="Session {session_id} is open in another window or process."
+)
+_START_NEW = msg("tui.startup.session.start_new", fallback="Start new session")
+_RETRY = msg("tui.startup.session.retry", fallback="Retry")
 _SESSION_RESTORE_FAILED = msg(
     "tui.startup.session.restore_failed",
     fallback="Could not restore session {session_id}: {error}",
@@ -1209,18 +1213,19 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
     async def _start_engine(self, profile: AgentProfile, screen: MainScreen) -> None:
         """Start the backend without holding Textual's mount path."""
         try:
-            if self._startup_session_id:
-                # Session restore builds the saved profile/runtime itself. Preparing
-                # subscriptions first avoids building the default agent only to tear
-                # it down immediately in the restore path.
+            while self._startup_session_id:
                 await self._engine.prepare(profile)
-                if await self._restore_startup_session(screen):
-                    # The restore republished the warnings of its own settings
-                    # load; the bootstrap ones no longer describe anything live.
+                problem = await self._restore_startup_session(screen, self._startup_session_id)
+                if problem is None:
+                    self._startup_session_id = ""
                     self._deferred_settings_warnings.clear()
                     return
+                screen.cancel_startup_session_restore()
+                screen.set_startup_agent_loading(True)
                 await self._engine.reset_after_failed_startup_restore()
-                await self._flush_deferred_settings_warnings()
+                if await self._choose_new_startup_session(screen, problem):
+                    self._startup_session_id = ""
+                    await self._flush_deferred_settings_warnings()
             await self._engine.start(profile)
         except asyncio.CancelledError:
             raise
@@ -1230,73 +1235,60 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 self._show_startup_failure(screen, exc)
             logger.exception("Engine startup failed")
 
-    async def _restore_startup_session(self, screen: MainScreen) -> bool:
-        """Restore the requested startup session, returning whether it succeeded."""
-        session_id = self._startup_session_id
-        if not session_id:
-            return False
-        self._startup_session_id = ""
+    async def _restore_startup_session(self, screen: MainScreen, selector: str) -> MessageRef | None:
+        from chrys.service.state.store import AmbiguousSessionIdError, StartupSessionInUseError
+
         screen.set_startup_agent_loading(True)
         try:
-            meta = await self._state_store.load_session_meta(session_id)
+            meta = await self._state_store.resolve_startup_session(selector, require_inactive=True)
+        except StartupSessionInUseError:
+            return _SESSION_IN_USE.bind(session_id=selector)
+        except AmbiguousSessionIdError as exc:
+            return exc.display_message or _SESSION_READ_FAILED.bind(session_id=selector, error=str(exc))
         except Exception as exc:
-            screen.set_startup_agent_loading(False)
-            logger.warning("Failed to read startup session %s", session_id, exc_info=True)
-            self._show_startup_session_warning(
-                screen,
-                _SESSION_READ_FAILED.bind(session_id=session_short_id(session_id), error=str(exc)),
-            )
-            return False
+            logger.warning("Failed to read startup session %s", selector, exc_info=True)
+            return _SESSION_READ_FAILED.bind(session_id=selector, error=str(exc))
         if meta is None:
-            screen.set_startup_agent_loading(False)
-            self._show_startup_session_warning(
-                screen,
-                _SESSION_NOT_FOUND.bind(session_id=session_short_id(session_id)),
-            )
-            return False
-        session_id = meta.session_id or session_id
+            return _SESSION_NOT_FOUND.bind(session_id=selector)
         await self._dismiss_startup_load_dialog_before_restore(screen)
         try:
-            outcome = await screen.restore_startup_session(session_id)
-            if outcome == "restored":
-                return True
-            screen.cancel_startup_session_restore()
-            if outcome == "declined":
-                # The user chose no folder for a session whose folder is gone: start fresh, quietly.
-                return False
-            logger.warning("Startup session restore produced no SessionRestored event for %s", session_id)
-            self._show_startup_session_warning(
-                screen,
-                _SESSION_RESTORE_FALLBACK.bind(session_id=session_short_id(session_id)),
-            )
-            return False
+            outcome = await screen.restore_startup_session(meta.session_id, saved_cwd=meta.primary_cwd)
         except Exception as exc:
-            screen.cancel_startup_session_restore()
-            screen.set_startup_agent_loading(False)
-            logger.warning("Failed to restore startup session %s", session_id, exc_info=True)
-            self._show_startup_session_warning(
-                screen,
-                _SESSION_RESTORE_FAILED.bind(session_id=session_short_id(session_id), error=str(exc)),
-            )
-            return False
+            logger.warning("Failed to restore startup session %s", selector, exc_info=True)
+            return _SESSION_RESTORE_FAILED.bind(session_id=selector, error=str(exc))
+        if outcome == "restored":
+            return None
+        if isinstance(outcome, Error):
+            if outcome.code == "session_in_use":
+                return _SESSION_IN_USE.bind(session_id=selector)
+            return outcome.display_message or _SESSION_RESTORE_FAILED.bind(session_id=selector, error=outcome.message)
+        return _SESSION_RESTORE_FALLBACK.bind(session_id=selector)
 
     async def _dismiss_startup_load_dialog_before_restore(self, screen: MainScreen) -> None:
-        """Clear the startup loading modal before opening the restore modal."""
         await screen.dismiss_startup_load_dialog_before_restore()
 
-    def _show_startup_session_warning(self, screen: MainScreen, message: MessageRef | str) -> None:
-        with contextlib.suppress(Exception):
-            from chrys.app.tui.widgets.chrome.status_bar import StatusBar
+    async def _choose_new_startup_session(self, screen: MainScreen, problem: MessageRef) -> bool:
+        """Only the explicit new-session action may abandon the requested session."""
+        from chrys.app.tui.screens.dialogs.confirm import StartupSessionChoiceDialog
 
-            screen.query_one(StatusBar).flash(message, error=True)
-        with contextlib.suppress(Exception):
-            screen.notify(
-                message if isinstance(message, str) else render_str(self.localizer, message),
-                title=render_str(self.localizer, _SESSION_NOTIFICATION_TITLE.bind()),
-                severity="warning",
-                timeout=6,
-                markup=False,
-            )
+        await screen.dismiss_startup_load_dialog_before_restore()
+        answer: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+
+        def settle(start_new: bool | None) -> None:
+            if not answer.done():
+                answer.set_result(start_new is True)
+
+        await self.push_screen(
+            StartupSessionChoiceDialog(
+                title=_SESSION_NOTIFICATION_TITLE.bind(),
+                message=problem,
+                confirm_label=_START_NEW.bind(),
+                cancel_label=_RETRY.bind(),
+                locale_controller=self._locale_controller,
+            ),
+            settle,
+        )
+        return await answer
 
     def _set_terminal_title_for_cwd(self) -> None:
         """Set the terminal title for the active workspace directory."""
@@ -1492,7 +1484,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
     parser = SanitizingArgumentParser(
         description=f"{APP_DISPLAY_NAME} - A general-purpose extensible agent platform for rapidly building and evolving custom agents."
     )
-    parser.add_argument("-s", "--session", default="", help="Restore the given session id after startup.")
+    add_startup_session_option(parser)
     parser.add_argument(
         "-a", "--agent", default="", help="Start with the given agent profile id, name, or display name."
     )
@@ -1567,7 +1559,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             model_registry=model_registry,
             startup_warnings=[*bootstrap.warnings],
             settings_warnings=settings_warning_events(loaded),
-            startup_session_id=args.session,
+            startup_session_id=args.session or "",
             apply_saved_model_on_restore=not bool(args.model.strip()),
             session_title_updater=session_title_updater,
             update_check=for_this_copy(enabled=loaded.settings.update_check, served=running_under_textual_web_driver()),

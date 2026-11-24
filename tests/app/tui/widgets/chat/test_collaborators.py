@@ -31,6 +31,7 @@ from chrys.kernel import (
     set_excluded,
 )
 from chrys.service.context.providers.history import CompressedBlock
+from chrys.service.state.folds import FoldItem
 
 
 class _FakeMount:
@@ -1343,7 +1344,9 @@ async def test_replay_context_fold_uses_persisted_turn_range() -> None:
     )
     block = CompressedBlock(compressed_context_id="ctx-1", turn_range=(7, 7))
 
-    await renderer.replay_history([_compressed_fold_message("ctx-1")], compressed_blocks={"ctx-1": block})
+    await renderer.replay_history(
+        [_compressed_fold_message("ctx-1")], folds=[FoldItem("ctx-1", "condensed", block=block)]
+    )
 
     fold = next(widget for widget in mount.widgets if isinstance(widget, ContextFoldWidget))
     assert fold.render().plain.splitlines()[0] == "  ═══ Compressed (Turn 7) ═══"
@@ -1367,7 +1370,7 @@ async def test_replay_legacy_context_fold_uses_persisted_message_count() -> None
 
     await renderer.replay_history(
         [_compressed_fold_message("ctx-legacy")],
-        compressed_blocks={"ctx-legacy": block},
+        folds=[FoldItem("ctx-legacy", "condensed", block=block)],
     )
 
     fold = next(widget for widget in mount.widgets if isinstance(widget, ContextFoldWidget))
@@ -1396,7 +1399,9 @@ async def test_replay_compressed_block_skips_flagged_nudge_keeps_injection() -> 
         ],
     )
 
-    await renderer.replay_history([_compressed_fold_message("ctx-1")], compressed_blocks={"ctx-1": block})
+    await renderer.replay_history(
+        [_compressed_fold_message("ctx-1")], folds=[FoldItem("ctx-1", "condensed", block=block)]
+    )
 
     users = [w for w in mount.widgets if isinstance(w, UserMessage)]
     assert [(w._text, w.is_injection) for w in users] == [("start task", False), ("mid-turn note", True)]
@@ -1423,7 +1428,9 @@ async def test_replay_compressed_block_nudge_does_not_flip_seen_user() -> None:
         ],
     )
 
-    await renderer.replay_history([_compressed_fold_message("ctx-1")], compressed_blocks={"ctx-1": block})
+    await renderer.replay_history(
+        [_compressed_fold_message("ctx-1")], folds=[FoldItem("ctx-1", "condensed", block=block)]
+    )
 
     users = [w for w in mount.widgets if isinstance(w, UserMessage)]
     assert [(w._text, w.is_injection) for w in users] == [("start task", False)]
@@ -1469,7 +1476,7 @@ async def test_replay_compressed_block_groups_consecutive_hosted_calls() -> None
 
     await renderer.replay_history(
         [_compressed_fold_message("ctx-hosted")],
-        compressed_blocks={"ctx-hosted": block},
+        folds=[FoldItem("ctx-hosted", "condensed", block=block)],
     )
 
     groups = [widget for widget in mount.widgets if isinstance(widget, ToolGroup)]
@@ -1516,7 +1523,7 @@ async def test_replay_compressed_block_pairs_hosted_result_from_later_message() 
 
     await renderer.replay_history(
         [_compressed_fold_message("ctx-hosted-split")],
-        compressed_blocks={"ctx-hosted-split": block},
+        folds=[FoldItem("ctx-hosted-split", "condensed", block=block)],
     )
 
     group = next(widget for widget in mount.widgets if isinstance(widget, ToolGroup))
@@ -1566,7 +1573,7 @@ async def test_replay_compressed_block_preserves_hosted_images_and_artifacts() -
 
     await renderer.replay_history(
         [_compressed_fold_message("ctx-hosted-structured")],
-        compressed_blocks={"ctx-hosted-structured": block},
+        folds=[FoldItem("ctx-hosted-structured", "condensed", block=block)],
     )
 
     group = next(widget for widget in mount.widgets if isinstance(widget, ToolGroup))
@@ -1599,7 +1606,7 @@ async def test_replay_compressed_block_keeps_local_tool_and_result_in_a_dimmed_g
 
     await renderer.replay_history(
         [_compressed_fold_message("ctx-local-tool")],
-        compressed_blocks={"ctx-local-tool": block},
+        folds=[FoldItem("ctx-local-tool", "condensed", block=block)],
     )
 
     groups = [widget for widget in mount.widgets if isinstance(widget, ToolGroup)]
@@ -1666,7 +1673,7 @@ async def test_replay_compressed_block_skips_tool_summary_but_keeps_archived_ori
 
     await renderer.replay_history(
         [_compressed_fold_message("ctx-summary")],
-        compressed_blocks={"ctx-summary": block},
+        folds=[FoldItem("ctx-summary", "condensed", block=block)],
     )
 
     assert [widget._text for widget in mount.widgets if isinstance(widget, UserMessage)] == ["inspect"]
