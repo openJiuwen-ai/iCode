@@ -330,6 +330,7 @@ _APPROVAL_SAFE_ENV_DROP = frozenset(
         "GLOBIGNORE",
         "IFS",
         "SHELLOPTS",
+        "ZDOTDIR",
         # Tool configuration that can turn a read-only command into an exec.
         "GIT_ASKPASS",
         "GIT_CONFIG_COUNT",
@@ -384,19 +385,25 @@ def _approval_safe_env() -> dict[str, str]:
     # build_shell_subprocess_env already sets cat; pin it again after cleanup.
     env["PAGER"] = "cat"
     env["GIT_PAGER"] = "cat"
-    # Keep Git from loading ambient global/system pager, fsmonitor or hook
-    # configuration. Repo-local config can still set these, so the environment
-    # config below wins over every file scope for the exec-capable keys.
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    env["GIT_CONFIG_GLOBAL"] = os.devnull
-    env["GIT_CONFIG_SYSTEM"] = os.devnull
-    env["GIT_CONFIG_COUNT"] = "3"
+    # Keep Git's global/system config for read-only semantics (core.excludesFile,
+    # safe.directory), but pin every key that can execute another program. The
+    # environment config below wins over every file scope, including a
+    # repository's own .git/config.
+    env["GIT_CONFIG_COUNT"] = "7"
     env["GIT_CONFIG_KEY_0"] = "core.fsmonitor"
     env["GIT_CONFIG_VALUE_0"] = "false"
     env["GIT_CONFIG_KEY_1"] = "core.pager"
     env["GIT_CONFIG_VALUE_1"] = "cat"
     env["GIT_CONFIG_KEY_2"] = "core.hooksPath"
     env["GIT_CONFIG_VALUE_2"] = os.devnull
+    env["GIT_CONFIG_KEY_3"] = "log.showSignature"
+    env["GIT_CONFIG_VALUE_3"] = "false"
+    env["GIT_CONFIG_KEY_4"] = "gpg.program"
+    env["GIT_CONFIG_VALUE_4"] = os.devnull
+    env["GIT_CONFIG_KEY_5"] = "gpg.ssh.program"
+    env["GIT_CONFIG_VALUE_5"] = os.devnull
+    env["GIT_CONFIG_KEY_6"] = "gpg.x509.program"
+    env["GIT_CONFIG_VALUE_6"] = os.devnull
     return env
 
 

@@ -10,6 +10,8 @@ import re
 import shlex
 from typing import Any
 
+from chrys.service.approval.command_identity import normalize_simple_command
+
 _SENSITIVE_TARGET_RE = re.compile(
     r"""(?ix)
     (^|[\s'"`=:/\\*?])
@@ -45,8 +47,8 @@ _ENV_DUMP_RE = re.compile(
     (
         printenv(?:$|[\s;&|])
         | env(?:$|[\s;&|](?![A-Za-z_][A-Za-z0-9_]*=))
-        | env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|(?:\\.|[^\s;&|])+))+\s*(?:$|[;&|])
-        | env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|(?:\\.|[^\s;&|])+))+\s+(?:env|printenv)(?:$|[\s;&|])
+        | env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|(?:\\.|[^\s;&|])*))+\s*(?:$|[;&|])
+        | env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|(?:\\.|[^\s;&|])*))+\s+(?:env|printenv)(?:$|[\s;&|])
     )
     """
 )
@@ -531,7 +533,22 @@ def path_arg_may_access_sensitive_data(raw_args: Any) -> bool:
 
 
 def shell_arg_may_access_sensitive_data(raw_args: Any, *, shell_name: str = "") -> bool:
-    """Return True when shell tool arguments access sensitive data."""
+    """Return True when shell tool arguments access sensitive data.
+
+    The raw text check keeps shell operators and substitutions visible. A
+    second check reads the same static tokens session reuse normalizes, so
+    quote concatenation (``cat .en''v``) cannot hide a target from this gate
+    while matching a reusable grant for ``cat .env``.
+    """
     parsed_args = _parsed_args(raw_args)
     command = parsed_args.get("command", "") if isinstance(parsed_args, dict) else ""
-    return isinstance(command, str) and shell_command_may_access_sensitive_data(command, shell_name=shell_name)
+    if not isinstance(command, str):
+        return False
+    if shell_command_may_access_sensitive_data(command, shell_name=shell_name):
+        return True
+    normalized = normalize_simple_command(command, shell_name)
+    if normalized is None:
+        return False
+    if any(target_may_access_sensitive_data(token) for token in normalized):
+        return True
+    return shell_command_may_access_sensitive_data(shlex.join(normalized), shell_name=shell_name)

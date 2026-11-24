@@ -41,6 +41,9 @@ from chrys.service.tools.builtins.shell_filter import classify_shell_for_approva
         ("sed -n 1p README.md", ("sed", "-n", "1p", "README.md"), "exec"),
         ("find . -name README.md", ("find", ".", "-name", "README.md"), "exec"),
         ("python --version", ("python", "--version"), "exec"),
+        ("pytest --version", ("pytest", "--version"), "exec"),
+        ("pip list --format=json", ("pip", "list", "--format=json"), "exec"),
+        ("uniq -- input.txt", ("uniq", "--", "input.txt"), "exec"),
         ("ruff --version", ("ruff", "--version"), "exec"),
         ("echo hello", ("echo", "hello"), "shell"),
         ('echo "a b"', ("echo", "a b"), "shell"),
@@ -91,6 +94,17 @@ def test_classifier_returns_validated_argv(command: str, argv: tuple[str, ...], 
         ("sed -i s/a/b/ file", "not_approval_safe:sed"),
         ("sed -e s/a/b/e file", "not_approval_safe:sed"),
         ("python -c id", "not_approval_safe:python"),
+        ("pytest --help", "not_approval_safe:pytest"),
+        ("pytest -h", "not_approval_safe:pytest"),
+        ("pip list --log out.log", "not_approval_safe:pip"),
+        ("pip show --log out.log", "not_approval_safe:pip"),
+        ("pip freeze --log out.log", "not_approval_safe:pip"),
+        ("uniq -- input.txt output.txt", "not_approval_safe:uniq"),
+        ("jq -n env", "not_approval_safe:jq"),
+        ("env", "not_approval_safe:env"),
+        ("env A=", "not_approval_safe:env"),
+        ("en''v", "not_approval_safe:env"),
+        ("'env'", "not_approval_safe:env"),
     ],
 )
 def test_classifier_requires_approval(command: str, reason: str) -> None:
@@ -130,12 +144,33 @@ def test_classifier_is_pure_and_has_no_sensitive_target_gate() -> None:
 
     ``cat .env`` and ``/proc/self/environ`` are safe shapes but must never reach
     auto-approval; the approval middleware checks the sensitive-target predicate
-    separately.
+    separately. ``env`` is not an auto-approved shape at all: it dumps the
+    environment with or without an empty assignment.
     """
-    for command in ("cat .env", "cat /proc/self/environ", "env"):
+    for command in ("cat .env", "cat /proc/self/environ"):
         decision = classify_shell_for_approval(command, shell_name="bash")
         assert decision.safe is True
         assert shell_command_may_access_sensitive_data(command) is True
+    for command in ("env", "env A=", "en''v"):
+        assert classify_shell_for_approval(command, shell_name="bash").safe is False
+
+
+@pytest.mark.parametrize("shell_name", ["", "ash", "fish", "csh", "tcsh"])
+def test_unmodeled_shells_are_not_auto_approved(shell_name: str) -> None:
+    """An unknown or non-POSIX shell grammar fails closed instead of assuming bash."""
+    decision = classify_shell_for_approval("ls", shell_name=shell_name)
+
+    assert decision.safe is False
+    assert decision.command is None
+    assert decision.reason.startswith("shell_not_supported:")
+
+
+def test_zsh_equals_expansion_requires_approval() -> None:
+    """zsh expands ``=cmd`` even after quotes; the parsed argv is not what runs."""
+    decision = classify_shell_for_approval("echo =foo", shell_name="zsh")
+
+    assert decision.safe is False
+    assert decision.reason == "zsh_equals_expansion"
 
 
 @pytest.mark.parametrize("command", ["", "   ", "\n", "ls\ncat"])

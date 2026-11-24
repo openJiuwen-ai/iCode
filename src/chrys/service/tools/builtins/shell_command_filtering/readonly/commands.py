@@ -20,7 +20,8 @@ _VERSION_HELP_ARGS_BY_COMMAND = {
     "npx": frozenset({("--version",), ("-v",), ("--help",), ("-h",)}),
     "pip": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "pip3": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
-    "pytest": frozenset({("--version",), ("--help",), ("-h",)}),
+    # pytest --help/-h runs plugin and conftest loading; only the version probe is inert.
+    "pytest": frozenset({("--version",), ("-V",)}),
     "python": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "python3": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "ruby": frozenset({("--version",), ("-v",), ("--help",), ("-h",)}),
@@ -32,6 +33,8 @@ _VERSION_HELP_ARGS_BY_COMMAND = {
 _PIP_READONLY_SUBCOMMANDS = frozenset({"freeze", "show"})
 _PIP_LIST_BLOCKED_ARGS = frozenset({"--outdated", "-o", "--uptodate", "-u"})
 _PIP_LIST_BLOCKED_LONG_ARGS = frozenset({"--outdated", "--uptodate"})
+_PIP_WRITE_OR_EXEC_OPTIONS = ("--log", "--log-file", "--python")
+"""``--log*`` writes an arbitrary path; ``--python`` runs an arbitrary program."""
 _RUFF_MUTATING_ARGS = frozenset({"--fix", "--fix-only", "--add-noqa", "--unsafe-fixes"})
 _RUFF_MUTATING_PREFIXES = ("--fix=", "--fix-only=", "--add-noqa=", "--unsafe-fixes=")
 _RUFF_NO_CACHE_ARGS = frozenset({"--no-cache", "-n"})
@@ -106,10 +109,18 @@ def _is_safe_version_help_command(command: str, args: list[str]) -> bool:
     return tuple(args) in _VERSION_HELP_ARGS_BY_COMMAND.get(command, frozenset())
 
 
+def _is_pip_blocked_option(arg: str) -> bool:
+    """Return whether *arg* can write a file or launch another program through pip."""
+    name = _option_name(arg)
+    return name.startswith("--") and any(option.startswith(name) for option in _PIP_WRITE_OR_EXEC_OPTIONS)
+
+
 def _is_safe_pip(args: list[str]) -> bool:
     if not args:
         return False
     subcommand = args[0]
+    if any(_is_pip_blocked_option(arg) for arg in args[1:]):
+        return False
     if subcommand == "list":
         return not any(
             arg in _PIP_LIST_BLOCKED_ARGS
@@ -235,7 +246,7 @@ def _is_safe_uniq(args: list[str]) -> bool:
         if positionals > 1:
             return False
         i += 1
-    return True
+    return positionals <= 1
 
 
 def _is_safe_readonly_arg_command(command: str, args: list[str]) -> bool:

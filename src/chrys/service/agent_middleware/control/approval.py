@@ -57,7 +57,6 @@ from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedR
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
     shell_arg_may_access_sensitive_data,
-    shell_command_may_access_sensitive_data,
     target_may_access_sensitive_data,
 )
 from chrys.service.tools.approval_targets import approved_targets
@@ -346,9 +345,25 @@ class ApprovalMiddleware(FunctionMiddleware):
         dev_sub_agent_review = (
             self._dev_mode and tool_kind == KIND_SUB_AGENT and self._approval_mode != ApprovalMode.BYPASS
         )
-        sensitive_shell = tool_kind == KIND_SHELL and shell_arg_may_access_sensitive_data(
-            context.arguments,
-            shell_name=tool_name,
+        shell_name = ""
+        shell_command = ""
+        approval_safe = None
+        shell_identity_unknown = False
+        if tool_kind == KIND_SHELL:
+            from chrys.service.tools.builtins.shell import SHELL_NAME_MISMATCH, shell_name_for_tool
+            from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval
+
+            raw = context.arguments
+            shell_command = raw.get("command", "") if isinstance(raw, dict) else ""
+            shell_name = shell_name_for_tool(context.function, fallback=tool_name)
+            shell_identity_unknown = shell_name == SHELL_NAME_MISMATCH
+            if shell_command:
+                approval_safe = classify_shell_for_approval(shell_command, shell_name=shell_name)
+        # Sensitive targets run before the policy fast path and the reuse offer:
+        # both must see the normalized argv the command will actually execute,
+        # not only the raw text.
+        sensitive_shell = tool_kind == KIND_SHELL and (
+            shell_identity_unknown or shell_arg_may_access_sensitive_data(context.arguments, shell_name=shell_name)
         )
         sensitive_filesystem_read = tool_kind == KIND_FILESYSTEM_READ and path_arg_may_access_sensitive_data(
             context.arguments
@@ -373,40 +388,21 @@ class ApprovalMiddleware(FunctionMiddleware):
         # an exact argv; anything with shell expansion goes through the normal
         # approval/judge path. This is deliberately separate from the
         # best-effort ``read_only`` shell filter.
-        if tool_kind == KIND_SHELL:
-            raw = context.arguments
-            cmd = raw.get("command", "") if isinstance(raw, dict) else ""
-            if cmd:
-                from chrys.service.tools.builtins.shell import shell_name_for_tool
-                from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval
-
-                shell_name = shell_name_for_tool(context.function, fallback=tool_name)
-                approval_safe = classify_shell_for_approval(cmd, shell_name=shell_name)
-                # The classifier normalizes quote concatenation, while the text
-                # sensitive scan sees the raw command: ``cat .en''v`` becomes
-                # argv ``("cat", ".env")``. Check the argv that will actually
-                # run as well, or the two views disagree.
-                argv_sensitive = approval_safe.command is not None and any(
-                    target_may_access_sensitive_data(arg) for arg in approval_safe.command.argv
-                )
-                if (
-                    approval_safe.safe
-                    and not argv_sensitive
-                    and not shell_command_may_access_sensitive_data(cmd, shell_name=shell_name)
-                ):
-                    self._decisions.append(
-                        _decision(
-                            request_id="",
-                            tool_name=tool_name,
-                            status="auto_approved",
-                            call_id=call_id,
-                            tool_order=tool_order,
-                        )
+        if tool_kind == KIND_SHELL and shell_command:
+            if approval_safe is not None and approval_safe.safe and not sensitive_shell:
+                self._decisions.append(
+                    _decision(
+                        request_id="",
+                        tool_name=tool_name,
+                        status="auto_approved",
+                        call_id=call_id,
+                        tool_order=tool_order,
                     )
-                    await call_next()
-                    return
-                if not approval_safe.safe:
-                    logger.debug("Shell command requires approval (%s)", approval_safe.reason)
+                )
+                await call_next()
+                return
+            if approval_safe is not None and not approval_safe.safe:
+                logger.debug("Shell command requires approval (%s)", approval_safe.reason)
 
         # Auto-approve file writes inside workspace git repos.
         if tool_kind == KIND_FILESYSTEM_WRITE and self._workspace_roots:

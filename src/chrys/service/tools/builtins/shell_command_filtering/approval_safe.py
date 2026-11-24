@@ -29,8 +29,14 @@ from chrys.service.tools.builtins.shell_command_filtering.readonly.git import _s
 
 ExecutionMode = Literal["exec", "shell"]
 
-_POSIX_SHELLS = frozenset({"", "bash", "dash", "fish", "git_bash", "ksh", "sh", "tcsh", "csh", "zsh"})
-"""Shells whose argument grammar this module models. ``git_bash`` is POSIX-like."""
+_POSIX_SHELLS = frozenset({"bash", "dash", "git_bash", "ksh", "sh", "zsh"})
+"""Shells whose argument grammar this module models. ``git_bash`` is POSIX-like.
+
+``fish``/``csh``/``tcsh`` are deliberately absent: fish treats backslash as an
+escape inside single quotes, and csh/tcsh expand history there. Their grammar
+does not match :func:`_simple_posix_argv`, so they require approval. An empty
+name is unknown, not POSIX.
+"""
 
 _MAX_COMMAND_CHARS = 32_768
 """Do not spend time validating an absurdly long command; approval is cheaper."""
@@ -61,7 +67,6 @@ _APPROVAL_SAFE_EXTERNAL = frozenset(
         "grep",
         "head",
         "id",
-        "jq",
         "ls",
         "md5sum",
         "ps",
@@ -84,10 +89,11 @@ _APPROVAL_SAFE_EXTERNAL = frozenset(
 
 Deliberately absent: ``rg`` (``--pre`` executes a command), ``less``/``more``
 (interactive ``!`` and ``LESSOPEN``), ``tree`` (``-o`` writes a file), ``date``
-(``-s`` sets the clock), ``hostname`` (a bare argument sets the name), ``cd`` and
-``type`` (shell builtins), and every command whose option surface is large enough
-to need the validators in ``readonly.commands`` (git, sed, awk, find, env,
-xargs, sort, uniq, python/node/curl version probes, ...).
+(``-s`` sets the clock), ``hostname`` (a bare argument sets the name), ``jq``
+(``env``/``$ENV`` reads the environment, and ``-f``/``-L`` read files), ``cd``
+and ``type`` (shell builtins), and every command whose option surface is large
+enough to need the validators in ``readonly.commands`` (git, sed, awk, find,
+env, xargs, sort, uniq, python/node/curl version probes, ...).
 """
 
 _POSIX_SHELL_BUILTINS = frozenset({"echo", "printf", "pwd", "test", "true", "false", "which"})
@@ -138,6 +144,10 @@ def classify_shell_for_approval(command: str, *, shell_name: str = "") -> Approv
     argv = _simple_posix_argv(command)
     if argv is None:
         return ApprovalShellDecision(reason="shell_syntax")
+    if shell_name == "zsh" and any(arg.startswith("=") for arg in argv):
+        # zsh expands a word starting with ``=`` to a command path, even after
+        # quotes; the parsed argv is not what zsh would execute.
+        return ApprovalShellDecision(reason="zsh_equals_expansion")
 
     name = argv[0]
     args = list(argv[1:])
@@ -153,6 +163,11 @@ def classify_shell_for_approval(command: str, *, shell_name: str = "") -> Approv
         stripped = _strip_git_global_options(args)
         if stripped is not None and stripped[:1] == ["config"]:
             return ApprovalShellDecision(reason="not_approval_safe:git-config")
+    if name == "env":
+        # ``env`` with no child prints the environment, and ``env NAME=`` still
+        # dumps it. The read-only filter keeps its best-effort ``env`` rule, but
+        # this security boundary never auto-approves it.
+        return ApprovalShellDecision(reason="not_approval_safe:env")
     if _is_safe_special_command(name, args):
         return _safe_command(argv, execution="exec", rule=f"validator:{name}", shell_name=shell_name)
     return ApprovalShellDecision(reason=f"not_approval_safe:{name}")

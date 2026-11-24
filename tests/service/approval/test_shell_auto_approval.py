@@ -21,9 +21,9 @@ from chrys.service.tools.builtins.shell import ShellTools
 from tests.support.waiting import wait_for
 
 
-def _middleware(bus: EventBus) -> ApprovalMiddleware:
+def _middleware(bus: EventBus, *, default: str = "require") -> ApprovalMiddleware:
     return ApprovalMiddleware(
-        ApprovalPolicy(ApprovalConfig(default="require")),
+        ApprovalPolicy(ApprovalConfig(default=default)),
         bus,
         approval_mode=ApprovalMode.MANUAL,
     )
@@ -74,7 +74,7 @@ async def test_renamed_shell_tool_requires_approval() -> None:
     """Approval and execution must agree on the real shell, not just a display name."""
     bus = EventBus()
     requests = await _record_requests(bus)
-    middleware = _middleware(bus)
+    middleware = _middleware(bus, default="skip")
     called = AsyncMock()
     tool = _shell_tool()
     actual_shell = tool.bound_instance.shell.name
@@ -82,6 +82,28 @@ async def test_renamed_shell_tool_requires_approval() -> None:
 
     task = asyncio.create_task(middleware.process(FunctionInvocationContext(tool, {"command": "ls -la"}), called))
     await wait_for(lambda: len(requests) == 1, description="renamed shell approval request")
+    assert called.await_count == 0
+
+    await bus.publish(ApprovalResponse(request_id=requests[0].request_id, approved=False, reason="test"))
+    await task
+
+    assert called.await_count == 0
+
+
+@pytest.mark.parametrize("command", ["cat .en''v", "rg secret .en''v", "env A=", "'env'"])
+async def test_permissive_policy_still_requires_approval_for_normalized_sensitive_targets(
+    command: str,
+) -> None:
+    """A policy that allows shell must not bypass sensitive targets hidden by quote concatenation."""
+    bus = EventBus()
+    requests = await _record_requests(bus)
+    middleware = _middleware(bus, default="skip")
+    called = AsyncMock()
+
+    task = asyncio.create_task(
+        middleware.process(FunctionInvocationContext(_shell_tool(), {"command": command}), called)
+    )
+    await wait_for(lambda: len(requests) == 1, description="normalized sensitive approval request")
     assert called.await_count == 0
 
     await bus.publish(ApprovalResponse(request_id=requests[0].request_id, approved=False, reason="test"))
@@ -107,6 +129,12 @@ async def test_renamed_shell_tool_requires_approval() -> None:
         "cat .ss''h/id_r''sa",
         "cat /proc/self/environ",
         "cat /proc/self/envi''ron",
+        "env A=",
+        "en''v",
+        "'env'",
+        "pytest --help",
+        "pip list --log out.log",
+        "uniq -- input.txt output.txt",
         "git status --short",
         "tree -o out .",
         "date -s 2020-01-01",

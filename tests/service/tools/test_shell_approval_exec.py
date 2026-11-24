@@ -134,17 +134,23 @@ def test_approval_safe_env_removes_startup_hooks(monkeypatch: pytest.MonkeyPatch
     assert "RIPGREP_CONFIG_PATH" not in env
     assert "BASH_ENV" not in env
     assert "PYTHONPATH" not in env
+    assert "ZDOTDIR" not in env
     assert not any(name.startswith("BASH_FUNC_") for name in env)
     assert env["PAGER"] == "cat"
     assert env["GIT_PAGER"] == "cat"
-    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
-    assert env["GIT_CONFIG_SYSTEM"] == os.devnull
-    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
-    assert env["GIT_CONFIG_COUNT"] == "3"
+    assert "GIT_CONFIG_GLOBAL" not in env
+    assert "GIT_CONFIG_SYSTEM" not in env
+    assert "GIT_CONFIG_NOSYSTEM" not in env
+    assert env["GIT_CONFIG_COUNT"] == "7"
     assert env["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
     assert env["GIT_CONFIG_VALUE_0"] == "false"
     assert env["GIT_CONFIG_KEY_1"] == "core.pager"
     assert env["GIT_CONFIG_VALUE_1"] == "cat"
     assert env["GIT_CONFIG_KEY_2"] == "core.hooksPath"
     assert env["GIT_CONFIG_VALUE_2"] == os.devnull
+    assert env["GIT_CONFIG_KEY_3"] == "log.showSignature"
+    assert env["GIT_CONFIG_VALUE_3"] == "false"
+    for index, key in ((4, "gpg.program"), (5, "gpg.ssh.program"), (6, "gpg.x509.program")):
+        assert env[f"GIT_CONFIG_KEY_{index}"] == key
+        assert env[f"GIT_CONFIG_VALUE_{index}"] == os.devnull
     assert "LD_LIBRARY_PATH" not in env
