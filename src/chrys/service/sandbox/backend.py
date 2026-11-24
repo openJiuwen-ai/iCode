@@ -137,6 +137,7 @@ import functools
 import os
 import posixpath
 import re
+import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path, PurePath, PurePosixPath
@@ -889,12 +890,14 @@ def _sandbox_engine_home_dir() -> str:
 
 def _password_database_home() -> str:
     """``pwd`` home for this uid, or ``Path.home()`` when that is unavailable."""
-    try:
-        import pwd
+    directory = ""
+    if sys.platform != "win32":
+        try:
+            import pwd
 
-        directory = pwd.getpwuid(os.geteuid()).pw_dir
-    except ImportError, KeyError, AttributeError, OSError:
-        directory = ""
+            directory = pwd.getpwuid(os.geteuid()).pw_dir
+        except ImportError, KeyError, AttributeError, OSError:
+            directory = ""
     if isinstance(directory, str) and directory:
         return directory
     return str(Path.home())

@@ -506,7 +506,7 @@ async def test_a_network_change_stops_the_old_child_only_after_its_running_comma
         await asyncio.gather(holder, return_exceptions=True)
 
 
-async def test_shutdown_stops_a_replaced_child_that_is_still_leased(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_shutdown_leaves_a_replaced_child_until_its_lease_ends(monkeypatch: pytest.MonkeyPatch) -> None:
     tokens = iter(["first-token", "second-token"])
     monkeypatch.setattr(supervisor.secrets, "token_urlsafe", lambda: next(tokens))
     events: list[str] = []
@@ -519,9 +519,12 @@ async def test_shutdown_stops_a_replaced_child_that_is_still_leased(monkeypatch:
     async with supervisor.leased_server("host"):
         await supervisor.ensure_started(network_mode="offline")
         await supervisor._shutdown()
-        assert sorted(events) == ["close:0", "close:1", "spawn:0", "spawn:1"]
-    # The lease ending after shutdown does not close the child a second time.
-    assert events.count("close:0") == 1
+        # Shutdown stops the unleased current child; the replaced one is still leased.
+        assert events == ["spawn:0", "spawn:1", "close:1"]
+        assert len(supervisor._retired) == 1
+    assert events == ["spawn:0", "spawn:1", "close:1", "close:0"]
+    assert supervisor._retired == []
+    assert supervisor._server is None
 
 
 async def test_run_shell_after_a_network_change_recreates_the_sandbox_on_the_new_server(

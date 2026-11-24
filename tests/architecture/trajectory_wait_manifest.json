@@ -750,11 +750,14 @@
         ["awaitable", "await self._side_questions.close()", "unresolved"],
         ["awaitable", "await self._lifecycle.shutdown()", "unresolved"],
         ["awaitable", "await self._hook_confirmations.close()", "unresolved"],
-        ["wrapper", "await _stop_bundled_sandbox(self)", "unresolved", "chrys.orchestration.engine.engine._stop_bundled_sandbox"]
+        ["wrapper", "await self._stop_bundled_sandbox()", "unresolved", "chrys.orchestration.engine.engine.AgentEngine._stop_bundled_sandbox"]
       ],
       "AgentEngine._session_operation": [
         ["awaitable", "await self._bus.publish(Error(code='workflow_active', message=f'Cannot {operation} while a workflow run is active. Cancel the workflow run first.', display_message=workflow_active_display, session_id=target_session_id or self._session.session_id))", "unresolved"],
         ["awaitable", "await run()", "unresolved"]
+      ],
+      "AgentEngine._stop_bundled_sandbox": [
+        ["wrapper", "await shutdown_sandbox()", "unresolved", "chrys.service.sandbox.supervisor.shutdown"]
       ],
       "AgentEngine._subscribe_event_handlers": [
         ["awaitable", "await self._bus.subscribe(UserMessage, self._on_user_message)", "unresolved"],
@@ -814,9 +817,6 @@
       ],
       "AgentEngine.wait_for_run_task": [
         ["awaitable", "await self._turns.wait_for_run_task()", "unresolved"]
-      ],
-      "_stop_bundled_sandbox": [
-        ["wrapper", "await shutdown_sandbox()", "unresolved", "chrys.service.sandbox.supervisor.shutdown"]
       ]
     },
     "chrys.orchestration.engine.execution": {
@@ -5537,6 +5537,7 @@
       "leased_server": [
         ["async_context", "async with _gate()", "unresolved"],
         ["wrapper", "await _current_server(_network_mode(network_mode), health_timeout)", "unresolved", "chrys.service.sandbox.supervisor._current_server"],
+        ["async_context", "async with _gate()", "unresolved"],
         ["wrapper", "await _discard(running.closer, running.proc)", "unresolved", "chrys.service.sandbox.supervisor._discard"]
       ],
       "shutdown": [
