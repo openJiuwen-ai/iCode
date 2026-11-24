@@ -45,6 +45,7 @@ from chrys.foundation.trajectory.segments import reassemble_array_slice
 from chrys.foundation.trajectory.writer import DEFAULT_WRITE_ACK_TIMEOUT_SECONDS, FdWriteBackend, WriterState
 from chrys.kernel import ChatResponse, Message
 from chrys.kernel.types import UsageDetails
+from chrys.orchestration.engine.build import builder as builder_module
 from chrys.service.analytics import Precision
 from chrys.service.analytics.aggregation import analyze_trajectory
 from chrys.service.approval import judge as judge_module
@@ -52,7 +53,7 @@ from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookRun, HooksFile
-from chrys.service.llm.mock import MockResponse
+from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.schema import CompactionConfig
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.trajectory.session import (
@@ -62,7 +63,7 @@ from chrys.service.trajectory.session import (
     trajectory_events_path,
     trajectory_lease_path,
 )
-from tests.support.formal_approval import predicate_values
+from tests.support.formal_approval import structured_response
 from tests.support.pipeline_helpers import (
     PipelineTestContext,
     create_test_engine,
@@ -905,22 +906,57 @@ async def test_an_approval_round_records_a_pair_the_writer_accepts(tmp_path: Pat
     assert resolved.payload["target_tool_operation_id"] == requested.payload["target_tool_operation_id"]
 
 
-@pytest.mark.parametrize("reload_during_review", [False, True])
+@pytest.mark.parametrize(
+    "reload_during_review,service_side",
+    [(False, False), (True, False), (False, True)],
+    ids=["local-history", "reload", "stored-responses"],
+)
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
-async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path, monkeypatch, reload_during_review):
+async def test_auto_formal_executes_the_tool_and_records_its_judgement(
+    tmp_path, monkeypatch, reload_during_review, service_side
+):
     install_tools(monkeypatch, [echo_tool])
     entered, release = asyncio.Event(), asyncio.Event()
+    if service_side:
+        original_context = builder_module.create_context
+
+        def create_context(inputs):
+            return original_context(
+                inputs
+                | {
+                    "skip_local_history_for_service_context": True,
+                    "service_context_default_options": {"store": True},
+                }
+            )
+
+        monkeypatch.setattr(builder_module, "create_context", create_context)
+    original_messages = MockChatClient._build_messages
+
+    def build_messages(self, resp):
+        messages = original_messages(self, resp)
+        if resp.tool_calls and resp.text:
+            contents = messages[0].contents
+            contents.insert(0, contents.pop())
+        return messages
+
+    monkeypatch.setattr(MockChatClient, "_build_messages", build_messages)
+
+    reply = structured_response({"remote_repoint": True}, authorized={"remote_repoint"})
 
     async def response(client, messages, *, stream, options, timeout):
         if reload_during_review:
             entered.set()
             await release.wait()
-        return ChatResponse(messages=[Message("assistant", [json.dumps(predicate_values())])])
+        return ChatResponse(messages=[Message("assistant", [reply])])
 
     respond = create_autospec(judge_module.get_final_response, side_effect=response)
     monkeypatch.setattr(judge_module, "get_final_response", respond)
     ctx = await create_test_engine(
-        [MockResponse(tool_calls=[("echo", "call-1", {"message": "hi"})]), MockResponse(text="done")],
+        [
+            MockResponse(text="Earlier answer", conversation_id="resp_earlier" if service_side else ""),
+            MockResponse(text="About to call echo.", tool_calls=[("echo", "call-1", {"message": "hi"})]),
+            MockResponse(text="done"),
+        ],
         tmp_path,
         approval_default="require",
     )
@@ -932,6 +968,7 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path,
         await ctx.bus.publish(SettingsReload(), raise_handler_errors=True)
         await ctx.bus.publish(SetApprovalMode(mode="auto", persist=False), raise_handler_errors=True)
         assert ctx.engine.current.loaded.approval_judge._auto_review == "formal"
+        await ctx.send_message("Earlier instruction")
         if reload_during_review:
             bound_judge = ctx.engine.current.loaded.approval_judge
             run_task = asyncio.create_task(ctx.send_message("please echo"))
@@ -952,6 +989,20 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path,
             assert ctx.engine.current.loaded.approval_judge._auto_review == "direct"
         else:
             await ctx.send_message("please echo")
+        context, pending = respond.await_args.args[1][1].text.split("\n\n<pending_action>\n")
+        assert context.count('{"user": "Earlier instruction"}') == 1
+        if service_side:
+            resumed_inputs, resumed_options = ctx.mock_client.call_history[1]
+            assert resumed_options["conversation_id"] == "resp_earlier"
+            assert not any("Earlier instruction" in (message.text or "") for message in resumed_inputs)
+        assert '{"assistant": "Earlier answer"}' in context
+        assert '{"user": "please echo"}' in context
+        assert '{"assistant": "About to call echo."}' in context
+        assert "<system-reminder>" not in context
+        assert '{"echo": {"message": "hi"}}' not in context
+        assert pending == '{"echo": {"message": "hi"}}\n</pending_action>'
+        requests = [event for event in ctx.events if isinstance(event, ApprovalRequest)]
+        assert len(requests) == 1 and requests[0].call_id != "call-1"
         raw = await ctx.get_session_messages()
         assert any(content.get("result") == "echo: hi" for message in raw for content in message.get("contents", []))
         assert respond.await_count == 1
@@ -968,8 +1019,12 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path,
     assert resolved["decider"] == "judge"
     assert resolved["formal_judge"]["stages"] == ["predicate"]
     assert type(resolved["formal_judge"]["decision_version"]) is int
-    assert resolved["formal_judge"]["decision_version"] == 1
-    assert resolved["formal_judge"]["predicate_results"] == [{"id": key, "value": False} for key in predicate_values()]
+    assert resolved["formal_judge"]["decision_version"] == 2
+    assert resolved["formal_judge"]["predicate_results"] == [
+        {"id": key, "value": entry["matches"]}
+        | ({"consent_bar_met": entry["consent_bar_met"]} if "consent_bar_met" in entry else {})
+        for key, entry in json.loads(reply)["predicates"].items()
+    ]
 
 
 @pytest.mark.asyncio

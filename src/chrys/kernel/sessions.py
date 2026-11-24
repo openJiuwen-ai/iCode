@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import uuid
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 
 from .client import collect_conversation_handles
@@ -54,6 +54,9 @@ __all__ = [
 
 class _ContextSource(Protocol):
     source_id: str
+
+
+TOOL_HISTORY_PREFIX_KWARG = "_chrys_tool_history_prefix"
 
 
 class SessionContext:
@@ -98,6 +101,8 @@ class SessionContext:
         self.session_id = session_id
         self.service_session_id = service_session_id
         self.input_messages = input_messages
+        # History already held by the provider, available only to local tool-side consumers.
+        self.load_tool_history_prefix: Callable[[], Awaitable[tuple[Message, ...]]] | None = None
         self.context_messages: dict[str, list[Message]] = context_messages or {}
         self.instructions: list[str] = instructions or []
         self.tools: list[Any] = tools or []

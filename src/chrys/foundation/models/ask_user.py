@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import TYPE_CHECKING, Final, cast
 
 from chrys.foundation.util.unicode_scalars import find_unpaired_surrogate, replace_unpaired_surrogates
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+ASK_USER_RESPONSE_DIGEST_KEY: Final[str] = "ask_user_response_digest"
 
 MAX_ASK_USER_QUESTIONS: Final[int] = 5
 MAX_ASK_USER_OPTIONS: Final[int] = 8
@@ -220,6 +223,11 @@ def parse_ask_user_answers(raw: object, *, question_count: int) -> tuple[AskUser
             answers.append(AskUserAnswer(values=tuple(values), note=note))
     answers.extend(AskUserAnswer() for _ in range(count - len(answers)))
     return tuple(answers)
+
+
+def ask_user_response_digest(result: str) -> str:
+    """Bind provenance to the exact dialog result, including when result hooks rewrite it."""
+    return sha256(result.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
 def format_ask_user_result(

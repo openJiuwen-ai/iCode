@@ -8,10 +8,12 @@ import asyncio
 import copy
 import json
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.platform.files import secure_open_owner_only_append
 from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import ChatResponse, Message
@@ -430,6 +432,10 @@ class ApprovalJudge:
         if client is not None:
             await client.aclose()
 
+    @property
+    def uses_formal_review(self) -> bool:
+        return self._auto_review == "formal"
+
     async def evaluate(
         self,
         user_message: str,
@@ -455,7 +461,7 @@ class ApprovalJudge:
             workspace_roots=list(workspace_roots),
         )
         log_path = log_dir / f"{request_id}.log" if log_dir and request_id else None
-        if self._auto_review == "formal":
+        if self.uses_formal_review:
             if self._formal is None:
                 self._formal = FormalEvaluator(self._profile.http_read_timeout)
             return await self._formal.evaluate(self, request, request_id=request_id, log_path=log_path)
@@ -561,8 +567,14 @@ class ApprovalJudge:
             lines.append("")
             lines.append("")
 
+            log_text = "\n".join(lines)
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write("\n".join(lines))
+            if stage == "predicate":
+                handle = secure_open_owner_only_append(log_path)
+                with os.fdopen(handle.fd, "wb") as f:
+                    f.write(log_text.encode("utf-8", errors="backslashreplace"))
+            else:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(log_text)
         except Exception:
             _log.debug("Failed to write approval log to %s", log_path, exc_info=True)

@@ -16,12 +16,12 @@ from chrys.service.approval.predicate import load_default_asset
 
 def test_triggered_conditions_reach_chinese_dialog():
     event = ApprovalReviewed(
-        approved=False, reason="Requires human review: destructive_action.", triggered=("destructive_action",)
+        approved=False, reason="Requires human review: file_folder_deletion.", triggered=("file_folder_deletion",)
     )
     verdict = _judge_verdict(event)
     text = review_reason(verdict, Localizer("zh-Hans"))
     assert "删除" in text
-    assert "destructive_action" not in text
+    assert "file_folder_deletion" not in text
     assert "Requires human review" not in text
 
 
@@ -45,8 +45,9 @@ def test_display_names_cover_the_packaged_conditions():
     assert set(_RISKS) == {principle.id for principle in load_default_asset().principles}
 
 
-def test_unknown_condition_keeps_the_original_reason():
-    verdict = JudgeVerdict(False, "Custom policy requires confirmation.", triggered=("custom_condition",))
+@pytest.mark.parametrize("triggered", [("custom_condition",), ("security_boundary_change", "custom_condition")])
+def test_unknown_condition_keeps_the_original_reason(triggered):
+    verdict = JudgeVerdict(False, "Custom policy requires confirmation.", triggered=triggered)
     assert review_reason(verdict, Localizer("zh-Hans")) == verdict.reason
 
 

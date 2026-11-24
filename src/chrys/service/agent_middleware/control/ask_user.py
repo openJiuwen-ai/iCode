@@ -11,6 +11,7 @@ from uuid import uuid4
 from chrys.foundation.config.settings import DEFAULT_ASK_USER_TIMEOUT_SECONDS
 from chrys.foundation.events.types import AskUserResponse, AskUserTimedOut, QuestionToUser
 from chrys.foundation.models.ask_user import (
+    ASK_USER_RESPONSE_DIGEST_KEY,
     MAX_ASK_USER_DESCRIPTION_CHARS,
     MAX_ASK_USER_HEADER_CHARS,
     MAX_ASK_USER_LABEL_CHARS,
@@ -19,11 +20,13 @@ from chrys.foundation.models.ask_user import (
     MAX_ASK_USER_QUESTIONS,
     AskUserAnswer,
     AskUserQuestion,
+    ask_user_response_digest,
     format_ask_user_result,
     parse_ask_user_answers,
     parse_ask_user_questions,
 )
 from chrys.foundation.tool_kinds import KIND_ASK_USER, get_tool_kind
+from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
 from chrys.foundation.trajectory.event_types import WaitCategory
 from chrys.foundation.util.once_close import finish_close
 from chrys.kernel.middleware import FunctionMiddleware
@@ -199,7 +202,11 @@ class AskUserMiddleware(FunctionMiddleware):
                     )
                 else:
                     answers = _answers_from_response(response, question_count=len(questions))
-                    context.result = format_ask_user_result(questions, answers)
+                    result = format_ask_user_result(questions, answers)
+                    context.result = result
+                    context.metadata.setdefault(TOOL_RESULT_METADATA_KEY, {})[ASK_USER_RESPONSE_DIGEST_KEY] = (
+                        ask_user_response_digest(result)
+                    )
                 if wait is not None:
                     await wait.finished()
             except TimeoutError:

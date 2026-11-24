@@ -4655,22 +4655,52 @@ msgstr ""
 msgid "tui.approval.review.triggered"
 msgstr ""
 
-#. English: Deletion or destructive changes
-#. chrys-meta={"fingerprint":"40f27eb4b731fad44e4f8169ef139d0b4a463609416faab1a72bf6211f886333","multiline":false,"placeholders":[]}
+#. English: Tampering with agent state
+#. chrys-meta={"fingerprint":"dfe9947a6a7d753b90a2da378398fefb196a50cacc78898f0c434ea12158bfa6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
-msgid "tui.approval.risk.destructive_action"
+msgid "tui.approval.risk.agent_state_tamper"
 msgstr ""
 
-#. English: External publication or transfer
-#. chrys-meta={"fingerprint":"fca65260a1707caa0f9aace61e4db8031c2f5210c48f15ce98cb48a79f042951","multiline":false,"placeholders":[]}
+#. English: Credential leakage
+#. chrys-meta={"fingerprint":"280e3ff6577147d71f42e0317ca5443e7ac87c010dfc66e0f41b350f19685fee","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
-msgid "tui.approval.risk.external_action"
+msgid "tui.approval.risk.credential_leakage"
 msgstr ""
 
-#. English: Actions beyond the requested scope
-#. chrys-meta={"fingerprint":"ae29394698d983d8bd226f5f0f7b9c6e93df24c38c5c48313502fac0fcf49d1e","multiline":false,"placeholders":[]}
+#. English: Sensitive data transfer outside its trust boundary
+#. chrys-meta={"fingerprint":"8b779853bef0570ca7a0070e6fa0180dd8584d13dec6c5ec1c5de0d57f10909e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
-msgid "tui.approval.risk.scope_escalation"
+msgid "tui.approval.risk.data_exfiltration"
+msgstr ""
+
+#. English: Preparation for sensitive data exfiltration
+#. chrys-meta={"fingerprint":"a00c4aad388840d1606ac05ef0e7a7840113c455edd5c347449b21292366419c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.exfil_scouting"
+msgstr ""
+
+#. English: File or folder deletion
+#. chrys-meta={"fingerprint":"037ca167d4b570176389e43fe7982b8290252b108f6b2c85e794207844a910ce","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.file_folder_deletion"
+msgstr ""
+
+#. English: Destructive Git operations
+#. chrys-meta={"fingerprint":"f1aaf675fd28560aca93b14710ba08980385818852c953c8461e116197313199","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.git_destructive"
+msgstr ""
+
+#. English: A change that would leak data when run
+#. chrys-meta={"fingerprint":"23dd19bee18d1a6a1053cf673f4a03c9576a55e4dacbd08228e8e79b0bda92d4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.leak_path"
+msgstr ""
+
+#. English: Changing a remote destination
+#. chrys-meta={"fingerprint":"3349390778032aa3c52e8be3ef7969503da7ba2f50521a3b57f0e3624565d9e4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.remote_repoint"
 msgstr ""
 
 #. English: Security or permission changes
@@ -4695,6 +4725,18 @@ msgstr ""
 #. chrys-meta={"fingerprint":"f10e013eabef62565627db9b930cab1a221f93989c4eed24b35f008419650e2a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
 msgid "tui.approval.risk.untrusted_execution"
+msgstr ""
+
+#. English: Deletion with unverified targets
+#. chrys-meta={"fingerprint":"ff5865146525f0690f5c376eb745084a1649c3cbffc5ca64824c67f330158c9d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.unverified_delete"
+msgstr ""
+
+#. English: An active user boundary
+#. chrys-meta={"fingerprint":"6a4d99781b22d261d5ba19666a3f203a5db4a6ecf3871158b7dad875cf3c1750","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.user_boundary"
 msgstr ""
 
 #. English: Review sub-agent delegation

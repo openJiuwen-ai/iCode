@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -39,7 +38,7 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.hooks.manager import HookManager
 from tests.service.agent_middleware.test_approval import _ctx, _require_all_policy
 from tests.service.trajectory._fakes import FakeSink, make_context
-from tests.support.formal_approval import judge_client, predicate_values
+from tests.support.formal_approval import judge_client, structured_response
 from tests.support.waiting import wait_for
 
 _SESSION_ID = "sess-1"
@@ -362,7 +361,7 @@ async def test_formal_cancellation_on_either_side_of_request_write_ack(monkeypat
     async def response(client, messages, *, stream, options, timeout):
         reviewing.set()
         await release.wait()
-        return ChatResponse(messages=[Message("assistant", [json.dumps(predicate_values())])])
+        return ChatResponse(messages=[Message("assistant", [structured_response()])])
 
     respond = create_autospec(judge_module.get_final_response, side_effect=response)
     monkeypatch.setattr(judge_module, "get_final_response", respond)
@@ -405,7 +404,7 @@ async def test_formal_terminal_keeps_audit_when_human_or_interrupt_wins(monkeypa
             await release.wait()
         else:
             await bus.publish(ApprovalResponse(request_id=recorder.request().request_id, approved=False))
-        return ChatResponse(messages=[Message("assistant", [json.dumps(predicate_values())])])
+        return ChatResponse(messages=[Message("assistant", [structured_response()])])
 
     monkeypatch.setattr(
         judge_module, "get_final_response", create_autospec(judge_module.get_final_response, side_effect=response)

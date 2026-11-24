@@ -343,11 +343,17 @@ class CompressibleHistoryProvider(HistoryProvider):
         state: dict[str, Any],
     ) -> None:
         """Load history and expose message count."""
-        if not self._skip_local_history_for_service_context or not _uses_service_side_context(
+        if self._skip_local_history_for_service_context and _uses_service_side_context(
             context,
             self._service_context_default_options,
             session.invalidated_service_session_ids,
         ):
+            # The provider already has these messages. Side calls such as approval do not share its handle.
+            async def load_tool_history_prefix() -> tuple[Message, ...]:
+                return tuple(await self.get_messages(session.session_id, state=state))
+
+            context.load_tool_history_prefix = load_tool_history_prefix
+        else:
             await super().before_run(agent=agent, session=session, context=context, state=state)
         session.state["_chrys_history_len"] = len(state.get("messages", []))
         session.state.pop(LAST_ASSISTANT_CREATED_AT_STATE_KEY, None)

@@ -47,10 +47,12 @@ from chrys.service.agent_middleware.control.approval_hooks import await_approval
 from chrys.service.agent_middleware.events.hook_dispatch import (
     apply_before_tool_hooks,
     get_call_id,
+    get_provider_call_id,
     get_tool_invocation_order,
 )
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
 from chrys.service.approval.correlation import OneShotCorrelation
+from chrys.service.approval.formal import pending_formal_call_id
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedReuse
 from chrys.service.approval.safety_classifier import (
@@ -329,6 +331,11 @@ class ApprovalMiddleware(FunctionMiddleware):
     def approval_mode(self) -> ApprovalMode:
         return self._approval_mode
 
+    @property
+    def captures_tool_history(self) -> bool:
+        # The approval mode can change while a run is active.
+        return self._approval_judge is not None and self._approval_judge.uses_formal_review
+
     async def process(
         self,
         context: FunctionInvocationContext,
@@ -572,7 +579,10 @@ class ApprovalMiddleware(FunctionMiddleware):
                         # The judge's model call is a side call of this session: rebind
                         # the ambient trajectory actor so its exchange is attributed to
                         # the judge, never to the main agent.
-                        with side_call_scope(ActorRole.APPROVAL_JUDGE):
+                        with (
+                            side_call_scope(ActorRole.APPROVAL_JUDGE),
+                            pending_formal_call_id.set(get_provider_call_id(context)),
+                        ):
                             judge_task = asyncio.create_task(
                                 self._approval_arbiter.judge(
                                     request_id=request_id,

@@ -22,6 +22,7 @@ import contextlib
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, TypeIs, cast
 
 from ._content import Content
@@ -70,6 +71,11 @@ class MiddlewareTermination(Exception):
             context.result = self.result.items if self.result.items is not None else self.result.result
         else:
             context.result = self.result
+
+
+active_tool_batch_messages: ContextVar[tuple[tuple[Message, ...], tuple[Message, ...]]] = ContextVar(
+    "active_tool_batch_messages", default=((), ())
+)
 
 
 class FunctionInvocationContext:
@@ -280,6 +286,11 @@ class FunctionMiddleware(ABC):
     :class:`MiddlewareTermination` raised here *propagates* out of the function
     pipeline so the tool loop can terminate and read ``exc.result``.
     """
+
+    @property
+    def captures_tool_history(self) -> bool:
+        """Whether this middleware uses effective request history during tool dispatch."""
+        return False
 
     @abstractmethod
     async def process(self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:

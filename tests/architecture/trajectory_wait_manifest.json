@@ -434,6 +434,7 @@
         ["awaitable", "await self.inner.aclose()", "unresolved"]
       ],
       "_LoopRun._blocking_iterations": [
+        ["wrapper", "await self._start()", "unresolved", "chrys.kernel.loop._LoopRun._start"],
         ["awaitable", "await self._trajectory.cycle_started(cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
         ["awaitable", "await self._wire.blocking_response(self._prepped_messages, request_message_observer=self._wire_request_observer)", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
@@ -453,6 +454,9 @@
       "_LoopRun._run_tool_batch": [
         ["wrapper", "await _execute_function_calls(function_calls=function_calls, result_commits=result_commits, tool_options=self._options, custom_args=self._additional_function_arguments, invocation_session=self._session, pipeline=self._pipeline, result_carrier_item_id=result_carrier_item_id, response_truncated=response_truncated, truncated_final_function_call_ids=_truncated_final_function_call_ids(response, function_calls) if response_truncated else None, tool_result_ceiling_tokens=self._tool_result_ceiling_tokens, dispatch_observer=self._trajectory.mark_tool_operations_dispatched)", "unresolved", "chrys.kernel._tool_execution._execute_function_calls"]
       ],
+      "_LoopRun._start": [
+        ["awaitable", "await self._load_tool_history_prefix()", "unresolved"]
+      ],
       "_LoopRun.close_abandoned_read": [
         ["awaitable", "await reading.aclose()", "unresolved"]
       ],
@@ -461,6 +465,7 @@
         ["awaitable", "await self._trajectory.settle_undispatched_tool_operations(queued=interrupted)", "unresolved"]
       ],
       "_LoopRun.stream": [
+        ["wrapper", "await self._start()", "unresolved", "chrys.kernel.loop._LoopRun._start"],
         ["awaitable", "await self._trajectory.cycle_started(cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
         ["async_iteration", "async for update in logical_stream", "unresolved"],
         ["awaitable", "await logical_stream.get_final_response()", "unresolved"],
@@ -4280,12 +4285,11 @@
     },
     "chrys.service.approval.formal": {
       "FormalEvaluator._evaluate_predicates": [
-        ["awaitable", "await model.ask(system=_build_predicate_system_prompt(asset), user=build_user_prompt(request), parse=parse, correction=f'Invalid response. You must respond with ONLY this JSON object shape: {{{fields}}}.', exhausted_reason='Predicate response is invalid', stage='predicate', log_path=log_path, meter=meter)", "unresolved"]
+        ["awaitable", "await model.ask(system=_build_predicate_system_prompt(asset), user=build_formal_user_prompt(request, history=history, response=landed, call_id=call_id), parse=parse, correction=correction, exhausted_reason='Predicate response is invalid', stage='predicate', log_path=log_path, meter=meter)", "unresolved"]
       ],
       "FormalEvaluator.evaluate": [
         ["async_context", "async with asyncio.timeout_at(meter.deadline)", "unresolved"],
-        ["wrapper", "await self._evaluate_predicates(model, asset, request, log_path, meter)", "unresolved", "chrys.service.approval.formal.FormalEvaluator._evaluate_predicates"],
-        ["awaitable", "await model.review_direct(request, log_path=log_path, meter=meter)", "unresolved"]
+        ["wrapper", "await self._evaluate_predicates(model, asset, request, log_path, meter)", "unresolved", "chrys.service.approval.formal.FormalEvaluator._evaluate_predicates"]
       ]
     },
     "chrys.service.approval.judge": {
@@ -4513,6 +4517,9 @@
       ],
       "CompressibleHistoryProvider.before_run": [
         ["awaitable", "await super().before_run(agent=agent, session=session, context=context, state=state)", "unresolved"]
+      ],
+      "CompressibleHistoryProvider.before_run.load_tool_history_prefix": [
+        ["awaitable", "await self.get_messages(session.session_id, state=state)", "unresolved"]
       ]
     },
     "chrys.service.extensions": {

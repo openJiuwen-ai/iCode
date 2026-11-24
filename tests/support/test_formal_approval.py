@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import json
 from contextlib import asynccontextmanager
 from functools import cached_property
 from types import ModuleType
@@ -20,7 +19,7 @@ from chrys.service.approval import formal as formal_module
 from chrys.service.approval import judge as judge_module
 from chrys.service.approval import review_types as review_types_module
 from chrys.service.llm import clients
-from tests.support.formal_approval import evaluate_judge, judge_client, predicate_values
+from tests.support.formal_approval import evaluate_judge, judge_client, structured_response
 
 
 @pytest.mark.parametrize("cold_stage", ["client-factory", "sdk-resources"])
@@ -64,7 +63,7 @@ async def test_cold_setup_leaves_the_full_budget_for_real_review(monkeypatch, co
 
     response = create_autospec(judge_module.get_final_response, side_effect=judge_module.get_final_response)
     monkeypatch.setattr(judge_module, "get_final_response", response)
-    replies = [json.dumps(predicate_values())]
+    replies = [structured_response()]
     async with judge_client(monkeypatch, replies) as (judge, calls):
         assert calls == []
         assert len(replies) == 1
@@ -88,7 +87,7 @@ async def test_a_full_collection_during_review_skips_what_earlier_tests_left_ali
         if phase == "start" and info["generation"] == 2:
             walked.append(len(gc.get_objects()))
 
-    async with judge_client(monkeypatch, [json.dumps(predicate_values())]) as (judge, _calls):
+    async with judge_client(monkeypatch, [structured_response()]) as (judge, _calls):
         gc.callbacks.append(on_gc)
         try:
             gc.collect()

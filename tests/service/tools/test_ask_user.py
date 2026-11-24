@@ -11,7 +11,13 @@ from pydantic import ValidationError
 
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AskUserResponse, AskUserTimedOut, QuestionToUser
-from chrys.foundation.models.ask_user import AskUserAnswer, AskUserOption, AskUserQuestion
+from chrys.foundation.models.ask_user import (
+    ASK_USER_RESPONSE_DIGEST_KEY,
+    AskUserAnswer,
+    AskUserOption,
+    AskUserQuestion,
+    ask_user_response_digest,
+)
 from chrys.foundation.tool_kinds import KIND_ASK_USER, set_tool_kind
 from chrys.foundation.tool_result_metadata import (
     TOOL_ERROR_DETAILS_METADATA_KEY,
@@ -19,6 +25,7 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_ERROR_MESSAGE_METADATA_KEY,
     TOOL_ERROR_RETRYABLE_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
+    TOOL_RESULT_METADATA_KEY,
 )
 from chrys.kernel import ChatResponse, Content, Message
 from chrys.kernel.middleware import ChatMiddlewareLayer, FunctionInvocationContext
@@ -341,6 +348,13 @@ async def test_ask_user_loop_validation_passes_coerced_options_to_middleware(
     assert len(questions) == 1
     assert questions[0].questions[0].question == "Pick?"
     assert [option.label for option in questions[0].questions[0].options] == expected_options
+    result = next(
+        content for message in wire.messages[1] for content in message.contents if content.type == "function_result"
+    )
+    assert result.result == "User response: One"
+    assert result.additional_properties[TOOL_RESULT_METADATA_KEY][ASK_USER_RESPONSE_DIGEST_KEY] == (
+        ask_user_response_digest("User response: One")
+    )
 
 
 async def _first_result_text(first_arguments: dict[str, object]) -> tuple[str, dict[str, object]]:

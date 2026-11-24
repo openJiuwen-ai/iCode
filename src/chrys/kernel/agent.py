@@ -55,6 +55,7 @@ from .exceptions import AgentInvalidResponseException
 from .instrumentation import AgentTelemetryLayer
 from .middleware import split_middleware
 from .sessions import (
+    TOOL_HISTORY_PREFIX_KWARG,
     AgentSession,
     HistoryProvider,
     InMemoryHistoryProvider,
@@ -563,6 +564,8 @@ class _AgentCore:
         effective_client_kwargs = dict(client_kwargs) if client_kwargs is not None else {}
         if active_session is not None:
             effective_client_kwargs["session"] = active_session
+        if session_context.load_tool_history_prefix is not None:
+            effective_client_kwargs[TOOL_HISTORY_PREFIX_KWARG] = session_context.load_tool_history_prefix
         # Append provider middleware after existing client middleware.
         # split_middleware rejects unsupported middleware with TypeError.
         provider_middleware = session_context.get_middleware()

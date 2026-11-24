@@ -241,6 +241,7 @@ def _bounded_formal_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
     result["stages"] = list(audit.get("stages", []))[:4]
     result["predicate_results"] = [
         {key: item[key][:128] if isinstance(item[key], str) else item[key] for key in ("id", "value") if key in item}
+        | ({"consent_bar_met": item["consent_bar_met"]} if type(item.get("consent_bar_met")) is bool else {})
         for item in (audit.get("predicate_results") or [])[:32]
     ]
     result["usage"] = {key: value for key, value in audit.get("usage", {}).items() if type(value) is int}

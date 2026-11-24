@@ -46,25 +46,17 @@ Automatic mode uses **Direct review** by default. Direct review judges the actio
 
 Both strategies ask you to confirm file deletion, including temporary files and build outputs. With Individual risk checks, the dialog identifies the matching risk from the checklist below.
 
+Individual risk checks send the visible conversation history to the configured approval judge, including user messages, assistant text, historical tool calls, and any available compaction summary. The pending call is sent separately. Tool results are omitted except for authenticated answers from the user question dialog. A summary can provide context but does not itself authorize an action or lift a user boundary. When a Responses session continues on the provider, the review also uses the visible history saved locally by iCode. An externally hosted ACP agent may expose only the current user turn and pending call.
+
 To choose a strategy:
 
 1. Enter `/approval auto` to switch to automatic mode.
 2. Press **F10**, open **Safety → Approval**, and find **Automatic review strategy**.
 3. Choose **Direct review** or **Individual risk checks**, then close Settings. Your choice is saved automatically and takes effect when the window closes. A review already in progress finishes as before.
 
-Individual risk checks cover these actions:
+Individual risk checks apply three hard rules for sensitive data transfer, file or folder deletion, and sensitive file access. They also check explicit user boundaries and other risks, including changes to shared infrastructure, security controls, and Git history. A hard rule, an active user boundary, or a soft rule without the required consent opens an approval dialog.
 
-| Action | Examples |
-| --- | --- |
-| Sending or publishing content outside your computer | Pushing code, uploading files, or sending messages |
-| Deleting or destroying data | Removing files or folders, emptying a file, or discarding changes that cannot be recovered |
-| Changing shared or production systems | Deploying a service or changing a shared database |
-| Accessing sensitive information | Reading API keys or account credentials |
-| Changing security settings | Granting broader permissions or disabling security checks |
-| Running untrusted code or exposing a service | Downloading and running a script, or making a local service accessible to others |
-| Going beyond your request | Changing configuration when you only asked to inspect it |
-
-When no risk is found, the action can run automatically. If something is unclear, iCode reviews the action again before deciding whether to run it or ask you. For workflows started without task input, actions with no detected risk also get this extra review. If review fails or times out, an approval dialog lets you decide what to do.
+When all checks clear, the action can run automatically. If the review cannot return a valid decision after a retry, fails, or times out, an approval dialog lets you decide what to do.
 
 This setting applies only in automatic mode. Actions that do not need approval and [approvals you have already remembered](#remember-approvals) continue to work as before.
 
