@@ -156,6 +156,7 @@ class _Browser:
 
 
 _browsers: dict[str, _Browser] = {}
+_reclaiming_slots: set[tuple[str | None, str, str | None, int]] = set()
 _MAX_BROWSERS = 2
 """Runaway guard: one agent build may keep at most this many browsers open."""
 
@@ -200,6 +201,27 @@ def _is_ephemeral_invocation(ctx: ToolContext) -> bool:
     invocation_type = getattr(ctx, "invocation_type", None)
     invocation_id = getattr(ctx, "invocation_id", None)
     return invocation_type is not None and invocation_type != "turn" and bool(invocation_id)
+
+
+def _is_reclaimable_on_idle(ctx: ToolContext) -> bool:
+    """Whether an idle timeout should fully close and reclaim this one-shot invocation.
+
+    Sub-agents and side questions get a fresh ``invocation_id`` on every call,
+    so an abandoned handle is unreachable once its caller finishes. Workflow
+    nodes keep their ``invocation_id`` across retries and must retain their
+    recorded slot/profile on idle.
+    """
+    invocation_type = getattr(ctx, "invocation_type", None)
+    invocation_id = getattr(ctx, "invocation_id", None)
+    return invocation_type in {"sub_agent", "side_question"} and bool(invocation_id)
+
+
+def _ctx_slot_key(ctx: ToolContext, slot: int) -> tuple[str | None, str, str | None, int]:
+    return (ctx.session_id, ctx.agent_name, _owner_scope(ctx), slot)
+
+
+def _slot_key(browser: _Browser) -> tuple[str | None, str, str | None, int]:
+    return (browser.owner_session, browser.owner_agent, browser.owner_scope, browser.slot)
 
 
 def _owner_matches(browser: _Browser, ctx: ToolContext) -> bool:
@@ -427,7 +449,9 @@ def _open(ctx: ToolContext) -> _Browser:
     """
     base = _config()
     _prune_closed()
-    used = {browser.slot for browser in _mine(ctx)}
+    used = {browser.slot for browser in _mine(ctx)} | {
+        slot for slot in range(_MAX_BROWSERS) if _ctx_slot_key(ctx, slot) in _reclaiming_slots
+    }
     slot = next((index for index in range(_MAX_BROWSERS) if index not in used), None)
     if slot is None:
         raise ToolError(
@@ -445,23 +469,38 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int) -> _Browser:
     # Bridge mode must use the same discovery file the native host reads; per-agent
     # state dirs are for owned profiles only. One bridge per state dir is enforced by
     # BridgeServer's instance lock, so a second agent gets a clear "resource busy".
-    config = base if base.bridge or base.broker else dataclasses.replace(base, state_dir=state_dir)
+    # Explicit browser_save_state archives always land under base.state_archive_dir
+    # (outside the per-slot profile dir) so ephemeral close cleanup never deletes them.
+    config = (
+        base
+        if base.bridge or base.broker
+        else dataclasses.replace(base, state_dir=state_dir, state_archive_root=base.state_archive_dir)
+    )
     if config.backend == "owned" and config.download_dir is not None:
         # Controlled downloads are session-scoped (the handle owns the browser).
         config = dataclasses.replace(config, download_dir=(ctx.session_data_dir or ctx.data_dir) / "downloads")
-    session = (
-        BrokerSession(
+    reclaim_on_idle = _is_reclaimable_on_idle(ctx)
+
+    async def _reclaim_abandoned_idle() -> None:
+        target = _browsers.get(browser_id)
+        if target is None or target.session.state != "idle":
+            return
+        await _close_and_forget(target)
+
+    if base.broker:
+        session: BrowserSession | BrokerSession = BrokerSession(
             base,
             owner=_owner_key(ctx),
             session_id=f"{_owner_key(ctx)}-slot-{slot}",
         )
-        if base.broker
-        else BrowserSession(
-            config,
-            journal_owner=_owner_key(ctx),
-            journal_session=f"{_owner_key(ctx)}-slot-{slot}",
-        )
-    )
+    else:
+        session_kwargs: dict[str, Any] = {
+            "journal_owner": _owner_key(ctx),
+            "journal_session": f"{_owner_key(ctx)}-slot-{slot}",
+        }
+        if reclaim_on_idle:
+            session_kwargs["on_idle"] = _reclaim_abandoned_idle
+        session = BrowserSession(config, **session_kwargs)
     backend = base.backend
     record = registry.new_record(
         browser_id=browser_id,
@@ -783,7 +822,7 @@ async def browser_resume(
             code="browser_resume_backend_mismatch",
         )
     slot = record.slot
-    if any(browser.slot == slot for browser in _mine(ctx)):
+    if any(browser.slot == slot for browser in _mine(ctx)) or _ctx_slot_key(ctx, slot) in _reclaiming_slots:
         raise ToolError(
             f"Slot {slot} already has a live browser; use its browser_id, close it first, or call browser_open.",
             code="browser_resume_conflict",
@@ -1309,6 +1348,27 @@ async def browser_screenshot(
     )
 
 
+def _stage_ephemeral_dir(state_dir: Path) -> tuple[Path, bool]:
+    """Atomically move *state_dir* aside before releasing its slot.
+
+    Returns ``(cleanup_target, slot_can_be_reused)``. If the rename succeeds
+    (or the directory does not exist), the original ``slot-N`` path is clear
+    and can safely be reused while background deletion removes the renamed
+    directory. If the rename fails (e.g. transient Windows lock), the caller
+    must keep the slot reserved until recursive deletion finishes.
+    """
+    if not state_dir.exists():
+        return state_dir, True
+    staged = state_dir.parent / f".reclaim-{state_dir.name}-{secrets.token_hex(4)}"
+    try:
+        state_dir.rename(staged)
+        return staged, True
+    except FileNotFoundError:
+        return state_dir, True
+    except OSError:
+        return state_dir, False
+
+
 def _cleanup_ephemeral_dir(state_dir: Path) -> None:
     """Remove an ephemeral Owned slot directory and its parent owner folder if empty."""
     shutil.rmtree(state_dir, ignore_errors=True)
@@ -1323,10 +1383,21 @@ async def _close_and_forget(browser: _Browser) -> None:
     halfway: the record disappears with the browser, not with the caller.
     """
     await browser.session.aclose()
+    cleanup_target: Path | None = None
+    reserved_slot: tuple[str | None, str, str | None, int] | None = None
+    if browser.ephemeral_state_dir is not None:
+        cleanup_target, slot_free = _stage_ephemeral_dir(browser.ephemeral_state_dir)
+        if not slot_free:
+            reserved_slot = _slot_key(browser)
+            _reclaiming_slots.add(reserved_slot)
     _browsers.pop(browser.id, None)
     _drop_record(browser)
-    if browser.ephemeral_state_dir is not None:
-        await asyncio.to_thread(_cleanup_ephemeral_dir, browser.ephemeral_state_dir)
+    if cleanup_target is not None:
+        try:
+            await asyncio.to_thread(_cleanup_ephemeral_dir, cleanup_target)
+        finally:
+            if reserved_slot is not None:
+                _reclaiming_slots.discard(reserved_slot)
 
 
 def _drop_record(browser: _Browser) -> None:

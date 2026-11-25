@@ -1279,3 +1279,96 @@ def test_fill_rich_text_preserves_paragraph_boundaries_in_both_directions() -> N
         )
         is True
     )
+
+
+def test_fill_rich_text_rejects_newline_collapsed_to_space_and_skips_enter(monkeypatch) -> None:
+    """When a page handler turns requested '\\n' into ' ', _values_match must reject and fill must not press Enter."""
+    # Replacing selected 'X' in 'X!' with 'First\nSecond' when page flattens newline to 'First Second!'.
+    assert (
+        fill._values_match(
+            "First Second!",
+            "First\nSecond",
+            clear=False,
+            before_value="X!",
+            selection_text="X",
+            selection_prefix="",
+            selection_suffix="!",
+            raw_value="First Second!",
+            native_value=False,
+        )
+        is False
+    )
+    # clear=True with explicit newline must also reject space-flattened readback.
+    assert (
+        fill._values_match(
+            "First Second",
+            "First\nSecond",
+            clear=True,
+            raw_value="First Second",
+            native_value=False,
+        )
+        is False
+    )
+    assert (
+        fill._values_match(
+            "First\nSecond",
+            "First\nSecond",
+            clear=True,
+            raw_value="First\nSecond\n",
+            native_value=False,
+        )
+        is True
+    )
+
+    # End-to-end fill.run(..., submit=True): must NOT press Enter when newline was flattened to space.
+    session = FakeSession()
+    session.state = {
+        "tag": "div",
+        "editable": True,
+        "focused": True,
+        "text": "First Second!",
+        "rawText": "First Second!",
+    }
+    session.client.state = session.state
+    session.client.update_on_insert = False
+
+    focus_with_sel = {
+        **FOCUS_VALUE,
+        "text": "X!",
+        "selectionText": "X",
+        "selectionPrefix": "",
+        "selectionSuffix": "!",
+    }
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {"type": "object", "value": dict(focus_with_sel)}
+        if "this.isContentEditable" in function:
+            return {"type": "object", "value": dict(session.state)}
+        return {}
+
+    async def fake_eval_value(*_args, **_kwargs):
+        return {"href": "https://example.com", "mutations": 0, "toasts": []}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "eval_value", fake_eval_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {
+                "target": "editor",
+                "text": "First\nSecond",
+                "clear": False,
+                "submit": True,
+                "keypress_fallback": False,
+            },
+        )
+    )
+    result_text = blocks[0]["text"]
+    assert "未提交：读回与输入不一致" in result_text
+    assert "status=uncertain" in result_text
+    assert all(
+        not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter") for call in session.client.calls
+    )

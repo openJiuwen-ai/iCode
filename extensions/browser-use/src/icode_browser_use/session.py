@@ -219,10 +219,12 @@ class BrowserSession:
         launcher_factory: LauncherFactory | None = None,
         journal_owner: str = "",
         journal_session: str = "",
+        on_idle: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.cfg = cfg
         self._journal_owner = journal_owner
         self._journal_session = journal_session
+        self._on_idle = on_idle
         self._journal: Journal | None = None
         self._client_factory: ClientFactory = client_factory or _default_client_factory
         self._launcher_factory: LauncherFactory = launcher_factory or launch_chrome
@@ -1230,12 +1232,19 @@ class BrowserSession:
                 await asyncio.sleep(interval)
                 if self._state != "ready" or self.login_pending or not self._idle_expired():
                     continue
+                reclaim = False
                 async with self._action_lock:
                     if self._closed or self.login_pending or not self._idle_expired():
                         continue
                     self._idle_task = None
                     await self._shutdown_idle()
-                    return
+                    reclaim = self._on_idle is not None
+                if reclaim and self._on_idle is not None and self._state == "idle":
+                    try:
+                        await self._on_idle()
+                    except Exception as exc:  # noqa: BLE001
+                        log("session.idle_callback_failed", error=str(exc))
+                return
         finally:
             # A loop shutdown cancels this task; never leave a stale handle that a
             # later loop would try to cancel/await.

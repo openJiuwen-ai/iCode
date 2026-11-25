@@ -75,6 +75,17 @@ def _normalize_native_value(value: Any) -> str:
     return str(value or "").replace("\r\n", "\n")
 
 
+def _normalize_lines(value: Any) -> list[str]:
+    """Normalize horizontal whitespace per line while preserving explicit line breaks."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [_normalize_text(line) for line in text.split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return lines
+
+
 def _splice_utf16(text: str, start: int, end: int, insert: str) -> str | None:
     """Splice *insert* into *text* using DOM UTF-16 code-unit selection offsets."""
     raw = text.encode("utf-16-le")
@@ -159,6 +170,8 @@ def _values_match(
     if not actual:
         return False
     if clear:
+        if raw_value is not None and ("\n" in expected or "\r" in expected):
+            return _normalize_lines(raw_value) == _normalize_lines(expected)
         return actual == wanted
     if before_value is not None:
         if selection is not None:
@@ -167,12 +180,16 @@ def _values_match(
                 return actual == _normalize_text(combined)
         before_norm = _normalize_text(before_value)
         if selection_prefix is not None and selection_suffix is not None:
-            expected_norm = _normalize_text(selection_prefix + expected + selection_suffix)
+            expected_full = selection_prefix + expected + selection_suffix
             if raw_value is not None:
                 # Both prefix/suffix and raw_value come from _visWalk (preserving visible line breaks).
-                return _normalize_text(raw_value) == expected_norm
+                # Compare line-by-line so explicit newlines collapsed to spaces never look like a match.
+                return _normalize_lines(raw_value) == _normalize_lines(expected_full)
+            expected_norm = _normalize_text(expected_full)
             reconstructed_before = _normalize_text(selection_prefix + selection_text + selection_suffix)
             if reconstructed_before == before_norm:
+                if "\n" in expected or "\r" in expected:
+                    return _normalize_lines(value) == _normalize_lines(expected_full)
                 return actual == expected_norm
             return False
         if selection_text:

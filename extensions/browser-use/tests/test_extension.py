@@ -44,8 +44,10 @@ def clear_registry(monkeypatch):
             monkeypatch.delenv(name)
     importlib.reload(ext)
     ext._browsers.clear()
+    ext._reclaiming_slots.clear()
     yield
     ext._browsers.clear()
+    ext._reclaiming_slots.clear()
 
 
 def ctx(
@@ -1311,3 +1313,238 @@ def test_navigate_redirect_blocked_reports_target_origin_from_policy() -> None:
     assert info.value.blocked_origin == "https://blocked-b.example:443"
     assert "user" not in info.value.message and "pw" not in info.value.message
     assert "https://blocked-b.example:443" in info.value.message
+
+
+def test_concurrent_close_and_open_does_not_delete_new_slot_dir(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(state_root))
+    sub_ctx = ctx(
+        tmp_path,
+        session="s-race",
+        agent="Worker",
+        caller_name="worker_tool",
+        invocation_type="sub_agent",
+        invocation_id="inv-race",
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_cleanup = ext._cleanup_ephemeral_dir
+
+    def paused_cleanup(target: Path) -> None:
+        entered.set()
+        release.wait(timeout=5.0)
+        real_cleanup(target)
+
+    monkeypatch.setattr(ext, "_cleanup_ephemeral_dir", paused_cleanup)
+
+    async def scenario() -> tuple[Path, Path]:
+        opened = await ext.browser_open(sub_ctx)
+        b1_id = opened.removeprefix("browser_id: ").strip()
+        b1 = ext._browsers[b1_id]
+        old_dir = b1.session.cfg.state_dir
+        old_dir.mkdir(parents=True, exist_ok=True)
+        (old_dir / "old.txt").write_text("old", encoding="utf-8")
+
+        close_task = asyncio.create_task(ext.browser_close(sub_ctx, b1_id))
+        await asyncio.to_thread(entered.wait, 5.0)
+        assert entered.is_set()
+
+        opened2 = await ext.browser_open(sub_ctx)
+        b2_id = opened2.removeprefix("browser_id: ").strip()
+        b2 = ext._browsers[b2_id]
+        new_dir = b2.session.cfg.state_dir
+        new_dir.mkdir(parents=True, exist_ok=True)
+        sentinel = new_dir / "sentinel.txt"
+        sentinel.write_text("fresh", encoding="utf-8")
+
+        release.set()
+        await close_task
+        return old_dir, sentinel
+
+    old_dir, sentinel = asyncio.run(scenario())
+    assert sentinel.is_file(), "closing the old browser deleted the new browser's state_dir"
+    assert sentinel.read_text(encoding="utf-8") == "fresh"
+    assert not (old_dir / "old.txt").exists()
+
+
+def test_concurrent_close_with_locked_rename_holds_slot_until_cleanup_finishes(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(state_root))
+    sub_ctx = ctx(
+        tmp_path,
+        session="s-lock",
+        agent="Worker",
+        caller_name="worker_tool",
+        invocation_type="sub_agent",
+        invocation_id="inv-lock",
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_cleanup = ext._cleanup_ephemeral_dir
+
+    def paused_cleanup(target: Path) -> None:
+        entered.set()
+        release.wait(timeout=5.0)
+        real_cleanup(target)
+
+    def fail_rename(self: Path, target: Path) -> Path:
+        raise PermissionError("locked by antivirus")
+
+    monkeypatch.setattr(ext, "_cleanup_ephemeral_dir", paused_cleanup)
+    monkeypatch.setattr(Path, "rename", fail_rename)
+
+    async def scenario() -> tuple[int, Path]:
+        opened = await ext.browser_open(sub_ctx)
+        b1_id = opened.removeprefix("browser_id: ").strip()
+        b1 = ext._browsers[b1_id]
+        old_dir = b1.session.cfg.state_dir
+        old_dir.mkdir(parents=True, exist_ok=True)
+        (old_dir / "old.txt").write_text("old", encoding="utf-8")
+
+        close_task = asyncio.create_task(ext.browser_close(sub_ctx, b1_id))
+        await asyncio.to_thread(entered.wait, 5.0)
+        assert entered.is_set()
+
+        opened2 = await ext.browser_open(sub_ctx)
+        b2_id = opened2.removeprefix("browser_id: ").strip()
+        b2 = ext._browsers[b2_id]
+        sentinel = b2.session.cfg.state_dir / "sentinel.txt"
+        b2.session.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("safe", encoding="utf-8")
+
+        release.set()
+        await close_task
+        return b2.slot, sentinel
+
+    slot2, sentinel = asyncio.run(scenario())
+    assert slot2 == 1, "when rename fails, slot 0 must stay reserved until cleanup completes"
+    assert sentinel.is_file()
+    assert sentinel.read_text(encoding="utf-8") == "safe"
+
+
+def test_save_state_archive_survives_ephemeral_sub_agent_close(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from icode_browser_use.actions import save_state
+
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(state_root))
+    monkeypatch.setenv("ICODE_BROWSER_SAVE_STATE", "allow")
+    sub_ctx = ctx(
+        tmp_path,
+        session="s-save",
+        agent="Worker",
+        caller_name="worker_tool",
+        invocation_type="sub_agent",
+        invocation_id="inv-save",
+    )
+
+    class FakeClient:
+        async def send(self, method: str, params=None, session_id=None, timeout=None):
+            if method == "Runtime.evaluate":
+                expr = (params or {}).get("expression", "")
+                if "localStorage" in expr:
+                    return {"result": {"value": '{"token":"abc"}'}}
+                return {"result": {"value": "https://example.com"}}
+            if method == "Network.getCookies":
+                return {"cookies": [{"name": "sid", "value": "xyz"}]}
+            return {}
+
+    async def scenario() -> tuple[Path, Path]:
+        opened = await ext.browser_open(sub_ctx)
+        browser_id = opened.removeprefix("browser_id: ").strip()
+        browser = ext._browsers[browser_id]
+        slot_dir = browser.session.cfg.state_dir
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        (slot_dir / "profile.dat").write_text("temp", encoding="utf-8")
+
+        monkeypatch.setattr(browser.session, "require_client", lambda: FakeClient())
+        blocks = await save_state.run(browser.session, {"name": "deliverable"})
+        first_line = blocks[0]["text"].splitlines()[0]
+        exported = Path(first_line.split("：", 1)[1].strip())
+        assert exported.is_file()
+
+        await ext.browser_close(sub_ctx, browser_id)
+        return slot_dir, exported
+
+    slot_dir, exported = asyncio.run(scenario())
+    assert not slot_dir.exists(), "ephemeral slot dir should still be reclaimed on close"
+    assert exported.is_file(), "explicitly exported state archive must survive browser_close"
+    assert "deliverable.json" == exported.name
+    assert slot_dir not in exported.parents
+
+
+def test_idle_timeout_reclaims_abandoned_sub_agent_but_keeps_workflow_node(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(state_root))
+    monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0.02")
+
+    sub_ctx = ctx(
+        tmp_path,
+        session="s-idle",
+        agent="Worker",
+        caller_name="worker_tool",
+        invocation_type="sub_agent",
+        invocation_id="inv-abandoned",
+        with_session_dir=True,
+    )
+    wf_ctx = ctx(
+        tmp_path,
+        session="s-idle",
+        agent="Worker",
+        caller_name="step_fetch",
+        invocation_type="workflow_node",
+        invocation_id="inv-wf-retry",
+        with_session_dir=True,
+    )
+
+    async def scenario() -> tuple[str, Path, str, Path, Path]:
+        sub_id = (await ext.browser_open(sub_ctx)).removeprefix("browser_id: ").strip()
+        wf_id = (await ext.browser_open(wf_ctx)).removeprefix("browser_id: ").strip()
+        sub_browser = ext._browsers[sub_id]
+        wf_browser = ext._browsers[wf_id]
+
+        sub_dir = sub_browser.session.cfg.state_dir
+        wf_dir = wf_browser.session.cfg.state_dir
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        wf_dir.mkdir(parents=True, exist_ok=True)
+        (sub_dir / "chrome-data.bin").write_bytes(b"x" * 1024)
+        (wf_dir / "chrome-data.bin").write_bytes(b"y" * 1024)
+
+        for b in (sub_browser, wf_browser):
+            b.session._state = "ready"
+            b.session._started_once = True
+            b.session._last_active = 0.0
+
+        await asyncio.wait_for(
+            asyncio.gather(
+                sub_browser.session._idle_watchdog(),
+                wf_browser.session._idle_watchdog(),
+            ),
+            timeout=2.0,
+        )
+        manifest = registry.manifest_path(sub_ctx)
+        return sub_id, sub_dir, wf_id, wf_dir, manifest
+
+    sub_id, sub_dir, wf_id, wf_dir, manifest = asyncio.run(scenario())
+    records, _ = registry.load(manifest)
+    record_ids = {r.browser_id for r in records}
+
+    # One-shot sub-agent is completely reclaimed on idle timeout.
+    assert sub_id not in ext._browsers
+    assert sub_id not in record_ids
+    assert not sub_dir.exists()
+
+    # Retryable workflow_node keeps its handle, manifest record, and profile dir.
+    assert wf_id in ext._browsers
+    assert ext._browsers[wf_id].session.state == "idle"
+    assert wf_id in record_ids
+    assert wf_dir.is_dir()

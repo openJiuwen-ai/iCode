@@ -211,6 +211,8 @@ class BrowserConfig:
     allowed_origins: tuple[str, ...] = ()
     """Explicit loopback origins (``scheme://host:port``) for local development."""
     state_dir: Path = field(default_factory=_default_state_dir)
+    state_archive_root: Path | None = None
+    """Explicit directory for ``browser_save_state`` archives; defaults to ``state_dir / 'state'``."""
     evaluate_enabled: bool = False
     save_state_enabled: bool = False
     max_actions_per_window: int = MAX_ACTIONS_PER_WINDOW
@@ -272,7 +274,7 @@ class BrowserConfig:
     @property
     def state_archive_dir(self) -> Path:
         """Directory holding named ``browser_save_state`` archives."""
-        return self.state_dir / "state"
+        return self.state_archive_root if self.state_archive_root is not None else self.state_dir / "state"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> BrowserConfig:
