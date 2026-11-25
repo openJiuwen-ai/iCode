@@ -976,3 +976,110 @@ def test_fill_native_textarea_preserves_trailing_space_in_readback_check(monkeyp
     text = blocks[0]["text"]
     assert "status=uncertain" in text
     assert "读回与输入不一致" in text
+
+
+def test_fill_rich_text_selection_truncation_blocks_submit_even_when_word_already_exists(monkeypatch) -> None:
+    """P1: in 'DONE is X' with 'X' selected, replacing with 'DONE' truncated to 'DONE is DO' must NOT press Enter."""
+    session = FakeSession()
+    session.state = {"tag": "div", "editable": True, "focused": True, "text": "DONE is X"}
+    original_send = session.client.send
+
+    async def truncating_send(method, params=None, session_id=None, timeout=None):
+        if method == "Input.insertText":
+            session.client.calls.append((method, params or {}, session_id))
+            session.state["text"] = "DONE is DO"
+            return {"result": {"value": None}}
+        return await original_send(method, params, session_id, timeout)
+
+    session.client.send = truncating_send
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    **FOCUS_VALUE,
+                    "text": "DONE is X",
+                    "selectionText": "X",
+                    "selectionPrefix": "DONE is ",
+                    "selectionSuffix": "",
+                },
+            }
+        return {"type": "object", "value": dict(session.state)}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "editor", "text": "DONE", "clear": False, "submit": True, "keypress_fallback": False},
+        )
+    )
+    text = blocks[0]["text"]
+    assert "status=uncertain" in text
+    assert "未提交" in text
+    assert all(
+        not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter") for call in session.client.calls
+    )
+
+
+def test_fill_email_and_number_select_all_replacement_succeeds_and_submits(monkeypatch) -> None:
+    """P2: email/number inputs report null selectionStart/End; select-all replacement to shorter text must succeed."""
+    for input_type, old_val, new_val in (
+        ("email", "old.address@example.com", "x@y.co"),
+        ("number", "12345", "7"),
+    ):
+        session = FakeSession()
+        session.state = {"tag": "input", "editable": False, "focused": True, "text": old_val}
+        pages = [
+            {"href": "http://example.com/form", "mutations": 0, "toasts": []},
+            {"href": "http://example.com/done", "mutations": 0, "toasts": []},
+        ]
+        original_send = session.client.send
+
+        async def replace_send(method, params=None, session_id=None, timeout=None):
+            if method == "Input.insertText":
+                session.client.calls.append((method, params or {}, session_id))
+                session.state["text"] = str((params or {}).get("text", ""))
+                return {"result": {"value": None}}
+            return await original_send(method, params, session_id, timeout)
+
+        session.client.send = replace_send
+
+        async def fake_call_value(_session, _object_id, function, **_kwargs):
+            if "this.focus" in function:
+                return {
+                    "type": "object",
+                    "value": {
+                        "focused": True,
+                        "editable": False,
+                        "tag": "input",
+                        "type": input_type,
+                        "readOnly": False,
+                        "disabled": False,
+                        "text": old_val,
+                        "selectionStart": None,
+                        "selectionEnd": None,
+                        "selectionText": old_val,
+                    },
+                }
+            return {"type": "object", "value": dict(session.state)}
+
+        async def fake_eval_value(*_args, **_kwargs):
+            return pages.pop(0) if len(pages) > 1 else pages[0]
+
+        monkeypatch.setattr(fill, "call_value", fake_call_value)
+        monkeypatch.setattr(fill, "eval_value", fake_eval_value)
+        monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+        blocks = asyncio.run(
+            fill.run(
+                session,
+                {"target": input_type, "text": new_val, "clear": False, "submit": True, "keypress_fallback": False},
+            )
+        )
+        text = blocks[0]["text"]
+        assert "status=succeeded" in text, f"{input_type} failed: {text}"
+        assert "已提交（页面已跳转）" in text
+        assert any(
+            call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter" for call in session.client.calls
+        )

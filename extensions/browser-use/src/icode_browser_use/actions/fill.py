@@ -94,6 +94,8 @@ def _values_match(
     before_value: str | None = None,
     selection: tuple[int, int] | None = None,
     selection_text: str = "",
+    selection_prefix: str | None = None,
+    selection_suffix: str | None = None,
     native_value: bool = False,
 ) -> bool:
     if native_value:
@@ -109,6 +111,17 @@ def _values_match(
                 combined = _splice_utf16(before_raw, selection[0], selection[1], wanted_raw)
                 if combined is not None:
                     return actual_raw == combined
+            if selection_text:
+                sel_raw = _normalize_native_value(selection_text)
+                if sel_raw == before_raw:
+                    # Confirmed select-all on controls without selectionStart/End (email/number).
+                    return actual_raw == wanted_raw
+                if before_raw.count(sel_raw) == 1:
+                    return actual_raw == before_raw.replace(sel_raw, wanted_raw, 1)
+                expected_len = len(before_raw) - len(sel_raw) + len(wanted_raw)
+                return wanted_raw in actual_raw and len(actual_raw) == expected_len and (
+                    actual_raw != before_raw or sel_raw == wanted_raw
+                )
             if actual_raw == before_raw:
                 return False
             return wanted_raw in actual_raw and len(actual_raw) >= len(before_raw) + len(wanted_raw)
@@ -128,9 +141,20 @@ def _values_match(
             if combined is not None:
                 return actual == _normalize_text(combined)
         before_norm = _normalize_text(before_value)
+        if selection_prefix is not None and selection_suffix is not None:
+            reconstructed_before = _normalize_text(selection_prefix + selection_text + selection_suffix)
+            if reconstructed_before == before_norm:
+                return actual == _normalize_text(selection_prefix + expected + selection_suffix)
         if selection_text:
-            # Replacing a non-collapsed selection in contenteditable may shorten the text.
-            return wanted in actual and (actual != before_norm or _normalize_text(selection_text) == wanted)
+            sel_norm = _normalize_text(selection_text)
+            if sel_norm == before_norm:
+                return actual == wanted
+            if before_norm.count(sel_norm) == 1:
+                return actual == _normalize_text(before_norm.replace(sel_norm, wanted, 1))
+            expected_len = len(before_norm) - len(sel_norm) + len(wanted)
+            return wanted in actual and abs(len(actual) - expected_len) <= 1 and (
+                actual != before_norm or sel_norm == wanted
+            )
         if actual == before_norm:
             return False
         return wanted in actual and len(actual) >= len(before_norm) + len(wanted)
@@ -316,6 +340,8 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     before_text: str | None = None
     before_selection: tuple[int, int] | None = None
     before_selection_text = ""
+    before_selection_prefix: str | None = None
+    before_selection_suffix: str | None = None
     if not clear:
         raw_before = focus_info.get("text")
         if isinstance(raw_before, str):
@@ -327,6 +353,11 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         raw_sel_text = focus_info.get("selectionText")
         if isinstance(raw_sel_text, str):
             before_selection_text = raw_sel_text
+        raw_prefix = focus_info.get("selectionPrefix")
+        raw_suffix = focus_info.get("selectionSuffix")
+        if isinstance(raw_prefix, str) and isinstance(raw_suffix, str):
+            before_selection_prefix = raw_prefix
+            before_selection_suffix = raw_suffix
     if clear:
         try:
             await _clear(session, object_id, cdp_session_id)
@@ -381,6 +412,8 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         before_value=before_text,
         selection=before_selection,
         selection_text=before_selection_text,
+        selection_prefix=before_selection_prefix,
+        selection_suffix=before_selection_suffix,
         native_value=native_value,
     )
     try:
@@ -435,6 +468,8 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         before_value=before_text,
         selection=before_selection,
         selection_text=before_selection_text,
+        selection_prefix=before_selection_prefix,
+        selection_suffix=before_selection_suffix,
         native_value=native_value,
     ):
         mismatch = True
