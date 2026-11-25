@@ -251,6 +251,82 @@ async def run(args: argparse.Namespace) -> None:
             require("foreground=" in status_out, f"browser_status missing foreground field: {status_out!r}")
             report("check", name="tab_visibility_status", ok=True)
             checks += 1
+
+            # --- 6. Rich-text blank-line count & pre-wrap indentation regression ---
+            session = ext._browsers[browser_id].session
+            client = session.require_client()
+            rich_html = """<!doctype html><html><body>
+              <div id="plain" contenteditable="true" aria-label="Plain Editor">X!</div>
+              <div id="code_strip" contenteditable="true" aria-label="Stripping Code Editor" style="white-space: pre-wrap;"></div>
+              <div id="code_keep" contenteditable="true" aria-label="Keeping Code Editor" style="white-space: pre-wrap;"></div>
+              <script>
+                window.__submitted = [];
+                for (const id of ['plain', 'code_strip', 'code_keep']) {
+                  const el = document.getElementById(id);
+                  el.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      window.__submitted.push({id, text: el.innerText});
+                      el.innerHTML = '';
+                    }
+                  });
+                }
+                const stripEl = document.getElementById('code_strip');
+                stripEl.addEventListener('input', () => {
+                  const stripped = stripEl.innerText.split('\\n').map(l => l.trimStart()).join('\\n');
+                  if (stripped !== stripEl.innerText) stripEl.textContent = stripped;
+                });
+              </script>
+            </body></html>"""
+            await client.send(
+                "Page.setDocumentContent",
+                {"frameId": session._main_frame_id, "html": rich_html},
+                session_id=session.session_id,
+            )
+            await ext.browser_snapshot(ctx, browser_id)
+            await client.send(
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        "(() => { const el=document.getElementById('plain'); el.focus();"
+                        " const r=document.createRange(); r.setStart(el.firstChild,0); r.setEnd(el.firstChild,1);"
+                        " const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); })()"
+                    )
+                },
+                session_id=session.session_id,
+            )
+            plain_res = await ext.browser_fill(
+                ctx, browser_id, target="Plain Editor", text="one\n\ntwo", clear=False, submit=True
+            )
+            require(
+                "未提交：读回与输入不一致" in plain_res,
+                f"plain editor extra blank line should block submit: {plain_res!r}",
+            )
+            await ext.browser_snapshot(ctx, browser_id)
+            strip_res = await ext.browser_fill(
+                ctx, browser_id, target="Stripping Code Editor", text="if ready:\n    run()", clear=True, submit=True
+            )
+            require(
+                "未提交：读回与输入不一致" in strip_res,
+                f"stripped pre-wrap indent should block submit: {strip_res!r}",
+            )
+            await ext.browser_snapshot(ctx, browser_id)
+            keep_res = await ext.browser_fill(
+                ctx, browser_id, target="Keeping Code Editor", text="if ready:\n    run()", clear=True, submit=True
+            )
+            require("status=succeeded" in keep_res, f"valid pre-wrap indent should submit: {keep_res!r}")
+            sub_res = await client.send(
+                "Runtime.evaluate",
+                {"expression": "window.__submitted", "returnByValue": True},
+                session_id=session.session_id,
+            )
+            submitted = list(sub_res.get("result", {}).get("value") or [])
+            require(
+                submitted == [{"id": "code_keep", "text": "if ready:\n    run()"}],
+                f"unexpected submitted payloads: {submitted!r}",
+            )
+            report("check", name="rich_text_blank_line_and_prewrap_indent", ok=True)
+            checks += 1
         finally:
             if browser_id and browser_id in ext._browsers:
                 with contextlib.suppress(Exception):

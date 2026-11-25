@@ -241,6 +241,7 @@ class BrowserSession:
 
         self._state = "idle"
         self._started_once = False
+        self._owns_state_dir = False
         self._client: CDPConnection | None = None
         self._child: ChildProcess | None = None
         self._targets: TargetManager | None = None
@@ -334,6 +335,11 @@ class BrowserSession:
     def started_once(self) -> bool:
         """False while the session is still an allocation; distinguishes allocated from idle-closed."""
         return self._started_once
+
+    @property
+    def owns_state_dir(self) -> bool:
+        """True only after this session actually acquired the instance lock for its state directory."""
+        return self._owns_state_dir
 
     @property
     def unclosed_targets(self) -> tuple[str, ...]:
@@ -687,6 +693,7 @@ class BrowserSession:
     async def _start(self) -> None:
         if self._transport.owns_browser:
             self._instance_lock = await acquire_instance_lock(self.cfg.state_dir)
+            self._owns_state_dir = True
         client, child = await self._transport.start()
         self._client = client
         self._child = child

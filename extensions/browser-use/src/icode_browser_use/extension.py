@@ -149,6 +149,7 @@ class _Browser:
     record: registry.ManifestRecord | None = None
     manifest: Path | None = None
     ephemeral_state_dir: Path | None = None
+    close_task: asyncio.Task[None] | None = None
     visited_origins: list[str] = field(default_factory=list)
     blocked_origins: list[str] = field(default_factory=list)
     screenshots: list[str] = field(default_factory=list)
@@ -469,12 +470,14 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int) -> _Browser:
     # Bridge mode must use the same discovery file the native host reads; per-agent
     # state dirs are for owned profiles only. One bridge per state dir is enforced by
     # BridgeServer's instance lock, so a second agent gets a clear "resource busy".
-    # Explicit browser_save_state archives always land under base.state_archive_dir
-    # (outside the per-slot profile dir) so ephemeral close cleanup never deletes them.
+    # Explicit browser_save_state archives always land under base.state_archive_dir,
+    # isolated by owner and slot (outside the per-slot profile dir) so ephemeral close
+    # cleanup never deletes them and concurrent sessions/slots never overwrite each other.
+    archive_dir = base.state_archive_dir / "agents" / _owner_key(ctx) / f"slot-{slot}"
     config = (
         base
         if base.bridge or base.broker
-        else dataclasses.replace(base, state_dir=state_dir, state_archive_root=base.state_archive_dir)
+        else dataclasses.replace(base, state_dir=state_dir, state_archive_root=archive_dir)
     )
     if config.backend == "owned" and config.download_dir is not None:
         # Controlled downloads are session-scoped (the handle owns the browser).
@@ -485,7 +488,7 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int) -> _Browser:
         target = _browsers.get(browser_id)
         if target is None or target.session.state != "idle":
             return
-        await _close_and_forget(target)
+        await _ensure_close_task(target)
 
     if base.broker:
         session: BrowserSession | BrokerSession = BrokerSession(
@@ -893,12 +896,12 @@ async def browser_navigate(
             raise
         if allocated:
             with contextlib.suppress(Exception):
-                await _close_and_forget(browser)
+                await _ensure_close_task(browser)
         raise
     except BaseException:
         if allocated:
             with contextlib.suppress(Exception):
-                await _close_and_forget(browser)
+                await _ensure_close_task(browser)
         raise
     return f"browser_id: {browser.id}\n{text}"
 
@@ -1348,23 +1351,25 @@ async def browser_screenshot(
     )
 
 
-def _stage_ephemeral_dir(state_dir: Path) -> tuple[Path, bool]:
+def _stage_ephemeral_dir(state_dir: Path) -> tuple[Path | None, bool]:
     """Atomically move *state_dir* aside before releasing its slot.
 
-    Returns ``(cleanup_target, slot_can_be_reused)``. If the rename succeeds
-    (or the directory does not exist), the original ``slot-N`` path is clear
-    and can safely be reused while background deletion removes the renamed
-    directory. If the rename fails (e.g. transient Windows lock), the caller
-    must keep the slot reserved until recursive deletion finishes.
+    Returns ``(cleanup_target, slot_can_be_reused)``. If the directory does not
+    exist, returns ``(None, True)`` so no background delete is ever scheduled
+    against a path a later handle might create. If the rename succeeds, the
+    original ``slot-N`` path is clear and can safely be reused while background
+    deletion removes the renamed directory. If the rename fails (e.g. transient
+    Windows lock), the caller must keep the slot reserved until recursive
+    deletion finishes.
     """
     if not state_dir.exists():
-        return state_dir, True
+        return None, True
     staged = state_dir.parent / f".reclaim-{state_dir.name}-{secrets.token_hex(4)}"
     try:
         state_dir.rename(staged)
         return staged, True
     except FileNotFoundError:
-        return state_dir, True
+        return None, True
     except OSError:
         return state_dir, False
 
@@ -1376,6 +1381,13 @@ def _cleanup_ephemeral_dir(state_dir: Path) -> None:
         state_dir.parent.rmdir()
 
 
+def _ensure_close_task(browser: _Browser) -> asyncio.Task[None]:
+    """Return the single teardown task for *browser* so concurrent closes share one cleanup."""
+    if browser.close_task is None:
+        browser.close_task = asyncio.create_task(_close_and_forget(browser))
+    return browser.close_task
+
+
 async def _close_and_forget(browser: _Browser) -> None:
     """Close the core session, then drop the handle and its recorded identity.
 
@@ -1385,7 +1397,7 @@ async def _close_and_forget(browser: _Browser) -> None:
     await browser.session.aclose()
     cleanup_target: Path | None = None
     reserved_slot: tuple[str | None, str, str | None, int] | None = None
-    if browser.ephemeral_state_dir is not None:
+    if browser.ephemeral_state_dir is not None and bool(getattr(browser.session, "owns_state_dir", False)):
         cleanup_target, slot_free = _stage_ephemeral_dir(browser.ephemeral_state_dir)
         if not slot_free:
             reserved_slot = _slot_key(browser)
@@ -1427,7 +1439,7 @@ async def browser_close(
 ) -> str:
     """Close a browser and release its Chrome process."""
     browser = _get(ctx, browser_id)
-    task = asyncio.create_task(_close_and_forget(browser))
+    task = _ensure_close_task(browser)
     try:
         # Shield the teardown: a cancelled turn must neither stop Chrome teardown
         # nor skip removing the handle and its recoverable record.

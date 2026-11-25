@@ -443,6 +443,7 @@ def test_ephemeral_sub_agent_close_reclaims_owned_state_dir_while_main_agent_kee
         tmp_path, agent="Browser", caller_name="Explore", invocation_type="sub_agent", invocation_id="sub-ephemeral-1"
     )
     sub_browser = ext._open(sub_ctx)
+    sub_browser.session._owns_state_dir = True
     sub_dir = state_root / "agents" / ext._owner_key(sub_ctx) / f"slot-{sub_browser.slot}"
     (sub_dir / "chrome").mkdir(parents=True, exist_ok=True)
     (sub_dir / "chrome" / "Preferences").write_text("{}", encoding="utf-8")
@@ -452,6 +453,7 @@ def test_ephemeral_sub_agent_close_reclaims_owned_state_dir_while_main_agent_kee
 
     main_ctx = ctx(tmp_path, agent="Code", caller_name="Code", invocation_type="turn", invocation_id="turn-1")
     main_browser = ext._open(main_ctx)
+    main_browser.session._owns_state_dir = True
     main_dir = state_root / "agents" / ext._owner_key(main_ctx) / f"slot-{main_browser.slot}"
     (main_dir / "chrome").mkdir(parents=True, exist_ok=True)
     (main_dir / "chrome" / "Preferences").write_text("{}", encoding="utf-8")
@@ -1344,6 +1346,7 @@ def test_concurrent_close_and_open_does_not_delete_new_slot_dir(tmp_path, monkey
         opened = await ext.browser_open(sub_ctx)
         b1_id = opened.removeprefix("browser_id: ").strip()
         b1 = ext._browsers[b1_id]
+        b1.session._owns_state_dir = True
         old_dir = b1.session.cfg.state_dir
         old_dir.mkdir(parents=True, exist_ok=True)
         (old_dir / "old.txt").write_text("old", encoding="utf-8")
@@ -1405,6 +1408,7 @@ def test_concurrent_close_with_locked_rename_holds_slot_until_cleanup_finishes(
         opened = await ext.browser_open(sub_ctx)
         b1_id = opened.removeprefix("browser_id: ").strip()
         b1 = ext._browsers[b1_id]
+        b1.session._owns_state_dir = True
         old_dir = b1.session.cfg.state_dir
         old_dir.mkdir(parents=True, exist_ok=True)
         (old_dir / "old.txt").write_text("old", encoding="utf-8")
@@ -1460,6 +1464,7 @@ def test_save_state_archive_survives_ephemeral_sub_agent_close(tmp_path, monkeyp
         opened = await ext.browser_open(sub_ctx)
         browser_id = opened.removeprefix("browser_id: ").strip()
         browser = ext._browsers[browser_id]
+        browser.session._owns_state_dir = True
         slot_dir = browser.session.cfg.state_dir
         slot_dir.mkdir(parents=True, exist_ok=True)
         (slot_dir / "profile.dat").write_text("temp", encoding="utf-8")
@@ -1522,6 +1527,7 @@ def test_idle_timeout_reclaims_abandoned_sub_agent_but_keeps_workflow_node(
         for b in (sub_browser, wf_browser):
             b.session._state = "ready"
             b.session._started_once = True
+            b.session._owns_state_dir = True
             b.session._last_active = 0.0
 
         await asyncio.wait_for(
@@ -1548,3 +1554,204 @@ def test_idle_timeout_reclaims_abandoned_sub_agent_but_keeps_workflow_node(
     assert ext._browsers[wf_id].session.state == "idle"
     assert wf_id in record_ids
     assert wf_dir.is_dir()
+
+
+def test_navigate_lock_conflict_rollback_does_not_delete_lock_holders_dir(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from icode_browser_use import locking
+    from icode_browser_use import session as session_mod
+
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(state_root))
+    wf_ctx = ctx(
+        tmp_path,
+        session="s-lock-conflict",
+        agent="Worker",
+        caller_name="step_fetch",
+        invocation_type="workflow_node",
+        invocation_id="inv-wf-locked",
+        with_session_dir=True,
+    )
+    owner_key = ext._owner_key(wf_ctx)
+    slot_dir = state_root / "agents" / owner_key / "slot-0"
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    holder_file = slot_dir / "holder.txt"
+    holder_file.write_text("owned-by-holder", encoding="utf-8")
+
+    # Fail fast on lock contention instead of waiting the default lock timeout.
+    real_acquire = locking.acquire_instance_lock
+    monkeypatch.setattr(session_mod, "acquire_instance_lock", lambda path: real_acquire(path, wait=0.0))
+
+    async def scenario() -> None:
+        lock = await real_acquire(slot_dir, wait=0.0)
+        try:
+            with pytest.raises(ToolError) as info:
+                await ext.browser_navigate(wf_ctx, "https://example.com")
+            assert "state_dir_locked" in info.value.message
+            # Holder's directory, sentinel file, and lock must still be intact.
+            assert slot_dir.is_dir()
+            assert holder_file.is_file()
+            assert holder_file.read_text(encoding="utf-8") == "owned-by-holder"
+            assert locking.probe_instance_lock(slot_dir).locked
+        finally:
+            lock.release()
+
+    asyncio.run(scenario())
+    # Implicitly allocated handle and manifest record were rolled back.
+    assert ext._browsers == {}
+    records, _ = registry.load(registry.manifest_path(wf_ctx))
+    assert records == []
+
+
+def test_closing_unstarted_handle_skips_cleanup_and_never_deletes_later_slot_dir(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(state_root))
+    sub_ctx = ctx(
+        tmp_path,
+        session="s-unstarted",
+        agent="Worker",
+        caller_name="worker_tool",
+        invocation_type="sub_agent",
+        invocation_id="inv-unstarted",
+    )
+
+    cleaned: list[Path] = []
+    monkeypatch.setattr(ext, "_cleanup_ephemeral_dir", lambda target: cleaned.append(target))
+
+    async def scenario() -> Path:
+        b1_id = (await ext.browser_open(sub_ctx)).removeprefix("browser_id: ").strip()
+        await ext.browser_close(sub_ctx, b1_id)
+        b2_id = (await ext.browser_open(sub_ctx)).removeprefix("browser_id: ").strip()
+        b2_dir = ext._browsers[b2_id].session.cfg.state_dir
+        b2_dir.mkdir(parents=True, exist_ok=True)
+        sentinel = b2_dir / "new-edge.txt"
+        sentinel.write_text("alive", encoding="utf-8")
+        return sentinel
+
+    sentinel = asyncio.run(scenario())
+    assert cleaned == [], "closing an unstarted handle with no dir must not schedule background rmtree"
+    assert sentinel.is_file()
+
+
+def test_concurrent_close_of_same_handle_shares_single_cleanup_task(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(state_root))
+    sub_ctx = ctx(
+        tmp_path,
+        session="s-dup-close",
+        agent="Worker",
+        caller_name="worker_tool",
+        invocation_type="sub_agent",
+        invocation_id="inv-dup-close",
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+    cleanup_calls: list[Path] = []
+    real_cleanup = ext._cleanup_ephemeral_dir
+
+    def paused_cleanup(target: Path) -> None:
+        cleanup_calls.append(target)
+        entered.set()
+        release.wait(timeout=5.0)
+        real_cleanup(target)
+
+    monkeypatch.setattr(ext, "_cleanup_ephemeral_dir", paused_cleanup)
+
+    async def scenario() -> Path:
+        b1_id = (await ext.browser_open(sub_ctx)).removeprefix("browser_id: ").strip()
+        b1 = ext._browsers[b1_id]
+        b1.session._owns_state_dir = True
+        old_dir = b1.session.cfg.state_dir
+        old_dir.mkdir(parents=True, exist_ok=True)
+        (old_dir / "old.txt").write_text("old", encoding="utf-8")
+
+        # Slow down aclose slightly so both concurrent browser_close calls see b1 in _browsers.
+        real_aclose = b1.session.aclose
+
+        async def slow_aclose() -> None:
+            await asyncio.sleep(0.02)
+            await real_aclose()
+
+        monkeypatch.setattr(b1.session, "aclose", slow_aclose)
+
+        close1 = asyncio.create_task(ext.browser_close(sub_ctx, b1_id))
+        close2 = asyncio.create_task(ext.browser_close(sub_ctx, b1_id))
+        await asyncio.to_thread(entered.wait, 5.0)
+        assert entered.is_set()
+
+        b2_id = (await ext.browser_open(sub_ctx)).removeprefix("browser_id: ").strip()
+        b2_dir = ext._browsers[b2_id].session.cfg.state_dir
+        b2_dir.mkdir(parents=True, exist_ok=True)
+        sentinel = b2_dir / "fresh.txt"
+        sentinel.write_text("fresh", encoding="utf-8")
+
+        release.set()
+        await asyncio.gather(close1, close2)
+        return sentinel
+
+    sentinel = asyncio.run(scenario())
+    assert len(cleanup_calls) == 1, "concurrent closes of the same handle must share one cleanup task"
+    assert sentinel.is_file()
+    assert sentinel.read_text(encoding="utf-8") == "fresh"
+
+
+def test_save_state_isolates_archives_across_slots_and_sessions(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from icode_browser_use.actions import save_state
+
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(state_root))
+    monkeypatch.setenv("ICODE_BROWSER_SAVE_STATE", "allow")
+
+    chat1_ctx = ctx(tmp_path, session="chat-1", agent="A", invocation_type="turn")
+    chat2_ctx = ctx(tmp_path, session="chat-2", agent="A", invocation_type="turn")
+
+    def fake_client(marker: str):
+        class FakeClient:
+            async def send(self, method: str, params=None, session_id=None, timeout=None):
+                if method == "Runtime.evaluate":
+                    expr = (params or {}).get("expression", "")
+                    if "localStorage" in expr:
+                        return {"result": {"value": json.dumps({"marker": marker})}}
+                    return {"result": {"value": "https://example.com"}}
+                if method == "Network.getCookies":
+                    return {"cookies": [{"name": "m", "value": marker}]}
+                return {}
+
+        return FakeClient()
+
+    async def scenario() -> list[tuple[Path, str]]:
+        b1_id = (await ext.browser_open(chat1_ctx)).removeprefix("browser_id: ").strip()
+        b2_id = (await ext.browser_open(chat1_ctx)).removeprefix("browser_id: ").strip()
+        b3_id = (await ext.browser_open(chat2_ctx)).removeprefix("browser_id: ").strip()
+
+        results: list[tuple[Path, str]] = []
+        for bid, marker in ((b1_id, "slot0-chat1"), (b2_id, "slot1-chat1"), (b3_id, "slot0-chat2")):
+            browser = ext._browsers[bid]
+            monkeypatch.setattr(browser.session, "require_client", lambda m=marker: fake_client(m))
+            blocks = await save_state.run(browser.session, {"name": "example"})
+            exported = Path(blocks[0]["text"].splitlines()[0].split("：", 1)[1].strip())
+            results.append((exported, marker))
+            assert browser.session.cfg.state_dir not in exported.parents
+
+        await ext.browser_close(chat1_ctx, b1_id)
+        await ext.browser_close(chat1_ctx, b2_id)
+        await ext.browser_close(chat2_ctx, b3_id)
+        return results
+
+    results = asyncio.run(scenario())
+    paths = [p for p, _ in results]
+    assert len(set(paths)) == 3, f"expected 3 distinct archive paths, got {paths}"
+    for path, marker in results:
+        assert path.is_file()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["localStorage"]["https://example.com"]["marker"] == marker

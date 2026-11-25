@@ -1372,3 +1372,166 @@ def test_fill_rich_text_rejects_newline_collapsed_to_space_and_skips_enter(monke
     assert all(
         not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter") for call in session.client.calls
     )
+
+def test_fill_rich_text_rejects_extra_blank_line_and_stripped_indentation() -> None:
+    """_values_match must reject extra blank lines in innerText and stripped indentation in pre-wrap editors."""
+    # Ordinary contenteditable: requested one\n\ntwo, Chrome innerText yielded one\n\n\ntwo!.
+    assert (
+        fill._values_match(
+            "one\n\n\ntwo!",
+            "one\n\ntwo",
+            clear=False,
+            before_value="X!",
+            selection_text="X",
+            selection_prefix="",
+            selection_suffix="!",
+            raw_value="one\n\ntwo!\n",
+            native_value=False,
+        )
+        is False
+    )
+    # Same issue on clear=True when innerText has an extra blank line.
+    assert (
+        fill._values_match(
+            "one\n\n\ntwo",
+            "one\n\ntwo",
+            clear=True,
+            raw_value="one\n\ntwo\n",
+            native_value=False,
+        )
+        is False
+    )
+    # Exact blank line count in both innerText and rawText matches.
+    assert (
+        fill._values_match(
+            "one\n\ntwo!",
+            "one\n\ntwo",
+            clear=False,
+            before_value="X!",
+            selection_text="X",
+            selection_prefix="",
+            selection_suffix="!",
+            raw_value="one\n\ntwo!",
+            native_value=False,
+        )
+        is True
+    )
+    # Whitespace-preserving editor: stripping 4-space indentation must NOT match.
+    assert (
+        fill._values_match(
+            "if ready:\nrun()",
+            "if ready:\n    run()",
+            clear=True,
+            raw_value="if ready:\nrun()",
+            native_value=False,
+            preserve_whitespace=True,
+        )
+        is False
+    )
+    assert (
+        fill._values_match(
+            "if ready:\n    run()",
+            "if ready:\n    run()",
+            clear=True,
+            raw_value="if ready:\n    run()",
+            native_value=False,
+            preserve_whitespace=True,
+        )
+        is True
+    )
+
+
+def test_fill_run_skips_enter_on_extra_blank_line_or_stripped_prewrap_indent(monkeypatch) -> None:
+    """fill.run(submit=True) refuses to press Enter when innerText adds a blank line or strips pre-wrap indent."""
+    # 1. Ordinary contenteditable: innerText has one\n\n\ntwo! while _visWalk rawText has one\n\ntwo!\n.
+    session = FakeSession()
+    session.state = {
+        "tag": "div",
+        "editable": True,
+        "focused": True,
+        "text": "one\n\n\ntwo!",
+        "rawText": "one\n\ntwo!\n",
+        "preserveWhitespace": False,
+    }
+    session.client.state = session.state
+    session.client.update_on_insert = False
+    focus_with_sel = {
+        **FOCUS_VALUE,
+        "text": "X!",
+        "selectionText": "X",
+        "selectionPrefix": "",
+        "selectionSuffix": "!",
+    }
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {"type": "object", "value": dict(focus_with_sel)}
+        if "this.isContentEditable" in function:
+            return {"type": "object", "value": dict(session.state)}
+        return {}
+
+    async def fake_eval_value(*_args, **_kwargs):
+        return {"href": "https://example.com", "mutations": 0, "toasts": []}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "eval_value", fake_eval_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {
+                "target": "editor",
+                "text": "one\n\ntwo",
+                "clear": False,
+                "submit": True,
+                "keypress_fallback": False,
+            },
+        )
+    )
+    assert "未提交：读回与输入不一致" in blocks[0]["text"]
+    assert "status=uncertain" in blocks[0]["text"]
+    assert all(
+        not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter") for call in session.client.calls
+    )
+
+    # 2. Pre-wrap editor that strips 4-space indentation on clear=True: must NOT press Enter.
+    session2 = FakeSession()
+    session2.state = {
+        "tag": "div",
+        "editable": True,
+        "focused": True,
+        "text": "if ready:\nrun()",
+        "rawText": "if ready:\nrun()",
+        "preserveWhitespace": True,
+    }
+    session2.client.state = session2.state
+    session2.client.update_on_insert = False
+
+    async def fake_call_value2(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {"type": "object", "value": dict(FOCUS_VALUE)}
+        if "this.isContentEditable" in function:
+            return {"type": "object", "value": dict(session2.state)}
+        return {}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value2)
+    monkeypatch.setattr(fill, "_clear", lambda *_a, **_kw: asyncio.sleep(0))
+    blocks2 = asyncio.run(
+        fill.run(
+            session2,
+            {
+                "target": "code",
+                "text": "if ready:\n    run()",
+                "clear": True,
+                "submit": True,
+                "keypress_fallback": False,
+            },
+        )
+    )
+    assert "未提交：读回与输入不一致" in blocks2[0]["text"]
+    assert "status=uncertain" in blocks2[0]["text"]
+    assert all(
+        not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter") for call in session2.client.calls
+    )
+    assert "preserveWhitespace" in actionability.FIELD_STATE_FN

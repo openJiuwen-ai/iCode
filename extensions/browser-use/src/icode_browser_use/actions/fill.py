@@ -75,10 +75,10 @@ def _normalize_native_value(value: Any) -> str:
     return str(value or "").replace("\r\n", "\n")
 
 
-def _normalize_lines(value: Any) -> list[str]:
-    """Normalize horizontal whitespace per line while preserving explicit line breaks."""
+def _normalize_lines(value: Any, *, preserve_whitespace: bool = False) -> list[str]:
+    """Split into lines, preserving horizontal whitespace when *preserve_whitespace* is True."""
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = [_normalize_text(line) for line in text.split("\n")]
+    lines = text.split("\n") if preserve_whitespace else [_normalize_text(line) for line in text.split("\n")]
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:
@@ -140,6 +140,7 @@ def _values_match(
     selection_suffix: str | None = None,
     raw_value: str | None = None,
     native_value: bool = False,
+    preserve_whitespace: bool = False,
 ) -> bool:
     if native_value:
         actual_raw = _normalize_native_value(value)
@@ -170,8 +171,13 @@ def _values_match(
     if not actual:
         return False
     if clear:
-        if raw_value is not None and ("\n" in expected or "\r" in expected):
-            return _normalize_lines(raw_value) == _normalize_lines(expected)
+        if preserve_whitespace or "\n" in expected or "\r" in expected:
+            expected_lines = _normalize_lines(expected, preserve_whitespace=preserve_whitespace)
+            if _normalize_lines(value, preserve_whitespace=preserve_whitespace) != expected_lines:
+                return False
+            if raw_value is not None:
+                return _normalize_lines(raw_value, preserve_whitespace=preserve_whitespace) == expected_lines
+            return True
         return actual == wanted
     if before_value is not None:
         if selection is not None:
@@ -182,14 +188,20 @@ def _values_match(
         if selection_prefix is not None and selection_suffix is not None:
             expected_full = selection_prefix + expected + selection_suffix
             if raw_value is not None:
-                # Both prefix/suffix and raw_value come from _visWalk (preserving visible line breaks).
-                # Compare line-by-line so explicit newlines collapsed to spaces never look like a match.
-                return _normalize_lines(raw_value) == _normalize_lines(expected_full)
+                # Compare both rendered innerText (value) and _visWalk (raw_value) line-by-line
+                # so extra blank lines, newlines flattened to spaces, or stripped indentation
+                # in whitespace-preserving editors never look like a match.
+                expected_lines = _normalize_lines(expected_full, preserve_whitespace=preserve_whitespace)
+                if _normalize_lines(value, preserve_whitespace=preserve_whitespace) != expected_lines:
+                    return False
+                return _normalize_lines(raw_value, preserve_whitespace=preserve_whitespace) == expected_lines
             expected_norm = _normalize_text(expected_full)
             reconstructed_before = _normalize_text(selection_prefix + selection_text + selection_suffix)
             if reconstructed_before == before_norm:
-                if "\n" in expected or "\r" in expected:
-                    return _normalize_lines(value) == _normalize_lines(expected_full)
+                if preserve_whitespace or "\n" in expected or "\r" in expected:
+                    return _normalize_lines(value, preserve_whitespace=preserve_whitespace) == _normalize_lines(
+                        expected_full, preserve_whitespace=preserve_whitespace
+                    )
                 return actual == expected_norm
             return False
         if selection_text:
@@ -457,6 +469,7 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         selection_suffix=before_selection_suffix,
         raw_value=state.get("rawText") if isinstance(state.get("rawText"), str) else None,
         native_value=native_value,
+        preserve_whitespace=bool(state.get("preserveWhitespace")),
     )
     try:
         if not matched:
@@ -514,6 +527,7 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         selection_suffix=before_selection_suffix,
         raw_value=state.get("rawText") if isinstance(state.get("rawText"), str) else None,
         native_value=native_value,
+        preserve_whitespace=bool(state.get("preserveWhitespace")),
     ):
         mismatch = True
 

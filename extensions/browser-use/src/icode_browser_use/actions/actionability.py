@@ -256,10 +256,12 @@ FIELD_STATE_FN = (
     " const root=(this.getRootNode && this.getRootNode())||document;"
     " let active=(root && root.activeElement) || document.activeElement;"
     " while (active && active.shadowRoot && active.shadowRoot.activeElement) { active=active.shadowRoot.activeElement; }"
+    " const ws=(typeof getComputedStyle==='function' ? String(getComputedStyle(this).whiteSpace||'') : '').toLowerCase();"
+    " const preserveWhitespace=ws==='pre'||ws==='pre-wrap'||ws==='break-spaces';"
     " return {tag, editable:this.isContentEditable===true,"
     "   focused:active===this || (!!active && !!(this.contains && this.contains(active))),"
     "   text:text===null?'':String(text),"
-    "   rawText};"
+    "   rawText, preserveWhitespace};"
     "}"
 )
 
