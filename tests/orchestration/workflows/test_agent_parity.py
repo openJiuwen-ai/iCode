@@ -230,6 +230,61 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     assert {"load_skill", "read_skill_resource", "run_skill_script"} <= {tool.name for tool in options["tools"]}
 
 
+async def test_extension_resource_owners_for_two_tools_using_the_same_child_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_file_extension(
+        monkeypatch,
+        "owners",
+        """from chrys.extensions import Extension, ToolContext
+
+extension = Extension()
+seen = []
+
+@extension.tool(requires_approval=False)
+async def owner(ctx: ToolContext) -> None:
+    seen.append(("tool", ctx.session_id, ctx.agent_name, ctx.agent_id))
+
+@extension.after_tool
+async def record(call, result):
+    if call.name == "owner":
+        ctx = call.context
+        seen.append(("hook", ctx.session_id, ctx.agent_name, ctx.agent_id))
+""",
+    )
+    profile, child = _delegating_profile(), _child_profile()
+    profile.extensions = child.extensions = ["owners"]
+    profile.sub_agents.agents.append(SubAgentRef(profile=child.name, tool_name="Inspect"))
+    call_owner = MockResponse(tool_calls=[("owner", "owner-call", {})])
+    main_client = MockChatClient(
+        responses=[
+            call_owner,
+            _delegate("First task"),
+            MockResponse(tool_calls=[("Inspect", "call-2", {"prompt": "Second task"})]),
+            MockResponse(text="Done"),
+        ]
+    )
+    child_client = MockChatClient(
+        responses=[call_owner, MockResponse(text="First"), call_owner, MockResponse(text="Second")]
+    )
+    patch_runtime(monkeypatch, [main_client])
+    _hand_out_child_client(monkeypatch, child_client)
+    host = make_host(tmp_path, project=make_workdir(tmp_path), profiles=[profile, child])
+    try:
+        await host.run_until_final("Go")
+    finally:
+        await host.shutdown()
+
+    seen = sys.modules["_chrys_extension_owners"].seen
+    session_id = seen[0][1]
+    assert session_id
+    assert seen == [
+        (callback, session_id, agent_name, agent_id)
+        for agent_name, agent_id in [(profile.name, None), (child.name, "sub:Child"), (child.name, "sub:Inspect")]
+        for callback in ("tool", "hook")
+    ]
+
+
 async def test_a_node_asks_its_extension_contexts_once_and_its_retry_keeps_their_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -239,7 +294,7 @@ async def test_a_node_asks_its_extension_contexts_once_and_its_retry_keeps_their
         monkeypatch,
         "acme_task",
         "from chrys.extensions import Extension\nextension = Extension()\nASKED = []\n\n"
-        "@extension.context\nasync def task(ctx):\n    ASKED.append(ctx.prompt)\n"
+        "@extension.context\nasync def task(ctx):\n    ASKED.append((ctx.prompt, ctx.agent_id))\n"
         "    return f'Asked {len(ASKED)} time(s) to: {ctx.prompt}'\n",
     )
     project = make_workdir(tmp_path)
@@ -281,7 +336,9 @@ async def test_a_node_asks_its_extension_contexts_once_and_its_retry_keeps_their
             await asyncio.gather(task, return_exceptions=True)
 
     assert result.outcome.value == "completed"
-    assert sys.modules["_chrys_extension_acme_task"].ASKED == ["Read twice"]
+    assert failed.invocation_id
+    asked = sys.modules["_chrys_extension_acme_task"].ASKED
+    assert asked == [("Read twice", f"workflow:{failed.invocation_id}")]
     first, retried = client.call_history[0][0], client.call_history[-1][0]
     opener = first[-1]
     assert "Asked 1 time(s) to: Read twice" in (opener.text or "")

@@ -94,6 +94,10 @@ class ToolContext:
     """The calling agent's profile name (a sub-agent or workflow node names its own profile)."""
     session_id: str | None
     """The saved session the call belongs to, or None outside one."""
+    agent_id: str | None = None
+    """None for the main agent, ``sub:<tool_name>`` for a sub-agent tool,
+    or ``workflow:<invocation_id>`` for a workflow node activation.
+    """
     _data_dir: Callable[[], Path] = field(repr=False, compare=False)
     _session_data_dir: Callable[[], Path | None] = field(repr=False, compare=False)
 
@@ -119,13 +123,14 @@ class ToolContext:
         session_data_dir: Path | str | None = None,
         agent_name: str = "test",
         session_id: str | None = None,
+        agent_id: str | None = None,
     ) -> ToolContext:
         """A context for calling a tool directly in a test; it never touches the real iCode folders.
 
         ``ctx.data_dir`` raises unless *data_dir* is given; ``ctx.session_data_dir``
         is None (no session) unless *session_data_dir* is given.
         """
-        return cls(**_testing_fields(cwd, data_dir, session_data_dir, agent_name, session_id))
+        return cls(**_testing_fields(cwd, data_dir, session_data_dir, agent_name, session_id, agent_id))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -145,9 +150,10 @@ class TurnContext(ToolContext):
         session_data_dir: Path | str | None = None,
         agent_name: str = "test",
         session_id: str | None = None,
+        agent_id: str | None = None,
     ) -> TurnContext:
         """A context for calling a context function directly in a test, as :meth:`ToolContext.for_testing`."""
-        return cls(prompt=prompt, **_testing_fields(cwd, data_dir, session_data_dir, agent_name, session_id))
+        return cls(prompt=prompt, **_testing_fields(cwd, data_dir, session_data_dir, agent_name, session_id, agent_id))
 
 
 def _testing_fields(
@@ -156,6 +162,7 @@ def _testing_fields(
     session_data_dir: Path | str | None,
     agent_name: str,
     session_id: str | None,
+    agent_id: str | None,
 ) -> dict[str, Any]:
     root = Path(cwd)
     session_dir = Path(session_data_dir) if session_data_dir is not None else None
@@ -163,6 +170,7 @@ def _testing_fields(
         "cwd": root,
         "workspace_dirs": (root,),
         "agent_name": agent_name,
+        "agent_id": agent_id,
         "session_id": session_id,
         "_data_dir": _test_dir(Path(data_dir)) if data_dir is not None else _missing_dir("data_dir"),
         "_session_data_dir": _test_dir(session_dir) if session_dir is not None else lambda: None,

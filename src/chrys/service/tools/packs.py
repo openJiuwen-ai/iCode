@@ -131,6 +131,8 @@ class ToolBuild:
     """Where ``todo_write`` announces a changed list."""
     web: WebTools | None = None
     """Set by :func:`assemble_tools` before any pack is created; callers leave it None."""
+    agent_id: str | None = None
+    """The identity exposed to Python extensions through ToolContext.agent_id."""
 
 
 @dataclass(frozen=True, slots=True)

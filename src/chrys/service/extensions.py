@@ -354,6 +354,7 @@ def _context_fields(extension_id: str, build: ToolBuild) -> dict[str, Any]:
         "cwd": folders[0],
         "workspace_dirs": folders,
         "agent_name": build.agent_name,
+        "agent_id": build.agent_id,
         "session_id": build.session_id or None,
         "_data_dir": partial(_private_dir, get_platform().config_dir / EXTENSION_DATA_DIR_NAME / extension_id),
         "_session_data_dir": (

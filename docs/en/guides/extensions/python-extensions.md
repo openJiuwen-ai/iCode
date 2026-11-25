@@ -151,9 +151,12 @@ iCode checks each tool when the extension is imported: a function that is not `a
 | `cwd` | The current [working directory](../daily-use/workspaces.md); resolve relative paths from it |
 | `workspace_dirs` | The working directory, then any additional working directories |
 | `agent_name` | The name of the agent calling the tool |
+| `agent_id` | `None` for the main agent, `sub:<tool_name>` for a sub-agent tool, or `workflow:<invocation_id>` for one workflow node activation |
 | `session_id` | The session's id, or `None` |
 | `data_dir` | A folder for the extension's own files, kept across sessions: `extension-data/<extension id>` in the iCode configuration directory |
 | `session_data_dir` | A folder for the extension's files in this session, inside the session's folder, or `None` when the session has no folder. Forking a session copies this folder, so store paths relative to it |
+
+Tools, turn contexts and tool hooks see the same `agent_id`. To keep resources apart within a session, include it alongside `session_id` and `agent_name`. The sub-agent ID uses only the tool name. Repeated calls share it, including calls from different workflow nodes that register the same tool name. A workflow node keeps its ID across retries and receives a new one on its next activation.
 
 iCode creates the two folders the first time a tool uses them, readable only by you. A context is valid only for the call it was given to: do not keep it for later calls. A tool changes iCode's state only through its result; anything else it changes is files and services, as with any program you run.
 
@@ -334,7 +337,7 @@ def test_reads_the_version(tmp_path):
     assert asyncio.run(pyproject_version(ctx)) == "1.2.0"
 ```
 
-`ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=...)` gives a tool only the folders you pass to it: `ctx.data_dir` raises an error unless you pass `data_dir`, and `ctx.session_data_dir` is `None` unless you pass `session_data_dir`.
+`ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=..., agent_id=...)` gives a tool only the folders you pass to it: `ctx.data_dir` raises an error unless you pass `data_dir`, and `ctx.session_data_dir` is `None` unless you pass `session_data_dir`.
 
 Contexts and tool hooks are plain async functions too. Call a context with `TurnContext.for_testing(tmp_path, prompt="...")`, and a hook with a `ToolCall` and a `ToolResult` you build:
 
