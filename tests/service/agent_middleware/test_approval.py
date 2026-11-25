@@ -697,24 +697,51 @@ def _session_archive_sensitive_component_case(tmp_path: Path) -> tuple[dict[str,
     )
 
 
+_AUTO_APPROVAL_REPLACED_ROOT_CASES = {
+    "workspace_git_file": _workspace_git_file_case,
+    "edit_file_in_git_workspace": _edit_file_in_git_workspace_case,
+    "secondary_git_workspace_root": _secondary_git_workspace_root_case,
+    "session_archive_read": _session_archive_read_case,
+    "session_archive_sensitive_component": _session_archive_sensitive_component_case,
+}
+
+
 @pytest.mark.parametrize(
-    "build_case",
+    ("build_case", "replace_root"),
     [
-        pytest.param(_safe_shell_case, id="safe_shell"),
-        pytest.param(_powershell_null_redirect_case, id="powershell_null_redirect"),
-        pytest.param(_workspace_git_file_case, id="workspace_git_file"),
-        pytest.param(_edit_file_in_git_workspace_case, id="edit_file_in_git_workspace"),
-        pytest.param(_secondary_git_workspace_root_case, id="secondary_git_workspace_root"),
-        pytest.param(_session_archive_read_case, id="session_archive_read"),
-        pytest.param(_session_archive_sensitive_component_case, id="session_archive_sensitive_component"),
+        pytest.param(_safe_shell_case, False, id="safe_shell"),
+        pytest.param(_powershell_null_redirect_case, False, id="powershell_null_redirect"),
+        *(pytest.param(case, False, id=name) for name, case in _AUTO_APPROVAL_REPLACED_ROOT_CASES.items()),
+        *(
+            pytest.param(case, True, id=f"replaced-root-{name}")
+            for name, case in _AUTO_APPROVAL_REPLACED_ROOT_CASES.items()
+        ),
     ],
 )
-async def test_auto_approval_records_alignment_placeholder(build_case: _AutoApprovalCase, tmp_path: Path) -> None:
-    """Every carve-out skips the dialog yet records an ``auto_approved`` placeholder to keep decision order aligned."""
+async def test_auto_approval_records_alignment_placeholder(
+    build_case: _AutoApprovalCase, tmp_path: Path, replace_root: bool
+) -> None:
+    """Carve-outs keep decision alignment and do not expand when a resolved root is replaced."""
     middleware_kwargs, ctx = build_case(tmp_path)
     bus = EventBus()
     mw = ApprovalMiddleware(event_bus=bus, **middleware_kwargs)
     h = await _Harness.attach(bus)
+
+    if replace_root:
+        roots = middleware_kwargs.get("workspace_roots") or middleware_kwargs.get("session_archive_read_roots")
+        assert roots
+        root = Path(roots[-1])
+        outside = tmp_path / "replacement"
+        root.rename(outside)
+        symlink_or_skip(root, outside, target_is_directory=True)
+        task = h.start(mw, ctx)
+        assert await wait_until(lambda: task.done() or bool(h.requests))
+        assert h.called is False
+        [request] = h.requests
+        await bus.publish(ApprovalResponse(request_id=request.request_id, approved=False, reason="root replaced"))
+        await task
+        assert h.called is False
+        return
 
     await h.run(mw, ctx)
 

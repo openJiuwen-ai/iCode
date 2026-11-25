@@ -20,6 +20,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, load_settings
 from chrys.foundation.config.spec import Apply, SettingOrigin, Source, specs_by_field
 from chrys.foundation.config.warnings import settings_warning_events
+from chrys.foundation.errors import clean_error_message
 from chrys.foundation.events.types import (
     AgentProfileSwitch,
     ApprovalModeUpdated,
@@ -33,10 +34,13 @@ from chrys.foundation.events.types import (
     SettingsReloaded,
     Warning,
     WorkspaceChange,
+    WorkspaceChangeFinished,
+    WorkspaceOperation,
     WorkspaceUpdated,
 )
 from chrys.foundation.i18n import DisplayPath, DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.platform.files import surrogate_safe_text
@@ -49,6 +53,16 @@ from chrys.orchestration.engine.reload_resources import (
 )
 from chrys.orchestration.engine.state.active_session import session_pin_overrides
 from chrys.orchestration.engine.state.lifecycle_permits import RebuildControlToken, RebuildPermit, RebuildPermitDenied
+from chrys.orchestration.engine.workspaces import (
+    LEAVE_MEMBERSHIP_WRITE_FAILED,
+    LeaveConfirmationRequired,
+    MembershipWrite,
+    StaleWorkspacePlan,
+    WorkspacePlan,
+    workspace_error_display,
+    workspace_left_warning,
+    workspace_updated_event,
+)
 from chrys.orchestration.session_hooks import read_hooks_strict
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import resolve_launch_profile
@@ -60,6 +74,8 @@ from chrys.service.profiles.models.resolver import (
 )
 from chrys.service.profiles.models.schema import is_model_profile_selectable
 from chrys.service.profiles.reload import ProfileReload
+from chrys.service.workspaces.paths import MissingWorkspacePrimary
+from chrys.service.workspaces.registry import RegistrySnapshot, WorkspaceRegistryError
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
@@ -164,6 +180,9 @@ _CONTROLS_WORKSPACE_MISSING = msg(
     "controls.workspace_missing",
     fallback="Cannot change the working directory: {path} does not exist.",
 )
+_WORKSPACE_CHANGE_FAILED = msg("controls.workspace_change_failed", fallback="Could not change workspace: {detail}")
+_WORKSPACE_CHANGE_CANCELLED = msg("controls.workspace_change_cancelled", fallback="Workspace change was cancelled.")
+_WORKSPACE_SESSION_CHANGED = msg("controls.workspace_session_changed", fallback="The active session changed.")
 _CONTROLS_SETTINGS_RESTART_REQUIRED = msg(
     "controls.settings_restart_required",
     fallback="Restart to apply these settings: {keys}.",
@@ -276,17 +295,10 @@ class RuntimeControls:
         if self._current.loaded is not None and self._current.loaded.sub_agent_tools is not None:
             self._current.loaded.sub_agent_tools.set_approval_mode(mode)
         self._workflows.set_approval_mode(mode)
-        if event.persist:
-            # Persist the user's choice so it survives restart.  BYPASS is
-            # downgraded to AUTO inside ``persist_approval_mode`` to avoid
-            # booting into unattended auto-approval on next launch — mirror
-            # that same downgrade onto the in-memory Settings so a later
-            # ``SettingsReload`` stays consistent with what's on disk.
-            #
-            # Through the overlay rather than onto the field: this key is
-            # ``Risk.DANGEROUS``, so a rejected value seals it at ``manual``, and
-            # an in-place write would leave that seal on top of the mode the user
-            # just chose.
+        updated = ApprovalModeUpdated(mode=mode.value, session_id=self._session.session_id)
+        if event.persist == "frontend":
+            updated.save_in_frontend = True
+        elif event.persist:
             try:
                 self._settings_handle.persist_approval_default(mode.value, persist=persist_approval_mode_fn)
             except (OSError, ValueError) as exc:
@@ -298,7 +310,8 @@ class RuntimeControls:
                         session_id=self._session.session_id,
                     )
                 )
-        prejudge_warning = None
+            else:
+                updated.saved_as_default = True
         if prejudge_path is not None:
             display = _PREJUDGE_UNAVAILABLE.bind(path=DisplayPath(str(prejudge_path)))
             prejudge_warning = Warning(
@@ -307,10 +320,9 @@ class RuntimeControls:
                 display_message=display,
                 session_id=self._session.session_id,
             )
+            updated.prejudge_warning = prejudge_warning
             await self._bus.publish(prejudge_warning)
-        await self._bus.publish(
-            ApprovalModeUpdated(mode=mode.value, session_id=self._session.session_id, prejudge_warning=prejudge_warning)
-        )
+        await self._bus.publish(updated)
 
     async def on_profile_switch(self, event: AgentProfileSwitch) -> None:
         """Handle agent profile switch — preserves conversation history."""
@@ -531,21 +543,13 @@ class RuntimeControls:
         self._session.model_profile_pinned = True
 
     async def _publish_workspace_updated_snapshot(
-        self,
-        session_id: str | None,
-        *,
-        primary_cwd: str | None = None,
-    ) -> None:
-        workspace = self._session.workspace
-        resolved_primary_cwd = primary_cwd if primary_cwd is not None else (workspace.primary_cwd if workspace else "")
-        await self._bus.publish(
-            WorkspaceUpdated(
-                primary_cwd=resolved_primary_cwd,
-                working_dirs=[d.path for d in workspace.working_dirs] if workspace is not None else [],
-                reference_files=list(workspace.reference_files) if workspace is not None else [],
-                session_id=session_id,
-            )
-        )
+        self, session_id: str | None, *, primary_cwd: str | None = None
+    ) -> WorkspaceUpdated:
+        update = workspace_updated_event(self._session, session_id=session_id)
+        if primary_cwd is not None:
+            update.primary_cwd = primary_cwd
+        await self._bus.publish(update)
+        return update
 
     async def _publish_model_satisfied_or_denied(
         self,
@@ -602,21 +606,28 @@ class RuntimeControls:
         profile: AgentProfile,
         *,
         operation: str,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
-        if self._current.loaded is None:
-            # The workspace rides as staged input, exactly like the settings: a
-            # build that fails before committing must leave the live root — the
-            # one the live settings and hooks were derived from — untouched.
-            await self._lifecycle.start_with_rebuild_permit(
-                permit, profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace
-            )
-            return
-        await self._lifecycle.reload_with_rebuild_permit(
-            permit, profile, workspace=workspace, operation=operation, staged_loaded=staged_loaded, session=session
+        rebuild = (
+            self._lifecycle.start_with_rebuild_permit
+            if self._current.loaded is None
+            else self._lifecycle.reload_with_rebuild_permit
         )
+        await rebuild(
+            permit,
+            profile,
+            workspace_plan=workspace_plan,
+            operation=operation,
+            staged_loaded=staged_loaded,
+            session=session,
+            commit_workspace=commit_workspace,
+        )
+        if operation == "workspace_change" and staged_loaded is not None:
+            for warning in settings_warning_events(staged_loaded):
+                await self._bus.publish(dataclasses.replace(warning, session_id=self._session.session_id))
 
     async def on_set_model_profile(self, event: SetModelProfile) -> None:
         """Switch the active model profile for this session, preserving the saved default.
@@ -1100,27 +1111,69 @@ class RuntimeControls:
             )
         )
 
+    def _workspace_refusal(self, *, missing: str | None = None) -> Error:
+        """Describe a workspace change refused before it committed."""
+        if missing is None:
+            code = "runtime_mutation_not_ready"
+            message = "No active agent — cannot change workspace"
+            display_message = _CONTROLS_WORKSPACE_SWITCH_NOT_READY.bind()
+        else:
+            code = "workspace_change_failed"
+            message = f"Working directory does not exist: {surrogate_safe_text(missing)}"
+            display_message = _CONTROLS_WORKSPACE_MISSING.bind(path=DisplayPath(missing))
+        return Error(code=code, message=message, display_message=display_message, session_id=self._session.session_id)
+
+    def _workspace_change_failure(self, exc: Exception, *, session_id: str | None = None) -> Error:
+        detail = clean_error_message(exc)
+        return Error(
+            code="workspace_change_failed",
+            message=detail,
+            display_message=workspace_error_display(exc) or _WORKSPACE_CHANGE_FAILED.bind(detail=detail),
+            session_id=session_id or self._session.session_id,
+        )
+
     async def on_workspace_change(self, event: WorkspaceChange) -> None:
+        """Use the ordinary cwd rebuild unless this request carries workspace intent."""
+        if (
+            self._session.workspace_id is None
+            and event.workspace_operation is WorkspaceOperation.NONE
+            and event.confirmation is None
+        ):
+            await self._change_unspecified_workspace(event)
+            return
+
+        error = None
+        update = None
+        try:
+            result = await self._change_workspace(event)
+            if isinstance(result, Error):
+                error = result
+                await self._bus.publish(error)
+            else:
+                update = result
+        except asyncio.CancelledError:
+            display = _WORKSPACE_CHANGE_CANCELLED.bind()
+            error = Error(code="workspace_change_cancelled", message=format_message(display), display_message=display)
+            raise
+        except Exception as exc:
+            error = self._workspace_change_failure(exc, session_id=event.session_id)
+            raise
+        finally:
+            finished = WorkspaceChangeFinished(
+                request_id=event.event_id,
+                session_id=event.session_id or self._session.session_id,
+                workspace_update=update,
+                error=error,
+            )
+            await finish_close(asyncio.create_task(self._bus.publish(finished)))
+
+    async def _change_unspecified_workspace(self, event: WorkspaceChange) -> None:
         """Handle workspace/cwd change — rebuild agent with new workspace."""
         if self._session.agent_profile is None:
-            await self._bus.publish(
-                Error(
-                    code="runtime_mutation_not_ready",
-                    message="No active agent — cannot change workspace",
-                    display_message=_CONTROLS_WORKSPACE_SWITCH_NOT_READY.bind(),
-                    session_id=self._session.session_id,
-                )
-            )
+            await self._bus.publish(self._workspace_refusal())
             return
         if event.primary_cwd and (missing := Workspace.from_cwd(event.primary_cwd).missing_primary()) is not None:
-            await self._bus.publish(
-                Error(
-                    code="workspace_change_failed",
-                    message=f"Working directory does not exist: {surrogate_safe_text(missing)}",
-                    display_message=_CONTROLS_WORKSPACE_MISSING.bind(path=DisplayPath(missing)),
-                    session_id=self._session.session_id,
-                )
-            )
+            await self._bus.publish(self._workspace_refusal(missing=missing))
             return
         token = self._permits.capture_control_token()
         permit = await self._permits.acquire_rebuild_permit(token)
@@ -1131,22 +1184,10 @@ class RuntimeControls:
         new_workspace = Workspace.from_cwd(event.primary_cwd)
         starting_without_executor = self._current.loaded is None
         try:
-            # A workspace change is a settings reload in disguise: the working directory
-            # trust domain is root-derived, so the new root's layers must be
-            # audited and applied — and the old root's dropped — by the same
-            # rebuild that installs the new workspace. Same routing as a reload
-            # (RESTART values stay in force, the command line keeps its credit),
-            # minus the restart-required warning: nothing was edited here, so any
-            # deferred value was already reported by the reload that deferred it.
             try:
-                old_loaded = self._settings_handle.base
-                candidate = await asyncio.to_thread(
-                    load_settings,
-                    workdir=Path(new_workspace.primary_cwd),
-                    eval_context=self._reload_eval_context(),
-                    **self._session_pin_overrides(),
+                staged_loaded = await self._lifecycle.stage_workspace_settings(
+                    new_workspace.primary_cwd, settings_loader=load_settings
                 )
-                staged_loaded, _ = route_restart_settings(reattribute_command_line(candidate, old_loaded), old_loaded)
             except Exception as exc:
                 # Same shape as a reload's load failure: it aborts before the
                 # rebuild publishes any completion event, and the bus swallows
@@ -1156,18 +1197,203 @@ class RuntimeControls:
                     Error(code="workspace_change_failed", message=str(exc), session_id=self._session.session_id)
                 )
                 raise
+            live_plan = self._session.workspace_plan
             await self._start_or_restart_with_permit(
                 permit,
                 self._session.agent_profile,
                 operation="workspace_change",
-                workspace=new_workspace,
+                workspace_plan=self._lifecycle.workspaces.plan(
+                    workspace=new_workspace,
+                    snapshot=RegistrySnapshot(),
+                    live_plan=live_plan if live_plan is not None and live_plan.departure is not None else None,
+                ),
                 staged_loaded=staged_loaded,
             )
-            # After the commit, not before: these verdicts describe the new
-            # root's files, and a failed rebuild keeps the old root's settings.
-            for warning in settings_warning_events(staged_loaded):
-                await self._bus.publish(dataclasses.replace(warning, session_id=self._session.session_id))
             if starting_without_executor:
                 await self._publish_workspace_updated_snapshot(token.session_id)
         finally:
             self._permits.release_rebuild_permit(permit)
+
+    async def _change_workspace(self, event: WorkspaceChange) -> WorkspaceUpdated | Error:
+        if self._session.agent_profile is None:
+            return self._workspace_refusal()
+        token = self._permits.capture_control_token()
+        operation = event.workspace_operation
+        try:
+            permit = await self._permits.acquire_rebuild_permit(token)
+            superseded = None
+            if (
+                isinstance(permit, RebuildPermitDenied)
+                and _denial_allows_already_satisfied_success(permit)
+                and token.session_id == self._session.session_id
+                and (operation is WorkspaceOperation.NONE or event.workspace_id == self._session.workspace_id)
+            ):
+                superseded = permit
+                permit = await self._permits.acquire_rebuild_permit(self._permits.capture_control_token())
+            if isinstance(permit, RebuildPermitDenied):
+                denied = superseded or permit
+                return Error(
+                    code=denied.code,
+                    message=denied.message,
+                    display_message=denied.display_message,
+                    session_id=token.session_id,
+                )
+            try:
+                token = permit.token
+                if event.session_id is not None and not self._session.owns_runtime_id(event.session_id):
+                    return Error(
+                        code="workspace_change_failed",
+                        message=format_message(_WORKSPACE_SESSION_CHANGED.bind()),
+                        display_message=_WORKSPACE_SESSION_CHANGED.bind(),
+                        session_id=event.session_id,
+                    )
+                workspaces = self._lifecycle.workspaces
+                snapshot = event.workspace_snapshot
+                if snapshot is None:
+                    snapshot = await workspaces.read_and_warn(self._session.session_id)
+                workspace = self._session.workspace or Workspace.from_cwd()
+                if operation is WorkspaceOperation.NONE and self._session.workspace_id is None and event.primary_cwd:
+                    workspace = Workspace.from_cwd(event.primary_cwd)
+                plan = workspaces.plan(
+                    workspace=workspace,
+                    live_plan=self._session.workspace_plan,
+                    snapshot=snapshot,
+                    operation=operation,
+                    workspace_id=event.workspace_id,
+                    target_cwd=event.primary_cwd,
+                    require_leave_confirmation=event.require_leave_confirmation,
+                    confirmation=event.confirmation,
+                )
+                if operation is WorkspaceOperation.NONE and (missing := plan.workspace.missing_primary()) is not None:
+                    return self._workspace_refusal(missing=missing)
+                already_loaded = self._current.loaded is not None and (
+                    plan is self._session.workspace_plan or plan.noop
+                )
+                if superseded is not None and not already_loaded:
+                    return Error(
+                        code=superseded.code,
+                        message=superseded.message,
+                        display_message=superseded.display_message,
+                        session_id=token.session_id,
+                    )
+                commit = workspaces.membership_write(plan, operation, source_id=self._session.workspace_id)
+                if already_loaded:
+                    if commit is not None:
+                        session_id = self._session.membership_session_id
+                        if session_id is None:
+                            raise RuntimeError("Saving workspace membership requires a session ID.")
+                        commit.save(session_id)
+                    if plan is self._session.workspace_plan or superseded is not None:
+                        return await self._publish_workspace_updated_snapshot(token.session_id)
+                    return workspace_updated_event(self._session, session_id=token.session_id)
+            except WorkspaceRegistryError, MissingWorkspacePrimary, LeaveConfirmationRequired:
+                raise
+            except Exception as exc:
+                return self._workspace_change_failure(exc, session_id=event.session_id)
+            else:
+                # The rebuild reports its own load failures.
+                return await self._rebuild_workspace(permit, plan, commit, operation=operation)
+            finally:
+                self._permits.release_rebuild_permit(permit)
+        except (WorkspaceRegistryError, MissingWorkspacePrimary, LeaveConfirmationRequired) as exc:
+            code = (
+                "workspace_primary_missing"
+                if isinstance(exc, MissingWorkspacePrimary)
+                else "workspace_leave_confirmation_required"
+                if isinstance(exc, LeaveConfirmationRequired)
+                else "workspace_change_failed"
+                if isinstance(exc, StaleWorkspacePlan) and operation is WorkspaceOperation.NONE
+                else "workspace_selection_failed"
+            )
+            return Error(
+                code=code, message=str(exc), display_message=exc.display_message, session_id=self._session.session_id
+            )
+
+    async def _rebuild_workspace(
+        self,
+        permit: RebuildPermit,
+        plan: WorkspacePlan,
+        commit: MembershipWrite | None,
+        *,
+        operation: WorkspaceOperation,
+    ) -> WorkspaceUpdated | Error:
+        """Rebuild for *plan* and report the commit's membership result."""
+        workspace = plan.workspace
+        profile = self._session.agent_profile
+        if profile is None:
+            return self._workspace_refusal()
+        before = self._current.loaded
+        update: WorkspaceUpdated | None = None
+
+        async def record_update(event: WorkspaceUpdated) -> None:
+            nonlocal update
+            if event.session_id == self._session.session_id:
+                update = event
+
+        await self._bus.subscribe(WorkspaceUpdated, record_update)
+        try:
+            try:
+                staged_loaded = await self._lifecycle.stage_workspace_settings(
+                    workspace.primary_cwd, settings_loader=load_settings
+                )
+            except Exception as exc:
+                detail = str(exc)
+                return Error(
+                    code="workspace_change_failed",
+                    message=detail,
+                    display_message=workspace_error_display(exc) or _WORKSPACE_CHANGE_FAILED.bind(detail=detail),
+                    session_id=self._session.session_id,
+                )
+
+            if commit is not None and not commit.best_effort:
+                try:
+                    self._settings_handle.check_prepared(self._settings_handle.prepare(staged_loaded))
+                    if self._session.session_id is None:
+                        self._session.begin(agent_profile=profile)
+                    session_id = self._session.membership_session_id
+                    if session_id is None:
+                        raise RuntimeError("Saving workspace membership requires a session ID.")
+                    commit.save(session_id)
+                except WorkspaceRegistryError:
+                    raise
+                except Exception as exc:
+                    return self._workspace_change_failure(exc)
+
+            await self._start_or_restart_with_permit(
+                permit,
+                profile,
+                operation="workspace_change",
+                workspace_plan=plan,
+                staged_loaded=staged_loaded,
+                commit_workspace=commit,
+            )
+            departure = plan.departure
+            if plan.left_workspace and departure is not None and self._session.surface is SessionSurface.CLI:
+                await self._bus.publish(workspace_left_warning(self._session.session_id, departure.name))
+            if update is None:
+                update = await self._publish_workspace_updated_snapshot(self._session.session_id)
+            return update
+        except Exception as exc:
+            if commit is not None and commit.saved:
+                current = self._session.workspace if self._current.loaded is not None else None
+                error = commit.open_failure(current, exc)
+                return Error(
+                    code=error.code,
+                    message=str(error),
+                    display_message=error.display_message,
+                    session_id=self._session.session_id,
+                )
+            raise
+        finally:
+            await self._bus.unsubscribe(WorkspaceUpdated, record_update)
+            committed = self._current.loaded is not before and self._current.loaded is not None
+            if committed:
+                if operation is WorkspaceOperation.SELECT and plan.workspace_id is not None:
+                    await self._lifecycle.touch_opened_workspace(workspace, workspace.primary_cwd)
+                # The mapping error belongs to the installed workspace even if the request was cancelled.
+                if commit is not None and commit.failure is not None and plan.departure is not None:
+                    await self._lifecycle.workspaces.warn_membership_write(
+                        self._session.session_id or "",
+                        LEAVE_MEMBERSHIP_WRITE_FAILED.bind(name=plan.departure.name),
+                        commit.failure,
+                    )

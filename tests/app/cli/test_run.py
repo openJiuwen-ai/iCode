@@ -58,6 +58,7 @@ from chrys.orchestration.session_host import (
     SessionNotFoundError,
 )
 from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.state.store import SESSION_ID_AMBIGUOUS
 from tests.support.streams import FailingTextStream
 
 
@@ -174,7 +175,7 @@ def _prepared_runtime(
     )
 
 
-def _settings(*, restoring_session: bool = False) -> headless.PreparedRuntime:
+def _settings(*, restoring_session: bool = False, workspace_cwd: str = "") -> headless.PreparedRuntime:
     return _prepared_runtime()
 
 
@@ -315,13 +316,13 @@ def test_run_command_accepts_short_flags(monkeypatch: pytest.MonkeyPatch, capsys
     _patch_runtime(monkeypatch)
     _patch_model_registry(monkeypatch)
 
-    rc = run_cli.main(["hello", "-a", "Headless", "-m", "Friendly Model", "-s", "abc"])
+    rc = run_cli.main(["hello", "-a", "Headless", "-m", "Friendly Model", "-s", "abc123abc123"])
 
     out = capsys.readouterr()
     assert rc == 0
     assert out.out == "final text\n"
     assert FakeHost.instances[0].kwargs["profile_name"] == "Headless"
-    assert FakeHost.instances[0].kwargs["session_id"] == "abc"
+    assert FakeHost.instances[0].kwargs["session_id"] == "abc123abc123"
     assert FakeHost.instances[0].kwargs["loaded_settings"].settings.model_profile == "model-id"
     assert FakeHost.instances[0].kwargs["loaded_settings"].settings.model_profile_override == ""
 
@@ -507,7 +508,7 @@ def test_run_command_changes_directory_before_bootstrapping(
 def test_run_command_json_output(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     _patch_runtime(monkeypatch)
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "--session", "abc", "--json"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "--session", "abc123abc123", "--json"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -518,7 +519,7 @@ def test_run_command_json_output(monkeypatch: pytest.MonkeyPatch, capsys) -> Non
     assert payload["result"] == "final text"
     assert isinstance(payload["duration"], (int, float))
     assert payload["duration"] >= 0
-    assert FakeHost.instances[0].kwargs["session_id"] == "abc"
+    assert FakeHost.instances[0].kwargs["session_id"] == "abc123abc123"
 
 
 def test_run_command_bootstrap_warning_text_mode(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
@@ -574,16 +575,12 @@ def test_run_command_marks_the_runtime_as_restoring_only_with_a_session(
 
     monkeypatch.setattr(headless, "prepare_runtime", _record)
 
-    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc"]) == 0
+    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123"]) == 0
     assert run_cli.main(["hello", "--agent", "Headless"]) == 0
-    # A blank id is "no session" to the host, so it must be one here too —
-    # a workdir-free bootstrap ahead of a fresh session would silently drop
-    # the working directory's workdir layer.
-    assert run_cli.main(["hello", "--agent", "Headless", "-s", "   "]) == 0
+    with pytest.raises(SystemExit):
+        run_cli.main(["hello", "--agent", "Headless", "-s", "   "])
     capsys.readouterr()
-    assert seen == [True, False, False]
-    assert FakeHost.instances[2].kwargs["session_id"] is None
-    assert not FakeHost.instances[2].started
+    assert seen == [True, False]
 
 
 def test_prepare_runtime_composes_the_same_root_independent_warnings_for_a_restore(
@@ -649,7 +646,7 @@ def test_run_command_writes_the_target_roots_warnings_in_text_mode(
     restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
     FakeHost.restored_loaded = restored_loaded
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -657,7 +654,7 @@ def test_run_command_writes_the_target_roots_warnings_in_text_mode(
     (expected,) = settings_warning_events(restored_loaded)
     lines = out.err.splitlines()
     assert lines[:3] == [
-        "• Restoring session abc…",
+        "• Restoring session abc123abc123…",
         f"Warning: {expected.message}",
         "• Restored session session1 · Fake Model",
     ]
@@ -675,7 +672,7 @@ def test_run_command_quiet_restore_writes_only_the_target_roots_warnings(
     restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
     FakeHost.restored_loaded = restored_loaded
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--quiet"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123", "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -692,7 +689,7 @@ def test_run_command_writes_the_target_roots_warnings_in_json_mode(
     restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_workdir_rejection(),))
     FakeHost.restored_loaded = restored_loaded
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--json"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123", "--json"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -701,6 +698,7 @@ def test_run_command_writes_the_target_roots_warnings_in_json_mode(
         "warning": expected.message,
         "code": "setting_rejected",
     }
+    assert FakeHost.instances[0].on_event is None
 
 
 def test_run_command_without_a_session_does_not_drive_an_early_start(
@@ -938,19 +936,19 @@ def test_run_command_reports_session_not_found_with_typed_code(monkeypatch: pyte
             timeout: float | None = None,
             on_event: Callable[[Event], None] | None = None,
         ) -> HeadlessRunResult:
-            raise SessionNotFoundError("Session not found: deadbeef. Recent sessions: aabbcc")
+            raise SessionNotFoundError("Session not found: deadbeef0000")
 
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(run_cli, "ChrysSessionHost", SessionNotFoundHost)
 
-    rc = run_cli.main(["hello", "-a", "Headless", "-s", "deadbeef", "--json"])
+    rc = run_cli.main(["hello", "-a", "Headless", "-s", "deadbeef0000", "--json"])
 
     out = capsys.readouterr()
     assert rc == 1
     assert out.out == ""
     payload = json.loads(out.err)
     assert payload == {
-        "error": "Session not found: deadbeef. Recent sessions: aabbcc",
+        "error": "Session not found: deadbeef0000",
         "code": "session_not_found",
     }
     assert SessionNotFoundHost.instances[0].shutdown_called
@@ -965,19 +963,19 @@ def test_run_command_reports_session_ambiguous_with_typed_code(monkeypatch: pyte
             timeout: float | None = None,
             on_event: Callable[[Event], None] | None = None,
         ) -> HeadlessRunResult:
-            raise AmbiguousSessionIdError("Session id 'abc' is ambiguous.")
+            raise AmbiguousSessionIdError("Session id 'abc123abc123' is ambiguous.")
 
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(run_cli, "ChrysSessionHost", AmbiguousHost)
 
-    rc = run_cli.main(["hello", "-a", "Headless", "-s", "abc", "--json"])
+    rc = run_cli.main(["hello", "-a", "Headless", "-s", "abc123abc123", "--json"])
 
     out = capsys.readouterr()
     assert rc == 1
     assert out.out == ""
     payload = json.loads(out.err)
     assert payload == {
-        "error": "Session id 'abc' is ambiguous.",
+        "error": "Session id 'abc123abc123' is ambiguous.",
         "code": "session_ambiguous",
     }
 
@@ -1213,13 +1211,13 @@ def test_run_command_restore_progress_shows_what_the_start_publishes_once(
         AgentLoadFinished(agent_profile="Headless", session_id="session-1"),
     ]
 
-    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc"]) == 0
+    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123"]) == 0
 
     out = capsys.readouterr()
     assert out.out == "final text\n"
     lines = out.err.splitlines()
     assert lines[:4] == [
-        "• Restoring session abc…",
+        "• Restoring session abc123abc123…",
         "• Connecting MCP server github…",
         "Warning: github: refused",
         "• Restored session session1 · Reviewer · Fake Model",
@@ -1241,7 +1239,7 @@ def test_run_command_quiet_restore_shows_a_warning_the_start_publishes_once(
     ]
     FakeHost.run_events = [Warning(code=refused.code, message=refused.message)]
 
-    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--quiet"]) == 0
+    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc123abc123", "--quiet"]) == 0
 
     out = capsys.readouterr()
     assert out.out == "final text\n"
@@ -1415,7 +1413,7 @@ def test_run_command_help_shows_task_option() -> None:
     assert "-t FILE" in help_text
     assert "--task FILE" in help_text
     assert "encoding auto-detected" in help_text
-    assert "resolved relative to --workdir" in help_text
+    assert "relative to --workdir or the --workspace primary folder" in " ".join(help_text.split())
 
 
 def test_run_command_help_uses_capitalized_help_text() -> None:
@@ -1803,27 +1801,15 @@ def test_fixed_failures_stay_english_across_locales(
             ),
             "session_not_found",
             "Session not found: deadbeef",
-            id="session-without-recent",
-        ),
-        pytest.param(
-            lambda: SessionNotFoundError(
-                "Session not found: deadbeef. Recent sessions: aabbcc, ddeeff",
-                display_message=session_host_module._SESSION_NOT_FOUND_WITH_RECENT.bind(
-                    session_id="deadbeef",
-                    recent=DisplaySequence(("aabbcc", "ddeeff")),
-                ),
-            ),
-            "session_not_found",
-            "Session not found: deadbeef. Recent sessions: aabbcc, ddeeff",
-            id="session-with-recent",
+            id="session-not-found",
         ),
         pytest.param(
             lambda: AmbiguousSessionIdError(
-                "Session id 'abc' is ambiguous.",
-                display_message=session_host_module._SESSION_ID_AMBIGUOUS.bind(session_id="abc"),
+                "Session id 'abc123abc123' is ambiguous.",
+                display_message=SESSION_ID_AMBIGUOUS.bind(session_id="abc123abc123"),
             ),
             "session_ambiguous",
-            "Session id 'abc' is ambiguous.",
+            "Session id 'abc123abc123' is ambiguous.",
             id="ambiguous-session",
         ),
         pytest.param(

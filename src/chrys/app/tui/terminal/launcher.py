@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 import shutil
@@ -16,6 +17,7 @@ from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.process import managed_subprocess
 
 _SSH_ENV_VARS = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")
 _HOSTED_WORKSPACE_ENV_VARS = ("GITPOD_WORKSPACE_ID", "REPL_ID")
@@ -26,7 +28,6 @@ _CORE_GRAPHICS_PATH = "/System/Library/Frameworks/CoreGraphics.framework/CoreGra
 _CORE_FOUNDATION_PATH = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 _TUI_SUBPROCESS_COMMAND = "__tui_subprocess__"
 _GHOSTTY_APP_NAME = "Ghostty"
-_ITERM_APP_NAME = "iTerm2"
 _QUICK_LAUNCH_TIMEOUT_SECONDS = 0.25
 
 _TERMINAL_LAUNCH_UNAVAILABLE = msg(
@@ -36,6 +37,9 @@ _TERMINAL_LAUNCH_UNAVAILABLE = msg(
 _TERMINAL_LAUNCH_MACOS_FAILED = msg(
     "tui.terminal.launch.macos_failed",
     fallback="Could not open Terminal: {error}",
+)
+_TERMINAL_LAUNCH_NO_REPLY = msg(
+    "tui.terminal.launch.no_reply", fallback="The terminal did not confirm whether the window opened."
 )
 _TERMINAL_LAUNCH_WINDOWS_FAILED = msg(
     "tui.terminal.launch.windows_failed",
@@ -102,20 +106,63 @@ def build_chrys_tui_argv(session_id: str) -> list[str]:
     return [*_entrypoint_argv(), _TUI_SUBPROCESS_COMMAND, "--session", session_id]
 
 
-def launch_new_chrys_window(session_id: str, *, cwd: str | None = None) -> None:
+def build_macos_fork_argv(session_id: str) -> list[str]:
+    # The terminal host creates the child independently of this process.
+    from chrys.foundation.config.settings import SESSION_ROOT_DIR_ENV_VAR, resolve_session_root_dir
+
+    return [
+        "/usr/bin/env",
+        f"HOME={Path.home()}",
+        f"{SESSION_ROOT_DIR_ENV_VAR}={resolve_session_root_dir(create=False)}",
+        *build_chrys_tui_argv(session_id),
+    ]
+
+
+def macos_login_shell_argv(argv: list[str], *, cwd: str | None) -> list[str]:
+    # A terminal's custom-command API skips shell startup. Load the user's
+    # normal interactive environment before restoring the fork's storage and cwd.
+    shell_env = [f"HOME={Path.home()}"]
+    shell_env.extend(f"{name}={os.environ[name]}" for name in ("ZDOTDIR", "XDG_CONFIG_HOME") if os.environ.get(name))
+    shell = os.environ.get("SHELL") or "/bin/zsh"
+    command = macos_shell_command(argv, cwd=cwd)
+    match Path(shell).name:
+        case "csh" | "tcsh":
+            # csh disallows -l alongside -c. Pass the POSIX command as data
+            # so csh history expansion cannot reinterpret a '!' in a path.
+            shell_argv = [shell, "-i", "-c", 'exec /bin/sh -c "$argv[1]"', command]
+        case "zsh" | "bash" | "sh" | "dash" | "ksh" | "fish":
+            shell_argv = [shell, "-l", "-i", "-c", command]
+        case _:
+            shell_argv = ["/bin/sh", "-c", command]
+    return ["/usr/bin/env", *shell_env, *shell_argv]
+
+
+async def run_macos_terminal_script(script: str, *args: str) -> subprocess.CompletedProcess[str]:
+    # Only the AppleEvent sender belongs to this request. The terminal host
+    # and the resumed session it starts have their own lifetimes.
+    argv = ["/usr/bin/osascript", "-", *args]
+    async with managed_subprocess(
+        *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    ) as proc:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(script.encode()), timeout=120)
+        return subprocess.CompletedProcess(
+            argv, await proc.wait(), stdout.decode(errors="replace"), stderr.decode(errors="replace")
+        )
+
+
+async def launch_new_chrys_window(session_id: str, *, cwd: str | None = None) -> None:
     """Open a new local terminal window running Chrys for *session_id*."""
-    if not can_open_new_chrys_window():
+    if not await asyncio.to_thread(can_open_new_chrys_window):
         display_message = _TERMINAL_LAUNCH_UNAVAILABLE.bind(app=APP_DISPLAY_NAME)
         raise TerminalLaunchError(format_message(display_message), display_message=display_message)
-    argv = build_chrys_tui_argv(session_id)
     platform = get_platform()
     if platform.is_macos:
-        _launch_macos(argv, cwd=cwd)
+        argv = await asyncio.to_thread(build_macos_fork_argv, session_id)
+        await _launch_macos(argv, cwd=cwd)
         return
-    if platform.is_windows:
-        _launch_windows(argv, cwd=cwd)
-        return
-    _launch_linux(argv, cwd=cwd)
+    argv = build_chrys_tui_argv(session_id)
+    launch = _launch_windows if platform.is_windows else _launch_linux
+    await asyncio.to_thread(launch, argv, cwd=cwd)
 
 
 def _env_flag_is_true(value: str | None) -> bool:
@@ -200,40 +247,33 @@ def _looks_like_python(executable: str) -> bool:
     return name.startswith(("python", "pypy"))
 
 
-def _launch_macos(argv: list[str], *, cwd: str | None) -> None:
-    if _is_ghostty_session() and _try_launch_macos_ghostty(argv, cwd=cwd):
+async def _launch_macos(argv: list[str], *, cwd: str | None) -> None:
+    if _is_ghostty_session() and await asyncio.to_thread(_try_launch_macos_ghostty, argv, cwd=cwd):
         return
-    if _is_wezterm_session() and _try_launch_wezterm_tab(argv, cwd=cwd):
+    if _is_wezterm_session() and await asyncio.to_thread(
+        _try_launch_wezterm_window, macos_login_shell_argv(argv, cwd=cwd), cwd=cwd
+    ):
         return
-    if _is_iterm_session() and _try_launch_macos_iterm_tab(argv, cwd=cwd):
-        return
-    command = _shell_command(argv, cwd=cwd)
-    script = f'tell application "Terminal"\n do script "{_applescript_quote(command)}"\n activate\nend tell'
-    try:
-        _spawn_or_raise(
-            ["/usr/bin/osascript", "-e", script],
-            label="Terminal",
-            verify_quick_exit=True,
+    if _is_iterm_session():
+        command = shlex.join(macos_login_shell_argv(argv, cwd=cwd))
+        script = (
+            'tell application "iTerm2"\n activate\n create window with default profile command startCommand\nend tell'
         )
+    else:
+        command = macos_shell_command(argv, cwd=cwd)
+        script = 'tell application "Terminal"\n do script startCommand\n activate\nend tell'
+    script = f"on run argv\nset startCommand to item 1 of argv\n{script}\nend run"
+    try:
+        result = await run_macos_terminal_script(script, command)
+    except TimeoutError as exc:
+        display_message = _TERMINAL_LAUNCH_NO_REPLY.bind()
+        raise TerminalLaunchError(format_message(display_message), display_message=display_message) from exc
     except OSError as exc:
         display_message = _TERMINAL_LAUNCH_MACOS_FAILED.bind(error=str(exc))
         raise TerminalLaunchError(format_message(display_message), display_message=display_message) from exc
-
-
-def _try_launch_macos_iterm_tab(argv: list[str], *, cwd: str | None) -> bool:
-    command = _shell_command(argv, cwd=cwd)
-    escaped = _applescript_quote(command)
-    script = (
-        f'tell application "{_ITERM_APP_NAME}"\n'
-        "  activate\n"
-        "  if (count of windows) = 0 then\n"
-        f'    create window with default profile command "{escaped}"\n'
-        "  else\n"
-        f'    tell current window to create tab with default profile command "{escaped}"\n'
-        "  end if\n"
-        "end tell"
-    )
-    return _try_spawn(["/usr/bin/osascript", "-e", script], verify_quick_exit=True)
+    if result.returncode:
+        display_message = _TERMINAL_LAUNCH_MACOS_FAILED.bind(error=result.stderr.strip() or str(result.returncode))
+        raise TerminalLaunchError(format_message(display_message), display_message=display_message)
 
 
 def _is_ghostty_session(env: Mapping[str, str] | None = None) -> bool:
@@ -241,8 +281,7 @@ def _is_ghostty_session(env: Mapping[str, str] | None = None) -> bool:
 
 
 def _try_launch_macos_ghostty(argv: list[str], *, cwd: str | None) -> bool:
-    command = _shell_command(argv, cwd=cwd)
-    ghostty_args = ["-e", "/bin/sh", "-lc", command]
+    ghostty_args = ["-e", *macos_login_shell_argv(argv, cwd=cwd)]
     ghostty_path = _ghostty_cli_path()
     if ghostty_path is not None:
         args = [ghostty_path, *ghostty_args]
@@ -269,11 +308,11 @@ def _is_wezterm_session(env: Mapping[str, str] | None = None) -> bool:
     return _env_contains("wezterm", env=env) or _env_has_any(("WEZTERM_EXECUTABLE", "WEZTERM_PANE"), env=env)
 
 
-def _try_launch_wezterm_tab(argv: list[str], *, cwd: str | None) -> bool:
+def _try_launch_wezterm_window(argv: list[str], *, cwd: str | None) -> bool:
     wezterm = shutil.which("wezterm")
     if wezterm is None:
         return False
-    args = [wezterm, "cli", "spawn", "--new-tab"]
+    args = [wezterm, "cli", "spawn", "--new-window"]
     if cwd:
         args.extend(["--cwd", cwd])
     args.extend(["--", *argv])
@@ -281,7 +320,7 @@ def _try_launch_wezterm_tab(argv: list[str], *, cwd: str | None) -> bool:
 
 
 def _launch_windows(argv: list[str], *, cwd: str | None) -> None:
-    if _is_windows_terminal_session() and _try_launch_windows_terminal_tab(argv, cwd=cwd):
+    if _is_windows_terminal_session() and _try_launch_windows_terminal_window(argv, cwd=cwd):
         return
     comspec = os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
     try:
@@ -300,11 +339,11 @@ def _is_windows_terminal_session(env: Mapping[str, str] | None = None) -> bool:
     return _env_has_any(("WT_SESSION", "WT_PROFILE_ID"), env=env)
 
 
-def _try_launch_windows_terminal_tab(argv: list[str], *, cwd: str | None) -> bool:
+def _try_launch_windows_terminal_window(argv: list[str], *, cwd: str | None) -> bool:
     wt = shutil.which("wt")
     if wt is None:
         return False
-    args = [wt, "-w", "0", "new-tab"]
+    args = [wt, "-w", "new", "new-tab"]
     if cwd:
         args.extend(["-d", cwd])
     args.extend(argv)
@@ -312,13 +351,13 @@ def _try_launch_windows_terminal_tab(argv: list[str], *, cwd: str | None) -> boo
 
 
 def _launch_linux(argv: list[str], *, cwd: str | None) -> None:
-    if _is_wezterm_session() and _try_launch_wezterm_tab(argv, cwd=cwd):
+    if _is_wezterm_session() and _try_launch_wezterm_window(argv, cwd=cwd):
         return
-    if _is_kitty_session() and _try_launch_kitty_tab(argv, cwd=cwd):
+    if _is_kitty_session() and _try_launch_kitty_window(argv, cwd=cwd):
         return
-    if _is_gnome_terminal_session() and _try_launch_gnome_terminal_tab(argv, cwd=cwd):
+    if _is_gnome_terminal_session() and _try_launch_gnome_terminal_window(argv, cwd=cwd):
         return
-    if _is_konsole_session() and _try_launch_konsole_tab(argv, cwd=cwd):
+    if _is_konsole_session() and _try_launch_konsole_window(argv, cwd=cwd):
         return
 
     launchers = (
@@ -349,11 +388,11 @@ def _is_kitty_session(env: Mapping[str, str] | None = None) -> bool:
     return _env_has_any(("KITTY_LISTEN_ON",), env=env)
 
 
-def _try_launch_kitty_tab(argv: list[str], *, cwd: str | None) -> bool:
+def _try_launch_kitty_window(argv: list[str], *, cwd: str | None) -> bool:
     kitty = shutil.which("kitty")
     if kitty is None:
         return False
-    args = [kitty, "@", "launch", "--type=tab"]
+    args = [kitty, "@", "launch", "--type=os-window"]
     if cwd:
         args.extend(["--cwd", cwd])
     args.extend(["--", *argv])
@@ -364,11 +403,11 @@ def _is_gnome_terminal_session(env: Mapping[str, str] | None = None) -> bool:
     return _env_has_any(("GNOME_TERMINAL_SCREEN", "GNOME_TERMINAL_SERVICE"), env=env)
 
 
-def _try_launch_gnome_terminal_tab(argv: list[str], *, cwd: str | None) -> bool:
+def _try_launch_gnome_terminal_window(argv: list[str], *, cwd: str | None) -> bool:
     terminal = shutil.which("gnome-terminal")
     if terminal is None:
         return False
-    args = [terminal, "--tab", "--", *argv]
+    args = [terminal, "--window", "--", *argv]
     return _try_spawn(args, cwd=cwd, verify_quick_exit=True)
 
 
@@ -376,11 +415,11 @@ def _is_konsole_session(env: Mapping[str, str] | None = None) -> bool:
     return _env_has_any(("KONSOLE_VERSION", "KONSOLE_DBUS_SESSION", "KONSOLE_DBUS_WINDOW"), env=env)
 
 
-def _try_launch_konsole_tab(argv: list[str], *, cwd: str | None) -> bool:
+def _try_launch_konsole_window(argv: list[str], *, cwd: str | None) -> bool:
     konsole = shutil.which("konsole")
     if konsole is None:
         return False
-    args = [konsole, "--new-tab", "-e", *argv]
+    args = [konsole, "--separate", "-e", *argv]
     return _try_spawn(args, cwd=cwd, verify_quick_exit=True)
 
 
@@ -401,11 +440,16 @@ def _env_has_any(names: tuple[str, ...], *, env: Mapping[str, str] | None = None
     return any(bool(values.get(name)) for name in names)
 
 
-def _shell_command(argv: list[str], *, cwd: str | None) -> str:
-    command = shlex.join(argv)
+def macos_shell_command(argv: list[str], *, cwd: str | None) -> str:
+    def quote_arg(value: str) -> str:
+        # Interactive csh expands history even inside single quotes. Escape
+        # literal exclamation marks outside the quoted segments in every shell.
+        return r"\!".join(shlex.quote(part) for part in value.split("!"))
+
+    command = " ".join(map(quote_arg, argv))
     if not cwd:
         return command
-    return f"cd {shlex.quote(cwd)} && {command}"
+    return f"cd {quote_arg(cwd)} && {command}"
 
 
 def _try_spawn(args: list[str], *, cwd: str | None = None, verify_quick_exit: bool = False) -> bool:
@@ -449,7 +493,3 @@ def _quick_launch_failure_code(process: subprocess.Popen[bytes]) -> int | None:
     except subprocess.TimeoutExpired:
         return None
     return return_code if return_code != 0 else None
-
-
-def _applescript_quote(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')

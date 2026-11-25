@@ -248,6 +248,27 @@ async def test_title_patch_does_not_promote_rollback_snapshot(tmp_path: Path) ->
     assert meta.custom_title == "new title"
 
 
+async def test_title_patch_preserves_an_unreadable_primary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = await _saved_store(tmp_path)
+    primary = store.session_dir("sess1") / "session.json"
+    backup = primary.with_suffix(".json.bak")
+    before = primary.read_bytes()
+    backup_bytes = backup.read_bytes()
+    read = Path.read_bytes
+
+    def deny_primary(path: Path) -> bytes:
+        if path == primary:
+            raise PermissionError("primary is unreadable")
+        return read(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", deny_primary)
+        with pytest.raises(PermissionError, match="primary is unreadable"):
+            await store.update_session_titles("sess1", custom_title="New title")
+    assert primary.read_bytes() == before
+    assert backup.read_bytes() == backup_bytes
+
+
 async def test_title_patch_fails_closed_on_parseable_invalid_primary_meta(tmp_path: Path) -> None:
     store = await _saved_store(tmp_path)
     session_dir = store.session_dir("sess1")

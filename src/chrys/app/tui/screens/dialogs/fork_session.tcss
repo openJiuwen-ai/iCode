@@ -4,6 +4,9 @@ ForkSessionDialog {
 
 #fork-session-container {
     width: 58;
+    max-width: 100%;
+    max-height: 100%;
+    overflow-y: auto;
     height: auto;
     min-height: 8;
     border: round $tui-border-warning $border-opacity;
@@ -34,25 +37,47 @@ ForkSessionDialog {
     margin: 1 0;
 }
 
-#fork-session-buttons {
-    dock: bottom;
-    align: center top;
-    height: 3;
+#fork-session-tab-reason, #fork-session-command {
+    height: auto;
     padding: 0 1;
+    text-align: center;
 }
 
-#fork-session-buttons > Button {
-    margin: 0 1;
+#fork-session-command {
+    margin-bottom: 1;
+    text-style: bold;
 }
 
-#fork-session-error-buttons {
-    dock: bottom;
-    align: center top;
-    height: 3;
-    padding: 0 1;
+#fork-session-copy-row {
+    align-horizontal: center;
+    margin-bottom: 1;
 }
 
-#fork-session-error-buttons > Button {
+#fork-session-copy {
+    width: auto;
+    min-width: 0;
+    height: 1;
+    padding: 0;
+    color: $primary;
+    background: transparent;
+    text-style: bold;
+    pointer: pointer;
+}
+
+#fork-session-copy:hover {
+    background: $foreground 15%;
+}
+
+#fork-session-copy:focus {
+    text-style: bold underline;
+}
+
+ForkSessionDialog DialogButtonRow {
+    dock: none;
+}
+
+ForkSessionDialog DialogButtonRow > Button {
+    min-width: 6;
     margin: 0 1;
 }
 

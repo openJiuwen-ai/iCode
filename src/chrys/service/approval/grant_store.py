@@ -58,7 +58,7 @@ def _grants_edit(original: object, *, validate: bool = False) -> dict[str, Any] 
 
 
 def grant_matches_scope(scope: object, scope_id: object, workdir: object, key: tuple[str, str]) -> bool:
-    """Match a directory across both grant stores."""
+    """Match a full workspace id or a directory across the two grant stores."""
     return (scope, scope_id) == key or (scope == "SESSION" and ("WORKDIR", workdir) == key)
 
 

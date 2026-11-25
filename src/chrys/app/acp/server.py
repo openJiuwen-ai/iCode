@@ -31,7 +31,7 @@ from chrys.app.acp.bridge import (
 )
 from chrys.app.acp.content import AcpContentError, ContentBlock, convert_prompt_blocks
 from chrys.app.acp.errors import failure_fields, internal_error, invalid_params, turn_failed
-from chrys.app.acp.history import replay_session_history, session_history_payload
+from chrys.app.acp.history import compressed_context_payload, replay_session_history, session_history_payload
 from chrys.app.acp.hook_confirmations import AcpSessionHookConfirmations
 from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager, ManagedSession, jsonable_dataclass
@@ -137,6 +137,7 @@ ACP_EXTENSION_METHODS: tuple[str, ...] = (
     "profiles/models/read",
     "profiles/models/write",
     "profiles/models/delete",
+    "providers/models/list",
     "mcp/test",
     "mcp/list",
     "skills/list",
@@ -514,6 +515,13 @@ class ChrysAcpServer:
                 mcp_servers=mcp_servers,
                 warnings=warnings,
             )
+        except Exception as exc:
+            if self._client is not None:
+                for warning in warnings:
+                    with contextlib.suppress(Exception):
+                        await self._send_warning(warning.session_id or session_id, warning)
+            raise _request_error(exc) from exc
+        try:
             session = result.session
             # One cleanup scope for everything after the load: a session this
             # request created must not stay in the active map when any of the
@@ -1098,10 +1106,17 @@ class ChrysAcpServer:
             primary_cwd = _string_param(params, "primaryCwd") or _string_param(params, "primary_cwd")
             if not primary_cwd:
                 raise invalid_params({"details": "primaryCwd is required."})
+            # Sent even when the change fails: an unreadable workspace list is told once per session.
+            warnings = []
+
             try:
-                result = await self._manager.set_workspace(session_id, primary_cwd)
+                result = await self._manager.set_workspace(session_id, primary_cwd, warnings=warnings)
             except Exception as exc:
                 raise _request_error(exc) from exc
+            finally:
+                for warning in warnings:
+                    with contextlib.suppress(Exception):
+                        await self._send_warning(session_id, warning)
             # A workspace change soft-restarts the agent, which can alter skills,
             # MCP/runtime details, memory, and workspace-loaded context — push the
             # refreshed runtime so the client doesn't keep stale state.
@@ -1120,8 +1135,8 @@ class ChrysAcpServer:
             except Exception as exc:
                 raise _request_error(exc) from exc
             if transcript is None:
-                return {"sessionId": canonical_id, "turns": [], "messages": []}
-            return session_history_payload(canonical_id, transcript.messages, transcript.turns)
+                return {"sessionId": canonical_id, "turns": [], "messages": [], "compressedBlocks": []}
+            return session_history_payload(canonical_id, transcript)
         if method == "session/turns":
             return await self._session_turns_payload(params)
         if method == "session/retry":
@@ -1168,6 +1183,14 @@ class ChrysAcpServer:
                 return self._manager.delete_model_profile(profile_id)
             except Exception as exc:
                 raise _request_error(exc) from exc
+        if method == "providers/models/list":
+            from chrys.app.acp.model_discovery import list_provider_models
+
+            return await list_provider_models(
+                _dict_param(params, "connection"),
+                _optional_string_param(params, "profileId"),
+                self._manager.get_model_profile,
+            )
         if method == "mcp/test":
             config = _dict_param(params, "server")
             try:
@@ -1485,11 +1508,9 @@ class ChrysAcpServer:
                 "chrys/context_compressed",
                 {
                     "sessionId": event_session_id,
-                    "compressedContextId": event.compressed_context_id,
-                    "summary": event.summary,
-                    "freedMessages": event.freed_messages,
-                    "turnRange": list(event.turn_range),
-                    "source": event.source,
+                    **compressed_context_payload(
+                        event.compressed_context_id, event.summary, event.freed_messages, event.turn_range, event.source
+                    ),
                 },
             )
             return True

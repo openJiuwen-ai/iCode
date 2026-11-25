@@ -50,6 +50,45 @@ async def test_btw_only_session_is_minimal_restorable_and_forks_independently(tm
     assert len(load_side_questions(restored.session_dir(fork), fork)) == 3
 
 
+async def test_resumed_uuid_alias_can_read_and_append_side_questions(tmp_path: Path) -> None:
+    store = JsonFileStateStore(tmp_path)
+    saved = "12345678-abcd-4111-8222-123456789abc"
+    compact = saved.replace("-", "")
+    seed = SideQuestionSessionSeed()
+    await store.save_session(saved, {"messages": [Message("user", ["original"])]})
+    await store.save_side_question(saved, _FIRST, seed)
+    store.save_recovery_session(compact, {"messages": [Message("user", ["continued"])]})
+    meta = await store.resolve_startup_session(compact[:12].upper(), require_inactive=True)
+    assert meta is not None and meta.session_id == compact
+    directory = store.session_dir(meta.session_id)
+    with FileLock(store.active_lock_path(compact), timeout=0):
+        restored = await store.load_chat_for_restore(compact, prefer_recovery=True)
+        assert restored is not None and restored.recovered_from_sidecar
+        assert load_side_questions(directory, compact) == (_FIRST,)
+        await store.save_side_question(compact, _SECOND, seed)
+    assert load_side_questions(directory, saved.upper()) == (_FIRST, _SECOND)
+    assert json.loads((directory / BTW_FILE_NAME).read_bytes())["session_id"] == compact
+
+
+@pytest.mark.parametrize(
+    ("saved", "other"),
+    [
+        ("12345678-abcd-4111-8222-123456789abc", "12345678-abcd-4111-8222-123456789abd"),
+        ("12345678abcd", "12345678-abcd-4111-8222-123456789abc"),
+        ("opaque-id", "opaqueid"),
+    ],
+)
+async def test_side_questions_reject_different_owners_in_same_folder(tmp_path: Path, saved: str, other: str) -> None:
+    store = JsonFileStateStore(tmp_path)
+    seed = SideQuestionSessionSeed()
+    await store.save_side_question(saved, _FIRST, seed)
+    path = store.session_dir(saved) / BTW_FILE_NAME
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="Invalid side question history"):
+        await store.save_side_question(other, _SECOND, seed)
+    assert path.read_bytes() == before
+
+
 async def test_fork_reads_side_questions_from_parent_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from chrys.service.state import _fork
 

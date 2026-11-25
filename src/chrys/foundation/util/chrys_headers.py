@@ -2,15 +2,40 @@
 
 """Shared Chrys-managed HTTP header names."""
 
+from enum import StrEnum
+
 MODEL_ID_HEADER = "Chrys-Model-Id"
 PARENT_SESSION_ID_HEADER = "Chrys-Parent-Session-Id"
 REQUEST_ATTEMPT_ID_HEADER = "Chrys-Request-Attempt-Id"
+REQUEST_ROLE_HEADER = "Chrys-Request-Role"
+REQUEST_SCOPE_HEADER = "Chrys-Request-Scope"
 SESSION_ID_HEADER = "Chrys-Session-Id"
 X_PARENT_SESSION_ID_HEADER = "X-Parent-Session-ID"
 X_SESSION_ID_HEADER = "X-Session-ID"
 
 _RESERVED_CHRYS_HEADER_PREFIXES = ("chrys-", "chrys_")
 _CHRYS_MANAGED_HEADER_NAMES = frozenset({X_PARENT_SESSION_ID_HEADER.casefold(), X_SESSION_ID_HEADER.casefold()})
+
+
+class RequestRole(StrEnum):
+    """Purpose values sent to the model gateway in Chrys-Request-Role."""
+
+    MAIN_AGENT = "main_agent"
+    SUB_AGENT = "sub_agent"
+    COMPACTION = "compaction"
+    PET = "pet"
+    APPROVAL_JUDGE = "approval_judge"
+    CONTEXT_RECALL = "context_recall"
+    SESSION_TITLE = "session_title"
+    SIDE_QUESTION = "side_question"
+    RSI_OPTIMIZER = "rsi_optimizer"
+    MODEL_TEST = "model_test"
+
+
+class RequestScope(StrEnum):
+    """Execution scopes sent to the model gateway in Chrys-Request-Scope."""
+
+    WORKFLOW = "workflow"
 
 
 def _is_reserved_chrys_header_name(name: str) -> bool:

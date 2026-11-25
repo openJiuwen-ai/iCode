@@ -470,10 +470,10 @@ async def test_reset_session_to_welcome_success_releases_external_lock_after_cle
     async def after_delete() -> None:
         assert_lock_is_held("after_delete")
 
-    def cleanup(path: Path | None, *, path_reused: bool = False) -> None:
+    def cleanup(path: Path | None, *, path_reused: bool = False, **kwargs) -> None:
         if path is not None and not (path / "session.json").exists():
             assert_lock_is_held("cleanup")
-        real_cleanup(path, path_reused=path_reused)
+        real_cleanup(path, path_reused=path_reused, **kwargs)
 
     def release_external_lock() -> None:
         lifecycle.append("released")
@@ -536,7 +536,7 @@ async def test_reset_session_to_welcome_delete_failure_restores_mutation_tracker
             staged=staged,
             settings=engine.settings_handle.prepare(staged.loaded),
             workspace_retarget=engine_services(engine).workspace_change_tracker.resolve_retarget(
-                staged.workspace,
+                staged.workspace_plan.workspace,
                 resolve_scope=engine.settings_handle.prepare(staged.loaded).effective.settings.workspace_change_notice,
             ),
             loaded=make_loaded_agent(

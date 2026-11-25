@@ -231,7 +231,7 @@ class SettingsCoordinator:
         loaded = self._settings_handle.loaded
         values = _values_by_key(loaded)
         current = values[key]
-        if is_greyed_layer(loaded.source_for(key)):
+        if is_greyed_layer(loaded.controlling_source_for(key)):
             self._desired.pop(key, None)
             return current
         if key in self._desired and self._desired[key] == current:
@@ -287,6 +287,9 @@ class SettingsCoordinator:
         for key, value in result.written.items():
             if key in self._panel_keys and self._specs[key].apply is not Apply.LIVE:
                 self._desired[key] = value
+        if "approval.default_mode" in result.written:
+            # The shared handle has already recorded this receipt, including any environment override.
+            self.projected_value("approval.default_mode")
         if any(key in self._reload_keys for key in result.written):
             self._reload_dirty = True
         self._reproject_dialog()
@@ -315,7 +318,7 @@ class SettingsCoordinator:
         values = _values_by_key(loaded)
         for key in list(self._desired):
             if (
-                is_greyed_layer(loaded.source_for(key))
+                is_greyed_layer(loaded.controlling_source_for(key))
                 or values[key] == self._desired[key]
                 or (key in self._reload_keys and not self._reload_dirty)
             ):

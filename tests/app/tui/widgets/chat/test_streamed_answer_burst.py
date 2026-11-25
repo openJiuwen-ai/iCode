@@ -275,3 +275,35 @@ async def test_each_row_a_streamed_answer_adds_lays_the_transcript_out_once(monk
             )
 
         assert len(full_layouts) == 3
+
+
+async def test_streamed_inline_children_are_reused_then_released() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(_transcript(2))
+        await panel.add_user_message("Explain.")
+        await panel.add_answer_delta("answer", "**stable**")
+        message = panel.query(AgentMessage).last()
+        body = message.query_one(VirtualizedMarkdown)
+        await panel.add_answer_delta("answer", "\n\nsecond")
+        await wait_for(lambda: body.shown_source.endswith("second"), pilot=pilot)
+        assert body._inline_cache is not None
+        children = body._inline_cache["**stable**"]
+        await panel.add_answer_delta("answer", "\n\nthird")
+        await wait_for(lambda: body.shown_source.endswith("third"), pilot=pilot)
+        assert body._inline_cache["**stable**"] is children
+
+        # Finalization can arrive before or after the last parse settles.
+        message.stream_update(message.text, is_final=True)
+        assert body._inline_cache is None
+        assert message._body_parse is not None
+        await message._body_parse
+        assert body._inline_cache is None
+
+        await panel.add_answer_delta("next", "next segment")
+        next_body = panel.query(AgentMessage).last().query_one(VirtualizedMarkdown)
+        await panel.add_answer_delta("next", "\n\nmore")
+        await wait_for(lambda: next_body.shown_source.endswith("more"), pilot=pilot)
+        assert next_body._inline_cache
+        await next_body.remove()
+        assert next_body._inline_cache is None

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import Error, RollbackResult, SessionRestore, UserRollback, Warning
-from chrys.foundation.i18n import DisplayBlock, msg
+from chrys.foundation.i18n import DisplayBlock, DisplayPath, msg
 from chrys.foundation.util.async_tasks import await_task_quiescence
 from chrys.foundation.util.lock import FileLock
 from chrys.orchestration.engine.state.machine import EngineState
@@ -54,6 +54,14 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_ROLLBACK_PRIMARY_MISSING = msg(
+    "workspaces.rollback_primary_missing",
+    fallback=(
+        "The workspace's primary folder, {path}, no longer exists. Restore the folder at its original path before "
+        "rolling back, or reopen the session in another folder to leave the workspace."
+    ),
+)
 
 _ROLLBACK_NO_SESSION = msg(
     "rollback.no_session",
@@ -494,6 +502,13 @@ class RollbackController:
     ) -> None:
         """Secure rollback resources, then commit immediately before mutation."""
 
+        if (
+            target_turn > 0
+            and self._session.workspace_id is not None
+            and await self._refuse_missing_workspace_primary(sid)
+        ):
+            return
+
         welcome_reset_lock: FileLock | None = None
         if target_turn == 0:
             await self._writer.flush()
@@ -744,6 +759,8 @@ class RollbackController:
             kept_turn_ids = {record.turn_id for record in snapshot.turns}
             superseded_for_record = [record for record in live_turns if record.turn_id not in kept_turn_ids]
 
+        if self._session.workspace_id is not None and await self._refuse_missing_workspace_primary(sid):
+            return
         snapshot_missing_after_lock = False
         try:
             lock_path = self._session.session_write_lock_path(sid)
@@ -820,27 +837,51 @@ class RollbackController:
         # on the new branch), after the swap lock is released — activation
         # takes the same lock — and while the live registry still names the
         # first superseded turn.
-        record_cancelled = False
-        try:
-            await self._trajectory_recorder.rollback(
-                superseded_turns=superseded_for_record,
-                target_turns=snapshot.turns,
-            )
-        except asyncio.CancelledError:
-            # The swap has committed but the engine still holds the pre-rollback
-            # history: leaving here would let the next save write that history
-            # back over the file the rollback just restored. The audit record is
-            # the only part that can be dropped, so the cancellation waits for the
-            # restore below and completes right after it.
-            task = asyncio.current_task()
-            if task is not None:
-                task.uncancel()
-            record_cancelled = True
+        if self._session.workspace_id is None:
+            record_cancelled = False
+            try:
+                await self._trajectory_recorder.rollback(
+                    superseded_turns=superseded_for_record,
+                    target_turns=snapshot.turns,
+                )
+            except asyncio.CancelledError:
+                # The swap has committed but the engine still holds the pre-rollback
+                # history: leaving here would let the next save write that history
+                # back over the file the rollback just restored. The audit record is
+                # the only part that can be dropped, so the cancellation waits for the
+                # restore below and completes right after it.
+                task = asyncio.current_task()
+                if task is not None:
+                    task.uncancel()
+                record_cancelled = True
 
-        with self._session.saves_suppressed():
-            await self._lifecycle.on_session_restore(SessionRestore(session_id=sid, ignore_recovery=True))
-        if record_cancelled:
-            raise asyncio.CancelledError
+            with self._session.saves_suppressed():
+                await self._lifecycle.on_session_restore(
+                    SessionRestore(session_id=sid, ignore_recovery=True), for_rollback=True
+                )
+            if record_cancelled:
+                raise asyncio.CancelledError
+        else:
+            record_rollback = self._trajectory_recorder.rollback
+
+            async def restore_committed_snapshot() -> None:
+                audit_cancelled = False
+                try:
+                    await record_rollback(
+                        superseded_turns=superseded_for_record,
+                        target_turns=snapshot.turns,
+                    )
+                except asyncio.CancelledError:
+                    audit_cancelled = True
+                with self._session.saves_suppressed():
+                    await self._lifecycle.on_session_restore(
+                        SessionRestore(session_id=sid, ignore_recovery=True, require_leave_confirmation=False),
+                        for_rollback=True,
+                    )
+                if audit_cancelled:
+                    raise asyncio.CancelledError
+
+            await self._permits.finish_committed_session_step(restore_committed_snapshot)
 
         # What the rollback actually retired, read from the registry the restored
         # session came back with: the snapshot names a state, but the restore may
@@ -907,6 +948,20 @@ class RollbackController:
         )
         if notice:
             self._workspace_change_tracker.queue_safety_notice(notice, cwd=cwd)
+
+    async def _refuse_missing_workspace_primary(self, session_id: str) -> bool:
+        workspace = self._session.session_workspace
+        if workspace is None or (missing := workspace.missing_primary()) is None:
+            return False
+        await self._bus.publish(
+            Error(
+                code="workspace_primary_missing",
+                message=f"Primary folder does not exist: {missing}.",
+                display_message=_ROLLBACK_PRIMARY_MISSING.bind(path=DisplayPath(missing)),
+                session_id=session_id,
+            )
+        )
+        return True
 
     async def _cancel_if_rollback_owner_changed(
         self,

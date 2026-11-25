@@ -392,33 +392,11 @@ async def test_tool_call_started_during_force_close_is_flushed(
     assert any(r.result == "(interrupted)" for r in results)
 
 
-async def test_tool_call_started_before_prompt_is_flushed_on_cancel(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A tool call streamed after session/new but before the prompt (prompt_started
-    still False) must be finalized when the attempt is cancelled — the
-    CancelledError handler flushes unconditionally like its siblings."""
-    bus = EventBus()
-    results = await capture_events(bus, InvocationToolCallResult)
-
-    install_client(monkeypatch, PrePromptClient)
-    controller = make_controller(
-        bus,
-        tmp_path,
-        attempt_callback=cancel_before_prompt,
-    )
-    with pytest.raises(asyncio.CancelledError):
-        await controller.run()
-
-    assert any(r.result == "(interrupted)" for r in results)
-
-
 async def test_completed_count_synced_after_cancel_flush(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A tool call finalized on the cancel path must reach completed_tool_calls.
+    """Cancelling before the prompt flushes the tool call and counts it in completed_tool_calls.
 
     Every sibling error handler syncs ``self._completed_calls`` after its flush;
     the cancel handler and the post-teardown sweep must too, or a call the cancel

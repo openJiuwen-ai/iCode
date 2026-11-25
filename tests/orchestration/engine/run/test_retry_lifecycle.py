@@ -25,6 +25,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetails, UserRetry
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.turns import UserMessageKind
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.text.images import LoadedImage
@@ -124,6 +125,7 @@ async def on_user_retry(host: object, event: UserRetry) -> None:
 class _Executor:
     def __init__(self) -> None:
         self.conversation = self
+        self.origin = InvocationOrigin("turn", "", "retry-turn", None)
         self.user_messages: list[str] = []
         self.resume_texts: list[str] = []
         self.run_failed = False
@@ -641,13 +643,12 @@ class TestRetryLifecycleApprovalContext:
         assert host._history.tags == [(HistoryMarkerKind.PROFILE_SWITCH_TO_KEY, "Explore Agent")]
 
 
-async def test_pending_retry_dispatch_strips_trailing_markers_before_task() -> None:
-    """Interrupt→resume marker hygiene (§7): the pending-retry dispatch path
-    (``RetryCoordinator.start_pending_retry_if_due``) strips trailing markers
-    BEFORE creating the retry task, so the resumed task's history carries no
-    interior turn marker.  The immediate-dispatch paths are covered end-to-end
-    by ``test_retry_turn_number.py`` (exactly one ``_turn=1`` marker after
-    interrupt→retry)."""
+async def test_unspecified_queued_retry_strips_trailing_markers_when_dispatched() -> None:
+    """Interrupt→resume marker hygiene (§7): the queued retry strips trailing
+    markers inside its own task, after its project check passed, so a dropped
+    retry never edits history.  The immediate-dispatch paths are covered
+    end-to-end by ``test_retry_turn_number.py`` (exactly one ``_turn=1`` marker
+    after interrupt→retry)."""
     from chrys.orchestration.engine.execution import PendingRetry
 
     order: list[str] = []
@@ -690,7 +691,9 @@ async def test_pending_retry_dispatch_strips_trailing_markers_before_task() -> N
 
     task = host._turn_state.lease.run_task
     assert task is not None
+    dispatch_order = list(order)
     await task
+    assert dispatch_order == ["remove_trailing_markers"]
     assert order == ["remove_trailing_markers", "retry_task"]
 
 

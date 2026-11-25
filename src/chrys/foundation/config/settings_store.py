@@ -75,6 +75,7 @@ from chrys.foundation.config.yaml_store import (
     update_yaml_doc,
 )
 from chrys.foundation.i18n import DisplayPath, MessageRef
+from chrys.foundation.models.workspace import path_identity
 from chrys.foundation.platform.runtime_paths import same_path
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,15 @@ class LoadedSettings:
 
     settings: Settings
     provenance: Mapping[str, SettingOrigin]
+    workdir_identity: tuple[int, int] | str | None = None
+    """The directory this load belongs to, by identity, or ``None`` when it serves none.
+
+    Recorded whatever ``workdir.config_enabled`` says: *which* directory a load
+    was made for decides whether its layer is read at all, so a rebuild for a
+    different directory has to reload rather than keep this one. ``None`` means
+    there is nothing to check against — a load made without a directory, or one
+    a caller assembled by hand.
+    """
     warnings: tuple[SettingsWarning, ...] = ()
     sealed_keys: frozenset[str] = frozenset()
     """Keys forced to their built-in default by :attr:`InvalidPolicy.SAFE_DEFAULT`.
@@ -230,6 +240,19 @@ class LoadedSettings:
             # the panel explain a built-in default that is not what is in use.
             sealed_keys=self.sealed_keys - overlaid,
         )
+
+    def sealing_warning(self, key: str) -> SettingsWarning | None:
+        """The rejection that forced this setting to its built-in default."""
+        if key in self.sealed_keys:
+            return next(
+                (warning for warning in reversed(self.warnings) if warning.key == key and warning.rejected), None
+            )
+        return None
+
+    def controlling_source_for(self, key: str) -> SettingOrigin:
+        """The layer a file edit must supersede, including the source of an invalid value."""
+        warning = self.sealing_warning(key)
+        return warning.origin if warning is not None else self.source_for(key)
 
     def source_for(self, key: str) -> SettingOrigin:
         """Where *key*'s effective value came from, including which file.
@@ -353,6 +376,16 @@ class SettingsHandle:
             released=released,
         )
 
+    def check_prepared(self, prepared: PreparedSettings) -> None:
+        """Raise now what :meth:`install_prepared` would raise, so a commit made after this cannot be stranded."""
+        base = prepared.base
+        if base.session_scoped_model or base.manual_model_revision is None:
+            return
+        if base.model_edit is None:
+            check_model_selection_revision(base.manual_model_revision)
+        else:
+            base.model_edit.check()
+
     def install_prepared(self, prepared: PreparedSettings) -> None:
         """Install values whose overlays have already succeeded, with the session's own choices they carry.
 
@@ -458,13 +491,19 @@ class SettingsHandle:
         return dict(self._confirmed)
 
     def persist_approval_default(self, mode: str, *, persist: Callable[[str], Exception | None]) -> str:
-        """Persist a global choice and mirror its safe launch default in the runtime overlay."""
+        """Persist a global choice and mirror it in the runtime overlay."""
         failure = persist(mode)
         if failure is not None:
             raise failure
-        default = "auto" if mode == "bypass" else mode
-        self.override(default_approval_mode=default)
-        return default
+        self.note_approval_default_written(mode)
+        return mode
+
+    def note_approval_default_written(self, mode: str) -> None:
+        """Reflect a successful file write until a manual reload reads a newer default."""
+        if self.base.controlling_source_for("approval.default_mode").layer is Source.ENV:
+            return
+        self.override(default_approval_mode=mode)
+        self._confirmed["default_approval_mode"] = self._runtime_versions["default_approval_mode"]
 
     def _overtaken_by(self, loaded: LoadedSettings) -> dict[str, int]:
         """The confirmed choices *loaded* moved past: a hand edit or removal, and not a value it refused.
@@ -571,7 +610,12 @@ def load_settings(
     # must not read the developer's own ``~/.chrys`` *or* the working directory files:
     # hermetic means hermetic, whatever root was passed alongside.
     revision = model_selection_revision() if manual_reload else None
-    file_layers = _read_file_layers(specs, workdir, strict=manual_reload) if env is None else None
+    # Resolved once: the layer is read from this directory and the load carries
+    # its identity, so a link retargeted during the load cannot pair one
+    # folder's values with another folder's identity.
+    directory = _resolved_directory(workdir) if workdir is not None else None
+    workdir_identity = path_identity(directory) if directory is not None else None
+    file_layers = _read_file_layers(specs, workdir, directory=directory, strict=manual_reload) if env is None else None
     # Phase one: the working directory trust domain is audited completely before any
     # winner is chosen, so a working directory value a higher layer shadows still gets
     # its policy verdict and its warning.
@@ -649,6 +693,7 @@ def load_settings(
     settings = Settings(**values)
     return LoadedSettings(
         settings=settings,
+        workdir_identity=workdir_identity,
         file_values=file_values,
         file_model=file_model,
         model_edit=edit,
@@ -747,10 +792,29 @@ class _FileLayers:
     """``None`` when no distinct working directory document applies."""
 
 
+def _resolved_directory(workdir: Path) -> Path:
+    """Return the physical directory *workdir* names, or *workdir* as spelled.
+
+    A path the system cannot open as spelled (``missing/..``, or an
+    extended-length Windows path, which Windows does not fold) is kept as spelled, so the file
+    read fails or succeeds as it would unresolved instead of reading whichever
+    folder lexical folding lands on.
+    """
+    if not os.path.isdir(workdir):
+        return workdir
+    try:
+        return Path(os.path.realpath(workdir, strict=True))
+    except OSError:
+        return workdir
+
+
 def _read_file_layers(
-    specs: Mapping[str, SettingSpec], workdir: Path | None, *, strict: bool = False
+    specs: Mapping[str, SettingSpec], workdir: Path | None, *, directory: Path | None, strict: bool = False
 ) -> _FileLayers | None:
     """Read the file-borne layers, or ``None`` before bootstrap froze the env.
+
+    The working directory layer is read from *directory*, the resolved
+    *workdir*; its path is reported as spelled under *workdir*.
 
     The snapshot gate is the hermeticity gate: a process that never called
     :func:`freeze_process_env` — every test that constructs settings directly —
@@ -771,19 +835,19 @@ def _read_file_layers(
     workdir_yaml: Mapping[str, Any] = _EMPTY_MAP
     workdir_yaml_unknown: tuple[str, ...] = ()
     workdir_yaml_path: Path | None = None
-    if workdir is not None:
-        candidate = workdir / ".chrys" / "settings.yaml"
+    if workdir is not None and directory is not None:
+        candidate = directory / ".chrys" / "settings.yaml"
         # A workspace rooted at the user's home names the user document again.
         # It remains the trusted USER layer; reading it a second time as an
         # untrusted WORKDIR layer would reject preferences and, with the gate
         # off, report the user's own settings as dormant working directory configuration.
         if not _is_same_entry(candidate, yaml_path):
-            workdir_yaml_path = candidate
+            workdir_yaml_path = workdir / ".chrys" / "settings.yaml"
             # Same empty-on-unparseable rule as the user document, read without
             # lock, backup or repair — the file lives in someone's working tree.
             gate = specs["workdir_config_enabled"]
             trusted = _user_doc_verdict(gate, values.get(gate.key)).value is True
-            workdir_doc = read_yaml_doc_readonly(workdir_yaml_path, strict=strict and trusted) or {}
+            workdir_doc = read_yaml_doc_readonly(candidate, strict=strict and trusted, shown_as=workdir_yaml_path) or {}
             settings_edit(workdir_doc)
             workdir_yaml, workdir_yaml_unknown = flatten_user_doc(workdir_doc, known_keys)
 
@@ -1123,8 +1187,6 @@ def _pinned(entry: SettingSpec, value: Any) -> Coerced:
     return coerced
 
 
-_APPROVAL_MODE_KEY: Final = "approval.default_mode"
-
 _KIND_REASONS: Final = {
     Kind.BOOL: CoerceReason.EXPECTED_BOOL,
     Kind.INT: CoerceReason.EXPECTED_INT,
@@ -1175,10 +1237,6 @@ def persist(
     An unknown key or a runtime-only (``persist=False``) key raises instead of
     rejecting: both are our-code bugs no user input can produce, exactly like
     a bad pin.
-
-    ``approval.default_mode`` is the one key with a store-time rule of its
-    own: ``bypass`` is a per-launch decision, so persisting it downgrades to
-    ``auto`` rather than arming every future session.
     """
     specs = specs_by_field(Settings)
     by_key = {entry.key: entry for entry in specs.values()}
@@ -1212,9 +1270,6 @@ def persist(
             rejected[key] = coerced
             continue
         written[key] = coerced.value
-
-    if written.get(_APPROVAL_MODE_KEY) == "bypass":
-        written[_APPROVAL_MODE_KEY] = "auto"
 
     if rejected:
         return PersistResult(written={}, rejected=rejected)

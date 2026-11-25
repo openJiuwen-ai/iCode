@@ -449,6 +449,7 @@ class ContextManagementProvider(ContextProvider):
         )
 
         try:
+            from chrys.foundation.util.chrys_headers import RequestRole
             from chrys.service.llm.clients import scoped_client
             from chrys.service.profiles.models.options import effective_chat_options
 
@@ -462,6 +463,7 @@ class ContextManagementProvider(ContextProvider):
             ]
             async with scoped_client(
                 self._profile,
+                request_role=RequestRole.CONTEXT_RECALL,
                 session_id=self._session_id,
                 parent_session_id=self._parent_session_id,
                 session_dir=self._session_dir,

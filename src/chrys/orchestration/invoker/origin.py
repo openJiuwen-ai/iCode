@@ -20,8 +20,8 @@ from dataclasses import dataclass
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Event, InvocationEvent
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.invocations import current_invocation_origin as current_invocation_origin
 
-current_invocation_origin: ContextVar[InvocationOrigin | None] = ContextVar("current_invocation_origin", default=None)
 invocation_routing_key: ContextVar[str] = ContextVar("invocation_routing_key", default="")
 
 

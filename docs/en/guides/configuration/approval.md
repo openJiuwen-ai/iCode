@@ -31,7 +31,7 @@ You can switch modes while a task is running. Approval requests that are already
 
 ### Set the default approval mode
 
-With the default settings unchanged, the TUI starts in manual approval mode on its first launch. Switching the current approval mode also updates the default for the next launch: choosing manual or automatic mode saves that mode as the default. Choosing bypass mode applies only to the current run; to avoid continuing to bypass approval protections after a restart, the default for the next launch is saved as automatic mode.
+The TUI starts in manual mode on first launch with the default settings. When you switch modes, iCode saves your choice for the next launch, including bypass. Each time the TUI starts in bypass mode, a warning reminds you that tools can run without approval.
 
 To change only the default for the next launch without changing the current approval mode, press **F10** to open **Settings** and change **Default approval mode** on the **Safety** tab. **Settings** does not offer bypass mode as a default that can be saved.
 
@@ -83,7 +83,7 @@ Tool calls that require approval open an **Approval Required** dialog showing th
 You can let iCode remember a Shell command or a file change you approve, so the same request does not ask you again. The approval dialog for a Shell command or a file write or edit shows a **Remember Approval** box:
 
 1. Check **Don't ask again for this command** (for files: **Don't ask again to modify these files**).
-2. Choose **This session** or **This working directory**. **This session** also applies after you restore the session; **This working directory** also applies in your other sessions using the same physical directory.
+2. Choose **This session** or **This working directory**. **This session** also applies after you restore the session; **This working directory** also applies in your other sessions using the same physical directory that are not in a workspace. In a session that belongs to a [workspace](../daily-use/workspaces.md#workspaces), the second choice is **This workspace**, which applies in the workspace's other sessions; leaving the workspace ends reuse of its approvals in the session. The original command and path constraints still apply.
 3. Select **Approve**.
 
 The next time the agent makes the same request, it runs without a dialog. Only that command, or those files, are remembered; other operations still ask. Approving without checking the box approves this one call only. A few cases are never remembered:
@@ -110,6 +110,7 @@ icode approval list --session SESSION_ID --json
 icode approval revoke GRANT_ID               # remove one approval by its ID from the list
 icode approval clear --workdir /work/demo    # remove all approvals for one working directory
 icode approval clear --session SESSION_ID    # remove all approvals for one session
+icode approval clear --workspace NAME       # remove all shared approvals for one workspace
 icode approval clear --all                   # remove everything
 ```
 
@@ -117,7 +118,7 @@ Pass `--workdir` with `--session` to limit the selection to that session’s gra
 
 Both filters require a non-empty value. Use `clear --all` on its own to remove every grant.
 
-Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a working directory stay until you remove them.
+Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a working directory or a workspace stay until you remove them. Pass a workspace name or ID to `--workspace` to select its shared approvals; for a deleted workspace, use its full ID.
 
 ## Understand automatic approval and safety protections
 

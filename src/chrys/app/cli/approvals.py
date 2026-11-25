@@ -10,23 +10,27 @@ import shlex
 import sys
 from pathlib import Path
 
-from chrys.app.cli.headless import write_warning
+from chrys.app.cli.headless import write_error, write_warning
+from chrys.app.cli.launch_cwd import resolve_workspace_selector
 from chrys.foundation.branding import APP_COMMAND
 from chrys.foundation.config.settings import resolve_sessions_dir
 from chrys.foundation.config.warnings import trust_conflict_warning
-from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
 from chrys.foundation.platform import get_platform
 from chrys.orchestration.startup import bootstrap_runtime
 from chrys.service.approval.grant_store import GRANTS_FILE, ApprovalGrantStore, grant_matches_scope, session_grants_path
 from chrys.service.approval.reuse import ApprovalGrant, CommandKey, workdir_path
+from chrys.service.workspaces.registry import WorkspaceRegistryError, is_workspace_id
 
 
-def _stores(config_dir: Path, session: str | None) -> list[ApprovalGrantStore]:
+def _stores(config_dir: Path, session: str | None, *, shared_only: bool) -> list[ApprovalGrantStore]:
     if session is not None:
         path = session_grants_path(config_dir, session)
         if not path.parent.is_dir():
             raise ValueError("Session directory does not exist")
         return [ApprovalGrantStore(path)]
+    if shared_only:
+        return [ApprovalGrantStore(config_dir / GRANTS_FILE)]
     sessions = resolve_sessions_dir(config_dir, create=False)
     paths = [config_dir / GRANTS_FILE, *sorted(sessions.glob(f"*/{GRANTS_FILE}"))]
     return [ApprovalGrantStore(path) for path in paths]
@@ -43,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session", help="Select one saved session (full or short ID)")
     parser.add_argument("--workdir", metavar="DIR", help="Filter grants by working directory")
     parser.add_argument("--project", dest="workdir", help=argparse.SUPPRESS)
+    parser.add_argument("--workspace", metavar="WORKSPACE", help="Filter shared grants by workspace name or ID")
     parser.add_argument("--all", action="store_true", help="Explicitly clear all shared and session grants")
     parser.add_argument("--json", action="store_true", help="List structured records")
     return parser
@@ -57,9 +62,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--workdir requires a non-empty directory")
     if args.session == "":
         parser.error("--session requires a non-empty session ID")
-    filtered = args.session is not None or args.workdir is not None
+    workspace = args.workspace
+    if workspace is not None:
+        if not workspace.strip():
+            parser.error("--workspace requires a non-empty workspace name or ID")
+        if args.workdir is not None or args.session is not None:
+            parser.error("--workspace cannot be combined with --workdir or --session")
+    filtered = args.session is not None or args.workdir is not None or workspace is not None
     if args.action == "clear" and not (args.all or filtered):
-        parser.error("clear requires --all, --session or --workdir")
+        parser.error("clear requires --all, --session, --workdir or --workspace")
     if args.all and (args.action != "clear" or filtered):
         parser.error("--all is only valid with an unfiltered clear")
     bootstrap = bootstrap_runtime(configure_stdio=True, setup_telemetry=False)
@@ -69,10 +80,21 @@ def main(argv: list[str] | None = None) -> int:
         warning = trust_conflict_warning(bootstrap.loaded.trust_conflicts)
         write_warning(warning.message, code=warning.code, as_json=args.json)
     scope_key = None
-    if args.workdir is not None:
+    if workspace is not None:
+        # A full ID always means that workspace, including a deleted one whose grants remain.
+        if not is_workspace_id(workspace):
+            try:
+                selected, _ = resolve_workspace_selector(workspace)
+            except WorkspaceRegistryError as error:
+                # CLI entry-point output stays English (AGENTS.md).
+                write_error(format_message(error.display_message), as_json=args.json, code=error.code)
+                return 1
+            workspace = selected.id
+        scope_key = ("WORKSPACE", workspace)
+    elif args.workdir is not None:
         scope_key = ("WORKDIR", workdir_path(args.workdir))
     try:
-        stores = _stores(get_platform().config_dir, args.session)
+        stores = _stores(get_platform().config_dir, args.session, shared_only=workspace is not None)
     except ValueError as error:
         parser.error(str(error))
     if args.action == "clear":
@@ -115,10 +137,11 @@ def main(argv: list[str] | None = None) -> int:
                 target = shlex.join(command) if isinstance(command, tuple) else command
             else:
                 target = grant.key.path
+            scope_label = "workspace" if grant.scope == "WORKSPACE" else "workdir"
             scope_value = grant.workdir if grant.scope == "SESSION" else grant.scope_id
             sys.stdout.write(
                 sanitize_legacy_scalar(
-                    f"{grant.id}  {grant.scope} {grant.scope_id}  workdir={scope_value}  {'prefix' if grant.prefix else 'exact'} {target}"
+                    f"{grant.id}  {grant.scope} {grant.scope_id}  {scope_label}={scope_value}  {'prefix' if grant.prefix else 'exact'} {target}"
                 )
                 + "\n"
             )

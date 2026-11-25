@@ -384,7 +384,7 @@ def read_yaml_doc(
     return read_yaml_document(path, backup=backup, lock_timeout=lock_timeout).doc
 
 
-def read_yaml_doc_readonly(path: Path, *, strict: bool = False) -> dict[str, Any] | None:
+def read_yaml_doc_readonly(path: Path, *, strict: bool = False, shown_as: Path | None = None) -> dict[str, Any] | None:
     """Read the YAML mapping at *path* with no lock, no backup and no repair.
 
     For documents Chrys does not own — a repository's ``.chrys/settings.yaml``
@@ -401,10 +401,12 @@ def read_yaml_doc_readonly(path: Path, *, strict: bool = False) -> dict[str, Any
     caller's trust domain (the working directory the user chose to open).
 
     Missing files return ``None``. For refused or malformed files strict
-    reads raise and ordinary reads return ``None``.
+    reads raise and ordinary reads return ``None``; the error names the file
+    as *shown_as* when the caller reads it through another spelling.
     """
+    shown = shown_as if shown_as is not None else path
     raw = _read_bytes_untrusted(path)
-    result = _parse(raw, required_at=path if strict else None)
+    result = _parse(raw, required_at=shown if strict else None)
     if strict and result is None:
         try:
             path.lstat()
@@ -412,9 +414,9 @@ def read_yaml_doc_readonly(path: Path, *, strict: bool = False) -> dict[str, Any
             return None
         except OSError as exc:
             raise ConfigDocumentError(
-                _UNREADABLE.bind(path=DisplayPath(path), detail=exc.strerror or str(exc))
+                _UNREADABLE.bind(path=DisplayPath(shown), detail=exc.strerror or str(exc))
             ) from exc
-        raise ConfigDocumentError(_INVALID_WORKDIR.bind(path=DisplayPath(path)))
+        raise ConfigDocumentError(_INVALID_WORKDIR.bind(path=DisplayPath(shown)))
     return result
 
 

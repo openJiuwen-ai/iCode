@@ -479,7 +479,9 @@ async def test_hooks_that_keep_changing_the_arguments_after_an_approval_are_stop
     assert decision.blocked is True
     assert "kept changing the arguments" in decision.block_reason
     assert operation.checked_revision is None
-    assert len(frontend.requests) <= 4
+    assert [request.arguments for request in frontend.requests] == [{"path": "a"}, {"path": "b"}]
+    assert "changed back to arguments already checked" in decision.block_reason
+    assert "0 rechecks" not in decision.block_reason
 
 
 # ── the same check for every entry ───────────────────────────────────
@@ -709,25 +711,6 @@ async def test_an_operation_withdrawn_after_the_user_continued_runs_no_later_hoo
     assert decision.invalidated is True
     assert operation.state == "invalidated"
     assert not ran.exists()
-
-
-@pytest.mark.asyncio
-async def test_a_recheck_back_to_a_checked_version_says_so(
-    hooks_dir: Path, bus: EventBus, confirmations: HookConfirmationService
-) -> None:
-    await _frontend(bus, answer_inline="approved")
-    manager = _manager(
-        hooks_dir,
-        _hook("guard", {"action": "ask"}),
-        _hook("flip", {"action": "modify", "args_override": {"path": "y"}}, path="x"),
-        _hook("flop", {"action": "modify", "args_override": {"path": "x"}}, path="y"),
-    )
-
-    decision = await _check(manager, _operation("x"), confirmations)
-
-    assert decision.blocked is True
-    assert "0 rechecks" not in decision.block_reason
-    assert "changed back to arguments already checked" in decision.block_reason
 
 
 @pytest.mark.asyncio

@@ -196,13 +196,18 @@ if TYPE_CHECKING:
     from chrys.service.prompt_shortcuts import PromptShortcut
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
     from chrys.service.state.store import StateStore
+    from chrys.service.workspaces.registry import RegistrySnapshot
 
 
 logger = logging.getLogger(__name__)
 
-type StartupRestore = Literal["restored", "declined", "failed"]
+type StartupRestore = Literal["restored", "declined", "failed"] | Error
 """Startup restore result; ``declined`` means the user chose no folder for a session whose folder is gone."""
 
+_BYPASS_STARTUP_WARNING = msg(
+    "tui.startup.approval.bypass",
+    fallback="Approval mode is bypass. Tool calls will run without asking for approval.",
+)
 _SHORTCUTS_LOADING = msg(
     "tui.prompt_shortcuts.loading",
     fallback="Prompt shortcuts are still being read; press Enter again in a moment.",
@@ -360,6 +365,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         approval_mode: ApprovalMode = ApprovalMode.MANUAL,
         reset_program_status: Callable[[], None] | None = None,
     ) -> None:
+        self._startup_restore_target: str | None = None
+        self._startup_restore_error: Error | None = None
         self._services = MainScreenServices(
             bus=event_bus,
             settings_handle=settings_handle,
@@ -456,6 +463,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 selected_cwd=lambda: self._workflow.workdir if self._workflow.workflow_mode else "",
                 apply_workflow_cwd=self._apply_workflow_cwd,
                 workflow_mode=lambda: self._workflow.workflow_mode,
+                start_new_session=lambda event, check: self._sessions.create_new_session(
+                    event, confirmation_is_current=check
+                ),
             ),
             locale_controller=self._locale_controller,
         )
@@ -521,6 +531,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 refresh_notification_settings=self._refresh_notification_settings,
                 refresh_trajectory_verify_commands=self._refresh_trajectory_verify_commands,
                 settings_reloaded=self._on_settings_reloaded_for_panel,
+                approval_default_saved=self._on_approval_default_saved,
+                save_approval_default=self._save_approval_default,
                 follow_manual_reload=self._follow_manual_reload,
             ),
             runtime_info=self._runtime_info,
@@ -549,7 +561,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 refresh_diff_preview=self._refresh_diff_preview,
                 reset_rollback_request=self._rollback_controller.reset_pending,
                 choose_missing_working_dir=partial(self._workspace_actions.choose_replacement_dir, reason="restore"),
+                confirm_workspace_leave=self._workspace_actions.confirm_workspace_leave,
                 confirm_stopping_background_tasks=self._confirm_stopping_background_tasks,
+                workflow_mode=lambda: self._workflow.workflow_mode,
             ),
             agent_load=self._events,
             runtime_info=self._runtime_info,
@@ -726,14 +740,17 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _existing_settings_coordinator(self) -> SettingsCoordinator | None:
         """The coordinator if the panel has ever been opened; never builds one.
 
-        Every queue write originates from the panel, so a write outcome or a
-        reload arriving before the coordinator exists has nothing to update.
+        Successful approval writes update the shared settings handle even before
+        the panel is opened. Only an existing panel needs projection feedback.
         """
         coordinator = self.__dict__.get("_settings_coordinator_instance")
         return coordinator if isinstance(coordinator, SettingsCoordinator) else None
 
     def _on_settings_written(self, result: PersistResult) -> None:
-        cast("ChrysApp", self.app).settings_handle.confirm_written(result.written)
+        handle = cast("ChrysApp", self.app).settings_handle
+        handle.confirm_written(result.written)
+        if "approval.default_mode" in result.written:
+            handle.note_approval_default_written(result.written["approval.default_mode"])
         coordinator = self._existing_settings_coordinator()
         if coordinator is not None:
             coordinator.on_written(result)
@@ -746,6 +763,14 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._navigation.follow_language()
         self._editor_mode = EditorMode.parse(app.settings_handle.settings.editor_keymap)
         self._suggestions.refresh_prompt_shortcuts()
+
+    async def _save_approval_default(self, mode: str) -> None:
+        await self._settings_persistence().persist_immediately({"approval.default_mode": mode})
+
+    def _on_approval_default_saved(self, mode: str) -> None:
+        coordinator = self._existing_settings_coordinator()
+        if coordinator is not None:
+            coordinator.note_external_write("approval.default_mode", mode)
 
     def _on_settings_reloaded_for_panel(self) -> None:
         coordinator = self._existing_settings_coordinator()
@@ -889,7 +914,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             new_session=self._create_new_session,
             clear_session=self._clear_current_session,
             quit_app=self.action_quit,
-            resume_session=self._resume_last_session,
+            resume_session=self._resume_session,
             fork_session=self._fork_current_session,
             ask_side_question=self.action_btw,
             browse_session_list=self.action_sessions,
@@ -1136,7 +1161,15 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             except Exception:
                 logger.exception("Failed to restore GC-freeze participant %s", type(participant).__name__)
 
-    async def restore_startup_session(self, session_id: str) -> StartupRestore:
+    async def restore_startup_session(
+        self,
+        session_id: str,
+        *,
+        saved_cwd: str,
+        workspace_id: str | None = None,
+        workspace_snapshot: RegistrySnapshot | None = None,
+        primary_cwd: str = "",
+    ) -> StartupRestore:
         """Restore at startup and confirm the matching backend success event."""
         restored = False
 
@@ -1145,13 +1178,29 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             if event.session_id == session_id:
                 restored = True
 
+        self._startup_restore_target = session_id
+        self._startup_restore_error = None
         await self._services.bus.subscribe(SessionRestored, observe_restored)
         try:
-            request = await self._sessions.do_session_restore(session_id, allow_while_loading=True)
+            request = (
+                await self._sessions.do_session_restore(
+                    session_id,
+                    allow_while_loading=True,
+                    saved_cwd=saved_cwd,
+                    workspace_id=workspace_id,
+                    workspace_snapshot=workspace_snapshot,
+                    primary_cwd=primary_cwd,
+                )
+                if workspace_id is not None
+                else await self._sessions.do_session_restore(session_id, allow_while_loading=True, saved_cwd=saved_cwd)
+            )
         finally:
+            self._startup_restore_target = None
             await self._services.bus.unsubscribe(SessionRestored, observe_restored)
         if restored:
             return "restored"
+        if self._startup_restore_error is not None:
+            return self._startup_restore_error
         return "declined" if request is RestoreRequest.DECLINED else "failed"
 
     def cancel_startup_session_restore(self) -> None:
@@ -1630,6 +1679,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self.query_one(SidebarPanel).hooks_panel.bind_source(
             self._hook_runs, self._configured_hook_count, self._hook_runs_dropped
         )
+        if self._state.runtime.approval_mode is ApprovalMode.BYPASS:
+            self.notify(
+                render_str(self._language_localizer(), _BYPASS_STARTUP_WARNING.bind()),
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
         await self._subscriptions.subscribe_all()
         await self._btw.subscribe()
         await self._workflow.subscribe()
@@ -2320,10 +2376,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         await self._sessions.create_new_session()
 
     @work(thread=False)
-    async def _resume_last_session(self) -> None:
+    async def _resume_session(self, selector: str) -> None:
         if self._state.run.agent_loading:
             return
-        await self._sessions.resume_last_session()
+        await self._sessions.resume_session(selector)
 
     @work(thread=False)
     async def _fork_current_session(self) -> None:
@@ -2841,7 +2897,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._navigation.quit()
 
     def action_sessions(self) -> None:
-        """Open the sessions modal (Ctrl+N)."""
+        """Open the sessions modal (F1)."""
         self._navigation.sessions()
 
     def _clear_current_session(self) -> None:
@@ -3119,6 +3175,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return event.session_id is None or event.session_id == self.chat_session_id
 
     def _route_session_error(self, event: Error) -> bool:
+        if self._sessions.capture_missing_explicit_session(event) or self._sessions.capture_restore_missing_cwd(event):
+            return True
+        if event.session_id and event.session_id == self._startup_restore_target:
+            self._startup_restore_error = event
+            return True
         if not event.session_id or event.session_id != self._workflow.session_id:
             return False
         self._workflow.feedback.notify(event.display_message or event.message)

@@ -240,14 +240,19 @@ async def test_full_document_row_text_is_stable() -> None:
         rows_again.pop()
     assert rows == rows_again, "two renders of identical markdown diverged"
 
-    # And confirm the visible content includes every block.
-    joined = "\n".join(rows)
-    assert "Title" in joined
-    assert "para one." in joined
-    assert "a = 1" in joined
-    assert "b = 2" in joined
-    assert "alpha" in joined
-    assert "beta" in joined
+    assert rows == [
+        "                 Title",
+        "",
+        "para one.",
+        "",
+        "",
+        "  a = 1",
+        "  b = 2",
+        "",
+        "",
+        "  • alpha",
+        "  • beta",
+    ]
 
 
 async def test_fence_render_byte_identical_with_and_without_line_cache() -> None:

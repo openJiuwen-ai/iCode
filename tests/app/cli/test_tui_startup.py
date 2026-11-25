@@ -85,3 +85,23 @@ def test_unwritable_terminal_does_not_block_startup(monkeypatch) -> None:
     monkeypatch.setattr(sys, "stderr", BrokenOutput())
     monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
     show_startup_notice([])
+
+
+@pytest.mark.parametrize("prefix", ["--w", "--wo", "--wor", "--work", "--workd", "--workdi", "--workdir"])
+def test_workdir_prefixes_match_main_for_tui_help_and_run(prefix, tmp_path) -> None:
+    import argparse
+
+    from chrys.app.cli import run as run_cli
+
+    main = argparse.ArgumentParser()
+    main.add_argument("-C", "--workdir")
+    expected = main.parse_args([prefix, str(tmp_path)]).workdir
+    for parser, argv, dest in (
+        (cli_app.build_parser(), [], "workdir"),
+        (run_cli.build_parser(), ["-a", "Code", "task"], "cwd"),
+    ):
+        assert getattr(parser.parse_args([*argv, prefix, str(tmp_path)]), dest) == expected
+        assert parser.parse_args([*argv, "--workspace", "Team"]).workspace == "Team"
+        with pytest.raises(SystemExit) as conflict:
+            parser.parse_args([*argv, "--workspace", "Team", prefix, str(tmp_path)])
+        assert conflict.value.code == 2

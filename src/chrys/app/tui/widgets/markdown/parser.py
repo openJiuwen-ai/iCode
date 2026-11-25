@@ -426,6 +426,56 @@ def _create_markdown_parser() -> MarkdownIt:
     return _configure_markdown_parser(parser)
 
 
+type InlineCache = dict[str, list[Token]]
+
+
+def _parse_streaming_markdown(parser: MarkdownIt, source: str, cache: InlineCache) -> list[Token]:
+    """Parse one snapshot with a fresh default parser, reusing the previous snapshot's inline children."""
+    # The block pass resolves document-wide structure and link definitions. Between it and
+    # math cleanup, these specific core rules process each inline independently. A new
+    # rule may need the entire document (e.g. for footnotes).
+    if parser.core.ruler.get_active_rules() != [
+        "normalize",
+        "block",
+        "inline",
+        "linkify",
+        "chrys_ipv6_links",
+        "text_join",
+        "chrys_math_cleanup",
+    ]:
+        cache.clear()
+        return parser.parse(source)
+
+    document: list[Token] | None = None
+
+    def select_changed(state: StateCore) -> None:
+        nonlocal document
+        if state.env.get("references"):
+            # Even an unchanged paragraph can acquire or lose a link target.
+            cache.clear()
+            return
+        document = state.tokens
+        pending = []
+        for token in document:
+            if token.type == "inline":
+                children = cache.get(token.content)
+                if children is None:
+                    pending.append(token)
+                else:
+                    token.children = children
+        state.tokens = pending
+
+    def restore_document(state: StateCore) -> None:
+        if document is not None:
+            state.tokens = document
+            cache.clear()
+            cache.update((t.content, t.children) for t in document if t.type == "inline" and t.children is not None)
+
+    parser.core.ruler.before("inline", "chrys_changed_inlines", select_changed)
+    parser.core.ruler.after("text_join", "chrys_restore_blocks", restore_document)
+    return parser.parse(source)
+
+
 def _hard_line_breaks(state: StateCore) -> None:
     for token in state.tokens:
         for child in token.children or []:

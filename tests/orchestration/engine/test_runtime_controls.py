@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock, create_autospec
 
 import pytest
@@ -31,6 +31,7 @@ from chrys.foundation.events.types import (
     SetModelProfile,
     SettingsReload,
     SettingsReloaded,
+    Warning,
     WorkspaceChange,
     WorkspaceUpdated,
 )
@@ -42,6 +43,7 @@ from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.kernel.tools import FunctionTool
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.state import lifecycle_permits
+from chrys.orchestration.engine.workspaces import MembershipWrite, WorkspacePlan
 from chrys.orchestration.sub_agents.tools import SubAgentTools
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
@@ -56,6 +58,7 @@ from tests.orchestration.engine._recovery_helpers import (
     _registry,
     stub_engine_start,
 )
+from tests.support.components import plan_workspace
 from tests.support.event_capture import assert_display_message, collect_events
 from tests.support.loaded_agents import install_loaded_agent
 
@@ -104,8 +107,10 @@ async def test_profile_switch_retries_start_when_no_executor(monkeypatch: pytest
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
+        assert commit_workspace is None
         calls.append((profile, operation))
         engine.session.agent_profile = profile
         executor = MagicMock()
@@ -209,16 +214,18 @@ async def test_workspace_change_starts_from_failed_build_without_executor(
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
+        assert commit_workspace is None
         calls.append((start_profile, operation))
         executor = MagicMock()
         executor.backend.history_state = {"messages": []}
         install_loaded_agent(engine, bindings=executor)
         # A successful start commits the staged workspace; the double honors
         # the same contract now that nothing pre-assigns it.
-        if workspace is not None:
-            engine.session.workspace = workspace
+        if workspace_plan is not None:
+            engine.session.install_workspace(workspace_plan)
 
     monkeypatch.setattr(engine.lifecycle, "start", fake_start)
 
@@ -246,7 +253,7 @@ async def test_failed_workspace_change_without_executor_keeps_the_old_root(
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.session_id = "sid"
     engine.session.agent_profile = profile
-    engine.session.workspace = Workspace.from_cwd(str(old_root))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(old_root))))
     old_settings = engine.settings
 
     async def failing_build(_profile: AgentProfile, _staged: Any, **_kwargs: object) -> None:
@@ -289,12 +296,16 @@ async def test_failed_workspace_change_load_publishes_a_terminal_error(
 
     monkeypatch.setattr("chrys.orchestration.engine.state.controls.load_settings", failing_load)
 
+    request = WorkspaceChange(primary_cwd=str(new_root))
     with pytest.raises(RuntimeError, match="unreadable config"):
-        await engine._on_workspace_change(WorkspaceChange(primary_cwd=str(new_root)))
+        await engine._on_workspace_change(request)
+
+    assert not engine.turns.turn_state.lease.prompt_admission_closed
 
     assert engine.settings is old_settings
-    assert [error.code for error in errors] == ["workspace_change_failed"]
-    assert errors[0].session_id == "sid"
+    assert [(error.code, error.message, error.session_id) for error in errors] == [
+        ("workspace_change_failed", "unreadable config", "sid")
+    ]
 
 
 async def test_workspace_change_soft_restarts_live_executor(
@@ -308,7 +319,7 @@ async def test_workspace_change_soft_restarts_live_executor(
     calls: list[tuple[AgentProfile, str, str]] = []
 
     async def fake_soft_restart(start_profile: AgentProfile, **kwargs: Any) -> None:
-        workspace = kwargs["workspace"]
+        workspace = kwargs["workspace_plan"].workspace
         calls.append((start_profile, workspace.primary_cwd, kwargs["operation"]))
 
     monkeypatch.setattr(engine.lifecycle, "reload", fake_soft_restart)
@@ -332,7 +343,7 @@ async def test_workspace_change_derives_settings_from_the_new_root(
     replacement_settings = Settings(default_approval_mode="auto")
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.agent_profile = profile
-    engine.session.workspace = Workspace.from_cwd(str(old_root))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(old_root))))
     load_kwargs: dict[str, Any] = {}
 
     def fake_load(**kwargs: Any) -> LoadedSettings:
@@ -348,7 +359,7 @@ async def test_workspace_change_derives_settings_from_the_new_root(
     assert engine.settings is replacement_settings
 
 
-async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass_as_auto(
+async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[ApprovalModeUpdated] = []
@@ -385,14 +396,15 @@ async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass_as_
     assert live_approval.approval_mode is ApprovalMode.BYPASS
     workflow_nodes.assert_called_once_with(ApprovalMode.BYPASS)
     assert persisted == ["bypass"]
-    assert engine.settings.default_approval_mode == "auto"
-    assert [(event.mode, event.session_id) for event in events] == [("bypass", "sid")]
+    assert engine.settings.default_approval_mode == "bypass"
+    assert [(event.mode, event.session_id, event.saved_as_default) for event in events] == [("bypass", "sid", True)]
 
 
 @pytest.mark.parametrize("mode", [ApprovalMode.MANUAL, ApprovalMode.AUTO])
 @pytest.mark.parametrize("failure", ["yaml", "rule", "grammar"])
+@pytest.mark.parametrize("persist", [False, True, "frontend"])
 async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation(
-    monkeypatch: pytest.MonkeyPatch, mode: ApprovalMode, failure: str
+    monkeypatch: pytest.MonkeyPatch, mode: ApprovalMode, failure: str, persist: bool | Literal["frontend"]
 ) -> None:
     from chrys.service.approval import prejudge_v2
 
@@ -410,6 +422,9 @@ async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation
     )
     bus = EventBus()
     engine = assemble_agent_engine(bus, settings=Settings(), initial_approval_mode=ApprovalMode.BYPASS)
+    engine.session.session_id = "sid"
+    persist_mode = create_autospec(engine_module.persist_approval_mode, return_value=None)
+    monkeypatch.setattr(engine_module, "persist_approval_mode", persist_mode)
     tool = FunctionTool(name="bash")
     set_tool_kind(tool, KIND_SHELL)
     policy = ApprovalPolicy(ApprovalConfig(default="require"), tools=[tool])
@@ -422,10 +437,14 @@ async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation
     workflow_nodes = create_autospec(engine.workflows.set_approval_mode)
     monkeypatch.setattr(engine.workflows, "set_approval_mode", workflow_nodes)
     updates: list[ApprovalModeUpdated] = []
+    warnings: list[Warning] = []
     requests: list[ApprovalRequest] = []
 
     async def updated(event: ApprovalModeUpdated) -> None:
         updates.append(event)
+
+    async def warned(event: Warning) -> None:
+        warnings.append(event)
 
     async def reject(request: ApprovalRequest) -> None:
         requests.append(request)
@@ -436,19 +455,30 @@ async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation
 
     await bus.subscribe(SetApprovalMode, engine._on_set_approval_mode)
     await bus.subscribe(ApprovalModeUpdated, updated)
+    await bus.subscribe(Warning, warned)
     await bus.subscribe(ApprovalRequest, reject)
     try:
         # EventBus swallows handler errors: verify every target and a real
         # approval request, rather than just that publish() returned.
-        await bus.publish(SetApprovalMode(mode=mode.value, persist=False))
+        await bus.publish(SetApprovalMode(mode=mode.value, persist=persist))
         assert engine.session.approval_mode is mode
         assert main.approval_mode is mode
         assert child.approval_mode is mode
         assert sub_agents._approval_mode is mode
         workflow_nodes.assert_called_once_with(mode)
         assert [event.mode for event in updates] == [mode.value]
+        assert updates[0].saved_as_default is (persist is True)
+        assert updates[0].save_in_frontend is (persist == "frontend")
+        if persist is True:
+            persist_mode.assert_called_once_with(mode.value)
+            assert engine.settings.default_approval_mode == mode.value
+        else:
+            persist_mode.assert_not_called()
+            assert engine.settings.default_approval_mode == "manual"
         warning = updates[0].prejudge_warning
         assert warning is not None
+        assert warnings == [warning]
+        assert warning.session_id == "sid"
         assert warning.code == "prejudge_unavailable"
         assert str(config) in warning.message and "restart iCode" in warning.message
         for middleware in (main, child):
@@ -459,6 +489,7 @@ async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation
         await child.close()
         await bus.unsubscribe(SetApprovalMode, engine._on_set_approval_mode)
         await bus.unsubscribe(ApprovalModeUpdated, updated)
+        await bus.unsubscribe(Warning, warned)
         await bus.unsubscribe(ApprovalRequest, reject)
 
 
@@ -479,16 +510,9 @@ async def test_setting_the_approval_mode_moves_its_provenance_with_the_value(
     assert engine.loaded_settings.source_for("approval.default_mode").layer is Source.RUNTIME
 
 
-async def test_setting_the_approval_mode_breaks_the_seal_it_no_longer_describes(
+async def test_changing_the_active_mode_preserves_a_default_sealed_by_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``approval.default_mode`` is DANGEROUS, so a bad env value seals it.
-
-    The seal means "we refused every layer and fell back to the built-in
-    default". Once the user picks a mode at runtime that sentence is false,
-    and leaving the seal on reproduces the contradiction the freeze fix
-    removed: sealed, yet holding a value nobody defaulted to.
-    """
     monkeypatch.setenv("CHRYS_DEFAULT_APPROVAL_MODE", "garbage")
     loaded = load_settings()
     assert loaded.settings.default_approval_mode == "manual"
@@ -501,8 +525,9 @@ async def test_setting_the_approval_mode_breaks_the_seal_it_no_longer_describes(
 
     await engine._on_set_approval_mode(SetApprovalMode(mode="auto"))
 
-    assert engine.settings.default_approval_mode == "auto"
-    assert "approval.default_mode" not in engine.loaded_settings.sealed_keys
+    assert engine.session.approval_mode is ApprovalMode.AUTO
+    assert engine.settings.default_approval_mode == "manual"
+    assert "approval.default_mode" in engine.loaded_settings.sealed_keys
 
 
 async def test_set_approval_mode_can_skip_global_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -530,7 +555,7 @@ async def test_set_approval_mode_can_skip_global_persistence(monkeypatch: pytest
     assert sub_agents.modes == [ApprovalMode.BYPASS]
     assert persisted == []
     assert settings.default_approval_mode == "manual"
-    assert [(event.mode, event.session_id) for event in events] == [("bypass", "sid")]
+    assert [(event.mode, event.session_id, event.saved_as_default) for event in events] == [("bypass", "sid", False)]
 
 
 async def test_set_approval_mode_ignores_invalid_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -644,18 +669,18 @@ async def test_workspace_change_to_a_missing_directory_is_refused_before_any_reb
     engine = assemble_agent_engine(bus, settings=Settings(), agent_registry=_registry(_profile()))
     engine.session.session_id = "sid"
     engine.session.agent_profile = _profile()
-    engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
     install_loaded_agent(engine, bindings=object())  # type: ignore[assignment]
     acquire_calls: list[lifecycle_permits.RebuildControlToken] = []
+    original_acquire = engine.permits.acquire_rebuild_permit
 
-    async def record_acquire(
-        token: lifecycle_permits.RebuildControlToken,
-    ) -> lifecycle_permits.RebuildPermitDenied:
+    async def record_acquire(token: lifecycle_permits.RebuildControlToken) -> lifecycle_permits.RebuildPermit:
         acquire_calls.append(token)
-        return lifecycle_permits.RebuildPermitDenied(reason="superseded", code="unexpected", message="unexpected")
+        return await original_acquire(token)
 
     monkeypatch.setattr(engine.permits, "acquire_rebuild_permit", record_acquire)
     missing = tmp_path / "missing"
+    loaded = engine.current.loaded
 
     await engine._on_workspace_change(WorkspaceChange(primary_cwd=str(missing)))
 
@@ -663,6 +688,7 @@ async def test_workspace_change_to_a_missing_directory_is_refused_before_any_reb
     assert errors[0].message == f"Working directory does not exist: {missing}"
     assert_display_message(errors[0], "controls.workspace_missing", {"path": DisplayPath(str(missing))})
     assert acquire_calls == []
+    assert engine.current.loaded is loaded
     assert engine.session.workspace.primary_cwd == str(tmp_path)
 
 
@@ -686,7 +712,7 @@ async def test_already_satisfied_denials_publish_typed_success(monkeypatch: pyte
     install_loaded_agent(
         engine, active_profile=ModelProfile(id="model-1", name="Model", provider="openai", model_id="gpt-5")
     )
-    engine.session.workspace = Workspace.from_cwd(current)
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(current)))
     denied = lifecycle_permits.RebuildPermitDenied(
         reason="superseded",
         code="runtime_mutation_superseded",
@@ -753,7 +779,7 @@ async def test_terminal_denials_are_not_masked_by_live_satisfied_state(
     install_loaded_agent(
         engine, active_profile=ModelProfile(id="model-1", name="Model", provider="openai", model_id="gpt-5")
     )
-    engine.session.workspace = Workspace.from_cwd(current)
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(current)))
     denied = lifecycle_permits.RebuildPermitDenied(reason=reason, code=code, message=reason)
 
     async def deny_after_boundary(
@@ -802,13 +828,15 @@ async def test_concurrent_profile_switch_waiters_supersede_after_first_rebuild(
     async def fake_soft_restart_with_permit(
         _permit: lifecycle_permits.RebuildPermit,
         profile: AgentProfile,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
     ) -> None:
-        _ = workspace, operation
+        assert commit_workspace is None
+        _ = workspace_plan, operation
         calls.append(profile.name)
         restart_entered.set()
         await release_restart.wait()
@@ -870,13 +898,15 @@ async def test_runtime_mutation_success_publishes_before_rebuild_permit_release(
 
     async def fake_soft_restart(
         _profile: AgentProfile,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
     ) -> None:
-        _ = workspace, operation
+        assert commit_workspace is None
+        _ = workspace_plan, operation
         install_loaded_agent(
             engine, active_profile=ModelProfile(id="new-model", name="New", provider="openai", model_id="gpt-5")
         )

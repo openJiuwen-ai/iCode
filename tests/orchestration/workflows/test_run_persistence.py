@@ -19,7 +19,14 @@ from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.workflows.layout import run_dir
 from chrys.service.workflows.store import RunRecord, WorkflowRunStore, read_run_events, read_run_output
-from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import (
+    confirm,
+    make_host,
+    make_workdir,
+    patch_runtime,
+    run,
+    write_workflow,
+)
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
 

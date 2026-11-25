@@ -330,7 +330,7 @@ class ApprovalMiddleware(FunctionMiddleware):
         self._workspace_roots: list[str] = []
         for r in workspace_roots or []:
             with contextlib.suppress(OSError, ValueError):
-                self._workspace_roots.append(os.path.realpath(os.path.abspath(r)))
+                self._workspace_roots.append(os.path.realpath(r))
         # Session-owned archive dirs (compaction spill records, superseded
         # LAST_WORDS notes) whose reads are always auto-approved: chrys wrote
         # those files from context the agent already saw.

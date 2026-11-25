@@ -9,6 +9,12 @@ import sys
 from typing import Final
 
 from chrys import __version__
+from chrys.app.parsing import (
+    WORKDIR_OPTIONS,
+    SanitizingArgumentParser,
+    WorkspaceHelpFormatter,
+    add_startup_session_option,
+)
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 
 _TUI_SUBPROCESS_COMMAND = "__tui_subprocess__"
@@ -116,7 +122,7 @@ def _run_acp(argv: list[str]) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     """Help-only parser; real dispatch lives in ``main()``."""
-    parser = argparse.ArgumentParser(
+    parser = SanitizingArgumentParser(
         prog=APP_COMMAND,
         description=f"{APP_DISPLAY_NAME} is a general-purpose extensible agent platform.",
         epilog=(
@@ -137,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
             "agent, model, approval, hook and workflow list when given no subcommand.\n\n"
             f"Default: '{APP_COMMAND}' launches the TUI. Run '{APP_COMMAND} <command> --help' for command options."
         ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=WorkspaceHelpFormatter,
         add_help=False,
     )
     parser.add_argument(
@@ -146,7 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--version", action="store_true", help=f"Print the {APP_DISPLAY_NAME} version and exit")
 
     tui_options = parser.add_argument_group("TUI options")
-    tui_options.add_argument("-s", "--session", metavar="SESSION", help="Restore the given session id after startup")
+    add_startup_session_option(tui_options)
     tui_options.add_argument(
         "-a",
         "--agent",
@@ -159,7 +165,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MODEL",
         help="Start the TUI with the given active model profile id or name",
     )
-    tui_options.add_argument("-C", "--workdir", metavar="DIR", help="Start the TUI in the given working directory")
+    workspace_flags = tui_options.add_mutually_exclusive_group()
+    workspace_flags.add_argument("--workspace", metavar="WORKSPACE", help="Open a workspace by name or ID prefix")
+    workspace_flags.add_argument(*WORKDIR_OPTIONS, metavar="DIR", help="Start the TUI in the given working directory")
 
     commands = parser.add_argument_group("commands")
     commands.add_argument(

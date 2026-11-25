@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, create_autospec
@@ -28,16 +27,15 @@ from chrys.foundation.events.types import (
     Warning,
 )
 from chrys.foundation.i18n import DisplayPath
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mutations import workspace_changes
-from chrys.service.profiles.agents.schema import (
-    AgentProfile,
-)
 from chrys.service.state.locks import ActiveSessionGuard
-from chrys.service.state.store import SESSION_RECOVERY_FILE_NAME, JsonFileStateStore
+from chrys.service.state.store import SESSION_RECOVERY_FILE_NAME, ChatRestoreKindError, JsonFileStateStore
 from tests.orchestration.engine._recovery_helpers import (
     _profile,
     _registry,
@@ -46,7 +44,35 @@ from tests.orchestration.engine._recovery_helpers import (
     stub_engine_lifecycle,
     stub_engine_shutdown,
 )
+from tests.support.components import plan_workspace
 from tests.support.event_capture import assert_display_message, collect_events
+from tests.support.symlinks import symlink_or_skip
+from tests.support.workspace_engine import stub_workspace_start
+
+
+async def test_restore_reports_busy_when_linked_recovery_is_claimed_after_lookup(tmp_path: Path) -> None:
+    source = JsonFileStateStore(tmp_path / "source")
+    store = JsonFileStateStore(tmp_path / "sessions")
+    session_id = "abcdef123456"
+    source.save_recovery_session(session_id, {})
+    path = store.session_dir(session_id) / SESSION_RECOVERY_FILE_NAME
+    path.parent.mkdir()
+    symlink_or_skip(path, source.session_dir(session_id) / path.name)
+    assert await store.resolve_startup_session(session_id, require_inactive=True) is not None
+
+    errors: list[Error] = []
+    bus = EventBus()
+    await bus.subscribe(Error, lambda event: collect_events(errors, event))
+    engine = assemble_agent_engine(bus, settings=Settings(), state_store=store)
+    try:
+        with FileLock(source.active_lock_path(session_id), timeout=0):
+            await engine.on_session_restore(SessionRestore(session_id=session_id))
+            assert [(e.code, e.session_id) for e in errors] == [("session_in_use", session_id)]
+            assert engine.session.session_id is None
+            with FileLock(store.active_lock_path(session_id), timeout=0):
+                assert path.is_symlink()
+    finally:
+        await engine.shutdown()
 
 
 async def test_restore_loads_winning_recovery_sidecar_after_acquiring_lock(
@@ -73,6 +99,216 @@ async def test_restore_loads_winning_recovery_sidecar_after_acquiring_lock(
     assert engine.recovered_from_sidecar is True
     assert len(events) == 1
     assert events[0].recovered_from_sidecar is True
+
+
+async def test_tui_replays_the_accepted_linked_recovery_when_source_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile()
+    source = JsonFileStateStore(tmp_path / "source")
+    store = JsonFileStateStore(tmp_path / "sessions")
+    await _seed_recovery_sidecar(source, agent_profile=profile.name)
+    sid = "restore_me"
+    path = store.session_dir(sid) / SESSION_RECOVERY_FILE_NAME
+    path.parent.mkdir()
+    symlink_or_skip(path, source.session_dir(sid) / path.name)
+    bus = EventBus()
+    events: list[SessionRestored] = []
+    await bus.subscribe(SessionRestored, lambda event: collect_events(events, event))
+    engine = assemble_agent_engine(
+        bus, settings=Settings(), state_store=store, agent_registry=_registry(profile), surface=SessionSurface.TUI
+    )
+    stub_engine_lifecycle(monkeypatch, engine)
+    try:
+        await engine.on_session_restore(SessionRestore(session_id=sid))
+        with FileLock(source.active_lock_path(sid), timeout=0):
+            assert await store.load_session_for_replay(sid, prefer_recovery=True) is None
+            [restored] = events
+            assert restored.replay is not None
+            assert restored.replay.transcript.messages[0]["contents"][0]["text"] == "recovery"
+    finally:
+        engine.session.guard.release()
+
+
+async def test_cancelled_restore_releases_the_lock_returned_after_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JsonFileStateStore(tmp_path)
+    session_id = "restore_me"
+    engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
+    acquired = asyncio.Event()
+    proceed = threading.Event()
+    loop = asyncio.get_running_loop()
+    acquire = engine.session.guard.acquire_for_restore
+
+    def delayed_acquire(session_id: str, *, timeout: float) -> FileLock:
+        lock = acquire(session_id, timeout=timeout)
+        assert lock is not None
+        loop.call_soon_threadsafe(acquired.set)
+        if not proceed.wait(5):
+            lock.release()
+            raise TimeoutError("Test did not release the lock worker")
+        return lock
+
+    monkeypatch.setattr(engine.session.guard, "acquire_for_restore", delayed_acquire)
+    restore = asyncio.create_task(engine.on_session_restore(SessionRestore(session_id=session_id)))
+    try:
+        async with asyncio.timeout(5):
+            await acquired.wait()
+            restore.cancel()
+            await asyncio.sleep(0)
+            restore.cancel()
+            await asyncio.sleep(0)
+            assert not restore.done()
+    finally:
+        proceed.set()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await restore
+            async with asyncio.timeout(5):
+                permit = await engine.permits.prepare_session_transition("test_after_cancel")
+            assert permit is not None
+            engine.permits.finish_session_transition(permit)
+        finally:
+            await engine.shutdown()
+
+    with FileLock(store.active_lock_path(session_id), timeout=0):
+        assert not engine.session.guard.owns(session_id)
+
+
+def test_runner_shutdown_releases_the_lock_returned_after_task_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JsonFileStateStore(tmp_path)
+    guard = ActiveSessionGuard(store)
+    acquire = guard.acquire_for_restore
+    session_id = "restore_me"
+    proceed = threading.Event()
+
+    async def start_acquiring() -> None:
+        loop = asyncio.get_running_loop()
+        acquired = asyncio.Event()
+        notifier_started = asyncio.Event()
+
+        def delayed_acquire(session_id: str, *, timeout: float) -> FileLock:
+            lock = acquire(session_id, timeout=timeout)
+            assert lock is not None
+            loop.call_soon_threadsafe(acquired.set)
+            if not proceed.wait(5):
+                lock.release()
+                raise TimeoutError("Test did not observe Runner shutdown")
+            return lock
+
+        async def signal_shutdown() -> None:
+            notifier_started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                proceed.set()
+
+        monkeypatch.setattr(guard, "acquire_for_restore", delayed_acquire)
+        notifier = asyncio.create_task(signal_shutdown())
+        pending = asyncio.create_task(guard.acquire_for_restore_async(session_id, timeout=0))
+        async with asyncio.timeout(5):
+            await notifier_started.wait()
+            await acquired.wait()
+        assert not notifier.done() and not pending.done()
+
+    asyncio.run(start_acquiring())
+    with FileLock(store.active_lock_path(session_id), timeout=0):
+        assert not guard.owns(session_id)
+
+
+async def test_new_session_cannot_release_current_lock_during_restore_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile()
+    store = JsonFileStateStore(tmp_path)
+    session_id = "restore_me"
+    await _seed_restorable_session(store, text="backup", agent_profile=profile.name)
+    primary = store.session_dir(session_id) / "session.json"
+    primary.unlink()
+    engine = assemble_agent_engine(
+        EventBus(), settings=Settings(), state_store=store, agent_registry=_registry(profile)
+    )
+    engine.session.session_id = session_id
+    engine.session.agent_profile = profile
+    engine.session.guard.install(session_id, engine.session.guard.acquire_for_restore(session_id, timeout=0))
+    repairing = asyncio.Event()
+    proceed = threading.Event()
+    loop = asyncio.get_running_loop()
+    load = store._load_chat_for_restore_sync
+
+    def delayed_load(session_id: str, *, prefer_recovery: bool, ignore_recovery: bool, repair: bool = True):
+        loop.call_soon_threadsafe(repairing.set)
+        assert proceed.wait(5)
+        return load(session_id, prefer_recovery=prefer_recovery, ignore_recovery=ignore_recovery, repair=repair)
+
+    monkeypatch.setattr(store, "_load_chat_for_restore_sync", delayed_load)
+    restore = asyncio.create_task(engine.on_session_restore(SessionRestore(session_id=session_id)))
+    new_session: asyncio.Task[None] | None = None
+    try:
+        async with asyncio.timeout(5):
+            await repairing.wait()
+            new_session = asyncio.create_task(engine.lifecycle.on_new_session(SessionNew()))
+            await asyncio.sleep(0)
+            assert not new_session.done()
+            assert engine.session.guard.owns(session_id)
+            with pytest.raises(TimeoutError), FileLock(store.active_lock_path(session_id), timeout=0):
+                pass
+            proceed.set()
+            await asyncio.gather(restore, new_session)
+            with FileLock(store.active_lock_path(session_id), timeout=0):
+                assert engine.session.session_id != session_id
+                assert primary.is_file()
+    finally:
+        proceed.set()
+        tasks = [restore] if new_session is None else [restore, new_session]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await engine.shutdown()
+
+
+@pytest.mark.parametrize("repair_fails", [False, True])
+async def test_cancelled_restore_keeps_active_lock_until_checkpoint_repair_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repair_fails: bool
+) -> None:
+    store = JsonFileStateStore(tmp_path)
+    await _seed_restorable_session(store)
+    primary = store.session_dir("restore_me") / "session.json"
+    primary.unlink()
+    engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
+    entered = asyncio.Event()
+    proceed = threading.Event()
+    loop = asyncio.get_running_loop()
+    load = store._load_chat_for_restore_sync
+
+    def delayed_load(session_id: str, *, prefer_recovery: bool, ignore_recovery: bool, repair: bool = True):
+        loop.call_soon_threadsafe(entered.set)
+        assert proceed.wait(5)
+        if repair_fails:
+            raise ChatRestoreKindError("Open this session in Workflow mode.")
+        return load(session_id, prefer_recovery=prefer_recovery, ignore_recovery=ignore_recovery, repair=repair)
+
+    monkeypatch.setattr(store, "_load_chat_for_restore_sync", delayed_load)
+    restore = asyncio.create_task(engine.on_session_restore(SessionRestore(session_id="restore_me")))
+    try:
+        async with asyncio.timeout(5):
+            await entered.wait()
+            restore.cancel()
+            await asyncio.sleep(0)
+            assert not restore.done()
+            with pytest.raises(TimeoutError), FileLock(store.active_lock_path("restore_me"), timeout=0):
+                pass
+    finally:
+        proceed.set()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await restore
+        finally:
+            await engine.shutdown()
+
+    with FileLock(store.active_lock_path("restore_me"), timeout=0):
+        assert primary.is_file() is not repair_fails
 
 
 async def test_restore_snapshots_settings_inside_the_transition_fence(
@@ -110,29 +346,16 @@ async def test_restore_snapshots_settings_inside_the_transition_fence(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         pass
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(*, staged_loaded, session, **_):
         if staged_loaded is not None:
             engine.settings_handle.install_prepared(engine.settings_handle.prepare(staged_loaded, session=session))
-        if workspace is not None:
-            engine.session.workspace = workspace
 
     monkeypatch.setattr("chrys.orchestration.engine.session_lifecycle.load_settings", hanging_restore_load)
     monkeypatch.setattr(
         "chrys.orchestration.engine.state.controls.load_settings",
         lambda **kwargs: LoadedSettings(settings=replacement_settings, provenance={}),
     )
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         restore = asyncio.create_task(engine.on_session_restore(SessionRestore(session_id="restore_me")))
@@ -273,14 +496,14 @@ async def test_failed_startup_restore_reset_releases_target_without_saving(tmp_p
 
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "restore_me"
-    engine.session.workspace = Workspace.from_cwd(str(target_cwd))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(target_cwd))))
     target_lock = engine.session.guard.acquire_for_restore("restore_me")
     engine.session.guard.install("restore_me", target_lock)
 
     await engine.reset_after_failed_startup_restore()
 
     assert engine.session.session_id is None
-    assert engine.session.workspace == Workspace.from_cwd()
+    assert engine.session.workspace is None
     assert engine.current.loaded is None
     assert engine.session.mutation_tracker is None
     assert engine.session.suppress_save is False
@@ -463,21 +686,10 @@ async def test_session_restore_keeps_admission_closed_through_restored_event(
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         shutdown_closed_states.append(engine.turns.turn_state.lease.prompt_admission_closed)
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(**_):
         start_closed_states.append(engine.turns.turn_state.lease.prompt_admission_closed)
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     try:
         await engine.on_session_restore(SessionRestore(session_id="restore_me"))
@@ -499,21 +711,10 @@ async def test_new_session_keeps_admission_closed_through_restart(monkeypatch: p
     async def fake_shutdown(*, keep_side_answers: bool = False) -> None:
         states.append(("shutdown", engine.turns.turn_state.lease.prompt_admission_closed))
 
-    async def fake_start(
-        start_profile: AgentProfile,
-        *,
-        operation: str = "startup",
-        staged_loaded: LoadedSettings | None = None,
-        session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
-    ) -> None:
-        _ = start_profile, operation
+    def fake_start(**_):
         states.append(("start", engine.turns.turn_state.lease.prompt_admission_closed))
 
-    monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", fake_shutdown)
-    monkeypatch.setattr(engine.lifecycle, "start", fake_start)
+    stub_workspace_start(monkeypatch, engine, fake_start, close=fake_shutdown)
 
     await engine._on_new_session(SessionNew())
 
@@ -528,13 +729,15 @@ async def test_new_session_uses_profile_after_transition_permit(monkeypatch: pyt
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.agent_profile = old_profile
 
-    async def fake_begin_session_transition(operation: str) -> str:
-        assert operation == "new_session"
-        engine.session.agent_profile = new_profile
-        return "session:new_session:test"
+    prepare = engine.permits.prepare_session_transition
 
-    monkeypatch.setattr(engine.permits, "begin_session_transition", fake_begin_session_transition)
-    monkeypatch.setattr(engine.permits, "finish_session_transition", lambda _owner: None)
+    async def choose_profile_after_prepare(operation: str) -> str | None:
+        assert operation == "new_session"
+        owner = await prepare(operation)
+        engine.session.agent_profile = new_profile
+        return owner
+
+    monkeypatch.setattr(engine.permits, "prepare_session_transition", choose_profile_after_prepare)
     stubbed = stub_engine_lifecycle(monkeypatch, engine)
 
     await engine._on_new_session(SessionNew())
@@ -543,7 +746,6 @@ async def test_new_session_uses_profile_after_transition_permit(monkeypatch: pyt
 
 
 async def test_new_session_keeps_the_approval_mode_chosen_this_launch(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Choosing bypass saves ``auto`` so the next launch is safe; within this launch the choice stands.
     profile = _profile()
     engine = assemble_agent_engine(EventBus(), settings=Settings(default_approval_mode="auto"))
     engine.session.agent_profile = profile

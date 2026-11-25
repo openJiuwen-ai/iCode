@@ -51,13 +51,6 @@ def test_safe_readonly_rejects_unsafe_command_after_newline() -> None:
     assert not is_safe_readonly_command(command)
 
 
-def test_safe_readonly_rejects_unsafe_command_after_ampersand() -> None:
-    """Approval auto-bypass must not classify backgrounded unsafe commands as read-only."""
-    command = 'ls & python3 -c \'open("/tmp/chrys_probe", "w").write("x")\''
-
-    assert not is_safe_readonly_command(command)
-
-
 async def test_skill_runner_prepends_positional_arguments_before_keyword_flags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

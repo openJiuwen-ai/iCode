@@ -30,6 +30,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import Message
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.mutations.types import MutationOp, MutationSource
+from chrys.service.state.folds import FoldItem
 from tests.app.tui.screens.test_prompt_shortcut_send import hold_next, notices, running_session
 from tests.support.event_capture import capture_events
 from tests.support.rollback_spec import drain
@@ -131,7 +132,9 @@ async def test_compacted_originals_keep_copy_rollback_and_tool_rows():
     async with ChatPanelApp().run_test(size=(100, 35)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         panel.set_tool_kinds({"read_file": "read_file"})
-        await panel.replay_history([summary], compressed_blocks={"spec-compressed": block}, rollback_targets={0})
+        await panel.replay_history(
+            [summary], folds=[FoldItem("spec-compressed", "condensed", block=block)], rollback_targets={0}
+        )
         await panel.wait_replay_complete()
         await pilot.pause()
         user = panel.query_one(UserMessage)

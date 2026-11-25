@@ -13,6 +13,7 @@ from pathlib import Path
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.platform.files import atomic_write_owner_only_text, read_owner_verified_bounded
+from chrys.foundation.util.session_ids import same_session_id
 
 BTW_FILE_NAME = "btw.json"
 _MAX_HISTORY_BYTES = 32 * 1024 * 1024
@@ -50,7 +51,11 @@ def load_side_questions(directory: Path, session_id: str) -> tuple[SideQuestionE
             return ()
         raise
     data = json.loads(payload)
-    if not isinstance(data, dict) or data.get("session_id") != session_id or not isinstance(data.get("items"), list):
+    if (
+        not isinstance(data, dict)
+        or not same_session_id(data.get("session_id"), session_id)
+        or not isinstance(data.get("items"), list)
+    ):
         raise ValueError("Invalid side question history")
     entries: list[SideQuestionEntry] = []
     for item in data["items"]:

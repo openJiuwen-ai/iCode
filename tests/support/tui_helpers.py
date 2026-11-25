@@ -353,6 +353,9 @@ def make_backend_handler(
             screen, "_handle_approval_response", request_id, approved, reason, modified_args, remember_choice
         )
 
+    async def save_approval_default(_mode: str) -> None:
+        pass
+
     def post_gc_message(message: object) -> None:
         messages = getattr(screen, "_gc_messages", None)
         if isinstance(messages, list):
@@ -398,6 +401,8 @@ def make_backend_handler(
             refresh_notification_settings=lambda: _call_screen_hook(screen, "_refresh_notification_settings"),
             refresh_trajectory_verify_commands=lambda: _call_screen_hook(screen, "_refresh_trajectory_verify_commands"),
             settings_reloaded=lambda: None,
+            approval_default_saved=lambda _mode: None,
+            save_approval_default=save_approval_default,
         ),
         live_diff=live_diff,
     )
@@ -1140,7 +1145,7 @@ class SuggestionScreen:
     def action_pick_theme(self) -> None:
         return
 
-    def _resume_last_session(self) -> None:
+    def _resume_session(self, selector: str) -> None:
         return
 
     def _fork_current_session(self) -> None:
@@ -1239,7 +1244,7 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         new_session=screen._create_new_session,
         clear_session=screen._clear_current_session,
         quit_app=screen.action_quit,
-        resume_session=screen._resume_last_session,
+        resume_session=screen._resume_session,
         fork_session=screen._fork_current_session,
         ask_side_question=lambda _question: None,
         workflow_selection=lambda: None,

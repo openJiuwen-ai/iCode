@@ -80,7 +80,7 @@ The `approval` keys control approval behavior when an agent requests an operatio
 | `workdir.hooks_enabled` | None | `false` | Boolean; whether to load working directory hooks from `.chrys/hooks` in the working directory. Must be enabled in user settings. Does not affect user-level hooks |
 | `workdir.skills_enabled` | None | `false` | Boolean; whether to load working directory skills from `.agents/skills` in the working directory. Must be enabled in user settings. The agent's own “Load skills from working folder” option must also stay on |
 
-If you manually set the default approval mode to `bypass` in YAML or an environment variable, approval is bypassed the next time iCode starts with that default. When you switch to `bypass` with `/approval` in the TUI, iCode saves `auto` as the default mode; the TUI Settings dialog does not offer `bypass`.
+Use `/approval bypass` to switch to bypass mode and save it as the default. If you set `CHRYS_DEFAULT_APPROVAL_MODE`, its value takes precedence at startup and appears as read-only in Settings. Whenever the TUI starts in bypass mode, it warns that tools can run without approval.
 
 Working directory settings, working directory hooks, and working directory skills come from the repository you open, so all three are off by default and each is turned on separately: enabling one does not enable the others. When the working directory has any of them that are off, iCode shows a notice naming the setting to turn on. Hooks are external commands that iCode runs on specific events; for authoring and configuration, see [Configure and write hooks](../guides/extensions/hooks.md). For skills, see [Install and use skills](../guides/extensions/skills.md).
 
