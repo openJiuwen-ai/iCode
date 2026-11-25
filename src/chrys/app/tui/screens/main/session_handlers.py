@@ -853,23 +853,26 @@ class SessionHandler:
         session_id = event.session_id
         self._cancel_restore_load(attempt)
         source = self._workspace_action_owner()
+
+        def is_current() -> bool:
+            return self._can_restore(attempt) and self._workspace_action_owner() == source
+
         dialog = SessionInUseDialog(
             event.message,
             store.sessions_root,
             session_id,
             event.session_owner_generation,
+            is_current=is_current,
             locale_controller=self._locale_controller,
         )
 
         async def retry() -> None:
-            if not self._can_restore(attempt) or self._workspace_action_owner() != source:
+            if not is_current():
                 return
             if not await self._begin_chat_restore_load(session_id, attempt):
                 return
             try:
-                if self._can_restore(attempt) and self._workspace_action_owner() == source:
-                    await dialog.take_over()
-                if self._can_restore(attempt) and self._workspace_action_owner() == source:
+                if is_current():
                     await self._publish_chat_restore(request, attempt)
                 else:
                     self._cancel_restore_load(attempt)

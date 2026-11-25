@@ -1581,7 +1581,11 @@ class SessionLifecycle:
         turn_number: int,
         runtime_meta: SessionRuntimeMetadata,
     ) -> None:
+        # This restart restores live memory after a partially failed delete,
+        # rather than hydrating a verified checkpoint.
         self.reset_for_restart(session_id)
+        if state is not None and has_real_messages(state):
+            self._session.pending_conversation_save = object()
         await self._reconcile_existing_spill_storage()
         self._session.restore_position(runtime_meta=runtime_meta, turn_number=turn_number)
         mutation_state = (

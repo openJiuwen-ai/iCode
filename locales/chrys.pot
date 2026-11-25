@@ -8269,6 +8269,12 @@ msgstr ""
 msgid "tui.main.session_in_use.title"
 msgstr ""
 
+#. English: Waiting for the other instance to release this conversation…
+#. chrys-meta={"fingerprint":"c5e4a851f23440cbd69858463ac89ac2ca76077b22975bc24f65ae77826751e5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_in_use.py
+msgid "tui.main.session_in_use.waiting"
+msgstr ""
+
 #. English: No active session.
 #. chrys-meta={"fingerprint":"38ae034f8f816fa68540bbc47beeb9d1767b24e5da9ae0eda8f7b3ad4d6094b5","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/panel.py

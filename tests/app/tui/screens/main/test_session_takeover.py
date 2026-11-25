@@ -24,7 +24,14 @@ from chrys.service.profiles.models.serializer import save_profile
 from chrys.service.state.locks import ActiveSessionGuard
 from chrys.service.state.store import JsonFileStateStore, session_active_owner_path
 from chrys.service.state.takeover import TakeoverOwner, credential_path
-from tests.app.tui.screens.test_prompt_shortcut_send import ALPHA, MAIN_MODEL, mock_model, running_session
+from tests.app.tui.screens.test_prompt_shortcut_send import (
+    ALPHA,
+    MAIN_MODEL,
+    mock_model,
+    running_session,
+    send_plain,
+    turn_finished,
+)
 from tests.support.symlinks import symlink_or_skip
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -100,6 +107,73 @@ async def test_dialog_offers_only_idle_owner_and_tracks_replacement(tmp_path: Pa
     finally:
         listener.close()
         holder.release()
+
+
+@pytest.mark.parametrize("outcome", ["release", "cancel", "replacement", "unreadable"])
+async def test_wait_for_accepted_owner_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+    from tests.support.tui_app_harness import make_chrys_app
+
+    store = JsonFileStateStore(tmp_path / "sessions")
+    holder = ActiveSessionGuard(store)
+    accepted = asyncio.Event()
+    listener = TakeoverListener(lambda: holder.takeover_owner, lambda: not accepted.is_set(), accepted.set)
+    holder.takeover_port = await listener.start()
+    target = str(uuid4())
+    try:
+        assert await asyncio.to_thread(holder.ensure, target)
+        message, generation = holder.conflict_details(target)
+        assert generation
+        dialog = SessionInUseDialog(message, store.sessions_root, target, generation, locale_controller=None)
+        results = []
+        app = make_chrys_app(tmp_path / "local")
+        async with app.run_test(size=(60, 20)) as pilot:
+            await app.push_screen(dialog, callback=results.append)
+            await wait_for(
+                lambda: dialog._peer is not None and dialog.query_one("#confirm-yes", Button).display, pilot=pilot
+            )
+            await click_when_settled(pilot, "#confirm-yes")
+            await wait_for(accepted.is_set, pilot=pilot)
+            await dialog._refresh_owner()
+            assert app.screen is dialog and not results
+            if outcome == "cancel":
+                await pilot.press("escape")
+                await wait_for(lambda: results == [False], pilot=pilot)
+                assert holder.owns(target)
+            if outcome == "unreadable":
+                monkeypatch.setattr("chrys.app.tui.screens.dialogs.session_in_use.lock_available", lambda path: None)
+            else:
+                holder.release()
+                if outcome == "replacement":
+                    assert holder.ensure(target)
+            if outcome == "replacement":
+                await wait_for(lambda: results == [False], pilot=pilot)
+                assert dialog.owner_changed and holder.owns(target)
+            elif outcome != "cancel":
+                await wait_for(lambda: results == [True], pilot=pilot)
+    finally:
+        holder.release()
+        listener.close()
+
+
+async def test_failed_turn_save_preserves_owner_until_a_successful_save(
+    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+        await send_plain(session, "old checkpoint", typed=False)
+        await turn_finished(session)
+        await wait_for(session.app._takeover_idle, pilot=session.pilot)
+
+        async def disk_full(*args, **kwargs):
+            raise OSError("disk full")
+
+        with monkeypatch.context() as failure:
+            failure.setattr(JsonFileStateStore, "save_session", disk_full)
+            await send_plain(session, "keep this turn", typed=False)
+            await turn_finished(session)
+            assert not session.app._takeover_idle()
+
+        assert await session.engine.writer.save_current_session()
+        await wait_for(session.app._takeover_idle, pilot=session.pilot)
 
 
 async def test_link_retarget_after_idle_probe_does_not_close_original_window(

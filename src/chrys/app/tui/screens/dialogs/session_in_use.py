@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from textual import on
 from textual.widgets import Button
 
+from chrys.app.tui.binding_display import CANCEL_BINDING
 from chrys.app.tui.screens.dialogs.confirm import SESSION_IN_USE_OK, SESSION_IN_USE_TITLE, ConfirmDialog
 from chrys.app.tui.session_takeover import query_owner
 from chrys.foundation.i18n import DisplayBlock, msg
@@ -28,12 +31,20 @@ _MESSAGE = msg(
 )
 
 
-def lock_available(path: Path, timeout: float) -> bool:
+_WAITING = msg(
+    "tui.main.session_in_use.waiting", fallback="Waiting for the other instance to release this conversation…"
+)
+
+
+def lock_available(path: Path) -> bool | None:
+    """Return None on a filesystem error so normal restore can report it."""
     try:
-        with FileLock(path.with_suffix(".lock"), timeout=timeout):
+        with FileLock(path.with_suffix(".lock"), timeout=0):
             return True
-    except TimeoutError, OSError:
+    except TimeoutError:
         return False
+    except OSError:
+        return None
 
 
 class SessionInUseDialog(ConfirmDialog):
@@ -48,6 +59,7 @@ class SessionInUseDialog(ConfirmDialog):
         generation: str,
         *,
         locale_controller: LocaleController | None,
+        is_current: Callable[[], bool] = lambda: True,
     ) -> None:
         super().__init__(
             SESSION_IN_USE_TITLE.bind(),
@@ -64,6 +76,8 @@ class SessionInUseDialog(ConfirmDialog):
         self._generation = generation
         self._peer: TakeoverOwner | None = None
         self._polling = False
+        self._waiting = False
+        self._is_current = is_current
         self._plain_message = message
         self.owner_changed = False
 
@@ -104,14 +118,22 @@ class SessionInUseDialog(ConfirmDialog):
             self.owner_changed = True
             self.dismiss_when_topmost(False)
             return
+        if self._waiting:
+            if (
+                (await asyncio.to_thread(lock_available, self._owner_path)) is not False
+                and not self.dismiss_requested
+                and self.is_attached
+            ):
+                self.dismiss_when_topmost(True)
+            return
         if self._peer is None and record:
             self._peer = await asyncio.to_thread(
                 TakeoverOwner.read, self._owner_path, self._session_id, self._generation
             )
         available = bool(self._peer and await query_owner(self._peer, "status"))
         if not available:
-            available = await asyncio.to_thread(lock_available, self._owner_path, 0)
-        if self.dismiss_requested or not self.is_attached:
+            available = (await asyncio.to_thread(lock_available, self._owner_path)) is True
+        if self._waiting or self.dismiss_requested or not self.is_attached:
             return
         button = self.query_one("#confirm-yes", Button)
         if button.has_focus and not available:
@@ -124,9 +146,30 @@ class SessionInUseDialog(ConfirmDialog):
             )
             self.refresh_localization()
 
-    async def take_over(self) -> None:
-        if self._peer is not None and self._current_owner_path(self._session_id) == self._owner_path:
-            accepted = await query_owner(self._peer, "take")
-            if accepted:
-                await asyncio.to_thread(lock_available, self._owner_path, 15.0)
-        # A missed reply, owner change or natural exit is resolved by normal restore.
+    @on(Button.Pressed, "#confirm-yes")
+    async def _request_takeover(self, event: Button.Pressed) -> None:
+        # The base confirm handler dismisses immediately. Keep the dialog open
+        # so Esc or Cancel can abandon the local wait without reopening the chat.
+        event.prevent_default()
+        event.stop()
+        if self._waiting or self.dismiss_requested:
+            return
+        if not self._is_current():
+            self.dismiss_when_topmost(False)
+            return
+        self._waiting = True
+        button = self.query_one("#confirm-yes", Button)
+        self._focus_confirm_button()
+        button.disabled = True
+        button.display = False
+        self._message_value = _WAITING.bind()
+        self._cancel_label_message = CANCEL_BINDING.bind()
+        self.refresh_localization()
+        if not await self.take_over() and self.is_attached and not self.dismiss_requested:
+            # A refused or missed reply goes back through normal restore.
+            self.dismiss_when_topmost(True)
+
+    async def take_over(self) -> bool:
+        if self._peer is None or self._current_owner_path(self._session_id) != self._owner_path:
+            return False
+        return await query_owner(self._peer, "take")

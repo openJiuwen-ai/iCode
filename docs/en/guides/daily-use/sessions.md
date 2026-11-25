@@ -71,7 +71,7 @@ When the agent is idle, enter `/resume` in the input field to resume the most re
 
 If you know the ID, enter `/sessions <session_id>` to open it directly. Use the 12-character short ID or the full UUID, with or without hyphens. A workflow ID opens its saved run history. If no session matches, a warning appears and your current chat stays open.
 
-When another local iCode TUI has the chat open, the dialog shows its process ID and parent process name when available. Once that window is idle and its background commands have finished, choose **Take Over** to close it and continue the same conversation here. If you opened the built-in `!` terminal in that window, finish your work and run `exit` in the shell to make the chat available for takeover. **OK** closes the dialog.
+When another local iCode TUI has the chat open, the dialog shows its process ID and parent process name when available. Once that window is idle, its latest turn has been saved, and its background commands have finished, choose **Take Over** to close it and continue the same conversation here. If you opened the built-in `!` terminal in that window, finish your work and run `exit` in the shell to make the chat available for takeover. **OK** closes the initial dialog. If the other window takes time to exit, this window waits and opens the chat automatically. Choose **Cancel** to stay in your current chat while the other window finishes closing.
 
 To find and resume another session, press **F1**, click `f1 Sessions`, or enter `/sessions` in the input field to open the "Chat Sessions" window. It lists each session's ID, title, directory, last active time, number of conversation turns, and session data size. Each page shows up to 100 sessions, most recently active first.
 
