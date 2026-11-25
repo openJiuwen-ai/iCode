@@ -25,6 +25,7 @@ from typing import Any, ClassVar
 from urllib.parse import unquote
 
 from markdown_it import MarkdownIt
+from rich._wrap import divide_line
 from rich.cells import set_cell_size
 from rich.segment import Segment
 from rich.style import Style as RichStyle
@@ -57,12 +58,14 @@ from chrys.app.tui.widgets.markdown.math import CompiledMath, compile_math
 from chrys.app.tui.widgets.markdown.math.markdown import MATH_ENABLED
 from chrys.app.tui.widgets.markdown.math.parser import MAX_SOURCE as MAX_MATH_SOURCE
 from chrys.app.tui.widgets.markdown.parser import (
+    InlineCache,
     _cell_min_width,
     _cell_natural_width,
     _cell_prefix_length,
     _cell_wrapped_height,
     _configure_markdown_parser,
     _create_markdown_parser,
+    _parse_streaming_markdown,
     _parse_tokens,
     _wrap_cell_text,
     highlight_code,
@@ -82,6 +85,22 @@ _PARSE_STALL_REPORT_SECONDS = 15.0
 def _strip_plain_text(strip: Strip) -> str:
     """Extract plain text from a Strip by joining segment texts."""
     return "".join(seg.text for seg in strip._segments)
+
+
+def _text_height(content: Content, width: int) -> int:
+    """Count default word-wrap rows without building formatted lines just to discard them."""
+    text = content.plain
+    if width <= 0 or "\t" in text or "\n" in text:
+        return content.get_height({}, width)
+
+    key = (width, "fold", False)
+    cached_key, height = content._height_cache
+    if cached_key != key:
+        height = 1
+        if len(text) * 2 > width and not (text.isascii() and len(text) <= width):
+            height += len(divide_line(text, width))
+        content._height_cache = (key, height)
+    return height
 
 
 def _line_ranges(text: str) -> list[tuple[int, int]]:
@@ -486,6 +505,7 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         self._markdown = ""
         self._source_requested = False
         """``update()`` or ``append()`` set the source: newer than the text the widget was built with."""
+        self._inline_cache: InlineCache | None = None
         self._parser_factory = parser_factory
         self._table_of_contents: TableOfContentsType | None = None
         self._open_links = open_links
@@ -758,6 +778,17 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         if anchor:
             self.goto_anchor(anchor)
 
+    def set_streaming(self, streaming: bool) -> None:
+        """Keep one snapshot of default-parser inlines while a message is streaming."""
+        if not streaming:
+            # Drop the owner. A build already running in the executor can only fill its local cache.
+            self._inline_cache = None
+        elif self._inline_cache is None and self._parser_factory is None:
+            self._inline_cache = {}
+
+    def on_unmount(self) -> None:
+        self._inline_cache = None
+
     def _build_blocks(self, markdown: str) -> list[MarkdownBlock]:
         """Parse markdown source into blocks.
 
@@ -772,7 +803,8 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             if self._parser_factory is None
             else _configure_markdown_parser(self._parser_factory())
         )
-        tokens = parser.parse(markdown)
+        cache = self._inline_cache
+        tokens = parser.parse(markdown) if cache is None else _parse_streaming_markdown(parser, markdown, cache)
         previous = self._fence_highlights
         highlights: dict[tuple[str, str], Content] = {}
 
@@ -887,9 +919,9 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
                 else:
                     # Source fallback uses the same wrapping and clipboard
                     # mapping as ordinary text, so soft wraps never split TeX.
-                    content_height = block.content.get_height({}, content_width)
+                    content_height = _text_height(block.content, content_width)
             else:
-                content_height = block.content.get_height({}, content_width)
+                content_height = _text_height(block.content, content_width)
 
             content_height += block.padding_top + block.padding_bottom
 
