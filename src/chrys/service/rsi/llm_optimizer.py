@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.util.chrys_headers import RequestRole
 from chrys.kernel import Message
 from chrys.service.llm.clients import scoped_client
 from chrys.service.llm.one_shot import get_final_response
@@ -212,7 +213,7 @@ def parse_optimizer_mutations(text: str) -> list[Mutation]:
 
 async def complete_with_model_profile(profile: ModelProfile, prompt: str) -> str:
     """One non-streaming completion on *profile*. The caller owns no client."""
-    async with scoped_client(profile) as client:
+    async with scoped_client(profile, request_role=RequestRole.RSI_OPTIMIZER) as client:
         response = await get_final_response(
             client,
             [Message("user", [prompt])],

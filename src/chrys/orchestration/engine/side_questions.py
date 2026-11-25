@@ -22,6 +22,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.side_questions import SideQuestionEntry
+from chrys.foundation.models.workspace import session_workdirs
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
 from chrys.orchestration.engine.run.turn_hooks import usage_payload
@@ -132,7 +133,7 @@ class SideQuestions:
             agent_display_name=agent.display_name if agent else "",
             agent_profile_id=agent.id if agent else "",
             primary_cwd=workspace.primary_cwd if workspace else "",
-            working_dirs=tuple(directory.path for directory in workspace.working_dirs) if workspace else (),
+            working_dirs=tuple(directory.path for directory in session_workdirs(workspace)) if workspace else (),
             model_provider=profile.provider,
             model_api_style=profile.api_style or "",
             model_id=profile.model_id,

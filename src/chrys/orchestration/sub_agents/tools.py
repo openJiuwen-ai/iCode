@@ -50,6 +50,7 @@ from chrys.foundation.tool_kinds import (
 from chrys.foundation.tool_result_metadata import tool_result_metadata_failure_state
 from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG, trajectory_scope
 from chrys.foundation.trajectory.event_types import TraceCoverage
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.foundation.util.filenames import safe_fs_name
 from chrys.foundation.util.once_close import finish_close
 from chrys.foundation.util.sub_agent_context import (
@@ -349,8 +350,11 @@ class SubAgentTools:
         allow_user_interaction: bool = True,
         human_failure_decisions: bool = True,
         shows_answer_text: bool = True,
+        *,
+        request_scope: RequestScope | None = None,
     ) -> None:
         self._max_total = max_total_concurrency
+        self._request_scope = request_scope
         self._bus = event_bus
         self._session_id = session_id
         self._session_dir = session_dir
@@ -619,6 +623,8 @@ class SubAgentTools:
             )
             client = await create_client(
                 sub_active_profile,
+                request_role=RequestRole.SUB_AGENT,
+                request_scope=self._request_scope,
                 session_id=sub_agent_session_id,
                 parent_session_id=self._session_id,
                 use_route_session_context=True,
@@ -637,6 +643,7 @@ class SubAgentTools:
             tool_build = tool_packs.ToolBuild(
                 tools=profile.tools,
                 agent_name=profile.name,
+                caller_name=tool_name,
                 runtime=runtime,
                 settings=settings,
                 session_id=self._session_id,
@@ -833,6 +840,7 @@ class SubAgentTools:
 
             last_words_inputs = LastWordsInputs(
                 profile=sub_active_profile,
+                request_scope=self._request_scope,
                 template=profile.compaction.last_words_template,
                 max_output_tokens=profile.compaction.last_words_max_output_tokens,
                 log_dir=sub_log_dir,
@@ -983,6 +991,7 @@ class SubAgentTools:
 
                 last_words_inputs = LastWordsInputs(
                     profile=sub_active_profile,
+                    request_scope=self._request_scope,
                     template=profile.compaction.last_words_template,
                     max_output_tokens=profile.compaction.last_words_max_output_tokens,
                     log_dir=sub_log_dir,
@@ -1814,7 +1823,8 @@ class SubAgentTools:
                 )
                 sub_agent_hook_started = True
                 # After the start event, so the parent's card shows the child while its contexts answer.
-                context_warnings = await invocation_reminder.refresh_extension_context(prompt)
+                with current_invocation_origin.set(origin):
+                    context_warnings = await invocation_reminder.refresh_extension_context(prompt)
                 if self._bus is not None:
                     for warning in context_warnings:
                         await self._bus.publish(warning)
@@ -2233,7 +2243,7 @@ class SubAgentTools:
                     try:
                         self._agent_active[tool_name] -= 1
                     except KeyError:
-                        logger.error(
+                        logger.exception(
                             "sub-agent counter underflow: tool %r not in _agent_active (invocation %s)",
                             tool_name,
                             invocation_id,

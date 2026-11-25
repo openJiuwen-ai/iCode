@@ -32,7 +32,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.models.history_markers import HistoryMarkerKind
-from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.models.workspace import WorkingDir, Workspace
 from chrys.foundation.platform import get_platform
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.kernel import Message
@@ -562,7 +562,6 @@ async def test_session_host_restore_preserves_working_dirs_when_cwd_matches(
 async def test_session_host_restore_honors_request_time_additional_dirs(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    from chrys.foundation.models.workspace import WorkingDir
 
     original_cwd = tmp_path / "original"
     original_cwd.mkdir()
@@ -643,7 +642,6 @@ async def test_session_host_restore_preserves_saved_primary_in_working_dirs(
     # meta.working_dirs is [primary, extra]. Restore must keep that list verbatim
     # (when reloading with the same dirs) or _can_restore_service_session's exact
     # path comparison breaks and an OpenAI Responses session is wrongly discarded.
-    from chrys.foundation.models.workspace import WorkingDir
 
     original_cwd = tmp_path / "original"
     original_cwd.mkdir()
@@ -716,7 +714,6 @@ async def test_session_host_restore_clears_saved_dirs_with_explicit_empty(
     # An explicit empty additionalDirectories (a workspace with only the primary) is
     # authoritative: it clears the saved additional roots, distinct from omitting the
     # field (which keeps them).
-    from chrys.foundation.models.workspace import WorkingDir
 
     original_cwd = tmp_path / "original"
     original_cwd.mkdir()
@@ -1376,8 +1373,8 @@ async def test_busy_recovery_owner_still_counts_toward_short_id_ambiguity(tmp_pa
             await store.resolve_startup_session("12345678abcd")
 
 
-@pytest.mark.asyncio
-async def test_session_host_reports_ambiguous_restore_session(tmp_path) -> None:
+@pytest.mark.parametrize("workspace_id", [None, "team"])
+async def test_session_host_reports_ambiguous_restore_session(tmp_path, workspace_id) -> None:
     settings, model_registry = _make_settings_and_models()
     store = JsonFileStateStore(tmp_path / "sessions")
     short_id = "abc123abc123"
@@ -1405,6 +1402,7 @@ async def test_session_host_reports_ambiguous_restore_session(tmp_path) -> None:
     host = ChrysSessionHost(
         profile_name="Headless",
         session_id=short_id,
+        workspace_id=workspace_id,
         settings=settings,
         agent_registry=_make_agent_registry(_make_profile(approval_default="skip")),
         model_registry=model_registry,

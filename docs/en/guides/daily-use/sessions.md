@@ -69,6 +69,8 @@ Use `icode -s <id>` to open a saved chat. Copy its 12-digit hexadecimal ID or th
 
 When the agent is idle, enter `/resume` in the input field to resume the most recent chat session.
 
+If you know the ID, enter `/sessions <session_id>` to open it directly. Use the 12-character short ID or the full UUID, with or without hyphens. A workflow ID opens its saved run history. If no session matches, a warning appears and your current chat stays open.
+
 To find and resume another session, press **F1**, click `f1 Sessions`, or enter `/sessions` in the input field to open the "Chat Sessions" window. It lists each session's ID, title, directory, last active time, number of conversation turns, and session data size. Each page shows up to 100 sessions, most recently active first.
 
 - **Filter by where a session was last used**: The "TUI", "CLI", and "ACP" checkboxes above the search field show sessions last used in the TUI, in [`icode run`](../running/icode-run.md), or in an editor or other client connected through [`icode acp`](../running/icode-acp.md). Only "TUI" is checked at first. Sessions from earlier iCode versions count as TUI. iCode remembers your choice until you quit it. Hover over a session to see where it was last used.

@@ -17,7 +17,6 @@ import pytest
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.models.workspace import Workspace
 from chrys.kernel import Content, LoopRecorder, Message
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
@@ -25,6 +24,7 @@ from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
 from chrys.orchestration.engine.state.active_session import ActiveSession
 from chrys.orchestration.engine.state.current_agent import CurrentAgent
 from chrys.orchestration.engine.state.session_writer import SessionWriter
+from chrys.orchestration.engine.workspaces import MembershipWrite, WorkspacePlan
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.hooks.schema import HookDecision
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
@@ -279,9 +279,12 @@ def _record_start(
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
-        _ = workspace
+        assert commit_workspace is None
+        if workspace_plan is not None:
+            engine.session.install_workspace(workspace_plan)
         if expect_operation is not None:
             assert operation == expect_operation
         start_calls.append((profile, operation))

@@ -28,14 +28,23 @@ class _RecordingView:
         raise AssertionError("unexpected notify")
 
 
-def _make_controller(view: _RecordingView, services: MainScreenServices, cwd: str) -> WorkspaceController:
+def _make_controller(
+    view: _RecordingView,
+    services: MainScreenServices,
+    cwd: str,
+    *,
+    workspace_id: str | None = None,
+    callbacks: WorkspaceCallbacks | None = None,
+) -> WorkspaceController:
     state = MainScreenState()
     state.workspace.current_cwd = cwd
+    state.workspace_marker.current_cwd = cwd
+    state.workspace.workspace_id = workspace_id
     return WorkspaceController(
         state=state,
         services=services,
         view=view,  # type: ignore[arg-type]
-        callbacks=WorkspaceCallbacks(start_worker=discard_worker, debug=lambda *_args: None),
+        callbacks=callbacks or WorkspaceCallbacks(start_worker=discard_worker, debug=lambda *_args: None),
     )
 
 

@@ -406,7 +406,7 @@ class TestSnapshotGapTolerance:
             json.dumps({"meta": {"session_id": "rb_test"}, "state": {"messages": ["live"], "compressed_msgs": []}})
         )
 
-        async def _fake_restore(_event: Any) -> None: ...
+        async def _fake_restore(_event: Any, *, for_rollback: bool = False) -> None: ...
 
         engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
 
@@ -610,7 +610,7 @@ class TestRollbackCoordinatorRecheck:
 
         engine.session.mutation_coordinator = _RecordingCoordinator()  # type: ignore[assignment]
 
-        async def _fake_restore(_event: Any) -> None: ...
+        async def _fake_restore(_event: Any, *, for_rollback: bool = False) -> None: ...
 
         engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
 

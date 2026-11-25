@@ -44,6 +44,7 @@ from chrys.foundation.trajectory.context import (
     main_actor,
 )
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.util.chrys_headers import RequestRole
 from chrys.kernel import (
     CONTEXT_WINDOW_FILLED_KEY,
     EXHAUSTION_TAIL_KWARG,
@@ -813,7 +814,7 @@ async def test_completer_side_call_shape_options_and_containment() -> None:
 
     side_call = client.inner_calls[-1]
     assert side_call["stream"] is False
-    assert side_call["kwargs"] == {"extra": 1}
+    assert side_call["kwargs"] == {"extra": 1, "_chrys_request_role": RequestRole.COMPACTION}
     # Marked as an internal side call for downstream instrumentation, and the
     # marker does not leak past the completer.
     assert side_call["side_call"] is True
@@ -869,7 +870,7 @@ async def test_completer_sanitizes_forwarded_kwargs_and_preserves_kwargs_cap_cei
     call = client.inner_calls[-1]
     assert call["options"]["max_tokens"] == 25
     assert call["options"]["store"] is False
-    assert call["kwargs"] == {"sentinel": "kept"}
+    assert call["kwargs"] == {"sentinel": "kept", "_chrys_request_role": RequestRole.COMPACTION}
 
 
 @pytest.mark.asyncio

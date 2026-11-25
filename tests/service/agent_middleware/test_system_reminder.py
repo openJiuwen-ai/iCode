@@ -117,7 +117,11 @@ async def test_real_tracker_boundary_lifecycle_cannot_erase_safety(tmp_path: Pat
     root = tmp_path / "workspace"
     root.mkdir()
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(Workspace(primary_cwd=str(root), working_dirs=[WorkingDir(str(root), is_primary=True)]))
+    tracker.apply_retarget(
+        tracker.resolve_retarget(
+            Workspace(primary_cwd=str(root), working_dirs=[WorkingDir(str(root), is_primary=True)])
+        )
+    )
     tracker.capture_baseline(1)
     middleware = SystemReminderMiddleware(
         runtime=_direct_runtime(tmp_path),

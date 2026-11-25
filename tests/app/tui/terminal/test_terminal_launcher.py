@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -68,6 +70,53 @@ def _isolate_terminal_launcher_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _mock_platform(monkeypatch: pytest.MonkeyPatch, *, macos: bool = False, windows: bool = False) -> None:
     monkeypatch.setattr(launcher, "get_platform", lambda: SimpleNamespace(is_macos=macos, is_windows=windows))
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires the macOS AppleScript interpreter")
+@pytest.mark.parametrize("tab", (True, False), ids=("tab", "window"))
+async def test_exiting_fork_dialog_reaps_pending_applescript(monkeypatch: pytest.MonkeyPatch, tab: bool) -> None:
+    import psutil
+    from textual.app import App
+
+    from chrys.app.tui.screens.dialogs.fork_session import ForkSessionDialog
+    from chrys.app.tui.terminal import fork_tab
+    from tests.support.tui_helpers import click_when_settled
+    from tests.support.waiting import wait_for
+
+    _mock_platform(monkeypatch, macos=True)
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    run_script = launcher.run_macos_terminal_script
+    marker = "pending-fork-test"
+
+    async def pending_script(*args: str) -> subprocess.CompletedProcess[str]:
+        return await run_script("delay 30", marker)
+
+    monkeypatch.setattr(fork_tab if tab else launcher, "run_macos_terminal_script", pending_script)
+    target = fork_tab.ForkTabTarget("Terminal", "/dev/ttys001") if tab else None
+    app = App()
+    parent = psutil.Process()
+    sender = None
+
+    def find_sender() -> bool:
+        nonlocal sender
+        for child in parent.children():
+            if child.name() == "osascript" and marker in child.cmdline():
+                sender = child
+                return True
+        return False
+
+    try:
+        async with app.run_test() as pilot:
+            await app.push_screen(ForkSessionDialog("fork-id", tab_target=target))
+            await click_when_settled(pilot, "#fork-session-open")
+            await wait_for(find_sender, pilot=pilot, description="pending AppleScript sender")
+            app.exit()
+        assert sender is not None
+        await wait_for(lambda: not sender.is_running(), description="AppleScript sender reaped on exit")
+    finally:
+        if sender is not None and sender.is_running():
+            sender.kill()
+            sender.wait(timeout=5)
 
 
 class _FakeProcess:
@@ -265,11 +314,11 @@ def test_build_chrys_tui_argv_ignores_pyapp_sentinel(monkeypatch) -> None:
     ]
 
 
-def test_launch_new_window_rejects_unavailable_environment(monkeypatch) -> None:
+async def test_launch_new_window_rejects_unavailable_environment(monkeypatch) -> None:
     monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
 
     try:
-        launcher.launch_new_chrys_window("session-1")
+        await launcher.launch_new_chrys_window("session-1")
     except TerminalLaunchError as exc:
         assert str(exc) == f"Opening a new {APP_DISPLAY_NAME} window is not available in the current environment."
         assert exc.display_message is not None
@@ -279,7 +328,7 @@ def test_launch_new_window_rejects_unavailable_environment(monkeypatch) -> None:
         raise AssertionError("expected TerminalLaunchError")
 
 
-def test_macos_launch_prefers_ghostty_when_running_in_ghostty(monkeypatch) -> None:
+async def test_macos_launch_prefers_ghostty_when_running_in_ghostty(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setenv("TERM_PROGRAM", "ghostty")
     _mock_platform(monkeypatch, macos=True)
@@ -292,7 +341,7 @@ def test_macos_launch_prefers_ghostty_when_running_in_ghostty(monkeypatch) -> No
 
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
 
-    launcher.launch_new_chrys_window("session-1", cwd="/repo")
+    await launcher.launch_new_chrys_window("session-1", cwd="/repo")
 
     assert calls == [
         (
@@ -302,9 +351,7 @@ def test_macos_launch_prefers_ghostty_when_running_in_ghostty(monkeypatch) -> No
                 "Ghostty",
                 "--args",
                 "-e",
-                "/bin/sh",
-                "-lc",
-                "cd /repo && /usr/bin/python3 -m chrys.app.cli.app __tui_subprocess__ --session session-1",
+                *launcher.macos_login_shell_argv(launcher.build_macos_fork_argv("session-1"), cwd="/repo"),
             ],
             {
                 "cwd": None,
@@ -316,7 +363,7 @@ def test_macos_launch_prefers_ghostty_when_running_in_ghostty(monkeypatch) -> No
     ]
 
 
-def test_macos_launch_uses_wezterm_tab_when_running_in_wezterm(monkeypatch) -> None:
+async def test_macos_launch_uses_wezterm_window_when_running_in_wezterm(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
     _mock_platform(monkeypatch, macos=True)
@@ -329,7 +376,7 @@ def test_macos_launch_uses_wezterm_tab_when_running_in_wezterm(monkeypatch) -> N
 
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
 
-    launcher.launch_new_chrys_window("session-1", cwd="/repo")
+    await launcher.launch_new_chrys_window("session-1", cwd="/repo")
 
     assert calls == [
         (
@@ -337,16 +384,11 @@ def test_macos_launch_uses_wezterm_tab_when_running_in_wezterm(monkeypatch) -> N
                 "/usr/local/bin/wezterm",
                 "cli",
                 "spawn",
-                "--new-tab",
+                "--new-window",
                 "--cwd",
                 "/repo",
                 "--",
-                "/usr/bin/python3",
-                "-m",
-                "chrys.app.cli.app",
-                "__tui_subprocess__",
-                "--session",
-                "session-1",
+                *launcher.macos_login_shell_argv(launcher.build_macos_fork_argv("session-1"), cwd="/repo"),
             ],
             {
                 "cwd": None,
@@ -358,7 +400,7 @@ def test_macos_launch_uses_wezterm_tab_when_running_in_wezterm(monkeypatch) -> N
     ]
 
 
-def test_macos_wezterm_failure_falls_back_to_terminal(monkeypatch) -> None:
+async def test_macos_wezterm_failure_falls_back_to_terminal(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
     _mock_platform(monkeypatch, macos=True)
@@ -373,27 +415,33 @@ def test_macos_wezterm_failure_falls_back_to_terminal(monkeypatch) -> None:
 
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
 
-    launcher.launch_new_chrys_window("session-1", cwd="/repo")
+    scripts = []
 
-    assert calls[0][0][:4] == ["/usr/local/bin/wezterm", "cli", "spawn", "--new-tab"]
-    assert calls[1][0][:2] == ["/usr/bin/osascript", "-e"]
+    async def run_script(script: str, command: str):
+        scripts.append(script)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(launcher, "run_macos_terminal_script", run_script)
+    await launcher.launch_new_chrys_window("session-1", cwd="/repo")
+
+    assert calls[0][0][:4] == ["/usr/local/bin/wezterm", "cli", "spawn", "--new-window"]
+    assert len(scripts) == 1 and 'tell application "Terminal"' in scripts[0]
 
 
-def test_macos_terminal_fallback_failure_raises(monkeypatch) -> None:
+@pytest.mark.parametrize("host", ["Apple_Terminal", "iTerm.app"])
+async def test_macos_window_uses_the_final_automation_result(monkeypatch, host) -> None:
     _mock_platform(monkeypatch, macos=True)
-    monkeypatch.setattr(launcher.sys, "executable", "/usr/bin/python3")
-    monkeypatch.setattr(launcher.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *_args, **_kwargs: _FakeProcess(1))
+    monkeypatch.setenv("TERM_PROGRAM", host)
 
-    try:
-        launcher.launch_new_chrys_window("session-1", cwd="/repo")
-    except TerminalLaunchError as exc:
-        assert "launcher exited with status 1" in str(exc)
-    else:
-        raise AssertionError("expected TerminalLaunchError")
+    async def denied(script, command):
+        return subprocess.CompletedProcess([], 1, "", "Not authorized (-1743)")
+
+    monkeypatch.setattr(launcher, "run_macos_terminal_script", denied)
+    with pytest.raises(TerminalLaunchError, match="Not authorized"):
+        await launcher.launch_new_chrys_window("session-1", cwd="/repo")
 
 
-def test_windows_launch_uses_windows_terminal_tab(monkeypatch) -> None:
+async def test_windows_launch_uses_new_windows_terminal_window(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setenv("WT_SESSION", "window-session")
     _mock_platform(monkeypatch, windows=True)
@@ -406,14 +454,14 @@ def test_windows_launch_uses_windows_terminal_tab(monkeypatch) -> None:
 
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
 
-    launcher.launch_new_chrys_window("session-1", cwd=r"C:\repo")
+    await launcher.launch_new_chrys_window("session-1", cwd=r"C:\repo")
 
     assert calls == [
         (
             [
                 r"C:\Windows\System32\wt.exe",
                 "-w",
-                "0",
+                "new",
                 "new-tab",
                 "-d",
                 r"C:\repo",
@@ -434,7 +482,7 @@ def test_windows_launch_uses_windows_terminal_tab(monkeypatch) -> None:
     ]
 
 
-def test_linux_launch_uses_kitty_tab_when_remote_control_is_available(monkeypatch) -> None:
+async def test_linux_launch_uses_kitty_window_when_remote_control_is_available(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setenv("KITTY_LISTEN_ON", "unix:/tmp/kitty")
     _mock_platform(monkeypatch)
@@ -447,7 +495,7 @@ def test_linux_launch_uses_kitty_tab_when_remote_control_is_available(monkeypatc
 
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
 
-    launcher.launch_new_chrys_window("session-1", cwd="/repo")
+    await launcher.launch_new_chrys_window("session-1", cwd="/repo")
 
     assert calls == [
         (
@@ -455,7 +503,7 @@ def test_linux_launch_uses_kitty_tab_when_remote_control_is_available(monkeypatc
                 "/usr/bin/kitty",
                 "@",
                 "launch",
-                "--type=tab",
+                "--type=os-window",
                 "--cwd",
                 "/repo",
                 "--",
@@ -476,7 +524,7 @@ def test_linux_launch_uses_kitty_tab_when_remote_control_is_available(monkeypatc
     ]
 
 
-def test_linux_launch_uses_gnome_terminal_tab_when_running_in_gnome_terminal(monkeypatch) -> None:
+async def test_linux_launch_uses_gnome_terminal_window_when_running_in_gnome_terminal(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setenv("GNOME_TERMINAL_SCREEN", "screen")
     _mock_platform(monkeypatch)
@@ -493,13 +541,13 @@ def test_linux_launch_uses_gnome_terminal_tab_when_running_in_gnome_terminal(mon
 
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
 
-    launcher.launch_new_chrys_window("session-1", cwd="/repo")
+    await launcher.launch_new_chrys_window("session-1", cwd="/repo")
 
     assert calls == [
         (
             [
                 "/usr/bin/gnome-terminal",
-                "--tab",
+                "--window",
                 "--",
                 "/usr/bin/python3",
                 "-m",
@@ -518,7 +566,7 @@ def test_linux_launch_uses_gnome_terminal_tab_when_running_in_gnome_terminal(mon
     ]
 
 
-def test_linux_launch_uses_available_terminal(monkeypatch) -> None:
+async def test_linux_launch_uses_available_terminal(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     _mock_platform(monkeypatch)
     monkeypatch.setattr(launcher.sys, "executable", "/usr/bin/python3")
@@ -534,7 +582,7 @@ def test_linux_launch_uses_available_terminal(monkeypatch) -> None:
 
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
 
-    launcher.launch_new_chrys_window("session-1", cwd="/repo")
+    await launcher.launch_new_chrys_window("session-1", cwd="/repo")
 
     assert calls == [
         (
@@ -556,3 +604,19 @@ def test_linux_launch_uses_available_terminal(monkeypatch) -> None:
             },
         )
     ]
+
+
+async def test_iterm_window_runs_the_directory_change_in_a_shell(monkeypatch) -> None:
+    commands = []
+
+    async def run_script(script: str, command: str):
+        assert "create window with default profile command startCommand" in script
+        commands.append(command)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+    monkeypatch.setattr(launcher, "run_macos_terminal_script", run_script)
+    argv = ["/path to/icode", "--session", "fork-id"]
+    cwd = "/someone's project"
+    await launcher._launch_macos(argv, cwd=cwd)
+    assert shlex.split(shlex.split(commands[0])[-1]) == ["cd", cwd, "&&", *argv]

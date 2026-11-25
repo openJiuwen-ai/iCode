@@ -638,6 +638,8 @@ class _ClientLastWordsCompleter:
         on_usage: Callable[[Mapping[str, Any]], None] | None = None,
         keep_tool_choice: bool = False,
     ) -> LastWordsCompletion:
+        from chrys.foundation.util.chrys_headers import RequestRole
+
         from .compaction import (
             LastWordsCompletion,
             LastWordsToolCallError,
@@ -691,6 +693,7 @@ class _ClientLastWordsCompleter:
             )
         }
         _scrub_side_call_extra_body(forwarded_kwargs)
+        forwarded_kwargs["_chrys_request_role"] = RequestRole.COMPACTION
         # A streamed note arrives chunk by chunk: every chunk (and each
         # attempt's dispatch) restarts the live call's stall watchdog, which
         # still cancels a side call that goes idle.

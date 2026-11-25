@@ -739,7 +739,8 @@ async def test_last_words_generator_uses_model_profile_stream_setting(tmp_path):
 
 
 async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
-    """Phase 4 LAST_WORDS calls should carry the active session header."""
+    """The fallback client carries its context's session and workflow scope."""
+    from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
     from chrys.service.context.compaction.last_words import LastWordsGenerator
     from chrys.service.profiles.models.resolver import default_profile
 
@@ -748,6 +749,7 @@ async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
         log_dir=tmp_path,
         session_id="sess-phase4",
         parent_session_id="parent-phase4",
+        request_scope=RequestScope.WORKFLOW,
     )
 
     with patch("chrys.service.llm.clients.create_client", return_value=MagicMock(aclose=AsyncMock())) as create_client:
@@ -756,6 +758,8 @@ async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
     create_client.assert_called_once()
     assert create_client.call_args.kwargs["session_id"] == "sess-phase4"
     assert create_client.call_args.kwargs["parent_session_id"] == "parent-phase4"
+    assert create_client.call_args.kwargs["request_role"] is RequestRole.COMPACTION
+    assert create_client.call_args.kwargs["request_scope"] is RequestScope.WORKFLOW
 
 
 async def test_closing_the_generator_closes_its_client_and_refuses_a_new_one(tmp_path):

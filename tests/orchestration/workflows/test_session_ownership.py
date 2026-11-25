@@ -13,7 +13,14 @@ from chrys.foundation.models.session_surface import SessionSurface
 from chrys.orchestration.session_host import WorkflowRunRejectedError
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.state.store import JsonFileStateStore
-from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import (
+    confirm,
+    make_host,
+    make_workdir,
+    patch_runtime,
+    run,
+    write_workflow,
+)
 from tests.support.workflow_workers import python_workflow
 
 

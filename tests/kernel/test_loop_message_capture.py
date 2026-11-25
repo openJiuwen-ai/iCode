@@ -852,87 +852,31 @@ class TestLoopRecorder:
 # ---------------------------------------------------------------------------
 
 
-def _make_engine_state(messages: list[Message]) -> dict:
-    """Build a minimal chrys_history state dict."""
-    return {"messages": messages}
-
-
 class TestMergeLoopMessages:
     """Test the merge logic that inserts recovered loop messages into state."""
 
-    def test_merge_inserts_after_user_message(self):
-        """Loop messages are inserted between user message and last-iteration messages."""
-        # State after after_run: [old_history, user_input, last_assistant, last_tool]
-        old_assistant = Message("assistant", ["old response"])
-        user_msg = Message("user", ["do work"])
-        last_assistant = Message("assistant", ["interrupted tool call"])
-        last_tool = Message("tool", [""])  # empty result from interrupt
+    @pytest.mark.parametrize("with_user", [True, False], ids=["last-user-anchor", "no-user"])
+    async def test_merge_recovers_loop_messages_once_after_the_last_user(self, with_user: bool) -> None:
+        suffix = Message("assistant", ["last response"])
+        prefix = [_user("first"), _user("second")] if with_user else []
+        messages = [*prefix, suffix]
+        history = SessionHistoryManager()
+        history.bind({"messages": messages})
+        loop = [
+            Message("assistant", ["first call"]),
+            Message("tool", ["first result"]),
+            Message("assistant", ["second call"]),
+            Message("tool", ["second result"]),
+        ]
+        recorder = LoopRecorder()
+        await recorder.record_pre_call(prefix)
+        await recorder.record_pre_call([*prefix, *loop])
 
-        messages = [old_assistant, user_msg, last_assistant, last_tool]
-
-        # Loop messages from completed iterations
-        iter0_assistant = Message("assistant", ["tool call 0"])
-        iter0_tool = Message("tool", ["result 0"])
-        iter1_assistant = Message("assistant", ["tool call 1"])
-        iter1_tool = Message("tool", ["result 1"])
-        loop_msgs = [iter0_assistant, iter0_tool, iter1_assistant, iter1_tool]
-
-        # Simulate _merge_loop_messages logic
-        user_idx = -1
-        for i in range(len(messages) - 1, -1, -1):
-            if getattr(messages[i], "role", "") == "user":
-                user_idx = i
-                break
-
-        insert_at = user_idx + 1
-        for j, lm in enumerate(loop_msgs):
-            messages.insert(insert_at + j, lm)
-
-        # Verify order: old_assistant, user_msg, iter0_*, iter1_*, last_*
-        assert messages[0] is old_assistant
-        assert messages[1] is user_msg
-        assert messages[2] is iter0_assistant
-        assert messages[3] is iter0_tool
-        assert messages[4] is iter1_assistant
-        assert messages[5] is iter1_tool
-        assert messages[6] is last_assistant
-        assert messages[7] is last_tool
-
-    def test_skip_when_already_present(self):
-        """Normal completion: loop messages already in state, merge is no-op."""
-        # In normal completion, _prepend_fcc_messages puts all messages in response
-        iter0_assistant = Message("assistant", ["tool call 0"])
-        iter0_tool = Message("tool", ["result 0"])
-        user_msg = Message("user", ["do work"])
-        final_text = Message("assistant", ["done!"])
-
-        messages = [user_msg, iter0_assistant, iter0_tool, final_text]
-
-        # Check identity — loop messages are already present
-        loop_msgs = [iter0_assistant, iter0_tool]
-        first_loop = loop_msgs[0]
-
-        already_present = any(m is first_loop for m in messages)
-        assert already_present, "Identity check should detect already-merged messages"
-
-    def test_no_user_message_is_noop(self):
-        """If there's no user message in state, merge does nothing."""
-        messages = [Message("assistant", ["some text"])]
-        loop_msgs = [Message("assistant", ["tool"]), Message("tool", ["result"])]
-
-        user_idx = -1
-        for i in range(len(messages) - 1, -1, -1):
-            if getattr(messages[i], "role", "") == "user":
-                user_idx = i
-                break
-
-        original_len = len(messages)
-        if user_idx >= 0:
-            insert_at = user_idx + 1
-            for j, lm in enumerate(loop_msgs):
-                messages.insert(insert_at + j, lm)
-
-        assert len(messages) == original_len  # No insertion
+        expected = [*prefix, *loop, suffix] if with_user else [suffix]
+        for _ in range(2):
+            history.merge_loop_messages(recorder)
+            assert messages == expected
+            assert all(actual is original for actual, original in zip(messages, expected, strict=True))
 
     def test_insert_index_places_pass_after_retained_earlier_work(self):
         """The pass boundary beats the user anchor when earlier-pass work follows it.
@@ -968,7 +912,8 @@ class TestMergeLoopMessages:
 
         user_msg = Message("user", ["run it"])
         injection = Message("user", ["also do this"])
-        messages = [user_msg, injection]
+        suffix = Message("assistant", ["later output"])
+        messages = [user_msg, injection, suffix]
 
         loop_call = Message("assistant", ["call"])
         loop_result = Message("tool", ["result"])
@@ -980,7 +925,7 @@ class TestMergeLoopMessages:
         history.bind({"messages": messages})
         history.merge_loop_messages(capture, insert_index=1)
 
-        assert messages == [user_msg, injection, loop_call, loop_result]
+        assert messages == [user_msg, injection, loop_call, loop_result, suffix]
 
 
 # ---------------------------------------------------------------------------
@@ -1167,17 +1112,10 @@ async def test_post_execution_middleware_cancel_keeps_raw_result_and_marks_proce
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("hook_a_returned", [False, True], ids=["first-hook-running", "second-hook-running"])
-async def test_cancel_while_result_hooks_run_restores_a_tombstone_not_the_raw_output(hook_a_returned: bool) -> None:
-    """Result hooks declared but unfinished: the raw output must not reach resumed history.
-
-    Covers the two cancel points the review reproduced: the first redaction hook
-    still running, and hook A having returned a replacement while hook B runs (the
-    aggregate is written to context.result only after the whole chain returns).
-    """
+async def test_cancel_while_result_hooks_run_restores_a_tombstone_not_the_raw_output() -> None:
+    """A pending result hook keeps the raw output out of resumed history."""
     tool_returned = asyncio.Event()
     hold_hooks = asyncio.Event()
-    hook_chain_state: list[str] = []
 
     @tool(name="secret_tool")
     async def secret_tool() -> str:
@@ -1191,10 +1129,6 @@ async def test_cancel_while_result_hooks_run_restores_a_tombstone_not_the_raw_ou
         ) -> None:
             context.metadata[HOOK_RESULT_PENDING_KEY] = True
             await call_next()
-            if hook_a_returned:
-                # Hook A's replacement exists only in the hook chain's own state;
-                # context.result is written after the whole chain returns.
-                hook_chain_state.append("REDACTED")
             tool_returned.set()
             await hold_hooks.wait()
 

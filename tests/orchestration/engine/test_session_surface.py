@@ -84,7 +84,7 @@ async def test_reopening_a_session_retires_its_mark(tmp_path: Path) -> None:
     assert captured.metadata["last_surface"] is SessionSurface.TUI
 
     engine.session.mark_surface()
-    engine.session.reset(session_id="c", workspace=None)
+    engine.session.reset(session_id="c")
     assert engine.session.marked_surface() is None
 
 

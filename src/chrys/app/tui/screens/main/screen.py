@@ -196,6 +196,7 @@ if TYPE_CHECKING:
     from chrys.service.prompt_shortcuts import PromptShortcut
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
     from chrys.service.state.store import StateStore
+    from chrys.service.workspaces.registry import RegistrySnapshot
 
 
 logger = logging.getLogger(__name__)
@@ -458,6 +459,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 selected_cwd=lambda: self._workflow.workdir if self._workflow.workflow_mode else "",
                 apply_workflow_cwd=self._apply_workflow_cwd,
                 workflow_mode=lambda: self._workflow.workflow_mode,
+                start_new_session=lambda event, check: self._sessions.create_new_session(
+                    event, confirmation_is_current=check
+                ),
             ),
             locale_controller=self._locale_controller,
         )
@@ -551,7 +555,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 refresh_diff_preview=self._refresh_diff_preview,
                 reset_rollback_request=self._rollback_controller.reset_pending,
                 choose_missing_working_dir=partial(self._workspace_actions.choose_replacement_dir, reason="restore"),
+                confirm_workspace_leave=self._workspace_actions.confirm_workspace_leave,
                 confirm_stopping_background_tasks=self._confirm_stopping_background_tasks,
+                workflow_mode=lambda: self._workflow.workflow_mode,
             ),
             agent_load=self._events,
             runtime_info=self._runtime_info,
@@ -891,7 +897,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             new_session=self._create_new_session,
             clear_session=self._clear_current_session,
             quit_app=self.action_quit,
-            resume_session=self._resume_last_session,
+            resume_session=self._resume_session,
             fork_session=self._fork_current_session,
             ask_side_question=self.action_btw,
             browse_session_list=self.action_sessions,
@@ -1138,7 +1144,15 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             except Exception:
                 logger.exception("Failed to restore GC-freeze participant %s", type(participant).__name__)
 
-    async def restore_startup_session(self, session_id: str, *, saved_cwd: str) -> StartupRestore:
+    async def restore_startup_session(
+        self,
+        session_id: str,
+        *,
+        saved_cwd: str,
+        workspace_id: str | None = None,
+        workspace_snapshot: RegistrySnapshot | None = None,
+        primary_cwd: str = "",
+    ) -> StartupRestore:
         """Restore at startup and confirm the matching backend success event."""
         restored = False
 
@@ -1151,7 +1165,18 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._startup_restore_error = None
         await self._services.bus.subscribe(SessionRestored, observe_restored)
         try:
-            request = await self._sessions.do_session_restore(session_id, allow_while_loading=True, saved_cwd=saved_cwd)
+            request = (
+                await self._sessions.do_session_restore(
+                    session_id,
+                    allow_while_loading=True,
+                    saved_cwd=saved_cwd,
+                    workspace_id=workspace_id,
+                    workspace_snapshot=workspace_snapshot,
+                    primary_cwd=primary_cwd,
+                )
+                if workspace_id is not None
+                else await self._sessions.do_session_restore(session_id, allow_while_loading=True, saved_cwd=saved_cwd)
+            )
         finally:
             self._startup_restore_target = None
             await self._services.bus.unsubscribe(SessionRestored, observe_restored)
@@ -2327,10 +2352,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         await self._sessions.create_new_session()
 
     @work(thread=False)
-    async def _resume_last_session(self) -> None:
+    async def _resume_session(self, selector: str) -> None:
         if self._state.run.agent_loading:
             return
-        await self._sessions.resume_last_session()
+        await self._sessions.resume_session(selector)
 
     @work(thread=False)
     async def _fork_current_session(self) -> None:
@@ -2848,7 +2873,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._navigation.quit()
 
     def action_sessions(self) -> None:
-        """Open the sessions modal (Ctrl+N)."""
+        """Open the sessions modal (F1)."""
         self._navigation.sessions()
 
     def _clear_current_session(self) -> None:
@@ -3126,6 +3151,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return event.session_id is None or event.session_id == self.chat_session_id
 
     def _route_session_error(self, event: Error) -> bool:
+        if self._sessions.capture_missing_explicit_session(event) or self._sessions.capture_restore_missing_cwd(event):
+            return True
         if event.session_id and event.session_id == self._startup_restore_target:
             self._startup_restore_error = event
             return True

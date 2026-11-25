@@ -101,6 +101,7 @@ from chrys.service.state.workflow import WorkflowSessionState
 from chrys.service.trajectory.state import TurnRecord, turn_records
 from chrys.service.workflows.history import read_workflow_meta, read_workflow_run
 from chrys.service.workflows.layout import EVENTS_FILE, HEADER_FILE, run_dir
+from chrys.service.workspaces.registry import RegistrySnapshot, WorkspaceRegistry, WorkspaceRegistryError
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,8 @@ class StateStore(Protocol):
 
     @property
     def sessions_root(self) -> Path: ...
+    @property
+    def workspace_registry(self) -> WorkspaceRegistry | None: ...
     def session_folder_cwds(self) -> dict[str, str]: ...
     def session_dir(self, session_id: str) -> Path: ...
     async def save_side_question(
@@ -242,6 +245,7 @@ class StateStore(Protocol):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
+        service_session_workspace_fingerprint: str = "",
         parent_session_id: str = "",
         last_surface: SessionSurface | None = None,
     ) -> SessionCheckpoint | None: ...
@@ -280,8 +284,9 @@ class StateStore(Protocol):
         self, session_id: str, *, prefer_recovery: bool = False, owns_active_lock: bool = False
     ) -> dict[str, Any] | None: ...
     async def load_chat_for_restore(
-        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool = False
+        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool = False, repair: bool = True
     ) -> ChatRestoreData | None: ...
+    async def repair_chat_restore(self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool) -> None: ...
     async def load_session_raw(
         self,
         session_id: str,
@@ -390,15 +395,33 @@ def _transcript(state: dict[str, Any], folds: list[FoldItem]) -> SessionTranscri
     return SessionTranscript(messages, turn_records(state), folds)
 
 
+def store_workspace_snapshot(store: StateStore | None) -> RegistrySnapshot:
+    """The current workspace list of *store*; empty without a store or registry."""
+    registry = store.workspace_registry if store is not None else None
+    return registry.snapshot() if registry is not None else RegistrySnapshot()
+
+
 class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
     """JSON file-based state store.
 
     Stores sessions as ``{short_session_id}/session.json`` folders with a
     sidecar backup and root-level locks for cross-process coordination.
+    The configured sessions directory uses the global registry. Any other
+    directory has its own registry unless the caller supplies the one it is paired with.
     """
 
-    def __init__(self, directory: str | Path | None = None) -> None:
+    def __init__(
+        self, directory: str | Path | None = None, *, workspace_registry: WorkspaceRegistry | None = None
+    ) -> None:
         self._dir = resolve_sessions_dir() if directory is None else Path(directory)
+        if workspace_registry is None:
+            # Only a directory other than the configured one has its own registry, kept out of
+            # both the session directory scan and the legacy flat JSON scan.
+            own = directory is not None and self._dir.resolve() != resolve_sessions_dir(create=False).resolve()
+            workspace_registry = WorkspaceRegistry(
+                self._dir / ".workspace-registry" / "workspaces.json" if own else None
+            )
+        self._workspace_registry = workspace_registry
         self._dir.mkdir(parents=True, exist_ok=True)
         # Custom titles set before a session's first save.  A never-saved
         # session must not be materialized on disk just for its title (it
@@ -874,6 +897,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
+        service_session_workspace_fingerprint: str = "",
         parent_session_id: str = "",
         last_surface: SessionSurface | None = None,
         kind: Literal["chat", "workflow"] = "chat",
@@ -973,6 +997,16 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             "generated_title": carry_generated_title,
         }
         if kind == "chat":
+            saved_service_session_id = (
+                service_session_id if service_session_id is not None else existing_meta.get("service_session_id", "")
+            )
+            workspace_fingerprint = (
+                existing_meta.get("service_session_workspace_fingerprint")
+                if service_session_id is None
+                else service_session_workspace_fingerprint
+            )
+            if saved_service_session_id and workspace_fingerprint:
+                meta["service_session_workspace_fingerprint"] = workspace_fingerprint
             meta.update(
                 {
                     "model_provider": model_provider or existing_meta.get("model_provider", ""),
@@ -985,9 +1019,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                     "model_profile_fingerprint": model_profile_fingerprint
                     if model_profile_fingerprint is not None
                     else existing_meta.get("model_profile_fingerprint", ""),
-                    "service_session_id": service_session_id
-                    if service_session_id is not None
-                    else existing_meta.get("service_session_id", ""),
+                    "service_session_id": saved_service_session_id,
                     "agent_profile": agent_profile or existing_meta.get("agent_profile", ""),
                     "agent_display_name": agent_display_name
                     or existing_meta.get("agent_display_name")
@@ -1085,6 +1117,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
+        service_session_workspace_fingerprint: str = "",
         parent_session_id: str = "",
         last_surface: SessionSurface | None = None,
         kind: Literal["chat", "workflow"] = "chat",
@@ -1116,6 +1149,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 model_base_url=model_base_url,
                 model_profile_fingerprint=model_profile_fingerprint,
                 service_session_id=service_session_id,
+                service_session_workspace_fingerprint=service_session_workspace_fingerprint,
                 parent_session_id=parent_session_id,
                 last_surface=last_surface,
                 kind=kind,
@@ -1151,6 +1185,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
+        service_session_workspace_fingerprint: str = "",
         parent_session_id: str = "",
         last_surface: SessionSurface | None = None,
     ) -> SessionCheckpoint:
@@ -1177,6 +1212,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             model_base_url=model_base_url,
             model_profile_fingerprint=model_profile_fingerprint,
             service_session_id=service_session_id,
+            service_session_workspace_fingerprint=service_session_workspace_fingerprint,
             parent_session_id=parent_session_id,
             last_surface=last_surface,
         )
@@ -1578,7 +1614,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         )
 
     def _load_chat_for_restore_sync(
-        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool
+        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool, repair: bool = True
     ) -> ChatRestoreData | None:
         with FileLock(self._write_lock_path(session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
             if self._session_is_pending_delete(self._session_dir(session_id)):
@@ -1593,7 +1629,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             if checkpoint is None and busy:
                 raise StartupSessionInUseError(session_id, None)
             if checkpoint is None:
-                if ignore_recovery:
+                if ignore_recovery and repair:
                     self._discard_ignored_recovery_unlocked(session_id)
                 return None
             envelope = checkpoint.envelope
@@ -1603,7 +1639,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 raise ChatRestoreKindError("Open this session in Workflow mode.")
             # Rollback has already swapped the primary. Retire its old sidecar
             # even if decoding the verified rollback checkpoint fails.
-            if ignore_recovery:
+            if ignore_recovery and repair:
                 self._discard_ignored_recovery_unlocked(session_id)
             try:
                 state = deserialize_state(envelope.get("state", {}))
@@ -1612,12 +1648,13 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             # Preserve the fallback for older chat metadata with missing or damaged
             # timestamps. The identity was already checked on this exact envelope.
             meta = self._chat_meta_for_replay(envelope)
-            if checkpoint.migrate_legacy and busy is None:
-                self._migrate_legacy_checkpoint_unlocked(session_id, envelope)
-            elif checkpoint.source in {"backup", "snapshot"}:
-                self._heal_primary_unlocked(session_id, checkpoint)
-            if cleanup is not None:
-                self._delete_recovery_session_unlocked(session_id)
+            if repair:
+                if checkpoint.migrate_legacy and busy is None:
+                    self._migrate_legacy_checkpoint_unlocked(session_id, envelope)
+                elif checkpoint.source in {"backup", "snapshot"}:
+                    self._heal_primary_unlocked(session_id, checkpoint)
+                if cleanup is not None:
+                    self._delete_recovery_session_unlocked(session_id)
             return ChatRestoreData(state, meta, checkpoint.source == "recovery", envelope.get("state", {}))
 
     def _discard_ignored_recovery_unlocked(self, session_id: str) -> None:
@@ -1629,9 +1666,12 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             self._delete_recovery_session_unlocked(session_id)
 
     async def load_chat_for_restore(
-        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool = False
+        self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool = False, repair: bool = True
     ) -> ChatRestoreData | None:
-        """Load and optionally repair a verified chat while the caller owns its active lock."""
+        """Load and optionally repair a verified chat while the caller owns its active lock.
+
+        A staged restore passes ``repair=False`` and calls :py:meth:`repair_chat_restore` once it commits.
+        """
         # Drain the writer before releasing the active lock. Use an executor
         # future so shutdown's cancellation of all tasks cannot cancel the writer.
         worker = asyncio.get_running_loop().run_in_executor(
@@ -1641,6 +1681,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 session_id,
                 prefer_recovery=prefer_recovery,
                 ignore_recovery=ignore_recovery,
+                repair=repair,
             ),
         )
         try:
@@ -1650,6 +1691,15 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             with contextlib.suppress(Exception):
                 await finish_close(worker)
             raise
+
+    async def repair_chat_restore(self, session_id: str, *, prefer_recovery: bool, ignore_recovery: bool) -> None:
+        """Apply the repairs a staged restore deferred, after the restored session has opened."""
+        try:
+            await self.load_chat_for_restore(
+                session_id, prefer_recovery=prefer_recovery, ignore_recovery=ignore_recovery
+            )
+        except OSError, ValueError, TimeoutError:
+            logger.warning("Could not repair restored session %s", session_id, exc_info=True)
 
     def _chat_meta_for_replay(self, envelope: dict[str, Any]) -> ChatSessionMeta | None:
         with contextlib.suppress(KeyError, ValueError, TypeError):
@@ -2468,6 +2518,11 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """The directory holding the session folders."""
         return self._dir
 
+    @property
+    def workspace_registry(self) -> WorkspaceRegistry:
+        """The registry holding workspace definitions and membership for this store."""
+        return self._workspace_registry
+
     def session_folder_cwds(self) -> dict[str, str]:
         """Each listed session folder's name and primary working folder; blocking, so it runs off the event loop."""
         cwds = {session_dir.name: meta.primary_cwd for session_dir, meta in self._folder_metas()}
@@ -2827,6 +2882,13 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """
         return await asyncio.to_thread(self._load_session_page_sync, listing, surfaces, page, page_size)
 
+    def forget_workspace_membership(self, session_id: str) -> None:
+        """Remove membership for a deleted session from this store's paired registry."""
+        try:
+            self._workspace_registry.remove_session_workspace(session_id)
+        except WorkspaceRegistryError, OSError:
+            logger.warning("Could not remove workspace membership for %s", session_id, exc_info=True)
+
     def _delete_session_sync(self, session_id: str, *, allow_active: bool = False) -> None:
         """Sync implementation of session delete (runs in a thread)."""
         session_dir = self._session_dir(session_id)
@@ -2876,6 +2938,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 self._forget_catalog_entry(session_id)
                 self._pending_custom_titles.pop(session_id_key(session_id), None)
                 self._written_recovery_meta.pop(_session_short_id(session_id), None)
+                self.forget_workspace_membership(session_id)
         finally:
             if active_lock is not None:
                 active_lock.release()

@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -37,7 +39,12 @@ from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.session.history import SessionHistoryManager
 from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
-from chrys.service.session.persistence import agent_profile_context_fingerprint, model_profile_context_fingerprint
+from chrys.service.session.persistence import (
+    SessionPersistence,
+    agent_profile_context_fingerprint,
+    model_profile_context_fingerprint,
+)
+from chrys.service.state._session_meta import ChatSessionMeta
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.components import make_current
 from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent, make_manifest
@@ -62,6 +69,7 @@ async def _post_run(host: object) -> None:
 
 def _restore_lifecycle(*, session: SimpleNamespace, current: SimpleNamespace) -> session_lifecycle.SessionLifecycle:
     """Construct the restore policy with only the queried components populated."""
+    bus = EventBus()
     return session_lifecycle.SessionLifecycle(
         session=session,
         current=current,
@@ -70,10 +78,10 @@ def _restore_lifecycle(*, session: SimpleNamespace, current: SimpleNamespace) ->
         writer=None,
         turn_state=None,
         usage_publisher=None,
-        bus=None,
+        bus=bus,
         fsm=None,
         history=None,
-        persistence=None,
+        persistence=SessionPersistence(None, bus),
         settings_handle=None,
         agent_registry=None,
         model_registry=None,
@@ -122,7 +130,14 @@ def test_service_session_restore_compatibility_requires_enabled_response_storage
             ),
         ),
     )
-    matching_meta = SimpleNamespace(
+    now = datetime.now(UTC)
+    matching_meta = ChatSessionMeta(
+        session_id="saved",
+        created_at=now,
+        updated_at=now,
+        agent_profile=agent_profile.name,
+        agent_display_name=agent_profile.name,
+        message_count=0,
         agent_profile_fingerprint=fingerprint,
         model_profile_fingerprint=model_fingerprint,
         model_provider="openai",
@@ -130,69 +145,29 @@ def test_service_session_restore_compatibility_requires_enabled_response_storage
         model_id="gpt-5",
         model_base_url=effective_model_base_url(enabled),
         primary_cwd="/workspace/project",
-        working_dirs=[],
     )
-    mismatched_meta = SimpleNamespace(
-        agent_profile_fingerprint=fingerprint,
-        model_profile_fingerprint=model_fingerprint,
-        model_provider="openai",
-        model_api_style="responses",
-        model_id="gpt-4o",
-        model_base_url=effective_model_base_url(enabled),
-        primary_cwd="/workspace/project",
-        working_dirs=[],
-    )
-    mismatched_agent_meta = SimpleNamespace(
+    mismatched_meta = replace(matching_meta, model_id="gpt-4o")
+    mismatched_agent_meta = replace(
+        matching_meta,
         agent_profile_fingerprint=agent_profile_context_fingerprint(agent_profile, memory_text="memory v2"),
-        model_profile_fingerprint=model_fingerprint,
-        model_provider="openai",
-        model_api_style="responses",
-        model_id="gpt-5",
-        model_base_url=effective_model_base_url(enabled),
-        primary_cwd="/workspace/project",
-        working_dirs=[],
     )
-    mismatched_endpoint_meta = SimpleNamespace(
-        agent_profile_fingerprint=fingerprint,
-        model_profile_fingerprint=model_fingerprint,
-        model_provider="openai",
-        model_api_style="responses",
-        model_id="gpt-5",
-        model_base_url="https://different.example.com/v1",
-        primary_cwd="/workspace/project",
-        working_dirs=[],
-    )
-    mismatched_workspace_meta = SimpleNamespace(
-        agent_profile_fingerprint=fingerprint,
-        model_profile_fingerprint=model_fingerprint,
-        model_provider="openai",
-        model_api_style="responses",
-        model_id="gpt-5",
-        model_base_url=effective_model_base_url(enabled),
-        primary_cwd="/workspace/other",
-        working_dirs=[],
-    )
-    mismatched_model_profile_meta = SimpleNamespace(
-        agent_profile_fingerprint=fingerprint,
+    mismatched_endpoint_meta = replace(matching_meta, model_base_url="https://different.example.com/v1")
+    mismatched_workspace_meta = replace(matching_meta, primary_cwd="/workspace/other")
+    mismatched_model_profile_meta = replace(
+        matching_meta,
         model_profile_fingerprint=model_profile_context_fingerprint(
             enabled, chat_options={"store": True, "verbosity": "low"}
         ),
-        model_provider="openai",
-        model_api_style="responses",
-        model_id="gpt-5",
-        model_base_url=effective_model_base_url(enabled),
-        primary_cwd="/workspace/project",
-        working_dirs=[],
     )
 
     assert agent_lifecycle._is_openai_responses_profile(enabled)
-    assert enabled_lifecycle._can_restore_service_session(matching_meta)
-    assert not disabled_lifecycle._can_restore_service_session(matching_meta)
-    assert not enabled_lifecycle._can_restore_service_session(mismatched_meta)
-    assert not enabled_lifecycle._can_restore_service_session(mismatched_agent_meta)
-    assert not enabled_lifecycle._can_restore_service_session(mismatched_endpoint_meta)
-    assert not enabled_lifecycle._can_restore_service_session(mismatched_workspace_meta)
-    assert not enabled_lifecycle._can_restore_service_session(mismatched_model_profile_meta)
+    assert enabled_lifecycle._can_restore_service_session(matching_meta, saved_workspace=False)
+    assert not disabled_lifecycle._can_restore_service_session(matching_meta, saved_workspace=False)
+    assert not enabled_lifecycle._can_restore_service_session(mismatched_meta, saved_workspace=False)
+    assert not enabled_lifecycle._can_restore_service_session(mismatched_agent_meta, saved_workspace=False)
+    assert not enabled_lifecycle._can_restore_service_session(mismatched_endpoint_meta, saved_workspace=False)
+    assert not enabled_lifecycle._can_restore_service_session(mismatched_workspace_meta, saved_workspace=False)
+    assert not enabled_lifecycle._can_restore_service_session(mismatched_model_profile_meta, saved_workspace=False)
 
 
 def test_restore_warning_display_references_match_protocol_prose_and_localize() -> None:
@@ -257,7 +232,7 @@ def test_deepseek_responses_never_restores_or_preserves_service_sessions() -> No
     )
 
     assert agent_lifecycle._is_openai_responses_profile(deepseek) is False
-    assert lifecycle._can_restore_service_session(meta) is False
+    assert lifecycle._can_restore_service_session(meta, saved_workspace=False) is False
     assert (
         agent_lifecycle._can_reuse_responses_service_session(
             old_agent_profile_fingerprint=agent_fingerprint,
@@ -300,6 +275,7 @@ def test_service_session_compat_canonicalizes_primary_in_working_dirs() -> None:
             model_base_url=effective_model_base_url(enabled),
             primary_cwd="/workspace/project",
             working_dirs=working_dirs,
+            service_session_workspace_fingerprint="",
         )
 
     def _engine(working_dirs: list[WorkingDir]) -> session_lifecycle.SessionLifecycle:
@@ -324,14 +300,14 @@ def test_service_session_compat_canonicalizes_primary_in_working_dirs() -> None:
     # workspace lists [primary] while a no-extra session saved []. The effective
     # roots are identical, so the service session must still be reusable.
     primary_only = _engine([WorkingDir(path="/workspace/project", is_primary=True)])
-    assert primary_only._can_restore_service_session(_meta([]))
+    assert primary_only._can_restore_service_session(_meta([]), saved_workspace=False)
     # The inverse representation (saved [primary], live []) is equally compatible.
-    assert _engine([])._can_restore_service_session(_meta(["/workspace/project"]))
+    assert _engine([])._can_restore_service_session(_meta(["/workspace/project"]), saved_workspace=False)
 
     # A genuine extra root on either side is a real workspace change → no reuse.
-    assert not primary_only._can_restore_service_session(_meta(["/workspace/project", "/extra"]))
+    assert not primary_only._can_restore_service_session(_meta(["/workspace/project", "/extra"]), saved_workspace=False)
     with_extra = _engine([WorkingDir(path="/workspace/project", is_primary=True), WorkingDir(path="/extra")])
-    assert not with_extra._can_restore_service_session(_meta([]))
+    assert not with_extra._can_restore_service_session(_meta([]), saved_workspace=False)
 
 
 def test_service_session_rebuild_reuse_requires_same_agent_endpoint_and_workspace() -> None:
@@ -801,13 +777,13 @@ def test_executor_retry_snapshot_restores_service_session_id() -> None:
     assert restored_anchor_snapshots == [anchors_snapshot]
 
 
-def test_executor_retry_snapshot_restores_existing_pre_output_floor() -> None:
+def test_retry_rollback_restores_pre_compression_history_and_pre_output_floor() -> None:
     executor = object.__new__(TurnBindings)
     session = AgentSession(session_id="local", service_session_id="resp_original")
     session.state["chrys_history"] = {
-        "messages": [Message("user", ["before retry"])],
+        "messages": [Message("user", ["first"]), Message("assistant", ["second"])],
         "compressed_msgs": [],
-        PRE_OUTPUT_HISTORY_LEN_STATE_KEY: 1,
+        PRE_OUTPUT_HISTORY_LEN_STATE_KEY: 2,
     }
     executor._session = session
     executor.tool_events = ToolEventMiddleware(EventBus(), origin=InvocationOrigin("turn", "", "turn-test", None))
@@ -827,11 +803,18 @@ def test_executor_retry_snapshot_restores_existing_pre_output_floor() -> None:
         history_state=lambda: session.state.get("chrys_history", {}),
     )
     snapshot = rollback.snapshot()
-    session.state["chrys_history"][PRE_OUTPUT_HISTORY_LEN_STATE_KEY] = 99
+    history = session.state["chrys_history"]
+    marker = CompressibleHistoryProvider.insert_marker(history, 1)
+    CompressibleHistoryProvider.compress(history, marker, "compressed summary")
+    assert len(history["messages"]) == len(history["compressed_msgs"]) == 1
+    history[PRE_OUTPUT_HISTORY_LEN_STATE_KEY] = 99
 
     rollback.restore(snapshot)
 
-    assert session.state["chrys_history"][PRE_OUTPUT_HISTORY_LEN_STATE_KEY] == 1
+    restored = session.state["chrys_history"]
+    assert [message.text for message in restored["messages"]] == ["first", "second"]
+    assert restored["compressed_msgs"] == []
+    assert restored[PRE_OUTPUT_HISTORY_LEN_STATE_KEY] == 2
     assert restored_approval_snapshots == [approval_snapshot]
 
 

@@ -31,6 +31,7 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.workflows.discovery import workdir_workflows_dir
+from chrys.service.workspaces.registry import WorkspaceRegistry
 from tests.support.tool_packs import install_tools
 
 PROFILE = "Headless"
@@ -123,7 +124,7 @@ def make_host(
         approval_mode=approval_mode,
         agent_registry=agents,
         model_registry=model_registry,
-        state_store=JsonFileStateStore(tmp_path / "sessions"),
+        state_store=JsonFileStateStore(tmp_path / "sessions", workspace_registry=WorkspaceRegistry()),
         cwd=str(project) if project is not None else None,
         workspace=workspace,
         allow_user_interaction=allow_user_interaction,

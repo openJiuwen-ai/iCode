@@ -53,6 +53,8 @@ from tests.support.acp_fixtures import STUB_SCRIPT
 from tests.support.paths import SRC_ROOT
 from tests.support.platform_fakes import platform_with_config_dir
 from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, wait_for, with_wait_deadline
+from tests.support.workspace_engine import select_workspace
+from tests.support.workspace_registry import make_workdir_alias, retarget_workdir_alias
 
 
 async def _start_acp_engine(
@@ -177,6 +179,58 @@ async def _start_acp_engine(
         ["Explore"] if expected_tools is None else expected_tools
     )
     return engine, bus, main_client, captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_workspace, allow_external_cwd", [(False, False), (True, False), (True, True)])
+async def test_acp_child_uses_opened_workspace_roots_or_live_unspecified_cwd(
+    tmp_path, monkeypatch, agent_engine, has_workspace, allow_external_cwd
+):
+    from chrys.orchestration.invoker import acp_spec
+    from tests.support.symlinks import symlink_or_skip
+
+    original, moved, alias = make_workdir_alias(tmp_path, "original", "moved", "workspace")
+    engine, bus, _client, captured = await _start_acp_engine(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_engine=agent_engine,
+        scenario="usage_gauge",
+        launch_fields={"cwd": "", "allow_external_cwd": allow_external_cwd},
+    )
+    reference, reference_before, reference_after = (
+        tmp_path / name for name in ("reference", "reference-before", "reference-after")
+    )
+    reference_before.mkdir()
+    reference_after.mkdir()
+    symlink_or_skip(reference, reference_before, target_is_directory=True)
+    if has_workspace:
+        registry = engine.lifecycle.workspaces.registry
+        assert registry is not None
+        workspace = registry.create("Team", str(alias), [str(reference)])
+        await select_workspace(bus, workspace.id)
+        assert engine.workspace.id == workspace.id
+    specs = []
+    resolve_spec = acp_spec.resolve_acp_spec
+
+    def record_spec(*args, **kwargs):
+        spec = resolve_spec(*args, **kwargs)
+        specs.append(spec)
+        return spec
+
+    monkeypatch.setattr(acp_spec, "resolve_acp_spec", record_spec)
+    retarget_workdir_alias(alias, moved)
+    retarget_workdir_alias(reference, reference_after)
+
+    await bus.publish(UserMessage(text="Delegate after the link moved"))
+    await engine.wait_for_run_task()
+
+    results = [event for event in captured.get(InvocationToolCallResult, []) if event.tool_name == "Explore"]
+    assert [event.result for event in results] == ["stub response"]
+    assert specs
+    assert {spec.cwd for spec in specs} == {str((original if has_workspace else moved).resolve())}
+    assert {spec.additional_directories for spec in specs} == {
+        ((str(reference_before.resolve()),) if has_workspace else ())
+    }
 
 
 @pytest.mark.asyncio

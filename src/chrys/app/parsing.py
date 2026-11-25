@@ -5,16 +5,30 @@
 from __future__ import annotations
 
 import argparse
+from copy import copy
 from typing import Never
 
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.util.session_ids import normalized_session_id
+
+WORKDIR_OPTIONS = ("-C", "--workdir", "--w", "--wo", "--wor", "--work")
+
+
+class WorkspaceHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Keep the workdir compatibility aliases out of help."""
+
+    def _format_action_invocation(self, action: argparse.Action) -> str:
+        if tuple(action.option_strings) == WORKDIR_OPTIONS:
+            action = copy(action)
+            action.option_strings = list(WORKDIR_OPTIONS[:2])
+        return super()._format_action_invocation(action)
 
 
 class SanitizingArgumentParser(argparse.ArgumentParser):
     """Argument parser that sanitizes attacker-controlled error details."""
 
     def error(self, message: str) -> Never:
+        message = message.replace("/".join(WORKDIR_OPTIONS), "-C")
         super().error(sanitize_legacy_scalar(message))
 
 

@@ -18,23 +18,35 @@ from openai import AsyncOpenAI
 from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, ExchangeTrace
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
-from chrys.foundation.util.chrys_headers import REQUEST_ATTEMPT_ID_HEADER
+from chrys.foundation.util.chrys_headers import (
+    REQUEST_ATTEMPT_ID_HEADER,
+    REQUEST_ROLE_HEADER,
+    REQUEST_SCOPE_HEADER,
+    RequestRole,
+    RequestScope,
+)
 from chrys.kernel import Content
 from chrys.kernel.types import ChatResponse, Message
+from chrys.service.llm import clients
 from chrys.service.llm.anthropic_messages.client import AnthropicMessagesClient
 from chrys.service.llm.chat_completions.client import ChatCompletionsClient
 from chrys.service.llm.clients import _build_profile_http_client
 from chrys.service.llm.observer import WireCallObserver
+from chrys.service.llm.one_shot import get_final_response
 from chrys.service.llm.openai_responses.client import ResponsesApiClient
 from chrys.service.llm.request_tracking import (
     REQUEST_ATTEMPT_ID_METADATA,
     RequestTracking,
     build_request_tracking_hooks,
 )
-from chrys.service.llm.wire_client import WireClient
+from chrys.service.llm.wire_client import RequestHeaders, WireClient
 from chrys.service.profiles.models.schema import ModelProfile
+from tests.service.llm._responses_wire import RESPONSE_ID, Script, blocking, paths
 from tests.service.llm.test_route_extension_wire import _ANTHROPIC_REPLY, _OPENAI_REPLY
 from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.mock_provider_turns import mock_provider_profile
+from tests.support.waiting import wait_for
+from tests.support.wire_cases._kit import resp_message
 
 
 def _profile(provider: str = "openai") -> ModelProfile:
@@ -49,6 +61,8 @@ async def test_wire_response_correlates_attempt_provider_and_exchange(protocol: 
 
     def handle(request: httpx.Request) -> httpx.Response:
         sent.append(request.headers[REQUEST_ATTEMPT_ID_HEADER])
+        assert request.headers.get_list(REQUEST_ROLE_HEADER) == ["pet"]
+        assert REQUEST_SCOPE_HEADER not in request.headers
         if protocol == "anthropic":
             payload = _ANTHROPIC_REPLY
         elif protocol == "responses":
@@ -81,14 +95,21 @@ async def test_wire_response_correlates_attempt_provider_and_exchange(protocol: 
         raw_http_log_path=tmp_path / "http.jsonl",
     )
     observer = WireCallObserver()
+    request_headers = RequestHeaders(request_role=RequestRole.PET)
     if protocol == "anthropic":
         client = AnthropicMessagesClient.from_sdk_client(
-            AsyncAnthropic(api_key="test", http_client=http, max_retries=0), model="test-model", observer=observer
+            AsyncAnthropic(api_key="test", http_client=http, max_retries=0),
+            model="test-model",
+            observer=observer,
+            request_headers=request_headers,
         )
     else:
         kind = ResponsesApiClient if protocol == "responses" else ChatCompletionsClient
         client = kind.from_sdk_client(
-            AsyncOpenAI(api_key="test", http_client=http, max_retries=0), model="test-model", observer=observer
+            AsyncOpenAI(api_key="test", http_client=http, max_retries=0),
+            model="test-model",
+            observer=observer,
+            request_headers=request_headers,
         )
     try:
         response = await client.get_response(
@@ -118,14 +139,19 @@ async def test_wire_response_correlates_attempt_provider_and_exchange(protocol: 
 async def test_redirects_and_concurrent_scopes_never_share_attempt_ids() -> None:
     sink = FakeSink()
     contexts = [make_context(sink).with_exchange(new_analytics_id()) for _ in range(2)]
-    trackers = [RequestTracking(context) for context in contexts]
+    trackers = [
+        RequestTracking(contexts[0], request_role=RequestRole.MAIN_AGENT, request_scope=RequestScope.WORKFLOW),
+        RequestTracking(contexts[1], request_role=RequestRole.PET),
+    ]
     arrived = asyncio.Event()
     count = 0
     sent: list[str] = []
+    routes: list[tuple[str, str | None]] = []
 
     async def handle(request: httpx.Request) -> httpx.Response:
         nonlocal count
         sent.append(request.headers[REQUEST_ATTEMPT_ID_HEADER])
+        routes.append((request.headers[REQUEST_ROLE_HEADER], request.headers.get(REQUEST_SCOPE_HEADER)))
         if request.url.path == "/start":
             count += 1
             if count == 2:
@@ -144,6 +170,7 @@ async def test_redirects_and_concurrent_scopes_never_share_attempt_ids() -> None
 
         await asyncio.gather(*(send(tracker) for tracker in trackers))
     assert len(set(sent)) == 4
+    assert routes.count(("main_agent", "workflow")) == routes.count(("pet", None)) == 2
     assert trackers[0].request_attempt_id != trackers[1].request_attempt_id
     assert all(t.provider_request_id is None for t in trackers)
     for context in contexts:
@@ -160,6 +187,8 @@ async def test_sdk_retry_and_stream_keep_request_scope(stream: bool) -> None:
 
     def handle(request: httpx.Request) -> httpx.Response:
         sent.append(request.headers[REQUEST_ATTEMPT_ID_HEADER])
+        assert request.headers.get_list(REQUEST_ROLE_HEADER) == ["sub_agent"]
+        assert request.headers.get_list(REQUEST_SCOPE_HEADER) == ["workflow"]
         if len(sent) == 1:
             return httpx.Response(
                 429, json={"error": {"message": "retry"}}, headers={"retry-after-ms": "1", "x-request-id": "req_failed"}
@@ -181,7 +210,10 @@ async def test_sdk_retry_and_stream_keep_request_scope(stream: bool) -> None:
 
     http = _build_profile_http_client(_profile(), httpx.Timeout(5), transport=httpx.MockTransport(handle))
     client = ChatCompletionsClient.from_sdk_client(
-        AsyncOpenAI(api_key="test", http_client=http, max_retries=1), model="test-model", observer=WireCallObserver()
+        AsyncOpenAI(api_key="test", http_client=http, max_retries=1, default_headers={"cHrys-Request-Role": "forged"}),
+        model="test-model",
+        observer=WireCallObserver(),
+        request_headers=RequestHeaders(request_role=RequestRole.SUB_AGENT, request_scope=RequestScope.WORKFLOW),
     )
     try:
         if stream:
@@ -203,6 +235,73 @@ async def test_sdk_retry_and_stream_keep_request_scope(stream: bool) -> None:
         for d in sink.drafts
         if d.event_type == EventType.MODEL_REQUEST_HEADERS_RECEIVED
     ] == ["req_failed", "req_ok"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_responses_create_and_retrieve_carry_the_workflow_route(
+    stream: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = resp_message("msg_1", "ok")
+    reply = Script().started().text(0, "msg_1", "ok").finished(item).reply() if stream else blocking(item)
+    sent: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(reply.status, headers=list(reply.headers), content=reply.body)
+
+    def build_http(
+        profile: ModelProfile,
+        timeout: httpx.Timeout,
+        **kwargs: Any,
+    ) -> httpx.AsyncClient:
+        return _build_profile_http_client(profile, timeout, transport=httpx.MockTransport(handle), **kwargs)
+
+    monkeypatch.setattr(clients, "_build_profile_http_client", build_http)
+    profile = mock_provider_profile("openai", stream=stream, api_style="responses")
+    messages = [Message("user", ["hi"])]
+    async with clients.scoped_client(
+        profile, request_role=RequestRole.MAIN_AGENT, request_scope=RequestScope.WORKFLOW
+    ) as client:
+        await get_final_response(client, messages, stream=stream)
+        await get_final_response(
+            client, messages, stream=stream, options={"continuation_token": {"response_id": RESPONSE_ID}}
+        )
+
+    assert paths(sent) == ["POST /v1/responses", f"GET /v1/responses/{RESPONSE_ID}"]
+    assert [request.headers.get_list(REQUEST_ROLE_HEADER) for request in sent] == [["main_agent"], ["main_agent"]]
+    assert [request.headers.get_list(REQUEST_SCOPE_HEADER) for request in sent] == [["workflow"], ["workflow"]]
+
+
+async def test_compaction_and_normal_call_on_the_same_client_keep_their_roles() -> None:
+    both_sent = asyncio.Event()
+    sent: dict[str, tuple[str, str]] = {}
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        last_message = json.loads(request.content)["messages"][-1]["content"]
+        sent[last_message] = (request.headers[REQUEST_ROLE_HEADER], request.headers[REQUEST_SCOPE_HEADER])
+        if len(sent) == 2:
+            both_sent.set()
+        await wait_for(both_sent.is_set, description="both requests reached the transport")
+        return httpx.Response(200, json=_OPENAI_REPLY)
+
+    http = _build_profile_http_client(_profile(), httpx.Timeout(5), transport=httpx.MockTransport(handle))
+    client = ChatCompletionsClient.from_sdk_client(
+        AsyncOpenAI(api_key="test", http_client=http, max_retries=0),
+        model="test-model",
+        request_headers=RequestHeaders(request_role=RequestRole.MAIN_AGENT, request_scope=RequestScope.WORKFLOW),
+    )
+    messages = [Message("user", ["hi"])]
+    try:
+        context = client._build_compaction_call_context(stream=False, options={}, client_kwargs={})
+        assert context.last_words_completer is not None
+        await asyncio.gather(
+            get_final_response(client, messages, stream=False),
+            context.last_words_completer.complete_last_words(messages, "summarize", max_output_tokens=100),
+        )
+    finally:
+        await client.aclose()
+
+    assert sent == {"hi": ("main_agent", "workflow"), "summarize": ("compaction", "workflow")}
 
 
 async def test_connection_failure_still_records_prepared_attempt() -> None:

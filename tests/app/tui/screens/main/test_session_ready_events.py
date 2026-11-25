@@ -154,6 +154,8 @@ def _run_existing_session_ready(
 
     class _FakePanel:
         border_subtitle = None
+        # The chat already shows the session this SessionReady repeats.
+        session_id = "session-existing"
 
         def set_profile(self, profile: str) -> None:
             calls.append(("profile", profile))
@@ -333,10 +335,11 @@ def test_agent_runtime_updated_refreshes_resource_counts_without_model_trail() -
     assert "1m" not in trail
 
 
-def test_session_ready_for_new_session_resets_terminal_title_to_cwd() -> None:
+def test_session_ready_for_new_session_resets_terminal_title_to_cwd(tmp_path: Path) -> None:
     """Starting a new session should clear the previous user-message title preview."""
 
     calls: list[tuple[str, object]] = []
+    destination = str(tmp_path)
     terminal_title_cwds: list[str] = []
 
     class _FakePanel:
@@ -395,6 +398,10 @@ def test_session_ready_for_new_session_resets_terminal_title_to_cwd() -> None:
         def session_dir(self, session_id: str) -> Path:
             return Path("/sessions") / session_id
 
+    class _FakeShellPanel:
+        async def change_directory(self, cwd: str) -> None:
+            calls.append(("shell_cwd", cwd))
+
     panel = _FakePanel()
     input_bar = _FakeInputBar()
     status = _FakeStatusBar()
@@ -410,11 +417,14 @@ def test_session_ready_for_new_session_resets_terminal_title_to_cwd() -> None:
             return input_bar
         if cls.__name__ == "StatusBar":
             return status
+        if cls.__name__ == "ShellPanel":
+            return _FakeShellPanel()
         if cls.__name__ == "SidebarPanel":
             return sidebar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     state = MainScreenState(session=SessionViewState(creating_new_session=True))
+    state.workspace_marker.current_cwd = str(tmp_path.parent)
     creating: list[bool] = []
     screen = SimpleNamespace(
         _state=state,
@@ -439,7 +449,7 @@ def test_session_ready_for_new_session_resets_terminal_title_to_cwd() -> None:
                 display_name="Code Agent",
                 session_id="session-new",
                 max_context_tokens=123,
-                primary_cwd="/workspace/new",
+                primary_cwd=destination,
             )
         )
     )
@@ -447,9 +457,12 @@ def test_session_ready_for_new_session_resets_terminal_title_to_cwd() -> None:
     assert state.session.creating_new_session is False
     assert creating == [False]
     assert input_bar.retry_mode is False
-    assert terminal_title_cwds == ["/workspace/new"]
+    assert ("shell_cwd", destination) not in calls
+    assert calls.index(("paste_cwd", destination)) < calls.index(("clear", None))
+    assert calls.index(("clear", None)) < calls.index(("workspace_cwd", destination))
+    assert terminal_title_cwds == [destination]
     assert ("session_id", "session-new") in calls
-    assert ("paste_cwd", "/workspace/new") in calls
+    assert ("paste_cwd", destination) in calls
     assert ("clipboard_image_dir", Path("/sessions/session-new/attachments/clipboard")) in calls
 
 

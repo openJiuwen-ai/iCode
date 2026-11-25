@@ -189,8 +189,8 @@ class GitBranchMonitor:
 
 
 def _path_from_cwd(cwd: str) -> Path | None:
-    raw = cwd.strip()
-    if not raw:
+    raw = cwd
+    if not raw.strip():
         return None
     try:
         return Path(raw).expanduser().resolve(strict=False)

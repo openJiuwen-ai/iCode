@@ -32,7 +32,7 @@ Direction principles:
 4. Some UI stays frontend-native even with a shared backend: editor diff rendering,
    terminal integration, file pickers, notifications, settings UI.
 5. Extensions use the `chrys/*`, `session/*`, `sub_agent/*`, `profiles/*`,
-   `settings/*`, or `mcp/*` namespaces and are documented here.
+   `providers/*`, `settings/*`, or `mcp/*` namespaces and are documented here.
 
 ## Transport
 
@@ -114,7 +114,7 @@ option); the manager builds a multi-dir `Workspace` and passes it to
 `ChrysSessionHost(workspace=...)`. All `cwd` / `additionalDirectories` paths must be
 **absolute** (ACP contract) — a relative path is rejected rather than resolved against
 the ACP server's process cwd, which would bind the session to the wrong workspace.
-On `session/load` of an inactive session, supplied `additionalDirectories` are
+For Unspecified sessions, on `session/load` of an inactive session, supplied `additionalDirectories` are
 **authoritative** and replace the saved additional roots, with the primary cwd kept
 first so an unchanged scope still reuses an OpenAI Responses service session. A
 non-empty list narrows/swaps scope; an explicit empty list `[]` clears the saved roots
@@ -127,6 +127,31 @@ ordered additional-root filter (roots validated absolute like new/load): only
 sessions whose saved extra roots match exactly are returned. When omitted or empty,
 all sessions for the `cwd` are returned (each session reports its own roots via
 `additionalDirectories` in the response).
+
+For Unspecified sessions, list and delete use the saved cwd. Load, history and
+turn details for an active Unspecified session check its current cwd.
+For workspace sessions, list, load, history and delete use the installed scope
+while the session is active and the registered scope when it is closed.
+A cwd pointing to the same physical directory is
+accepted, including a case alias on a case-insensitive volume. List reports the
+physical paths of the primary folder and available reference folders, with the
+references in `additionalDirectories`. It skips the additional-directory
+filter for workspace sessions. If any candidate is Unspecified, list validates
+the requested directories as usual. An invalid directory then fails the request.
+A cold load checks the resolved request `cwd` against the registered primary and
+runs in the validated directory. Omitting `additionalDirectories` keeps the
+registered reference folders. An explicit list sets the roots for that load, and
+`[]` clears them for that load. The registered definition stays on disk. An active
+load accepts omission or the same ordered roots that list reports. Close the
+session before loading it with different roots.
+Changing the physical directory of an active session with `session/set_workspace`
+makes it Unspecified if it belonged to a workspace. If the session is in a
+workspace and the directory stays the same, it keeps the workspace and skips
+the soft restart. For an Unspecified session, the agent soft-restarts on every
+call. The returned `primaryCwd` uses the installed path spelling.
+The returned `workingDirs` lists the session's installed reference folders.
+After a move makes the session Unspecified, reload the active session under
+its new cwd. List and delete use the cwd from its latest save.
 
 ### Session modes — approval mode (standard)
 
@@ -268,7 +293,7 @@ All routed through `ext_method`.
 | `session/inject` | `sessionId`, `text` | Inject a prompt into the active turn. Rejected when no turn is running (use `session/prompt` to start one). |
 | `session/rollback` | `sessionId`, `targetTurn`, `revertChanges?`, `selectedPaths?` | Roll back; replays history + emits `chrys/rollback_result`. Response/notification carry `rolledBackUserText` (first discarded user prompt, for restoring the composer), `exclusions` (`[{path, reason}]`, reason = `RollbackExclusionReason` value like `"unrestorable"` / `"move_poisoned"`) for files the plan dropped, and advisory `warnings` (strings). |
 | `session/switch_agent` | `sessionId`, `agentProfile` | Switch active agent profile in-session. Unknown profile → immediate error; switching to the active profile is a no-op (no 60s wait) whose response still carries the live runtime (model/tools/skills), so it won't blank client state. |
-| `session/set_workspace` | `sessionId`, `primaryCwd` | Change primary workspace cwd. `primaryCwd` is validated strictly (must exist + be a directory, resolved absolutely) like `new`/`load`. Soft-restarts the agent, then pushes `chrys/runtime_update` (skills/MCP/memory/context may change). |
+| `session/set_workspace` | `sessionId`, `primaryCwd` | Change primary workspace cwd. `primaryCwd` is validated strictly (must exist + be a directory, resolved absolutely) like `new`/`load`. Soft-restarts the agent and pushes `chrys/runtime_update` (skills/MCP/memory/context may change). A session in a workspace skips the restart when the directory is physically the same. |
 | `session/skip_sleep` | `sessionId`, `callId` | Finish an active `sleep` tool call early. |
 | `session/retry` | `sessionId`, `text?` | Retry the session's last failed or interrupted turn. Resumes the **same** turn (the response `_meta.chrys.turnId` is the one the original prompt reported, and `chrys/turn_started` carries `isRetry: true`; `chrys/messages_retracted` then withdraws the cut-off answer the retry drops — see *Streamed text*), opens no new user message, so the response carries no `userMessageId`. `text` is optional guidance persisted as user input inside the resumed turn, not metadata: it goes through the same approval gate and `user_prompt_submit` hooks as a prompt and can be rejected. Refused with `invalid_params` when the session has no retryable turn, and when a turn is running — cancel it first (`session/cancel`), the retry is never queued behind a live turn. |
 | `session/set_config_option` | `sessionId`, `key`, `value` | Persist a supported config key to the user settings document + awaited reload, then push `chrys/runtime_update` (global default; see below). `key` accepts the logical name or its legacy `CHRYS_*` spelling; the response carries all three names (`key` echoed, `envKey`, `settingKey`). The session must be active — it is validated *before* the document write, so a failed request never leaves persisted config mutated. |
@@ -333,12 +358,57 @@ A sub-agent pauses only for a client that declared `subAgentPause` (see
 | `profiles/agents/write` | `profile` | Persist user settings. Built-in system and compaction prompts remain package-owned; create a custom agent with a new name and ID to change them. If explicitly submitted prompts differ from the built-in values, the response includes `ignored_fields` (using `instructions` and/or `compaction.last_words_template`); other settings are still saved. Unchanged or omitted prompt fields produce no warning. Masked `"***"` MCP secrets are restored from the stored profile. |
 | `profiles/agents/delete` | `name` | Delete a user agent profile. Built-in profiles are rejected; clients should migrate the previous "delete shadow to restore built-in" behavior to `profiles/agents/reset`. |
 | `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. System and compaction prompts remain package-owned and are excluded from reset comparisons. Returns `changed: false` when no shadow or resettable changes exist. |
-| `profiles/models/list` | — | Model profile summaries (no secrets). |
+| `profiles/models/list` | — | Summaries of locally saved model profiles, with secrets omitted. |
 | `profiles/models/read` | `id` | Full model profile. **`api_key` masked as `"***"`.** |
 | `profiles/models/write` | `profile` | Persist. `api_key` of `""`/`"***"` preserves the stored key. Omitting `stream` or sending `null` streams for a new profile and keeps the stored value on an update; `false` (or another false spelling such as `0` or `""`) turns streaming off. |
 | `profiles/models/delete` | `id` | Delete a model profile. |
+| `providers/models/list` | `connection`, optional `profileId` | Fetch model IDs from an unsaved provider connection. See [Model discovery](#model-discovery). |
 | `settings/reload` | `sessionId`, optional `scope` | Reload registries + soft-restart. Awaits the rebuild: a failed reload returns an error, success pushes `chrys/runtime_update`. Without `scope` (also what `session/set_config_option` runs) it returns `{}`, and an MCP server whose configuration is unchanged keeps its connection. `scope: "full"` is described below; any other `scope` is an invalid-params error. |
 | `mcp/test` | `server` | One-shot HTTP MCP connection test. Client-supplied stdio is rejected. |
+
+### Model discovery
+
+Call `_providers/models/list` on the wire when `initialize` advertises
+`providers/models/list`. A client can query a local service with this request.
+
+```json
+{"connection":{"provider":"openai","baseUrl":"http://localhost:11434/v1"}}
+```
+
+The request works before creating a session or saving a profile. The required
+`provider` is one of `openai`, `anthropic`, `deepseek-openai`, or `glm-openai`.
+A blank or omitted `baseUrl` uses the provider's configured address. A configured
+address containing only whitespace is invalid.
+Optional fields inside `connection` are `apiKey` (default empty),
+`httpHeaders` and `extraHeaders` (string-to-string objects, the latter overrides
+the former), `verifySsl` (true), `bypassProxy` (false), and `connectTimeout`
+(positive seconds, default 10). Use the current form values for all fields.
+
+Draft keys and headers are literal. A blank key sends no implicit provider key.
+A client editing a saved profile may send `apiKey: "***"` and its top-level
+`profileId` to use the stored key at the same provider and base URL.
+Preserve TLS verification and proxy bypass if enabled in the saved profile, and
+omit custom Host headers to reuse the key. Only the saved key can resolve environment templates. Credential commands
+and invalid connection parameters return JSON-RPC `-32602`.
+Requests carrying credentials or headers probe only the requested origin. Include
+`http://` for a local plain HTTP service when sending a key or custom headers.
+Clients editing a profile convert its JSON-encoded `http_headers` and
+`chat_options.extra_headers` to the two header objects in the draft.
+
+```json
+{"models":[{"id":"example-model"}],"authRejected":false,"unreachable":false,"correctedBaseUrl":null,"urlCorrections":[]}
+```
+
+An empty list can carry `authRejected` or `unreachable` when the provider
+rejects credentials or an address could not be checked. On success, a suggested
+`correctedBaseUrl` and its `urlCorrections` can be shown in the draft. Only an
+explicit profile write saves the user's selection.
+
+A single JSON-RPC response can contain up to 5,000 model IDs. When starting
+iCode with the Python ACP SDK's `spawn_agent_process`, pass
+`transport_kwargs={"limit": DEFAULT_STDIO_BUFFER_LIMIT_BYTES}` (import the
+constant from `acp.core`). Its default 64 KiB subprocess reader can be too
+small for the complete catalog.
 
 ### Full reload
 

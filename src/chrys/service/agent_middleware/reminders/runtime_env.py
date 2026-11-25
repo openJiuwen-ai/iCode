@@ -12,6 +12,7 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from chrys.foundation.models.workspace import control_chars_as_spaces
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.platform.runtime_paths import normalize_path as _normalise_path
 from chrys.foundation.platform.runtime_paths import same_path, which_excluding_runtime
@@ -34,16 +35,25 @@ class _PythonExecutionPath:
 
 
 class RuntimeEnvSource:
-    """The runtime environment one middleware reports: cwd, OS, shells, working directories."""
+    """The runtime environment one middleware reports: cwd, OS, shells, workspace, working directories."""
 
     name = "runtime"
     """The catalog's record name."""
     withdrawn = None
     """None: when no runtime hint is offered, the last one in view stays standing."""
 
-    def __init__(self, runtime: SessionEnvironment | None, *, shell_tool_enabled: bool) -> None:
+    def __init__(
+        self,
+        runtime: SessionEnvironment | None,
+        *,
+        shell_tool_enabled: bool,
+        workspace_section: bool = False,
+    ) -> None:
         self._runtime = runtime
         self._shell_tool_enabled = shell_tool_enabled
+        # Only the main agent reads its workspace here; a sub-agent gets no workspace
+        # context, just the workspace folders it may work in, listed as working directories.
+        self._workspace_section = workspace_section
 
     def snapshot(self) -> str | None:
         """The runtime hint, or None without a session environment; callers cache it at turn start."""
@@ -62,15 +72,30 @@ class RuntimeEnvSource:
         lines.extend(
             f"  Shell: {extra.name} {extra.version} ({extra.path})".rstrip() for extra in rt.platform.extra_shells
         )
+        lines.extend(self._workspace_lines(rt))
         if self._shell_tool_enabled:
             lines.extend(_format_python_execution_paths_hint())
-        if rt.working_dirs:
+        working_dirs = () if self._workspace_section and rt.workspace_name else rt.working_dirs
+        if working_dirs:
             lines.append("  Working directories:")
-            for wd in rt.working_dirs:
+            for wd in working_dirs:
                 marker = " (primary)" if wd.is_primary else ""
                 label = f" [{wd.label}]" if wd.label else ""
                 lines.append(f"    - {wd.path}{label}{marker}")
         return surrogate_safe_text("\n".join(lines))
+
+    def _workspace_lines(self, rt: SessionEnvironment) -> list[str]:
+        """Workspace membership, its folder index once, or the line naming the workspace just left."""
+        if not self._workspace_section:
+            return []
+        if rt.workspace_name:
+            return [f"  Workspace: {rt.workspace_name}", *(f"  {line}" for line in rt.workspace_index)]
+        departed = rt.departed_workspace
+        if departed is None:
+            return []
+        name = control_chars_as_spaces(departed.name)
+        reason = f'left workspace "{name}"'
+        return [f"  Workspace: Unspecified ({reason})"]
 
 
 def _format_python_execution_paths_hint() -> list[str]:

@@ -15,6 +15,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.util.chrys_headers import RequestRole
 from chrys.kernel import Message
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.service.llm.route_sessions import derive_llm_route_session_id
@@ -123,7 +124,9 @@ def _client_factory(monkeypatch: pytest.MonkeyPatch, make: Callable[[ModelProfil
         session_id: str | None = None,
         parent_session_id: str | None = None,
         session_dir: Path | None = None,
+        request_role: RequestRole | None = None,
     ) -> _Client:
+        assert request_role is RequestRole.PET
         return make(profile)
 
     monkeypatch.setattr("chrys.service.llm.clients.create_client", create_client)
@@ -200,6 +203,7 @@ async def test_the_call_is_routed_under_the_current_session(monkeypatch: pytest.
         session_id: str | None = None,
         parent_session_id: str | None = None,
         session_dir: Path | None = None,
+        request_role: RequestRole | None = None,
     ) -> _Client:
         context.update(session_id=session_id, parent_session_id=parent_session_id, session_dir=session_dir)
         return client
@@ -282,6 +286,7 @@ async def test_a_chosen_buddy_profile_answers_over_its_own_connection(
         session_id: str | None = None,
         parent_session_id: str | None = None,
         session_dir: Path | None = None,
+        request_role: RequestRole | None = None,
     ) -> _Client:
         asked.append(profile)
         context.update(session_id=session_id, parent_session_id=parent_session_id, session_dir=session_dir)
