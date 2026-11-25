@@ -5,12 +5,9 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import TYPE_CHECKING
 
 from rich.cells import get_character_cell_size, load_cell_table, split_graphemes
-
-if TYPE_CHECKING:
-    from rich.text import Text
+from rich.text import Text
 
 
 def format_token_count(n: int) -> str:
@@ -132,15 +129,47 @@ def _is_lone_regional_indicator(text: str, start: int, end: int) -> bool:
     """Whether ``text[start:end]`` is a single regional indicator, a half flag.
 
     A flag is a pair of regional indicators (the second may carry a variation
-    selector).  An unpaired one renders as a lettered box, so it is worth
-    neither head nor tail space.
+    selector).  An unpaired one renders as a lettered box.
     """
     return _is_regional_indicator(text[start]) and _regional_indicator_count(text, start, end) == 1
 
 
+def _trailing_virama(text: str, start: int, end: int) -> str | None:
+    """The virama at the end of ``text[start:end]``, past any trailing Extends.
+
+    ``split_graphemes`` glues a nukta (combining class 7) onto a cluster that
+    already carries a virama, so the virama is not always the final code point.
+    UAX #29 GB9c continues a conjunct through ``Linker Extend*`` to the next
+    consonant, and those Extends must not hide the linker.
+    """
+    for index in range(end - 1, start - 1, -1):
+        character = text[index]
+        combining = unicodedata.combining(character)
+        if combining == 9:
+            return character
+        if combining == 0:
+            break
+    return None
+
+
 def _ends_with_virama(text: str, start: int, end: int) -> bool:
-    """Whether ``text[start:end]`` ends with a Unicode virama (combining class 9)."""
-    return end > start and unicodedata.combining(text[end - 1]) == 9
+    """Whether ``text[start:end]`` ends with a virama, possibly followed by Extends."""
+    return _trailing_virama(text, start, end) is not None
+
+
+def _same_indic_script(virama_char: str, letter_char: str) -> bool:
+    """Whether *letter_char* is a letter of the script that owns *virama_char*.
+
+    Unicode names start with the script for both a virama (``DEVANAGARI SIGN
+    VIRAMA``) and its consonants (``DEVANAGARI LETTER SSA``). Comparing that
+    first word keeps a Latin ``A`` beside a Devanagari virama out of the
+    conjunct without a hard-coded table of Indic code-point blocks.
+    """
+    virama_name = unicodedata.name(virama_char, "")
+    if not virama_name:
+        return False
+    script = virama_name.split(" ", 1)[0]
+    return unicodedata.name(letter_char, "").startswith(f"{script} ")
 
 
 def _starts_with_letter(text: str, start: int, end: int) -> bool:
@@ -267,13 +296,19 @@ def _cluster_gap(text: str, offset: int) -> list[tuple[int, int, int]]:
     while index < total:
         start, end, _reported_width = spans[index]
         index += 1
-        while index < total and _ends_with_virama(text, start, end):
-            next_start, next_end, _next_width = spans[index]
-            if next_start == end and _starts_with_letter(text, next_start, next_end):
-                index += 1
-                end = next_end
-            else:
+        while index < total:
+            virama = _trailing_virama(text, start, end)
+            if virama is None:
                 break
+            next_start, next_end, _next_width = spans[index]
+            if not (
+                next_start == end
+                and _starts_with_letter(text, next_start, next_end)
+                and _same_indic_script(virama, text[next_start])
+            ):
+                break
+            index += 1
+            end = next_end
         clusters.append((offset + start, offset + end, _cell_width(text[start:end])))
     return clusters
 
@@ -288,11 +323,12 @@ def _display_clusters(text: str) -> list[tuple[int, int, int]]:
     left-to-right at the code-point level (a half flag may carry a variation
     selector), and a ZWJ glued between two flags stays a separate zero-width
     cluster instead of misaligning the pairing.  An odd leftover indicator
-    stays on its own and is dropped by :func:`elide_middle`.
+    stays on its own, so it is kept or dropped whole with the rest of an end.
 
     An Indic virama is a combining mark, so ``split_graphemes`` glues it to the
     preceding letter but — not implementing UAX #29 GB9c — leaves the following
-    letter separate; that letter is merged here so a conjunct is cut whole.
+    letter separate; a following consonant of the same script is merged here,
+    even with a nukta between them, so a conjunct is never cut whole.
 
     Widths are measured by :func:`_cell_width` rather than taken from the span:
     a span built by gluing a code point onto a zero-width joiner is reported as
@@ -321,6 +357,56 @@ def _display_clusters(text: str) -> list[tuple[int, int, int]]:
     return clusters
 
 
+def _side_text(text: str, clusters: list[tuple[int, int, int]], indices: list[int], *, keep_left: bool) -> str:
+    """Join *indices* into one end, stripping only the edge that meets the ellipsis.
+
+    The ellipsis sits on the head's right and the tail's left, where a
+    zero-width format character joins nothing.  The outer edge is part of the
+    source text and may carry glyph meaning -- a Malayalam Chillu N ends in a
+    ZWJ that shapes the letter -- so it is kept.  Measuring and rendering share
+    this one string, so a width taken here is the width that is finally printed.
+    """
+    side = "".join(text[clusters[index][0] : clusters[index][1]] for index in indices)
+    return side.rstrip(_ZERO_WIDTH_FORMAT_CHARS) if keep_left else side.lstrip(_ZERO_WIDTH_FORMAT_CHARS)
+
+
+def _fit_side(
+    text: str,
+    clusters: list[tuple[int, int, int]],
+    indices: list[int],
+    cells: int,
+    *,
+    keep_left: bool,
+) -> None:
+    """Drop whole clusters from the ellipsis end until *indices* fits *cells*.
+
+    A presentational sequence can measure one cell wider in Rich than in
+    :func:`_cell_width`, so a side built to its ``_cell_width`` share may still
+    overflow Rich's count.  Shrinking each side to its own Rich-managed share
+    keeps the overrun on the side that caused it instead of draining the other.
+    Popping from the ellipsis end (the head's tail, the tail's head) leaves the
+    head a prefix and the tail a suffix, and ``indices`` shrinks each step so
+    the loop terminates even across zero-width clusters.
+    """
+    while indices and Text(_side_text(text, clusters, indices, keep_left=keep_left)).cell_len > cells:
+        if keep_left:
+            indices.pop()
+        else:
+            indices.pop(0)
+
+
+def _render_elision(
+    text: str,
+    clusters: list[tuple[int, int, int]],
+    head_indices: list[int],
+    tail_indices: list[int],
+) -> str:
+    """Join the chosen clusters into ``head…tail``, stripping only the cut edges."""
+    head = _side_text(text, clusters, head_indices, keep_left=True)
+    tail = _side_text(text, clusters, tail_indices, keep_left=False)
+    return f"{head}…{tail}"
+
+
 def elide_middle(text: str, max_width: int) -> str:
     """Cap *text* at *max_width* terminal cells, eliding the middle.
 
@@ -328,18 +414,23 @@ def elide_middle(text: str, max_width: int) -> str:
     distinguishing parts); widths are measured in cells so CJK names don't
     overflow the cap.  Cutting happens on display clusters rather than code
     points, so an emoji, a flag or a letter carrying a combining mark is kept
-    whole or dropped whole, never sliced in half.  A regional indicator left
-    without its partner and a zero-width format character are dropped rather
-    than kept at the cut, and the ellipsis never sits beside a dangling joiner.
+    whole or dropped whole, never sliced in half.  Head and tail stay a
+    contiguous prefix and suffix of the input: even a regional indicator left
+    without its partner is kept when it falls inside one, while zero-width
+    format characters at the cut are stripped so the ellipsis never sits
+    beside a dangling joiner.
 
-    The result is never wider than *max_width* actually renders: widths come
-    from :func:`_cell_width`, which spends a ZWJ-following glyph's cells unless
-    that glyph is an emoji part ``rich`` would join into the same cluster.
+    The result is never wider than *max_width* as the caller renders it.  The
+    budget comes from :func:`_cell_width` (which spends a ZWJ-following glyph's
+    cells unless the glyph joins an emoji sequence), then :class:`rich.text.Text`
+    rechecks each side because Rich counts some presentation sequences a cell
+    wider; a side that overflows its own share is shrunk on that side alone, so
+    an overrun in the head never eats the tail.
     """
     if max_width <= 0:
         # Not even the ellipsis fits.
         return ""
-    if _cell_width(text) <= max_width:
+    if _cell_width(text) <= max_width and Text(text).cell_len <= max_width:
         return text
     budget = max_width - 1  # the ellipsis cell
     tail_budget = budget // 2
@@ -348,9 +439,7 @@ def elide_middle(text: str, max_width: int) -> str:
 
     head_indices: list[int] = []
     head_used = 0
-    for index, (start, end, width) in enumerate(clusters):
-        if _is_lone_regional_indicator(text, start, end):
-            continue
+    for index, (_start, _end, width) in enumerate(clusters):
         if head_used + width > head_budget:
             break
         head_used += width
@@ -365,9 +454,7 @@ def elide_middle(text: str, max_width: int) -> str:
     head_last = head_indices[-1] if head_indices else -1
     # Stop at the head's last cluster so the two ends never overlap.
     for index in range(len(clusters) - 1, head_last, -1):
-        start, end, width = clusters[index]
-        if _is_lone_regional_indicator(text, start, end):
-            continue
+        _start, _end, width = clusters[index]
         if tail_used + width > tail_budget:
             break
         tail_used += width
@@ -376,13 +463,11 @@ def elide_middle(text: str, max_width: int) -> str:
     if tail_used == 0:
         tail_indices = []
 
-    head_text = "".join(text[clusters[index][0] : clusters[index][1]] for index in head_indices)
-    tail_text = "".join(text[clusters[index][0] : clusters[index][1]] for index in tail_indices)
-
-    # A joiner at the cut sits against the ellipsis and joins nothing, and a
-    # joiner at the very edge of the result is invisible; drop both so they
-    # cannot glue the ends together.
-    head_text = head_text.strip(_ZERO_WIDTH_FORMAT_CHARS)
-    tail_text = tail_text.strip(_ZERO_WIDTH_FORMAT_CHARS)
-
-    return f"{head_text}…{tail_text}"
+    # Rich can measure a presentational sequence one cell above _cell_width, so
+    # shrink each side to its own Rich share rather than draining the tail.
+    # After this Text(head) <= head_budget, Text(tail) <= tail_budget, and the
+    # ellipsis is one cell, so the result renders at most
+    # head_budget + 1 + tail_budget == max_width -- no second pass needed.
+    _fit_side(text, clusters, head_indices, head_budget, keep_left=True)
+    _fit_side(text, clusters, tail_indices, tail_budget, keep_left=False)
+    return _render_elision(text, clusters, head_indices, tail_indices)

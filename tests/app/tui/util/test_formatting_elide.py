@@ -16,6 +16,7 @@ import unicodedata
 
 import pytest
 from rich.cells import cell_len, split_graphemes
+from rich.text import Text
 
 from chrys.app.tui.util.formatting import _cell_width, elide_middle
 
@@ -264,13 +265,25 @@ def test_a_narrow_emoji_without_its_selector_does_not_join() -> None:
         ("🇨\ufe0f" + "🇨🇳" * 10, 12),
     ],
 )
-def test_an_odd_regional_indicator_run_never_leaves_a_lone_flag(text: str, max_width: int) -> None:
-    """The budget cuts between flags, not through one: every run of indicators stays even."""
+def test_elision_never_splits_a_flag_in_an_odd_run(text: str, max_width: int) -> None:
+    """A budget cut falls between flags, and a lone indicator already in the
+    source stays with its end so head/tail remain a prefix and a suffix.
+
+    The old "every run is even" assertion demanded that elision repair a
+    malformed source, which is impossible without dropping a character from
+    the middle of an end. For a well-formed source the check still holds;
+    :func:`test_elide_middle_keeps_regional_indicators_paired` covers it.
+    """
     result = elide_middle(text, max_width)
 
     runs = _regional_indicator_runs(result)
-    assert all(run % 2 == 0 for run in runs), f"{result!r} holds a lone flag: runs {runs!r}"
+    source_runs = _regional_indicator_runs(text)
+    if all(run % 2 == 0 for run in source_runs):
+        assert all(run % 2 == 0 for run in runs), f"{result!r} holds a lone flag: runs {runs!r}"
     assert _cell_width(result) <= max_width
+    head, _, tail = result.partition(ELLIPSIS)
+    assert text.startswith(head), f"head {head!r} is not a prefix of {text!r}"
+    assert text.endswith(tail), f"tail {tail!r} is not a suffix of {text!r}"
 
 
 CORPUS = [
@@ -309,3 +322,110 @@ def test_the_invariants_hold_across_a_corpus(max_width: int) -> None:
         head, _, tail = result.partition(ELLIPSIS)
         assert text.startswith(head), f"w={max_width} head {head!r} is not a prefix of {text!r}"
         assert text.endswith(tail), f"w={max_width} tail {tail!r} is not a suffix of {text!r}"
+
+
+def test_a_lone_regional_indicator_inside_an_end_keeps_the_end_contiguous() -> None:
+    """Skipping an unpaired indicator dropped a letter from the *middle* of the head."""
+    text = "a\U0001f1fabcdefgh"
+
+    result = elide_middle(text, 7)
+
+    assert result == "a\U0001f1fab…fgh", f"{result!r} is not a contiguous head and tail"
+    head, _, tail = result.partition(ELLIPSIS)
+    assert text.startswith(head), f"head {head!r} is not a prefix of {text!r}"
+    assert text.endswith(tail), f"tail {tail!r} is not a suffix of {text!r}"
+
+
+def test_a_devanagari_virama_does_not_swallow_a_latin_letter() -> None:
+    """A virama joins a consonant of its own script, not just any Unicode letter."""
+    text = "\u0915\u094dA" + "x" * 10
+
+    result = elide_middle(text, 3)
+
+    assert result == "\u0915\u094d…x", f"{result!r} lost the virama cluster or kept the Latin letter"
+
+
+def test_a_nukta_between_virama_and_consonant_does_not_split_the_conjunct() -> None:
+    """GB9c lets Extends sit between the linker and the following consonant."""
+    conjunct = "\u0915\u094d\u093c\u0937"
+    text = conjunct + "x" * 10
+
+    elided = elide_middle(text, 3)
+    assert elided == "…x", f"{elided!r} cut the conjunct at the nukta"
+    kept = elide_middle(text, 4)
+    assert kept == f"{conjunct}…x", f"{kept!r} did not keep the conjunct whole"
+
+
+def test_the_final_width_is_checked_with_richs_own_measure() -> None:
+    """Rich counts a VS16 after a combining mark a cell wider than ``_cell_width``."""
+    text = "x" * 13 + "\u2764\u0301\ufe0f" + "x" * 12
+
+    result = elide_middle(text, 26)
+
+    assert Text(result).cell_len <= 26, f"{result!r} renders at {Text(result).cell_len} cells on Rich's measure"
+
+
+OVERWEIGHT_PREFIX = "\u2764\u0301\ufe0f" * 12 + "x" * 30
+"""A heart sequence Rich renders at two cells but ``_cell_width`` measures at one."""
+
+
+def test_an_overweight_prefix_does_not_consume_the_whole_tail() -> None:
+    """An overrun Rich sees in the head is shrunk on the head, not billed to the tail."""
+    result = elide_middle(OVERWEIGHT_PREFIX, 24)
+
+    head, _, tail = result.partition(ELLIPSIS)
+    assert head, f"{result!r} dropped the whole head"
+    assert tail, f"{result!r} dropped the whole tail on the head's overrun"
+    assert Text(result).cell_len == 24, f"{result!r} renders at {Text(result).cell_len} cells, not 24"
+    assert head.count("\u2764") == 6, f"{head!r} does not keep six hearts"
+    assert tail.count("x") == 11, f"{tail!r} does not keep eleven x's"
+
+
+@pytest.mark.parametrize("max_width", [12, 20])
+def test_an_overweight_prefix_keeps_both_ends_at_a_narrow_width(max_width: int) -> None:
+    """A tight budget still keeps a prefix and a suffix instead of an empty side."""
+    result = elide_middle(OVERWEIGHT_PREFIX, max_width)
+
+    head, _, tail = result.partition(ELLIPSIS)
+    assert head and tail, f"{result!r} at {max_width} lost an end"
+    assert Text(result).cell_len <= max_width, f"{result!r} renders at {Text(result).cell_len} cells"
+    assert _cell_width(result) <= max_width, f"{result!r} is really {_cell_width(result)} cells"
+
+
+def test_a_trailing_zwj_that_shapes_the_last_glyph_is_kept() -> None:
+    """A Malayalam Chillu N ends in a ZWJ that shapes the letter: only the cut edge is stripped."""
+    text = "x" * 20 + "\u0d28\u0d4d\u200d"
+
+    result = elide_middle(text, 10)
+
+    assert result.endswith("\u0d28\u0d4d\u200d"), f"{result!r} dropped the trailing shaping ZWJ"
+    assert Text(result).cell_len <= 10, f"{result!r} renders at {Text(result).cell_len} cells"
+
+
+WIDTH_CONSISTENCY_CORPUS = [
+    "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466" * 4,  # ZWJ family
+    "\u2764\u0301\ufe0f" * 12 + "x" * 30,  # VS16 after a combining mark
+    "\u0d28\u0d4d\u200d" * 3 + "x" * 20,  # Chillu N (trailing ZWJ)
+    "\u200d" + "abcdefghij",  # leading ZWJ
+    "a\u200d" * 6,  # interior ZWJ run
+    "中文名字很长" * 3,  # CJK
+    "e\u0301" * 9,  # combining acute
+]
+
+
+@pytest.mark.parametrize("text", WIDTH_CONSISTENCY_CORPUS)
+@pytest.mark.parametrize("max_width", [1, 2, 3, 5, 8, 10, 12, 16, 20, 24, 32, 40])
+def test_the_measured_text_is_the_rendered_text(text: str, max_width: int) -> None:
+    """The width fitted is the width printed, and both ends stay a prefix and a suffix.
+
+    Fitting and rendering share one stripped string, so a Rich width measured for
+    a side is exactly the width the caller ends up printing.  If they diverged,
+    a ``Text.cell_len`` above the cap would slip through.
+    """
+    result = elide_middle(text, max_width)
+
+    assert Text(result).cell_len <= max_width, f"{result!r} renders at {Text(result).cell_len} cells"
+    head, sep, tail = result.partition(ELLIPSIS)
+    if sep:
+        assert text.startswith(head), f"head {head!r} is not a prefix of {text!r}"
+        assert text.endswith(tail), f"tail {tail!r} is not a suffix of {text!r}"
