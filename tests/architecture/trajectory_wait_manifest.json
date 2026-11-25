@@ -4756,7 +4756,7 @@
       ],
       "discover_models": [
         ["timeout", "async with asyncio.timeout(_TOTAL_SECONDS)", "unresolved"],
-        ["wrapper", "await _discover(snapshot, transport, budget, on_retry)", "unresolved", "chrys.service.llm.model_list._discover"]
+        ["wrapper", "await _discover(snapshot, transport, budget, on_retry, literal_connection=literal_connection)", "unresolved", "chrys.service.llm.model_list._discover"]
       ]
     },
     "chrys.service.llm.observer": {

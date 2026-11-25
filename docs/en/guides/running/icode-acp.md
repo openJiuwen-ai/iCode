@@ -2,7 +2,7 @@
 
 Editors and development tools that support the Agent Client Protocol (ACP) can connect to iCode to use iCode agents in the client. The ACP client provides the interface, while iCode communicates with it over standard input and output (stdio), runs agents, executes tools, and saves sessions.
 
-Before you begin, install iCode and configure at least one model. For preparation steps, see [Getting started with iCode](../../start/getting-started.md) and [Configure models](../configuration/models.md).
+Install iCode before connecting. Configure at least one model before sending your first message. For preparation steps, see [Getting started with iCode](../../start/getting-started.md) and [Configure models](../configuration/models.md).
 
 ## Connect to iCode
 
@@ -20,6 +20,8 @@ icode acp
 ```
 
 If the client provides only a single launch command field, enter the full command, `icode acp`.
+
+If your client offers **Fetch models**, enter the provider connection details to look up model IDs before saving a model profile or starting a session. Leave the API key blank for a service that accepts anonymous requests. You can also enter a model ID manually.
 
 After saving the configuration, verify the connection:
 

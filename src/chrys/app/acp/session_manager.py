@@ -490,14 +490,19 @@ class AcpSessionManager:
         self.load_registries()
         return [_model_profile_info(profile) for profile in self._model_registry.list_profiles()]
 
-    def read_model_profile(self, profile_id: str) -> dict[str, object]:
-        """Return one model profile as JSON-like data without secrets."""
-        self.load_registries()
+    def get_model_profile(self, profile_id: str) -> ModelProfile:
+        """Look up the saved profile used by ACP reads and credential restoration."""
+        if not self._model_registry.list_ids():
+            self._model_registry.load_all()
         profile = self._model_registry.get(profile_id)
         if profile is None:
             msg = f"Model profile not found: {profile_id}"
             raise AcpSessionError(msg)
-        data = jsonable_dataclass(profile)
+        return profile
+
+    def read_model_profile(self, profile_id: str) -> dict[str, object]:
+        """Return one model profile as JSON-like data without secrets."""
+        data = jsonable_dataclass(self.get_model_profile(profile_id))
         data["api_key"] = "***" if data.get("api_key") else ""
         # NOTE: only api_key is masked. ``http_headers`` and ``chat_options`` are
         # JSON strings that can also carry auth (e.g. an Authorization header or a

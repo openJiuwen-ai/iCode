@@ -32,7 +32,7 @@ Direction principles:
 4. Some UI stays frontend-native even with a shared backend: editor diff rendering,
    terminal integration, file pickers, notifications, settings UI.
 5. Extensions use the `chrys/*`, `session/*`, `sub_agent/*`, `profiles/*`,
-   `settings/*`, or `mcp/*` namespaces and are documented here.
+   `providers/*`, `settings/*`, or `mcp/*` namespaces and are documented here.
 
 ## Transport
 
@@ -358,12 +358,57 @@ A sub-agent pauses only for a client that declared `subAgentPause` (see
 | `profiles/agents/write` | `profile` | Persist user settings. Built-in system and compaction prompts remain package-owned; create a custom agent with a new name and ID to change them. If explicitly submitted prompts differ from the built-in values, the response includes `ignored_fields` (using `instructions` and/or `compaction.last_words_template`); other settings are still saved. Unchanged or omitted prompt fields produce no warning. Masked `"***"` MCP secrets are restored from the stored profile. |
 | `profiles/agents/delete` | `name` | Delete a user agent profile. Built-in profiles are rejected; clients should migrate the previous "delete shadow to restore built-in" behavior to `profiles/agents/reset`. |
 | `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. System and compaction prompts remain package-owned and are excluded from reset comparisons. Returns `changed: false` when no shadow or resettable changes exist. |
-| `profiles/models/list` | — | Model profile summaries (no secrets). |
+| `profiles/models/list` | — | Summaries of locally saved model profiles, with secrets omitted. |
 | `profiles/models/read` | `id` | Full model profile. **`api_key` masked as `"***"`.** |
 | `profiles/models/write` | `profile` | Persist. `api_key` of `""`/`"***"` preserves the stored key. Omitting `stream` or sending `null` streams for a new profile and keeps the stored value on an update; `false` (or another false spelling such as `0` or `""`) turns streaming off. |
 | `profiles/models/delete` | `id` | Delete a model profile. |
+| `providers/models/list` | `connection`, optional `profileId` | Fetch model IDs from an unsaved provider connection. See [Model discovery](#model-discovery). |
 | `settings/reload` | `sessionId`, optional `scope` | Reload registries + soft-restart. Awaits the rebuild: a failed reload returns an error, success pushes `chrys/runtime_update`. Without `scope` (also what `session/set_config_option` runs) it returns `{}`, and an MCP server whose configuration is unchanged keeps its connection. `scope: "full"` is described below; any other `scope` is an invalid-params error. |
 | `mcp/test` | `server` | One-shot HTTP MCP connection test. Client-supplied stdio is rejected. |
+
+### Model discovery
+
+Call `_providers/models/list` on the wire when `initialize` advertises
+`providers/models/list`. A client can query a local service with this request.
+
+```json
+{"connection":{"provider":"openai","baseUrl":"http://localhost:11434/v1"}}
+```
+
+The request works before creating a session or saving a profile. The required
+`provider` is one of `openai`, `anthropic`, `deepseek-openai`, or `glm-openai`.
+A blank or omitted `baseUrl` uses the provider's configured address. A configured
+address containing only whitespace is invalid.
+Optional fields inside `connection` are `apiKey` (default empty),
+`httpHeaders` and `extraHeaders` (string-to-string objects, the latter overrides
+the former), `verifySsl` (true), `bypassProxy` (false), and `connectTimeout`
+(positive seconds, default 10). Use the current form values for all fields.
+
+Draft keys and headers are literal. A blank key sends no implicit provider key.
+A client editing a saved profile may send `apiKey: "***"` and its top-level
+`profileId` to use the stored key at the same provider and base URL.
+Preserve TLS verification and proxy bypass if enabled in the saved profile, and
+omit custom Host headers to reuse the key. Only the saved key can resolve environment templates. Credential commands
+and invalid connection parameters return JSON-RPC `-32602`.
+Requests carrying credentials or headers probe only the requested origin. Include
+`http://` for a local plain HTTP service when sending a key or custom headers.
+Clients editing a profile convert its JSON-encoded `http_headers` and
+`chat_options.extra_headers` to the two header objects in the draft.
+
+```json
+{"models":[{"id":"example-model"}],"authRejected":false,"unreachable":false,"correctedBaseUrl":null,"urlCorrections":[]}
+```
+
+An empty list can carry `authRejected` or `unreachable` when the provider
+rejects credentials or an address could not be checked. On success, a suggested
+`correctedBaseUrl` and its `urlCorrections` can be shown in the draft. Only an
+explicit profile write saves the user's selection.
+
+A single JSON-RPC response can contain up to 5,000 model IDs. When starting
+iCode with the Python ACP SDK's `spawn_agent_process`, pass
+`transport_kwargs={"limit": DEFAULT_STDIO_BUFFER_LIMIT_BYTES}` (import the
+constant from `acp.core`). Its default 64 KiB subprocess reader can be too
+small for the complete catalog.
 
 ### Full reload
 
