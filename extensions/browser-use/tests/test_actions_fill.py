@@ -833,3 +833,146 @@ def test_fill_clear_false_append_on_full_maxlength_field_reports_mismatch_not_su
     assert all(
         not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Backspace") for call in session.client.calls
     )
+
+
+def test_fill_clear_false_replaces_existing_contenteditable_selection(monkeypatch) -> None:
+    """Issue #1: FOCUS_FN must keep an existing in-editor selection so clear=false replaces 'bcd' -> 'aXef'."""
+    assert "hasSelection" in actionability.FOCUS_FN
+    assert "if (selection && !hasSelection)" in actionability.FOCUS_FN
+
+    session = FakeSession()
+    session.state = {"tag": "div", "editable": True, "focused": True, "text": "abcdef"}
+    original_send = session.client.send
+
+    async def replacing_send(method, params=None, session_id=None, timeout=None):
+        if method == "Input.insertText":
+            session.client.calls.append((method, params or {}, session_id))
+            session.state["text"] = "a" + str((params or {}).get("text", "")) + "ef"
+            return {"result": {"value": None}}
+        return await original_send(method, params, session_id, timeout)
+
+    session.client.send = replacing_send
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    **FOCUS_VALUE,
+                    "text": "abcdef",
+                    "selectionText": "bcd",
+                },
+            }
+        return {"type": "object", "value": dict(session.state)}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "editor", "text": "X", "clear": False, "submit": False, "keypress_fallback": False},
+        )
+    )
+    assert "status=succeeded" in blocks[0]["text"]
+    assert session.state["text"] == "aXef"
+
+
+def test_fill_emoji_utf16_selection_offset_matches_and_submits(monkeypatch) -> None:
+    """Issue #2: UTF-16 selection offset after emoji ('😀AB' at offset 2) matches '😀!AB' and sends Enter."""
+    session = FakeSession()
+    session.state = {"tag": "input", "editable": False, "focused": True, "text": "😀AB"}
+    pages = [
+        {"href": "http://example.com/form", "mutations": 0, "toasts": []},
+        {"href": "http://example.com/submitted", "mutations": 0, "toasts": []},
+    ]
+    original_send = session.client.send
+
+    async def emoji_send(method, params=None, session_id=None, timeout=None):
+        if method == "Input.insertText":
+            session.client.calls.append((method, params or {}, session_id))
+            session.state["text"] = "😀" + str((params or {}).get("text", "")) + "AB"
+            return {"result": {"value": None}}
+        return await original_send(method, params, session_id, timeout)
+
+    session.client.send = emoji_send
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "input",
+                    "type": "text",
+                    "readOnly": False,
+                    "disabled": False,
+                    "text": "😀AB",
+                    "selectionStart": 2,
+                    "selectionEnd": 2,
+                },
+            }
+        return {"type": "object", "value": dict(session.state)}
+
+    async def fake_eval_value(*_args, **_kwargs):
+        return pages.pop(0) if len(pages) > 1 else pages[0]
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "eval_value", fake_eval_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "field", "text": "!", "clear": False, "submit": True, "keypress_fallback": False},
+        )
+    )
+    text = blocks[0]["text"]
+    assert "status=succeeded" in text
+    assert "已提交（页面已跳转）" in text
+    assert any(call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter" for call in session.client.calls)
+
+
+def test_fill_native_textarea_preserves_trailing_space_in_readback_check(monkeypatch) -> None:
+    """Issue #4: <textarea maxlength='4'> truncated 'code ' -> 'code' must report mismatch, not succeeded."""
+    session = FakeSession()
+    session.state = {"tag": "textarea", "editable": False, "focused": True, "text": ""}
+    original_send = session.client.send
+
+    async def truncating_send(method, params=None, session_id=None, timeout=None):
+        if method == "Input.insertText":
+            session.client.calls.append((method, params or {}, session_id))
+            session.state["text"] = str((params or {}).get("text", ""))[:4]
+            return {"result": {"value": None}}
+        return await original_send(method, params, session_id, timeout)
+
+    session.client.send = truncating_send
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "textarea",
+                    "type": "",
+                    "readOnly": False,
+                    "disabled": False,
+                    "text": "",
+                    "selectionStart": 0,
+                    "selectionEnd": 0,
+                },
+            }
+        return {"type": "object", "value": dict(session.state)}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "bio", "text": "code ", "clear": True, "submit": False, "keypress_fallback": False},
+        )
+    )
+    text = blocks[0]["text"]
+    assert "status=uncertain" in text
+    assert "读回与输入不一致" in text

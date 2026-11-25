@@ -91,6 +91,13 @@ async def test_compact_context_uses_compact_playbook(monkeypatch, tmp_path):
         listed = await reloaded.browser_list(ctx)
         assert "open=1" in listed
         assert "browser_id=" in listed
+
+        # Simulate host restart: live registry cleared, recorded manifest entry remains.
+        reloaded._browsers.clear()
+        after_restart = await reloaded.browser_list(ctx)
+        assert "recoverable=1" in after_restart
+        assert "call browser_resume to reopen" not in after_restart
+        assert "browser_navigate" in after_restart or "browser_open" in after_restart
     finally:
         ext._browsers.clear()
         monkeypatch.delenv("ICODE_BROWSER_TOOLSET", raising=False)

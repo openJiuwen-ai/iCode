@@ -265,3 +265,51 @@ def test_attached_direct_close_reports_unclosed_targets_when_browser_unreachable
         assert session.unclosed_targets == ("target-1",)
 
     asyncio.run(scenario())
+
+
+def test_attached_direct_close_after_natural_disconnect_with_closed_client_cleans_up_tab(tmp_path: Path) -> None:
+    """Issue #3: when CDP drops naturally (client still present with client.closed=True), direct aclose() reconnects to close the tab."""
+    live_targets = [{"targetId": "target-1", "type": "page", "url": "https://example.com"}]
+    clients: list[FakeClient] = []
+
+    class NaturalDisconnectClient(FakeClient):
+        async def send(self, method: str, params=None, session_id=None, timeout=None):
+            if self.closed:
+                raise OSError("socket already closed")
+            self.calls.append((method, params, session_id))
+            if method == "Browser.getVersion":
+                return {"product": "Edge/135", "revision": "rev-1", "userAgent": "Edge/135"}
+            if method == "Target.getTargets":
+                return {"targetInfos": list(live_targets)}
+            if method == "Target.createTarget":
+                return {"targetId": "target-1"}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-1"}
+            if method == "Page.getFrameTree":
+                return {"frameTree": {"frame": {"id": "frame-1", "url": "https://example.com"}}}
+            if method == "Page.addScriptToEvaluateOnNewDocument":
+                return {"identifier": "probe-1"}
+            return {}
+
+    async def client_factory(_ws: str) -> FakeClient:
+        client = NaturalDisconnectClient()
+        clients.append(client)
+        return client
+
+    config = BrowserConfig(
+        allowed_domains=("example.com",),
+        state_dir=tmp_path / "state",
+        cdp_url="ws://existing",
+    )
+    session = BrowserSession(config, client_factory=client_factory)
+
+    async def scenario() -> None:
+        await session.ensure_started()
+        # Simulate natural CDP disconnect: client object still attached, client.closed is truthy.
+        clients[0].closed = True  # type: ignore[assignment]
+        await session.aclose()
+        assert len(clients) == 2
+        assert ("Target.closeTarget", {"targetId": "target-1"}, None) in clients[1].calls
+        assert session.unclosed_targets == ()
+
+    asyncio.run(scenario())

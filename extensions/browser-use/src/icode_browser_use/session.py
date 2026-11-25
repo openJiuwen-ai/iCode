@@ -1071,12 +1071,13 @@ class BrowserSession:
         client = self._client
         child = self._child
         target_id = self._target_id or None
+        client_dead = client is None or bool(getattr(client, "closed", False))
         owned_targets = [
             tid for tid in ([self._target_id] + [t for t in self._page_order if t != self._target_id]) if tid
         ]
         detached_to_close: list[str] = []
         if (
-            client is None
+            client_dead
             and not self._transport.owns_browser
             and self._transport.browser_commands
             and not self._closed
@@ -1086,7 +1087,7 @@ class BrowserSession:
                 if tid not in self._detached_target_ids:
                     self._detached_target_ids.append(tid)
         elif self._closed:
-            if client is None and not self._transport.owns_browser and self._transport.browser_commands:
+            if client_dead and not self._transport.owns_browser and self._transport.browser_commands:
                 detached_to_close = list(dict.fromkeys([*owned_targets, *self._detached_target_ids]))
             self._detached_target_ids.clear()
         # The next browser may reuse tab ids (Bridge ids are Chrome tab numbers).
@@ -1122,14 +1123,19 @@ class BrowserSession:
             self._unclosed_targets = []
         if self._closed:
             self._browser_identity = ""
-        if client is not None and not self._transport.owns_browser and self._transport.browser_commands:
+        if not client_dead and client is not None and not self._transport.owns_browser and self._transport.browser_commands:
             for extra_id in owned_targets:
                 if extra_id != target_id:
                     with contextlib.suppress(Exception):
                         await client.send("Target.closeTarget", {"targetId": extra_id}, timeout=5.0)
         # The transport decides whether that means "close the browser" (owned) or
         # "close our tab and disconnect" (attached); it never raises.
-        await self._transport.stop(client, child, target_id=target_id)
+        if client_dead and client is not None and not self._transport.owns_browser:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+            await self._transport.stop(None, child, target_id=None)
+        else:
+            await self._transport.stop(client, child, target_id=target_id)
         # The state-dir lock guards the profile while we own the browser; a
         # teardown (restart, failure, close) always releases it.
         self._release_lock()

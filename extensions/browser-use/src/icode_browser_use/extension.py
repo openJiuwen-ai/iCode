@@ -651,7 +651,13 @@ async def browser_list(ctx: ToolContext) -> str:
             f"- resume_id={record.resume_id} state=recorded backend={record.backend} "
             f"slot={record.slot} origin={record.origin}"
         )
-        lines.append("  next: call browser_resume to reopen this handle (it does not navigate)")
+        if _active_toolset() == "compact":
+            lines.append(
+                "  next: call browser_navigate(url=...) or browser_open to start a new handle "
+                "(browser_resume is unavailable in compact toolset)"
+            )
+        else:
+            lines.append("  next: call browser_resume to reopen this handle (it does not navigate)")
     if unclaimable:
         lines.append(f"unclaimable={unclaimable} (records copied from another session; history only)")
     if not mine and not recoverable:

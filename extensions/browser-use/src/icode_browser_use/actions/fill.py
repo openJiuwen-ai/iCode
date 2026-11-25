@@ -70,6 +70,22 @@ _normalize_text = normalize_text
 _submit_verdict = submit_verdict
 
 
+def _normalize_native_value(value: Any) -> str:
+    """Preserve exact spaces on native ``<input>``/``<textarea>`` while normalizing CRLF to LF."""
+    return str(value or "").replace("\r\n", "\n")
+
+
+def _splice_utf16(text: str, start: int, end: int, insert: str) -> str | None:
+    """Splice *insert* into *text* using DOM UTF-16 code-unit selection offsets."""
+    raw = text.encode("utf-16-le")
+    total_units = len(raw) // 2
+    if not (0 <= start <= end <= total_units):
+        return None
+    prefix = raw[: start * 2].decode("utf-16-le", errors="surrogatepass")
+    suffix = raw[end * 2 :].decode("utf-16-le", errors="surrogatepass")
+    return prefix + insert + suffix
+
+
 def _values_match(
     value: Any,
     expected: str,
@@ -77,7 +93,27 @@ def _values_match(
     clear: bool = True,
     before_value: str | None = None,
     selection: tuple[int, int] | None = None,
+    selection_text: str = "",
+    native_value: bool = False,
 ) -> bool:
+    if native_value:
+        actual_raw = _normalize_native_value(value)
+        wanted_raw = _normalize_native_value(expected)
+        if not wanted_raw:
+            return actual_raw == "" if clear else True
+        if clear:
+            return actual_raw == wanted_raw
+        if before_value is not None:
+            before_raw = _normalize_native_value(before_value)
+            if selection is not None:
+                combined = _splice_utf16(before_raw, selection[0], selection[1], wanted_raw)
+                if combined is not None:
+                    return actual_raw == combined
+            if actual_raw == before_raw:
+                return False
+            return wanted_raw in actual_raw and len(actual_raw) >= len(before_raw) + len(wanted_raw)
+        return wanted_raw in actual_raw
+
     actual = _normalize_text(value)
     wanted = _normalize_text(expected)
     if not wanted:
@@ -88,11 +124,13 @@ def _values_match(
         return actual == wanted
     if before_value is not None:
         if selection is not None:
-            start, end = selection
-            if 0 <= start <= end <= len(before_value):
-                combined = before_value[:start] + expected + before_value[end:]
+            combined = _splice_utf16(before_value, selection[0], selection[1], expected)
+            if combined is not None:
                 return actual == _normalize_text(combined)
         before_norm = _normalize_text(before_value)
+        if selection_text:
+            # Replacing a non-collapsed selection in contenteditable may shorten the text.
+            return wanted in actual and (actual != before_norm or _normalize_text(selection_text) == wanted)
         if actual == before_norm:
             return False
         return wanted in actual and len(actual) >= len(before_norm) + len(wanted)
@@ -274,8 +312,10 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     cdp_session_id = entry.cdp_session_id
 
     focus_info = await _focus(session, object_id, cdp_session_id)
+    native_value = str(focus_info.get("tag") or "").lower() in {"input", "textarea"}
     before_text: str | None = None
     before_selection: tuple[int, int] | None = None
+    before_selection_text = ""
     if not clear:
         raw_before = focus_info.get("text")
         if isinstance(raw_before, str):
@@ -284,6 +324,9 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         sel_end = focus_info.get("selectionEnd")
         if isinstance(sel_start, int) and isinstance(sel_end, int):
             before_selection = (sel_start, sel_end)
+        raw_sel_text = focus_info.get("selectionText")
+        if isinstance(raw_sel_text, str):
+            before_selection_text = raw_sel_text
     if clear:
         try:
             await _clear(session, object_id, cdp_session_id)
@@ -337,13 +380,19 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         clear=clear,
         before_value=before_text,
         selection=before_selection,
+        selection_text=before_selection_text,
+        native_value=native_value,
     )
     try:
         if not matched:
             unchanged_append = (
                 not clear
                 and before_text is not None
-                and _normalize_text(state.get("text")) == _normalize_text(before_text)
+                and (
+                    _normalize_native_value(state.get("text")) == _normalize_native_value(before_text)
+                    if native_value
+                    else _normalize_text(state.get("text")) == _normalize_text(before_text)
+                )
             )
             if keypress_fallback:
                 if state.get("focused") is False:
@@ -385,6 +434,8 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         clear=clear,
         before_value=before_text,
         selection=before_selection,
+        selection_text=before_selection_text,
+        native_value=native_value,
     ):
         mismatch = True
 

@@ -476,3 +476,38 @@ def test_enter_whose_field_readback_times_out_is_uncertain(monkeypatch) -> None:
     assert "succeeded" not in text
     assert len(session.client.keys()) == 2
     assert session.successes == 0
+
+
+def test_press_key_backspace_preserves_existing_contenteditable_selection(monkeypatch) -> None:
+    """Issue #1: press_key(Backspace) on a contenteditable with 'bcd' selected deletes 'bcd' -> 'aef', not trailing 'f'."""
+    from icode_browser_use.actions import actionability
+
+    assert "hasSelection" in actionability.FOCUS_FN
+    assert "if (selection && !hasSelection)" in actionability.FOCUS_FN
+
+    session = FakeSession()
+    before_facts = {
+        "tag": "div",
+        "type": "",
+        "name": "abcdef",
+        "inForm": False,
+        "readOnly": False,
+        "checked": False,
+        "value": "",
+        "contextLength": 6,
+        "disabled": False,
+        "ariaDisabled": False,
+    }
+    after_facts = {**before_facts, "name": "aef", "contextLength": 3}
+    install(
+        monkeypatch,
+        session,
+        pages=[page(active="div", active_text="abcdef"), page(active="div", active_text="aef", mutations=1)],
+        facts=[before_facts, before_facts, after_facts],
+        focus={"focused": True, "tag": "div", "editable": True, "text": "abcdef", "selectionText": "bcd"},
+    )
+    blocks = asyncio.run(press_key.run(session, {"key": "Backspace", "target": "@e1#3"}))
+    text = blocks[0]["text"]
+    assert "effect=dom" in text
+    assert "status=succeeded" in text
+    assert [event["key"] for event in session.client.keys()] == ["Backspace", "Backspace"]
