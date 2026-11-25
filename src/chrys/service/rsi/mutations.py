@@ -107,16 +107,17 @@ def _split_blocks(text: str) -> list[str]:
     """Split *text* into paragraph blocks.
 
     Line endings are normalised first (CRLF and bare CR become LF), then any
-    line that is empty or holds only spaces/tabs separates two blocks.  Each
-    block keeps its own lines verbatim, so leading indentation survives; only
-    the blank separator lines are dropped.
+    line that is empty or holds only spaces/tabs separates two blocks.  Leading
+    indentation is preserved, but per-line trailing whitespace is dropped so a
+    block compares equal to its saved form (the YAML writer rstrips every line).
+    Only the blank separator lines are dropped.
     """
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     blocks: list[str] = []
     current: list[str] = []
     for line in lines:
         if line.strip():
-            current.append(line)
+            current.append(line.rstrip())
         elif current:
             blocks.append("\n".join(current))
             current = []
@@ -130,7 +131,8 @@ def _already_appended(base: str, addition: str) -> bool:
 
     A plain substring check drops a new instruction that happens to occur inside
     an existing one without appending anything.  Blocks are compared with their
-    internal indentation preserved; only surrounding newlines are trimmed.
+    leading indentation preserved; trailing whitespace and surrounding newlines
+    are ignored, matching how the YAML writer stores instructions.
     """
     blocks = _split_blocks(addition)
     if not blocks:
