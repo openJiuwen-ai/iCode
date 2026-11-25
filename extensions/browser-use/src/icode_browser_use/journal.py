@@ -47,8 +47,14 @@ _COLUMNS = (
     "status",
     "document_epoch",
     "evidence",
+    "target_ref",
+    "dispatch",
+    "reason",
+    "effect",
     "at",
 )
+
+_STRUCTURED_COLUMNS = ("target_ref", "dispatch", "reason", "effect")
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +90,14 @@ class Journal:
                 "action_id TEXT PRIMARY KEY, schema INTEGER NOT NULL, owner TEXT NOT NULL, "
                 "logical_session TEXT NOT NULL, generation TEXT NOT NULL, tool TEXT NOT NULL, "
                 "phase TEXT NOT NULL, status TEXT NOT NULL, document_epoch INTEGER NOT NULL, "
-                "evidence TEXT NOT NULL, at REAL NOT NULL)"
+                "evidence TEXT NOT NULL, target_ref TEXT NOT NULL DEFAULT '', "
+                "dispatch TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', "
+                "effect TEXT NOT NULL DEFAULT '', at REAL NOT NULL)"
             )
+            existing = {row[1] for row in connection.execute("PRAGMA table_info(actions)").fetchall()}
+            for column in _STRUCTURED_COLUMNS:
+                if column not in existing:
+                    connection.execute(f"ALTER TABLE actions ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             connection.commit()
             return connection
         except (sqlite3.Error, OSError) as exc:
@@ -101,6 +113,10 @@ class Journal:
         status: str,
         evidence: str,
         document_epoch: int = 0,
+        target_ref: str = "",
+        dispatch: str = "",
+        reason: str = "",
+        effect: str = "",
     ) -> None:
         connection = self._connection
         if connection is None:
@@ -108,9 +124,12 @@ class Journal:
         try:
             connection.execute(
                 "INSERT INTO actions (action_id, schema, owner, logical_session, generation, tool, "
-                "phase, status, document_epoch, evidence, at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                "phase, status, document_epoch, evidence, target_ref, dispatch, reason, effect, at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(action_id) DO UPDATE SET phase=excluded.phase, status=excluded.status, "
-                "document_epoch=excluded.document_epoch, evidence=excluded.evidence, at=excluded.at, "
+                "document_epoch=excluded.document_epoch, evidence=excluded.evidence, "
+                "target_ref=excluded.target_ref, dispatch=excluded.dispatch, "
+                "reason=excluded.reason, effect=excluded.effect, at=excluded.at, "
                 "generation=excluded.generation",
                 (
                     action_id,
@@ -123,6 +142,10 @@ class Journal:
                     status,
                     int(document_epoch),
                     evidence[:500],
+                    target_ref[:80],
+                    dispatch[:40],
+                    reason[:80],
+                    effect[:40],
                     time.time(),
                 ),
             )
@@ -202,6 +225,9 @@ class Journal:
 def describe(record: dict[str, Any]) -> str:
     """Render a record for the model, downgrading incomplete phases to uncertain."""
     payload = dict(record)
+    for column in _STRUCTURED_COLUMNS:
+        if not payload.get(column):
+            payload.pop(column, None)
     phase = str(payload.get("phase", ""))
     if phase in {PREPARED, DISPATCHED}:
         payload["status"] = "uncertain"

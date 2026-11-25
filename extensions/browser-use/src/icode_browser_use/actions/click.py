@@ -440,47 +440,38 @@ async def _locate_hit(
 def _dom_click_allowed(session: Any, entry: Any, facts: dict[str, Any], submit_like: bool) -> str | None:
     """Reason ``dispatch=dom`` is refused for this target, or None when it may proceed.
 
-    A dom click is spent permanently per ref in this document: any record whose
-    evidence carries the dom label (prepared, in flight or finished) refuses a
-    second one, and the plugin's own dom-refusal rows are skipped when finding the
-    newest page record. That record must be a finished all-occluded refusal, or an
-    ``effect=none`` mouse click on a target that is not submit-like. A record still
-    in flight (no result row), a blocked record that never sent, or a mouse click
-    that may have landed keeps the gate shut. Matching anchors on the plugin's own
-    leading text, so page text quoted in a record (a dialog message) cannot open
-    the gate.
+    Decisions read only structured journal fields (``target_ref``, ``dispatch``,
+    ``reason``, ``effect``, ``phase``, ``status``) so rewording display prose never
+    changes retry policy. Legacy rows lacking structured fields are treated
+    conservatively (never open the gate).
     """
     tag = str(facts.get("tag") or "").lower()
     role = str(facts.get("role") or "").lower()
     if tag not in _DOM_CLICK_TAGS and role != "button":
         return f"目标是 {tag or 'unknown'}（role={role or '-'}），dispatch=dom 只允许 button/a/input 或 role=button"
-    token_re = re.compile(re.escape(entry.token) + r"(?!\d)")
     rows = session.journal.rows_for("browser_click", session.page_epoch)
-    for row in rows:
-        evidence = str(row.get("evidence") or "")
-        if _DOM_USED in evidence and token_re.search(evidence):
+    target_rows = [row for row in rows if str(row.get("target_ref") or "") == entry.token]
+    for row in target_rows:
+        if str(row.get("dispatch") or "") == "dom":
             return f"dispatch=dom 对 {entry.token} 已用过一次，不要重复；请 snapshot 核对"
-    newest: dict[str, Any] | None = None
-    for row in rows:
-        evidence = str(row.get("evidence") or "")
-        if token_re.search(evidence) and not evidence.startswith(f"未点击 {entry.token}：{_DOM_REFUSED}"):
-            newest = row
-            break
+    newest = next((row for row in target_rows if str(row.get("reason") or "") != "dom_refused"), None)
     if newest is None:
         return f"本文档内尚无 {entry.token} 的 mouse 点击记录；请先用默认 dispatch=mouse 点击"
-    evidence = str(newest.get("evidence") or "")
     status = str(newest.get("status") or "")
     phase = str(newest.get("phase") or "")
+    reason = str(newest.get("reason") or "")
+    dispatch_mode = str(newest.get("dispatch") or "")
+    effect = str(newest.get("effect") or "")
     if phase != RESULT:
         return f"{entry.token} 上一次点击尚无结果记录（phase={phase}，可能已生效），不要再点击；请 snapshot 核对"
-    if status == "blocked" and evidence.startswith(f"未点击 {entry.token}：{_ALL_OCCLUDED}"):
+    if status == "blocked" and reason == "all_occluded":
         return None
-    if status == "blocked" and evidence.startswith(f"未点击 {entry.token}："):
-        first = evidence.splitlines()[0]
-        return f"{entry.token} 最近一次点击未发送（{first}），dispatch=dom 不能绕过；请先按提示处理"
-    if status == "uncertain" and evidence.startswith(f"未点击 {entry.token}：{_HIT_TEST_FAILED}"):
+    if status == "blocked" and dispatch_mode == "not_sent":
+        detail = reason or "blocked"
+        return f"{entry.token} 最近一次点击未发送（{detail}），dispatch=dom 不能绕过；请先按提示处理"
+    if status == "uncertain" and reason == "hit_test_failed":
         return f"{entry.token} 上一次命中测试失败，未发送任何事件；请重新 snapshot 后用默认 dispatch=mouse 点击"
-    if status == "uncertain" and "\neffect=none\n" in evidence:
+    if status == "uncertain" and dispatch_mode == "mouse" and effect == "none":
         if submit_like:
             return f"{entry.token} 是提交类目标，mouse 点击 effect=none 不能证明未提交，不放行 dispatch=dom；请 snapshot 核对"
         return None
@@ -544,7 +535,7 @@ async def _dispatch_click(session: Any, x: float, y: float, button: str, count: 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     baseline = await prepare_expect_baseline(session, arguments)
     outcome = await _run_click(session, arguments)
-    return await run_post_write_expect(session, arguments, baseline=baseline, action_blocks=outcome)
+    return await run_post_write_expect(session, arguments, baseline=baseline, outcome=outcome)
 
 
 async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
@@ -566,7 +557,16 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             "不要对同一 ref 重试\ndispatch=not_sent\nstatus=blocked retryable=false\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(session, action_id, "browser_click", "blocked", text)
+        record_action(
+            session,
+            action_id,
+            "browser_click",
+            "blocked",
+            text,
+            target_ref=entry.token,
+            dispatch="not_sent",
+            reason="disabled",
+        )
         return WriteOutcome(status="blocked", dispatched=False, blocks=[text_block(text)], action_id=action_id)
 
     submit_like = _is_submit_like(facts)
@@ -578,7 +578,16 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 f"未点击 {entry.token}：{_DOM_REFUSED}：{refusal}\n"
                 f"dispatch=not_sent\nstatus=blocked retryable=false\n{evidence_line(session, action_id)}"
             )
-            record_action(session, action_id, "browser_click", "blocked", text)
+            record_action(
+                session,
+                action_id,
+                "browser_click",
+                "blocked",
+                text,
+                target_ref=entry.token,
+                dispatch="not_sent",
+                reason="dom_refused",
+            )
             return WriteOutcome(status="blocked", dispatched=False, blocks=[text_block(text)], action_id=action_id)
         x = y = 0.0
         where = "dom"
@@ -590,7 +599,16 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 "dispatch=not_sent\nstatus=uncertain retryable=false\n请重新 snapshot 后再试\n"
                 f"{evidence_line(session, action_id)}"
             )
-            record_action(session, action_id, "browser_click", "uncertain", text)
+            record_action(
+                session,
+                action_id,
+                "browser_click",
+                "uncertain",
+                text,
+                target_ref=entry.token,
+                dispatch="not_sent",
+                reason="hit_test_failed",
+            )
             return WriteOutcome(status="uncertain", dispatched=False, blocks=[text_block(text)], action_id=action_id)
         if where == "occluded":
             text = (
@@ -601,7 +619,16 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 "可对同一 ref 用 dispatch=dom 重试一次\n"
                 f"{evidence_line(session, action_id)}"
             )
-            record_action(session, action_id, "browser_click", "blocked", text)
+            record_action(
+                session,
+                action_id,
+                "browser_click",
+                "blocked",
+                text,
+                target_ref=entry.token,
+                dispatch="not_sent",
+                reason="all_occluded",
+            )
             return WriteOutcome(status="blocked", dispatched=False, blocks=[text_block(text)], action_id=action_id)
     baseline_ok = True
     try:
@@ -617,6 +644,8 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         action_id,
         "browser_click",
         f"prepared click on {entry.token} ({label})",
+        target_ref=entry.token,
+        dispatch=dispatch,
     )
     dialog_seq = session.dialog_seq
     if dispatch == "dom":
@@ -641,7 +670,17 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             f"reason=dispatch_failed:{type(exc).__name__}；不要重复点击\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(session, action_id, "browser_click", "uncertain", text)
+        record_action(
+            session,
+            action_id,
+            "browser_click",
+            "uncertain",
+            text,
+            target_ref=entry.token,
+            dispatch=dispatch,
+            reason="dispatch_failed",
+            effect="unknown",
+        )
         return WriteOutcome(
             status="uncertain", dispatched=True, blocks=[text_block(text)], effect="unknown", action_id=action_id
         )
@@ -651,9 +690,21 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             action_id,
             "browser_click",
             f"click on {entry.token} is in flight; a dialog opened before it settled",
+            target_ref=entry.token,
+            dispatch=dispatch,
         )
         text = _dialog_blocked(session, entry, label, dialog, action_id)
-        record_action(session, action_id, "browser_click", "blocked", text)
+        record_action(
+            session,
+            action_id,
+            "browser_click",
+            "blocked",
+            text,
+            target_ref=entry.token,
+            dispatch=dispatch,
+            reason="dialog",
+            effect="dialog",
+        )
         return WriteOutcome(
             status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
         )
@@ -662,11 +713,23 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         action_id,
         "browser_click",
         f"dispatched click on {entry.token} ({label})",
+        target_ref=entry.token,
+        dispatch=dispatch,
     )
     effect, _ = await _settled_effect(session, cdp_session_id, before, dialog_seq)
     if effect == "dialog":
         text = _dialog_blocked(session, entry, label, session.dialog_since(dialog_seq), action_id)
-        record_action(session, action_id, "browser_click", "blocked", text)
+        record_action(
+            session,
+            action_id,
+            "browser_click",
+            "blocked",
+            text,
+            target_ref=entry.token,
+            dispatch=dispatch,
+            reason="dialog",
+            effect="dialog",
+        )
         return WriteOutcome(
             status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
         )
@@ -697,7 +760,17 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 dialog = session.dialog_since(dialog_seq)
                 if dialog is not None:
                     text = _dialog_blocked(session, entry, label, dialog, action_id)
-                    record_action(session, action_id, "browser_click", "blocked", text)
+                    record_action(
+                        session,
+                        action_id,
+                        "browser_click",
+                        "blocked",
+                        text,
+                        target_ref=entry.token,
+                        dispatch=dispatch,
+                        reason="dialog",
+                        effect="dialog",
+                    )
                     return WriteOutcome(
                         status="blocked",
                         dispatched=True,
@@ -737,7 +810,17 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     dialog = session.dialog_since(dialog_seq)
     if dialog is not None:
         text = _dialog_blocked(session, entry, label, dialog, action_id)
-        record_action(session, action_id, "browser_click", "blocked", text)
+        record_action(
+            session,
+            action_id,
+            "browser_click",
+            "blocked",
+            text,
+            target_ref=entry.token,
+            dispatch=dispatch,
+            reason="dialog",
+            effect="dialog",
+        )
         return WriteOutcome(
             status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
         )
@@ -776,5 +859,14 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 "可对同一 ref 用 dispatch=dom 重试一次"
             )
     text = "\n".join(lines)
-    record_action(session, action_id, "browser_click", status, text)
+    record_action(
+        session,
+        action_id,
+        "browser_click",
+        status,
+        text,
+        target_ref=entry.token,
+        dispatch=dispatch,
+        effect=effect,
+    )
     return WriteOutcome(status=status, dispatched=True, blocks=[text_block(text)], effect=effect, action_id=action_id)

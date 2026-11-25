@@ -1002,6 +1002,8 @@ def test_an_in_flight_click_row_keeps_dom_dispatch_shut(monkeypatch) -> None:
         status="dispatched",
         evidence="dispatched click on @e1#7 (button=left, click_count=1)",
         document_epoch=session.page_epoch,
+        target_ref="@e1#7",
+        dispatch="mouse",
     )
     calls = _install_hit_testing(monkeypatch, centres=[(10.0, 10.0)], corners=[_CORNERS], hits={}, pages=[_page()])
     text = _click(session, dispatch="dom")
@@ -1010,7 +1012,7 @@ def test_an_in_flight_click_row_keeps_dom_dispatch_shut(monkeypatch) -> None:
 
 
 def test_page_text_quoting_the_occlusion_marker_does_not_open_the_gate(monkeypatch) -> None:
-    """The occluded marker counts only as the plugin's own leading text, never inside a quoted dialog."""
+    """The occluded marker counts only as a structured reason, never inside a quoted dialog."""
     session = FakeSession()
     session.journal.record(
         action_id="dialog",
@@ -1019,6 +1021,10 @@ def test_page_text_quoting_the_occlusion_marker_does_not_open_the_gate(monkeypat
         status="blocked",
         evidence=f"已发送点击 @e1#7（button=left, click_count=1）\ndialog=alert message={click._ALL_OCCLUDED}\n对话框出现",
         document_epoch=session.page_epoch,
+        target_ref="@e1#7",
+        dispatch="mouse",
+        reason="dialog",
+        effect="dialog",
     )
     calls = _install_hit_testing(monkeypatch, centres=[(10.0, 10.0)], corners=[_CORNERS], hits={}, pages=[_page()])
     text = _click(session, dispatch="dom")
@@ -1027,7 +1033,7 @@ def test_page_text_quoting_the_occlusion_marker_does_not_open_the_gate(monkeypat
 
 
 def test_page_text_quoting_a_dom_refusal_keeps_the_newest_row(monkeypatch) -> None:
-    """Only the plugin's own refusal row (leading text) is skipped, not a landed click whose dialog quotes it."""
+    """Only a structured dom_refused row is skipped, not a landed click whose dialog quotes it."""
     session = FakeSession()
     session.journal.record(
         action_id="occluded",
@@ -1036,6 +1042,9 @@ def test_page_text_quoting_a_dom_refusal_keeps_the_newest_row(monkeypatch) -> No
         status="blocked",
         evidence=f"未点击 @e1#7：{click._ALL_OCCLUDED}，未发送任何事件",
         document_epoch=session.page_epoch,
+        target_ref="@e1#7",
+        dispatch="not_sent",
+        reason="all_occluded",
     )
     session.journal.record(
         action_id="dialog",
@@ -1047,6 +1056,10 @@ def test_page_text_quoting_a_dom_refusal_keeps_the_newest_row(monkeypatch) -> No
             f"dialog=alert message={click._DOM_REFUSED} during the click\n对话框出现"
         ),
         document_epoch=session.page_epoch,
+        target_ref="@e1#7",
+        dispatch="mouse",
+        reason="dialog",
+        effect="dialog",
     )
     calls = _install_hit_testing(monkeypatch, centres=[(10.0, 10.0)], corners=[_CORNERS], hits={}, pages=[_page()])
     text = _click(session, dispatch="dom")
@@ -1080,6 +1093,8 @@ def test_a_dom_dispatch_that_never_recorded_a_result_stays_spent(monkeypatch) ->
         status="dispatched",
         evidence="dispatched click on @e1#7 (button=left, click_count=1, dispatch=dom)",
         document_epoch=session.page_epoch,
+        target_ref="@e1#7",
+        dispatch="dom",
     )
     session.journal.record(
         action_id="occluded-later",
@@ -1088,6 +1103,9 @@ def test_a_dom_dispatch_that_never_recorded_a_result_stays_spent(monkeypatch) ->
         status="blocked",
         evidence=f"未点击 @e1#7：{click._ALL_OCCLUDED}，未发送任何事件",
         document_epoch=session.page_epoch,
+        target_ref="@e1#7",
+        dispatch="not_sent",
+        reason="all_occluded",
     )
     calls = _install_hit_testing(monkeypatch, centres=[(10.0, 10.0)], corners=[_CORNERS], hits={}, pages=[_page()])
     text = _click(session, dispatch="dom")
@@ -1104,6 +1122,9 @@ def test_a_blocked_click_that_never_sent_is_not_reported_as_landed(monkeypatch) 
         status="blocked",
         evidence="未点击 @e1#7：目标处于 disabled 状态",
         document_epoch=session.page_epoch,
+        target_ref="@e1#7",
+        dispatch="not_sent",
+        reason="disabled",
     )
     calls = _install_hit_testing(monkeypatch, centres=[(10.0, 10.0)], corners=[_CORNERS], hits={}, pages=[_page()])
     text = _click(session, dispatch="dom")

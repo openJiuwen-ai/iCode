@@ -37,7 +37,10 @@ def test_urls_and_compound_secret_keys_in_text_are_scrubbed():
         "status code: 404 for user 7",
     ):
         page.console("t", _console("error", {"type": "string", "value": value}))
-    page.exception("t", {"exceptionDetails": {"exception": {"description": "Error: x\n at f (https://cdn.example/a.js?sig=S6:1:2)"}}})
+    page.exception(
+        "t",
+        {"exceptionDetails": {"exception": {"description": "Error: x\n at f (https://cdn.example/a.js?sig=S6:1:2)"}}},
+    )
     texts = [scrub(entry.text) for entry in page.entries("t")]
     assert not any(secret in text for text in texts for secret in ("S1", "S2", "S3", "S4", "S5", "S6"))
     assert texts[0] == "console.error: callback failed https://idp.example/cb?…"
@@ -66,15 +69,30 @@ def test_network_keeps_api_calls_http_errors_and_real_failures():
         ("5", "GET", "https://ads.test/x.js"),
     ):
         log.request("t", {"requestId": request_id, "request": {"method": method, "url": url}})
-    log.response("t", {"requestId": "1", "type": "Stylesheet", "response": {"status": 200, "url": "https://example.com/app.css"}})
-    log.response("t", {"requestId": "2", "type": "Fetch", "response": {"status": 201, "url": "https://example.com/api/items?token=x"}})
-    log.response("t", {"requestId": "3", "type": "Image", "response": {"status": 404, "url": "https://example.com/missing.png"}})
+    log.response(
+        "t", {"requestId": "1", "type": "Stylesheet", "response": {"status": 200, "url": "https://example.com/app.css"}}
+    )
+    log.response(
+        "t",
+        {
+            "requestId": "2",
+            "type": "Fetch",
+            "response": {"status": 201, "url": "https://example.com/api/items?token=x"},
+        },
+    )
+    log.response(
+        "t", {"requestId": "3", "type": "Image", "response": {"status": 404, "url": "https://example.com/missing.png"}}
+    )
     log.failed("t", {"requestId": "4", "errorText": "net::ERR_ABORTED", "canceled": True})
     log.failed("t", {"requestId": "5", "errorText": "net::ERR_FAILED", "blockedReason": "inspector"})
     assert [(e.level, e.text, e.url) for e in log.entries("t")] == [
         ("info", "POST 201", "https://example.com/api/items"),
         ("warning", "GET 404", "https://example.com/missing.png"),
-        ("error", "GET FAILED blocked by the allow-list (ICODE_BROWSER_ALLOWED_DOMAINS/ORIGINS)", "https://ads.test/x.js"),
+        (
+            "error",
+            "GET FAILED blocked by the allow-list (ICODE_BROWSER_ALLOWED_DOMAINS/ORIGINS)",
+            "https://ads.test/x.js",
+        ),
     ]
     assert [e.text for e in log.entries("t", errors_only=True)] == [
         "GET 404",
@@ -101,7 +119,7 @@ def test_session_records_owned_pages_only():
     async def run():
         session = BrowserSession(BrowserConfig(allowed_domains=("example.com",)))
         session._record_page("tab-1", "s-1", opener_id=None)
-        session._oopif_page["frame-s"] = "tab-1"
+        session.register_oopif("frame-s", "target-if", page_target_id="tab-1")
         handler = session._log_handler(session.page_log.console)
         message = _console("error", {"type": "string", "value": "boom"})
         await handler(message, "s-1")
@@ -118,7 +136,9 @@ def test_tool_renders_cursor_quoted_text_and_trimmed_urls():
     log = PageLog()
     log.console("tab", _console("error", {"type": "string", "value": 'say "hi"'}))
     log.request("tab", {"requestId": "9", "request": {"method": "GET", "url": "https://example.com/a?secret=1"}})
-    log.response("tab", {"requestId": "9", "type": "XHR", "response": {"status": 500, "url": "https://example.com/a?secret=1"}})
+    log.response(
+        "tab", {"requestId": "9", "type": "XHR", "response": {"status": 500, "url": "https://example.com/a?secret=1"}}
+    )
     session = SimpleNamespace(page_log=log, target_id="tab")
     arguments = {"kind": "all", "errors_only": False, "since": 0, "limit": 1}
     text = asyncio.run(logs.run(session, arguments))[0]["text"]
@@ -137,17 +157,29 @@ def test_tool_renders_cursor_quoted_text_and_trimmed_urls():
 def test_hostile_page_text_costs_little_per_event_and_to_read():
     import time
 
-    hostile = ("ws://" * 800, "a." * 2000, "a-" * 2000, ("a." * 19 + "token ") * 90, "token" * 20000, "x" * 4000, "https://a:" * 400, "?a=" * 1000, "Bearer " * 600, "\"" * 4000)
+    hostile = (
+        "ws://" * 800,
+        "a." * 2000,
+        "a-" * 2000,
+        ("a." * 19 + "token ") * 90,
+        "token" * 20000,
+        "x" * 4000,
+        "https://a:" * 400,
+        "?a=" * 1000,
+        "Bearer " * 600,
+        '"' * 4000,
+    )
     log = PageLog()
     started = time.perf_counter()
     for text in hostile * 20:
         log.console("t", _console("error", {"type": "string", "value": text}))
     per_event = (time.perf_counter() - started) / (len(hostile) * 20)
     assert per_event < 0.0005, f"{per_event * 1000:.2f} ms per event"
-    for entry in log.entries("t")[-len(hostile):]:
+    for entry in log.entries("t")[-len(hostile) :]:
         started = time.perf_counter()
         scrub(entry.text)
         assert time.perf_counter() - started < 0.005, entry.text[:20]
+
 
 def test_urls_are_stored_short_without_credentials_or_payloads():
     log = PageLog()
@@ -166,6 +198,7 @@ def test_urls_are_stored_short_without_credentials_or_payloads():
     assert urls[1] == "https://example.com:8443/a/b"
     assert len(urls[2]) <= 300 and urls[2].startswith("https://example.com/ppp")
 
+
 def test_logs_hint_is_truthful_and_a_cursor_from_a_reset_log_is_not_silent():
     log = PageLog()
     for index in range(3):
@@ -178,6 +211,7 @@ def test_logs_hint_is_truthful_and_a_cursor_from_a_reset_log_is_not_silent():
     text = asyncio.run(logs.run(session, {**arguments, "since": 99, "limit": 30}))[0]["text"]
     assert "since=99 大于当前 cursor 3" in text
     assert "m0" in text and "m2" in text
+
 
 def test_json_secrets_and_relative_url_queries_are_masked():
     cases = {
@@ -192,14 +226,20 @@ def test_json_secrets_and_relative_url_queries_are_masked():
     for benign in ("status code: 404 for user 7", "3 tokens left", "is it ok? yes"):
         assert scrub(benign) == benign
 
+
 def test_finished_requests_do_not_push_out_a_slow_one():
     log = PageLog()
     log.request("t", {"requestId": "slow", "request": {"method": "POST", "url": "https://example.com/api/slow"}})
     for index in range(600):
-        log.request("t", {"requestId": str(index), "request": {"method": "GET", "url": f"https://example.com/i{index}.png"}})
+        log.request(
+            "t", {"requestId": str(index), "request": {"method": "GET", "url": f"https://example.com/i{index}.png"}}
+        )
         log.response("t", {"requestId": str(index), "type": "Image", "response": {"status": 200}})
-    log.response("t", {"requestId": "slow", "type": "Fetch", "response": {"status": 200, "url": "https://example.com/api/slow"}})
+    log.response(
+        "t", {"requestId": "slow", "type": "Fetch", "response": {"status": 200, "url": "https://example.com/api/slow"}}
+    )
     assert [entry.text for entry in log.entries("t")] == ["POST 200"]
+
 
 def test_more_credential_shapes_are_masked_and_stack_positions_survive():
     leaks = {
@@ -217,6 +257,7 @@ def test_more_credential_shapes_are_masked_and_stack_positions_survive():
     for benign in ("is it ok? yes", "consider: inside=3 outside=4", "visit https://example.com/a?b"):
         assert scrub(benign) == benign
 
+
 def test_short_urls_drop_path_parameters_and_keep_ipv6_hosts():
     from icode_browser_use.page_log import _short_url
 
@@ -224,6 +265,7 @@ def test_short_urls_drop_path_parameters_and_keep_ipv6_hosts():
     assert _short_url("http://[::1]:8080/a") == "http://[::1]:8080/a"
     assert _short_url("http://[zz/a") == "http:"
     assert _short_url("https://user:pw@example.com:8443/a/b?x=1") == "https://example.com:8443/a/b"
+
 
 def test_a_restarted_browser_does_not_show_the_previous_run_s_logs():
     from icode_browser_use.config import BrowserConfig
@@ -237,6 +279,7 @@ def test_a_restarted_browser_does_not_show_the_previous_run_s_logs():
     session.page_log.console("7", _console("error", {"type": "string", "value": "new run"}))
     assert [entry.seq for entry in session.page_log.entries("7", since=cursor)] == [cursor + 1]
 
+
 def test_a_cursor_older_than_the_buffer_reports_the_gap():
     log = PageLog()
     log.console("tab", _console("log", {"type": "string", "value": "first"}))
@@ -244,16 +287,22 @@ def test_a_cursor_older_than_the_buffer_reports_the_gap():
     for index in range(MAX_ENTRIES + 5):
         log.console("other", _console("log", {"type": "string", "value": f"noise {index}"}))
     session = SimpleNamespace(page_log=log, target_id="tab")
-    text = asyncio.run(logs.run(session, {"kind": "all", "errors_only": False, "since": cursor, "limit": 30}))[0]["text"]
+    text = asyncio.run(logs.run(session, {"kind": "all", "errors_only": False, "since": cursor, "limit": 30}))[0][
+        "text"
+    ]
     assert "已不在缓冲区" in text and f"#{log.seq - MAX_ENTRIES + 1}" in text
+
 
 def test_a_reduced_document_response_is_left_to_the_full_one():
     log = PageLog()
     log.request("t", {"requestId": "9", "request": {"method": "GET", "url": "https://example.com/missing"}})
     log.response("t", {"requestId": "9", "type": "Document", "response": {"status": 404}})  # bridge status copy
     assert log.entries("t") == []
-    log.response("t", {"requestId": "9", "type": "Document", "response": {"status": 404, "url": "https://example.com/missing"}})
+    log.response(
+        "t", {"requestId": "9", "type": "Document", "response": {"status": 404, "url": "https://example.com/missing"}}
+    )
     assert [(entry.text, entry.url) for entry in log.entries("t")] == [("GET 404", "https://example.com/missing")]
+
 
 def _session_with_client(capabilities):
     from icode_browser_use.config import BrowserConfig
@@ -283,10 +332,12 @@ def test_a_gating_extension_and_direct_cdp_collect_page_logs():
         _session, methods = _session_with_client(capabilities)
         assert "Runtime.consoleAPICalled" in methods
 
+
 def test_a_page_built_method_name_is_stored_bounded():
     log = PageLog()
     log.request("t", {"requestId": "1", "request": {"method": "M" * 100_000, "url": "https://example.com/a"}})
     assert all(len(method) <= 32 for method, _url in log._requests.values())
+
 
 def test_usernames_as_tokens_and_short_secret_keys_are_masked():
     for text, secret in {
@@ -299,3 +350,19 @@ def test_usernames_as_tokens_and_short_secret_keys_are_masked():
         assert secret not in scrub(text), text
     for benign in ("author=Ann sessions=3", "https://example.com/a@b", "mail me at a@b.c"):
         assert scrub(benign) == benign
+
+
+def test_tabs_downloads_and_page_log_share_url_sanitization():
+    from icode_browser_use.actions._shared import display_url as tab_display_url
+    from icode_browser_use.downloads import display_url as download_display_url
+    from icode_browser_use.page_log import _short_url
+
+    raw = "https://alice:topsecret@example.com:8443/files/report.pdf;jsessionid=S1?token=T1#frag"
+    expected = "https://example.com:8443/files/report.pdf"
+    for fn in (tab_display_url, download_display_url, _short_url):
+        rendered = fn(raw)
+        assert rendered == expected
+        assert "alice" not in rendered and "topsecret" not in rendered
+        assert "S1" not in rendered and "T1" not in rendered and "frag" not in rendered
+    for fn in (tab_display_url, download_display_url, _short_url):
+        assert fn("data:text/html;base64,PHNjcmlwdD5zZWNyZXQ8L3NjcmlwdD4=") == "data:"

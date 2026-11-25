@@ -15,7 +15,6 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 #: Longest file name (not path) kept; Chrome's own limit is larger but this
 #: leaves room for a ``-12`` suffix.
@@ -110,9 +109,10 @@ def reserve_path(directory: Path, name: str) -> Path:
 
 
 def display_url(url: str, limit: int = 200) -> str:
-    """Origin+path view of a download URL: query strings may carry tokens."""
-    parts = urlsplit(url or "")
-    value = f"{parts.scheme}://{parts.netloc}{parts.path}" if parts.scheme and parts.netloc else (url or "")
+    """Origin+path view of a download URL with credentials, ``;params`` and query stripped."""
+    from .policy import sanitize_display_url
+
+    value = sanitize_display_url(url)
     if len(value) > limit:
         value = value[:limit] + f"… (+{len(value) - limit} chars)"
     return value

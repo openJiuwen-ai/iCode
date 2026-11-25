@@ -381,30 +381,109 @@ def evidence_line(session: Any, action_id: str) -> str:
     return f"action_id={action_id} document_epoch={getattr(session, 'page_epoch', 0)}"
 
 
-def _write(session: Any, action_id: str, tool: str, phase: str, status: str, evidence: str) -> None:
-    session.journal.record(
-        action_id=action_id,
-        tool=tool,
-        phase=phase,
-        status=status,
-        evidence=evidence,
-        document_epoch=int(getattr(session, "page_epoch", 0)),
+def _write(
+    session: Any,
+    action_id: str,
+    tool: str,
+    phase: str,
+    status: str,
+    evidence: str,
+    *,
+    target_ref: str = "",
+    dispatch: str = "",
+    reason: str = "",
+    effect: str = "",
+) -> None:
+    kwargs: dict[str, Any] = {
+        "action_id": action_id,
+        "tool": tool,
+        "phase": phase,
+        "status": status,
+        "evidence": evidence,
+        "document_epoch": int(getattr(session, "page_epoch", 0)),
+    }
+    if target_ref or dispatch or reason or effect:
+        kwargs.update(target_ref=target_ref, dispatch=dispatch, reason=reason, effect=effect)
+    session.journal.record(**kwargs)
+
+
+def prepare_action(
+    session: Any,
+    action_id: str,
+    tool: str,
+    evidence: str,
+    *,
+    target_ref: str = "",
+    dispatch: str = "",
+    reason: str = "",
+    effect: str = "",
+) -> None:
+    """Record ``prepared`` before anything is sent, so a crash is distinguishable."""
+    _write(
+        session,
+        action_id,
+        tool,
+        PREPARED,
+        "prepared",
+        evidence,
+        target_ref=target_ref,
+        dispatch=dispatch,
+        reason=reason,
+        effect=effect,
     )
 
 
-def prepare_action(session: Any, action_id: str, tool: str, evidence: str) -> None:
-    """Record ``prepared`` before anything is sent, so a crash is distinguishable."""
-    _write(session, action_id, tool, PREPARED, "prepared", evidence)
-
-
-def mark_dispatched(session: Any, action_id: str, tool: str, evidence: str) -> None:
+def mark_dispatched(
+    session: Any,
+    action_id: str,
+    tool: str,
+    evidence: str,
+    *,
+    target_ref: str = "",
+    dispatch: str = "",
+    reason: str = "",
+    effect: str = "",
+) -> None:
     """Record ``dispatched`` once the send boundary returned: the action may have taken effect."""
-    _write(session, action_id, tool, DISPATCHED, "dispatched", evidence)
+    _write(
+        session,
+        action_id,
+        tool,
+        DISPATCHED,
+        "dispatched",
+        evidence,
+        target_ref=target_ref,
+        dispatch=dispatch,
+        reason=reason,
+        effect=effect,
+    )
 
 
-def record_action(session: Any, action_id: str, tool: str, status: str, evidence: str) -> None:
+def record_action(
+    session: Any,
+    action_id: str,
+    tool: str,
+    status: str,
+    evidence: str,
+    *,
+    target_ref: str = "",
+    dispatch: str = "",
+    reason: str = "",
+    effect: str = "",
+) -> None:
     """Record the verified outcome (``succeeded`` / ``blocked`` / ``uncertain``)."""
-    _write(session, action_id, tool, RESULT, status, evidence)
+    _write(
+        session,
+        action_id,
+        tool,
+        RESULT,
+        status,
+        evidence,
+        target_ref=target_ref,
+        dispatch=dispatch,
+        reason=reason,
+        effect=effect,
+    )
 
 
 def lookup_action(session: Any, action_id: str) -> dict[str, Any] | None:

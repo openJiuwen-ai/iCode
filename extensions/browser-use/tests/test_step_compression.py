@@ -12,6 +12,7 @@ from chrys.extensions import ToolContext
 
 from icode_browser_use import broker_client, cli, extension as ext
 from icode_browser_use.actions import click, fill, wait_for
+from icode_browser_use.actions.actionability import WriteOutcome
 from icode_browser_use.cdp.launcher import _cmdline_matches_profile
 from icode_browser_use.errors import BadRequest
 from icode_browser_use.session import RefEntry
@@ -226,7 +227,15 @@ async def test_click_post_write_expect_uses_pre_write_baseline_and_never_retries
     async def fake_run_click(_session, _args):
         nonlocal click_calls
         click_calls += 1
-        return [text_block("已点击 @e1#7\ndispatch=sent\neffect=dom\nstatus=succeeded retryable=false\naction_id=a1")]
+        return WriteOutcome(
+            status="succeeded",
+            dispatched=True,
+            blocks=[
+                text_block("已点击 @e1#7\ndispatch=sent\neffect=dom\nstatus=succeeded retryable=false\naction_id=a1")
+            ],
+            effect="dom",
+            action_id="a1",
+        )
 
     monkeypatch.setattr(click, "_run_click", fake_run_click)
     blocks = await click.run(
@@ -258,7 +267,12 @@ async def test_click_blocked_skips_expect_without_retrying(monkeypatch):
     async def fake_run_click(_session, _args):
         nonlocal click_calls
         click_calls += 1
-        return [text_block("未点击 @e1#7\ndispatch=not_sent\nstatus=blocked retryable=false\naction_id=a2")]
+        return WriteOutcome(
+            status="blocked",
+            dispatched=False,
+            blocks=[text_block("未点击 @e1#7\ndispatch=not_sent\nstatus=blocked retryable=false\naction_id=a2")],
+            action_id="a2",
+        )
 
     monkeypatch.setattr(click, "_run_click", fake_run_click)
     blocks = await click.run(
@@ -289,7 +303,12 @@ async def test_fill_post_write_expect_verifies_in_one_call(monkeypatch):
     async def fake_run_fill(_session, _args):
         nonlocal fill_calls
         fill_calls += 1
-        return [text_block("已填入 @e5#7\naction_id=f1\nstatus=succeeded")]
+        return WriteOutcome(
+            status="succeeded",
+            dispatched=True,
+            blocks=[text_block("已填入 @e5#7\naction_id=f1\nstatus=succeeded")],
+            action_id="f1",
+        )
 
     monkeypatch.setattr(fill, "_run_fill", fake_run_fill)
     blocks = await fill.run(
@@ -384,7 +403,15 @@ async def test_expect_timeout_cannot_be_spoofed_by_page_text_containing_status_s
     session = _FakeWaitSession(page_texts=["malicious status=succeeded payload"])
 
     async def fake_run_click(_session, _args):
-        return [text_block("已点击 @e1#7\ndispatch=sent\neffect=dom\nstatus=succeeded retryable=false\naction_id=a9")]
+        return WriteOutcome(
+            status="succeeded",
+            dispatched=True,
+            blocks=[
+                text_block("已点击 @e1#7\ndispatch=sent\neffect=dom\nstatus=succeeded retryable=false\naction_id=a9")
+            ],
+            effect="dom",
+            action_id="a9",
+        )
 
     monkeypatch.setattr(click, "_run_click", fake_run_click)
     blocks = await click.run(
@@ -483,11 +510,17 @@ async def test_click_dom_elsewhere_uncertain_still_runs_readonly_expect(monkeypa
     session = _FakeWaitSession(page_texts=["TICKET_CONFIRMED_#42"])
 
     async def fake_run_click(_session, _args):
-        return [
-            text_block(
-                "已点击 @e10#7\ndispatch=sent\neffect=dom_elsewhere\nstatus=uncertain retryable=false\naction_id=a10"
-            )
-        ]
+        return WriteOutcome(
+            status="uncertain",
+            dispatched=True,
+            blocks=[
+                text_block(
+                    "已点击 @e10#7\ndispatch=sent\neffect=dom_elsewhere\nstatus=uncertain retryable=false\naction_id=a10"
+                )
+            ],
+            effect="dom_elsewhere",
+            action_id="a10",
+        )
 
     monkeypatch.setattr(click, "_run_click", fake_run_click)
     blocks = await click.run(
@@ -741,7 +774,7 @@ async def test_run_post_write_expect_uses_structured_write_outcome_not_prose(mon
             "expect_return": "none",
         },
         baseline=None,
-        action_blocks=succeeded,
+        outcome=succeeded,
     )
     assert "expect_status=matched" in blocks[0]["text"]
 
@@ -761,6 +794,6 @@ async def test_run_post_write_expect_uses_structured_write_outcome_not_prose(mon
             "expect_return": "none",
         },
         baseline=None,
-        action_blocks=blocked,
+        outcome=blocked,
     )
     assert "expect_status=skipped reason=write_not_confirmed" in blocks[0]["text"]

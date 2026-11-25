@@ -149,6 +149,28 @@ def canonical_origin(url: str) -> str:
     return f"{scheme}://{host}:{effective_port}"
 
 
+def sanitize_display_url(url: str) -> str:
+    """Origin+path view of a URL with credentials, ``;params``, query and fragment stripped.
+
+    Hierarchical URLs keep ``scheme://host[:port]/path`` (preserving IPv6 brackets and any
+    explicit port, never ``user:pass@``); non-hierarchical schemes (``data:``, ``blob:``,
+    ``about:``) return only ``scheme:`` so embedded payloads never leak. Callers apply
+    their own length limit and truncation suffix.
+    """
+    raw = url or ""
+    try:
+        parts = urlsplit(raw)
+    except ValueError:  # e.g. an unterminated IPv6 literal in a page-built URL
+        return (raw.partition(":")[0] + ":") if ":" in raw else ""
+    if not parts.scheme:
+        return ""
+    if not parts.netloc:
+        return f"{parts.scheme}:"
+    host = parts.netloc.rpartition("@")[2]
+    path = parts.path.partition(";")[0]
+    return f"{parts.scheme}://{host}{path}"
+
+
 def origin_allowed(allowed_origins: tuple[str, ...], url: str) -> bool:
     """True when *url*'s origin is explicitly authorised for local development."""
     if not allowed_origins:

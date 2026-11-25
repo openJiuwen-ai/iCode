@@ -60,8 +60,7 @@ def test_ensure_oopif_domains_caches_per_session_and_invalidates_on_detach_or_di
     session = BrowserSession(BrowserConfig(allowed_domains=("example.com",)))
     client = FakeClient()
     session._client = client
-    session._oopif_sessions["child-1"] = "target-if-1"
-    session._oopif_parents["child-1"] = None
+    session.register_oopif("child-1", "target-if-1")
 
     async def scenario() -> None:
         await ensure_oopif_domains(session, "child-1")
@@ -72,7 +71,7 @@ def test_ensure_oopif_domains_caches_per_session_and_invalidates_on_detach_or_di
 
         # Detaching invalidates the cache so a re-attached session re-initializes.
         session._forget_oopif("child-1")
-        session._oopif_sessions["child-1"] = "target-if-1"
+        session.register_oopif("child-1", "target-if-1")
         await ensure_oopif_domains(session, "child-1")
         assert len(client.calls) == 8
 
@@ -108,8 +107,8 @@ def test_resolve_oopif_offset_sums_live_nested_chain() -> None:
     session = BrowserSession(BrowserConfig(allowed_domains=("example.com",)))
     session._client = ChainClient()
     session._session_id = "main"
-    session._oopif_sessions = {"outer": "t-outer", "inner": "t-inner"}
-    session._oopif_parents = {"outer": None, "inner": "outer"}
+    session.register_oopif("outer", "t-outer")
+    session.register_oopif("inner", "t-inner", parent_session_id="outer")
     session.set_oopif_offset("inner", (999.0, 999.0))  # stale pre-scroll cache
 
     offset = asyncio.run(resolve_oopif_offset(session, "inner"))
@@ -166,8 +165,7 @@ def test_scrolled_oopif_click_and_hover_use_post_scroll_live_offset() -> None:
         session._session_id = "main"
         session._target_id = "t1"
         session._journal = Journal(None)
-        session._oopif_sessions = {"oopif-1": "target-if"}
-        session._oopif_parents = {"oopif-1": None}
+        session.register_oopif("oopif-1", "target-if")
         session.set_oopif_offset("oopif-1", (30.0, 1200.0))  # stale pre-scroll offset
         entry = SimpleNamespace(
             token="@e1#1",

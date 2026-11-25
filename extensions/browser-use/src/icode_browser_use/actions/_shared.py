@@ -113,13 +113,10 @@ def truncate_chars(text: str, limit: int) -> str:
 
 
 def display_url(url: str, limit: int = 200) -> str:
-    """An origin+path view of *url* for model-visible listings (query stripped)."""
-    parts = urlsplit(url or "")
-    if parts.scheme and parts.netloc:
-        value = f"{parts.scheme}://{parts.netloc}{parts.path}"
-    else:
-        value = url or ""
-    return truncate_chars(value, limit)
+    """An origin+path view of *url* for model-visible listings (credentials, ``;params`` and query stripped)."""
+    from ..policy import sanitize_display_url
+
+    return truncate_chars(sanitize_display_url(url), limit)
 
 
 def stats_line(session: Any, nodes: list[Any]) -> str:

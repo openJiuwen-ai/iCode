@@ -190,6 +190,24 @@ class PageInfo:
     active: bool | None = None
 
 
+@dataclass
+class _OopifState:
+    """Lifecycle and cached CDP state for one attached out-of-process iframe session."""
+
+    target_id: str
+    parent_session_id: str | None = None
+    page_target_id: str = ""
+    offset: tuple[float, float] = (0.0, 0.0)
+    enabled: bool = False
+    frame_id: str = ""
+
+    def clear_connection_cache(self) -> None:
+        """Drop per-connection caches on temporary disconnect while keeping topology."""
+        self.offset = (0.0, 0.0)
+        self.enabled = False
+        self.frame_id = ""
+
+
 class BrowserSession:
     """Per-process browser session; lazily starts Chrome on the first action."""
 
@@ -234,8 +252,8 @@ class BrowserSession:
         #: Owned pages: the tab this handle created plus popups it opened.
         self._pages: dict[str, PageState] = {}
         self._page_order: list[str] = []
-        #: CDP session -> owning page target, so OOPIF fusion stays page-scoped.
-        self._oopif_page: dict[str, str] = {}
+        #: Attached out-of-process iframes keyed by child CDP session id.
+        self._oopifs: dict[str, _OopifState] = {}
         #: Duplicate sessions Chrome auto-attached to a tab we already drive.
         self._duplicate_sessions: dict[str, str] = {}
         #: Page targets opened by someone else (user, extension): detached, never closed.
@@ -248,11 +266,6 @@ class BrowserSession:
         self._ref_map: dict[int, RefEntry] = {}
         self._next_index = 1
         self._snapshot = SnapshotState()
-        self._oopif_sessions: dict[str, str] = {}
-        self._oopif_parents: dict[str, str | None] = {}
-        self._oopif_offsets: dict[str, tuple[float, float]] = {}
-        self._oopif_enabled: set[str] = set()
-        self._oopif_frame_ids: dict[str, str] = {}
         self._dirty = False
         self._probe_seen: int | None = None
         self._probe_script_id: str = ""
@@ -395,53 +408,84 @@ class BrowserSession:
         loader = self._frame_loader.get(self._main_frame_id, "")
         return self._document_status.get((self._session_id, self._main_frame_id, loader))
 
+    def register_oopif(
+        self,
+        cdp_session_id: str,
+        target_id: str = "",
+        *,
+        parent_session_id: str | None = None,
+        page_target_id: str = "",
+    ) -> None:
+        """Record an attached OOPIF session and its parent/page topology."""
+        self._oopifs[cdp_session_id] = _OopifState(
+            target_id=target_id,
+            parent_session_id=parent_session_id,
+            page_target_id=page_target_id,
+        )
+
     @property
     def oopif_sessions(self) -> list[str]:
         """CDP sessions of currently attached out-of-process iframes."""
-        return list(self._oopif_sessions)
+        return list(self._oopifs)
 
     def oopif_parent(self, cdp_session_id: str) -> str | None:
         """The parent OOPIF session, or None when the frame is a direct child of the page."""
-        return self._oopif_parents.get(cdp_session_id)
+        state = self._oopifs.get(cdp_session_id)
+        return state.parent_session_id if state is not None else None
 
     def oopif_children(self, cdp_session_id: str | None) -> list[str]:
         """Direct OOPIF children of *cdp_session_id* (None means the current page's main frame)."""
         if cdp_session_id is not None:
-            return [child for child, parent in self._oopif_parents.items() if parent == cdp_session_id]
+            return [child for child, state in self._oopifs.items() if state.parent_session_id == cdp_session_id]
         # Unmapped children only occur before a page session is known (startup/tests).
         return [
             child
-            for child, parent in self._oopif_parents.items()
-            if parent is None and self._oopif_page.get(child, "") in {self._target_id, ""}
+            for child, state in self._oopifs.items()
+            if state.parent_session_id is None and state.page_target_id in {self._target_id, ""}
         ]
 
     def set_oopif_offset(self, cdp_session_id: str, offset: tuple[float, float]) -> None:
         """Remember an OOPIF's iframe-origin in the parent viewport."""
-        self._oopif_offsets[cdp_session_id] = offset
+        state = self._oopifs.get(cdp_session_id)
+        if state is None:
+            state = _OopifState(target_id="")
+            self._oopifs[cdp_session_id] = state
+        state.offset = offset
 
     def oopif_offset(self, cdp_session_id: str | None) -> tuple[float, float]:
         """The parent-viewport offset of an OOPIF, or ``(0, 0)`` for the main frame."""
         if not cdp_session_id:
             return (0.0, 0.0)
-        return self._oopif_offsets.get(cdp_session_id, (0.0, 0.0))
+        state = self._oopifs.get(cdp_session_id)
+        return state.offset if state is not None else (0.0, 0.0)
 
     def is_oopif_enabled(self, cdp_session_id: str) -> bool:
         """Whether CDP domains have been enabled for this attached OOPIF session."""
-        return cdp_session_id in self._oopif_enabled
+        state = self._oopifs.get(cdp_session_id)
+        return state.enabled if state is not None else False
 
     def mark_oopif_enabled(self, cdp_session_id: str) -> None:
         """Remember that CDP domains are enabled on *cdp_session_id* until detach or reconnect."""
-        if not self._oopif_sessions or cdp_session_id in self._oopif_sessions:
-            self._oopif_enabled.add(cdp_session_id)
+        state = self._oopifs.get(cdp_session_id)
+        if state is not None:
+            state.enabled = True
+        elif not self._oopifs:
+            self._oopifs[cdp_session_id] = _OopifState(target_id="", enabled=True)
 
     def oopif_frame_id(self, cdp_session_id: str) -> str:
         """Cached root frameId for an attached OOPIF session, or empty when unknown."""
-        return self._oopif_frame_ids.get(cdp_session_id, "")
+        state = self._oopifs.get(cdp_session_id)
+        return state.frame_id if state is not None else ""
 
     def set_oopif_frame_id(self, cdp_session_id: str, frame_id: str) -> None:
         """Remember the root frameId of an attached OOPIF session."""
-        if frame_id and (not self._oopif_sessions or cdp_session_id in self._oopif_sessions):
-            self._oopif_frame_ids[cdp_session_id] = frame_id
+        if not frame_id:
+            return
+        state = self._oopifs.get(cdp_session_id)
+        if state is not None:
+            state.frame_id = frame_id
+        elif not self._oopifs:
+            self._oopifs[cdp_session_id] = _OopifState(target_id="", frame_id=frame_id)
 
     # ------------------------------------------------------------------ pages
 
@@ -809,7 +853,8 @@ class BrowserSession:
             return page.target_id
         if session_id in self._duplicate_sessions:
             return self._duplicate_sessions[session_id]
-        return self._oopif_page.get(session_id)
+        state = self._oopifs.get(session_id)
+        return state.page_target_id or None if state is not None else None
 
     def _owns_session(self, target_id: str, session_id: str) -> bool:
         """Whether *session_id* is the session this handle drives *target_id* on."""
@@ -824,7 +869,7 @@ class BrowserSession:
         self._page_order = [item for item in self._page_order if item != target_id]
         for session_id in [s for s, target in self._duplicate_sessions.items() if target == target_id]:
             self._duplicate_sessions.pop(session_id, None)
-        for session_id in [s for s in self._oopif_sessions if self._oopif_page.get(s) == target_id]:
+        for session_id in [s for s, state in self._oopifs.items() if state.page_target_id == target_id]:
             self._forget_oopif(session_id)
         self._timeouts.pop(target_id, None)
         for key in [item for item in self._document_status if item[0] == page.session_id]:
@@ -924,15 +969,10 @@ class BrowserSession:
         self._main_frame_id = ""
         self._pages.clear()
         self._page_order.clear()
-        self._oopif_page.clear()
+        self._oopifs.clear()
         self._duplicate_sessions.clear()
         self._foreign_targets.clear()
         self._opening_page = False
-        self._oopif_sessions.clear()
-        self._oopif_parents.clear()
-        self._oopif_offsets.clear()
-        self._oopif_enabled.clear()
-        self._oopif_frame_ids.clear()
         self._cancel_dialog_task()
         self._dialog = None
         self._last_dialog = None
@@ -974,9 +1014,8 @@ class BrowserSession:
         self._state = "failed"
         self._client = None
         self._targets = None
-        self._oopif_enabled.clear()
-        self._oopif_frame_ids.clear()
-        self._oopif_offsets.clear()
+        for state in self._oopifs.values():
+            state.clear_connection_cache()
         if self._child is None:
             self._release_lock()
 
@@ -1882,12 +1921,9 @@ class BrowserSession:
         target_id = str(info.get("targetId", ""))
         target_type = info.get("type")
         if target_type == "iframe" and child_session:
-            self._oopif_sessions[child_session] = target_id
-            parent = session_id if session_id in self._oopif_sessions else None
-            self._oopif_parents[child_session] = parent
-            owner = self._page_target_for_session(session_id)
-            if owner is not None:
-                self._oopif_page[child_session] = owner
+            parent = session_id if session_id in self._oopifs else None
+            owner = self._page_target_for_session(session_id) or ""
+            self.register_oopif(child_session, target_id, parent_session_id=parent, page_target_id=owner)
             return
         if target_type != "page" or not child_session or not target_id:
             return
@@ -1958,7 +1994,7 @@ class BrowserSession:
         if session_key in self._duplicate_sessions:
             self._duplicate_sessions.pop(session_key, None)
             return
-        if session_key in self._oopif_sessions:
+        if session_key in self._oopifs:
             self._forget_oopif(session_key)
             return
         page = self._page_by_session(session_key)
@@ -1971,12 +2007,7 @@ class BrowserSession:
             await self._drop_page(page.target_id)
 
     def _forget_oopif(self, child_session: str) -> None:
-        self._oopif_sessions.pop(child_session, None)
-        self._oopif_parents.pop(child_session, None)
-        self._oopif_offsets.pop(child_session, None)
-        self._oopif_enabled.discard(child_session)
-        self._oopif_frame_ids.pop(child_session, None)
-        self._oopif_page.pop(child_session, None)
+        self._oopifs.pop(child_session, None)
         for descendant in self.oopif_children(child_session):
             self._forget_oopif(descendant)
 

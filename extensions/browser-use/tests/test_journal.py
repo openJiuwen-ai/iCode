@@ -189,3 +189,80 @@ def test_another_session_object_cannot_read_the_journal(tmp_path: Path) -> None:
     assert lookup_action(second, "abc123") is None
     asyncio.run(first.aclose())
     asyncio.run(second.aclose())
+
+
+def test_dom_click_allowed_uses_structured_fields_not_evidence_prose(tmp_path: Path) -> None:
+    import sqlite3
+    from types import SimpleNamespace
+
+    from icode_browser_use.actions.click import _dom_click_allowed
+    from icode_browser_use.journal import RESULT
+
+    j = journal(tmp_path)
+    entry = SimpleNamespace(token="@e5#7")
+    session = SimpleNamespace(journal=j, page_epoch=7)
+    facts = {"tag": "button", "role": "button"}
+
+    # Completely arbitrary prose in evidence still allows dom click when structured fields match.
+    j.record(
+        action_id="c1",
+        tool="browser_click",
+        phase=RESULT,
+        status="uncertain",
+        evidence="completely rewritten english prose without any magic markers",
+        document_epoch=7,
+        target_ref="@e5#7",
+        dispatch="mouse",
+        effect="none",
+    )
+    assert _dom_click_allowed(session, entry, facts, submit_like=False) is None
+    assert _dom_click_allowed(session, entry, facts, submit_like=True) is not None
+
+    # A second dom click is refused once dispatch="dom" was recorded, regardless of prose.
+    j.record(
+        action_id="c2",
+        tool="browser_click",
+        phase=RESULT,
+        status="succeeded",
+        evidence="rewritten prose",
+        document_epoch=7,
+        target_ref="@e5#7",
+        dispatch="dom",
+        effect="dom",
+    )
+    assert _dom_click_allowed(session, entry, facts, submit_like=False) is not None
+    j.close()
+
+    # Legacy SQLite DB missing the new columns migrates cleanly and treats old rows conservatively.
+    legacy_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(legacy_path)
+    conn.execute(
+        "CREATE TABLE actions ("
+        "action_id TEXT PRIMARY KEY, schema INTEGER NOT NULL, owner TEXT NOT NULL, "
+        "logical_session TEXT NOT NULL, generation TEXT NOT NULL, tool TEXT NOT NULL, "
+        "phase TEXT NOT NULL, status TEXT NOT NULL, document_epoch INTEGER NOT NULL, "
+        "evidence TEXT NOT NULL, at REAL NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO actions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "old1",
+            1,
+            "owner-a",
+            "slot-0",
+            "g1",
+            "browser_click",
+            RESULT,
+            "uncertain",
+            7,
+            "old @e5#7\neffect=none\n",
+            1.0,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = Journal(legacy_path, owner="owner-a", logical_session="slot-0", generation="g1")
+    legacy_session = SimpleNamespace(journal=migrated, page_epoch=7)
+    assert _dom_click_allowed(legacy_session, entry, facts, submit_like=False) is not None
+    migrated.close()

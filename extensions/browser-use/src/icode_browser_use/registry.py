@@ -31,6 +31,7 @@ import json
 import os
 import tempfile
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -39,20 +40,102 @@ from .policy import canonical_origin
 SCHEMA_VERSION = 1
 MANIFEST_NAME = "browsers.json"
 
-#: Fields a caller may rely on. Anything else is ignored on load.
-_FIELDS = (
-    "schema",
-    "browser_id",
-    "resume_id",
-    "session_id",
-    "agent_name",
-    "owner_key",
-    "backend",
-    "generation",
-    "slot",
-    "origin",
-    "updated_at",
-)
+
+@dataclass(frozen=True)
+class ManifestRecord:
+    """Validated, typed browser recovery record stored in ``browsers.json``."""
+
+    schema: int
+    browser_id: str
+    resume_id: str
+    session_id: str | None
+    agent_name: str
+    owner_key: str
+    backend: str
+    generation: str
+    slot: int
+    origin: str
+    updated_at: float
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "browser_id": self.browser_id,
+            "resume_id": self.resume_id,
+            "session_id": self.session_id,
+            "agent_name": self.agent_name,
+            "owner_key": self.owner_key,
+            "backend": self.backend,
+            "generation": self.generation,
+            "slot": self.slot,
+            "origin": self.origin,
+            "updated_at": self.updated_at,
+        }
+
+
+def _is_strict_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_strict_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _parse_record(item: Any) -> tuple[ManifestRecord | None, bool]:
+    """Parse one manifest JSON entry. Returns ``(record, invalid)``."""
+    if not isinstance(item, Mapping):
+        return None, True
+    schema = item.get("schema")
+    if not _is_strict_int(schema):
+        return None, True
+    if schema != SCHEMA_VERSION:
+        # Older or newer schema entries are ignored quietly for forward/backward tolerance.
+        return None, False
+    browser_id = item.get("browser_id")
+    resume_id = item.get("resume_id")
+    session_id = item.get("session_id")
+    agent_name = item.get("agent_name")
+    owner_key = item.get("owner_key")
+    backend = item.get("backend")
+    generation = item.get("generation")
+    slot = item.get("slot")
+    origin = item.get("origin")
+    updated_at = item.get("updated_at")
+    if (
+        not isinstance(browser_id, str)
+        or not browser_id
+        or not isinstance(resume_id, str)
+        or not resume_id
+        or (session_id is not None and not isinstance(session_id, str))
+        or not isinstance(agent_name, str)
+        or not isinstance(owner_key, str)
+        or not owner_key
+        or not isinstance(backend, str)
+        or not backend
+        or not isinstance(generation, str)
+        or not generation
+        or not _is_strict_int(slot)
+        or slot < 0
+        or not isinstance(origin, str)
+        or not _is_strict_number(updated_at)
+    ):
+        return None, True
+    return (
+        ManifestRecord(
+            schema=schema,
+            browser_id=browser_id,
+            resume_id=resume_id,
+            session_id=session_id,
+            agent_name=agent_name,
+            owner_key=owner_key,
+            backend=backend,
+            generation=generation,
+            slot=slot,
+            origin=origin,
+            updated_at=float(updated_at),
+        ),
+        False,
+    )
 
 
 def manifest_path(ctx: Any) -> Path:
@@ -78,23 +161,23 @@ def new_record(
     slot: int,
     origin_url: str = "",
     updated_at: float = 0.0,
-) -> dict[str, object]:
-    return {
-        "schema": SCHEMA_VERSION,
-        "browser_id": browser_id,
-        "resume_id": resume_id,
-        "session_id": session_id,
-        "agent_name": agent_name,
-        "owner_key": owner_key,
-        "backend": backend,
-        "generation": generation,
-        "slot": slot,
-        "origin": redacted_origin(origin_url),
-        "updated_at": updated_at,
-    }
+) -> ManifestRecord:
+    return ManifestRecord(
+        schema=SCHEMA_VERSION,
+        browser_id=browser_id,
+        resume_id=resume_id,
+        session_id=session_id,
+        agent_name=agent_name,
+        owner_key=owner_key,
+        backend=backend,
+        generation=generation,
+        slot=slot,
+        origin=redacted_origin(origin_url),
+        updated_at=float(updated_at),
+    )
 
 
-def load(path: Path) -> tuple[list[dict[str, object]], str | None]:
+def load(path: Path) -> tuple[list[ManifestRecord], str | None]:
     """Return ``(records, problem)``; a missing file is not a problem."""
     try:
         raw = path.read_text(encoding="utf-8")
@@ -108,20 +191,22 @@ def load(path: Path) -> tuple[list[dict[str, object]], str | None]:
         return [], "unreadable"
     if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
         return [], "unexpected shape"
-    records: list[dict[str, object]] = []
+    records: list[ManifestRecord] = []
+    invalid_count = 0
     for item in payload["records"]:
-        if not isinstance(item, Mapping) or item.get("schema") != SCHEMA_VERSION:
-            continue
-        if not all(name in item for name in _FIELDS):
-            continue
-        records.append({name: item[name] for name in _FIELDS})
-    return records, None
+        parsed, invalid = _parse_record(item)
+        if parsed is not None:
+            records.append(parsed)
+        elif invalid:
+            invalid_count += 1
+    problem = f"{invalid_count} invalid record(s) skipped" if invalid_count else None
+    return records, problem
 
 
-def save(path: Path, records: list[dict[str, object]]) -> None:
+def save(path: Path, records: list[ManifestRecord]) -> None:
     """Replace the manifest atomically; a reader sees the old file or the new one."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"schema": SCHEMA_VERSION, "records": records}, ensure_ascii=True)
+    payload = json.dumps({"schema": SCHEMA_VERSION, "records": [r.to_dict() for r in records]}, ensure_ascii=True)
     handle, temporary = tempfile.mkstemp(prefix=f".{MANIFEST_NAME}.", dir=path.parent)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
@@ -137,29 +222,25 @@ def save(path: Path, records: list[dict[str, object]]) -> None:
         raise
 
 
-def upsert(records: list[dict[str, object]], record: dict[str, object]) -> list[dict[str, object]]:
+def upsert(records: list[ManifestRecord], record: ManifestRecord) -> list[ManifestRecord]:
     """Replace the record with the same ``resume_id`` in place, or append it."""
-    resume_id = record["resume_id"]
     for index, item in enumerate(records):
-        if item.get("resume_id") == resume_id:
+        if item.resume_id == record.resume_id:
             updated = list(records)
             updated[index] = record
             return updated
     return [*records, record]
 
 
-def supersede(records: list[dict[str, object]], record: dict[str, object]) -> list[dict[str, object]]:
+def supersede(records: list[ManifestRecord], record: ManifestRecord) -> list[ManifestRecord]:
     """Keep one record per owner slot: an older generation of the same slot is dropped."""
-    owner_key = record["owner_key"]
-    slot = record["slot"]
     kept = [
         item
         for item in records
-        if not (item.get("owner_key") == owner_key and item.get("slot") == slot)
-        or item.get("resume_id") == record.get("resume_id")
+        if not (item.owner_key == record.owner_key and item.slot == record.slot) or item.resume_id == record.resume_id
     ]
     return upsert(kept, record)
 
 
-def drop(records: list[dict[str, object]], resume_id: str) -> list[dict[str, object]]:
-    return [item for item in records if item.get("resume_id") != resume_id]
+def drop(records: list[ManifestRecord], resume_id: str) -> list[ManifestRecord]:
+    return [item for item in records if item.resume_id != resume_id]

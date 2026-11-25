@@ -22,7 +22,7 @@ def ctx(tmp_path: Path, *, session: str | None = "s1", agent: str = "A", with_se
     )
 
 
-def record(resume_id: str = "s0-abc", **overrides: object) -> dict[str, object]:
+def record(resume_id: str = "s0-abc", **overrides: object) -> registry.ManifestRecord:
     values: dict[str, object] = {
         "schema": registry.SCHEMA_VERSION,
         "browser_id": "b1",
@@ -37,7 +37,7 @@ def record(resume_id: str = "s0-abc", **overrides: object) -> dict[str, object]:
         "updated_at": 0.0,
     }
     values.update(overrides)
-    return values
+    return registry.ManifestRecord(**values)  # type: ignore[arg-type]
 
 
 def test_manifest_path_prefers_the_session_folder(tmp_path: Path) -> None:
@@ -72,12 +72,25 @@ def test_load_ignores_records_from_an_older_schema(tmp_path: Path) -> None:
     path = ctx(tmp_path).session_data_dir / "browsers.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"schema": 1, "records": [{**record(), "schema": 0}, record("s0-new")]}),
+        json.dumps({"schema": 1, "records": [{**record().to_dict(), "schema": 0}, record("s0-new").to_dict()]}),
         encoding="utf-8",
     )
     records, problem = registry.load(path)
     assert problem is None
-    assert [item["resume_id"] for item in records] == ["s0-new"]
+    assert [item.resume_id for item in records] == ["s0-new"]
+
+
+def test_load_rejects_records_with_invalid_field_types(tmp_path: Path) -> None:
+    path = ctx(tmp_path).session_data_dir / "browsers.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    bad_slot = {**record("s0-bad").to_dict(), "slot": "not-an-int"}
+    bool_slot = {**record("s0-bool").to_dict(), "slot": True}
+    good = record("s0-good").to_dict()
+    path.write_text(json.dumps({"schema": 1, "records": [bad_slot, bool_slot, good]}), encoding="utf-8")
+    records, problem = registry.load(path)
+    assert problem == "2 invalid record(s) skipped"
+    assert [item.resume_id for item in records] == ["s0-good"]
+    assert isinstance(records[0].slot, int)
 
 
 def test_upsert_replaces_the_same_resume_id_only() -> None:
@@ -94,12 +107,12 @@ def test_supersede_drops_older_generations_of_the_same_slot() -> None:
     other_owner = record("s0-other", slot=0, owner_key="someone-else")
     newest = record("s0-new", slot=0, generation="new")
     records = registry.supersede([older, other_slot, other_owner], newest)
-    assert [item["resume_id"] for item in records] == ["s1-keep", "s0-other", "s0-new"]
+    assert [item.resume_id for item in records] == ["s1-keep", "s0-other", "s0-new"]
 
 
 def test_drop_removes_only_the_named_record() -> None:
     records = [record("s0-a"), record("s0-b")]
-    assert [item["resume_id"] for item in registry.drop(records, "s0-a")] == ["s0-b"]
+    assert [item.resume_id for item in registry.drop(records, "s0-a")] == ["s0-b"]
     assert registry.drop(records, "missing") == records
 
 
@@ -118,6 +131,6 @@ def test_stored_origin_never_keeps_query_credentials_or_paths() -> None:
         slot=0,
         origin_url=url,
     )
-    assert "SENTINEL" not in json.dumps(stored)
-    assert "secret" not in json.dumps(stored)
-    assert stored["origin"] == "https://example.com:8443"
+    assert "SENTINEL" not in json.dumps(stored.to_dict())
+    assert "secret" not in json.dumps(stored.to_dict())
+    assert stored.origin == "https://example.com:8443"

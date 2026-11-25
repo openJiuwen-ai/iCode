@@ -15,9 +15,9 @@ import re
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
 from .dialog import redact_message
+from .policy import sanitize_display_url
 
 #: Entries kept per handle (all tabs together, newest last).
 MAX_ENTRIES = 200
@@ -61,17 +61,7 @@ def _mask_query(match: re.Match[str]) -> str:
 
 def _short_url(url: str) -> str:
     """Origin+path of a hierarchical URL (no userinfo, ``;params`` or query; bounded); else its scheme."""
-    try:
-        parts = urlsplit(url or "")
-    except ValueError:  # e.g. an unterminated IPv6 literal in a page-built URL
-        return (url.partition(":")[0] + ":")[:_MAX_URL] if ":" in (url or "") else ""
-    if not parts.scheme:
-        return ""
-    if not parts.netloc:
-        return f"{parts.scheme}:"  # data:/blob:/about: carry their payload in the URL itself
-    host = parts.netloc.rpartition("@")[2]  # keeps an IPv6 literal's brackets and the port
-    path = parts.path.partition(";")[0]  # ;jsessionid=… is a credential, not a location
-    return f"{parts.scheme}://{host}{path}"[:_MAX_URL]
+    return sanitize_display_url(url)[:_MAX_URL]
 
 
 def scrub(text: str) -> str:
@@ -183,7 +173,9 @@ class PageLog:
             reason = "blocked by the allow-list (ICODE_BROWSER_ALLOWED_DOMAINS/ORIGINS)"
         self._add(target_id, "network", "error", f"{method or '?'} FAILED {reason}", url)
 
-    def entries(self, target_id: str, *, since: int = 0, kind: str = "all", errors_only: bool = False) -> list[LogEntry]:
+    def entries(
+        self, target_id: str, *, since: int = 0, kind: str = "all", errors_only: bool = False
+    ) -> list[LogEntry]:
         """Entries of *target_id* newer than *since*, oldest first."""
         return [
             entry

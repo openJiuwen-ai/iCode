@@ -635,32 +635,14 @@ async def prepare_expect_baseline(session: Any, arguments: dict[str, Any]) -> st
     )
 
 
-def _coerce_write_outcome(result: WriteOutcome | list[ToolBlock]) -> WriteOutcome:
-    """Adapt legacy raw block lists from test doubles into a :class:`WriteOutcome`."""
-    if isinstance(result, WriteOutcome):
-        return result
-    action_text = "\n".join(str(b.get("text", "")) for b in result if b.get("type") == "text")
-    lines = action_text.splitlines()
-    dispatched = not any(line.startswith("dispatch=not_sent") for line in lines)
-    status = "succeeded"
-    if any(line.startswith("status=blocked") for line in lines):
-        status = "blocked"
-    elif any(line.startswith("status=failed") for line in lines):
-        status = "failed"
-    elif any(line.startswith("status=uncertain") for line in lines):
-        status = "uncertain"
-    return WriteOutcome(status=status, dispatched=dispatched, blocks=result)
-
-
 async def run_post_write_expect(
     session: Any,
     arguments: dict[str, Any],
     *,
     baseline: str | None,
-    action_blocks: WriteOutcome | list[ToolBlock],
+    outcome: WriteOutcome,
 ) -> list[ToolBlock]:
     """Attach bounded read-only verification after a single write action without ever re-dispatching it."""
-    outcome = _coerce_write_outcome(action_blocks)
     condition = str(arguments.get("expect_condition") or "")
     if not condition:
         return outcome.blocks

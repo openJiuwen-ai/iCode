@@ -136,7 +136,7 @@ class _Browser:
     url: str = ""
     title: str = ""
     backend: str = ""
-    record: dict[str, object] = field(default_factory=dict)
+    record: registry.ManifestRecord | None = None
     manifest: Path | None = None
     visited_origins: list[str] = field(default_factory=list)
     blocked_origins: list[str] = field(default_factory=list)
@@ -331,7 +331,7 @@ def _manifest_path(ctx: ToolContext) -> Path | None:
         return None
 
 
-def _save_record(path: Path | None, record: dict[str, object]) -> None:
+def _save_record(path: Path | None, record: registry.ManifestRecord) -> None:
     """Persist one record, superseding older generations of its slot; never breaks a call."""
     if path is None:
         return
@@ -352,31 +352,30 @@ def _browser_origin(browser: _Browser) -> str:
 
 def _persist(browser: _Browser) -> None:
     """Refresh the redacted origin, writing only when it changed."""
-    if browser.manifest is None or not browser.record:
+    if browser.manifest is None or browser.record is None:
         return
     origin = _browser_origin(browser)
-    if browser.record.get("origin") == origin:
+    if browser.record.origin == origin:
         return
-    browser.record["origin"] = origin
-    browser.record["updated_at"] = time.time()
+    browser.record = dataclasses.replace(browser.record, origin=origin, updated_at=time.time())
     _save_record(browser.manifest, browser.record)
 
 
-def _recoverable(ctx: ToolContext) -> list[dict[str, object]]:
+def _recoverable(ctx: ToolContext) -> list[registry.ManifestRecord]:
     """Manifest records this session/agent may reopen, excluding live handles."""
     path = _manifest_path(ctx)
     if path is None:
         return []
     records, _problem = registry.load(path)
-    live = {browser.record.get("resume_id") for browser in _mine(ctx) if browser.record}
+    live = {browser.record.resume_id for browser in _mine(ctx) if browser.record is not None}
     owner_key = _owner_key(ctx)
     return [
         record
         for record in records
-        if record.get("owner_key") == owner_key
-        and record.get("session_id") == ctx.session_id
-        and record.get("agent_name") == ctx.agent_name
-        and record.get("resume_id") not in live
+        if record.owner_key == owner_key
+        and record.session_id == ctx.session_id
+        and record.agent_name == ctx.agent_name
+        and record.resume_id not in live
     ]
 
 
@@ -619,7 +618,7 @@ async def browser_list(ctx: ToolContext) -> str:
     """List this session's browsers plus recorded handles that can be reopened; never launches Chrome."""
     mine = _mine(ctx)
     path = _manifest_path(ctx)
-    records: list[dict[str, object]] = []
+    records: list[registry.ManifestRecord] = []
     problem: str | None = None
     if path is not None:
         records, problem = registry.load(path)
@@ -627,13 +626,11 @@ async def browser_list(ctx: ToolContext) -> str:
     own = [
         record
         for record in records
-        if record.get("owner_key") == owner_key
-        and record.get("session_id") == ctx.session_id
-        and record.get("agent_name") == ctx.agent_name
+        if record.owner_key == owner_key and record.session_id == ctx.session_id and record.agent_name == ctx.agent_name
     ]
-    live = {browser.record.get("resume_id") for browser in mine if browser.record}
-    recoverable = [record for record in own if record.get("resume_id") not in live]
-    unclaimable = sum(1 for record in records if record.get("session_id") != ctx.session_id)
+    live = {browser.record.resume_id for browser in mine if browser.record is not None}
+    recoverable = [record for record in own if record.resume_id not in live]
+    unclaimable = sum(1 for record in records if record.session_id != ctx.session_id)
 
     lines = [f"open={len(mine)} recoverable={len(recoverable)} manifest={problem or 'ok'}"]
     for browser in mine:
@@ -642,17 +639,16 @@ async def browser_list(ctx: ToolContext) -> str:
             f"- browser_id={browser.id} state={state} backend={browser.backend or 'unknown'} "
             f"slot={browser.slot} origin={_browser_origin(browser)}"
         )
-        resume_id = browser.record.get("resume_id")
-        if resume_id:
-            line += f" resume_id={resume_id}"
+        if browser.record is not None and browser.record.resume_id:
+            line += f" resume_id={browser.record.resume_id}"
         lines.append(line)
         if reason:
             lines.append(f"  reason: {reason}")
         lines.append(f"  next: {next_step}")
     for record in recoverable:
         lines.append(
-            f"- resume_id={record.get('resume_id')} state=recorded backend={record.get('backend')} "
-            f"slot={record.get('slot')} origin={record.get('origin')}"
+            f"- resume_id={record.resume_id} state=recorded backend={record.backend} "
+            f"slot={record.slot} origin={record.origin}"
         )
         lines.append("  next: call browser_resume to reopen this handle (it does not navigate)")
     if unclaimable:
@@ -717,16 +713,16 @@ async def browser_resume(
     base = _config()
     path = _manifest_path(ctx)
     records, _problem = registry.load(path) if path is not None else ([], None)
-    record = next((item for item in records if item.get("resume_id") == resume_id), None)
+    record = next((item for item in records if item.resume_id == resume_id), None)
     if record is None:
         raise ToolError(
             f"Unknown resume_id {resume_id!r}; call browser_list to see this session's recorded browsers.",
             code="unknown_resume",
         )
     if (
-        record.get("owner_key") != _owner_key(ctx)
-        or record.get("session_id") != ctx.session_id
-        or record.get("agent_name") != ctx.agent_name
+        record.owner_key != _owner_key(ctx)
+        or record.session_id != ctx.session_id
+        or record.agent_name != ctx.agent_name
     ):
         raise ToolError(
             "That record belongs to another session or agent; a copied/forked session cannot claim it. "
@@ -734,16 +730,16 @@ async def browser_resume(
             code="browser_resume_denied",
         )
     for browser in _mine(ctx):
-        if browser.record.get("resume_id") == resume_id:
+        if browser.record is not None and browser.record.resume_id == resume_id:
             return f"browser_id: {browser.id}\nresume_id {resume_id} is already live; use its browser_id."
     backend = base.backend
-    if record.get("backend") != backend:
+    if record.backend != backend:
         raise ToolError(
-            f"That browser was opened in {record.get('backend')} mode but this plugin is configured for {backend}; "
+            f"That browser was opened in {record.backend} mode but this plugin is configured for {backend}; "
             "restore the original configuration or call browser_open instead.",
             code="browser_resume_backend_mismatch",
         )
-    slot = int(record["slot"])  # type: ignore[arg-type]
+    slot = record.slot
     if any(browser.slot == slot for browser in _mine(ctx)):
         raise ToolError(
             f"Slot {slot} already has a live browser; use its browser_id, close it first, or call browser_open.",
@@ -1285,12 +1281,11 @@ async def _close_and_forget(browser: _Browser) -> None:
 
 def _drop_record(browser: _Browser) -> None:
     """Remove the durable record that would otherwise offer a resume for a closed browser."""
-    resume_id = browser.record.get("resume_id")
-    if not resume_id or browser.manifest is None:
+    if browser.record is None or not browser.record.resume_id or browser.manifest is None:
         return
     try:
         records, _problem = registry.load(browser.manifest)
-        registry.save(browser.manifest, registry.drop(records, str(resume_id)))
+        registry.save(browser.manifest, registry.drop(records, browser.record.resume_id))
     except OSError as exc:
         logger.warning("browser manifest update failed: %s", exc)
 
