@@ -1083,3 +1083,110 @@ def test_fill_email_and_number_select_all_replacement_succeeds_and_submits(monke
         assert any(
             call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter" for call in session.client.calls
         )
+
+
+def test_fill_multiline_rich_text_truncation_blocks_submit_using_consistent_text_representation(monkeypatch) -> None:
+    """Multi-line contenteditable: Range.toString() vs textContent catches truncation 'DONE X\\nDON' and blocks Enter."""
+    session = FakeSession()
+    session.state = {
+        "tag": "div",
+        "editable": True,
+        "focused": True,
+        "text": "DONE X\nX",
+        "rawText": "DONE XX",
+    }
+    original_send = session.client.send
+
+    async def truncating_send(method, params=None, session_id=None, timeout=None):
+        if method == "Input.insertText":
+            session.client.calls.append((method, params or {}, session_id))
+            session.state["text"] = "DONE X\nDON"
+            session.state["rawText"] = "DONE XDON"
+            return {"result": {"value": None}}
+        return await original_send(method, params, session_id, timeout)
+
+    session.client.send = truncating_send
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    **FOCUS_VALUE,
+                    "text": "DONE X\nX",
+                    "selectionText": "X",
+                    "selectionPrefix": "DONE X",
+                    "selectionSuffix": "",
+                },
+            }
+        return {"type": "object", "value": dict(session.state)}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "editor", "text": "DONE", "clear": False, "submit": True, "keypress_fallback": False},
+        )
+    )
+    text = blocks[0]["text"]
+    assert "status=uncertain" in text
+    assert "未提交" in text
+    assert all(
+        not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter") for call in session.client.calls
+    )
+
+
+def test_fill_number_partial_repeated_selection_rejects_clamped_value_and_accepts_overlapping_match() -> None:
+    """Number input without selectionStart/End: check exact candidate set including overlapping positions."""
+    # Clamped by page handler: 101010 with "10" -> "50" clamped to "101500" must NOT match.
+    assert (
+        fill._values_match(
+            "101500",
+            "50",
+            clear=False,
+            before_value="101010",
+            selection=None,
+            selection_text="10",
+            native_value=True,
+        )
+        is False
+    )
+    # Valid replacement at middle occurrence: 105010 matches.
+    assert (
+        fill._values_match(
+            "105010",
+            "50",
+            clear=False,
+            before_value="101010",
+            selection=None,
+            selection_text="10",
+            native_value=True,
+        )
+        is True
+    )
+    # Overlapping occurrence: "1112" with 2nd+3rd "1" ("11") -> "7" yields "172" (as well as "712").
+    assert (
+        fill._values_match(
+            "172",
+            "7",
+            clear=False,
+            before_value="1112",
+            selection=None,
+            selection_text="11",
+            native_value=True,
+        )
+        is True
+    )
+    assert (
+        fill._values_match(
+            "712",
+            "7",
+            clear=False,
+            before_value="1112",
+            selection=None,
+            selection_text="11",
+            native_value=True,
+        )
+        is True
+    )

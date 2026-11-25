@@ -86,6 +86,22 @@ def _splice_utf16(text: str, start: int, end: int, insert: str) -> str | None:
     return prefix + insert + suffix
 
 
+def _replacement_candidates(before: str, selected: str, replacement: str) -> set[str]:
+    """All exact strings reachable by replacing one occurrence (including overlapping) of *selected* in *before*."""
+    if not selected:
+        return set()
+    candidates: set[str] = set()
+    start = 0
+    step = len(selected)
+    while True:
+        idx = before.find(selected, start)
+        if idx == -1:
+            break
+        candidates.add(before[:idx] + replacement + before[idx + step :])
+        start = idx + 1
+    return candidates
+
+
 def _values_match(
     value: Any,
     expected: str,
@@ -96,6 +112,7 @@ def _values_match(
     selection_text: str = "",
     selection_prefix: str | None = None,
     selection_suffix: str | None = None,
+    raw_value: str | None = None,
     native_value: bool = False,
 ) -> bool:
     if native_value:
@@ -113,15 +130,10 @@ def _values_match(
                     return actual_raw == combined
             if selection_text:
                 sel_raw = _normalize_native_value(selection_text)
-                if sel_raw == before_raw:
-                    # Confirmed select-all on controls without selectionStart/End (email/number).
-                    return actual_raw == wanted_raw
-                if before_raw.count(sel_raw) == 1:
-                    return actual_raw == before_raw.replace(sel_raw, wanted_raw, 1)
-                expected_len = len(before_raw) - len(sel_raw) + len(wanted_raw)
-                return wanted_raw in actual_raw and len(actual_raw) == expected_len and (
-                    actual_raw != before_raw or sel_raw == wanted_raw
-                )
+                candidates = _replacement_candidates(before_raw, sel_raw, wanted_raw)
+                if candidates:
+                    return actual_raw in candidates
+                return False
             if actual_raw == before_raw:
                 return False
             return wanted_raw in actual_raw and len(actual_raw) >= len(before_raw) + len(wanted_raw)
@@ -142,19 +154,18 @@ def _values_match(
                 return actual == _normalize_text(combined)
         before_norm = _normalize_text(before_value)
         if selection_prefix is not None and selection_suffix is not None:
+            if raw_value is not None:
+                # Range.toString() and textContent share the exact same DOM text representation
+                # (including multi-line <div>/<p> blocks), so compare in that representation directly.
+                return _normalize_text(raw_value) == _normalize_text(selection_prefix + expected + selection_suffix)
             reconstructed_before = _normalize_text(selection_prefix + selection_text + selection_suffix)
             if reconstructed_before == before_norm:
                 return actual == _normalize_text(selection_prefix + expected + selection_suffix)
+            return False
         if selection_text:
             sel_norm = _normalize_text(selection_text)
-            if sel_norm == before_norm:
-                return actual == wanted
-            if before_norm.count(sel_norm) == 1:
-                return actual == _normalize_text(before_norm.replace(sel_norm, wanted, 1))
-            expected_len = len(before_norm) - len(sel_norm) + len(wanted)
-            return wanted in actual and abs(len(actual) - expected_len) <= 1 and (
-                actual != before_norm or sel_norm == wanted
-            )
+            candidates = {_normalize_text(c) for c in _replacement_candidates(before_norm, sel_norm, wanted)}
+            return actual in candidates
         if actual == before_norm:
             return False
         return wanted in actual and len(actual) >= len(before_norm) + len(wanted)
@@ -414,6 +425,7 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         selection_text=before_selection_text,
         selection_prefix=before_selection_prefix,
         selection_suffix=before_selection_suffix,
+        raw_value=state.get("rawText") if isinstance(state.get("rawText"), str) else None,
         native_value=native_value,
     )
     try:
@@ -470,6 +482,7 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         selection_text=before_selection_text,
         selection_prefix=before_selection_prefix,
         selection_suffix=before_selection_suffix,
+        raw_value=state.get("rawText") if isinstance(state.get("rawText"), str) else None,
         native_value=native_value,
     ):
         mismatch = True
