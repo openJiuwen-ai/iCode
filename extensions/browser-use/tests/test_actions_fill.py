@@ -1190,3 +1190,92 @@ def test_fill_number_partial_repeated_selection_rejects_clamped_value_and_accept
         )
         is True
     )
+
+
+def test_fill_number_append_without_selection_rejects_clamped_value_and_accepts_true_insertion() -> None:
+    """Number input without selection: appending '5' to '199' clamped to '1500' must NOT match."""
+    assert (
+        fill._values_match(
+            "1500",
+            "5",
+            clear=False,
+            before_value="199",
+            selection=None,
+            selection_text="",
+            native_value=True,
+        )
+        is False
+    )
+    assert (
+        fill._values_match(
+            "1995",
+            "5",
+            clear=False,
+            before_value="199",
+            selection=None,
+            selection_text="",
+            native_value=True,
+        )
+        is True
+    )
+    assert (
+        fill._values_match(
+            "1599",
+            "5",
+            clear=False,
+            before_value="199",
+            selection=None,
+            selection_text="",
+            native_value=True,
+        )
+        is True
+    )
+
+
+def test_fill_rich_text_preserves_paragraph_boundaries_in_both_directions() -> None:
+    """Rich-text visible-newline walk accepts 'First\\nSecond!' and rejects merged 'Shiptoday'."""
+    # Direction 1: X! with X selected, replaced with First\nSecond -> visible First\nSecond! matches.
+    assert (
+        fill._values_match(
+            "First\nSecond!",
+            "First\nSecond",
+            clear=False,
+            before_value="X!",
+            selection_text="X",
+            selection_prefix="",
+            selection_suffix="!",
+            raw_value="First\nSecond!\n",
+            native_value=False,
+        )
+        is True
+    )
+    # Direction 2: Ship\nX with X selected, replaced with today -> merged 'Shiptoday' must NOT match.
+    assert (
+        fill._values_match(
+            "Shiptoday",
+            "today",
+            clear=False,
+            before_value="Ship\nX",
+            selection_text="X",
+            selection_prefix="Ship\n",
+            selection_suffix="\n",
+            raw_value="Shiptoday",
+            native_value=False,
+        )
+        is False
+    )
+    # And preserved paragraph break 'Ship\ntoday' DOES match.
+    assert (
+        fill._values_match(
+            "Ship\ntoday",
+            "today",
+            clear=False,
+            before_value="Ship\nX",
+            selection_text="X",
+            selection_prefix="Ship\n",
+            selection_suffix="\n",
+            raw_value="Ship\ntoday\n",
+            native_value=False,
+        )
+        is True
+    )

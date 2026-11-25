@@ -102,6 +102,21 @@ def _replacement_candidates(before: str, selected: str, replacement: str) -> set
     return candidates
 
 
+def _is_single_insertion(before: str, inserted: str, actual: str) -> bool:
+    """True iff *actual* equals *before* with *inserted* spliced in at some single position."""
+    if len(actual) != len(before) + len(inserted):
+        return False
+    step = len(inserted)
+    start = 0
+    while True:
+        idx = actual.find(inserted, start)
+        if idx == -1:
+            return False
+        if actual[:idx] + actual[idx + step :] == before:
+            return True
+        start = idx + 1
+
+
 def _values_match(
     value: Any,
     expected: str,
@@ -134,9 +149,7 @@ def _values_match(
                 if candidates:
                     return actual_raw in candidates
                 return False
-            if actual_raw == before_raw:
-                return False
-            return wanted_raw in actual_raw and len(actual_raw) >= len(before_raw) + len(wanted_raw)
+            return _is_single_insertion(before_raw, wanted_raw, actual_raw)
         return wanted_raw in actual_raw
 
     actual = _normalize_text(value)
@@ -154,13 +167,13 @@ def _values_match(
                 return actual == _normalize_text(combined)
         before_norm = _normalize_text(before_value)
         if selection_prefix is not None and selection_suffix is not None:
+            expected_norm = _normalize_text(selection_prefix + expected + selection_suffix)
             if raw_value is not None:
-                # Range.toString() and textContent share the exact same DOM text representation
-                # (including multi-line <div>/<p> blocks), so compare in that representation directly.
-                return _normalize_text(raw_value) == _normalize_text(selection_prefix + expected + selection_suffix)
+                # Both prefix/suffix and raw_value come from _visWalk (preserving visible line breaks).
+                return _normalize_text(raw_value) == expected_norm
             reconstructed_before = _normalize_text(selection_prefix + selection_text + selection_suffix)
             if reconstructed_before == before_norm:
-                return actual == _normalize_text(selection_prefix + expected + selection_suffix)
+                return actual == expected_norm
             return False
         if selection_text:
             sel_norm = _normalize_text(selection_text)
