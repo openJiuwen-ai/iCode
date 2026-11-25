@@ -338,8 +338,10 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     else:
         status = "uncertain"
         lines.append(f"selected={selected or '读回为空'}")
-        lines.append("status=uncertain retryable=true")
-        lines.append("读回与请求不一致；选择是幂等的，可在 snapshot 核对后重试同一 values")
+        lines.append("status=uncertain retryable=false")
+        lines.append(
+            "读回与请求不一致；已派发 input/change 事件，请先 browser_snapshot 核对页面上的业务结果，不要直接重复选择"
+        )
     if status == "succeeded":
         session.note_success(session.target_id)
     lines.append(evidence_line(session, action_id))

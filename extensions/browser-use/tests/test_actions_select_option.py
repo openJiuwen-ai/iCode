@@ -206,14 +206,14 @@ def test_disabled_select_is_blocked(monkeypatch) -> None:
     assert "status=blocked" in blocks[0]["text"]
 
 
-def test_readback_mismatch_is_uncertain_but_retryable(monkeypatch) -> None:
+def test_readback_mismatch_is_uncertain_and_not_retryable(monkeypatch) -> None:
     session = FakeSession()
     applied = install(monkeypatch, session, states=[SINGLE, SINGLE])  # the page never changes
     blocks = asyncio.run(select_option.run(session, {"target": "@e2#4", "values": ["gamma"]}))
     text = blocks[0]["text"]
     assert applied == [["gamma"]]
-    assert "status=uncertain retryable=true" in text
-    assert "幂等" in text
+    assert "status=uncertain retryable=false" in text
+    assert "不要直接重复选择" in text
     assert session.successes == 0
 
 
@@ -437,6 +437,7 @@ def test_select_option_rejects_succeeded_when_change_handler_replaces_option_val
     blocks = asyncio.run(select_option.run(session, {"target": "@e2#4", "values": ["b"]}))
     text = blocks[0]["text"]
     assert "selected=['c']" in text
-    assert "status=uncertain" in text
+    assert "status=uncertain retryable=false" in text
     assert "status=succeeded" not in text
+    assert "不要直接重复选择" in text
     assert session.successes == 0
