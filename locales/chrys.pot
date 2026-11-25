@@ -7067,14 +7067,26 @@ msgstr ""
 msgid "tui.file_picker.title.folder"
 msgstr ""
 
+#. English: Copy Resume Command
+#. chrys-meta={"fingerprint":"ed3daf53ad572911c1165cd3d6f114eca024467b71c56c115adc3933df0884d4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/fork_session.py
+msgid "tui.fork_session.button.copy_command"
+msgstr ""
+
+#. English: Open in New Tab
+#. chrys-meta={"fingerprint":"4c830c9c42f90dc68c0488b7e2a2c8fa78df8f23449349d02e329d11a92447f6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/fork_session.py
+msgid "tui.fork_session.button.new_tab"
+msgstr ""
+
 #. English: Ok
 #. chrys-meta={"fingerprint":"d42d95676a5fb59c33cf368c1c8fc71930805c1f4111bb007f02ca6bc05ed42a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/fork_session.py
 msgid "tui.fork_session.button.ok"
 msgstr ""
 
-#. English: Open New Window
-#. chrys-meta={"fingerprint":"79a6673345a27d87b4ac35a660e8121e95ee63b486548aa790de5bfa1b719ec2","multiline":false,"placeholders":[]}
+#. English: Open in New Window
+#. chrys-meta={"fingerprint":"03c5bbed4f8a25b107dc9600fb374d02476f67d94dea6de8bf7972fe94882035","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/fork_session.py
 msgid "tui.fork_session.button.open_new_window"
 msgstr ""
@@ -7101,6 +7113,36 @@ msgstr ""
 #. chrys-meta={"fingerprint":"3ada9701fd20d30fb4d63bd5f722d2761e57e9526cc1374fc65de6d99308c794","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/fork_session.py
 msgid "tui.fork_session.creating"
+msgstr ""
+
+#. English: macOS denied permission to control the terminal.
+#. chrys-meta={"fingerprint":"11a4a2110d21bd176b512e784b7999949f68a031022cc5714ce09c3cf1aa5d2d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.denied"
+msgstr ""
+
+#. English: The terminal could not open the tab: {error}
+#. chrys-meta={"fingerprint":"75c63f6ea74b91bbc0e420caecb8d02ea32d1869ef96ddb98871c44cc74bc1c8","multiline":false,"placeholders":["error"]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.failed"
+msgstr ""
+
+#. English: Could not uniquely identify the originating terminal.
+#. chrys-meta={"fingerprint":"2e1d0c18e2dd714c166ced42a3999043bb9e21e9b93e9f97e7181d7213233157","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.source_gone"
+msgstr ""
+
+#. English: The terminal did not confirm whether the tab opened.
+#. chrys-meta={"fingerprint":"f08ea0d5004c68bec12a6297ceb0df44f0f8d12e476508a9fdc38529c21cdc4e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.timeout"
+msgstr ""
+
+#. English: This terminal cannot identify the originating window for a new tab.
+#. chrys-meta={"fingerprint":"46d58266af3fb4d5bf5703e2ca7ed07a05f79b2c71f778276514978afb4c039b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.unavailable"
 msgstr ""
 
 #. English: Fork Failed
@@ -8365,10 +8407,10 @@ msgstr ""
 msgid "tui.man.fold.body"
 msgstr ""
 
-#. English: Create an independent branch of the current session.  The current
-#. window stays on the existing session. After the fork is created, choose
-#. whether to stay here or switch this window to the forked session.
-#. chrys-meta={"fingerprint":"8fa3c6cfea1e5f4ad5e2af6d109848eee72d121c1f9c862581bce84c78ced01a","multiline":true,"placeholders":[]}
+#. English: Create an independent branch of the current session.  Switch to the
+#. fork here, open it in a supported terminal, or copy the resume command to
+#. run in another tab.
+#. chrys-meta={"fingerprint":"cedd41950a48b4cf28b8504b97cf46ad0397ae2289fb91fc653c8180280247db","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.fork.body"
 msgstr ""
@@ -13207,6 +13249,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"825e12ea81e61506943ee1c3c593ce87f84670d5f758b42c4475af60a3d29b03","multiline":false,"placeholders":["error"]}
 #: src/chrys/app/tui/terminal/launcher.py
 msgid "tui.terminal.launch.macos_failed"
+msgstr ""
+
+#. English: The terminal did not confirm whether the window opened.
+#. chrys-meta={"fingerprint":"54506f6a20a5af854cfd94232c763f55b26221481b7a8e0352565d3fca78f058","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/launcher.py
+msgid "tui.terminal.launch.no_reply"
 msgstr ""
 
 #. English: Opening a new {app} window is not available in the current

@@ -594,12 +594,15 @@ class SessionHandler:
         """Open the non-dismissible fork progress dialog and mark the UI busy."""
         s = self
         from chrys.app.tui.screens.dialogs.fork_session import ForkSessionDialog
+        from chrys.app.tui.terminal.fork_tab import detect_fork_tab_target
         from chrys.app.tui.terminal.launcher import can_open_new_chrys_window
 
         if self._fork_dialog is not None:
             return
         dialog = ForkSessionDialog(
             show_new_window=can_open_new_chrys_window(),
+            tab_target=detect_fork_tab_target(),
+            cwd=s.workspace_cwd(),
             locale_controller=self._locale_controller,
         )
         self._fork_dialog = dialog
@@ -623,15 +626,7 @@ class SessionHandler:
         if result == "switch" and new_session_id:
             s.start_session_restore(new_session_id)
             return
-        if result == "new_window" and new_session_id:
-            from chrys.app.tui.terminal.launcher import TerminalLaunchError, launch_new_chrys_window
-
-            try:
-                launch_new_chrys_window(new_session_id, cwd=s.workspace_cwd())
-            except TerminalLaunchError as exc:
-                message = str(exc) if exc.display_message is None else self._render_message(exc.display_message)
-                s.notify(message, title=_FORK_TITLE.bind(), severity="warning", timeout=5)
-                return
+        if result in ("new_tab", "new_window") and fork_short_id:
             ui.flash_status(STATUS_OPENED_FORK.bind(fork_id=fork_short_id))
             return
         if result == "stay" and fork_short_id:
@@ -1209,7 +1204,7 @@ class SessionHandler:
         self._fork_new_session_id = event.new_session_id
         fork_dialog = self._fork_dialog
         if fork_dialog is not None:
-            fork_dialog.set_success(fork_short_id)
+            fork_dialog.set_success(event.new_session_id)
         s.set_agent_loading(False)
         s.notify(
             _FORK_CREATED.bind(fork_id=fork_short_id),

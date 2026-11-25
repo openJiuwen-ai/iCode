@@ -243,9 +243,8 @@ _MAN_FORK_BODY = msg(
     "tui.man.fork.body",
     fallback=(
         "Create an independent branch of the current session.\n\n"
-        "The current window stays on the existing session. After\n"
-        "the fork is created, choose whether to stay here or switch\n"
-        "this window to the forked session."
+        "Switch to the fork here, open it in a supported terminal,\n"
+        "or copy the resume command to run in another tab."
     ),
     multiline=True,
 )

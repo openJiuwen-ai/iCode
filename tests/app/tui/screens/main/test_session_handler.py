@@ -12,12 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.main.session_handlers import RestoreRequest
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotRef, file_snapshot_inline_char_limit
-from chrys.foundation.branding import APP_DISPLAY_NAME
-from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
@@ -406,13 +403,7 @@ def test_session_fork_dialog_hides_new_window_over_ssh(monkeypatch: pytest.Monke
     assert loading == [True]
 
 
-def test_on_session_forked_routes_dialog_results(monkeypatch: pytest.MonkeyPatch) -> None:
-    launcher_calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(
-        "chrys.app.tui.terminal.launcher.launch_new_chrys_window",
-        lambda session_id, *, cwd=None: launcher_calls.append((session_id, cwd)),
-    )
-
+def test_on_session_forked_routes_dialog_results() -> None:
     def run_case(
         result: str, new_session_id: str
     ) -> tuple[list[str], list[str], list[tuple[str, str, str]], list[bool]]:
@@ -473,6 +464,8 @@ def test_on_session_forked_routes_dialog_results(monkeypatch: pytest.MonkeyPatch
             )
         )
         assert pushes[0]._state == "success"
+        assert pushes[0]._fork_id == new_session_id
+        assert pushes[0]._cwd == "/workspace"
         assert loading == [True, False]
         callbacks[0](result)
         for worker in started_workers:
@@ -496,70 +489,6 @@ def test_on_session_forked_routes_dialog_results(monkeypatch: pytest.MonkeyPatch
     assert [status_text(message) for message in flashes] == [f"Opened fork: {session_short_id('fork-window')}"]
     assert restores == []
     assert notifications == [("Fork", "information", f"Created fork {session_short_id('fork-window')}")]
-    assert loading == [True, False, False]
-    assert launcher_calls == [("fork-window", "/workspace")]
-
-
-def test_on_session_forked_new_window_launcher_failure_warns(monkeypatch: pytest.MonkeyPatch) -> None:
-    pushes: list[object] = []
-    callbacks: list[object] = []
-    notifications: list[tuple[str, str, str]] = []
-    loading: list[bool] = []
-
-    class _FakeStatusBar:
-        def flash(self, _message: str) -> None:
-            raise AssertionError("status flash should not run on launcher failure")
-
-    def query_one(cls: type) -> object:
-        if cls.__name__ == "ChatPanel":
-            return SimpleNamespace(session_id="current-session")
-        if cls.__name__ == "StatusBar":
-            return _FakeStatusBar()
-        raise AssertionError(cls)
-
-    def push_screen(dialog: object, callback=None) -> None:
-        pushes.append(dialog)
-        callbacks.append(callback)
-
-    monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
-    from chrys.app.tui.terminal import launcher
-
-    with pytest.raises(launcher.TerminalLaunchError) as captured:
-        launcher.launch_new_chrys_window("probe")
-
-    def raise_launch_error(_session_id: str, *, cwd: str | None = None) -> None:
-        del cwd
-        raise captured.value
-
-    monkeypatch.setattr("chrys.app.tui.terminal.launcher.launch_new_chrys_window", raise_launch_error)
-    screen = SimpleNamespace(
-        app=SimpleNamespace(push_screen=push_screen),
-        query_one=query_one,
-        notify=lambda message, *, title, severity="information", **_kwargs: notifications.append(
-            (title, severity, message)
-        ),
-        _set_agent_loading=loading.append,
-        _state=main_screen_state_at("/workspace"),
-        _debug=lambda *_args: None,
-    )
-    handler = make_session_handler(screen, locale_controller=LocaleController(Settings(locale="zh-Hans")))
-
-    asyncio.run(handler._open_session_fork_dialog("current-session"))
-    asyncio.run(
-        handler.on_session_forked(
-            SessionForked(
-                session_id="current-session",
-                parent_session_id="current-session",
-                new_session_id="fork-window",
-            )
-        )
-    )
-    callbacks[0]("new_window")
-
-    assert notifications == [
-        ("Fork", "information", f"Created fork {session_short_id('fork-window')}"),
-        ("Fork", "warning", f"当前环境无法打开新的 {APP_DISPLAY_NAME} 窗口。"),
-    ]
     assert loading == [True, False, False]
 
 
