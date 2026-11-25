@@ -212,7 +212,7 @@ async def run_installed(args, root: Path) -> None:
     build = SimpleNamespace(
         runtime=SimpleNamespace(cwd=root, working_dirs=()),
         agent_name="wheel-smoke",
-        agent_id=None,
+        caller_name=None,
         session_id="wheel-smoke",
         session_dir=root / "session",
     )

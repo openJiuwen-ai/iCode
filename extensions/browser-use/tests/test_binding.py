@@ -56,9 +56,9 @@ def test_real_iCode_binding_exposes_nine_tools_and_hooks(tmp_path: Path) -> None
     build = SimpleNamespace(
         runtime=SimpleNamespace(cwd=tmp_path, working_dirs=()),
         agent_name="browser-test",
+        caller_name=None,
         session_id=None,
         session_dir=tmp_path / "session",
-        agent_id=None,
     )
     bound = bind_extension("browser", loaded[0].extension, build)
 
@@ -89,12 +89,14 @@ def test_real_binding_same_profile_requires_explicit_browser_id_when_open(tmp_pa
     build1 = SimpleNamespace(
         runtime=SimpleNamespace(cwd=tmp_path, working_dirs=()),
         agent_name="Browser",
+        caller_name=None,
         session_id="chat-1",
         session_dir=tmp_path / "session",
     )
     build2 = SimpleNamespace(
         runtime=SimpleNamespace(cwd=tmp_path, working_dirs=()),
         agent_name="Browser",
+        caller_name=None,
         session_id="chat-1",
         session_dir=tmp_path / "session",
     )

@@ -58,9 +58,9 @@ def native(request, monkeypatch, tmp_path):
         build = SimpleNamespace(
             runtime=SimpleNamespace(cwd=tmp_path, working_dirs=()),
             agent_name="contract",
+            caller_name=None,
             session_id="contract",
             session_dir=tmp_path / "session",
-            agent_id=None,
         )
         bound = binding.bind_extension("browser", ext.extension, build)
         try:

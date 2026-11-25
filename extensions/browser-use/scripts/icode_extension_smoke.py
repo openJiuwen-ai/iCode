@@ -43,7 +43,7 @@ async def _run() -> None:
         build = SimpleNamespace(
             runtime=SimpleNamespace(cwd=root, working_dirs=()),
             agent_name="smoke",
-            agent_id=None,
+            caller_name=None,
             session_id="smoke",
             session_dir=root / "session",
         )

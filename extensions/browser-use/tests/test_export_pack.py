@@ -96,9 +96,9 @@ def test_exported_pack_loads_and_declares_the_browser_tools(tmp_path, monkeypatc
     build = SimpleNamespace(
         runtime=SimpleNamespace(cwd=tmp_path, working_dirs=()),
         agent_name="pack-test",
+        caller_name=None,
         session_id="pack-test",
         session_dir=tmp_path / "session",
-        agent_id=None,
     )
     names = {tool.name for tool in bind_extension("browser", extension, build).tools}
 

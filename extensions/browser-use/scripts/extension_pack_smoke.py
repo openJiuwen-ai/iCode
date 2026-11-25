@@ -319,7 +319,7 @@ def _tools(extension, root: Path, name: str):
     build = SimpleNamespace(
         runtime=SimpleNamespace(cwd=root, working_dirs=()),
         agent_name="pack-smoke",
-        agent_id=None,
+        caller_name=None,
         session_id=f"pack-smoke-{name}",
         session_dir=root / f"session-{name}",
     )
