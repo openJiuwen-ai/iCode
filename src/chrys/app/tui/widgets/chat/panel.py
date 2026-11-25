@@ -171,6 +171,11 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._rollback_targets: set[int] = {0}
         self._rollback_preview_borders: dict[Widget, tuple[object, Callable[[Task[None]], None]]] = {}
         self._rollback_preview_start: UserMessage | None = None
+        # The card captured when the user starts a retry; ``captured`` also
+        # records "there was no old card", so a later TurnStarted never re-reads
+        # the transcript after a new interrupt card has mounted.
+        self._retry_settled_status: ReferenceType[Widget] | None = None
+        self._retry_settled_status_captured = False
         self._tool_registry = ToolGroupRegistry(
             self,
             self,
@@ -1862,28 +1867,33 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         if isinstance(last, (ErrorMessage, InterruptedMessage)):
             last.hide_action()
 
-    def settled_status(self) -> object | None:
-        """Return the settled terminal card a retry may dismiss, as an opaque weak handle.
+    def capture_settled_status(self) -> None:
+        """Record the card a retry may dismiss, including that there is none.
 
-        A retry captures this before its ``TurnStarted`` can wait in the render
-        gate. The handle holds no strong reference, so a card replaced in the
-        meantime dies with its widget instead of pinning the transcript.
+        Called when the user starts the retry, before any new card can mount.
+        A later ``TurnStarted`` must not re-read the transcript: an interrupt
+        card may have replaced the old one by then. The weak reference holds no
+        strong reference, so a replaced card dies with its widget.
         """
         status = self._find_trailing_status()
-        if isinstance(status, (ErrorMessage, InterruptedMessage)):
-            return weakref_ref(status)
-        return None
+        self._retry_settled_status = (
+            weakref_ref(status) if isinstance(status, (ErrorMessage, InterruptedMessage)) else None
+        )
+        self._retry_settled_status_captured = True
 
-    async def clear_settled_status(self, status: object) -> None:
-        """Remove exactly the captured settled card, if it is still the trailing one.
+    async def clear_settled_status(self) -> None:
+        """Remove exactly the card captured when the retry started, if still trailing.
 
-        The retry attempt or an interrupt may mount a newer card while the
-        retry's ``TurnStarted`` waits in the render gate. Such a card is newer
-        than the event that names the old one and must stay.
+        A retry attempt or an interrupt may mount a newer card while the retry's
+        ``TurnStarted`` waits in the render gate. That card was not captured and
+        must stay.
         """
-        if not isinstance(status, ReferenceType):
+        if not self._retry_settled_status_captured:
             return
-        captured = status()
+        status = self._retry_settled_status
+        self._retry_settled_status = None
+        self._retry_settled_status_captured = False
+        captured = status() if status is not None else None
         if (
             isinstance(captured, (ErrorMessage, InterruptedMessage))
             and captured.is_mounted
