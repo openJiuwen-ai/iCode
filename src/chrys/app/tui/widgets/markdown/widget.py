@@ -89,17 +89,19 @@ def _strip_plain_text(strip: Strip) -> str:
 
 def _text_height(content: Content, width: int) -> int:
     """Count default word-wrap rows without building formatted lines just to discard them."""
+    key = (width, "fold", False)
+    cached_key, height = content._height_cache
+    if cached_key == key:
+        return height
+
     text = content.plain
     if width <= 0 or "\t" in text or "\n" in text:
         return content.get_height({}, width)
 
-    key = (width, "fold", False)
-    cached_key, height = content._height_cache
-    if cached_key != key:
-        height = 1
-        if len(text) * 2 > width and not (text.isascii() and len(text) <= width):
-            height += len(divide_line(text, width))
-        content._height_cache = (key, height)
+    height = 1
+    if len(text) * 2 > width and not (text.isascii() and len(text) <= width):
+        height += len(divide_line(text, width))
+    content._height_cache = (key, height)
     return height
 
 
