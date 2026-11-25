@@ -184,6 +184,7 @@ _OBSERVE_SHADOWS_JS = (
     "const observeTree=(obs,seen,root,observeRoot)=>{"
     " const visited=new Set();"
     " const stack=[root];"
+    " let added=false;"
     " if(observeRoot && root && !seen.has(root)){"
     "  seen.add(root);"
     f"  try{{ obs.observe(root, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
@@ -195,6 +196,7 @@ _OBSERVE_SHADOWS_JS = (
     "  if(cur.shadowRoot){"
     "   if(!seen.has(cur.shadowRoot)){"
     "    seen.add(cur.shadowRoot);"
+    "    added=true;"
     f"    try{{ obs.observe(cur.shadowRoot, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
     "   }"
     "   stack.push(cur.shadowRoot);"
@@ -204,6 +206,7 @@ _OBSERVE_SHADOWS_JS = (
     "    if(el.shadowRoot){"
     "     if(!seen.has(el.shadowRoot)){"
     "      seen.add(el.shadowRoot);"
+    "      added=true;"
     f"      try{{ obs.observe(el.shadowRoot, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
     "     }"
     "     stack.push(el.shadowRoot);"
@@ -211,6 +214,7 @@ _OBSERVE_SHADOWS_JS = (
     "   }"
     "  }"
     " }"
+    " return added;"
     "};"
 )
 
@@ -230,8 +234,10 @@ _STABLE_PAGE_EXPR = (
     "   if(hit){ m.n++; m.at=performance.now(); }"
     "  });"
     "  m={n:0, at:performance.now(), obs, seen}; window.__chrys_stable=m;"
+    "  observeTree(m.obs, m.seen, root, true);"
+    " }else if(observeTree(m.obs, m.seen, root, true)){"
+    "  m.n++; m.at=performance.now();"
     " }"
-    " observeTree(m.obs, m.seen, root, true);"
     " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
     "})()"
 )
@@ -260,9 +266,13 @@ _STABLE_NODE_FN = (
     "   if(hit){ m.n++; m.at=performance.now(); }"
     "  });"
     "  m={n:0, at:performance.now(), obs, seen}; map.set(root, m);"
+    "  observeTree(m.obs, m.seen, root, true);"
+    "  if(this.shadowRoot) observeTree(m.obs, m.seen, this.shadowRoot, true);"
+    " }else{"
+    "  const added=observeTree(m.obs, m.seen, root, true)"
+    "   || (this.shadowRoot ? observeTree(m.obs, m.seen, this.shadowRoot, true) : false);"
+    "  if(added){ m.n++; m.at=performance.now(); }"
     " }"
-    " observeTree(m.obs, m.seen, root, true);"
-    " if(this.shadowRoot) observeTree(m.obs, m.seen, this.shadowRoot, true);"
     " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
     "}"
 )
@@ -440,13 +450,20 @@ async def _lookup(
     *,
     refresh_allowed: bool,
     editable_only: bool = False,
+    force_refresh: bool = False,
 ) -> tuple[Any, str, bool]:
     """Resolve a free-text target; entry ``None`` means it is not in the page.
 
     Returns ``(entry, object_id, refreshed)``. The snapshot is refreshed at most
-    once per call, and only when the caller allows it.
+    once per call, and only when the caller allows it. When *force_refresh* is
+    set (e.g. a previously resolved node detached from the DOM), refresh before
+    looking up so a stale snapshot entry whose detached node still yields a CDP
+    ``objectId`` cannot loop forever.
     """
     refreshed = False
+    can_refresh = capture_and_register is not _shared_capture or hasattr(session, "read_frame_metrics")
+    if force_refresh and refresh_allowed and can_refresh:
+        refreshed = await _refresh(session, deadline)
     for attempt in range(2):
         try:
             entry = _resolve_editable_free_text(session, spec) if editable_only else session.resolve_target(spec)
@@ -458,15 +475,14 @@ async def _lookup(
             entry = None
         if entry is not None:
             object_id = await _resolve_node(session, entry, deadline)
-            can_refresh = capture_and_register is not _shared_capture or hasattr(session, "read_frame_metrics")
-            if object_id or attempt or not refresh_allowed or not can_refresh:
+            if object_id or attempt or refreshed or not refresh_allowed or not can_refresh:
                 return entry, object_id or "", refreshed
             # Entry from snapshot is detached (re-rendered): refresh once before returning.
             refreshed = await _refresh(session, deadline)
             if not refreshed:
                 return entry, "", refreshed
             continue
-        if attempt or not refresh_allowed:
+        if attempt or refreshed or not refresh_allowed:
             break
         refreshed = await _refresh(session, deadline)
         if not refreshed:
@@ -774,6 +790,7 @@ async def _run_with_baseline_outcome(
     observed_text: str | None = None
     count_epoch: int | None = None
     refresh_failed = False
+    force_refresh = False
     try:
         while True:
             ok = False
@@ -857,16 +874,18 @@ async def _run_with_baseline_outcome(
                         last = f"count={found}"
                 else:
                     if not ref_spec:
-                        refresh_allowed = time.monotonic() - refresh_at >= _REFRESH_MIN_SECONDS
+                        refresh_allowed = force_refresh or (time.monotonic() - refresh_at >= _REFRESH_MIN_SECONDS)
                         entry, object_id, refreshed = await _lookup(
                             session,
                             target,
                             deadline,
                             refresh_allowed=refresh_allowed,
                             editable_only=(condition == "editable"),
+                            force_refresh=force_refresh,
                         )
                         if refreshed:
                             refresh_at = time.monotonic()
+                            force_refresh = False
                     else:
                         refreshed = False
                         if not object_id:
@@ -890,6 +909,7 @@ async def _run_with_baseline_outcome(
                             # A free-text target re-rendered since the snapshot: re-check current page.
                             if condition == "hidden":
                                 last += "（原节点已失效，正在重新查找同名元素）"
+                            force_refresh = True
                             entry, object_id = None, ""
                     else:
                         if condition == "stable":
@@ -919,7 +939,7 @@ async def _run_with_baseline_outcome(
                             else:
                                 if condition == "hidden":
                                     last += "（原节点已失效，正在重新查找同名元素）"
-                                    refresh_at = time.monotonic() - _REFRESH_MIN_SECONDS
+                                force_refresh = True
                                 entry, object_id = None, ""
                         elif condition == "stable":
                             quiet = float(probe.get("quiet_ms") or 0.0)

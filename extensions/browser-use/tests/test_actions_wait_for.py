@@ -724,3 +724,28 @@ def test_hidden_free_text_rechecks_page_when_previous_node_is_replaced(monkeypat
     assert "status=timeout" in text
     assert "basis=gone" not in text
     assert session.captures >= 1
+
+
+def test_hidden_free_text_refreshes_and_succeeds_when_detached_node_still_resolves(
+    monkeypatch, deterministic_clock
+) -> None:
+    deterministic_clock.step = 0.1
+    # CDP still returns an objectId for the detached node, while Runtime.callFunctionOn reports present=False.
+    session = FakeSession(
+        client=FakeClient(
+            probes=[
+                {"present": True, "visible": True, "text": "Stop generating"},
+                {"present": False, "visible": False, "text": ""},
+            ]
+        )
+    )
+
+    async def capture_removes_button(sess) -> None:
+        sess.captures += 1
+        sess.targets = [TargetNotFound("absent")] * 10
+
+    monkeypatch.setattr(wait_for, "capture_and_register", capture_removes_button)
+    text = run(session, {"condition": "hidden", "target": "Stop generating", "value": "", "timeout_ms": 1000})
+    assert "status=succeeded" in text
+    assert "basis=not_found" in text
+    assert session.captures == 1
