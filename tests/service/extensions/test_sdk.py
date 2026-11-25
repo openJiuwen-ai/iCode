@@ -173,15 +173,19 @@ def test_tool_error_carries_its_message_and_code() -> None:
 def test_a_test_context_creates_only_the_folders_it_was_given(tmp_path: Path) -> None:
     bare = ToolContext.for_testing(tmp_path)
     assert (bare.cwd, bare.workspace_dirs, bare.session_id, bare.agent_name) == (tmp_path, (tmp_path,), None, "test")
-    assert bare.agent_id is None
+    assert bare.agent_id is bare.invocation_id is None
     assert bare.session_data_dir is None
     with pytest.raises(RuntimeError, match="Pass data_dir="):
         _ = bare.data_dir
 
     full = ToolContext.for_testing(
-        tmp_path, data_dir=tmp_path / "data", session_data_dir=tmp_path / "session", agent_id="sub:review"
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_id="sub:review",
+        invocation_id="call-1",
     )
-    assert full.agent_id == "sub:review"
+    assert (full.agent_id, full.invocation_id) == ("sub:review", "call-1")
     assert not (tmp_path / "data").exists()
     assert full.data_dir == tmp_path / "data"
     assert full.data_dir.is_dir()
@@ -320,9 +324,9 @@ def test_a_timeout_is_a_positive_number_of_seconds(declare: Any, timeout: Any) -
 
 def test_a_turn_context_is_a_tool_context_with_the_turn_prompt(tmp_path: Path) -> None:
     turn = TurnContext.for_testing(
-        tmp_path, prompt="Ship it", agent_name="Code", session_id="s1", agent_id="workflow:abc"
+        tmp_path, prompt="Ship it", agent_name="Code", session_id="s1", agent_id="workflow:abc", invocation_id="abc"
     )
-    assert turn.agent_id == "workflow:abc"
+    assert (turn.agent_id, turn.invocation_id) == ("workflow:abc", "abc")
     assert isinstance(turn, ToolContext)
     assert (turn.prompt, turn.cwd, turn.workspace_dirs, turn.agent_name, turn.session_id) == (
         "Ship it",

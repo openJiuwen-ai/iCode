@@ -98,6 +98,8 @@ class ToolContext:
     """None for the main agent, ``sub:<tool_name>`` for a sub-agent tool,
     or ``workflow:<invocation_id>`` for a workflow node activation.
     """
+    invocation_id: str | None = None
+    """The current chat turn, sub-agent call or workflow node activation ID, or None outside an invocation."""
     _data_dir: Callable[[], Path] = field(repr=False, compare=False)
     _session_data_dir: Callable[[], Path | None] = field(repr=False, compare=False)
 
@@ -124,13 +126,17 @@ class ToolContext:
         agent_name: str = "test",
         session_id: str | None = None,
         agent_id: str | None = None,
+        invocation_id: str | None = None,
     ) -> ToolContext:
         """A context for calling a tool directly in a test; it never touches the real iCode folders.
 
         ``ctx.data_dir`` raises unless *data_dir* is given; ``ctx.session_data_dir``
         is None (no session) unless *session_data_dir* is given.
         """
-        return cls(**_testing_fields(cwd, data_dir, session_data_dir, agent_name, session_id, agent_id))
+        return cls(
+            invocation_id=invocation_id,
+            **_testing_fields(cwd, data_dir, session_data_dir, agent_name, session_id, agent_id),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -151,9 +157,14 @@ class TurnContext(ToolContext):
         agent_name: str = "test",
         session_id: str | None = None,
         agent_id: str | None = None,
+        invocation_id: str | None = None,
     ) -> TurnContext:
         """A context for calling a context function directly in a test, as :meth:`ToolContext.for_testing`."""
-        return cls(prompt=prompt, **_testing_fields(cwd, data_dir, session_data_dir, agent_name, session_id, agent_id))
+        return cls(
+            prompt=prompt,
+            invocation_id=invocation_id,
+            **_testing_fields(cwd, data_dir, session_data_dir, agent_name, session_id, agent_id),
+        )
 
 
 def _testing_fields(

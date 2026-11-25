@@ -43,6 +43,7 @@ from chrys.extensions import Extension, ToolContext, ToolError, TurnContext
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.events.types import RuntimeExtensionDetails, Warning
 from chrys.foundation.i18n import msg
+from chrys.foundation.models.invocations import current_invocation_origin
 from chrys.foundation.platform import get_platform
 from chrys.foundation.tool_kinds import EXTENSION_ID_PATTERN, extension_kind
 
@@ -284,8 +285,8 @@ class BoundToolHook:
 
     extension_id: str
     declaration: ToolHookDeclaration
-    context: ToolContext
-    """The ``ToolCall.context`` it gets: its own extension's folders, whichever tool is called."""
+    tool_context: Callable[[], ToolContext]
+    """Snapshot the current invocation with this extension's folders for one hook call."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,12 +312,13 @@ class BoundExtension:
 def bind_extension(extension_id: str, extension: Extension, build: ToolBuild) -> BoundExtension:
     """Everything the extension declares, bound for one agent build."""
     fields = _context_fields(extension_id, build)
-    hook_context = ToolContext(**fields)
 
     def turn_context(prompt: str) -> TurnContext:
-        return TurnContext(prompt=prompt, **fields)
+        return TurnContext(prompt=prompt, invocation_id=_invocation_id(), **fields)
 
-    tool_context = partial(ToolContext, **fields)
+    def tool_context() -> ToolContext:
+        return ToolContext(invocation_id=_invocation_id(), **fields)
+
     return BoundExtension(
         tools=[_bind(extension_id, declaration, tool_context, build.session_dir) for declaration in extension.tools],
         contexts=[
@@ -324,10 +326,10 @@ def bind_extension(extension_id: str, extension: Extension, build: ToolBuild) ->
             for declaration in extension.contexts
         ],
         before_tool_hooks=[
-            BoundToolHook(extension_id, declaration, hook_context) for declaration in extension.before_tool_hooks
+            BoundToolHook(extension_id, declaration, tool_context) for declaration in extension.before_tool_hooks
         ],
         after_tool_hooks=[
-            BoundToolHook(extension_id, declaration, hook_context) for declaration in extension.after_tool_hooks
+            BoundToolHook(extension_id, declaration, tool_context) for declaration in extension.after_tool_hooks
         ],
     )
 
@@ -344,6 +346,11 @@ def context_failed_warning(context: BoundContext, reason: str) -> Warning:
         ),
         session_id=context.session_id,
     )
+
+
+def _invocation_id() -> str | None:
+    origin = current_invocation_origin.get()
+    return origin.invocation_id if origin is not None else None
 
 
 def _context_fields(extension_id: str, build: ToolBuild) -> dict[str, Any]:

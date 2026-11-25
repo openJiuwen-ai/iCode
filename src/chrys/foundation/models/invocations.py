@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Literal
 
@@ -50,6 +51,10 @@ class InvocationOrigin:
         while origin.parent is not None:
             origin = origin.parent
         return origin
+
+
+current_invocation_origin: ContextVar[InvocationOrigin | None] = ContextVar("current_invocation_origin", default=None)
+"""The invocation executing a callback in this task, including its pre-pass extension contexts."""
 
 
 @dataclass(frozen=True, slots=True)
