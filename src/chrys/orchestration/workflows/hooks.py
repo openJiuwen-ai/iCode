@@ -110,11 +110,18 @@ class WorkflowSessionHooks:
         if previous is not None:
             return
         if manager is not None:
-            event = HookEvent.SESSION_RESTORED if resources.restoring else HookEvent.SESSION_START
-            if resources.restoring:
-                payload = {**payload, "restored_session_id": session.session_id}
             with trajectory_scope(context):
-                await manager.fire(event, payload, scope="session")
+                if resources.restoring:
+                    # ``session_restored`` alone says the session came back; firing
+                    # ``session_start`` too would change what an existing hook sees
+                    # on a restore.
+                    await manager.fire(
+                        HookEvent.SESSION_RESTORED,
+                        {**payload, "restored_session_id": session.session_id},
+                        scope="session",
+                    )
+                else:
+                    await manager.fire(HookEvent.SESSION_START, payload, scope="session")
 
     async def run_event(self, session_id: str, event: HookEvent, *, run_id: str, **fields: Any) -> None:
         attachment = self._sessions[session_id]

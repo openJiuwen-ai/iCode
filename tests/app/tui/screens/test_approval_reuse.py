@@ -90,7 +90,7 @@ async def test_tui_remember_selection_persists_or_reports_failure(tmp_path, monk
             else:
                 judge.evaluate.assert_not_awaited()
             await click_when_settled(pilot, "#reuse-remember")
-            await click_when_settled(pilot, "#reuse-project")
+            await click_when_settled(pilot, "#reuse-workspace")
             await click_when_settled(pilot, "#approval-yes")
             await wait_for(task.done, pilot=pilot, description="approval saved and call executed")
             await task
@@ -98,7 +98,7 @@ async def test_tui_remember_selection_persists_or_reports_failure(tmp_path, monk
             assert len(requests) == 1
             if save_ok:
                 grant = binding.service.rules()[0]
-                assert grant.scope == "PROJECT"
+                assert grant.scope == "WORKDIR"
                 await middleware.process(context, called)
                 assert called.await_count == 2 and len(requests) == 1
                 assert json.loads(middleware.drain_decisions()[-1]["grant_ids"]) == [grant.id]
@@ -126,9 +126,9 @@ class _DialogHost(App):
     [
         (False, "session", False, ""),
         (True, "session", False, "EXACT_SESSION"),
-        (True, "project", False, "EXACT_PROJECT"),
+        (True, "workspace", False, "EXACT_WORKSPACE"),
         (True, "session", True, "PREFIX_SESSION"),
-        (True, "project", True, "PREFIX_PROJECT"),
+        (True, "workspace", True, "PREFIX_WORKSPACE"),
     ],
 )
 async def test_compact_controls_submit_explicit_reuse_choice(remember, scope, extra, expected):
@@ -204,9 +204,9 @@ async def test_offer_without_prefix_hides_extra_arguments(kind):
         assert label == (
             "Don't ask again to modify these files" if kind == "files" else "Don't ask again for this command"
         )
-        await click_when_settled(pilot, "#reuse-project")
+        await click_when_settled(pilot, "#reuse-workspace")
         await click_when_settled(pilot, "#approval-yes")
-        assert dialog.remember_choice == "EXACT_PROJECT"
+        assert dialog.remember_choice == "EXACT_WORKSPACE"
 
 
 @pytest.mark.parametrize("decision", ["edited", "declined", "auto_approved"])
@@ -244,10 +244,10 @@ async def test_reuse_scope_keyboard_selection_does_not_approve():
         await app.push_screen(dialog, results.append)
         await click_when_settled(pilot, "#reuse-remember")
         await pilot.press("tab", "right", "space", "escape")
-        assert dialog.query_one("#reuse-project", RadioButton).value
+        assert dialog.query_one("#reuse-workspace", RadioButton).value
         assert app.screen is dialog and results == []
         await pilot.press("y")
-        assert dialog.remember_choice == "EXACT_PROJECT"
+        assert dialog.remember_choice == "EXACT_WORKSPACE"
         assert results == [(True, "", None)]
 
 
@@ -290,3 +290,18 @@ async def test_deferred_auto_approval_never_saves_a_reuse_grant(tmp_path):
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, record_request)
+
+
+@pytest.mark.parametrize(("workspace", "label"), [(True, "This workspace"), (False, "This working directory")])
+async def test_shared_approval_label_matches_session_membership(workspace, label):
+    dialog = ApprovalDialog(
+        caller_name="Code",
+        tool_name="shell",
+        args={"command": "npm run test"},
+        reuse_offer=ApprovalReuseOffer("command", ("npm run test",), workspace=workspace),
+    )
+    app = _DialogHost()
+    async with app.run_test() as pilot:
+        await app.push_screen(dialog)
+        await click_when_settled(pilot, "#reuse-remember")
+        assert dialog.query_one("#reuse-workspace", RadioButton).label.plain == label

@@ -78,6 +78,7 @@ from chrys.service.session.message_metadata import (
     is_compaction_tool_summary,
     persisted_tool_call_kind,
 )
+from chrys.service.state.folds import fold_summary
 from chrys.service.text_blocks import join_text_blocks, reconstruct_text_blocks, text_block_id
 
 if TYPE_CHECKING:
@@ -86,6 +87,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey
     from chrys.foundation.models.invocations import ContentChannel
     from chrys.service.context.providers.history import CompressedBlock
+    from chrys.service.state.folds import FoldItem
 
 # Replay renders every function-style call it can display: legacy serialized calls
 # count as calls, informational calls still get cards, and idless calls/results pair
@@ -204,6 +206,7 @@ class ReplayStructuredCompletion:
 class ReplayContextFold:
     context_id: str
     summary: str
+    block: CompressedBlock | None = None
 
 
 @dataclass(frozen=True)
@@ -799,10 +802,13 @@ class HistoryReplayPlanner:
                 continue
 
             if marker == HistoryMarkerKind.SUMMARY:
+                if HistoryMarkerKind.ARCHIVE_INDEX_KEY in extra:
+                    # The list of archived blocks is no fold: each of them has its own card.
+                    continue
                 entries.append(
                     ReplayContextFold(
                         context_id=str(extra.get("_block_id", "")),
-                        summary=_fold_summary(contents),
+                        summary=fold_summary(contents),
                     )
                 )
                 seen_user_in_turn = False
@@ -1057,7 +1063,7 @@ class HistoryReplayRenderer:
         *,
         initial_profile: str = "",
         file_snapshots: dict[FileSnapshotKey, list[Any]] | None = None,
-        compressed_blocks: dict[str, CompressedBlock] | None = None,
+        folds: list[FoldItem] | None = None,
     ) -> None:
         """Replay saved session messages into the chat transcript."""
         await self._ui.dismiss_welcome_for_content()
@@ -1071,7 +1077,13 @@ class HistoryReplayRenderer:
         process_failures_after: list[Widget] = []
         turn_user: UserMessage | None = None
 
-        for entry in plan.entries:
+        entries = plan.entries
+        if folds is not None:
+            entries = [
+                *(ReplayContextFold(fold.context_id, fold.summary, fold.block) for fold in folds),
+                *(entry for entry in entries if not isinstance(entry, ReplayContextFold)),
+            ]
+        for entry in entries:
             if isinstance(entry, ReplayTurnMarker):
                 self._toc.apply_turn_marker(entry.turn_index)
                 if turn_user is not None and entry.turn_index is not None:
@@ -1084,7 +1096,7 @@ class HistoryReplayRenderer:
                 continue
 
             if isinstance(entry, ReplayContextFold):
-                block = compressed_blocks.get(entry.context_id) if compressed_blocks else None
+                block = entry.block
                 if block:
                     replay_profile = await self._replay_compressed_block(
                         block,
@@ -1741,19 +1753,6 @@ def _replay_tool_images(content: dict[str, Any]) -> list[dict[str, Any]]:
         if is_image_media_type(media_type):
             image_items.append(item)
     return image_items
-
-
-def _fold_summary(contents: list[Any]) -> str:
-    fallback = ""
-    for content in contents:
-        text = (
-            content.get("text", "") if isinstance(content, dict) else str(content) if isinstance(content, str) else ""
-        )
-        if text and "Summary:" in text:
-            return text.split("Summary:", 1)[1].strip()
-        if text:
-            fallback = text
-    return fallback
 
 
 def _first_text(contents: list[Any]) -> str:

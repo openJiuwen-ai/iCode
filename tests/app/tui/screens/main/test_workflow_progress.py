@@ -26,11 +26,13 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.models.invocations import InvocationOrigin
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, open_workflow
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 
 # Every failure state records the same error in the node's journal, which the open details render
@@ -40,7 +42,7 @@ from ._workflow_support import WorkflowEngine, open_workflow
 async def test_agent_failure_uses_chat_error_and_retry_recovers_the_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, detail_open: bool, state: str
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(120, 45)) as pilot:
@@ -111,7 +113,7 @@ async def test_agent_failure_uses_chat_error_and_retry_recovers_the_surface(
 async def test_retry_compaction_pressure_and_progress_are_scoped_to_the_node(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus, engine = EventBus(), WorkflowEngine()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(120, 45)) as pilot:

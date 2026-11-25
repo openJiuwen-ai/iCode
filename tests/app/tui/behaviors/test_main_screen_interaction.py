@@ -11,6 +11,7 @@ import pytest
 from textual.widgets import Button, TextArea
 
 from chrys.app.tui.app import ChrysApp
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.tui_app_harness import (
@@ -407,3 +408,51 @@ async def test_shell_mode_transitions_never_paint_half_applied_layout(tmp_path: 
         tab_columns = [row.find("Tasks") for row in frame if "Tasks" in row]
         assert tab_columns, f"sidebar tabs missing from painted frame {index}"
         assert min(tab_columns) > 60, f"frame {index} painted the sidebar in the left half (x={min(tab_columns)})"
+
+
+@pytest.mark.parametrize(("locale", "back_label"), [("en", "Back"), ("zh-Hans", "返回")])
+async def test_trajectory_puts_esc_back_in_the_footer_corner_and_the_chat_gets_the_hook_indicator_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    locale: str,
+    back_label: str,
+) -> None:
+    """A surface that replaces the chat shows Esc Back at the right end, where the chat shows its hooks."""
+    from textual.widgets._footer import FooterKey
+
+    from chrys.app.tui.widgets.chrome.footer import ChrysFooter
+    from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
+    from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
+
+    monkeypatch.setenv("CHRYS_LOCALE", locale)
+    app = make_chrys_app(tmp_path, settings=Settings(locale=locale))
+
+    async with app.run_test(size=(80, 32)) as pilot:
+        footer = app.screen.query_one(ChrysFooter)
+        indicator = app.screen.query_one(HookIndicator)
+        dashboard = app.screen.query_one(TrajectoryDashboard)
+
+        def escape_keys() -> list[FooterKey]:
+            return [key for key in footer.query(FooterKey) if key.key == "escape"]
+
+        assert escape_keys() == []
+        assert indicator.display is True
+        await wait_for(lambda: indicator.region.width > 0, pilot=pilot)
+        hooks_width = indicator.region.width
+
+        await pilot.press("f12")
+        await wait_for(
+            lambda: dashboard.foreground and len(keys := escape_keys()) == 1 and keys[0].region.width > 0,
+            pilot=pilot,
+        )
+        (back,) = escape_keys()
+        assert back.has_class("-corner")
+        assert back_label in str(back.render())
+        # At the right end, and no wider than the hook indicator: the keys on the left keep their room.
+        assert back.region.right == app.screen.size.width
+        assert back.region.width <= hooks_width
+        assert indicator.display is False
+
+        await pilot.press("escape")
+        await wait_for(lambda: not dashboard.foreground and escape_keys() == [], pilot=pilot)
+        assert indicator.display is True

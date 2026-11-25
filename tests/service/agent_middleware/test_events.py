@@ -21,11 +21,12 @@ from chrys.foundation.events.types import (
     InvocationToolCallStart,
     ShellToBackground,
 )
-from chrys.foundation.io.result_content import extract_result_text
+from chrys.foundation.io.result_content import extract_result_images, extract_result_text
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.tool_call_context import TOOL_CALL_CONTEXT_METADATA_KEY, set_tool_context_builder
 from chrys.foundation.tool_kinds import KIND_SHELL, KIND_SUB_AGENT
 from chrys.foundation.tool_result_metadata import (
+    COMMITTED_ERROR_TEXT_KEY,
     SHELL_EXIT_CODE_METADATA_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
     TOOL_ERROR_MESSAGE_METADATA_KEY,
@@ -51,12 +52,15 @@ from chrys.service.agent_middleware import (
 )
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_REJECTED_KEY,
+    _BEFORE_TOOL_CONTEXT_KEY,
     _REJECTION_MESSAGE_KEY,
     _REJECTION_SOURCE_KEY,
     _TOOL_INVOCATION_ORDER_KEY,
 )
+from chrys.service.agent_middleware.events import hook_dispatch
 from chrys.service.agent_middleware.events.hook_dispatch import (
-    append_extra_context_to_result,
+    apply_result_hooks,
+    before_tool_context,
     fire_after_tool_hooks,
     get_tool_invocation_order,
 )
@@ -71,9 +75,11 @@ from chrys.service.tools.result_metadata import record_tool_success, tool_error
 from tests.service.agent_middleware._event_fakes import (
     DenyBeforeToolHookManager,
     DualDecisionHookManager,
+    PayloadRecordingHookManager,
     _ctx,
 )
 from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.async_tasks import running_task, wait_for_completion, wait_for_started
 from tests.support.event_capture import capture_event_sequence, capture_events
 
 # ──────────────── ResponseBatchCounter ──────────────────────────────────
@@ -427,7 +433,53 @@ async def test_tool_event_middleware_hook_denial_is_not_public_approval_rejectio
         "approval_rejected": True,
         "rejection_source": "hook",
         "hook_denied": True,
+        "outcome": "rejected",
     }
+
+
+async def test_tool_hook_payloads_carry_the_calling_invocation_and_its_ancestry() -> None:
+    """A sub-agent's call names itself and the turn it runs under, so concurrent children stay apart."""
+    turn = InvocationOrigin("turn", "test", "turn-test", None)
+    child = InvocationOrigin("sub_agent", "test", "child-a", turn)
+    manager = PayloadRecordingHookManager(
+        {
+            HookEvent.BEFORE_TOOL_CALL: HookDecision(),
+            HookEvent.AFTER_TOOL_CALL: HookDecision(),
+        },
+    )
+    mw = ToolEventMiddleware(EventBus(), session_id="test", hook_manager=manager, origin=child)
+    ctx = _ctx("read_file", "filesystem.read", args={"path": "a.txt"})
+
+    async def call_next() -> None:
+        ctx.result = "contents"
+
+    await mw.process(ctx, call_next)
+
+    expected = {
+        "kind": "sub_agent",
+        "session_id": "test",
+        "invocation_id": "child-a",
+        "attempt": 0,
+        "parent": {"kind": "turn", "session_id": "test", "invocation_id": "turn-test", "attempt": 0, "parent": None},
+    }
+    assert manager.payloads[HookEvent.BEFORE_TOOL_CALL][0]["origin"] == expected
+    assert manager.payloads[HookEvent.AFTER_TOOL_CALL][0]["origin"] == expected
+
+
+def test_tool_hook_payload_origin_is_null_without_a_bound_invocation() -> None:
+    """Every invocation event needs a live origin, so only a direct payload build can lack one."""
+    payload = hook_dispatch._build_payload(
+        session_id="test",
+        profile_name="Code",
+        tool_name="read_file",
+        kind="filesystem.read",
+        call_id="call-1",
+        args={},
+        workspace_cwd="/tmp",
+        origin=None,
+    )
+
+    assert payload["origin"] is None
 
 
 async def test_tool_event_middleware_user_rejection_public_metadata_is_persisted() -> None:
@@ -566,6 +618,156 @@ async def test_tool_card_shows_the_model_visible_error_the_model_read() -> None:
     assert [result.result for result in results] == ["Error: Cannot load 'remote': another tool already has that name."]
 
 
+async def test_result_override_on_tool_error_replaces_the_text_the_model_reads() -> None:
+    """The middleware commits the replacement to ``context.result``, not only to the event.
+
+    The bus event is what the UI shows; ``context.result`` is what the kernel reads
+    when it builds the content the model sees. A replacement that reached only the
+    first would leave the model reading the original text.
+    """
+    bus = EventBus()
+    manager = PayloadRecordingHookManager(
+        {HookEvent.TOOL_ERROR: HookDecision(result_override="REDACTED")},
+    )
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="test",
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+        hook_manager=manager,
+    )
+    events = await capture_events(bus, InvocationToolCallResult)
+    context = FunctionInvocationContext(FunctionTool(name="test_tool"), {})
+
+    async def call_next_error() -> None:
+        raise ModelVisibleToolError("SECRET ORIGINAL")
+
+    with pytest.raises(ModelVisibleToolError):
+        await mw.process(context, call_next_error)
+
+    # What the UI shows.
+    assert [event.result for event in events] == ["REDACTED"]
+    # What the kernel hands the model: the committed result, not the exception text.
+    assert extract_result_text(context.result) == "REDACTED"
+
+
+@pytest.mark.asyncio
+async def test_tool_error_sees_the_text_after_tool_call_left() -> None:
+    """One call fires two events; the second must not read what the first removed.
+
+    ``after_tool_call`` runs first, then ``tool_error`` with the same payload. If
+    the second still saw the original text, its replacement would be computed
+    from what the first hook redacted, and the redacted text would come back.
+    """
+    bus = EventBus()
+    manager = PayloadRecordingHookManager(
+        {
+            HookEvent.AFTER_TOOL_CALL: HookDecision(result_override="REDACTED"),
+            HookEvent.TOOL_ERROR: HookDecision(result_override="REDACTED AGAIN"),
+        },
+    )
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="test",
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+        hook_manager=manager,
+    )
+    context = FunctionInvocationContext(FunctionTool(name="test_tool"), {})
+
+    async def call_next_error() -> None:
+        raise ModelVisibleToolError("SECRET ORIGINAL")
+
+    with pytest.raises(ModelVisibleToolError):
+        await mw.process(context, call_next_error)
+
+    seen = manager.payloads[HookEvent.TOOL_ERROR][0]["result"]["text"]
+    assert seen == "REDACTED", "tool_error was handed the text the earlier event replaced"
+
+
+@pytest.mark.asyncio
+async def test_result_override_survives_the_coroutine_the_pipeline_leaves_behind() -> None:
+    """The real chain puts the tool's coroutine in ``context.result`` before awaiting it.
+
+    ``kernel/middleware.py`` assigns ``context.result = final_handler(context)`` and
+    only then awaits it, so when the tool raises, ``context.result`` still holds
+    that coroutine. Reading it as the replacement finds no text at all, and the
+    model would read the original error the hook was there to redact.
+    """
+    bus = EventBus()
+    manager = PayloadRecordingHookManager(
+        {HookEvent.TOOL_ERROR: HookDecision(result_override="REDACTED")},
+    )
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="test",
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+        hook_manager=manager,
+    )
+    context = FunctionInvocationContext(FunctionTool(name="test_tool"), {})
+
+    async def the_tool() -> None:
+        raise ModelVisibleToolError("SECRET ORIGINAL")
+
+    async def call_next_error() -> None:
+        # Exactly what the kernel's final wrapper does: assign, then await.
+        context.result = the_tool()
+        await context.result
+
+    with pytest.raises(ModelVisibleToolError):
+        await mw.process(context, call_next_error)
+
+    # The coroutine left in ``context.result`` is closed and replaced, not kept:
+    # a kept one would be a dangling awaitable the replacement never reaches.
+    assert extract_result_text(context.result) == "REDACTED"
+    # What the model reads once the kernel builds the result from the exception.
+    committed = context.metadata.get(COMMITTED_ERROR_TEXT_KEY)
+    assert committed == "REDACTED", "the replacement did not reach the kernel"
+
+
+async def test_result_override_on_after_tool_call_also_reaches_context_result() -> None:
+    """An override on the successful-event side of a raising call lands the same way."""
+    bus = EventBus()
+    manager = PayloadRecordingHookManager(
+        {HookEvent.AFTER_TOOL_CALL: HookDecision(result_override="REDACTED")},
+    )
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="test",
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+        hook_manager=manager,
+    )
+    context = FunctionInvocationContext(FunctionTool(name="test_tool"), {})
+
+    async def call_next_error() -> None:
+        raise ModelVisibleToolError("SECRET ORIGINAL")
+
+    with pytest.raises(ModelVisibleToolError):
+        await mw.process(context, call_next_error)
+
+    assert extract_result_text(context.result) == "REDACTED"
+
+
+async def test_without_an_override_a_raise_leaves_no_committed_result() -> None:
+    """A hook with no decision leaves error construction to the kernel."""
+    bus = EventBus()
+    manager = PayloadRecordingHookManager({HookEvent.TOOL_ERROR: HookDecision()})
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="test",
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+        hook_manager=manager,
+    )
+    context = FunctionInvocationContext(FunctionTool(name="test_tool"), {})
+
+    async def call_next_error() -> None:
+        raise ModelVisibleToolError("SECRET ORIGINAL")
+
+    with pytest.raises(ModelVisibleToolError):
+        await mw.process(context, call_next_error)
+
+    assert COMMITTED_ERROR_TEXT_KEY not in context.metadata
+    assert context.result == "Error: SECRET ORIGINAL"
+
+
 async def test_tool_event_middleware_hooks_modify_args_before_start_event(tmp_path) -> None:
     """Hook-modified args should be what UI events and the tool body see."""
 
@@ -694,6 +896,149 @@ async def test_tool_event_middleware_after_hook_extra_context_appends_to_text_re
     assert results[0].result == "base result\n\nhook note"
 
 
+def _decision_hook(hook_id: str, event: HookEvent, decision: dict) -> HookConfig:
+    """A blocking hook that writes *decision* as its result file."""
+    script = textwrap.dedent(
+        f"""
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({decision!r}, f)
+        """,
+    )
+    return HookConfig(
+        id=hook_id,
+        event=event,
+        run=HookRun(type="command", argv=[sys.executable, "-c", script]),
+        execution=HookExecution(mode="blocking"),
+    )
+
+
+async def test_before_tool_extra_context_lets_the_call_run_and_precedes_after_tool_context(tmp_path) -> None:
+    """A warn: the call runs, and the model reads the note with its result, ahead of after-tool context."""
+    manager = HookManager(
+        file=HooksFile(
+            hooks=[
+                _decision_hook("warn", HookEvent.BEFORE_TOOL_CALL, {"extra_context": "before note"}),
+                _decision_hook("note", HookEvent.AFTER_TOOL_CALL, {"extra_context": "after note"}),
+            ],
+        ),
+        hooks_dir=tmp_path / "hooks",
+    )
+    bus = EventBus()
+    results = await capture_events(bus, InvocationToolCallResult)
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="s1",
+        hook_manager=manager,
+        profile_name="Code",
+        origin=InvocationOrigin("turn", "s1", "turn-test", None),
+    )
+    ctx = _ctx("read_file", "filesystem.read", args={"path": "/tmp/x"})
+    ran = False
+
+    async def call_next() -> None:
+        nonlocal ran
+        ran = True
+        ctx.result = "base result"
+
+    await mw.process(ctx, call_next)
+
+    assert ran is True
+    assert ctx.result == "base result\n\nbefore note\n\nafter note"
+    assert results[0].result == "base result\n\nbefore note\n\nafter note"
+
+
+async def test_before_tool_extra_context_rides_with_a_modify(tmp_path) -> None:
+    """A hook can rewrite the arguments and say why in the same result file."""
+    manager = HookManager(
+        file=HooksFile(
+            hooks=[
+                _decision_hook(
+                    "fix",
+                    HookEvent.BEFORE_TOOL_CALL,
+                    {"action": "modify", "args_override": {"path": "/tmp/safe"}, "extra_context": "path rewritten"},
+                ),
+            ],
+        ),
+        hooks_dir=tmp_path / "hooks",
+    )
+    mw = ToolEventMiddleware(
+        EventBus(),
+        session_id="s1",
+        hook_manager=manager,
+        profile_name="Code",
+        origin=InvocationOrigin("turn", "s1", "turn-test", None),
+    )
+    ctx = _ctx("read_file", "filesystem.read", args={"path": "/tmp/x"})
+    seen: list[str] = []
+
+    async def call_next() -> None:
+        seen.append(ctx.arguments["path"])
+        ctx.result = "ok"
+
+    await mw.process(ctx, call_next)
+
+    assert seen == ["/tmp/safe"]
+    assert ctx.result == "ok\n\npath rewritten"
+
+
+async def test_before_tool_extra_context_is_dropped_when_a_later_hook_blocks(tmp_path) -> None:
+    """A call that does not run carries only the block reason, not an earlier hook's note."""
+    manager = HookManager(
+        file=HooksFile(
+            hooks=[
+                _decision_hook("warn", HookEvent.BEFORE_TOOL_CALL, {"extra_context": "before note"}),
+                _decision_hook("deny", HookEvent.BEFORE_TOOL_CALL, {"action": "block", "reason": "no"}),
+            ],
+        ),
+        hooks_dir=tmp_path / "hooks",
+    )
+    mw = ToolEventMiddleware(
+        EventBus(),
+        session_id="s1",
+        hook_manager=manager,
+        profile_name="Code",
+        origin=InvocationOrigin("turn", "s1", "turn-test", None),
+    )
+    ctx = _ctx("read_file", "filesystem.read", args={"path": "/tmp/x"})
+    ran = False
+
+    async def call_next() -> None:
+        nonlocal ran
+        ran = True
+
+    await mw.process(ctx, call_next)
+
+    assert ran is False
+    assert "before note" not in str(ctx.result)
+    assert "no" in str(ctx.result)
+
+
+async def test_sub_agent_tool_call_gets_before_tool_extra_context(tmp_path) -> None:
+    """A sub-agent's tool call is warned the same way as the main agent's."""
+    manager = HookManager(
+        file=HooksFile(hooks=[_decision_hook("warn", HookEvent.BEFORE_TOOL_CALL, {"extra_context": "before note"})]),
+        hooks_dir=tmp_path / "hooks",
+    )
+    mw = SubAgentEventMiddleware(
+        EventBus(),
+        agent_name="Explore",
+        invocation_id="inv123",
+        session_id="s1",
+        hook_manager=manager,
+        origin=InvocationOrigin("sub_agent", "s1", "inv123", None),
+    )
+    ctx = _ctx("read_file", "filesystem.read", args={"path": "/tmp/x"})
+
+    async def call_next() -> None:
+        ctx.result = "base result"
+
+    await mw.process(ctx, call_next)
+    await mw.flush_progress()
+
+    assert ctx.result == "base result\n\nbefore note"
+
+
 async def test_failed_tool_call_merges_after_and_error_hook_decisions() -> None:
     manager = DualDecisionHookManager(
         {
@@ -739,10 +1084,10 @@ async def test_failed_tool_call_merges_after_and_error_hook_decisions() -> None:
 
 
 def test_append_extra_context_updates_content_list_result() -> None:
-    result, result_text = append_extra_context_to_result(
+    result, result_text = apply_result_hooks(
         [Content.from_text("base result")],
         "base result",
-        ["hook note"],
+        extra_context=["hook note"],
     )
 
     assert result_text == "base result\n\nhook note"
@@ -750,6 +1095,82 @@ def test_append_extra_context_updates_content_list_result() -> None:
     assert len(result) == 2
     assert result[1].text == "\nhook note"
     assert extract_result_text(result) == result_text
+
+
+def test_result_override_replaces_a_text_result() -> None:
+    result, result_text = apply_result_hooks("base result", "base result", result_override="sanitised result")
+
+    assert (result, result_text) == ("sanitised result", "sanitised result")
+
+
+def test_result_override_and_extra_context_put_the_note_after_the_replacement() -> None:
+    result, result_text = apply_result_hooks(
+        "base result",
+        "base result",
+        result_override="sanitised result",
+        extra_context=["hook note"],
+    )
+
+    assert result == result_text == "sanitised result\n\nhook note"
+
+
+def test_result_override_keeps_the_images_of_a_list_result() -> None:
+    image = Content(type="data", uri="data:image/png;base64,AAAA", media_type="image/png")
+    result, result_text = apply_result_hooks(
+        [Content.from_text("base result"), image],
+        "base result",
+        result_override="sanitised result",
+    )
+
+    assert result_text == "sanitised result"
+    assert isinstance(result, list)
+    assert [item.type for item in result] == ["text", "data"]
+    assert result[0].text == "sanitised result"
+    assert result[1] is image
+    # The model still sees the image beside the replacement, as it saw it beside the original text.
+    assert extract_result_images(result) == [image]
+
+
+def test_result_override_keeps_attachments_that_are_not_images() -> None:
+    """An MCP server answers with audio or a file beside its text: a hook's text replacement keeps them."""
+    audio = Content(type="data", uri="data:audio/wav;base64,AAAA", media_type="audio/wav")
+    blob = Content(type="uri", uri="file:///tmp/report.pdf", media_type="application/pdf")
+    result, result_text = apply_result_hooks(
+        [Content.from_text("base result"), audio, blob],
+        "base result",
+        result_override="sanitised result",
+    )
+
+    assert result_text == "sanitised result"
+    assert isinstance(result, list)
+    assert [item.type for item in result] == ["text", "data", "uri"]
+    assert result[0].text == "sanitised result"
+    assert result[1] is audio
+    assert result[2] is blob
+
+
+def test_a_replacement_and_appended_context_together_keep_attachments_that_are_not_images() -> None:
+    audio = Content(type="data", uri="data:audio/wav;base64,AAAA", media_type="audio/wav")
+    result, result_text = apply_result_hooks(
+        [Content.from_text("base result"), audio],
+        "base result",
+        result_override="sanitised result",
+        extra_context=["hook note"],
+    )
+
+    assert result_text == "sanitised result\n\nhook note"
+    assert isinstance(result, list)
+    assert [item.type for item in result] == ["text", "data"]
+    assert result[0].text == "sanitised result\n\nhook note"
+    assert result[1] is audio
+
+
+def test_result_override_leaves_a_non_text_result_as_it_is() -> None:
+    original = SimpleNamespace(type="data", media_type="application/octet-stream", additional_properties={})
+    result, result_text = apply_result_hooks(original, "", result_override="sanitised result")
+
+    assert result is original
+    assert result_text == "sanitised result"
 
 
 # ──────────────── ToolEventMiddleware — implicit mutation windows ─────────
@@ -847,13 +1268,17 @@ async def test_tool_event_middleware_runs_implicit_windows_in_parallel_by_defaul
     first_ctx = _ctx("bash", KIND_SHELL, args={"command": "true"})
     second_ctx = _ctx("bash", KIND_SHELL, args={"command": "true"})
 
-    first_task = asyncio.create_task(mw.process(first_ctx, first_next))
-    await first_entered.wait()
-    second_task = asyncio.create_task(mw.process(second_ctx, second_next))
-    await asyncio.wait_for(second_entered.wait(), timeout=0.5)
-
-    release_both.set()
-    await asyncio.gather(first_task, second_task)
+    try:
+        async with running_task(mw.process(first_ctx, first_next)) as first_task:
+            await wait_for_started(first_entered, first_task, description="first parallel tool entered")
+            async with running_task(mw.process(second_ctx, second_next)) as second_task:
+                await wait_for_started(second_entered, second_task, description="second parallel tool entered")
+                assert not first_task.done()
+                release_both.set()
+                await wait_for_completion(first_task)
+                await wait_for_completion(second_task)
+    finally:
+        release_both.set()
     assert max_active == 2
 
 
@@ -1124,3 +1549,160 @@ async def test_clear_batch_records_drops_rolled_back_attempt_records() -> None:
     mw.clear_batch_records()
 
     assert mw.drain_batch_records() == []
+
+
+async def test_a_rejected_call_does_not_carry_the_gate_warning() -> None:
+    """A rejection replaces the result, so a gate warning has nothing to attach to.
+
+    The model already reads why the call was refused; appending the hook's
+    "this looked risky" note to that reason would contradict it.
+    """
+    context = SimpleNamespace(metadata={})
+    context.metadata[_BEFORE_TOOL_CONTEXT_KEY] = ["this looks risky"]
+    assert before_tool_context(context) == ["this looks risky"]
+
+    context.metadata[_APPROVAL_REJECTED_KEY] = True
+    assert before_tool_context(context) == []
+
+
+async def test_an_allowed_call_still_carries_the_gate_warning() -> None:
+    context = SimpleNamespace(metadata={_BEFORE_TOOL_CONTEXT_KEY: ["note"], _APPROVAL_REJECTED_KEY: False})
+    assert before_tool_context(context) == ["note"]
+
+
+@pytest.mark.asyncio
+async def test_extra_context_on_raised_call_does_not_expose_private_exception_text() -> None:
+    """Appending extra_context to a raised call must not leak private exception text to the model.
+
+    A tool that raises RuntimeError("PRIVATE_CREDENTIAL") normally produces
+    ``Error: Function failed.`` for the model.  If a hook only appends
+    ``extra_context`` the middleware must base the committed text on the safe
+    ``raised_text`` (``Error: Function failed.``), not on ``error_text``
+    (which carries the raw exception message).  The correct model result is
+    ``Error: Function failed.\n\nNOTE``.
+    """
+    bus = EventBus()
+    manager = PayloadRecordingHookManager(
+        {HookEvent.AFTER_TOOL_CALL: HookDecision(extra_context=["NOTE"])},
+    )
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="test",
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+        hook_manager=manager,
+    )
+    context = FunctionInvocationContext(FunctionTool(name="test_tool"), {})
+
+    async def call_next_private_error() -> None:
+        raise RuntimeError("PRIVATE_CREDENTIAL_123")
+
+    with pytest.raises(RuntimeError):
+        await mw.process(context, call_next_private_error)
+
+    committed = context.metadata.get(COMMITTED_ERROR_TEXT_KEY)
+    assert committed is not None, "middleware must commit text when extra_context was appended to a raised call"
+    assert "PRIVATE_CREDENTIAL_123" not in committed, "private exception text must not reach the model"
+    assert "NOTE" in committed, "extra_context note must still appear"
+    assert committed.startswith("Error: Function failed.")
+
+
+@pytest.mark.asyncio
+async def test_explicit_result_override_on_raised_call_takes_full_text() -> None:
+    """An explicit result_override replaces the whole result regardless of raised_text.
+
+    A hook that returns result_override="REDACTED" on a raised call decides what
+    the model reads. That text may contain whatever the hook chooses; the
+    private-exception-isolation rule applies only when no explicit override is set.
+    """
+    bus = EventBus()
+    manager = PayloadRecordingHookManager(
+        {HookEvent.TOOL_ERROR: HookDecision(result_override="REDACTED BY HOOK")},
+    )
+    mw = ToolEventMiddleware(
+        bus,
+        session_id="test",
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+        hook_manager=manager,
+    )
+    context = FunctionInvocationContext(FunctionTool(name="test_tool"), {})
+
+    async def call_next_error() -> None:
+        raise RuntimeError("PRIVATE_STUFF")
+
+    with pytest.raises(RuntimeError):
+        await mw.process(context, call_next_error)
+
+    committed = context.metadata.get(COMMITTED_ERROR_TEXT_KEY)
+    assert committed == "REDACTED BY HOOK"
+
+
+def test_empty_string_result_override_withholds_on_a_successful_call() -> None:
+    """result_override='' (withhold) must replace result with empty text, not be ignored."""
+    result, result_text = apply_result_hooks("original output", "original output", result_override="")
+    assert result == ""
+    assert result_text == ""
+
+
+def test_subsequent_hook_with_no_override_does_not_restore_withheld_text() -> None:
+    """Once a hook withholds the result (''), a later hook without an override must not restore it.
+
+    _merge_decision copies result_override when it is not None; a later HookDecision
+    with result_override=None (the default) must not reset the already-withheld value.
+    """
+    from chrys.service.agent_middleware.events.hook_dispatch import _merge_decision
+
+    aggregate = HookDecision()
+    _merge_decision(aggregate, HookDecision(result_override=""))
+    second = HookDecision()  # result_override=None — no opinion
+    _merge_decision(aggregate, second)
+    assert aggregate.result_override == "", "withheld result must not be restored by a hook with no opinion"
+
+
+def test_replaced_result_audit_carries_both_override_and_extra_context() -> None:
+    """When a hook sets both result_override and extra_context, HookRunApplied keeps both.
+
+    The headline effect is replaced_result; the audit must also capture extra_context
+    so the TUI's 'actual applied' section can show both the replacement text and the
+    appended note.
+    """
+    from chrys.service.hooks.manager import _blocking_effect
+    from chrys.service.hooks.runner import HookResult
+
+    decision = HookDecision(
+        result_override="REPLACED TEXT",
+        extra_context=["APPENDED NOTE"],
+    )
+    result = HookResult(
+        hook_id="test-hook",
+        exit_code=0,
+        decision={"result_override": "REPLACED TEXT", "extra_context": "APPENDED NOTE"},
+    )
+    effect, applied = _blocking_effect(
+        HookEvent.AFTER_TOOL_CALL,
+        result,
+        decision,
+        blocked=False,
+        asked=False,
+        args_changed=False,
+        args_after={},
+        reminders_before=0,
+        contexts_before=0,
+    )
+    assert effect == "replaced_result"
+    assert applied.result_override == "REPLACED TEXT"
+    assert applied.extra_context == "APPENDED NOTE"
+
+
+def test_asks_unsupported_recognises_empty_string_result_override_as_explicit_request() -> None:
+    """result_override='' on a non-override event must be treated as an explicit (unsupported) request."""
+    from chrys.service.hooks.manager import _asks_unsupported
+
+    # USER_PROMPT_SUBMIT does not support result_override.
+    assert _asks_unsupported(HookEvent.USER_PROMPT_SUBMIT, {"result_override": ""}, unusable="")
+
+
+def test_asks_anything_recognises_empty_string_result_override() -> None:
+    """_asks_anything must return True when result_override is '' (hook explicitly withholds)."""
+    from chrys.service.hooks.manager import _asks_anything
+
+    assert _asks_anything({"result_override": ""})

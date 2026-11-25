@@ -19,8 +19,8 @@ from chrys.service.approval.reuse import (
     FileKey,
     ReuseContext,
     canonical,
-    project_path,
     simple_argv,
+    workdir_path,
 )
 from chrys.service.approval.safety_classifier import target_may_access_sensitive_data
 from chrys.service.tools.approval_targets import ApprovedTargets
@@ -52,9 +52,17 @@ class ApprovalReuseBinding:
     off the event loop.
     """
 
-    def __init__(self, runtime: SessionEnvironment, tools: list, *, session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        runtime: SessionEnvironment,
+        tools: list,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         self.runtime = runtime
         self.session_id = session_id or runtime.session_id
+        self.workspace_id = workspace_id
         self._tools = {tool.name: tool for tool in tools if isinstance(tool, FunctionTool)}
         config_dir = runtime.platform.config_dir
         self.service = ApprovalReuseService(
@@ -95,7 +103,7 @@ class ApprovalReuseBinding:
 
     def _candidate(self, context: FunctionInvocationContext, targets: ApprovedTargets) -> Candidate | None:
         args = context.arguments
-        reuse = ReuseContext(self.session_id, project_path(self.runtime.cwd))
+        reuse = ReuseContext(self.session_id, workdir_path(self.runtime.cwd), self.workspace_id)
         if not isinstance(args, dict) or not reuse.eligible:
             return None
         if targets.files is not None:

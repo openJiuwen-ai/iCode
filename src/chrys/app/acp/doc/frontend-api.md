@@ -32,7 +32,7 @@ Direction principles:
 4. Some UI stays frontend-native even with a shared backend: editor diff rendering,
    terminal integration, file pickers, notifications, settings UI.
 5. Extensions use the `chrys/*`, `session/*`, `sub_agent/*`, `profiles/*`,
-   `settings/*`, or `mcp/*` namespaces and are documented here.
+   `providers/*`, `settings/*`, or `mcp/*` namespaces and are documented here.
 
 ## Transport
 
@@ -100,13 +100,21 @@ the whole prompt with `invalid_params`. Audio and embedded blob resources fail t
 right after its text (alone, for a message that had no text), each as an `image` block in
 its own `user_message_chunk` with the same `messageId` and `_meta.chrys` turn ids as the text.
 
+`session/load` and `session/rollback` replay folded segments first, oldest to
+newest, followed by the remaining transcript. Updates for a folded segment carry
+`_meta.chrys.compressedContextId` alongside any turn labels. Each segment ends
+with its own `chrys/context_compressed` notification, after any synthesized tool
+results. A summary with no original messages sends only that notification. Close
+one fold entry per notification and distinguish repeated context IDs by their
+order. A rollback to turn 0 does not replay history.
+
 `session/new` and `session/load` accept `additionalDirectories` (advertised via
 `SessionCapabilities.additionalDirectories` in `initialize` so clients surface the
 option); the manager builds a multi-dir `Workspace` and passes it to
 `ChrysSessionHost(workspace=...)`. All `cwd` / `additionalDirectories` paths must be
 **absolute** (ACP contract) — a relative path is rejected rather than resolved against
 the ACP server's process cwd, which would bind the session to the wrong workspace.
-On `session/load` of an inactive session, supplied `additionalDirectories` are
+For Unspecified sessions, on `session/load` of an inactive session, supplied `additionalDirectories` are
 **authoritative** and replace the saved additional roots, with the primary cwd kept
 first so an unchanged scope still reuses an OpenAI Responses service session. A
 non-empty list narrows/swaps scope; an explicit empty list `[]` clears the saved roots
@@ -119,6 +127,31 @@ ordered additional-root filter (roots validated absolute like new/load): only
 sessions whose saved extra roots match exactly are returned. When omitted or empty,
 all sessions for the `cwd` are returned (each session reports its own roots via
 `additionalDirectories` in the response).
+
+For Unspecified sessions, list and delete use the saved cwd. Load, history and
+turn details for an active Unspecified session check its current cwd.
+For workspace sessions, list, load, history and delete use the installed scope
+while the session is active and the registered scope when it is closed.
+A cwd pointing to the same physical directory is
+accepted, including a case alias on a case-insensitive volume. List reports the
+physical paths of the primary folder and available reference folders, with the
+references in `additionalDirectories`. It skips the additional-directory
+filter for workspace sessions. If any candidate is Unspecified, list validates
+the requested directories as usual. An invalid directory then fails the request.
+A cold load checks the resolved request `cwd` against the registered primary and
+runs in the validated directory. Omitting `additionalDirectories` keeps the
+registered reference folders. An explicit list sets the roots for that load, and
+`[]` clears them for that load. The registered definition stays on disk. An active
+load accepts omission or the same ordered roots that list reports. Close the
+session before loading it with different roots.
+Changing the physical directory of an active session with `session/set_workspace`
+makes it Unspecified if it belonged to a workspace. If the session is in a
+workspace and the directory stays the same, it keeps the workspace and skips
+the soft restart. For an Unspecified session, the agent soft-restarts on every
+call. The returned `primaryCwd` uses the installed path spelling.
+The returned `workingDirs` lists the session's installed reference folders.
+After a move makes the session Unspecified, reload the active session under
+its new cwd. List and delete use the cwd from its latest save.
 
 ### Session modes — approval mode (standard)
 
@@ -162,7 +195,7 @@ on four surfaces, and all four report the same string:
 | `chrys/turn_started` notification | `turnId`, `turnNumber`, `isRetry`, `userMessageId`, `openingItemId` |
 | `PromptResponse._meta.chrys` | `turnId`, `turnNumber`, `sessionUsage` |
 | every `session/update` of the turn | `_meta.chrys.{turnId, turnNumber}` |
-| `session/history` | `turns[]` and each labelled `messages[]` entry |
+| `session/history` | `turns[]` and each labelled message in `messages[]` and `compressedBlocks[].messages` |
 
 - `turnNumber` is display order only. Reusing a number is possible after a
   failed or cancelled turn (see *Rollback and turn identity*), so join on
@@ -260,7 +293,7 @@ All routed through `ext_method`.
 | `session/inject` | `sessionId`, `text` | Inject a prompt into the active turn. Rejected when no turn is running (use `session/prompt` to start one). |
 | `session/rollback` | `sessionId`, `targetTurn`, `revertChanges?`, `selectedPaths?` | Roll back; replays history + emits `chrys/rollback_result`. Response/notification carry `rolledBackUserText` (first discarded user prompt, for restoring the composer), `exclusions` (`[{path, reason}]`, reason = `RollbackExclusionReason` value like `"unrestorable"` / `"move_poisoned"`) for files the plan dropped, and advisory `warnings` (strings). |
 | `session/switch_agent` | `sessionId`, `agentProfile` | Switch active agent profile in-session. Unknown profile → immediate error; switching to the active profile is a no-op (no 60s wait) whose response still carries the live runtime (model/tools/skills), so it won't blank client state. |
-| `session/set_workspace` | `sessionId`, `primaryCwd` | Change primary workspace cwd. `primaryCwd` is validated strictly (must exist + be a directory, resolved absolutely) like `new`/`load`. Soft-restarts the agent, then pushes `chrys/runtime_update` (skills/MCP/memory/context may change). |
+| `session/set_workspace` | `sessionId`, `primaryCwd` | Change primary workspace cwd. `primaryCwd` is validated strictly (must exist + be a directory, resolved absolutely) like `new`/`load`. Soft-restarts the agent and pushes `chrys/runtime_update` (skills/MCP/memory/context may change). A session in a workspace skips the restart when the directory is physically the same. |
 | `session/skip_sleep` | `sessionId`, `callId` | Finish an active `sleep` tool call early. |
 | `session/retry` | `sessionId`, `text?` | Retry the session's last failed or interrupted turn. Resumes the **same** turn (the response `_meta.chrys.turnId` is the one the original prompt reported, and `chrys/turn_started` carries `isRetry: true`; `chrys/messages_retracted` then withdraws the cut-off answer the retry drops — see *Streamed text*), opens no new user message, so the response carries no `userMessageId`. `text` is optional guidance persisted as user input inside the resumed turn, not metadata: it goes through the same approval gate and `user_prompt_submit` hooks as a prompt and can be rejected. Refused with `invalid_params` when the session has no retryable turn, and when a turn is running — cancel it first (`session/cancel`), the retry is never queued behind a live turn. |
 | `session/set_config_option` | `sessionId`, `key`, `value` | Persist a supported config key to the user settings document + awaited reload, then push `chrys/runtime_update` (global default; see below). `key` accepts the logical name or its legacy `CHRYS_*` spelling; the response carries all three names (`key` echoed, `envKey`, `settingKey`). The session must be active — it is validated *before* the document write, so a failed request never leaves persisted config mutated. |
@@ -288,11 +321,19 @@ Approval mode and model switching are **not** here — they use standard ACP
 | `chrys/session_runtime` | `sessionId` | Runtime snapshot: profile, model, tokens/usage, tools, MCP/skills details. |
 | `session/mutations` | `sessionId` | Per-turn mutation summary + rollback turns + file summary. Turns are `{turnNumber, turnId, mutationCount, mutations}`: `turnId` is the string turn identity when exactly one registered turn carries that ordinal, and `null` when several do (a failed or cancelled turn lets the running ordinal and the saved one drift apart) or none does — `turnNumber`, `mutationCount` and the mutations are returned either way, and the mutations are never attributed to the last same-numbered turn. Mutations carry `beforeSkip`/`afterSkip` (`"too_large"` / `"binary"` / `null`) when a side's content backup was withheld by snapshot policy; such files are excluded from the `files` summary. Each mutation also carries `provenance` (`"proven"` / `"assumed"` / `"foreign"`) + `contested` (bool); `turns[].mutations` and `mutationCount` are the **raw event log** (foreign rows included — clients filter/badge themselves), while the net-level `files` list excludes foreign changes and carries folded `contested`/`inferred` badges. |
 | `session/diff` | `sessionId`, `path?`, `turn?` | Before/after text diff entries (binary-aware). Entries whose content backup was withheld by snapshot policy (oversized/binary files) are omitted. Each entry carries the same folded `contested`/`inferred` badges as the `session/mutations` `files` list, so clients can badge diffs without joining the two endpoints. |
-| `session/history` | `sessionId`, `cwd?` | Persisted messages plus the turns that ran them. Shape: `{sessionId, turns: [{turnId, turnNumber, userMessageId, inheritedFrom?}], messages: [{turnId, turnNumber, message}]}` — `turns[]` lists every turn in the session's registry, in start order, including one whose messages the transcript no longer holds (inherited by a fork, or compacted away): the client needs those ids to join what it replays with what `session/turns` reports. In `messages[]`, `turnId`/`turnNumber` are `null` for a message no registered turn claims, `userMessageId` is the client's `messageId` for the turn's opening user message only (`null` for an interjection or retry note inside the same turn), and `inheritedFrom` is present only on a turn a fork inherited, naming the session that first ran it. Message contents are unchanged by this framing: raw persisted messages, without the messages compaction excluded (tool calls it summarized or removed, a dropped current turn's in-between text, folded turns). Scoped to the requesting workspace cwd (like `load`/`delete`); a session from another workspace is rejected. An assistant message whose `additional_properties._group` has `_summary_of_group_ids` is compaction's summary of excluded tool calls, kept for the model: the `session/load` and `session/rollback` replays show neither the summary nor the messages it replaced, and a client rendering this list should skip it too. Call-level data (request ids, timings, usage) is not here — use `session/turns`. |
+| `session/history` | `sessionId`, `cwd?` | Persisted history scoped to the requesting workspace cwd, like `load` and `delete`. Returns `{sessionId, turns, messages, compressedBlocks}`. See **Rendering persisted history** below. |
 | `session/turns` | `sessionId`, `cwd?`, `turnId?` | Per-turn model-request data read from the session's trajectory log: `{sessionId, coverage, gapCount, turns, supersededTurns, unassignedPasses, sessionLevel}`. `turns` preserves log start order even when an older registry overwrote a same-numbered turn; each turn is `{turnId, turnNumber, userMessageId, inheritedFrom, traceAvailable, coverage, status, startedAt, endedAt, usage, usageUnreportedCalls, modelCallCount, failedModelCallCount, requestAttemptCount, retryCount, passes, modelCalls, retries}`. A turn holds one entry per **pass** (a retry adds a pass to the same `turnId`). Its `endedAt` is the latest pass’s end time, or `null` while that pass is unfinished. `turnNumber` comes from the registry when available, otherwise from the first logged pass that supplies it, including for superseded turns. `modelCalls[].attempts[]` are HTTP attempts of one call; `requestAttemptId` is the model request's id and has nothing to do with JSON-RPC `id`. A `modelCall` whose `model.exchange.started` the log lost is reported with `startedAt: null`; readable request attempts survive even when both exchange markers are missing. A readable terminal recovers missing `agentProfile`, `provider` and `requestModel` without replacing facts from a readable start. A call with no terminal has `endedAt: null` and `outcome: null`. Either missing boundary makes its turn and session `partial`. The request retains its envelope pass id: an unplaceable pass belongs in `unassignedPasses`, and a request outside every pass belongs in `sessionLevel`. Each `retries[]` entry is `{retryId, passId, reasonCode, delayMs, retryMode, started}` (no timestamp — the trajectory records none for a retry) and is counted in `retryCount` only when `started` is `true`: a `retry.scheduled` whose `retry.started` never arrived is a backoff an interrupt cancelled mid-sleep, so it is reported with `started: false` and the session is `partial` while it is open. For a retry without `passId`, the branch turn observed at `retry.scheduled` fixes its ownership: later turns and rollbacks cannot move or drop an assigned retry. If the schedule is missing, the branch at `retry.started` is used. `sessionLevel` holds calls outside every turn (a title generated afterwards). Coverage: `exact` only when the scan found no corruption, no unaccounted gap, no unsupported record, no torn tail and nothing unplaceable, and nothing is left outstanding; otherwise `partial`. `gapCount` counts explicit gaps only, so `gapCount == 0` does not mean `exact`. A turn is `partial` when damage overlaps any of its passes or it holds a call with a missing boundary or an unfinished backoff. Each pass ends at its finish record; an unfinished pass extends to the next pass start or the scan tail. An unfinished retry is checked independently of earlier finished passes, and a gap between finished passes and their retries touches neither pass. `coverage`, `usage` and every count cover **this** session's log only — a fork-inherited turn (`inheritedFrom` set, `traceAvailable: false`) brings no source-session numbers or calls, and its `coverage` describes the absence of a local record, not damage to one; read `traceAvailable` first. `supersededTurns` are the turns a rollback discarded, plus a failed or cancelled turn that left nothing and was dropped when the next prompt started (that prompt reuses its `turnNumber`); a turn a fork inherited and then removed either way has no local record of either, so it appears in neither list. Rollback records written before this upgrade used the ordinals of their day, so their superseded set can be off by one turn. Model calls made inside an external ACP sub-agent are invisible here — only the invocation granularity is recorded. `turnId` returns just that turn (`invalid_params` when no turn matches) and keeps it in the list it belongs to — a superseded turn appears in `supersededTurns` with `turns` empty, while a fork-inherited turn appears in `turns`. Filtered responses have empty `unassignedPasses`, and the session-level `coverage` still describes the whole scan. Replayed history carries the same ids: `session/load` and `session/rollback` stamp `_meta.chrys.turnId`/`turnNumber` on replayed user text and images, answers, tool cards and the synthesized terminal update of a call whose result was never persisted. Scoped to the requesting workspace cwd, like `session/history`. |
 | `settings/options` | `sessionId?` | Supported config keys under all three names (`key`, `envKey`, `settingKey`). Each entry carries the durable document `value` plus `baseValue`/`baseSource` — the manager's base settings, deliberately not called any session's view. With `sessionId`, entries add `sessionValue`/`sessionSource` read from that session's own loaded settings. |
 | `mcp/list` | `sessionId` | MCP tools + failures from runtime details. |
 | `skills/list` | `sessionId` | Skill sources + details from runtime details. |
+
+**Rendering persisted history**
+
+- `turns[]` lists all registered turns in start order as `{turnId, turnNumber, userMessageId, inheritedFrom?}`. The opening user message alone takes that turn's `userMessageId`, which may be `null`. `inheritedFrom` names the source session for a fork-inherited turn. Use `session/turns` for per-request timings and usage.
+- `compressedBlocks[]` is in replay order. Each entry has `{compressedContextId, summary, turnRange, freedMessages, markerId, createdAt, source, messages}`. For a stored block, `markerId` identifies its ending turn marker and `createdAt` is its compaction timestamp. A summary whose block is missing has `messages: []`, `freedMessages: 0`, `turnRange: [0, 0]`, and null `markerId` and `createdAt`; `session/history` also reports an unreadable block that way. `source` is null in persisted history.
+- The top-level `messages` list and each block's `messages` list contain entries of the form `{turnId, turnNumber, message}`, with null turn labels for unclaimed messages. All contain persisted message contents, with legacy plain-string contents converted to text blocks (or `{type: "legacy", raw}` for an old `Content(type=…)` repr). The top-level list omits messages flagged `_excluded`. Folded segments include their original `_excluded` messages and display them on replay.
+- In both lists, skip marker messages (fold summaries, the archive index, turn and status markers), assistant tool summaries whose `additional_properties._group` has `_summary_of_group_ids`, and synthetic user continuation prompts flagged `_continuation`. Pair tool calls and results within each segment. Render each folded segment followed by its summary, then render the top-level messages.
+- The history response includes full folded messages in one JSON-RPC response. Its size grows with the saved conversation. Configure the client to accept lines large enough for that response.
 
 The CLI command `icode trajectory export --session <id> --format turns --out turns.json` uses the same turn-trace projection as `session/turns`. Its `sessionId` is the short form stored in the session folder name; ACP returns the full session ID, so these fields may differ in length for the same session.
 
@@ -314,15 +355,60 @@ A sub-agent pauses only for a client that declared `subAgentPause` (see
 |---|---|---|
 | `profiles/agents/list` | — | Agent profile summaries, including a `builtin` flag. |
 | `profiles/agents/read` | `name` | Full agent profile. **MCP `headers`/`env` values masked as `"***"`.** |
-| `profiles/agents/write` | `profile` | Persist. Masked `"***"` MCP secrets restored from the stored profile. |
+| `profiles/agents/write` | `profile` | Persist user settings. Built-in system and compaction prompts remain package-owned; create a custom agent with a new name and ID to change them. If explicitly submitted prompts differ from the built-in values, the response includes `ignored_fields` (using `instructions` and/or `compaction.last_words_template`); other settings are still saved. Unchanged or omitted prompt fields produce no warning. Masked `"***"` MCP secrets are restored from the stored profile. |
 | `profiles/agents/delete` | `name` | Delete a user agent profile. Built-in profiles are rejected; clients should migrate the previous "delete shadow to restore built-in" behavior to `profiles/agents/reset`. |
-| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. Returns `changed: false` when no shadow or resettable changes exist. |
-| `profiles/models/list` | — | Model profile summaries (no secrets). |
+| `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, Memory, and Extensions settings. System and compaction prompts remain package-owned and are excluded from reset comparisons. Returns `changed: false` when no shadow or resettable changes exist. |
+| `profiles/models/list` | — | Summaries of locally saved model profiles, with secrets omitted. |
 | `profiles/models/read` | `id` | Full model profile. **`api_key` masked as `"***"`.** |
 | `profiles/models/write` | `profile` | Persist. `api_key` of `""`/`"***"` preserves the stored key. Omitting `stream` or sending `null` streams for a new profile and keeps the stored value on an update; `false` (or another false spelling such as `0` or `""`) turns streaming off. |
 | `profiles/models/delete` | `id` | Delete a model profile. |
+| `providers/models/list` | `connection`, optional `profileId` | Fetch model IDs from an unsaved provider connection. See [Model discovery](#model-discovery). |
 | `settings/reload` | `sessionId`, optional `scope` | Reload registries + soft-restart. Awaits the rebuild: a failed reload returns an error, success pushes `chrys/runtime_update`. Without `scope` (also what `session/set_config_option` runs) it returns `{}`, and an MCP server whose configuration is unchanged keeps its connection. `scope: "full"` is described below; any other `scope` is an invalid-params error. |
 | `mcp/test` | `server` | One-shot HTTP MCP connection test. Client-supplied stdio is rejected. |
+
+### Model discovery
+
+Call `_providers/models/list` on the wire when `initialize` advertises
+`providers/models/list`. A client can query a local service with this request.
+
+```json
+{"connection":{"provider":"openai","baseUrl":"http://localhost:11434/v1"}}
+```
+
+The request works before creating a session or saving a profile. The required
+`provider` is one of `openai`, `anthropic`, `deepseek-openai`, or `glm-openai`.
+A blank or omitted `baseUrl` uses the provider's configured address. A configured
+address containing only whitespace is invalid.
+Optional fields inside `connection` are `apiKey` (default empty),
+`httpHeaders` and `extraHeaders` (string-to-string objects, the latter overrides
+the former), `verifySsl` (true), `bypassProxy` (false), and `connectTimeout`
+(positive seconds, default 10). Use the current form values for all fields.
+
+Draft keys and headers are literal. A blank key sends no implicit provider key.
+A client editing a saved profile may send `apiKey: "***"` and its top-level
+`profileId` to use the stored key at the same provider and base URL.
+Preserve TLS verification and proxy bypass if enabled in the saved profile, and
+omit custom Host headers to reuse the key. Only the saved key can resolve environment templates. Credential commands
+and invalid connection parameters return JSON-RPC `-32602`.
+Requests carrying credentials or headers probe only the requested origin. Include
+`http://` for a local plain HTTP service when sending a key or custom headers.
+Clients editing a profile convert its JSON-encoded `http_headers` and
+`chat_options.extra_headers` to the two header objects in the draft.
+
+```json
+{"models":[{"id":"example-model"}],"authRejected":false,"unreachable":false,"correctedBaseUrl":null,"urlCorrections":[]}
+```
+
+An empty list can carry `authRejected` or `unreachable` when the provider
+rejects credentials or an address could not be checked. On success, a suggested
+`correctedBaseUrl` and its `urlCorrections` can be shown in the draft. Only an
+explicit profile write saves the user's selection.
+
+A single JSON-RPC response can contain up to 5,000 model IDs. When starting
+iCode with the Python ACP SDK's `spawn_agent_process`, pass
+`transport_kwargs={"limit": DEFAULT_STDIO_BUFFER_LIMIT_BYTES}` (import the
+constant from `acp.core`). Its default 64 KiB subprocess reader can be too
+small for the complete catalog.
 
 ### Full reload
 
@@ -625,6 +711,13 @@ One-way `ext_notification` pushes, bridged from `EventBus`:
   `chrys/approval_reviewed`.
 - Agent load lifecycle: `chrys/agent_load_started`, `chrys/agent_load_progress`,
   `chrys/agent_load_finished`, `chrys/agent_load_failed`.
+  Nested initialization updates add optional `stage` (`mcp` or `skills`),
+  `stageSubject` (the MCP server name, or empty for Skills), and `stageStatus`
+  (`running`, `done`, or `failed`) fields to `chrys/agent_load_progress`.
+  These fields are omitted when there is no nested stage. `current`, `total`,
+  and `failed` keep their outer progress meaning; a nested stage finishing
+  does not mean the owning sub-agent has finished loading. `message` remains
+  the English compatibility text.
 - Diagnostics: `chrys/error`, `chrys/warning`, `chrys/context_compressed`,
   `chrys/context_pressure`, `chrys/tool_compacted`,
   `chrys/compaction_started`, `chrys/compaction_finished`.
@@ -640,10 +733,18 @@ One-way `ext_notification` pushes, bridged from `EventBus`:
   `chrys/sub_agent_aborted`, `chrys/sub_agent_cascade_aborted`.
 
 Notes:
+- `chrys/context_compressed` carries `{sessionId, compressedContextId, summary, freedMessages, turnRange, source}`.
+  Live compaction sends `source` `"agent"` or `"auto"`. One sent while `session/load` or
+  `session/rollback` replays marks a saved segment, not a new compaction: `source` is
+  null and `freedMessages` counts the original messages in the segment, including
+  hidden markers and tool summaries. A summary whose block is missing reports 0
+  and `turnRange: [0, 0]`; `session/history` also reports an unreadable block
+  that way. A session whose saved state cannot be decoded cannot be loaded.
 - `chrys/error` is `{ sessionId, code, message, recoverable, kind, retryable,
   statusCode, hint }`; see *Failures* for the last four.
 - `chrys/warning` is `{ sessionId, code, message }`, plus `reason` when the code has
-  a machine-readable cause. `trajectory_activation_failed` always carries one, saying
+  a machine-readable cause. Startup migration warnings and notices are sent during
+  initialization without `sessionId`. `trajectory_activation_failed` always carries one, saying
   why the session records no trajectory: `lease_held` (another live writer has it),
   `permission` (the session's files or a folder above them refused this user: the
   wrong owner or mode, an ACL, a link, or a read-only folder), `key_unavailable`,

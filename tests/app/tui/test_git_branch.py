@@ -40,7 +40,7 @@ def test_read_git_branch_snapshot_reads_normal_repo_head(tmp_path: Path) -> None
 
     assert snapshot.branch == "main"
     assert snapshot.head_path == repo / ".git" / "HEAD"
-    assert format_workspace_subtitle(str(repo), snapshot.branch) == f"{repo} (main)"
+    assert format_workspace_subtitle(str(repo), snapshot.branch, width=1000).plain == f"{repo} (main)"
 
 
 def test_read_git_branch_snapshot_finds_parent_repo_from_nested_cwd(tmp_path: Path) -> None:
@@ -97,7 +97,7 @@ def test_read_git_branch_snapshot_handles_non_git_cwd(tmp_path: Path) -> None:
 
     assert snapshot.branch == ""
     assert snapshot.head_path is None
-    assert format_workspace_subtitle(str(workspace), snapshot.branch) == str(workspace)
+    assert format_workspace_subtitle(str(workspace), snapshot.branch, width=1000).plain == str(workspace)
 
 
 def test_non_git_watch_target_catches_git_init_marker_creation(tmp_path: Path) -> None:

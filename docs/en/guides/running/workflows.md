@@ -6,11 +6,11 @@ This tutorial first introduces the terminal user interface (TUI) and basic opera
 
 ## Run the built-in workflow in the TUI
 
-First, [configure a working model](../../start/getting-started.md#3-configure-a-model) and choose a local project directory. The built-in example below asks agents to read files in that directory and generate a project introduction, incurring model usage costs.
+First, [configure a working model](../../start/getting-started.md#3-configure-a-model) and choose a local working directory. The built-in example below asks agents to read files in that directory and generate a project introduction, incurring model usage costs.
 
 ### Select a workflow
 
-In a terminal, change to the chosen project directory and run `icode` to open the TUI. Enter `/workflow` in the input box to open the workflow picker, then select `demo-workflow` with the `builtin` source.
+In a terminal, change to the chosen working directory and run `icode` to open the TUI. Enter `/workflow` in the input box to open the workflow picker, then select `demo-workflow` with the `builtin` source.
 
 Alternatively, click “APP MODE: Chat” in the upper left and select “Workflow” to switch modes, then click “New Session” and select a workflow.
 
@@ -45,9 +45,11 @@ When the run ends with a result, click “Result” to the right of “■ Cance
 
 A workflow session can save multiple runs. Click the “Run 1”, “Run 2”, and subsequent run tabs above “Workflow”, “Info”, and the other tabs to browse each run. After quitting and reopening iCode, first switch to “Workflow” through the app mode selector in the upper left. Press `F1` or click `f1 Sessions` at the bottom of the interface, then select a workflow session to view its historical inputs, outputs, and node records.
 
+Agent nodes use the folders you confirmed for the workflow session. Chat workspace folders are separate.
+
 ## Create your first workflow
 
-Next, write your own workflow. Create a `.chrys/workflows/` directory in your project if it does not already exist. Save all the workflow files below in this directory.
+Next, write your own workflow. Create a `.chrys/workflows/` directory in your working directory if it does not already exist. Save all the workflow files below in this directory.
 
 Create `.chrys/workflows/greeting.py`:
 
@@ -607,7 +609,7 @@ The CLI is suitable for workflows that need no human interaction. It does not su
 
 ### List and run workflows
 
-Run this command in the project directory to list available workflows:
+Run this command to list available workflows. It searches the command’s current directory for local workflows:
 
 ```shell
 icode workflow list

@@ -77,6 +77,20 @@ def _case() -> RsiCase:
     return RsiCase(case_id="c1", prompt="Do it", expect=ScriptExpect(response_contains=("ok",)), script=None)
 
 
+def test_candidate_runner_uses_experimental_prompt_with_independent_identity():
+    registry = AgentProfileRegistry()
+    registry.load_builtins()
+    candidate = registry.get_builtin_template("Code")
+    candidate.instructions = "experimental instructions"
+    candidate.compaction.last_words_template = "experimental compaction"
+    runner = rsi_headless.build_candidate_runner_factory()(candidate)
+    effective = runner.agent_registry.get(runner.agent)
+    assert effective.name != candidate.name and effective.id != candidate.id
+    assert effective.instructions == candidate.instructions
+    assert effective.compaction.last_words_template == candidate.compaction.last_words_template
+    assert runner.agent_registry.get("Code").instructions == registry.get_builtin_template("Code").instructions
+
+
 @pytest.fixture
 def fake_host(monkeypatch: pytest.MonkeyPatch) -> type[_FakeHost]:
     monkeypatch.setattr(_FakeHost, "created", [])

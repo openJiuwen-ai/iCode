@@ -24,7 +24,7 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.orchestration.workflows.catalog import WorkflowCatalog
 from chrys.orchestration.workflows.preview import WorkflowPreview
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
@@ -32,11 +32,13 @@ from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, dismiss_workflow_notice, open_workflow, switch_mode
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_missing_selection_notice_preserves_draft_and_underlay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(100, 32)) as pilot:
@@ -120,7 +122,7 @@ async def test_rejection_waits_for_other_modal_and_long_notice_remains_dismissib
             await invoke_callbacks(dialog)
 
     monkeypatch.setattr(NoticeDialog, "_invoke_and_clear_callbacks", invoke_when_released)
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus)
     async with app.run_test(size=(100, 28)) as pilot:
@@ -183,7 +185,7 @@ async def test_rejection_waits_for_other_modal_and_long_notice_remains_dismissib
 async def test_source_read_error_does_not_reopen_notice_on_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main = app._main_screen
@@ -201,7 +203,7 @@ async def test_source_read_error_does_not_reopen_notice_on_resume(
 
 
 async def test_preview_completion_does_not_pop_covering_modal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main = app._main_screen

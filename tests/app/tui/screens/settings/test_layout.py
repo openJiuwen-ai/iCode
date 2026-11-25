@@ -56,13 +56,7 @@ def test_the_chat_display_preferences_sit_together_right_after_the_appearance_ro
     appearance = titles.index("Appearance")
     assert titles[appearance + 1] == "Display preferences"
     assert [row.key for row in general.sections[appearance].rows] == ["ui.theme", "ui.locale"]
-    assert [row.key for row in general.sections[appearance + 1].rows] == [
-        "ui.chat.show_thinking",
-        "ui.chat.tool_groups_expanded",
-        "ui.chat.fold_finished_turns",
-        "ui.chat.image_graphics",
-    ]
-    assert "ui.chat.tool_groups_expanded" not in {row.key for section in tools.sections for row in section.rows}
+    assert [row.key for row in general.sections[appearance + 1].rows] == ["ui.chat.image_graphics"]
 
 
 def test_tools_tab_lists_each_tool_category_as_its_own_section() -> None:

@@ -425,7 +425,9 @@ async def test_reload_keeps_builtin_name_across_custom_id_override(
             expected = builtin
         await reload_success(session)
         assert session.engine.session.agent_profile.id == expected.id
-        assert session.engine.session.agent_profile.instructions == expected.instructions
+        assert session.engine.session.agent_profile.instructions == builtin.instructions
+        if add_override:
+            assert agents.get(f"{name}-Modified").instructions == override.instructions
         report = session.seen.of(ev.SettingsReloaded)[-1].report
         assert all(line.definition.key != "controls.reload_agent_fallback" for line in report)
         await session.bus.publish(ev.SessionNew(), raise_handler_errors=True)

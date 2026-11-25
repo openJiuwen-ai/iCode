@@ -69,11 +69,11 @@ iCode ignores leading and trailing whitespace in this field, including in YAML. 
 | `~/mcp-server` | The `mcp-server` folder inside your home folder |
 | An absolute path, such as `/opt/mcp-server` or `D:\mcp-server` | The specified folder |
 
-For example, with the session's working directory at `/project`, set the server's "Working Directory" to `tools/mcp` and "Command" to `python server.py` to run `/project/tools/mcp/server.py` from `/project/tools/mcp`. That folder and script must already exist, and `python` must be available on `PATH`.
+For example, with the session's working directory at `/work/demo`, set the server's "Working Directory" to `tools/mcp` and "Command" to `python server.py` to run `/work/demo/tools/mcp/server.py` from `/work/demo/tools/mcp`. That folder and script must already exist, and `python` must be available on `PATH`.
 
 Relative paths can use `..` to point outside the session's working directory, for example `../shared-mcp`.
 
-After you change the session's working directory with `/chdir`, a blank Working Directory setting uses the new directory, and relative paths start from it. For example, if you enter `tools/mcp` and switch from project A to project B, the server uses project B's `tools/mcp` folder. Locations specified with `~/` or an absolute path stay the same.
+After you change the session's working directory with `/chdir`, a blank Working Directory setting uses the new directory, and relative paths start from it. For example, if you enter `tools/mcp` and switch from working directory A to working directory B, the server uses working directory B's `tools/mcp` folder. Locations specified with `~/` or an absolute path stay the same.
 
 If the command is a relative path such as `./bin/server`, iCode looks for the program in the server's working directory. If you enter only a program name such as `python`, iCode searches `PATH`.
 
@@ -128,6 +128,8 @@ If the test fails:
 For failures while loading the agent, press **F6** to view iCode's connection error logs. iCode captures only a limited amount of the server's standard error output; for complete server logs, follow the server's own logging instructions. Remove tokens, credentials, and other sensitive information before sharing diagnostics.
 
 ## Reconnect with /reload
+
+While an agent and its local sub-agents load, matching MCP configurations share one connection attempt, including a failed attempt. The loading dialog names the sub-agent and MCP server being prepared. A failed server is not retried for each sub-agent during that load; fix the server and use `/reload` to try again. Server names and connection settings must match to share an attempt; the same address alone is not sufficient.
 
 `/reload` tries a new connection to each enabled MCP server of the current agent and its sub-agents, while the existing connections stay open. The next request uses the tools, prompt templates, and usage instructions each server now reports. Every server has its own result, so a failure on one doesn't affect the others:
 

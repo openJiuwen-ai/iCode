@@ -13,10 +13,12 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
+from textual.content import Content, Span
 from textual.geometry import Region
 
 from chrys.app.tui.widgets.chat.panel import ChatPanel
-from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
+from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown, _text_height
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import ChatPanelApp
 from tests.support.waiting import wait_for
@@ -135,6 +137,9 @@ async def test_replayed_transcript_lays_markdown_out_only_at_real_widths(monkeyp
         fence = "\n".join(f"value_{line} = {line} * {turn}" for line in range(8))
         answer = f"## Answer {turn}\n\n{_DOCUMENT}\n\n```python\n{fence}\n```\n"
         messages.append({"role": "assistant", "contents": [{"type": "text", "text": answer}]})
+        messages.append(
+            {"role": "system", "contents": [], "additional_properties": {HistoryMarkerKind.KEY: HistoryMarkerKind.TURN}}
+        )
 
     async with ChatPanelApp().run_test(size=(100, 30)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
@@ -163,3 +168,14 @@ async def test_replayed_transcript_lays_markdown_out_only_at_real_widths(monkeyp
             widths = [width for widget, width in layouts if widget is markdown]
             assert widths
             assert widths[-1] == markdown.scrollable_content_region.width
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", " ", " " * 101, "two words " * 9, "a" * 80, "中文文字", "👍🏽e\u0301👩‍💻🇯🇵" * 5, "a\nb\n\n", "中\t文"],
+)
+def test_text_height_matches_textual_on_repeated_rewrap(text: str) -> None:
+    measured = Content(text, [Span(0, len(text), "bold")])
+    reference = Content(text, [Span(0, len(text), "bold")])
+    for width in (1, 2, 3, 5, 12, 40, 80, 80, 1):
+        assert _text_height(measured, width) == reference.get_height({}, width)

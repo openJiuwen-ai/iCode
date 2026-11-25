@@ -96,6 +96,20 @@ class DropBreakerController:
             return True
         return charged.side_call_tokens < self._strategy._phase4_side_call_token_budget
 
+    def affords_side_call_tokens(self, estimated_tokens: int) -> bool:
+        """Whether a provider attempt of this size would be admitted; nothing is charged.
+
+        For an attempt the caller can do without: charging one that is then
+        refused would take the room its cheaper replacement needs.
+        """
+        last_words = self._strategy._last_words_state
+        if last_words is None:
+            return False
+        budget = self._strategy._phase4_side_call_token_budget
+        if budget < 0:
+            return True
+        return last_words.get_drop_round_breaker().side_call_tokens + max(0, estimated_tokens) < budget
+
     def record_no_progress(self, reason: str) -> DropRoundBreakerState | None:
         """Record one failed or low-yield round and apply escalation."""
         last_words = self._strategy._last_words_state
@@ -114,11 +128,20 @@ class DropBreakerController:
             self.emit_context_pressure(reason, updated)
         return updated
 
-    def record_progress(self, entry_usage_pct: float, post_usage_pct: float) -> DropRoundBreakerState | None:
-        """Update progress state from the synchronous post-drop sample."""
-        if entry_usage_pct - post_usage_pct < _DROP_MIN_PROGRESS_PCT:
-            return self.record_no_progress("no_progress")
+    def record_progress(
+        self, entry_usage_pct: float, post_usage_pct: float, *, low_yield_counts: bool = True
+    ) -> DropRoundBreakerState | None:
+        """Update progress state from the synchronous post-drop sample.
+
+        A round that freed too little counts towards disabling the drop,
+        unless the pass was allowed to run for little (*low_yield_counts*
+        false): an overflow pass takes what it can get, so a drop it commits
+        is progress whatever it freed, and ends a run of failed rounds like
+        any other.
+        """
         last_words = self._strategy._last_words_state
+        if low_yield_counts and entry_usage_pct - post_usage_pct < _DROP_MIN_PROGRESS_PCT:
+            return self.record_no_progress("no_progress")
         if last_words is None:
             return None
         breaker = last_words.get_drop_round_breaker()

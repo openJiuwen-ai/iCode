@@ -276,3 +276,23 @@ def test_a_live_label_is_one_word_when_text_is_split_on_whitespace() -> None:
     ]
     assert labels_from_words(words) == typed
     assert labels_as_words("[Image #1] tail", EMPTY_REFERENCES) == "[Image #1] tail"
+
+
+def test_following_text_belongs_to_the_entry_object_and_survives_other_table_changes() -> None:
+    from chrys.foundation.text.draft_references import EMPTY_REFERENCES, DraftReference
+
+    table, quote = EMPTY_REFERENCES.with_new("quote", "code")
+    table = table.with_following_text(quote, "comment")
+    table, paste = table.with_new("paste", "long text")
+    assert table.following_text(quote) == "comment"
+    assert table.following_text(paste) is None
+    assert table.following_text(DraftReference(quote.kind, quote.number, quote.content, quote.label)) is None
+
+    edited = table.with_replaced(DraftReference("paste", paste.number, "edited text"))
+    assert edited.following_text(quote) == "comment"
+    assert table.with_following_text(quote, "changed").following_text(quote) == "changed"
+    assert table.following_text(quote) == "comment"
+
+    replaced = table.with_replaced(DraftReference("quote", quote.number, "other code"))
+    assert replaced.following_text(quote) is None
+    assert replaced.following == ()

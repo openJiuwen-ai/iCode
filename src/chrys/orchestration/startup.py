@@ -196,23 +196,22 @@ def bootstrap_runtime(
     apply_patches: bool = True,
     setup_telemetry: bool = True,
     eval_context: EvalContext = DEFAULT_EVAL_CONTEXT,
-    project_root: Path | None = None,
+    workdir: Path | None = None,
 ) -> RuntimeBootstrap:
     """Freeze the startup environment, apply process patches, and build settings.
 
     Args:
         eval_context: The frontend's own policy, passed *into* the load rather
             than substituted afterwards. ``chrys run`` raises the transient
-            retry default, and that number is an input to the project layer's
+            retry default, and that number is an input to the working directory layer's
             tighten/loosen verdicts — replacing it after the fact would arrive
             after the decisions it informs.
-        project_root: The workspace root whose project trust domain the loaded
-            settings live under. The TUI and ``chrys run`` pass their working
+        workdir: The session directory from which to load trusted settings. The TUI and ``chrys run`` pass their working
             directory — except a ``chrys run --session`` restore, which passes
             nothing because the saved session's own root is the one the restore
             loads from; the ACP manager passes nothing — its base settings are
-            deliberately project-free because each session derives its own
-            root, and a manager-level project layer would leak one session's
+            loaded without a working-directory layer because each session derives its own
+            root, and a manager-level working directory layer would leak one session's
             trust decisions into every other.
     """
     set_process_title()
@@ -244,6 +243,11 @@ def bootstrap_runtime(
         )
         for var, value in sanitize_no_proxy_env().items()
     )
+    from chrys.foundation.platform import get_platform
+    from chrys.orchestration.workdir_migration import WorkdirMigration
+
+    migration = WorkdirMigration(get_platform().config_dir)
+    migration.migrate_global()
     warnings.extend(_migrate_legacy_settings())
 
     if apply_patches:
@@ -251,8 +255,10 @@ def bootstrap_runtime(
 
         apply_all()
 
-    loaded = settle_session_root(load_settings(project_root=project_root, eval_context=eval_context))
+    loaded = settle_session_root(load_settings(workdir=workdir, eval_context=eval_context))
     install_process_settings(loaded)
+    migration.migrate_sessions()
+    warnings.extend(migration.finish())
     remember_file_model(loaded.file_model)
     # Seed the live model pointer with the layered verdict, origin intact —
     # never an unconditional overwrite: when the shell exported a value, that

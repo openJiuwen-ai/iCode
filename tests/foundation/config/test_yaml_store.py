@@ -53,6 +53,13 @@ def test_detected_encoding_preserves_primary_and_unrelated_values(tmp_path: Path
     assert yaml.safe_load(path.read_text(encoding="utf-8")) == committed
 
 
+def test_normal_writes_sort_settings_keys(tmp_path: Path) -> None:
+    path = tmp_path / "settings.yaml"
+    path.write_text("zeta: 1\nalpha:\n  foo: true\n  bar: false\n", encoding="utf-8")
+    update_yaml_doc(path, lambda doc: {**doc, "middle": 2})
+    assert path.read_text(encoding="utf-8") == "alpha:\n  bar: false\n  foo: true\nmiddle: 2\nzeta: 1\n"
+
+
 def test_update_merges_disjoint_keys_and_last_writer_wins_on_the_same_key(tmp_path: Path) -> None:
     path = tmp_path / "settings.yaml"
 
@@ -339,14 +346,14 @@ def test_readonly_read_refuses_a_symlinked_containing_directory(tmp_path: Path) 
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "settings.yaml").write_text("a: 1\n", encoding="utf-8")
-    project = tmp_path / "project"
-    project.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
     try:
-        (project / ".chrys").symlink_to(outside, target_is_directory=True)
+        (workdir / ".chrys").symlink_to(outside, target_is_directory=True)
     except OSError, NotImplementedError:  # pragma: no cover - Windows without symlink rights
         pytest.skip("platform cannot create symlinks")
 
-    assert read_yaml_doc_readonly(project / ".chrys" / "settings.yaml") is None
+    assert read_yaml_doc_readonly(workdir / ".chrys" / "settings.yaml") is None
     assert read_yaml_doc_readonly(outside / "settings.yaml") == {"a": 1}
 
 
@@ -469,3 +476,39 @@ def test_an_unreadable_primary_is_distinct_from_a_busy_document(
     with pytest.raises(yaml_store.ConfigDocumentError, match="Permission denied") as failure:
         yaml_store.read_yaml_document(path, strict=True)
     assert failure.value.display.definition.key == "settings.document_unreadable"
+
+
+def test_trust_migration_hands_both_originals_to_the_backup_under_the_settings_lock(tmp_path):
+    from chrys.foundation.config.user_settings import migrate_trust_settings
+    from chrys.foundation.util.lock import FileLock
+
+    path = tmp_path / "settings.yaml"
+    sibling = backup_path_for(path)
+    original = b"project.hooks_enabled: true\n"
+    previous = b"project.hooks_enabled: false\n"
+    path.write_bytes(original)
+    sibling.write_bytes(previous)
+    copies = {}
+
+    def preserve(source, raw):
+        with pytest.raises(TimeoutError), FileLock(lock_path_for(path), timeout=0):
+            pytest.fail("The settings lock must still be held")
+        copies[source] = raw
+
+    assert migrate_trust_settings(path, preserve) == (True, [])
+    assert copies == {path: original, sibling: previous}
+    assert read_yaml_doc(path) == {"workdir": {"hooks_enabled": True}}
+
+
+def test_trust_migration_does_not_replace_read_only_settings(tmp_path):
+    from chrys.foundation.config.user_settings import migrate_trust_settings
+
+    path = tmp_path / "settings.yaml"
+    original = b"project.hooks_enabled: true\n"
+    path.write_bytes(original)
+    path.chmod(0o400)
+    try:
+        assert migrate_trust_settings(path, lambda *_: pytest.fail("read-only")) == (False, [])
+    finally:
+        path.chmod(0o600)
+    assert path.read_bytes() == original

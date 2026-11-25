@@ -25,6 +25,8 @@ from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.foundation.retry import HistorySnapshot, StreamRetryLoop
 from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY
 from chrys.foundation.tool_result_metadata import (
+    HOOK_RESULT_APPLIED_KEY,
+    HOOK_RESULT_PENDING_KEY,
     TOOL_INTERRUPTED_METADATA_KEY,
     TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY,
     TOOL_RESULT_METADATA_KEY,
@@ -850,87 +852,31 @@ class TestLoopRecorder:
 # ---------------------------------------------------------------------------
 
 
-def _make_engine_state(messages: list[Message]) -> dict:
-    """Build a minimal chrys_history state dict."""
-    return {"messages": messages}
-
-
 class TestMergeLoopMessages:
     """Test the merge logic that inserts recovered loop messages into state."""
 
-    def test_merge_inserts_after_user_message(self):
-        """Loop messages are inserted between user message and last-iteration messages."""
-        # State after after_run: [old_history, user_input, last_assistant, last_tool]
-        old_assistant = Message("assistant", ["old response"])
-        user_msg = Message("user", ["do work"])
-        last_assistant = Message("assistant", ["interrupted tool call"])
-        last_tool = Message("tool", [""])  # empty result from interrupt
+    @pytest.mark.parametrize("with_user", [True, False], ids=["last-user-anchor", "no-user"])
+    async def test_merge_recovers_loop_messages_once_after_the_last_user(self, with_user: bool) -> None:
+        suffix = Message("assistant", ["last response"])
+        prefix = [_user("first"), _user("second")] if with_user else []
+        messages = [*prefix, suffix]
+        history = SessionHistoryManager()
+        history.bind({"messages": messages})
+        loop = [
+            Message("assistant", ["first call"]),
+            Message("tool", ["first result"]),
+            Message("assistant", ["second call"]),
+            Message("tool", ["second result"]),
+        ]
+        recorder = LoopRecorder()
+        await recorder.record_pre_call(prefix)
+        await recorder.record_pre_call([*prefix, *loop])
 
-        messages = [old_assistant, user_msg, last_assistant, last_tool]
-
-        # Loop messages from completed iterations
-        iter0_assistant = Message("assistant", ["tool call 0"])
-        iter0_tool = Message("tool", ["result 0"])
-        iter1_assistant = Message("assistant", ["tool call 1"])
-        iter1_tool = Message("tool", ["result 1"])
-        loop_msgs = [iter0_assistant, iter0_tool, iter1_assistant, iter1_tool]
-
-        # Simulate _merge_loop_messages logic
-        user_idx = -1
-        for i in range(len(messages) - 1, -1, -1):
-            if getattr(messages[i], "role", "") == "user":
-                user_idx = i
-                break
-
-        insert_at = user_idx + 1
-        for j, lm in enumerate(loop_msgs):
-            messages.insert(insert_at + j, lm)
-
-        # Verify order: old_assistant, user_msg, iter0_*, iter1_*, last_*
-        assert messages[0] is old_assistant
-        assert messages[1] is user_msg
-        assert messages[2] is iter0_assistant
-        assert messages[3] is iter0_tool
-        assert messages[4] is iter1_assistant
-        assert messages[5] is iter1_tool
-        assert messages[6] is last_assistant
-        assert messages[7] is last_tool
-
-    def test_skip_when_already_present(self):
-        """Normal completion: loop messages already in state, merge is no-op."""
-        # In normal completion, _prepend_fcc_messages puts all messages in response
-        iter0_assistant = Message("assistant", ["tool call 0"])
-        iter0_tool = Message("tool", ["result 0"])
-        user_msg = Message("user", ["do work"])
-        final_text = Message("assistant", ["done!"])
-
-        messages = [user_msg, iter0_assistant, iter0_tool, final_text]
-
-        # Check identity — loop messages are already present
-        loop_msgs = [iter0_assistant, iter0_tool]
-        first_loop = loop_msgs[0]
-
-        already_present = any(m is first_loop for m in messages)
-        assert already_present, "Identity check should detect already-merged messages"
-
-    def test_no_user_message_is_noop(self):
-        """If there's no user message in state, merge does nothing."""
-        messages = [Message("assistant", ["some text"])]
-        loop_msgs = [Message("assistant", ["tool"]), Message("tool", ["result"])]
-
-        user_idx = -1
-        for i in range(len(messages) - 1, -1, -1):
-            if getattr(messages[i], "role", "") == "user":
-                user_idx = i
-                break
-
-        original_len = len(messages)
-        if user_idx >= 0:
-            insert_at = user_idx + 1
-            for j, lm in enumerate(loop_msgs):
-                messages.insert(insert_at + j, lm)
-
-        assert len(messages) == original_len  # No insertion
+        expected = [*prefix, *loop, suffix] if with_user else [suffix]
+        for _ in range(2):
+            history.merge_loop_messages(recorder)
+            assert messages == expected
+            assert all(actual is original for actual, original in zip(messages, expected, strict=True))
 
     def test_insert_index_places_pass_after_retained_earlier_work(self):
         """The pass boundary beats the user anchor when earlier-pass work follows it.
@@ -966,7 +912,8 @@ class TestMergeLoopMessages:
 
         user_msg = Message("user", ["run it"])
         injection = Message("user", ["also do this"])
-        messages = [user_msg, injection]
+        suffix = Message("assistant", ["later output"])
+        messages = [user_msg, injection, suffix]
 
         loop_call = Message("assistant", ["call"])
         loop_result = Message("tool", ["result"])
@@ -978,7 +925,7 @@ class TestMergeLoopMessages:
         history.bind({"messages": messages})
         history.merge_loop_messages(capture, insert_index=1)
 
-        assert messages == [user_msg, injection, loop_call, loop_result]
+        assert messages == [user_msg, injection, loop_call, loop_result, suffix]
 
 
 # ---------------------------------------------------------------------------
@@ -1137,22 +1084,189 @@ async def test_post_execution_middleware_cancel_keeps_raw_result_and_marks_proce
             client_kwargs={"loop_recorder": recorder},
         )
     )
-    await tool_returned.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        await wait_for(lambda: tool_returned.is_set() or task.done())
+        if task.done():
+            await task
+            pytest.fail("tool call finished before the cancellation point")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     projected = recorder.loop_messages
     assert projected is not None
     result = projected[-1].contents[0]
     call = projected[0].contents[0]
     metadata = result.additional_properties[TOOL_RESULT_METADATA_KEY]
+    # No result hooks were declared (HOOK_RESULT_PENDING_KEY unset), so nothing
+    # would have changed the output: the raw result is final and is kept.
     assert result.result == "raw-result"
     assert metadata[TOOL_INTERRUPTED_METADATA_KEY] is True
     assert metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] is True
     assert call.additional_properties[TRAJECTORY_TIMING_KEY] == measured_timing
     assert result.additional_properties[TRAJECTORY_TIMING_KEY] == measured_timing
     assert tool_runs == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_result_hooks_run_restores_a_tombstone_not_the_raw_output() -> None:
+    """A pending result hook keeps the raw output out of resumed history."""
+    tool_returned = asyncio.Event()
+    hold_hooks = asyncio.Event()
+
+    @tool(name="secret_tool")
+    async def secret_tool() -> str:
+        return "PRIVATE_CREDENTIAL_123"
+
+    class _PendingHooks(FunctionMiddleware):
+        async def process(
+            self,
+            context: FunctionInvocationContext,
+            call_next: Callable[[], Awaitable[None]],
+        ) -> None:
+            context.metadata[HOOK_RESULT_PENDING_KEY] = True
+            await call_next()
+            tool_returned.set()
+            await hold_hooks.wait()
+
+    recorder = LoopRecorder()
+    layer, _wire = _stack([_call_response(("c1", "secret_tool", {}))])
+    task = asyncio.create_task(
+        layer.get_response(
+            [_user()],
+            options={"tools": [secret_tool]},
+            middleware=[_PendingHooks()],
+            client_kwargs={"loop_recorder": recorder},
+        )
+    )
+    try:
+        await wait_for(lambda: tool_returned.is_set() or task.done())
+        if task.done():
+            await task
+            pytest.fail("tool call finished before the cancellation point")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    projected = recorder.loop_messages
+    assert projected is not None
+    result = projected[-1].contents[0]
+    metadata = result.additional_properties[TOOL_RESULT_METADATA_KEY]
+    assert "PRIVATE_CREDENTIAL_123" not in str(result.result)
+    assert result.result.startswith("Error: Tool execution was interrupted.")
+    assert metadata[TOOL_INTERRUPTED_METADATA_KEY] is True
+    assert metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] is True
+
+
+@pytest.mark.asyncio
+async def test_sync_completion_cancel_with_result_hooks_declared_restores_a_tombstone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sync worker finishing as the cancel lands must not bypass declared redaction hooks."""
+
+    @tool(name="threaded_tool")
+    def threaded_tool() -> str:
+        return "unused"
+
+    async def _cancelled_after_completion(self: FunctionTool, call_kwargs: Any) -> Any:
+        raise SyncToolCancelledAfterCompletion("PRIVATE_CREDENTIAL_123")
+
+    class _DeclareResultHooks(FunctionMiddleware):
+        async def process(
+            self,
+            context: FunctionInvocationContext,
+            call_next: Callable[[], Awaitable[None]],
+        ) -> None:
+            context.metadata[HOOK_RESULT_PENDING_KEY] = True
+            await call_next()
+
+    monkeypatch.setattr(FunctionTool, "_invoke_function", _cancelled_after_completion)
+    recorder = LoopRecorder()
+    layer, _wire = _stack([_call_response(("fast", "threaded_tool", {}))])
+    with pytest.raises(asyncio.CancelledError):
+        await layer.get_response(
+            [_user()],
+            options={"tools": [threaded_tool]},
+            middleware=[_DeclareResultHooks()],
+            client_kwargs={"loop_recorder": recorder},
+        )
+
+    projected = recorder.loop_messages
+    assert projected is not None
+    result = projected[-1].contents[0]
+    assert "PRIVATE_CREDENTIAL_123" not in str(result.result)
+    assert result.result.startswith("Error: Tool execution was interrupted.")
+    assert recorder.committed_count == 1
+
+
+@pytest.mark.asyncio
+async def test_post_execution_middleware_cancel_uses_processed_result_when_context_result_set() -> None:
+    """When middleware modifies context.result before cancellation, the slot keeps the processed value.
+
+    Scenario: tool returns "raw-result"; a middleware replaces context.result with
+    "processed-result" (simulating what hooks/redaction middleware does), then
+    awaits a gate. Cancellation arrives while the gate holds. The slot must end up
+    with "processed-result", not "raw-result", because middleware already finished
+    its work and the processed value is what the model should see.
+    """
+    tool_returned = asyncio.Event()
+    hold_after_modify = asyncio.Event()
+
+    @tool(name="modifying_tool")
+    async def modifying_tool() -> str:
+        return "raw-result"
+
+    class _ModifyThenHold(FunctionMiddleware):
+        async def process(
+            self,
+            context: FunctionInvocationContext,
+            call_next: Callable[[], Awaitable[None]],
+        ) -> None:
+            await call_next()
+            # Simulate what hook/redaction middleware does: replace the result
+            # and set the processing-complete marker.
+            context.result = "processed-result"
+            if isinstance(context.metadata, dict):
+                context.metadata[HOOK_RESULT_APPLIED_KEY] = True
+            tool_returned.set()
+            await hold_after_modify.wait()
+
+    recorder = LoopRecorder()
+    layer, _wire = _stack([_call_response(("c1", "modifying_tool", {}))])
+    task = asyncio.create_task(
+        layer.get_response(
+            [_user()],
+            options={"tools": [modifying_tool]},
+            middleware=[_ModifyThenHold()],
+            client_kwargs={"loop_recorder": recorder},
+        )
+    )
+    try:
+        await wait_for(lambda: tool_returned.is_set() or task.done())
+        if task.done():
+            await task
+            pytest.fail("tool call finished before the cancellation point")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    projected = recorder.loop_messages
+    assert projected is not None
+    result = projected[-1].contents[0]
+    metadata = result.additional_properties[TOOL_RESULT_METADATA_KEY]
+    # The middleware-processed value must survive; raw-result must not reach the model.
+    assert result.result == "processed-result"
+    assert metadata[TOOL_INTERRUPTED_METADATA_KEY] is True
+    assert metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] is True
 
 
 @pytest.mark.asyncio

@@ -107,6 +107,16 @@ def _is_same_filename_spelling(a: str, b: str) -> bool:
     return _canonical_caseless(a) == _canonical_caseless(b)
 
 
+def _is_canonical_profile_file(path: Path, canonical: Path) -> bool:
+    """A spelling alias is canonical only if the filesystem resolves it to the same file."""
+    if not _is_same_filename_spelling(path.name, canonical.name):
+        return False
+    try:
+        return canonical.samefile(path)
+    except OSError:
+        return False
+
+
 def _quarantine_path(path: Path) -> Path | None:
     """Return a free ``<file>.conflict[-N]`` sibling for *path* (outside the ``*.yaml``/``*.yml`` scan)."""
     return _free_sibling(path, f"{path.name}.conflict", "")
@@ -195,6 +205,7 @@ class AgentProfileRegistry:
         self._user_dir: Path | None = None
         self.sources: dict[Path, str] = {}
         self.revision = 0
+        self.prompt_backups: list[str] = []
 
     @property
     def directory(self) -> Path:
@@ -204,6 +215,7 @@ class AgentProfileRegistry:
         """The builtins and host-injected profiles that survive a complete directory scan."""
         view = AgentProfileRegistry()
         view._user_dir = self._user_dir
+        view.prompt_backups = self.prompt_backups.copy()
         view._builtin_profiles = self._builtin_profiles.copy()
         view._profiles = {
             **deepcopy(view._builtin_profiles),
@@ -214,10 +226,74 @@ class AgentProfileRegistry:
     def install_reload(self, view: AgentProfileRegistry) -> None:
         self._profiles = view._profiles
         self.sources = view.sources
+        self.prompt_backups = view.prompt_backups
+        self._enforce_builtin_prompt_invariant()
         self.revision += 1
+
+    def enforce_builtin_prompts(self, profile: AgentProfile) -> None:
+        """Keep package-owned prompts even when the builtin value is empty."""
+        template = self._builtin_profiles.get(profile.name)
+        if template is not None:
+            profile.instructions = template.instructions
+            profile.compaction.last_words_template = template.compaction.last_words_template
+
+    def _enforce_builtin_prompt_invariant(self) -> None:
+        for profile in self._profiles.values():
+            self.enforce_builtin_prompts(profile)
+
+    def migrate_builtin_prompts(self, directory: Path | None = None) -> list[str]:
+        from chrys.service.profiles.agents.prompt_migration import migrate_builtin_prompts
+
+        directory = directory if directory is not None else self.directory
+        backups = migrate_builtin_prompts(self, directory)
+        self.prompt_backups.extend(name for name in backups if name not in self.prompt_backups)
+        for name in backups:
+            path = directory / f"{name}.yaml"
+            self.register(load_profile_from_yaml(path), source=path)
+        return backups
+
+    def save(self, profile: AgentProfile, *, target_dir: Path | None = None, user_dir: Path | None = None) -> Path:
+        """Persist user settings; full exports and experimental snapshots remain lossless."""
+        from chrys.service.profiles.agents.serializer import profile_directory_lock, save_profile
+
+        directory = user_dir if user_dir is not None else self.directory
+        with profile_directory_lock(directory):
+            if self.is_builtin(profile.name):
+                source = directory / f"{profile.name}.yaml"
+                if source.exists() or source.is_symlink():
+                    try:
+                        owner = load_profile_from_yaml(source).name
+                    except AgentProfileLoadError as exc:
+                        raise OSError(
+                            f"Cannot read target agent profile {profile.name!r}; the original file was preserved."
+                        ) from exc
+                    if owner != profile.name:
+                        raise ValueError(f"Agent profile file for {profile.name!r} belongs to another profile.")
+                self.migrate_builtin_prompts(directory)
+            effective = deepcopy(profile)
+            self.enforce_builtin_prompts(effective)
+            if not self.is_builtin(profile.name):
+                return save_profile(effective, target_dir=target_dir if target_dir is not None else directory)
+            return save_profile(
+                effective,
+                target_dir=target_dir if target_dir is not None else directory,
+                builtin_override=self.is_builtin(profile.name),
+            )
+
+    def clone(self, profile: AgentProfile, *, reserved_profiles: Iterable[AgentProfile] = ()) -> AgentProfile:
+        """Create an independent editable identity for a runtime candidate or installed copy."""
+        from chrys.service.profiles.agents.cloning import allocate_identity, copy_profile, name_key
+
+        profiles = [*self._profiles.values(), *reserved_profiles, profile]
+        occupied = {name_key(p.name) for p in profiles}
+        occupied.update(name_key(p.display_name) for p in profiles)
+        if self.directory.exists():
+            occupied.update(name_key(path.stem) for path in self.directory.iterdir())
+        return copy_profile(profile, allocate_identity(profile, occupied, {p.id for p in profiles}))
 
     def register(self, profile: AgentProfile, *, source: Path | None = None) -> None:
         """Register an agent profile definition."""
+        self.enforce_builtin_prompts(profile)
         conflicts = _profile_id_matches(
             (candidate for name, candidate in self._profiles.items() if name != profile.name),
             profile.id,
@@ -253,6 +329,7 @@ class AgentProfileRegistry:
         self._builtin_profiles = deepcopy(snapshot.builtin_profiles)
         self._user_dir = snapshot.user_dir
         self.sources = snapshot.sources.copy()
+        self._enforce_builtin_prompt_invariant()
         self.revision += 1
 
     def get(self, name: str) -> AgentProfile | None:
@@ -364,14 +441,59 @@ class AgentProfileRegistry:
         """
         target = directory or _default_user_dir()
         self._user_dir = target
-        from chrys.service.profiles.agents.serializer import profile_write_lock
-
-        with profile_write_lock:
+        try:
             return self._load_user_files(target)
+        except OSError as exc:
+            logger.warning("Could not update agent profiles; loading without writes: %s", exc)
+            registered = 0
+            for path, profile in scan_profile_dir(target).loaded:
+                canonical = target / f"{profile.name}.yaml"
+                # Noncanonical files must first be normalized by a writable load:
+                # otherwise an editor would save/delete a different file.
+                if _is_canonical_profile_file(path, canonical):
+                    self.register(profile, source=path)
+                    registered += 1
+            return registered
 
     def _load_user_files(self, target: Path) -> int:
+        from chrys.service.profiles.agents.serializer import profile_directory_lock
+
         scan = scan_profile_dir(target)
-        loaded = self.canonicalize_profile_files(scan.loaded, target)
+        if scan.directory_error:
+            raise scan.directory_error
+        needs_write = (target / ".builtin-prompt-migration.json").exists() or any(
+            not _is_canonical_profile_file(path, target / f"{p.name}.yaml")
+            or not p.id
+            or (self.is_builtin(p.name) and bool(p.instructions.strip() or p.compaction.last_words_template.strip()))
+            or (
+                not scan.invalid
+                and self.get("Plan") is None
+                and not any(parsed.name == "Plan" for _, parsed in scan.loaded)
+                and any(ref.profile == "Plan" for ref in p.sub_agents.agents)
+            )
+            for path, p in scan.loaded
+        )
+        loaded = scan.loaded
+        if needs_write:
+            with profile_directory_lock(target):
+                # Only the write phase holds the lock; re-read under it before
+                # normalizing so an earlier scan can never overwrite a newer save.
+                scan = scan_profile_dir(target)
+                if scan.directory_error:
+                    raise scan.directory_error
+                loaded = self.canonicalize_profile_files(scan.loaded, target)
+                try:
+                    if self.migrate_builtin_prompts():
+                        scan = scan_profile_dir(target)
+                        loaded = self.canonicalize_profile_files(scan.loaded, target)
+                except (OSError, ValueError) as exc:
+                    logger.warning("Builtin prompt backup is pending; original files were preserved: %s", exc)
+                for _, profile in loaded:
+                    self._migrate_legacy_id_if_needed(profile, target)
+                self._drop_retired_plan_refs((profile for _, profile in loaded), scan, target)
+        elif scan.invalid:
+            # This path only explains why Plan cleanup is deferred; it cannot write.
+            self._drop_retired_plan_refs((profile for _, profile in loaded), scan, target)
         # Case-folded names: the registry key is the raw name, but
         # filesystem casing varies, so treat "Code" == "code" for
         # warning purposes.
@@ -388,10 +510,8 @@ class AgentProfileRegistry:
                 )
             else:
                 seen.add(key)
-            self._migrate_legacy_id_if_needed(p, target)
             self.register(p, source=source)
             registered += 1
-        self._drop_retired_plan_refs((profile for _, profile in loaded), scan, target)
         return registered
 
     def canonicalize_profile_files(
@@ -599,14 +719,12 @@ class AgentProfileRegistry:
         """
         if profile.id:
             return
-        from chrys.service.profiles.agents.serializer import save_profile
-
         builtin_id = _BUILTIN_IDS.get(profile.name)
         migrated_id = legacy_profile_id(profile.name)
         profile.id = migrated_id
         source = "builtin" if builtin_id else "generated"
         try:
-            save_profile(profile, target_dir=user_dir)
+            self.save(profile, target_dir=user_dir)
         except (OSError, ValueError) as exc:
             profile.id = ""
             logger.warning(
@@ -673,14 +791,12 @@ class AgentProfileRegistry:
                 ", ".join(path.name for path in scan.invalid),
             )
             return
-        from chrys.service.profiles.agents.serializer import save_profile
-
         for profile in referencing:
             profile.sub_agents.agents = [
                 ref for ref in profile.sub_agents.agents if ref.profile != _RETIRED_PLAN_PROFILE
             ]
             try:
-                path = save_profile(profile, target_dir=user_dir)
+                path = self.save(profile, target_dir=user_dir)
             except (OSError, ValueError) as exc:
                 logger.warning(
                     "Dropped agent profile %r's references to the removed Plan sub-agent for this run but could "
@@ -768,12 +884,10 @@ class AgentProfileRegistry:
 
     def _remove_sub_agent_refs(self, name: str) -> None:
         """Remove all sub-agent references to *name* from other profiles and persist changes."""
-        from chrys.service.profiles.agents.serializer import save_profile
-
         for profile in self.profiles_referencing(name):
             profile.sub_agents.agents = [a for a in profile.sub_agents.agents if a.profile != name]
             if not self.is_builtin(profile.name):
-                save_profile(profile)
+                self.save(profile)
 
     def load_all(self, user_dir: Path | None = None) -> int:
         """Load builtins + user profiles. Returns total loaded."""
@@ -784,6 +898,15 @@ class AgentProfileRegistry:
         count = self.load_builtins()
         count += self.load_user_profiles(target)
         return count
+
+    def load_all_readonly(self) -> None:
+        """Load profiles for prechecks without migrating user YAML files."""
+        from chrys.service.profiles.reload import ProfileReload
+
+        self.load_builtins()
+        profiles = ProfileReload(self, None)
+        profiles.scan()
+        profiles.install()
 
 
 def resolve_launch_profile(registry: AgentProfileRegistry, preferred_name: str) -> AgentProfile | None:

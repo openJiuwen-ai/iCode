@@ -61,29 +61,13 @@ class TodoTools:
         ],
         context: FunctionInvocationContext,
     ) -> str:
-        """Use this tool to create and manage a structured task list for the current session.
+        """Track substantial multi-step work in a visible checklist; skip routine tasks and conversation.
 
-        It helps you track progress and shows the user a live checklist of what
-        you're doing.
-
-        **When to use**: multi-step tasks (3+ distinct steps), work spanning
-        multiple files or subsystems, or several tasks given at once.
-        **When NOT to use**: single straightforward tasks or purely conversational
-        turns.
-
-        **Semantics**: each call replaces the entire list — always send the full
-        updated list. Remove an item by omitting it. Call ``todo_write`` at most
-        once per response — never in parallel with another ``todo_write``. Keep
-        exactly ONE item ``in_progress`` at a time. Mark an item ``completed``
-        immediately after finishing it; never mark it completed if tests failed or
-        work is partial. ``content`` is imperative ("Fix the auth bug");
-        ``active_form`` is the present-continuous label shown while in progress
-        ("Fixing the auth bug").
-
-        **Language**: write ``content`` and ``active_form`` in the language the
-        user writes in (e.g. a Chinese request gets Chinese todo items); when the
-        user's language is unclear or mixed, default to English.
-        """
+        Each call replaces the entire list; omit an item to remove it. Send at most one
+        call per response. Keep at most one item in_progress and mark completed only
+        when finished, including required checks. Use the user's language for content
+        (an action) and active_form (its present-continuous label); default to English
+        when unclear."""
         if self._tracker is None or self._bus is None:
             return tool_error("todo_unavailable", "todo tracking is not available in this session.")
         # Each call replaces the whole list, so which of two calls in one response

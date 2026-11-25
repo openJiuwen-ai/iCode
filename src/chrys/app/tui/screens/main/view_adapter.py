@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from textual.css.query import NoMatches
 
 from chrys.app.tui.buddy_messages import BUDDY_TITLE
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.notifications import NotificationEvent
 from chrys.app.tui.screens.main.dialog_controllers import (
     AgentLoadDialogHandle,
@@ -33,6 +33,7 @@ from chrys.app.tui.screens.main.ports import (
     ConfirmMessage,
     InputLabel,
     InputRestore,
+    InputSubmission,
     NotificationSeverity,
     StatusMessage,
     StatusTrail,
@@ -41,6 +42,7 @@ from chrys.app.tui.screens.main.ports import (
 from chrys.app.tui.screens.main.runtime_info import with_background_count
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
+from chrys.app.tui.util.diff_comments import DiffComment, DiffDraft
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets import PromptDraft
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
@@ -101,7 +103,7 @@ if TYPE_CHECKING:
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.judge import JudgeVerdict
-    from chrys.service.context.providers.history import CompressedBlock
+    from chrys.service.state.folds import FoldItem
     from chrys.service.state.store import StateStore
 
 logger = logging.getLogger(__name__)
@@ -354,8 +356,15 @@ class MainScreenViewAdapter:
     def clear_ask_user_inline_prompts(self) -> None:
         self._screen.query_one(ChatPanel).clear_ask_user_inline_prompts()
 
-    def lock_input_with_text(self) -> None:
-        self._screen.query_one(InputBar).lock_with_text()
+    def lock_input_with_text(self) -> InputSubmission:
+        input_bar = self._screen.query_one(InputBar)
+        input_bar.lock_with_text()
+        return InputSubmission(input_bar.draft(), input_bar.draft_revision)
+
+    def set_injection_steering(self, steering: bool) -> None:
+        input_bar = self._screen.query_one(InputBar)
+        if input_bar.locked and input_bar.injection_phase:
+            input_bar.injection_phase = "steering" if steering else "queued"
 
     def unlock_input_keep_if_locked(self) -> None:
         input_bar = self._screen.query_one(InputBar)
@@ -507,14 +516,14 @@ class MainScreenViewAdapter:
     def set_input_paste_cwd(self, cwd: str) -> None:
         self._screen.query_one(InputBar).set_paste_cwd(cwd)
 
-    def unlock_input_clearing(self, text: str) -> None:
-        """Unlock the composer, clearing it unless edited since *text* was sent.
+    def clear_submitted_input(self, submission: InputSubmission) -> None:
+        """Clear a successfully sent draft only if it has never been edited or replaced.
 
-        A locked composer is read-only, so it still holds what was sent; Enter
-        sends the composer's text stripped.
+        The synchronous revision also catches edits undone back to the same
+        text; compare the whole draft, including fields and references, too.
         """
         input_bar = self._screen.query_one(InputBar)
-        if input_bar.locked or input_bar.value.strip() == text:
+        if input_bar.draft_revision == submission.revision and input_bar.draft() == submission.draft:
             input_bar.unlock_and_clear()
 
     def restore_input_draft(self, draft: str | ChatDraft) -> bool:
@@ -607,8 +616,16 @@ class MainScreenViewAdapter:
             return list(panel.get_user_messages())
         return list(panel.get_agent_responses())
 
-    def copy_text(self, text: str) -> None:
-        copy_text_to_clipboards(self._screen.app, text)
+    def copy_text(self, text: str, *, message: StatusMessage, title: StatusMessage) -> None:
+        dispatched = copy_text_to_clipboards(self._screen.app, text)
+        notify_after_copy(
+            self._screen,
+            self._render_status_message(message),
+            dispatched=dispatched,
+            title=self._render_status_message(title),
+            timeout=2,
+            markup=False,
+        )
 
     def toggle_chat_fold_all(self) -> bool:
         return self._screen.query_one(ChatPanel).toggle_fold_all()
@@ -643,9 +660,23 @@ class MainScreenViewAdapter:
             on_result,
         )
 
-    async def restore_workflow_session(self, session_id: str) -> None:
-        if self._screen._workflow.workflow_mode:
-            await self._screen._workflow.session_view.restore_session(session_id)
+    async def restore_workflow_session(self, session_id: str, *, open_from_chat: bool = False) -> None:
+        from chrys.app.tui.session_lookup import RESUME_TITLE, SESSION_NOT_FOUND
+        from chrys.app.tui.widgets.workflow import text
+
+        screen = self._screen
+        if open_from_chat:
+            screen._set_workflow_mode(True)
+        if not screen._workflow.workflow_mode:
+            if open_from_chat and (notice := screen._app_mode_busy_notice()) is not None:
+                self.notify(notice, title=text.MODE_BUSY_TITLE.bind(), severity="warning")
+            return
+
+        def missing() -> None:
+            screen._set_workflow_mode(False)
+            self.notify(SESSION_NOT_FOUND.bind(session_id=session_id), title=RESUME_TITLE.bind(), severity="warning")
+
+        await screen._workflow.session_view.restore_session(session_id, on_missing=missing if open_from_chat else None)
 
     def toggle_sidebar(self) -> None:
         self._screen.query_one(SidebarPanel).toggle()
@@ -675,10 +706,12 @@ class MainScreenViewAdapter:
         )
         self._screen.query_one(TrajectoryDashboard).show_session(session_id, path)
         self.sync_main_surface()
+        self._screen.refresh_bindings()  # Esc Back shows only while the trajectory is in front.
 
     def hide_trajectory_dashboard(self) -> None:
         self._screen.query_one(TrajectoryDashboard).hide_dashboard()
         self.sync_main_surface()
+        self._screen.refresh_bindings()
         self._screen.query_one(InputBar).focus_input()
 
     def select_trajectory_turn(self, turn_id: str) -> None:
@@ -703,7 +736,8 @@ class MainScreenViewAdapter:
         self._screen.query_one("#footer-row").display = not shell
         # It shows the chat session's hook runs only: a workflow's hooks run on
         # the workflow's own manager, which reports nothing.
-        self._screen.query_one(HookIndicator).display = not workflow
+        # Esc Back takes the right end while the trajectory fills the main area.
+        self._screen.query_one(HookIndicator).display = not workflow and not dashboard.foreground
         self._screen._sync_workflow_timer()
 
     def open_confirm_dialog(
@@ -742,6 +776,9 @@ class MainScreenViewAdapter:
     # Diff and rollback
     # -------------------------------------------------------------- #
 
+    def diff_draft(self) -> DiffDraft:
+        return self._screen.query_one(InputBar)
+
     def open_diff_screen(
         self,
         periods_data: dict[int, list[DiffFileEntry]],
@@ -752,6 +789,9 @@ class MainScreenViewAdapter:
         all_entries: list[DiffFileEntry],
         load_data: Callable[[], Awaitable[DiffLoadResult]] | None = None,
         focus: DiffFocus | None = None,
+        draft: DiffDraft | None = None,
+        comments: list[DiffComment] | None = None,
+        turn_prompt: Callable[[int], str | None] | None = None,
     ) -> None:
         from chrys.app.tui.screens.diff import DiffScreen
 
@@ -764,6 +804,9 @@ class MainScreenViewAdapter:
                 all_entries=all_entries,
                 load_data=load_data,
                 focus=focus,
+                draft=draft,
+                comments=comments,
+                turn_prompt=turn_prompt,
                 locale_controller=self._locale_controller,
             )
         )
@@ -864,7 +907,7 @@ class MainScreenViewAdapter:
         *,
         initial_profile: str,
         file_snapshots: dict[FileSnapshotKey, list[FileSnapshotPayload]] | None,
-        compressed_blocks: dict[str, CompressedBlock] | None,
+        folds: list[FoldItem] | None,
         recovered_from_sidecar: bool = False,
         rollback_targets: set[int] | None = None,
     ) -> None:
@@ -872,7 +915,7 @@ class MainScreenViewAdapter:
             messages,
             initial_profile=initial_profile,
             file_snapshots=file_snapshots,
-            compressed_blocks=compressed_blocks,
+            folds=folds,
             recovered_from_sidecar=recovered_from_sidecar,
             rollback_targets=rollback_targets,
         )

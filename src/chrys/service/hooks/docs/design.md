@@ -15,7 +15,7 @@ This document describes **how** the hook system works. For the YAML format see
 
 - Let users observe or change agent behaviour without forking Chrys.
 - Be reliable enough that "telemetry" hooks don't have to be reinvented for
-  every project.
+  every working directory.
 - Bound gate and shutdown waits so misbehaving hooks cannot stall critical
   shutdown paths indefinitely.
 - Keep the no-hooks path zero-cost.
@@ -77,8 +77,8 @@ Names in YAML are the lowercase string values.
 | `before_tool_call` | Before a tool runs (main or sub-agent) | Yes | tool args |
 | `approval_requested` | A native tool approval still needs a human after automatic review, if any | No | No |
 | `approval_resolved` | That human approval wait ends with acceptance or rejection | No | No |
-| `after_tool_call` | After a tool returns | No (blocking hooks can append to result) | extra_context |
-| `tool_error` | When a tool raises | No | extra_context |
+| `after_tool_call` | After a tool returns | No (blocking hooks can append to or replace the result) | extra_context, result_override |
+| `tool_error` | When a tool raises | No | extra_context, result_override |
 | `sub_agent_start` | When a sub-agent invocation begins | No | No |
 | `sub_agent_end` | When a sub-agent invocation finishes | No | No |
 | `pre_compact` | Before each compaction phase fires | No | No |
@@ -120,8 +120,11 @@ actions:
   arguments before it runs.
 - `user_prompt_submit` blocking hook → can refuse the prompt or queue
   `<system-reminder>` text for the next LLM call.
+- `before_tool_call` blocking hook → can attach `extra_context` that reaches the model
+  with the call's result once it runs, without changing whether it runs.
 - `after_tool_call` / `tool_error` blocking hook → can append `extra_context`
-  text to the tool result before it streams back to the model.
+  text to the tool result before it streams back to the model, or replace its
+  text outright with `result_override`.
 
 Blocking hooks within the same event run **sequentially** in YAML order. The
 first `action: block` short-circuits the rest. `action: modify` updates the
@@ -340,20 +343,20 @@ Temp, detached invocation, detached log, and outbox files are written with
 Hooks can be loaded from two sources:
 
 1. The global file at `<config_dir>/hooks/hooks.yaml`.
-2. The project file at `<workspace.primary_cwd>/.chrys/hooks/hooks.yaml`.
+2. The working directory file at `<workspace.primary_cwd>/.chrys/hooks/hooks.yaml`.
 
-The project file is optional. When both are present, they are merged
-at loader time into a single `MergedHooksFile` with project hooks
+The working directory file is optional. When both are present, they are merged
+at loader time into a single `MergedHooksFile` with working directory hooks
 listed first. The `HookManager` iterates this combined list as a
 single chain; the existing "first block short-circuits" rule applies
-to the whole chain, so a project block ends the chain (including the
+to the whole chain, so a working directory block ends the chain (including the
 global layer for the same event). This is the layered semantic: both
-layers apply, project just runs first.
+layers apply, working directory just runs first.
 
 Runtime artifacts (`logs/`, `tmp/`, `outbox/`) stay in the global
-`<config_dir>/hooks/` tree. Project scripts can write their own
-artifacts to `<project>/.chrys/hooks/` if they want; chrys does not
+`<config_dir>/hooks/` tree. Working directory scripts can write their own
+artifacts to `<working directory>/.chrys/hooks/` if they want; chrys does not
 create or manage that path.
 
-See [project-hooks.md](project-hooks.md) for the full design and
+See [workdir-hooks.md](workdir-hooks.md) for the full design and
 the merge / short-circuit / settings / id-collision rules.

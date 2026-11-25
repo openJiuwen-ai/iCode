@@ -9,6 +9,7 @@ import contextlib
 import functools
 import json
 import uuid
+import weakref
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -30,7 +31,7 @@ from chrys.app.acp.bridge import (
 )
 from chrys.app.acp.content import AcpContentError, ContentBlock, convert_prompt_blocks
 from chrys.app.acp.errors import failure_fields, internal_error, invalid_params, turn_failed
-from chrys.app.acp.history import replay_session_history, session_history_payload
+from chrys.app.acp.history import compressed_context_payload, replay_session_history, session_history_payload
 from chrys.app.acp.hook_confirmations import AcpSessionHookConfirmations
 from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager, ManagedSession, jsonable_dataclass
@@ -136,6 +137,7 @@ ACP_EXTENSION_METHODS: tuple[str, ...] = (
     "profiles/models/read",
     "profiles/models/write",
     "profiles/models/delete",
+    "providers/models/list",
     "mcp/test",
     "mcp/list",
     "skills/list",
@@ -325,10 +327,12 @@ class ChrysAcpServer:
         *,
         initial_vision: bool,
         permission_timeout_seconds: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+        startup_warnings: tuple[Warning, ...] = (),
     ) -> None:
         if not isfinite(permission_timeout_seconds) or permission_timeout_seconds < 0:
             raise ValueError("permission_timeout_seconds must be finite and non-negative.")
         self._manager = manager
+        self._startup_warnings = startup_warnings
         self._initial_vision = initial_vision
         self._permission_timeout_seconds = permission_timeout_seconds
         self._client: Client | None = None
@@ -337,6 +341,11 @@ class ChrysAcpServer:
         self._pending_permission_tasks: dict[tuple[str, str], asyncio.Task[acp_schema.RequestPermissionResponse]] = {}
         self._input_cancel_tombstones: set[tuple[str, str]] = set()
         self._permission_cancel_tombstones: set[tuple[str, str]] = set()
+        # One ``Warning`` object can reach the client from two senders at once:
+        # a reload's collected batch and the prompt stream it overlaps.
+        # Identity, not text: distinct failures may read identically. Entries
+        # vanish with the event itself, so a live warning is never forgotten.
+        self._sent_warnings: dict[int, weakref.ref[Warning]] = {}
 
     def on_connect(self, conn: Client) -> None:
         """Capture the ACP client connection used for server-to-client requests."""
@@ -354,6 +363,11 @@ class ChrysAcpServer:
         # Only a client that answers a paused sub-agent's sub_agent/retry or
         # sub_agent/abort may be left waiting on one; any other would wait forever.
         self._manager.pause_failed_sub_agents = _declares_sub_agent_pause(client_capabilities)
+        if self._client is not None:
+            startup_warnings, self._startup_warnings = self._startup_warnings, ()
+            for warning in startup_warnings:
+                with contextlib.suppress(Exception):
+                    await self._send_warning(None, warning)
         return acp_schema.InitializeResponse(
             protocolVersion=min(protocol_version, PROTOCOL_VERSION),
             agentInfo=acp_schema.Implementation(name=APP_DISPLAY_NAME, version=__version__),
@@ -446,7 +460,7 @@ class ChrysAcpServer:
         """Create a new Chrys session."""
         _ = kwargs
         # Session creation runs outside any prompt turn, so the settings
-        # warnings its load produced — a denied project key, say — have no
+        # warnings its load produced — a denied working directory key, say — have no
         # forwarder; collect and send them once the session exists.
         warnings: list[Warning] = []
         try:
@@ -501,6 +515,13 @@ class ChrysAcpServer:
                 mcp_servers=mcp_servers,
                 warnings=warnings,
             )
+        except Exception as exc:
+            if self._client is not None:
+                for warning in warnings:
+                    with contextlib.suppress(Exception):
+                        await self._send_warning(warning.session_id or session_id, warning)
+            raise _request_error(exc) from exc
+        try:
             session = result.session
             # One cleanup scope for everything after the load: a session this
             # request created must not stay in the active map when any of the
@@ -1082,10 +1103,17 @@ class ChrysAcpServer:
             primary_cwd = _string_param(params, "primaryCwd") or _string_param(params, "primary_cwd")
             if not primary_cwd:
                 raise invalid_params({"details": "primaryCwd is required."})
+            # Sent even when the change fails: an unreadable workspace list is told once per session.
+            warnings = []
+
             try:
-                result = await self._manager.set_workspace(session_id, primary_cwd)
+                result = await self._manager.set_workspace(session_id, primary_cwd, warnings=warnings)
             except Exception as exc:
                 raise _request_error(exc) from exc
+            finally:
+                for warning in warnings:
+                    with contextlib.suppress(Exception):
+                        await self._send_warning(session_id, warning)
             # A workspace change soft-restarts the agent, which can alter skills,
             # MCP/runtime details, memory, and workspace-loaded context — push the
             # refreshed runtime so the client doesn't keep stale state.
@@ -1104,8 +1132,8 @@ class ChrysAcpServer:
             except Exception as exc:
                 raise _request_error(exc) from exc
             if transcript is None:
-                return {"sessionId": canonical_id, "turns": [], "messages": []}
-            return session_history_payload(canonical_id, transcript.messages, transcript.turns)
+                return {"sessionId": canonical_id, "turns": [], "messages": [], "compressedBlocks": []}
+            return session_history_payload(canonical_id, transcript)
         if method == "session/turns":
             return await self._session_turns_payload(params)
         if method == "session/retry":
@@ -1152,6 +1180,14 @@ class ChrysAcpServer:
                 return self._manager.delete_model_profile(profile_id)
             except Exception as exc:
                 raise _request_error(exc) from exc
+        if method == "providers/models/list":
+            from chrys.app.acp.model_discovery import list_provider_models
+
+            return await list_provider_models(
+                _dict_param(params, "connection"),
+                _optional_string_param(params, "profileId"),
+                self._manager.get_model_profile,
+            )
         if method == "mcp/test":
             config = _dict_param(params, "server")
             try:
@@ -1326,6 +1362,15 @@ class ChrysAcpServer:
                     "current": event.current,
                     "total": event.total,
                     "failed": event.failed,
+                    **(
+                        {
+                            "stage": event.stage,
+                            "stageSubject": event.stage_subject,
+                            "stageStatus": event.stage_status,
+                        }
+                        if event.stage
+                        else {}
+                    ),
                 },
             )
             return True
@@ -1460,11 +1505,9 @@ class ChrysAcpServer:
                 "chrys/context_compressed",
                 {
                     "sessionId": event_session_id,
-                    "compressedContextId": event.compressed_context_id,
-                    "summary": event.summary,
-                    "freedMessages": event.freed_messages,
-                    "turnRange": list(event.turn_range),
-                    "source": event.source,
+                    **compressed_context_payload(
+                        event.compressed_context_id, event.summary, event.freed_messages, event.turn_range, event.source
+                    ),
                 },
             )
             return True
@@ -1743,9 +1786,28 @@ class ChrysAcpServer:
             update=plan_update_for_todos(items),
         )
 
-    async def _send_warning(self, session_id: str, warning: Warning) -> None:
-        """Send one ``chrys/warning``, whether it came from a turn or an RPC."""
-        payload = {"sessionId": session_id, "code": warning.code, "message": warning.message}
+    async def _send_warning(self, session_id: str | None, warning: Warning) -> None:
+        """Send one ``chrys/warning``, whether it came from a turn or an RPC.
+
+        A warning already sent from the other path is not sent again: the copy
+        would be identical and names nothing the first does not.
+        """
+        sent = self._sent_warnings
+        previous = sent.get(id(warning))
+        if previous is not None and previous() is warning:
+            return
+        # Entries leave with their events: the callback below removes each one,
+        # so there is nothing to sweep here — and sweeping would race the very
+        # callback a collection triggers mid-iteration.
+        key = id(warning)
+
+        def _forget(_ref: weakref.ref[Warning], key: int = key) -> None:
+            sent.pop(key, None)
+
+        sent[key] = weakref.ref(warning, _forget)
+        payload = {"code": warning.code, "message": warning.message}
+        if session_id is not None:
+            payload["sessionId"] = session_id
         if warning.reason:
             payload["reason"] = warning.reason
         await self._client_or_error().ext_notification("chrys/warning", payload)

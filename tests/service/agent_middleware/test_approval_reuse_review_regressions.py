@@ -132,7 +132,7 @@ async def test_writer_contention_does_not_block_approval_event_loop(approval_set
     candidate = reuse_candidate(binding, context)
     assert candidate is not None
     if operation == "match":
-        assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_PROJECT")
+        assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_WORKSPACE")
     else:
         assert await asyncio.to_thread(binding.service.store.add_many, [])
     lock = await asyncio.to_thread(_hold_writer_lock, binding.service.store)
@@ -154,7 +154,9 @@ async def test_writer_contention_does_not_block_approval_event_loop(approval_set
 
     async def approve(event):
         requests.append(event)
-        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_PROJECT"))
+        await bus.publish(
+            ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_WORKSPACE")
+        )
         if operation == "remember":
             asyncio.get_running_loop().call_soon(beat)
 
@@ -186,7 +188,7 @@ async def test_reserved_writer_lock_does_not_block_existing_rule_reads(approval_
     tool, binding, _, _ = approval_setup
     candidate = reuse_candidate(binding, FunctionInvocationContext(tool, {"command": "npm run test"}))
     assert candidate is not None
-    assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_PROJECT")
+    assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_WORKSPACE")
     lock = await asyncio.to_thread(_hold_writer_lock, binding.service.store)
     try:
         assert await asyncio.to_thread(binding.service.match, candidate)

@@ -33,6 +33,8 @@ from chrys.foundation.models.workflow_session import (
     WorkflowSessionSelection,
     WorkflowTarget,
 )
+from chrys.foundation.models.workspace import Workspace, WorkspaceConfirmation
+from chrys.foundation.models.workspace_operations import WorkspaceOperation, default_workspace_operation
 
 if TYPE_CHECKING:
     # Typing-only import: avoids a runtime dependency from foundation events
@@ -42,6 +44,8 @@ if TYPE_CHECKING:
     # (top of file) keeps all annotations as strings, so this import never
     # executes at runtime.
     from chrys.service.mutations.types import RestoreResult
+    from chrys.service.state.store import SessionReplay
+    from chrys.service.workspaces.registry import RegistrySnapshot
 
 AGENT_LOAD_PHASE_MODEL = "model"
 AGENT_LOAD_PHASE_RUNTIME = "runtime"
@@ -236,6 +240,15 @@ class UserInject(Event):
 
 
 @dataclass
+class UserInjectSteer(Event):
+    """Try steering the active pass with an already queued message, without resubmitting it."""
+
+    injection_id: str = ""
+    accepted: bool = field(default=False, compare=False)
+    """The backend accepted the request; InvocationSteered reports the actual pass ending."""
+
+
+@dataclass
 class UserInjectCancel(Event):
     """User cancels a queued mid-run injection before the model sees it.
 
@@ -415,9 +428,14 @@ class SessionOnlySwitch(Event):
 
 @dataclass
 class WorkspaceChange(Event):
-    """User requests a workspace/cwd change."""
+    """Request a change to the session's workspace: a new cwd, or entering or leaving a workspace."""
 
     primary_cwd: str = ""
+    workspace_operation: WorkspaceOperation = field(default_factory=default_workspace_operation)
+    workspace_id: str | None = None
+    require_leave_confirmation: bool = True
+    confirmation: WorkspaceConfirmation | None = None
+    workspace_snapshot: RegistrySnapshot | None = None
 
 
 @dataclass
@@ -1210,7 +1228,7 @@ class HookConfirmationRequest(Event):
     """The agent profile that wants the operation."""
     hook_id: str
     hook_source: str = ""
-    """``project`` or ``global``; empty when unknown."""
+    """``workdir`` or ``global``; empty when unknown."""
     reason: str = ""
     """What the hook wrote: plain text, never markup."""
     subject: HookConfirmationSubjectKind
@@ -1340,9 +1358,9 @@ class RuntimeHookDetails:
 
 @dataclass
 class RuntimeHookSourceDetails:
-    """One project or global source contributing runtime hooks."""
+    """One working directory or global source contributing runtime hooks."""
 
-    scope: Literal["project", "global"] = "global"
+    scope: Literal["workdir", "global"] = "global"
     source_path: str = ""
     hooks: list[RuntimeHookDetails] = field(default_factory=list)
 
@@ -1408,6 +1426,12 @@ class AgentLoadProgress(Event):
     """Generic per-item identifier, such as an MCP server or sub-agent profile."""
     detail: str = ""
     """Raw untranslated dynamic reason associated with this progress update."""
+    stage: str = ""
+    """Nested initialization phase; outer counts still count completed sub-agents."""
+    stage_subject: str = ""
+    """The nested resource, such as the MCP server being connected."""
+    stage_status: str = ""
+    """Nested phase status, independent of the owning sub-agent's status."""
 
 
 @dataclass
@@ -1481,9 +1505,10 @@ class SessionReady(Event):
     memory_files: list[str] = field(default_factory=list)
     runtime_details: AgentRuntimeDetails = field(default_factory=AgentRuntimeDetails)
     primary_cwd: str = ""
-    # All workspace roots (may include the primary cwd) so consumers such as
-    # the workspace MRU can record secondary roots without an engine query.
+    # The session's own directories, which may include the primary cwd. Empty for workspaces.
     working_dirs: list[str] = field(default_factory=list)
+
+    workspace: Workspace | None = None  # Set only when the session belongs to a workspace.
 
 
 @dataclass
@@ -1513,6 +1538,11 @@ class AgentRuntimeUpdated(Event):
 class SessionNew(Event):
     """User requests to start a new session (preserving the current one)."""
 
+    workspace_id: str | None = None
+    start_unspecified: bool = False
+    primary_cwd: str = ""
+    confirmation: WorkspaceConfirmation | None = None
+
 
 @dataclass
 class SessionRestore(Event):
@@ -1530,6 +1560,15 @@ class SessionRestore(Event):
     # list (possibly empty) is authoritative and replaces the saved additional roots,
     # so ACP clients can narrow, swap, or clear scope on load.
     working_dirs: list[str] | None = None
+    workspace_snapshot: RegistrySnapshot | None = None
+    """Registry snapshot already read at the entry point for this open."""
+    opened_cwd: str = ""
+    """Validated workspace primary directory supplied by the TUI precheck for the same snapshot."""
+
+    workspace_operation: WorkspaceOperation = field(default_factory=default_workspace_operation)
+    workspace_id: str | None = None
+    require_leave_confirmation: bool = True
+    confirmation: WorkspaceConfirmation | None = None
 
 
 @dataclass
@@ -1568,10 +1607,12 @@ class SessionRestored(Event):
     cwd_warning: str = ""
     primary_cwd: str = ""
     recovered_from_sidecar: bool = False
-    # Restored workspace roots (may include the primary cwd) so consumers
-    # such as the workspace MRU can record secondary roots without an
-    # engine query.
+    # The session's own directories, which may include the primary cwd. Empty for workspaces.
     working_dirs: list[str] = field(default_factory=list)
+    # In-process TUI replay of the checkpoint the backend actually restored.
+    replay: SessionReplay | None = field(default=None, repr=False, compare=False)
+
+    workspace: Workspace | None = None  # Set only when the session belongs to a workspace.
 
 
 @dataclass
@@ -1719,6 +1760,23 @@ class WorkspaceUpdated(Event):
     primary_cwd: str = ""
     working_dirs: list[str] = field(default_factory=list)
     reference_files: list[str] = field(default_factory=list)
+
+    workspace: Workspace | None = None  # Set only when the session belongs to a workspace.
+
+
+@dataclass(kw_only=True)
+class WorkspaceChangeFinished(Event):
+    """Terminal reply to an in-place change with workspace intent, including no-ops.
+
+    A current membership, explicit workspace operation or confirmation gives
+    the request workspace intent. Ordinary directory changes in Unspecified
+    use WorkspaceUpdated on success. This reply's error is for the requester
+    waiting on request_id. A standalone Error is for user-facing presentation.
+    """
+
+    request_id: str
+    workspace_update: WorkspaceUpdated | None = None
+    error: Error | None = None
 
 
 @dataclass

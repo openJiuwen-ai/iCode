@@ -18,16 +18,15 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_ESCAPED_OPEN = "\0CHRYS_ENV_TEMPLATE_OPEN\0"
-_ESCAPED_CLOSE = "\0CHRYS_ENV_TEMPLATE_CLOSE\0"
+_ESCAPE_OPEN = "{{{{"
+_ESCAPE_CLOSE = "}}}}"
 
 COMMAND_HANDLE_RE = re.compile(r"chrys-cmd-[0-9a-f]{32}")
-_COMMAND_PLACEHOLDER_RE = re.compile(r"\{\{!.*?\}\}", re.DOTALL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,18 +45,21 @@ class EnvVarResolutionError(ValueError):
     """Raised when an environment-variable placeholder cannot be resolved."""
 
 
-def _invalid_placeholder_message(raw: str, location: str) -> str:
+def _invalid_placeholder_message(raw: str, location: str, *, after_command: bool = False) -> str:
     # This text can reach the model, and a command may hold a secret.
     shown = "{{!...}}" if raw.lstrip("{").lstrip().startswith("!") else raw
-    return (
-        f"Invalid environment variable placeholder {shown!r} in {location}. "
-        "Use {{ENV_VAR}} with letters, digits, and underscores only, and no spaces, or {{!command}}."
+    remedy = (
+        "A command placeholder ends at its first }}, so a literal }} in the command must be written as }}}}, "
+        "or the command put in a script."
+        if after_command
+        else "Use {{ENV_VAR}} with letters, digits, and underscores only, and no spaces, or {{!command}}."
     )
+    return f"Invalid environment variable placeholder {shown!r} in {location}. {remedy}"
 
 
 def _command_handle(body: str, *, raw: str, location: str, allow_commands: bool) -> str:
     """Return the handle of the ``{{!command}}`` whose text after the ``!`` is *body*."""
-    command = body.replace(_ESCAPED_OPEN, "{{").replace(_ESCAPED_CLOSE, "}}").strip()
+    command = _restore_escapes(body).strip()
     if not command:
         raise EnvVarResolutionError(_invalid_placeholder_message(raw, location))
     if not allow_commands:
@@ -83,19 +85,132 @@ def command_handles_in(values: Iterable[str]) -> set[str]:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _Text:
+    """A run of literal text, in the positions it holds in the value it came from."""
+
+    start: int
+    end: int
+
+
+@dataclass(frozen=True, slots=True)
+class _Placeholder:
+    """One ``{{...}}``, and the text between its braces as written."""
+
+    start: int
+    end: int
+    inner: str
+    terminated: bool
+
+
+def _iter_spans(value: str) -> Iterator[_Text | _Placeholder]:
+    """Split *value* into literal runs and placeholders, for every reader of placeholders.
+
+    ``{{{{`` and ````}}}}`` are literal braces wherever they appear, inside a
+    placeholder's body as much as outside it, so a placeholder ends at the first
+    ``}}`` that no doubled pair owns and a doubled pair is never a boundary.
+    """
+    length = len(value)
+    text_start = 0
+    index = 0
+    while index < length:
+        if value.startswith(_ESCAPE_OPEN, index) or value.startswith(_ESCAPE_CLOSE, index):
+            index += 4
+            continue
+        if not value.startswith("{{", index):
+            index += 1
+            continue
+        yield _Text(text_start, index)
+        close = _closing_braces(value, index + 2)
+        if close is None:
+            yield _Placeholder(index, length, value[index + 2 :], terminated=False)
+            return
+        yield _Placeholder(index, close + 2, value[index + 2 : close], terminated=True)
+        index = text_start = close + 2
+    yield _Text(text_start, length)
+
+
+def _closing_braces(value: str, index: int) -> int | None:
+    """Return the index of the ``}}`` ending a placeholder whose body starts at *index*, if it has one."""
+    length = len(value)
+    while index < length:
+        if value.startswith(_ESCAPE_CLOSE, index):
+            index += 4
+            continue
+        if value.startswith("}}", index):
+            return index
+        index += 1
+    return None
+
+
+def _restore_escapes(text: str) -> str:
+    """Return *text* with each doubled brace pair collapsed in one left-to-right pass."""
+    if _ESCAPE_OPEN not in text and _ESCAPE_CLOSE not in text:
+        return text
+    parts: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text.startswith(_ESCAPE_OPEN, index):
+            parts.append("{{")
+            index += 4
+            continue
+        if text.startswith(_ESCAPE_CLOSE, index):
+            parts.append("}}")
+            index += 4
+            continue
+        parts.append(text[index])
+        index += 1
+    return "".join(parts)
+
+
+def _contains_stray_close(text: str) -> bool:
+    """Whether literal *text* holds a ``}}`` that no doubled pair owns."""
+    index = 0
+    while (found := text.find("}}", index)) != -1:
+        if text.startswith(_ESCAPE_CLOSE, found):
+            index = found + 4
+            continue
+        return True
+    return False
+
+
 def blank_commands(value: str) -> str:
     """Return unresolved *value*, same length, with each ``{{!command}}`` blanked.
+
+    A command whose body holds an unescaped ``}}`` ends at that ``}}``, so what
+    follows it cannot be told apart from the rest of the command: from its ``{{!``
+    to the end of the value is blanked, keeping every remaining position.  A
+    ``{{!`` with no closing pair is left as written.
 
     For checking a draft against what can go on the wire: a command's text never
     does, and what it prints is checked when it runs.
     """
-    return _COMMAND_PLACEHOLDER_RE.sub(lambda match: "x" * len(match.group()), value)
+    spans = list(_iter_spans(value))
+    parts: list[str] = []
+    position = 0
+    for index, span in enumerate(spans):
+        if not isinstance(span, _Placeholder) or not span.inner.startswith("!"):
+            continue
+        parts.append(value[position : span.start])
+        if not span.terminated:
+            parts.append(value[span.start :])
+            return "".join(parts)
+        parts.append("x" * (span.end - span.start))
+        position = span.end
+        following = spans[index + 1]
+        if isinstance(following, _Text) and _contains_stray_close(value[following.start : following.end]):
+            parts.append("x" * (len(value) - position))
+            return "".join(parts)
+    parts.append(value[position:])
+    return "".join(parts)
 
 
 def has_command_placeholder(value: str) -> bool:
     """Whether unresolved *value* holds a ``{{!command}}`` that resolving would run (escaped braces do not count)."""
-    unescaped = value.replace("{{{{", _ESCAPED_OPEN).replace("}}}}", _ESCAPED_CLOSE)
-    return _COMMAND_PLACEHOLDER_RE.search(unescaped) is not None
+    return any(
+        isinstance(span, _Placeholder) and span.terminated and span.inner.startswith("!") for span in _iter_spans(value)
+    )
 
 
 def resolve_env_templates(value: str, *, location: str, allow_commands: bool = True) -> str:
@@ -109,46 +224,46 @@ def resolve_env_templates(value: str, *, location: str, allow_commands: bool = T
     variable identifier or starting with ``!`` are resolved; other non-empty
     blocks, such as ``{{"kind":"json"}}``, are preserved literally.  A
     ``{{!command}}`` where the value must be known now, or cannot be swapped
-    later (*allow_commands* false), is an error.
+    later (*allow_commands* false), is an error.  A literal ``}}`` inside a
+    command is written ````}}}}``; written as plain ``}}`` it ends the command,
+    which is reported as an error rather than guessed at.
     """
-    value = value.replace("{{{{", _ESCAPED_OPEN).replace("}}}}", _ESCAPED_CLOSE)
     if "{{" not in value and "}}" not in value:
-        return value.replace(_ESCAPED_OPEN, "{{").replace(_ESCAPED_CLOSE, "}}")
+        return value
 
     parts: list[str] = []
-    pos = 0
-    while True:
-        start = value.find("{{", pos)
-        stray_end = value.find("}}", pos)
-        if start == -1:
-            if stray_end != -1:
-                raise EnvVarResolutionError(_invalid_placeholder_message("}}", location))
-            parts.append(value[pos:])
-            break
-        if stray_end != -1 and stray_end < start:
-            raise EnvVarResolutionError(_invalid_placeholder_message("}}", location))
+    command: _Placeholder | None = None
+    for span in _iter_spans(value):
+        if isinstance(span, _Text):
+            literal = value[span.start : span.end]
+            if _contains_stray_close(literal):
+                # The command's own text is the placeholder before this run: showing the run would show its tail.
+                raw = value[command.start : command.end] if command is not None else "}}"
+                raise EnvVarResolutionError(
+                    _invalid_placeholder_message(raw, location, after_command=command is not None)
+                )
+            parts.append(_restore_escapes(literal))
+            command = None
+            continue
 
-        end = value.find("}}", start + 2)
-        if end == -1:
-            raise EnvVarResolutionError(_invalid_placeholder_message(value[start:], location))
-
-        parts.append(value[pos:start])
-        name = value[start + 2 : end]
-        raw_placeholder = value[start : end + 2]
+        raw_placeholder = value[span.start : span.end]
+        if not span.terminated:
+            raise EnvVarResolutionError(_invalid_placeholder_message(raw_placeholder, location))
+        name = span.inner
         if name == "":
             raise EnvVarResolutionError(_invalid_placeholder_message(raw_placeholder, location))
         if name.startswith("!"):
             parts.append(
                 _command_handle(name[1:], raw=raw_placeholder, location=location, allow_commands=allow_commands)
             )
-            pos = end + 2
+            command = span
             continue
+        command = None
         if _ENV_NAME_RE.fullmatch(name) is None:
             stripped = name.strip()
             if stripped != name and (_ENV_NAME_RE.fullmatch(stripped) is not None or stripped.startswith("!")):
                 raise EnvVarResolutionError(_invalid_placeholder_message(raw_placeholder, location))
-            parts.append(raw_placeholder)
-            pos = end + 2
+            parts.append(_restore_escapes(raw_placeholder))
             continue
 
         resolved = os.environ.get(name)
@@ -158,9 +273,8 @@ def resolve_env_templates(value: str, *, location: str, allow_commands: bool = T
                 f"Set {name} in the environment or remove the {{{{{name}}}}} placeholder."
             )
         parts.append(resolved)
-        pos = end + 2
 
-    return "".join(parts).replace(_ESCAPED_OPEN, "{{").replace(_ESCAPED_CLOSE, "}}")
+    return "".join(parts)
 
 
 def resolve_env_template_mapping(values: dict[str, Any], *, location: str) -> dict[str, str]:

@@ -186,7 +186,14 @@ def _make_judge(client: _FakeClient) -> ApprovalJudge:
 
 
 async def test_approval_judge_passes_session_id_to_client() -> None:
-    judge = ApprovalJudge(default_profile(), session_id="sess-judge", parent_session_id="parent-judge")
+    from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
+
+    judge = ApprovalJudge(
+        default_profile(),
+        session_id="sess-judge",
+        parent_session_id="parent-judge",
+        request_scope=RequestScope.WORKFLOW,
+    )
 
     with patch("chrys.service.llm.clients.create_client", return_value=MagicMock(aclose=AsyncMock())) as create_client:
         await judge._get_client()
@@ -194,6 +201,8 @@ async def test_approval_judge_passes_session_id_to_client() -> None:
     create_client.assert_called_once()
     assert create_client.call_args.kwargs["session_id"] == "sess-judge"
     assert create_client.call_args.kwargs["parent_session_id"] == "parent-judge"
+    assert create_client.call_args.kwargs["request_role"] is RequestRole.APPROVAL_JUDGE
+    assert create_client.call_args.kwargs["request_scope"] is RequestScope.WORKFLOW
 
 
 async def test_closing_the_judge_closes_its_client_and_refuses_a_new_one() -> None:

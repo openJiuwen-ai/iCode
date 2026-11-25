@@ -16,6 +16,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.util.removal import remove_shielded
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.image_preview import extract_image_previews
 from chrys.app.tui.widgets.chat.image_view import TerminalImages
@@ -251,4 +252,4 @@ class ToolViewDiff(VerticalGroup):
             return
         with suppress(Exception):
             await self.mount(dv)
-            await self.query_one(".tool-view-diff-placeholder", Static).remove()
+            await remove_shielded(self.query_one(".tool-view-diff-placeholder", Static))

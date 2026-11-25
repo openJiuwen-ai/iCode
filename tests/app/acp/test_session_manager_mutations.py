@@ -29,6 +29,7 @@ from chrys.foundation.events.types import (
     UserRollback,
     Warning,
     WorkspaceChange,
+    WorkspaceChangeFinished,
 )
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.app.acp._session_manager_fakes import (
@@ -37,6 +38,7 @@ from tests.app.acp._session_manager_fakes import (
     _manager,
     _StaticListStore,
 )
+from tests.support.async_tasks import wait_for_completion
 
 
 @pytest.mark.asyncio
@@ -56,8 +58,9 @@ async def test_set_workspace_rejects_nonexistent_dir(tmp_path) -> None:
         host=_InjectHost(bus, is_turn_active=True),  # type: ignore[arg-type]
     )
 
-    with pytest.raises((AcpSessionError, FileNotFoundError)):
-        await manager.set_workspace("s1", str(tmp_path / "does-not-exist"))
+    async with manager._sessions["s1"].mutation_lock:
+        with pytest.raises((AcpSessionError, FileNotFoundError)):
+            await asyncio.wait_for(manager.set_workspace("s1", str(tmp_path / "does-not-exist")), timeout=1)
 
     # Validation happens before publishing, so no broken workspace is rebuilt/persisted.
     assert published == []
@@ -112,7 +115,7 @@ async def test_switch_agent_same_profile_is_noop(tmp_path) -> None:
         host=host,
     )
 
-    result = await asyncio.wait_for(manager.switch_agent("s1", "Code"), timeout=0.5)
+    result = await wait_for_completion(manager.switch_agent("s1", "Code"))
 
     assert result.from_profile == "Code"
     assert result.to_profile == "Code"
@@ -327,7 +330,10 @@ async def test_set_workspace_surfaces_rebuild_failure(tmp_path) -> None:
     bus = EventBus()
 
     async def _fail(event: WorkspaceChange) -> None:
-        await bus.publish(AgentLoadFailed(session_id="s1", message="workspace boom"))
+        await bus.publish(AgentLoadFailed(session_id="s1", message="unrelated workspace load failure"))
+        await bus.publish(
+            WorkspaceChangeFinished(session_id="s1", request_id=event.event_id, error=Error(message="workspace boom"))
+        )
 
     await bus.subscribe(WorkspaceChange, _fail)
     manager._sessions["s1"] = ManagedSession(  # type: ignore[assignment]
@@ -337,7 +343,7 @@ async def test_set_workspace_surfaces_rebuild_failure(tmp_path) -> None:
         host=_InjectHost(bus, is_turn_active=True),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(AcpSessionError, match="workspace boom"):
+    with pytest.raises(AcpSessionError, match="unrelated workspace load failure"):
         await manager.set_workspace("s1", str(tmp_path))
 
 

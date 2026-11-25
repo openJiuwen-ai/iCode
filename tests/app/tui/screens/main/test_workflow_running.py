@@ -26,11 +26,13 @@ from tests.app.tui.screens.main._workflow_support import (
     select_workflow_view,
     workflow_selection,
 )
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 
 @pytest.mark.parametrize("submit", ["button", "keyboard"])
@@ -40,7 +42,7 @@ async def test_running_workflow_uses_input_dialog_and_preserves_chat_draft(
     from chrys.app.tui.screens.dialogs.workflow_input import WorkflowInputDialog
     from chrys.app.tui.widgets.editor import MessageEditor
 
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine, bus = WorkflowEngine(), EventBus()
     requests = []
 
@@ -95,7 +97,7 @@ async def test_running_workflow_uses_input_dialog_and_preserves_chat_draft(
 async def test_node_completion_and_next_start_repaint_after_details_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine, bus = WorkflowEngine(), EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(140, 48)) as pilot:

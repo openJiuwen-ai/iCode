@@ -138,6 +138,8 @@ class ChatPanelChrome:
         self._session_title: str = ""
         self._workspace_cwd: str = ""
         self._workspace_branch: str = ""
+        self._shown_subtitle: Text | None = None
+        self._subtitle_width: int | None = None
         self._update_notice: UpdateNotice | None = None
 
     @property
@@ -274,13 +276,22 @@ class ChatPanelChrome:
 
     def set_workspace_cwd(self, cwd: str) -> None:
         """Set workspace cwd metadata and refresh the border subtitle."""
+        if cwd == self._workspace_cwd:
+            return
         self._workspace_cwd = cwd
         self._update_border_subtitle()
 
     def set_workspace_branch(self, branch: str) -> None:
         """Set workspace git branch metadata and refresh the border subtitle."""
+        if branch == self._workspace_branch:
+            return
         self._workspace_branch = branch
         self._update_border_subtitle()
+
+    def resize(self) -> None:
+        """Rebuild only when the border's cell budget changed."""
+        if self._host.border_region().width != self._subtitle_width:
+            self._update_border_subtitle()
 
     def _update_border_title(self) -> None:
         if not self._session_id:
@@ -319,8 +330,18 @@ class ChatPanelChrome:
         return render_content(controller.localizer, reference)
 
     def _update_border_subtitle(self) -> None:
-        subtitle = format_workspace_subtitle(self._workspace_cwd, self._workspace_branch)
-        self._host.set_border_subtitle(Text(subtitle) if subtitle else None)
+        width = self._host.border_region().width
+        # Textual reserves two edge cells before the label's four corner/padding cells.
+        subtitle = format_workspace_subtitle(
+            self._workspace_cwd,
+            self._workspace_branch,
+            width=max(0, width - 6) if width else None,
+        )
+        if subtitle == self._shown_subtitle and width == self._subtitle_width:
+            return
+        self._shown_subtitle = subtitle
+        self._subtitle_width = width
+        self._host.set_border_subtitle(subtitle or None)
 
     def is_infrastructure(self, widget: Widget) -> bool:
         """Return whether ``widget`` is persistent chrome infrastructure."""

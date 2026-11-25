@@ -49,7 +49,7 @@ from chrys.service.state._session_meta import ChatSessionMeta, SessionMeta, Work
 
 logger = logging.getLogger(__name__)
 
-CATALOG_DERIVATION_VERSION = 2
+CATALOG_DERIVATION_VERSION = 3
 """Bump whenever the recorded metadata changes shape, meaning or derivation (turn counts, prompt excerpts, …),
 so older catalogs rebuild; ``tests/service/state/test_session_catalog.py`` pins all three."""
 

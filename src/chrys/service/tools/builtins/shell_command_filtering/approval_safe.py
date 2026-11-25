@@ -69,7 +69,6 @@ _APPROVAL_SAFE_EXTERNAL = frozenset(
         "id",
         "ls",
         "md5sum",
-        "ps",
         "realpath",
         "readlink",
         "seq",
@@ -90,19 +89,22 @@ _APPROVAL_SAFE_EXTERNAL = frozenset(
 Deliberately absent: ``rg`` (``--pre`` executes a command), ``less``/``more``
 (interactive ``!`` and ``LESSOPEN``), ``tree`` (``-o`` writes a file), ``date``
 (``-s`` sets the clock), ``hostname`` (a bare argument sets the name), ``jq``
-(``env``/``$ENV`` reads the environment, and ``-f``/``-L`` read files), ``cd``
-and ``type`` (shell builtins), and every command whose option surface is large
-enough to need the validators in ``readonly.commands`` (git, sed, awk, find,
-env, xargs, sort, uniq, python/node/curl version probes, ...).
+(``env``/``$ENV`` reads the environment, and ``-f``/``-L`` read files), ``ps``
+(some options print another process's environment), ``cd`` and ``type`` (shell
+builtins), and every command whose option surface is large enough to need the
+validators in ``readonly.commands`` (git, sed, awk, find, env, xargs, sort,
+uniq, python/node/curl version probes, ...).
 """
 
 _POSIX_SHELL_BUILTINS = frozenset({"echo", "printf", "pwd", "test", "true", "false", "which"})
 """Safe builtins that must keep shell semantics (for example, ``echo -e``).
 
 They are executed through the shell, not by direct exec. The command text still
-passed the no-expansion check, and the approval-safe environment strips shell
-startup hooks (``BASH_ENV``/``ENV``/exported functions), so no user code runs
-before the builtin.
+passed the no-expansion check. The approval-safe environment strips the
+repository-injectable startup hooks (``BASH_ENV``/``ENV``/exported functions,
+and ``ZDOTDIR`` for zsh), so a repository cannot run code before the builtin.
+zsh still reads the system and user startup files ``/etc/zshenv`` and
+``$HOME/.zshenv``; those are trusted user configuration, not repository input.
 """
 
 
@@ -129,6 +131,16 @@ class ApprovalShellDecision:
     @property
     def safe(self) -> bool:
         return self.command is not None
+
+
+def _git_option_present(args: list[str], names: frozenset[str]) -> bool:
+    """Return whether one of *names* is an option before the first ``--``."""
+    for arg in args:
+        if arg == "--":
+            return False
+        if arg in names:
+            return True
+    return False
 
 
 def classify_shell_for_approval(command: str, *, shell_name: str = "") -> ApprovalShellDecision:
@@ -161,13 +173,26 @@ def classify_shell_for_approval(command: str, *, shell_name: str = "") -> Approv
         # global/system config; letting it auto-approve would silently show an
         # empty view, so read it under approval instead.
         stripped = _strip_git_global_options(args)
-        if stripped is not None and stripped[:1] == ["config"]:
-            return ApprovalShellDecision(reason="not_approval_safe:git-config")
+        if stripped is not None:
+            subcommand = stripped[0] if stripped else ""
+            if subcommand == "config":
+                return ApprovalShellDecision(reason="not_approval_safe:git-config")
+            if subcommand == "status":
+                # Worktree comparisons can run clean/process filters from
+                # attributes and config; read them under approval.
+                return ApprovalShellDecision(reason="not_approval_safe:git-worktree")
+            if subcommand == "diff" and not _git_option_present(stripped[1:], frozenset({"--cached", "--staged"})):
+                # Only index/tree diffs are filter-free; a worktree diff is not.
+                return ApprovalShellDecision(reason="not_approval_safe:git-worktree")
     if name == "env":
         # ``env`` with no child prints the environment, and ``env NAME=`` still
         # dumps it. The read-only filter keeps its best-effort ``env`` rule, but
         # this security boundary never auto-approves it.
         return ApprovalShellDecision(reason="not_approval_safe:env")
+    if name == "pytest":
+        # Which pytest runs comes from PATH. pytest 8 loads plugins and conftest
+        # even for ``--version``; only pytest 9 skips that. Require approval.
+        return ApprovalShellDecision(reason="not_approval_safe:pytest")
     if _is_safe_special_command(name, args):
         return _safe_command(argv, execution="exec", rule=f"validator:{name}", shell_name=shell_name)
     return ApprovalShellDecision(reason=f"not_approval_safe:{name}")

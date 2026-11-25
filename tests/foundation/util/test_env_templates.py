@@ -181,3 +181,55 @@ def test_allow_commands_reaches_nested_values() -> None:
 )
 def test_has_command_placeholder_spots_only_unescaped_commands(value: str, expected: bool) -> None:
     assert has_command_placeholder(value) is expected
+
+
+def test_blanking_a_command_hides_a_closing_brace_pair_it_escaped() -> None:
+    value = "{{!jq '{a:{b:1}}}}'}}"
+
+    assert blank_commands(value) == "x" * len(value)
+
+
+def test_blanking_leaves_an_escaped_command_placeholder_as_written() -> None:
+    for value in ("{{{{!secret}}}}", "Bearer {{{{!tool get token}}}}"):
+        assert blank_commands(value) == value
+
+
+def test_blanking_a_command_with_an_unescaped_close_hides_the_rest() -> None:
+    value = "{{!python -c \"print('}}')\"}}"
+
+    assert blank_commands(value) == "x" * len(value)
+
+
+def test_a_close_brace_inside_a_command_is_reported_with_the_escape_rule() -> None:
+    with pytest.raises(EnvVarResolutionError) as raised:
+        resolve_env_templates("{{!python -c \"print('}}')\"}}", location="test field")
+
+    assert "}}}}" in str(raised.value)
+    assert "print" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "resolves"),
+    [
+        ("{{!cmd}}", True),
+        ("Bearer {{!cmd}}", True),
+        ("{{!jq '{a:{b:1}}}}'}}", True),
+        ("{{! tool get token }}", True),
+        ("{{{{!cmd}}}}", True),
+        ('{{"kind":"json"}}', True),
+        ("{{!python -c \"print('}}')\"}}", False),
+        ("{{!secret-command", False),
+        ("", True),
+        ("plain text", True),
+    ],
+)
+def test_the_three_readers_agree_on_which_commands_a_value_holds(value: str, resolves: bool) -> None:
+    has_command = has_command_placeholder(value)
+
+    assert has_command is (blank_commands(value) != value)
+    if not resolves:
+        with pytest.raises(EnvVarResolutionError):
+            resolve_env_templates(value, location="test")
+        return
+    resolved = resolve_env_templates(value, location="test")
+    assert (COMMAND_HANDLE_RE.search(resolved) is not None) is has_command

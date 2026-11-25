@@ -164,6 +164,7 @@ async def test_last_words_generator_retries_empty_response_then_raises(tmp_path,
         usage_details = None
         additional_properties: ClassVar[dict[str, object]] = {}
         messages: ClassVar[tuple[Message, ...]] = ()
+        finish_reason = None
         raw_text = ""
 
     class _EmptyClient:
@@ -209,6 +210,7 @@ async def test_last_words_generator_retries_transient_failure_and_succeeds(tmp_p
         usage_details = None
         additional_properties: ClassVar[dict[str, object]] = {}
         messages: ClassVar[tuple[Message, ...]] = ()
+        finish_reason = None
         raw_text = structured_note()
 
     class _FlakyClient:
@@ -271,6 +273,7 @@ async def test_fallback_attempts_report_wire_progress_before_each_dispatch(tmp_p
         usage_details = None
         additional_properties: ClassVar[dict[str, object]] = {}
         messages: ClassVar[tuple[Message, ...]] = ()
+        finish_reason = None
         raw_text = structured_note()
 
     at_dispatch: list[int] = []
@@ -335,6 +338,7 @@ async def test_zero_transient_budget_keeps_fixed_corrective_retry_events(tmp_pat
                 usage_details = None
                 additional_properties: ClassVar[dict[str, object]] = {}
                 messages: ClassVar[tuple[Message, ...]] = ()
+                finish_reason = None
                 raw_text = "" if self.calls == 1 else structured_note()
 
             return _Response()
@@ -362,6 +366,7 @@ async def test_last_words_generator_publishes_status_around_success(tmp_path):
         usage_details = None
         additional_properties: ClassVar[dict[str, object]] = {}
         messages: ClassVar[tuple[Message, ...]] = ()
+        finish_reason = None
         raw_text = structured_note()
 
     class _Client:
@@ -467,6 +472,7 @@ async def test_last_words_generator_publish_committed_correlates_with_last_gener
         usage_details = None
         additional_properties: ClassVar[dict[str, object]] = {}
         messages: ClassVar[tuple[Message, ...]] = ()
+        finish_reason = None
         raw_text = structured_note()
 
     class _Client:
@@ -597,6 +603,7 @@ async def test_last_words_generator_cancelled_during_finished_publish_raises(tmp
         usage_details = None
         additional_properties: ClassVar[dict[str, object]] = {}
         messages: ClassVar[tuple[Message, ...]] = ()
+        finish_reason = None
         raw_text = structured_note()
 
     class _Client:
@@ -658,6 +665,7 @@ async def test_last_words_generator_swallows_status_publish_failures(tmp_path):
         usage_details = None
         additional_properties: ClassVar[dict[str, object]] = {}
         messages: ClassVar[tuple[Message, ...]] = ()
+        finish_reason = None
         raw_text = structured_note()
 
     class _Client:
@@ -684,6 +692,7 @@ async def test_last_words_generator_uses_model_profile_stream_setting(tmp_path):
         usage_details = None
         additional_properties: ClassVar[dict[str, object]] = {}
         messages: ClassVar[tuple[Message, ...]] = ()
+        finish_reason = None
         raw_text = structured_note()
 
     class _Stream:
@@ -730,7 +739,8 @@ async def test_last_words_generator_uses_model_profile_stream_setting(tmp_path):
 
 
 async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
-    """Phase 4 LAST_WORDS calls should carry the active session header."""
+    """The fallback client carries its context's session and workflow scope."""
+    from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
     from chrys.service.context.compaction.last_words import LastWordsGenerator
     from chrys.service.profiles.models.resolver import default_profile
 
@@ -739,6 +749,7 @@ async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
         log_dir=tmp_path,
         session_id="sess-phase4",
         parent_session_id="parent-phase4",
+        request_scope=RequestScope.WORKFLOW,
     )
 
     with patch("chrys.service.llm.clients.create_client", return_value=MagicMock(aclose=AsyncMock())) as create_client:
@@ -747,6 +758,8 @@ async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
     create_client.assert_called_once()
     assert create_client.call_args.kwargs["session_id"] == "sess-phase4"
     assert create_client.call_args.kwargs["parent_session_id"] == "parent-phase4"
+    assert create_client.call_args.kwargs["request_role"] is RequestRole.COMPACTION
+    assert create_client.call_args.kwargs["request_scope"] is RequestScope.WORKFLOW
 
 
 async def test_closing_the_generator_closes_its_client_and_refuses_a_new_one(tmp_path):
@@ -786,6 +799,7 @@ async def test_last_words_generator_renders_only_scoped_timeline(tmp_path):
         usage_details = None
         additional_properties: ClassVar[dict[str, object]] = {}
         messages: ClassVar[tuple[Message, ...]] = ()
+        finish_reason = None
         raw_text = structured_note()
 
     class _CapturingClient:

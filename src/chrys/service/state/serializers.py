@@ -14,6 +14,7 @@ from typing import Any
 
 from chrys.kernel import Message
 from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.service.context.compaction.budgets import BOUNDARY_SUSPENDED_STATE_KEY, TURN_BOUNDARY_PENDING_STATE_KEY
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.session.runtime_metadata import (
     CONTEXT_CALIBRATION_KEY,
@@ -45,6 +46,10 @@ _PASS_THROUGH_OPTIONAL_KEYS = (
     # attempt/spend breaker for the interrupted logical turn.
     "last_words_manifest",
     "last_words_breaker",
+    # Turn-boundary compaction schedule — booked by one turn for the next
+    # turn's first request, which a resumed session sends from a new process.
+    TURN_BOUNDARY_PENDING_STATE_KEY,
+    BOUNDARY_SUSPENDED_STATE_KEY,
     TOTAL_SESSION_TOKENS_KEY,
     TOTAL_SESSION_INPUT_TOKENS_KEY,
     TOTAL_SESSION_OUTPUT_TOKENS_KEY,
@@ -102,6 +107,13 @@ def serialize_compressed_block(block: CompressedBlock) -> dict[str, Any]:
     }
 
 
+def _turn_range(value: object) -> tuple[int, int]:
+    """A stored ``[first, last]`` turn range; anything malformed reads as unknown ``(0, 0)``."""
+    if isinstance(value, list | tuple) and len(value) == 2 and all(type(turn) is int for turn in value):
+        return value[0], value[1]
+    return 0, 0
+
+
 def deserialize_compressed_block(data: dict[str, Any]) -> CompressedBlock:
     """Reconstruct a CompressedBlock from a serialized dict."""
     return CompressedBlock(
@@ -109,7 +121,7 @@ def deserialize_compressed_block(data: dict[str, Any]) -> CompressedBlock:
         messages=[deserialize_message(m) for m in data.get("messages", [])],
         summary_text=data["summary_text"],
         marker_id=data.get("marker_id", ""),
-        turn_range=tuple(data.get("turn_range", [0, 0])),
+        turn_range=_turn_range(data.get("turn_range")),
         created_at=data.get("created_at", ""),
     )
 

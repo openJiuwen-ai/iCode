@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import HistoryMarkerKind, read_last_words_record
 from chrys.kernel import EXCLUDED_KEY, ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream
 from chrys.kernel.middleware import ChatContext
 from chrys.service.agent_middleware.injection import InjectionMiddleware
@@ -39,6 +39,7 @@ from chrys.service.llm.chat_completions import history as chat_history
 from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
 from chrys.service.llm.openai_responses.replay import encode_input
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
+from chrys.service.state.serializers import deserialize_message, serialize_message
 from tests.support.reminder_calls import enrich_call, establish_request
 from tests.support.reminder_stack import reminder_pair
 
@@ -193,16 +194,28 @@ async def test_record_write_assigns_a_new_list(monkeypatch: pytest.MonkeyPatch) 
     assert _record(opener)[-1] == {"kind": "event", "text": "late hook"}
 
 
-async def test_last_words_stays_dynamic_and_unrecorded(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("requests", [1, 0], ids=["established", "never-sent"])
+async def test_last_words_has_a_record_of_its_own_written_once_its_request_is_established(
+    monkeypatch: pytest.MonkeyPatch, requests: int
+) -> None:
+    """A note no compaction commit recorded (one restored from an older session) is recorded as it is sent."""
     middleware, last_words = _middleware_pair(monkeypatch)
     opener = _user("first")
     middleware.prepare_turn()
     last_words.set_last_words("progress note")
 
-    wire = await enrich_call(middleware, [opener])
+    wire = await enrich_call(middleware, [opener], requests=requests)
 
     assert _texts(wire[0])[-1].startswith(_LAST_WORDS_PREFIX)
-    assert all("[LAST_WORDS]" not in entry["text"] for entry in _record(opener))
+    # The note replaces itself during a turn, so it is no entry of the append-only reminder record.
+    assert all("[LAST_WORDS]" not in entry["text"] for entry in opener.additional_properties.get(_RECORD, []))
+    record = read_last_words_record(opener.additional_properties)
+    if requests:
+        assert record is not None
+        assert record.note == "progress note"
+        assert _wrap(record.text) == _texts(wire[0])[-1]
+    else:
+        assert record is None
 
 
 # ---------------------------------------------------------------------------
@@ -1070,3 +1083,26 @@ async def test_continuation_poll_keeps_the_held_catalogs(monkeypatch: pytest.Mon
     sent = await _service_call(middleware, [_user("second")], handle="resp_1", answer="resp_2")
 
     assert _count(sent, _CATALOG) == 0
+
+
+async def test_saved_workdir_reminders_replay_byte_for_byte(monkeypatch: pytest.MonkeyPatch) -> None:
+    old = "[Runtime Environment]\n  Project: Team\n  Project folders:\n  - /repo (primary)"
+    departed = '[Runtime Environment]\n  Project: Unspecified (left project "Team")'
+    runtime: list[str | None] = [old]
+    writer = _middleware(monkeypatch, runtime=runtime)
+    history: list[Message] = []
+    first = await _next_turn(writer, history, "first")
+    runtime[0] = departed
+    second = await _next_turn(writer, history, "second")
+
+    # Re-ID the messages via the same provider-state serializer used by session persistence.
+    saved = [serialize_message(message) for message in history]
+    restored = [deserialize_message(message) for message in saved]
+    runtime[0] = "[Runtime Environment]\n  Workspace: Team"
+    reader = _middleware(monkeypatch, runtime=runtime)
+    reader.prepare_turn()
+    wire = await enrich_call(reader, [*restored, _user("third")])
+
+    assert [text.encode() for text in _texts(wire[0])] == [text.encode() for text in first]
+    assert [text.encode() for text in _texts(wire[2])] == [text.encode() for text in second]
+    assert _wrap(runtime[0]) in _texts(wire[-1])

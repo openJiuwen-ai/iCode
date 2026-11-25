@@ -26,7 +26,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -40,7 +40,7 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT
 async def test_successful_agent_keeps_activation_accounting_when_edge_evaluation_is_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference")
     profile = make_profile(builtins=["filesystem.read"])

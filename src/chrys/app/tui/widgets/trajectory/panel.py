@@ -25,7 +25,7 @@ from textual.message import Message
 from textual.widgets import Tab, Tabs
 
 from chrys.app.tui.binding_display import localized_binding
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.support.file_manager import can_open_in_file_manager, open_in_file_manager
 from chrys.app.tui.support.gc_freeze import (
@@ -440,6 +440,7 @@ class TrajectoryDashboard(Container):
                 else:
                     session_json.set_status(self._render_message(_NO_ACTIVE_SESSION.bind()))
                 self._session_json_loaded = True
+                self._update_border_labels()
         else:
             session_json.hide_session_json()
             self._session_json_loaded = False
@@ -518,7 +519,8 @@ class TrajectoryDashboard(Container):
             self.border_subtitle = Text("")
             return
         if self.active_tab is DashboardTab.SESSION_DATA and self._path is not None:
-            self.border_subtitle = Text(surrogate_safe_text(str(self._path.parents[1] / "session.json")))
+            opened = self.query_one(SessionJsonPanel).session_path if self._session_json_loaded else ""
+            self.border_subtitle = Text(surrogate_safe_text(opened or str(self._path.parents[1] / "session.json")))
             return
         subtitle = self._precision_legend()
         subtitle.append(" · ")
@@ -917,9 +919,11 @@ class TrajectoryDashboard(Container):
         folder = self._session_folder
         if folder is None:
             return
-        copy_text_to_clipboards(self.app, str(folder))
-        self.notify(
+        dispatched = copy_text_to_clipboards(self.app, str(folder))
+        notify_after_copy(
+            self,
             self._render_message(_SESSION_INFO_PATH_COPIED.bind()),
+            dispatched=dispatched,
             title=self._render_message(COPIED_TITLE.bind()),
             timeout=1,
             markup=False,

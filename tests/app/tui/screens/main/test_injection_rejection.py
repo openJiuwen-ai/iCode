@@ -22,6 +22,7 @@ from chrys.app.tui.screens.dialogs.vision_unsupported import VisionUnsupportedDi
 from chrys.app.tui.screens.main import MainScreen
 from chrys.app.tui.screens.main.event_handlers import BackendEventHandler
 from chrys.app.tui.screens.main.input_flow import InputFlowController
+from chrys.app.tui.screens.main.ports import InputSubmission
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar
 from chrys.foundation.events.bus import EventBus
@@ -52,8 +53,18 @@ class _InputBar:
     """The composer: an injection keeps its text while the bar is locked."""
 
     def __init__(self) -> None:
-        self.value = ""
+        self._value = ""
+        self.draft_revision = 0
         self.locked = False
+
+    @property
+    def value(self) -> str:
+        return self._value
+
+    @value.setter
+    def value(self, text: str) -> None:
+        self._value = text
+        self.draft_revision += 1
 
     def lock_with_text(self) -> None:
         self.locked = True
@@ -93,15 +104,16 @@ class _InputFlowView:
     def clear_terminal_title_result(self) -> None:
         return None
 
-    def lock_input_with_text(self) -> None:
+    def lock_input_with_text(self) -> InputSubmission:
         self._input_bar.lock_with_text()
+        return InputSubmission(self._input_bar.draft(), self._input_bar.draft_revision)
 
     def unlock_input_keep_if_locked(self) -> None:
         if self._input_bar.locked:
             self._input_bar.unlock_and_keep()
 
-    def unlock_input_clearing(self, text: str) -> None:
-        if self._input_bar.locked or self._input_bar.value.strip() == text:
+    def clear_submitted_input(self, submission: InputSubmission) -> None:
+        if self._input_bar.draft_revision == submission.revision and self._input_bar.draft() == submission.draft:
             self._input_bar.unlock_and_clear()
 
     def current_chat_session_id(self) -> str:
@@ -239,8 +251,10 @@ class _Harness:
         def set_agent_running(running: bool) -> None:
             self.running.append(running)
             # As MainScreen does: a run's end hands a locked composer back.
-            if not running and self.input_bar.locked:
-                self.input_bar.unlock_and_keep()
+            if not running:
+                self.state.pending_injection.clear()
+                if self.input_bar.locked:
+                    self.input_bar.unlock_and_keep()
 
         screen = SimpleNamespace(
             _state=self.state,
@@ -354,8 +368,8 @@ async def test_error_the_running_turn_publishes_meanwhile_is_the_turns() -> None
     assert h.running == [False]
     assert h.chat_errors == ["Working directory is gone"]
     assert h.notifications == []
-    # The message still waits for the backend's word on it.
-    assert h.state.pending_injection.active is True
+    # Admission may still be pending, but the ended turn no longer owns the composer.
+    assert h.state.pending_injection.active is False
     assert h.input_bar.value == _TEXT
 
 
@@ -408,17 +422,18 @@ async def test_second_submit_in_the_same_tick_goes_back_to_the_composer(agent_ru
         await h.bus.publish(Error(code="hook_blocked", message=_BLOCK_REASON))
 
     await h.start(hold_then_refuse)
-    # A running turn's Enter leaves the text in the composer, so a repeated
-    # Enter sends it again; a new turn's Enter clears it.
+    # A running turn reserves its unchanged draft synchronously; a new turn's
+    # Enter clears it and a second submission is handed back by its worker.
     h.input_bar.value = _TEXT if agent_running else ""
     second = _TEXT if agent_running else "second message"
     h.controller.submit_user_text(_TEXT)
     h.controller.submit_user_text(second)
-    assert len(h.workers) == 2
+    assert len(h.workers) == (1 if agent_running else 2)
 
     first_task = asyncio.create_task(h.workers[0]())
     await wait_for(lambda: hook_entered.is_set() or first_task.done(), description="first submit in its hook")
-    await h.workers[1]()
+    if not agent_running:
+        await h.workers[1]()
 
     assert not first_task.done()
     assert [event.text for event in h.published] == [_TEXT]
@@ -432,7 +447,7 @@ async def test_second_submit_in_the_same_tick_goes_back_to_the_composer(agent_ru
     # Nothing stays reserved: the next submit is sent.
     assert h.state.submit.active is False
     h.controller.submit_user_text(second)
-    await h.workers[2]()
+    await h.workers[-1]()
     assert [event.text for event in h.published] == [_TEXT, second]
 
 
@@ -448,7 +463,7 @@ async def test_mid_run_message_whose_run_ended_first_shows_the_turn_it_opened(me
         h.handler.set_agent_running(False)
         if meanwhile == "esc":
             # Its backend cancel arrives too late.
-            assert h.controller.cancel_pending_injection() is True
+            assert h.controller.withdraw_submit() is True
         if meanwhile == "edit":
             # The run's end handed the composer back, so it is editable.
             h.input_bar.value = "edited draft"
@@ -471,7 +486,7 @@ async def test_mid_run_message_whose_run_ended_first_shows_the_turn_it_opened(me
     assert h.state.submit.active is False
     assert h.state.render_gate.active is False
     assert h.input_bar.locked is False
-    # Only the sent text leaves the composer; a draft edited since stays.
+    # Only the unchanged, unwithdrawn sent draft is cleared after delayed admission.
     assert h.input_bar.value == {"nothing": "", "esc": _TEXT, "edit": "edited draft"}[meanwhile]
 
 
@@ -517,6 +532,7 @@ async def test_mid_run_message_failing_before_its_publish_releases_the_submit(mo
         await h.controller.queue_injection(_TEXT)
 
     assert h.state.submit.active is False
+    assert h.state.pending_injection.active is False
     assert h.published == []
 
 

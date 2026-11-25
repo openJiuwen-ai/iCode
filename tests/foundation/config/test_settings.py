@@ -36,10 +36,10 @@ from chrys.foundation.config.settings import (
     persist_editor_keymap,
     persist_locale,
     persist_theme,
-    persist_tool_groups_expanded,
 )
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, load_settings
-from chrys.foundation.config.spec import Apply, ProjectMerge, Source, kind_accepts, specs_by_field, specs_by_key
+from chrys.foundation.config.spec import Source, kind_accepts, specs_by_field, specs_by_key
+from chrys.foundation.config.user_settings import RETIRED_SETTING_KEYS
 
 # ── Settings.max_transient_retries env loading ──────────────────────
 
@@ -715,7 +715,7 @@ def test_an_overlay_refuses_a_value_the_field_would_never_accept() -> None:
 def test_an_overlay_refuses_to_impersonate_a_file() -> None:
     """A file layer's origin has to name its file, which an overlay cannot."""
     with pytest.raises(ValueError, match="file"):
-        load_settings(env={}).overlay(Source.PROJECT, model_profile="x")
+        load_settings(env={}).overlay(Source.WORKDIR, model_profile="x")
 
 
 def test_an_overlay_unseals_the_key_it_writes() -> None:
@@ -822,27 +822,10 @@ def test_persist_locale_writes_the_settings_document_without_an_env_mirror(fake_
     assert "CHRYS_LOCALE" not in os.environ
 
 
-def test_thinking_streams_folded_by_default_and_only_the_user_settings_change_it_live() -> None:
-    found = specs_by_key(Settings)["ui.chat.show_thinking"]
-
-    assert Settings().chat_thinking_expanded is False
-    assert (found.apply, found.env, found.project_merge) == (Apply.LIVE, None, ProjectMerge.DENY)
-
-
-def test_completed_turn_folding_is_user_owned_and_enabled_by_default() -> None:
-    found = specs_by_key(Settings)["ui.chat.fold_finished_turns"]
-    assert Settings().chat_fold_finished_turns is True
-    assert (found.apply, found.env, found.project_merge) == (Apply.LIVE, None, ProjectMerge.DENY)
-
-
-def test_tool_groups_default_collapsed_and_persist_native_bool(fake_config_dir: Path) -> None:
-    assert Settings().tool_groups_expanded is False
-
-    persist_tool_groups_expanded(True)
-
-    value = _read_setting(fake_config_dir, "ui.chat.tool_groups_expanded")
-    assert value is True
-    assert type(value) is bool
+def test_the_retired_chat_display_choices_are_not_settings() -> None:
+    keys = specs_by_key(Settings)
+    for key in RETIRED_SETTING_KEYS:
+        assert key not in keys
 
 
 @pytest.mark.parametrize(

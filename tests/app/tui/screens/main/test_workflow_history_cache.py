@@ -15,19 +15,21 @@ from chrys.app.tui.screens.dialogs.workflow_node import WorkflowNodeDialog
 from chrys.app.tui.screens.main import workflow_session_view
 from chrys.app.tui.widgets.workflow.values import WorkflowValueView
 from chrys.service.workflows.store import node_value_path
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import wait_for
 from tests.support.workflow_history import record_workflow_run
 
 from ._workflow_support import WorkflowEngine, save_workflow_session, value_text
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("history_state", ["corrupt", "empty", "missing_current"])
 async def test_previous_history_is_cached_without_hiding_current_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, history_state: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:

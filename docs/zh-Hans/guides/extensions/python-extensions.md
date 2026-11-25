@@ -65,7 +65,7 @@
 
   uv 只保留最近一次命令中指定的包，因此每次都要列出你使用的所有扩展。以包的方式安装时，扩展需要的库也会一并安装。iCode 离线安装包无法添加额外的包，请改用文件方式安装扩展。
 
-iCode 只在这两处查找扩展，不会从项目文件夹中加载。
+iCode 只在这两处查找扩展，不会从工作目录中加载。
 
 扩展的 ID 即其文件名或文件夹名，或其所在包为它指定的名称。ID 只能使用小写字母、数字和 `_`，必须以字母开头，并且不能与 iCode 某个内置工具类别的 ID（例如 `shell`、`todo` 或 `sleep`）相同。如果两处安装了 ID 相同的扩展，两份都不会加载：请删除其中一份。
 
@@ -150,10 +150,17 @@ iCode 在导入扩展时会检查每个工具：函数不是 `async def`、参�
 | --- | --- |
 | `cwd` | 当前[工作目录](../daily-use/workspaces.md)；以它为基准解析相对路径 |
 | `workspace_dirs` | 工作目录，以及其后的各个附加工作目录 |
-| `agent_name` | 调用该工具的智能体名称 |
+| `agent_name` | 调用该工具的智能体所使用的 profile 名 |
+| `caller_name` | 主智能体的 profile 名、子代理注册的工具名（如 `Explore`）或工作流节点 ID |
+| `invocation_type` | 与 `invocation_id` 对应的调用类型。扩展回调中为 `turn`、`sub_agent` 或 `workflow_node`，在调用之外为 `None` |
+| `invocation_id` | 当前主智能体回合、单次子代理调用或工作流节点激活的 ID，在调用之外为 `None` |
 | `session_id` | 会话 ID，或 `None` |
 | `data_dir` | 存放扩展自身文件的文件夹，跨会话保留：iCode 配置目录中的 `extension-data/<扩展 ID>` |
 | `session_data_dir` | 存放扩展在本会话中文件的文件夹，位于会话目录内；会话没有目录时为 `None`。复刻会话时会复制这个文件夹，因此请保存相对于它的路径 |
+
+如果把名为 `Researcher` 的 profile 注册为工具 `Explore`，插件会读到 `agent_name="Researcher"` 和 `caller_name="Explore"`。并行调用两次 `Explore`，调用方名称和类型相同，调用 ID 各不相同。每次调用内部，工具、钩子和每轮上下文读到的这三个值一致。
+
+单次调用独享的资源可用 `(session_id, invocation_type, invocation_id)` 作键。同一会话内，若要让同名、同类型调用方的多次调用共享资源，可用 `(session_id, invocation_type, caller_name)` 作键。工作流节点重试时保留调用 ID，再次激活时获得新 ID。
 
 iCode 会在工具首次使用这两个文件夹时创建它们，且只有你可以读取。上下文只在传给它的那次调用中有效：不要留到之后的调用中使用。工具只能通过其结果改变 iCode 的状态；它修改的其他内容都是文件和服务，就像你运行的任何程序一样。
 
@@ -334,7 +341,7 @@ def test_reads_the_version(tmp_path):
     assert asyncio.run(pyproject_version(ctx)) == "1.2.0"
 ```
 
-`ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=...)` 只为工具提供你传入的文件夹：未传入 `data_dir` 时访问 `ctx.data_dir` 会报错；未传入 `session_data_dir` 时 `ctx.session_data_dir` 为 `None`。
+`ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=..., caller_name=..., invocation_type=..., invocation_id=...)` 只为工具提供你传入的文件夹：未传入 `data_dir` 时访问 `ctx.data_dir` 会报错；未传入 `session_data_dir` 时 `ctx.session_data_dir` 为 `None`。
 
 上下文和工具钩子同样是普通的异步函数。用 `TurnContext.for_testing(tmp_path, prompt="...")` 调用上下文；用你构造的 `ToolCall` 和 `ToolResult` 调用钩子：
 
@@ -388,7 +395,7 @@ dev = ["iCode-TUI", "pytest"]
 
 | 现象 | 检查什么 |
 | --- | --- |
-| “工具”标签页中没有该扩展 | 文件位于配置目录的 `extensions` 文件夹中（而不是项目文件夹中），名称以 `.py` 结尾或是包含 `__init__.py` 的文件夹，且名称不以 `_` 或 `.` 开头。以包的方式安装时，包必须装在 iCode 所在的运行环境中。 |
+| “工具”标签页中没有该扩展 | 文件位于配置目录的 `extensions` 文件夹中（而不是工作目录中），名称以 `.py` 结尾或是包含 `__init__.py` 的文件夹，且名称不以 `_` 或 `.` 开头。以包的方式安装时，包必须装在 iCode 所在的运行环境中。 |
 | “扩展”下显示“已跳过 …” | ID 不符合上面的 ID 规则，或与某个内置工具类别重名。请重命名文件或文件夹。 |
 | 警告说智能体启动时未包含该扩展 | 警告会说明原因：扩展未安装、安装了两份、导入失败（消息中会给出错误），或其中某个工具的名称已被其他工具使用。 |
 | 调用结果为“Error: Function failed.” | 工具抛出了 `ToolError` 以外的异常。在 TUI 中，iCode 会把它记录在配置目录的 `logs/debug.log` 中。对于需要让模型知道的失败，请抛出 `ToolError`。 |

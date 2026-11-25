@@ -12,6 +12,7 @@ from textual.geometry import Offset
 from textual.scrollbar import ScrollTo
 
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from tests.app.tui.widgets._scroll_gc import install_fake_chat_panel_gc
 from tests.support.tui_helpers import ChatPanelApp, chat_content_children
 from tests.support.waiting import wait_for, wait_until_quiet
@@ -31,6 +32,9 @@ def _turns(count: int) -> list[dict[str, object]]:
     for index in range(count):
         messages.append({"role": "user", "contents": [{"type": "text", "text": f"question {index}"}]})
         messages.append({"role": "assistant", "contents": [{"type": "text", "text": f"answer {index}\n\nmore"}]})
+        messages.append(
+            {"role": "system", "additional_properties": {HistoryMarkerKind.KEY: HistoryMarkerKind.TURN}, "contents": []}
+        )
     return messages
 
 

@@ -15,19 +15,21 @@ from textual.widgets import Button, Static
 from chrys.app.tui.screens.main import workflow_content
 from chrys.service.workflows.store import RunRecord, node_value_path
 from tests.app.tui.screens.main._workflow_support import select_archived_run
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, open_workflow, run_store, select_workflow_view, workflow_selection
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 @pytest.mark.parametrize("first_result", ["long", "long_line", "damaged", "missing"])
 async def test_all_output_nodes_remain_accessible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_result: str
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main = app._main_screen

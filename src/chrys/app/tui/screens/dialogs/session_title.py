@@ -17,7 +17,7 @@ from textual.message import Message
 from textual.widgets import Button, Static
 
 from chrys.app.tui.binding_display import CANCEL_BINDING, localized_binding
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str
 from chrys.app.tui.screens.dialogs.base import BaseDialog
@@ -183,9 +183,11 @@ class SessionTitleDialog(BaseDialog[str | None]):
 
     @on(_CopyIdLink.Clicked)
     def _on_copy_id(self, _event: _CopyIdLink.Clicked) -> None:
-        copy_text_to_clipboards(self.app, self._session_id)
-        self.notify(
+        dispatched = copy_text_to_clipboards(self.app, self._session_id)
+        notify_after_copy(
+            self,
             self._render_message(_ID_COPIED.bind()),
+            dispatched=dispatched,
             title=self._render_message(COPIED_TITLE.bind()),
             timeout=1,
             markup=False,

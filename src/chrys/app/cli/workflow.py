@@ -24,7 +24,7 @@ from chrys.app.cli.display import counted, one_line, shown_path
 from chrys.app.cli.headless import EXIT_INTERRUPTED, PreparedRuntime
 from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message
 from chrys.app.cli.progress import ProgressWriter, WorkflowProgress, guarded, progress_console
-from chrys.app.parsing import SanitizingArgumentParser, add_help_option, default_to_list
+from chrys.app.parsing import SanitizingArgumentParser, add_help_option, add_startup_session_option, default_to_list
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE
 from chrys.foundation.events.types import WorkflowRunAccepted
@@ -74,8 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
         "list",
         help="List the workflows found for the current directory",
         description="List the workflows found for the current directory: builtin templates, the user's global "
-        "directory, and the project's .chrys/workflows directory. A workflow is a .py file, or a folder holding a "
-        ".py file of the same name; a project workflow shadows a global one, which shadows a builtin.",
+        "directory, and the working directory's .chrys/workflows directory. A workflow is a .py file, or a folder holding a "
+        ".py file of the same name; a working directory workflow shadows a global one, which shadows a builtin.",
         add_help=False,
     )
     add_help_option(list_parser)
@@ -106,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--input", metavar="TEXT", default="", help="Input text handed to the workflow's start node (default: empty)"
     )
-    run_parser.add_argument("-s", "--session", default=None, help="Optional session id to restore before running")
+    add_startup_session_option(run_parser)
     run_parser.add_argument(
         "--trust",
         action="store_true",
@@ -160,7 +160,7 @@ def _rows(catalog: WorkflowCatalog, discovery: Discovery) -> list[_WorkflowRow]:
 def _list_command(args: argparse.Namespace) -> int:
     prepared = headless.prepare_runtime()
     headless.write_pending_warnings(prepared, as_json=args.json)
-    catalog = WorkflowCatalog(config_dir=get_platform().config_dir, project_cwd=Path.cwd())
+    catalog = WorkflowCatalog(config_dir=get_platform().config_dir, workdir=Path.cwd())
     discovery = catalog.discover()
     for skipped in discovery.skipped:
         headless.write_warning(f"Skipped {skipped.path}: {skipped.reason}", as_json=args.json, code="workflow_skipped")

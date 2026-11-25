@@ -72,7 +72,7 @@ _DESCRIPTION_RENAME = msg(
     "tui.commands.description.rename",
     fallback="Set or clear a custom session title",
 )
-_DESCRIPTION_SESSIONS = msg("tui.commands.description.sessions", fallback="Browse saved sessions")
+_DESCRIPTION_SESSIONS = msg("tui.commands.description.sessions", fallback="Browse saved sessions or open one by ID")
 _DESCRIPTION_THEME = msg("tui.commands.description.theme", fallback="Set color theme")
 _DESCRIPTION_LANGUAGE = msg("tui.commands.description.language", fallback="Set display language")
 _DESCRIPTION_CHDIR = msg("tui.commands.description.chdir", fallback="Change working directory")
@@ -243,9 +243,8 @@ _MAN_FORK_BODY = msg(
     "tui.man.fork.body",
     fallback=(
         "Create an independent branch of the current session.\n\n"
-        "The current window stays on the existing session. After\n"
-        "the fork is created, choose whether to stay here or switch\n"
-        "this window to the forked session."
+        "Switch to the fork here, open it in a supported terminal,\n"
+        "or copy the resume command to run in another tab."
     ),
     multiline=True,
 )
@@ -266,7 +265,8 @@ _MAN_RENAME_BODY = msg(
 _MAN_SESSIONS_BODY = msg(
     "tui.man.sessions.body",
     fallback=(
-        "Open the session browser to view and resume previous sessions.\n\n"
+        "Enter a 12-character session ID or a full UUID to open a saved session.\n\n"
+        "Without an ID, open the session browser.\n\n"
         "From the browser you can:\n"
         "    - Select a session to resume\n"
         "    - Delete old sessions\n"
@@ -443,7 +443,7 @@ _MAN_USAGE_BODY = msg(
     fallback=(
         "Open the token usage dialog, read from every saved session.\n\n"
         "    Overview: new tokens by date range, their trend over time,\n"
-        "    and totals by model, source, project or model profile, with each\n"
+        "    and totals by model, source, working directory or model profile, with each\n"
         "    model's speed. A model used through several of your profiles is\n"
         "    shown once for each.\n"
         "    Calendar: new tokens day by day, and one day's details.\n\n"
@@ -496,7 +496,7 @@ class SlashCommandActionPort(Protocol):
     def resume_last_session(self) -> None: ...
     def fork_current_session(self) -> None: ...
     def ask_side_question(self, question: str, /) -> None: ...
-    def browse_sessions(self) -> None: ...
+    def browse_sessions(self, arg: str) -> None: ...
     def open_workflows(self) -> None: ...
     def open_guide(self) -> None: ...
     def rename_session(self, arg: str = "") -> None: ...
@@ -541,7 +541,7 @@ class SlashCommandActions:
     new_session: Callable[[], object]
     clear_session: Callable[[], None]
     quit_app: Callable[[], None]
-    resume_session: Callable[[], object]
+    resume_session: Callable[[str], object]
     fork_session: Callable[[], object]
     ask_side_question: Callable[[str], None]
     browse_session_list: Callable[[], None]
@@ -609,13 +609,16 @@ class SlashCommandActions:
         self.quit_app()
 
     def resume_last_session(self) -> None:
-        self.resume_session()
+        self.resume_session("")
 
     def fork_current_session(self) -> None:
         self.fork_session()
 
-    def browse_sessions(self) -> None:
-        self.browse_session_list()
+    def browse_sessions(self, arg: str) -> None:
+        if selector := arg.strip():
+            self.resume_session(selector)
+        else:
+            self.browse_session_list()
 
     def rename_session(self, arg: str = "") -> None:
         title = arg.strip()
@@ -957,7 +960,8 @@ class MainSlashCommandRegistry:
             SlashCommandDef(
                 "sessions",
                 _DESCRIPTION_SESSIONS.bind(),
-                action=lambda _: actions.browse_sessions(),
+                action=actions.browse_sessions,
+                synopsis="/sessions [session_id]",
                 man_page=_MAN_SESSIONS_BODY.bind(),
             ),
             SlashCommandDef(

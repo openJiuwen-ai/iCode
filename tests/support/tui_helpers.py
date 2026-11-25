@@ -36,13 +36,16 @@ from chrys.app.tui.screens.main.suggestions import SuggestionCallbacks, Suggesti
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.support.gc_freeze import GcAbsorbRequested, GcReclaimRequested
 from chrys.app.tui.widgets.chat.agent_transcript_surface import AgentTranscriptSurface
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ChatBottomSpacer, _ScrollToBottomButton
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
+from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
 from chrys.app.tui.widgets.chrome import input_bar as input_bar_module
-from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
+from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult, WorkdirPathSuggestion
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.app.tui.widgets.loading import RunningTitle
@@ -662,21 +665,15 @@ class ChatPanelApp(LocalizedApp):
         localization: TranscriptLocalizationPort | None = None,
         *,
         thinking_expanded: Callable[[], bool] | None = None,
-        fold_finished_turns: Callable[[], bool] | None = None,
-        tool_groups_expanded: Callable[[], bool] | None = None,
     ) -> None:
         self._localization = localization
         self._thinking_expanded = thinking_expanded
-        self._fold_finished_turns = fold_finished_turns
-        self._tool_groups_expanded = tool_groups_expanded
         super().__init__()
 
     def compose(self) -> ComposeResult:
         yield ChatPanel(
             localization=self._localization,
             thinking_expanded=self._thinking_expanded,
-            fold_finished_turns=self._fold_finished_turns,
-            tool_groups_expanded=self._tool_groups_expanded,
         )
 
 
@@ -692,6 +689,20 @@ class GcMessageChatPanelApp(ChatPanelApp):
 
     def on_gc_reclaim_requested(self, message: GcReclaimRequested) -> None:
         self.gc_messages.append(message)
+
+
+def open_process_for(member: ProcessMember) -> None:
+    """Open a main-chat member's process through its production toggle, leaving its own fold state alone."""
+    panel = member.parent
+    if not isinstance(panel, ChatPanel):
+        return
+    process = panel._process_controller.owner_of(member)
+    if process is None or not process.collapsed:
+        return
+    if isinstance(process, LiveProcessRow):
+        panel._toggle_live_process_row(process)
+    elif isinstance(process, ProcessBlock):
+        panel._toggle_process_block(process)
 
 
 def chat_content_children(panel: ChatPanel) -> list[object]:
@@ -1129,7 +1140,7 @@ class SuggestionScreen:
     def action_pick_theme(self) -> None:
         return
 
-    def _resume_last_session(self) -> None:
+    def _resume_session(self, selector: str) -> None:
         return
 
     def _fork_current_session(self) -> None:
@@ -1228,7 +1239,7 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         new_session=screen._create_new_session,
         clear_session=screen._clear_current_session,
         quit_app=screen.action_quit,
-        resume_session=screen._resume_last_session,
+        resume_session=screen._resume_session,
         fork_session=screen._fork_current_session,
         ask_side_question=lambda _question: None,
         workflow_selection=lambda: None,
@@ -1291,9 +1302,9 @@ def suggestion_values(items: list[object]) -> list[str]:
     return values
 
 
-def scan_result(root: str, paths: list[ProjectPathSuggestion], **kwargs: object) -> ProjectPathScanResult:
-    """Build a project-path scan result for a fake scanner."""
-    return ProjectPathScanResult.from_suggestions(root=root, paths=paths, **kwargs)
+def scan_result(root: str, paths: list[WorkdirPathSuggestion], **kwargs: object) -> WorkdirPathScanResult:
+    """Build a workdir-path scan result for a fake scanner."""
+    return WorkdirPathScanResult.from_suggestions(root=root, paths=paths, **kwargs)
 
 
 async def wait_for_file_query(handler: SuggestionHandler) -> None:

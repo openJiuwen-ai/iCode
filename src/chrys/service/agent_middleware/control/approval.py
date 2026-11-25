@@ -278,7 +278,7 @@ class ApprovalMiddleware(FunctionMiddleware):
         self._workspace_roots: list[str] = []
         for r in workspace_roots or []:
             with contextlib.suppress(OSError, ValueError):
-                self._workspace_roots.append(os.path.realpath(os.path.abspath(r)))
+                self._workspace_roots.append(os.path.realpath(r))
         # Session-owned archive dirs (compaction spill records, superseded
         # LAST_WORDS notes) whose reads are always auto-approved: chrys wrote
         # those files from context the agent already saw.
@@ -350,20 +350,30 @@ class ApprovalMiddleware(FunctionMiddleware):
         approval_safe = None
         shell_identity_unknown = False
         if tool_kind == KIND_SHELL:
-            from chrys.service.tools.builtins.shell import SHELL_NAME_MISMATCH, shell_name_for_tool
+            from chrys.service.tools.builtins.shell import shell_identity_is_renamed, shell_name_for_tool
             from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval
 
             raw = context.arguments
             shell_command = raw.get("command", "") if isinstance(raw, dict) else ""
-            shell_name = shell_name_for_tool(context.function, fallback=tool_name)
-            shell_identity_unknown = shell_name == SHELL_NAME_MISMATCH
             if shell_command:
+                shell_name = shell_name_for_tool(context.function, fallback=tool_name)
+                shell_identity_unknown = shell_identity_is_renamed(context.function)
                 approval_safe = classify_shell_for_approval(shell_command, shell_name=shell_name)
+        # The classifier returns the exact argv execution will use; check those
+        # tokens as well, since the raw-text regex and the session-reuse
+        # normalizer do not accept every character the classifier does.
+        argv_sensitive = (
+            approval_safe is not None
+            and approval_safe.command is not None
+            and any(target_may_access_sensitive_data(arg) for arg in approval_safe.command.argv)
+        )
         # Sensitive targets run before the policy fast path and the reuse offer:
         # both must see the normalized argv the command will actually execute,
         # not only the raw text.
-        sensitive_shell = tool_kind == KIND_SHELL and (
-            shell_identity_unknown or shell_arg_may_access_sensitive_data(context.arguments, shell_name=shell_name)
+        sensitive_shell = bool(shell_command) and (
+            shell_identity_unknown
+            or argv_sensitive
+            or shell_arg_may_access_sensitive_data(context.arguments, shell_name=shell_name)
         )
         sensitive_filesystem_read = tool_kind == KIND_FILESYSTEM_READ and path_arg_may_access_sensitive_data(
             context.arguments

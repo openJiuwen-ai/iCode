@@ -62,6 +62,14 @@ class ConnectionSnapshot:
     connect_timeout: float = 10.0
 
 
+def model_list_base_url(provider: str, base_url: str) -> str:
+    """Return the configured discovery address, including the provider default."""
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        return base_url.strip()
+    return _configured_connection_value(base_url.strip(), spec.base_url_env, spec.default_base_url).strip()
+
+
 def resolve_model_connection(snapshot: ConnectionSnapshot) -> ConnectionSnapshot:
     """Resolve the address and key using the conversation's provider fallbacks.
 
@@ -78,11 +86,7 @@ def resolve_model_connection(snapshot: ConnectionSnapshot) -> ConnectionSnapshot
         return replace(snapshot, base_url=snapshot.base_url.strip(), api_key=key)
     return replace(
         snapshot,
-        base_url=_configured_connection_value(
-            snapshot.base_url.strip(),
-            spec.base_url_env,
-            spec.default_base_url,
-        ),
+        base_url=model_list_base_url(snapshot.provider, snapshot.base_url),
         api_key=_configured_connection_value(key, spec.api_key_env),
     )
 
@@ -113,18 +117,15 @@ def has_command_placeholder(snapshot: ConnectionSnapshot) -> bool:
     )
 
 
-def _credentials(snapshot: ConnectionSnapshot) -> tuple[str, dict[str, str]]:
+def _credentials(snapshot: ConnectionSnapshot, *, literal_connection: bool) -> tuple[str, dict[str, str]]:
     key = snapshot.api_key
     if api_key_charset_error(key):
         raise ValueError("Invalid model-list API key charset")
     headers: dict[str, str] = {}
     for mapping in (snapshot.http_headers, snapshot.extra_headers):
         for name, value in mapping.items():
-            value = resolve_env_templates(
-                value,
-                location="model-list header",
-                allow_commands=False,
-            )
+            if not literal_connection:
+                value = resolve_env_templates(value, location="model-list header", allow_commands=False)
             if header_name_charset_error(name) or header_value_charset_error(name, value):
                 raise ValueError("Invalid model-list header charset")
             headers[name.casefold()] = value
@@ -408,12 +409,17 @@ async def _discover(
     transport: httpx.AsyncBaseTransport | None,
     budget: _Budget,
     on_retry: Callable[[int, int], None] | None,
+    *,
+    literal_connection: bool,
 ) -> list[ModelInfo]:
     import httpx
 
-    if snapshot.provider not in PROVIDERS or has_command_placeholder(snapshot):
+    if snapshot.provider not in PROVIDERS:
         return []
-    snapshot = resolve_model_connection(snapshot)
+    if not literal_connection and has_command_placeholder(snapshot):
+        return []
+    if not literal_connection:
+        snapshot = resolve_model_connection(snapshot)
     base_url = snapshot.base_url
     if not base_url:
         return []
@@ -421,9 +427,12 @@ async def _discover(
     base = httpx.URL("https://" + base_url if missing_scheme else base_url)
     if base.scheme not in {"http", "https"} or not base.host or any(c.isspace() for c in unquote(base.host)):
         return []
-    key, headers = _credentials(snapshot)
+    key, headers = _credentials(snapshot, literal_connection=literal_connection)
     groups = _auth_groups(snapshot.provider, key, headers)
     locations = _locations(base, snapshot.provider, missing_scheme=missing_scheme)
+    if literal_connection and (key or headers):
+        # Caller-supplied credentials belong to the requested origin, even on correction probes.
+        locations = [location for location in locations if _origin(location.url) == _origin(base)]
     if snapshot.provider == "anthropic":
         locations = [replace(location, url=location.url.copy_merge_params({"limit": "1000"})) for location in locations]
     budget.pending_urls = {location.url.copy_with(fragment=None) for location in locations}
@@ -561,9 +570,12 @@ async def discover_models(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
     on_retry: Callable[[int, int], None] | None = None,
+    literal_connection: bool = False,
 ) -> ModelDiscovery:
     """Return bounded discovery facts; failures never interrupt form editing.
 
+    A literal connection already has its final address, key and headers. It reads no
+    credential templates or provider defaults and confines credentialed probes to that origin.
     *on_retry* gets (round, total_rounds) as retry rounds 2 through 5 begin.
     """
     budget = _Budget(0.0)
@@ -571,7 +583,7 @@ async def discover_models(
     try:
         async with asyncio.timeout(_TOTAL_SECONDS):
             budget.deadline = asyncio.get_running_loop().time() + _TOTAL_SECONDS
-            models = await _discover(snapshot, transport, budget, on_retry)
+            models = await _discover(snapshot, transport, budget, on_retry, literal_connection=literal_connection)
     except TimeoutError:
         timed_out = True
         models = sorted(budget.partial_models.values(), key=lambda model: reading_order(model.id))

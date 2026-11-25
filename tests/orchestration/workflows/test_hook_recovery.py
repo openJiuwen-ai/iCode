@@ -18,7 +18,7 @@ from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.outbox import Outbox
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookRun, HookSettings, HooksFile
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, run, write_workflow
+from tests.orchestration.workflows._hosting import confirm, make_host, make_workdir, run, write_workflow
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
 
@@ -26,7 +26,7 @@ from tests.support.workflow_workers import python_workflow
 async def test_workflow_only_recovers_pending_hook_once_across_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     hooks_dir = tmp_path / "hooks"
     output = tmp_path / "recovered.json"
@@ -51,7 +51,7 @@ async def test_workflow_only_recovers_pending_hook_once_across_runs(
     calls = []
     real_recover = HookManager.recover_outbox
 
-    async def build(factory, *, project_root, project_hooks_enabled, session_id, request_id=""):
+    async def build(factory, *, workdir, workdir_hooks_enabled, session_id, request_id=""):
         return HookManager(file=config, hooks_dir=hooks_dir)
 
     async def recover(manager):
@@ -81,13 +81,13 @@ async def test_workflow_only_recovers_pending_hook_once_across_runs(
 async def test_shutdown_cancels_and_observes_owned_recovery_before_manager_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     entered, parked = asyncio.Event(), asyncio.Event()
     order = []
     real_drain = HookManager.drain_session
 
-    async def build(factory, *, project_root, project_hooks_enabled, session_id, request_id=""):
+    async def build(factory, *, workdir, workdir_hooks_enabled, session_id, request_id=""):
         return HookManager(file=HooksFile(), hooks_dir=tmp_path / "hooks")
 
     async def recover(manager):
@@ -119,14 +119,14 @@ async def test_shutdown_cancels_and_observes_owned_recovery_before_manager_close
 async def test_cancel_during_reattachment_drains_old_manager_and_keeps_new_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
     entered, stopped, attaching = (asyncio.Event() for _ in range(3))
     managers = []
     real_attach = WorkflowSessionHooks.attach
     attachments = 0
 
-    async def build(factory, *, project_root, project_hooks_enabled, session_id, request_id=""):
+    async def build(factory, *, workdir, workdir_hooks_enabled, session_id, request_id=""):
         manager = HookManager(file=HooksFile(), hooks_dir=tmp_path / "hooks")
         managers.append(manager)
         return manager

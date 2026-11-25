@@ -187,7 +187,7 @@ class SubprocessScriptRunner:
                 details={"skill_name": skill.name, "script_name": script.name, "script_path": script.full_path},
             )
 
-        # A project skill can live inside the deleted working directory: report
+        # A working directory skill can live inside the deleted working directory: report
         # the directory, not its script, so the model stops instead of retrying.
         if cwd is None and self._runtime is not None and self._runtime.cwd and not os.path.isdir(self._runtime.cwd):
             return working_dir_missing_error(self._runtime.cwd)

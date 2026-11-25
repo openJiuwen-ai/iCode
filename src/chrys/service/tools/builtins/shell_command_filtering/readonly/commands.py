@@ -58,6 +58,8 @@ _UNIQ_OPTIONS_NO_VALUE = frozenset(
     }
 )
 _UNIQ_OPTIONS_WITH_VALUE = frozenset({"-f", "--skip-fields", "-s", "--skip-chars", "-w", "--check-chars"})
+_PS_SAFE_ARGS = frozenset({(), ("aux",), ("-e",), ("-ef",), ("-f",), ("-l",)})
+"""``ps`` forms that only list process metadata; ``e``/``E``/``-o`` can print environments."""
 _UNIQ_OPTION_PREFIXES_WITH_VALUE = ("-f", "-s", "-w", "--skip-fields=", "--skip-chars=", "--check-chars=")
 _SED_PRINT_SCRIPT_RE = re.compile(r"^(?:\d+|\$)?(?:,(?:\d+|\$))?[p=]$")
 _SED_SAFE_SUBSTITUTION_FLAGS = frozenset("0123456789gpiImM")
@@ -292,6 +294,11 @@ def _is_safe_env(args: list[str]) -> bool:
     return all(_ENV_ASSIGNMENT_RE.fullmatch(arg) is not None for arg in args)
 
 
+def _is_safe_ps(args: list[str]) -> bool:
+    """Only exact process-listing forms; environment/field options go to approval."""
+    return tuple(args) in _PS_SAFE_ARGS
+
+
 def _xargs_command_start(args: list[str]) -> int | None:
     i = 0
     while i < len(args):
@@ -414,6 +421,8 @@ def _is_safe_special_command(command: str, args: list[str]) -> bool:
         return _is_safe_git(args)
     if command in {"pip", "pip3"}:
         return _is_safe_version_help_command(command, args) or _is_safe_pip(args)
+    if command == "ps":
+        return _is_safe_ps(args)
     if command == "ruff":
         return _is_safe_ruff(args)
     if command == "sed":

@@ -71,6 +71,17 @@ result's identity is unambiguous.
 TOOL_ERRORED_METADATA_KEY = "errored"
 """True when the tool invocation failed outside normal tool-result semantics."""
 
+COMMITTED_ERROR_TEXT_KEY = "_chrys_committed_error_text"
+"""The error text a middleware committed in place of the exception's, for the model to read.
+
+``FunctionInvocationContext.result`` already holds the tool's own output by the
+time a later middleware runs, so a set ``result`` alone cannot tell "this
+middleware replaced the error text" from "the tool succeeded and something
+after it raised". A middleware that cleaned, redacted or withheld the error
+puts it here; the kernel's exception branch reads only this key, and an empty
+string is a replacement too (the text is withheld, not restored).
+"""
+
 TOOL_FAILED_METADATA_KEY = "failed"
 """True when a tool returned a normal, structured failure result."""
 
@@ -79,6 +90,27 @@ TOOL_INTERRUPTED_METADATA_KEY = "interrupted"
 
 TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY = "interrupted_post_processing"
 """True when the tool returned but cancellation interrupted result processing."""
+
+INTERRUPTED_TOOL_RESULT_TEXT = (
+    "Error: Tool execution was interrupted. The operation may have completed; inspect current state before retrying."
+)
+
+HOOK_RESULT_PENDING_KEY = "_chrys_hook_result_pending"
+"""Set on ``FunctionInvocationContext.metadata`` before the tool runs when result hooks
+(blocking ``after_tool_call`` / ``tool_error`` hooks, or extension after-tool hooks) are
+installed for the call, so they may replace or redact what the tool returns.
+
+Without it, the tool's own output is the final result and survives a cancellation as is.
+With it, the journal initially records a placeholder. A crash or cancellation before the
+hooks finish must not restore text they might have removed."""
+
+HOOK_RESULT_APPLIED_KEY = "_chrys_hook_result_applied"
+"""Set on ``FunctionInvocationContext.metadata`` after ``apply_result_hooks`` has
+written the hooks' decision (result_override / extra_context) onto ``context.result``.
+
+The kernel's cancel handler reads this to tell a processed result from the raw one
+the tool itself produced: without it, ``context.result`` is the tool's own output
+and must not be committed as the model's result, because hooks may still be running."""
 
 TOOL_ERROR_KIND_METADATA_KEY = "tool_error_kind"
 """Stable category for a structured tool failure."""

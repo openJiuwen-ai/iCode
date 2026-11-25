@@ -21,6 +21,7 @@ from chrys.app.tui.widgets.chat.fold_rows import (
     fit_fold_row,
     fold_row_styles,
 )
+from chrys.app.tui.widgets.chat.guide_fold import ProcessGuideMixin
 from chrys.app.tui.widgets.chat.messages import ThinkingMessage, folds_with_turn
 from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
@@ -29,12 +30,26 @@ from chrys.foundation.i18n import msg
 
 if TYPE_CHECKING:
     from rich.text import Text
+    from textual.widget import Widget
 
 _CALLS = msg("tui.chat.process.tool_calls", fallback="{count} tool call: ", plural_fallback="{count} tool calls: ")
 _ACTIVITY = msg("tui.chat.process.activity", fallback="Activity")
 
 
-class ProcessBlock(FoldGap, Static, can_focus=False):
+def render_process_title(widget: Widget, tally: ToolTally, *, collapsed: bool) -> Text:
+    """Render the shared process summary, keeping tool outcomes in view."""
+    localizer = widget_localizer(widget)
+    arrow = FOLDED_ARROW if collapsed else OPEN_ARROW
+    if tally.total:
+        calls = render_str(localizer, _CALLS.bind(count=tally.total))
+        failed, interrupted = tally.outcomes(localizer)
+        row = FoldRow(f"{arrow} {calls}", tally.count_words(localizer), failed, interrupted)
+    else:
+        row = FoldRow(f"{arrow} {render_str(localizer, _ACTIVITY.bind())}")
+    return fit_fold_row(row, widget.content_size.width, fold_row_styles(widget, "processblock"))
+
+
+class ProcessBlock(ProcessGuideMixin, FoldGap, Static, can_focus=False):
     """A turn's process header: the calls its tool groups made, by kind, and how many failed or were interrupted.
 
     Collapse intent survives blocking members; their terminal notifications retry it.
@@ -81,6 +96,9 @@ class ProcessBlock(FoldGap, Static, can_focus=False):
         """Keep transcript clicks in the composer, as tool and thinking headers do."""
         return False
 
+    def guide_members(self) -> list[ProcessMember]:
+        return self.members
+
     def ends_folded(self) -> bool:
         # Its one row heads the rows it opens to: a gap parts the first of them from it.
         return True
@@ -102,16 +120,7 @@ class ProcessBlock(FoldGap, Static, can_focus=False):
 
         A turn that made no calls reads ``▸ Activity``.
         """
-        localizer = widget_localizer(self)
-        arrow = FOLDED_ARROW if self.collapsed else OPEN_ARROW
-        tally = self.tally
-        if tally.total:
-            calls = render_str(localizer, _CALLS.bind(count=tally.total))
-            failed, interrupted = tally.outcomes(localizer)
-            row = FoldRow(f"{arrow} {calls}", tally.count_words(localizer), failed, interrupted)
-        else:
-            row = FoldRow(f"{arrow} {render_str(localizer, _ACTIVITY.bind())}")
-        return fit_fold_row(row, self.content_size.width, fold_row_styles(self, "processblock"))
+        return render_process_title(self, self.tally, collapsed=self.collapsed)
 
     def try_finalize_fold(self) -> None:
         """Apply the latest intent, including after the last interactive member finishes."""
@@ -126,6 +135,7 @@ class ProcessBlock(FoldGap, Static, can_focus=False):
             member.set_process_hidden(collapsed)
         if self.collapsed != collapsed:
             if collapsed:
+                self.clear_guide_hover()
                 # Its members hide, folded as they ended or not.
                 note_fold(self)
             self.collapsed = collapsed
@@ -135,6 +145,9 @@ class ProcessBlock(FoldGap, Static, can_focus=False):
         self.post_message(self.ToggleRequested(self))
 
     def on_click(self, event: Click) -> None:
+        if self._click_guide(event):
+            return
         event.prevent_default()
         event.stop()
-        self.action_toggle_process()
+        if self.clicked_same_cell(event) and self._process_title_at(event.screen_offset):
+            self.action_toggle_process()

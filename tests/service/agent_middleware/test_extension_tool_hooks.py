@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -15,33 +16,61 @@ from chrys.extensions import Extension, ToolCall, ToolError, ToolResult
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import InvocationToolCallResult
 from chrys.foundation.models.invocations import InvocationOrigin
-from chrys.kernel import Content
+from chrys.foundation.tool_kinds import KIND_SUB_AGENT, set_tool_kind
+from chrys.foundation.tool_result_metadata import (
+    INTERRUPTED_TOOL_RESULT_TEXT,
+    PROCESS_EXIT_CODE_METADATA_KEY,
+    TOOL_ERRORED_METADATA_KEY,
+    TOOL_FAILED_METADATA_KEY,
+    TOOL_INTERRUPTED_METADATA_KEY,
+    TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY,
+    TOOL_RESULT_METADATA_KEY,
+)
+from chrys.foundation.util.sub_agent_context import sub_agent_parent_result_metadata
+from chrys.kernel import Content, LoopRecorder, tool
 from chrys.kernel.exceptions import GENERIC_TOOL_ERROR_TEXT
+from chrys.kernel.middleware import FunctionMiddleware, MiddlewareTermination
 from chrys.service.agent_middleware import SubAgentEventMiddleware, ToolEventMiddleware
 from chrys.service.agent_middleware._metadata_keys import _REJECTION_SOURCE_KEY
+from chrys.service.agent_middleware.control.interrupt import InterruptMiddleware
 from chrys.service.agent_middleware.events.extension_hooks import ExtensionToolHooks
 from chrys.service.extensions import bind_extension
+from chrys.service.hooks.events import HookEvent
+from chrys.service.hooks.manager import HookManager
+from chrys.service.hooks.schema import HookConfig, HookExecution, HookRun, HooksFile
+from chrys.service.session.checkpoint import build_recovery_state
+from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
+from chrys.service.state.store import JsonFileStateStore
+from chrys.service.tools.result_metadata import record_process_result
+from tests.kernel._fakes import _call_response, _stack, _text_response, _user
 from tests.service.agent_middleware._event_fakes import _ctx
 from tests.service.extensions._support import extension_build
 from tests.support.event_capture import capture_events
+from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
-    from chrys.kernel.middleware import FunctionMiddleware
+    from chrys.kernel.middleware import FunctionInvocationContext
 
 _TURN = InvocationOrigin("turn", "s-1", "turn-test", None)
 
 
-def _main(bus: EventBus, hooks: ExtensionToolHooks) -> FunctionMiddleware:
-    return ToolEventMiddleware(bus, session_id="s-1", origin=_TURN, extension_hooks=hooks)
+def _main(bus: EventBus, hooks: ExtensionToolHooks, manager: HookManager | None = None) -> FunctionMiddleware:
+    return ToolEventMiddleware(bus, session_id="s-1", origin=_TURN, extension_hooks=hooks, hook_manager=manager)
 
 
-def _sub_agent(bus: EventBus, hooks: ExtensionToolHooks) -> FunctionMiddleware:
+def _sub_agent(bus: EventBus, hooks: ExtensionToolHooks, manager: HookManager | None = None) -> FunctionMiddleware:
     origin = InvocationOrigin("sub_agent", "s-1", "inv-1", _TURN)
     return SubAgentEventMiddleware(
-        bus, agent_name="Explore", invocation_id="inv-1", session_id="s-1", origin=origin, extension_hooks=hooks
+        bus,
+        agent_name="Explore",
+        invocation_id="inv-1",
+        session_id="s-1",
+        origin=origin,
+        extension_hooks=hooks,
+        hook_manager=manager,
     )
 
 
@@ -243,4 +272,309 @@ async def test_a_tool_that_raised_shows_hooks_the_model_s_error_text_and_keeps_i
         await _main(bus, _hooks(tmp_path, ("acme", extension))).process(context, tool.runner(context))
     ((text, failed, rejected),) = [(r.text, r.failed, r.rejected) for r in seen]
     assert (text, failed, rejected) == (GENERIC_TOOL_ERROR_TEXT, True, False)
-    assert context.result is None
+    assert context.result == GENERIC_TOOL_ERROR_TEXT
+
+
+async def _read_checkpoint(recorder: LoopRecorder, tmp_path: Path) -> Content:
+    recovery = build_recovery_state(
+        {"messages": [_user()]},
+        recorder,
+        mutation_tracker=None,
+        runtime_meta=SessionRuntimeMetadata(),
+        user_text=None,
+        user_contents=None,
+        user_created_at=None,
+    )
+    assert recovery is not None
+    sessions = tmp_path / "sessions"
+    await asyncio.to_thread(JsonFileStateStore(sessions).save_recovery_session, "example", recovery)
+    restored = await JsonFileStateStore(sessions).load_session("example", prefer_recovery=True)
+    assert restored is not None
+    (saved,) = [c for m in restored["messages"] for c in m.contents if c.type == "function_result"]
+    return saved
+
+
+@_MIDDLEWARES
+@pytest.mark.parametrize("outcome", ["completed", "cancel_pending", "cancel_second_pending", "cancel_applied"])
+async def test_recover_result_while_a_hook_withholds_it(
+    make: Callable[[EventBus, ExtensionToolHooks], FunctionMiddleware], tmp_path: Path, outcome: str
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    publishing = asyncio.Event()
+    extension = Extension()
+
+    if outcome == "cancel_second_pending":
+
+        @extension.after_tool
+        async def first_review(_call: ToolCall, result: ToolResult) -> str:
+            assert result.text == "unreviewed output"
+            return "partially reviewed"
+
+    seen: list[str] = []
+
+    @extension.after_tool
+    async def withhold(_call: ToolCall, result: ToolResult) -> str:
+        seen.append(result.text)
+        entered.set()
+        await release.wait()
+        return ""
+
+    @tool(name="child")
+    async def child() -> str:
+        link = sub_agent_parent_result_metadata.get()
+        assert link is not None
+        link.sub_agent_invocation_id = "child-run"
+        link.sub_agent_log_file = "child-run.jsonl"
+        link.sub_agent_audit_complete = True
+        record_process_result(0)
+        return "unreviewed output"
+
+    bus = EventBus()
+    if outcome == "cancel_applied":
+
+        async def hold_card(_event: InvocationToolCallResult) -> None:
+            publishing.set()
+            await asyncio.Event().wait()
+
+        await bus.subscribe(InvocationToolCallResult, hold_card)
+    set_tool_kind(child, KIND_SUB_AGENT)
+    recorder = LoopRecorder()
+    before_call = recorder.snapshot()
+    layer, _wire = _stack([_call_response(("call", "child", {})), _text_response()])
+    task = asyncio.create_task(
+        layer.get_response(
+            [_user()],
+            options={"tools": [child]},
+            middleware=[make(bus, _hooks(tmp_path, ("example", extension)))],
+            client_kwargs={"loop_recorder": recorder},
+        )
+    )
+    links = {
+        "sub_agent_invocation_id": "child-run",
+        "sub_agent_log_file": "child-run.jsonl",
+        "sub_agent_audit_complete": True,
+    }
+    try:
+        await wait_for(lambda: entered.is_set() or task.done())
+        if task.done():
+            await task
+            pytest.fail("call ended before the result hook")
+        assert seen == ["partially reviewed" if outcome == "cancel_second_pending" else "unreviewed output"]
+        assert recorder.loop_messages is not None
+        pending = recorder.loop_messages[-1].contents[0]
+        assert recorder.loop_messages[-1].contents[0] is pending
+        saved = await _read_checkpoint(recorder, tmp_path)
+        assert saved.result == INTERRUPTED_TOOL_RESULT_TEXT
+        assert links.items() <= saved.additional_properties[TOOL_RESULT_METADATA_KEY].items()
+        assert recorder.committed_count == 1
+
+        cancel_pending = outcome in ("cancel_pending", "cancel_second_pending")
+        if not cancel_pending:
+            release.set()
+        if outcome == "cancel_applied":
+            await wait_for(lambda: publishing.is_set() or task.done())
+            assert publishing.is_set()
+        if outcome == "completed":
+            await task
+        else:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            recorder.restore(before_call)
+        assert recorder.loop_messages is not None
+        (result,) = [c for m in recorder.loop_messages for c in m.contents if c.type == "function_result"]
+        assert result.result == (INTERRUPTED_TOOL_RESULT_TEXT if cancel_pending else "")
+        metadata = result.additional_properties[TOOL_RESULT_METADATA_KEY]
+        assert links.items() <= metadata.items()
+        assert metadata[PROCESS_EXIT_CODE_METADATA_KEY] == 0
+        assert bool(metadata.get(TOOL_INTERRUPTED_METADATA_KEY)) == (outcome != "completed")
+        assert bool(metadata.get(TOOL_FAILED_METADATA_KEY)) == cancel_pending
+        if cancel_pending:
+            assert metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] is True
+        assert recorder.committed_count == 1
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@_MIDDLEWARES
+@pytest.mark.parametrize("variant", ["interrupt", "text", "prebuilt", "rewrite_prebuilt", "context", "tool"])
+async def test_termination_preserves_the_result_and_stops_the_loop(
+    make: Callable[[EventBus, ExtensionToolHooks], FunctionMiddleware], tmp_path: Path, variant: str
+) -> None:
+    calls: list[str] = []
+    seen: list[ToolResult] = []
+    extension = Extension()
+
+    @extension.after_tool
+    async def review(_call: ToolCall, result: ToolResult) -> str | None:
+        seen.append(result)
+        return "" if variant == "rewrite_prebuilt" else None
+
+    @tool(name="example")
+    async def example() -> str:
+        calls.append("example")
+        raise MiddlewareTermination("stop", result="paused")
+
+    image = Content.from_uri("https://example.test/image.png", media_type="image/png")
+    prebuilt = Content.from_function_result(
+        "original",
+        result=[Content.from_text("paused"), image],
+        additional_properties={TOOL_RESULT_METADATA_KEY: {"owned": True}},
+    )
+
+    class Stop(FunctionMiddleware):
+        async def process(self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            if variant == "tool":
+                await call_next()
+                return
+            if variant == "context":
+                context.result = "from context"
+            raise MiddlewareTermination("stop", result="paused" if variant == "text" else prebuilt)
+
+    stop: FunctionMiddleware = Stop()
+    if variant == "interrupt":
+        interrupt = InterruptMiddleware()
+        interrupt.set_interrupted()
+        stop = interrupt
+    hooks = (
+        _hooks(tmp_path) if variant in {"interrupt", "prebuilt", "text"} else _hooks(tmp_path, ("observer", extension))
+    )
+    bus = EventBus()
+    cards = await capture_events(bus, InvocationToolCallResult)
+    recorder = LoopRecorder()
+    layer, wire = _stack([_call_response(("call", "example", {}))])
+    await layer.get_response(
+        [_user()],
+        options={"tools": [example]},
+        middleware=[make(bus, hooks), stop],
+        client_kwargs={"loop_recorder": recorder},
+    )
+    assert recorder.loop_messages is not None
+    (result,) = [c for m in recorder.loop_messages for c in m.contents if c.type == "function_result"]
+    assert result.result == {"interrupt": "", "context": "from context", "rewrite_prebuilt": ""}.get(variant, "paused")
+    assert [event.metadata.get(TOOL_INTERRUPTED_METADATA_KEY) for event in cards] == [True]
+    expected_input = "from context" if variant == "context" else "paused"
+    assert [(r.text, r.failed) for r in seen] == ([(expected_input, False)] if hooks.after else [])
+    assert calls == (["example"] if variant == "tool" else [])
+    assert len(wire.calls) == 1
+    if variant in {"prebuilt", "rewrite_prebuilt"}:
+        assert result.additional_properties[TOOL_RESULT_METADATA_KEY] == {"owned": True}
+        assert result.items is not None and result.items[-1] is image
+        assert (prebuilt.call_id, prebuilt.result) == ("original", "paused")
+
+
+@_MIDDLEWARES
+@pytest.mark.parametrize("stage", ["observer_start", "card", "outer_cleanup", "recovered"])
+async def test_cancel_after_an_inner_middleware_failed_recovers_the_model_error(
+    make: Callable[..., FunctionMiddleware], tmp_path: Path, stage: str
+) -> None:
+    class FailAfterTool(FunctionMiddleware):
+        async def process(self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            nonlocal invocation_task
+            invocation_task = asyncio.current_task()
+            await call_next()
+            raise RuntimeError("detail for tool card")
+
+    @tool(name="example")
+    async def example() -> str:
+        return "superseded output"
+
+    bus = EventBus()
+    cards: list[str] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_card(event: InvocationToolCallResult) -> None:
+        cards.append(event.result)
+        if stage in {"card", "recovered"}:
+            entered.set()
+            await release.wait()
+
+    await bus.subscribe(InvocationToolCallResult, hold_card)
+    manager = HookManager(
+        file=HooksFile(
+            hooks=[
+                HookConfig(
+                    id="observer",
+                    event=HookEvent.AFTER_TOOL_CALL,
+                    run=HookRun(type="command", argv=[sys.executable, "-c", "pass"]),
+                    execution=HookExecution(mode="async"),
+                )
+            ]
+        ),
+        hooks_dir=tmp_path,
+    )
+
+    async def hold_observer_start(_manager: HookManager) -> None:
+        if stage == "observer_start" and asyncio.current_task() is invocation_task:
+            entered.set()
+            await release.wait()
+
+    manager.on_change = hold_observer_start
+    invocation_task: asyncio.Task[Any] | None = None
+
+    class HoldOuterError(FunctionMiddleware):
+        async def process(self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            try:
+                await call_next()
+            except RuntimeError:
+                if stage == "recovered":
+                    context.result = "fallback"
+                    return
+                entered.set()
+                await release.wait()
+                raise
+
+    events = make(bus, _hooks(tmp_path), manager)
+    middleware = [HoldOuterError(), FailAfterTool(), events] if stage == "outer_cleanup" else [events, FailAfterTool()]
+    if stage == "recovered":
+        middleware = [events, HoldOuterError(), FailAfterTool()]
+    recorder = LoopRecorder()
+    layer, _wire = _stack([_call_response(("call", "example", {}))])
+    task = asyncio.create_task(
+        layer.get_response(
+            [_user()],
+            options={"tools": [example]},
+            middleware=middleware,
+            client_kwargs={"loop_recorder": recorder},
+        )
+    )
+    try:
+        await wait_for(lambda: entered.is_set() or task.done())
+        if task.done():
+            await task
+            pytest.fail("call ended before the selected cancellation point")
+        assert (
+            cards
+            == {
+                "observer_start": [],
+                "card": ["Error: detail for tool card"],
+                "recovered": ["fallback"],
+                "outer_cleanup": ["superseded output"],
+            }[stage]
+        )
+        if stage != "recovered":
+            saved = await _read_checkpoint(recorder, tmp_path)
+            assert saved.result == GENERIC_TOOL_ERROR_TEXT
+            assert saved.exception is not None
+            assert saved.additional_properties[TOOL_RESULT_METADATA_KEY][TOOL_ERRORED_METADATA_KEY] is True
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert recorder.loop_messages is not None
+        (result,) = [c for m in recorder.loop_messages for c in m.contents if c.type == "function_result"]
+        assert result.result == ("fallback" if stage == "recovered" else GENERIC_TOOL_ERROR_TEXT)
+        assert (result.exception is not None) == (stage != "recovered")
+        assert bool(result.additional_properties[TOOL_RESULT_METADATA_KEY].get(TOOL_ERRORED_METADATA_KEY)) == (
+            stage != "recovered"
+        )
+        assert recorder.committed_count == 1
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await manager.drain_session()

@@ -22,6 +22,13 @@ TRIGGER_FLOOR_PCT_NUM = 30
 TRIGGER_FLOOR_PCT_DEN = 100
 MIN_DERIVABLE_CONTEXT_TOKENS = 100
 
+# History-state keys of the turn-boundary schedule: a pass booked for the
+# next turn's first request, and the suspension of further bookings.  They
+# live in the state because that request may be sent by another process.
+# Only ``True`` is ever stored; the session serializer drops falsy values.
+TURN_BOUNDARY_PENDING_STATE_KEY = "compaction_boundary_pending"
+BOUNDARY_SUSPENDED_STATE_KEY = "compaction_boundary_suspended"
+
 
 def _ceil_div(numerator: int, denominator: int) -> int:
     return -(-numerator // denominator)
@@ -36,6 +43,7 @@ class CompactionBudgets:
     safety_margin_tokens: int
     trigger_tokens: int
     target_tokens: int
+    satisfied_tokens: int
     force_compress_tokens: int
     floor_clamped: bool
 
@@ -50,8 +58,13 @@ class CompactionBudgets:
         return self.target_tokens / self.max_context_tokens
 
     @property
+    def satisfied_pct(self) -> float:
+        """Usage at or below which a pass stops escalating, as a context fraction."""
+        return self.satisfied_tokens / self.max_context_tokens
+
+    @property
     def force_compress_pct(self) -> float:
-        """Post-turn force-compression threshold as a context fraction."""
+        """Turn-boundary high-water mark and Phase 4 entry gate as a context fraction."""
         return self.force_compress_tokens / self.max_context_tokens
 
 
@@ -78,16 +91,22 @@ def derive_compaction_budgets(profile: ModelProfile) -> CompactionBudgets:
             profile.max_output_tokens,
         )
 
+    # Four ordered lines, an eighth of the trigger apart: a pass stops at the
+    # target, stops escalating once at or below the satisfied line, and a turn
+    # that ends above the force line books a turn-boundary pass.
     target = (5 * trigger + 4) // 8
+    satisfied = (6 * trigger + 4) // 8
     force = (7 * trigger + 4) // 8
     force = max(min(force, trigger - 1), 2)
     target = max(min(target, force - 1), 1)
+    satisfied = max(min(satisfied, force), target)
     return CompactionBudgets(
         max_context_tokens=max_context,
         output_reserve_tokens=output_reserve,
         safety_margin_tokens=margin,
         trigger_tokens=trigger,
         target_tokens=target,
+        satisfied_tokens=satisfied,
         force_compress_tokens=force,
         floor_clamped=floor_clamped,
     )

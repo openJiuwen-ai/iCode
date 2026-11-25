@@ -138,9 +138,8 @@ def test_approval_safe_env_removes_startup_hooks(monkeypatch: pytest.MonkeyPatch
     assert not any(name.startswith("BASH_FUNC_") for name in env)
     assert env["PAGER"] == "cat"
     assert env["GIT_PAGER"] == "cat"
-    assert "GIT_CONFIG_GLOBAL" not in env
-    assert "GIT_CONFIG_SYSTEM" not in env
-    assert "GIT_CONFIG_NOSYSTEM" not in env
+    assert env["GIT_CONFIG_GLOBAL"] == "/tmp/evil-global"
+    assert env["GIT_CONFIG_SYSTEM"] == "/tmp/evil-system"
     assert env["GIT_CONFIG_COUNT"] == "7"
     assert env["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
     assert env["GIT_CONFIG_VALUE_0"] == "false"

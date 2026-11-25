@@ -150,10 +150,17 @@ iCode checks each tool when the extension is imported: a function that is not `a
 | --- | --- |
 | `cwd` | The current [working directory](../daily-use/workspaces.md); resolve relative paths from it |
 | `workspace_dirs` | The working directory, then any additional working directories |
-| `agent_name` | The name of the agent calling the tool |
+| `agent_name` | The profile name of the agent calling the tool |
+| `caller_name` | The main agent’s profile name, the registered sub-agent tool name (for example, `Explore`), or the workflow node ID |
+| `invocation_type` | The kind of the invocation named by `invocation_id`: `turn`, `sub_agent`, or `workflow_node` for extension callbacks; `None` outside an invocation |
+| `invocation_id` | The ID of this chat turn, sub-agent call or workflow node activation, or `None` outside an invocation |
 | `session_id` | The session's id, or `None` |
 | `data_dir` | A folder for the extension's own files, kept across sessions: `extension-data/<extension id>` in the iCode configuration directory |
 | `session_data_dir` | A folder for the extension's files in this session, inside the session's folder, or `None` when the session has no folder. Forking a session copies this folder, so store paths relative to it |
+
+If a profile named `Researcher` is registered as the tool `Explore`, the extension sees `agent_name="Researcher"` and `caller_name="Explore"`. Two parallel calls to `Explore` have the same caller name and invocation type, but distinct invocation IDs. Tools, hooks and turn contexts within each call see the same values.
+
+For per-invocation resources, use `(session_id, invocation_type, invocation_id)` as the key. To share state across calls to the same named caller in a session, use `(session_id, invocation_type, caller_name)`. Workflow retries keep the invocation ID, and each new activation gets a new ID.
 
 iCode creates the two folders the first time a tool uses them, readable only by you. A context is valid only for the call it was given to: do not keep it for later calls. A tool changes iCode's state only through its result; anything else it changes is files and services, as with any program you run.
 
@@ -334,7 +341,7 @@ def test_reads_the_version(tmp_path):
     assert asyncio.run(pyproject_version(ctx)) == "1.2.0"
 ```
 
-`ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=...)` gives a tool only the folders you pass to it: `ctx.data_dir` raises an error unless you pass `data_dir`, and `ctx.session_data_dir` is `None` unless you pass `session_data_dir`.
+`ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=..., caller_name=..., invocation_type=..., invocation_id=...)` gives a tool only the folders you pass to it: `ctx.data_dir` raises an error unless you pass `data_dir`, and `ctx.session_data_dir` is `None` unless you pass `session_data_dir`.
 
 Contexts and tool hooks are plain async functions too. Call a context with `TurnContext.for_testing(tmp_path, prompt="...")`, and a hook with a `ToolCall` and a `ToolResult` you build:
 
@@ -388,7 +395,7 @@ The package's `description` is what the "Tools" tab shows. iCode runs on Python 
 
 | What you see | What to check |
 | --- | --- |
-| The extension is missing from the "Tools" tab | The file is in the `extensions` folder of the configuration directory (not in a project folder), its name ends in `.py` or it is a folder with `__init__.py`, and its name does not start with `_` or `.`. A package must be installed into the environment iCode runs in. |
+| The extension is missing from the "Tools" tab | The file is in the `extensions` folder of the configuration directory (not in the working directory), its name ends in `.py` or it is a folder with `__init__.py`, and its name does not start with `_` or `.`. A package must be installed into the environment iCode runs in. |
 | "Skipped …" under "Extensions" | The id breaks the id rules above or repeats a built-in tool category. Rename the file or folder. |
 | A warning that the agent starts without the extension | The warning gives the reason: the extension is not installed, is installed twice, failed to import (the message names the error), or has a tool whose name another tool already uses. |
 | A call ends with "Error: Function failed." | The tool raised an exception other than `ToolError`. In the TUI, iCode records it in `logs/debug.log` in the configuration directory. Raise `ToolError` for failures the model should read. |

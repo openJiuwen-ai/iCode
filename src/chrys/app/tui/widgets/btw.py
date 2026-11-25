@@ -125,7 +125,7 @@ class BtwPage(VerticalScroll, can_focus_children=False):
 
     def _reveal_output(self) -> None:
         target, row = self._reveal_target, self._reveal_row
-        if not composed_live(self) or target is None or row is None or not row.is_attached or not target.display:
+        if not composed_live(self) or target is None or row is None or not composed_live(row) or not target.display:
             return
         top = target.virtual_region
         if not top.width or not row.region.width:
@@ -144,7 +144,7 @@ class BtwPage(VerticalScroll, can_focus_children=False):
         super().watch_scroll_y(old_value, new_value)
         if new_value != min(self._reveal_scroll_y, self.max_scroll_y):
             self._reveal_target = None
-        self.post_message(BtwPanel.Scrolled())
+        self.post_message(BtwPanel.Scrolled(self))
 
 
 class BtwQuestion(UserMessage):
@@ -201,8 +201,29 @@ class BtwThinking(RunningTitle, Static):
         return self.running_title(render_text(widget_localizer(self), _THINKING.bind()))
 
 
+class _BtwControls(Horizontal):
+    """The pager and close button over the card's top row."""
+
+    def on_resize(self) -> None:
+        # The counter's width follows the record count; the card's text keeps clear of all of it.
+        parent = self.parent
+        if isinstance(parent, BtwPanel):
+            parent.keep_text_clear_of_controls()
+
+
+async def _await_update(task: asyncio.Task[None]) -> None:
+    """Wait for a card update to its end, which the card's own cancelling reaches too: as it closes or leaves,
+    from wherever the update was, even before it started. Only the caller being cancelled reaches the caller."""
+    try:
+        await finish_shielded(task)
+    except asyncio.CancelledError:
+        caller = asyncio.current_task()
+        if caller is not None and caller.cancelling():
+            raise
+
+
 _ROOMY_HEIGHT = 4
-"""Rows a card needs for its border, the blank row under its title and one row of content."""
+"""Rows a card needs for its border, the controls' row under its title and one row of content."""
 
 
 class BtwPanel(Vertical):
@@ -214,15 +235,10 @@ class BtwPanel(Vertical):
         border: round $tui-border-accent $border-opacity;
         border-title-align: left;
         border-title-color: $accent;
-        /* One blank row under the title, as between the question and the answer. */
-        padding: 1 0 0 0;
         layers: page controls;
     }
-    /* A card of a single row gives the blank row up, so the controls stay on it. */
-    BtwPanel.-cramped { padding: 0; }
-    /* Over the page's top-right corner, beside the question's header: the page keeps the card's first content row.
-       Kept tight, to leave the header's label and copy action as much of the row as they can.
-       The margin, not padding, keeps the page's scrollbar showing beside them. */
+    /* On the row under the card's title, which the page leaves blank, as between the question and the answer.
+       In a card of a single row the page takes that row too, and its text keeps clear of them. */
     BtwPanel #btw-history-controls { layer: controls; dock: right; width: auto; height: 1; margin: 0 1 0 0; }
     BtwPanel Button.btw-action {
         width: 3; min-width: 3; height: 1; padding: 0;
@@ -235,7 +251,10 @@ class BtwPanel(Vertical):
     BtwPanel #btw-close { background: $primary 20%; color: $text; text-style: bold; }
     BtwPanel #btw-close:hover, BtwPanel #btw-close:focus { background: $primary 35%; }
     BtwPanel #btw-position { width: auto; min-width: 3; height: 1; padding: 0; color: $text-muted; text-align: center; }
-    BtwPanel BtwPage { height: 1fr; min-height: 1; padding: 0 0 0 1; overflow-x: hidden; scrollbar-size: 1 1; }
+    BtwPanel BtwPage {
+        height: 1fr; min-height: 1; margin: 1 0 0 0; padding: 0 0 0 1; overflow-x: hidden; scrollbar-size: 1 1;
+    }
+    BtwPanel.-cramped BtwPage { margin: 0; }
     /* The question opens the page, plain on the card, under the controls' row. */
     BtwPanel BtwQuestion, BtwPanel BtwQuestion:ansi { margin: 0 0 1 0; background: transparent; }
     BtwPanel BtwThinking { margin: 1 0 0 1; }
@@ -253,6 +272,10 @@ class BtwPanel(Vertical):
     class Scrolled(Message):
         """The page scrolled: a quote offer for its text no longer sits beside it."""
 
+        def __init__(self, page: BtwPage) -> None:
+            super().__init__()
+            self.page = page
+
     def __init__(self, *, locale_controller: LocaleController | None = None) -> None:
         super().__init__()
         self._locale_controller = locale_controller
@@ -260,10 +283,12 @@ class BtwPanel(Vertical):
         self.running = False
         self.display = False
         self._notice = _FAILED.bind()
-        self._content_task: asyncio.Task[None] | None = None
+        self._content_tasks: set[asyncio.Task[None]] = set()
+        self._content_lock = asyncio.Lock()
+        self._answer_updates = 0
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="btw-history-controls"):
+        with _BtwControls(id="btw-history-controls"):
             yield BtwButton("‹", id="btw-previous", classes="btw-action", compact=True, disabled=True)  # noqa: RUF001 - navigation glyph
             yield Static("0/0", id="btw-position", markup=False)
             yield BtwButton("›", id="btw-next", classes="btw-action", compact=True, disabled=True)  # noqa: RUF001 - navigation glyph
@@ -305,15 +330,33 @@ class BtwPanel(Vertical):
         self.refresh_localization()
 
     def on_resize(self) -> None:
-        # Measured with the border and the blank row, so giving the row up cannot undo itself.
+        # Measured with the border and the controls' row, so giving the row up cannot undo itself.
         self.set_class(self.region.height < _ROOMY_HEIGHT, "-cramped")
+        self.keep_text_clear_of_controls()
+
+    def keep_text_clear_of_controls(self) -> None:
+        """In a card of one row every line passes under the controls: there the text leaves their width free.
+
+        A taller card gives them the row under its title, above the page, which no line passes.
+        """
+        controls = self.query_one("#btw-history-controls")
+        page = self.query_one(BtwPage)
+        # From where they start to the page's edge: their margin, and the scrollbar column it leaves, included.
+        clear = max(0, page.region.right - controls.region.x) if self.has_class("-cramped") else 0
+        top, right, bottom, left = page.styles.padding
+        if right != clear:
+            page.styles.padding = (top, clear, bottom, left)
 
     def on_unmount(self) -> None:
         if self._locale_controller is not None:
             self._locale_controller.unregister_surface(self)
-        # Leaving with the card: removals it started are shielded and still finish.
-        if self._content_task is not None:
-            self._content_task.cancel()
+        self._stop_content_updates()
+
+    def _stop_content_updates(self) -> None:
+        """Stop every update still running, an answer still parsing after a newer update replaced it included, so
+        no caller waits on it. Removals they started are shielded and still finish."""
+        for task in tuple(self._content_tasks):
+            task.cancel()
 
     def refresh_localization(self) -> None:
         if not self.children:
@@ -344,43 +387,54 @@ class BtwPanel(Vertical):
         if question is not None:
             page.replace_content()
         generation = page.content_generation
-        previous = self._content_task
+        if answer is not None:
+            self._answer_updates += 1
+        answer_update = self._answer_updates
 
         def current() -> bool:
             return composed_live(self) and composed_live(page) and page.content_generation == generation
 
+        def decides() -> bool:
+            # A repeated completion keeps the record: of its answers, the latest says how the card ends.
+            return current() and self._answer_updates == answer_update
+
         async def present() -> None:
             reply: BtwAnswer | None = None
+            mounted = False
             try:
-                if previous is not None:
-                    await previous
-                if not current():
-                    return
-                with self.app.batch_update():
-                    # A record's own answer replaces any it showed, as a repeated completion does.
-                    old = list(page.query_children("BtwQuestion, BtwAnswer" if question is not None else "BtwAnswer"))
-                    # A replaced answer takes a selection in it along, as a new record does with the page's.
-                    page.clear_selection_in(old)
-                    if old:
-                        await self._remove_messages(old)
-                        if not current():
-                            return
-                    if question is not None:
-                        page.start_at_top()
-                    shown: list[Widget] = [BtwQuestion(question)] if question else []
-                    # Parse only after mounting: failures belong to this card, not the App.
-                    if answer is not None:
-                        reply = BtwAnswer()
-                        # Hidden until its text shows, as the card always showed an answer: whole or not at all.
-                        reply.display = False
-                        shown.append(reply)
-                    if shown:
-                        await page.mount(*shown, before=self.query_one(BtwThinking))
-                        if not current():
-                            return
+                # One update changes the page's widgets at a time. An answer's parse runs after that, unwaited for:
+                # a newer update can replace the answer meanwhile, and this one then lets it go.
+                async with self._content_lock:
+                    if not current():
+                        return
+                    with self.app.batch_update():
+                        # A record's own answer replaces any it showed, as a repeated completion does.
+                        kinds = "BtwQuestion, BtwAnswer" if question is not None else "BtwAnswer"
+                        old = list(page.query_children(kinds))
+                        # A replaced answer takes a selection in it along, as a new record does with the page's.
+                        page.clear_selection_in(old)
+                        if old:
+                            await self._remove_messages(old)
+                            if not current():
+                                return
+                        if question is not None:
+                            page.start_at_top()
+                        shown: list[Widget] = [BtwQuestion(question)] if question else []
+                        # Parse only after mounting: failures belong to this card, not the App.
+                        if answer is not None:
+                            reply = BtwAnswer()
+                            # Hidden until its text shows, as the card always showed an answer: whole or not at all.
+                            reply.display = False
+                            shown.append(reply)
+                        if shown:
+                            await page.mount(*shown, before=self.query_one(BtwThinking))
+                            mounted = True
+                            if not current():
+                                return
                 if reply is not None and answer is not None:
                     await reply.show_text(answer)
-                    if not current():
+                    # Not once its removal begins: a newer update may be taking it off the page.
+                    if not decides() or not composed_live(reply):
                         return
                     self.running = False
                     self._stop_thinking()
@@ -393,23 +447,29 @@ class BtwPanel(Vertical):
                 elif self.query_one("#btw-error").display:
                     page.reveal(self.query_one("#btw-error"))
             except asyncio.CancelledError:
-                # Cancelled only as the card leaves: whoever waits on it just stops waiting.
+                # Cancelled only as the card closes or leaves: whoever waits on it just stops waiting.
                 return
             except Exception:
+                if not decides() or (mounted and reply is not None and not composed_live(reply)):
+                    # Replaced while it parsed, its removal begun or done: what failed is no longer on the card.
+                    return
                 _log.warning("Could not render side question", exc_info=True)
                 try:
                     if reply is not None:
                         await self._remove_messages([reply])
-                        if not current():
+                        if not decides():
                             return
                 except Exception:
                     _log.exception("Could not remove side question answer")
                 finally:
-                    if current():
+                    # A newer answer to the record may have shown while this one was taken away.
+                    if decides():
                         self.fail(request_id)
 
-        self._content_task = asyncio.create_task(present())
-        return self._content_task
+        task = asyncio.create_task(present())
+        self._content_tasks.add(task)
+        task.add_done_callback(self._content_tasks.discard)
+        return task
 
     async def _remove_messages(self, messages: list[Widget]) -> None:
         await remove_all_shielded(messages)
@@ -432,7 +492,7 @@ class BtwPanel(Vertical):
             return
         # The thinking row stays until the answer takes its place: with neither, the page would jump to its top.
         if (task := self._show(None, answer, request_id)) is not None:
-            await finish_shielded(task)
+            await _await_update(task)
 
     def fail(self, request_id: str, *, blocked_reason: str | None = None) -> None:
         if self.request_id != request_id:
@@ -481,7 +541,7 @@ class BtwPanel(Vertical):
         self.query_one("#btw-error").display = False
         self.display = True
         if (task := self._show(entry.question, entry.answer, request_id)) is not None:
-            await finish_shielded(task)
+            await _await_update(task)
 
     def set_history_position(self, index: int | None, total: int, created_at: str = "") -> None:
         """Show which saved record the card shows; with none (a question still on its way, a notice), no pager."""
@@ -509,6 +569,8 @@ class BtwPanel(Vertical):
         if composed_live(self) and self.children:
             self._stop_thinking()
             self.display = False
+            # Before the update that empties the page, which must run.
+            self._stop_content_updates()
             self._show("", None, "")
 
     @on(Button.Pressed, "#btw-close")

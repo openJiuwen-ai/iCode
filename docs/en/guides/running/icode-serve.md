@@ -38,7 +38,7 @@ Open `http://localhost:7777` in your local browser and enter the password you se
 
 The iCode interface should appear after login, using any existing model configuration on the server. Once a model is configured, send “Hello” and check that you receive a reply.
 
-The directory where you started the service is the initial working directory. Click the directory path at the right end of the conversation area's bottom border to [switch working directories](../daily-use/workspaces.md#change-the-working-directory-during-a-session). `icode serve` does not accept the TUI's `--workdir`, `--agent`, `--model`, or `--session` arguments. Switch agents or models and restore sessions in the page.
+The directory where you started the service is the initial working directory. Click the directory path at the right end of the conversation area's bottom border to [switch working directories](../daily-use/workspaces.md#change-the-working-directory-during-a-session). Use `icode serve -s <id>` to open a saved chat in each new browser connection. The session uses its saved working directory. If another tab or terminal has it open, close that instance and choose **Retry**, or choose **Start new session** to work separately.
 
 ### 3. Finish using iCode
 

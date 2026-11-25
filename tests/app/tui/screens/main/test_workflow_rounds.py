@@ -15,11 +15,13 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, open_workflow
+
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
 
 SOURCE = b"""from chrys.workflows import WorkflowBuilder
 def echo(value):
@@ -42,7 +44,7 @@ workflow = wf.build()
 async def test_round_badge_advances_at_entry_and_retains_the_terminal_round(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locale: str, outcome: str
 ) -> None:
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "rounds", SOURCE)
     engine, bus = WorkflowEngine(), EventBus()

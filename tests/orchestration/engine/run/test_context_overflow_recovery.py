@@ -42,7 +42,8 @@ async def test_an_overflowing_request_is_compacted_and_resent_within_the_turn(tm
     compacted = await capture_events(ctx.bus, ToolCompacted)
 
     try:
-        await ctx.send_message("first")
+        # Keep enough user context that trimming only the echo result cannot satisfy recovery.
+        await ctx.send_message("first " + "task requirement " * 200)
         await ctx.send_message("second")
     finally:
         restore()
@@ -54,7 +55,8 @@ async def test_an_overflowing_request_is_compacted_and_resent_within_the_turn(tm
     assert (retry.scope, retry.attempt, retry.max_attempts, retry.delay_seconds) == ("wire", 1, 1, 0)
     assert retry.display_message is not None
     assert retry.display_message.definition.key == "retry.context_overflow"
-    assert [event.phase for event in compacted] == ["phase1"]
+    # An overflow pass has no escalation gate: the summary alone frees too little, so the group goes too.
+    assert [event.phase for event in compacted] == ["phase1", "phase2"]
     resent, _options = ctx.mock_client.call_history[-1]
     assert not any(
         content.type in {"function_call", "function_result"} for message in resent for content in message.contents

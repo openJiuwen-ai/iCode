@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from chrys.service.approval.policy import ApprovalPolicy
 from chrys.service.profiles.agents.loader import load_profile_from_yaml
+from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import ApprovalConfig
 
 
@@ -51,3 +52,31 @@ def test_approval_policy_does_not_apply_absent_known_kind_override_to_other_kind
     )
 
     assert policy.should_require_approval("server.tool")
+
+
+def test_text_false_user_can_override_does_not_allow_a_session_override(tmp_path: Path) -> None:
+    """``"false"`` is a true value in Python; the reader must take the word, not the string."""
+    path = tmp_path / "text-false.yaml"
+    path.write_text(
+        """\
+name: text-false
+approval:
+  user_can_override: "false"
+""",
+        encoding="utf-8",
+    )
+
+    policy = ApprovalPolicy(load_profile_from_yaml(path).approval)
+
+    assert policy.set_user_override("require") is False
+
+
+def test_profile_with_non_text_display_name_is_not_registered(tmp_path: Path) -> None:
+    """A refused profile never reaches the registry, so a selector miss stays a miss."""
+    (tmp_path / "good.yaml").write_text("name: good\n", encoding="utf-8")
+    (tmp_path / "bad.yaml").write_text("name: bad\ndisplay_name: 2024\n", encoding="utf-8")
+    registry = AgentProfileRegistry()
+
+    assert registry.load_user_profiles(tmp_path) == 1
+    assert registry.resolve_selector("2024") is None
+    assert registry.resolve_selector("good") is not None

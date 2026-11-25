@@ -12,7 +12,7 @@ sub-agent registration, skills, middleware chain, and Agent/TurnBindings creatio
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
@@ -46,9 +46,12 @@ from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
+from chrys.foundation.util.chrys_headers import RequestRole
 from chrys.foundation.util.imports import import_off_loop
 from chrys.kernel import Agent, LoopRecorder
+from chrys.kernel.sessions import ContextProvider
 from chrys.orchestration.engine.run.bindings import TurnBindings
+from chrys.orchestration.initialization import initialize_dependencies
 from chrys.orchestration.invoker.origin import InvocationPublishers
 from chrys.orchestration.invoker.resources import Conversation, PreparedAgent, rollback_resources
 from chrys.orchestration.invoker.runtime import (
@@ -72,6 +75,7 @@ from chrys.orchestration.sub_agents.registration import (
 )
 from chrys.service.agent_middleware import ResponseBatchCounter
 from chrys.service.agent_middleware.injection import InjectionMiddleware
+from chrys.service.agent_middleware.reminders.workspace import workspace_index_lines
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
@@ -94,7 +98,7 @@ from chrys.service.tools.names import chrys_reserved_tool_names
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
-    from chrys.foundation.models.workspace import Workspace
+    from chrys.foundation.models.workspace import Workspace, WorkspaceDeparture
     from chrys.orchestration.sub_agents.tools import SubAgentTools
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.turn_context import TurnContextHolder
@@ -108,7 +112,7 @@ if TYPE_CHECKING:
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
-    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.profiles.agents.schema import AgentProfile, SubAgentRef
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
     from chrys.service.skills.provider import ChrysSkillsProvider
@@ -150,7 +154,7 @@ def _runtime_api_style(provider: str, api_style: str) -> str:
 
 
 def _runtime_hook_source_details(
-    scope: Literal["project", "global"],
+    scope: Literal["workdir", "global"],
     file: HooksFile,
 ) -> RuntimeHookSourceDetails:
     """Build the non-sensitive runtime view for one hook config source."""
@@ -171,13 +175,13 @@ def _runtime_hook_source_details(
 
 
 def _runtime_hook_sources(hook_manager: HookManager | None) -> list[RuntimeHookSourceDetails]:
-    """Snapshot the live project/global hook manager without executable configuration."""
+    """Snapshot the live working directory and global hook manager without executable configuration."""
     if hook_manager is None:
         return []
     sources: list[RuntimeHookSourceDetails] = []
-    project = hook_manager.file.project
-    if project is not None:
-        sources.append(_runtime_hook_source_details("project", project))
+    workdir = hook_manager.file.workdir
+    if workdir is not None:
+        sources.append(_runtime_hook_source_details("workdir", workdir))
     global_ = hook_manager.file.global_
     if global_ is not None:
         sources.append(_runtime_hook_source_details("global", global_))
@@ -199,7 +203,39 @@ class LoadProgressCallback(Protocol):
         status: str = "",
         subject: str = "",
         detail: str = "",
+        stage: str = "",
+        stage_subject: str = "",
+        stage_status: str = "",
     ) -> Awaitable[None]: ...
+
+
+def _system_prompt(
+    profile: AgentProfile,
+    memory_text: str,
+    providers: Sequence[ContextProvider] = (),
+) -> str:
+    """The text this build puts at the top of every model call, as one string.
+
+    The profile's own instructions, then the memory block the context layer renders
+    (``AGENTS.md`` and the like), then what each context provider appends on every
+    call (skills, context management, documentation) — the same order and content
+    the model receives. A guard shown only the first two is looking at a fraction of
+    what the model treats as its instructions.
+    """
+    parts = [text for text in (profile.instructions, memory_text) if text]
+    parts.extend(_provider_instructions(providers))
+    return chr(10).join(parts)
+
+
+def _provider_instructions(providers: Sequence[ContextProvider]) -> list[str]:
+    """What each context provider contributes to every call's instructions, in run order.
+
+    Providers fix these strings when they are built, so each is asked through its
+    public ``contributed_instructions`` method.  Running ``before_run`` would re-enter
+    the session for what is only a read; the method exists on the base class so the
+    type checker can verify it without a ``getattr`` probe.
+    """
+    return [text for provider in providers if isinstance((text := provider.contributed_instructions()), str) and text]
 
 
 @dataclass
@@ -226,6 +262,13 @@ class AgentBuildResult:
     runtime_details: AgentRuntimeDetails
     compaction_strategy: Any
     active_profile: ModelProfile
+    instructions: str = ""
+    """The system prompt this build hands the model: the profile's instructions plus memory text.
+
+    Defaulted and last, so existing constructors that predate it keep working.
+    """
+    profile_instructions: str = ""
+    """The agent profile's own instructions only, without memory or provider contributions."""
 
 
 async def build_agent(
@@ -242,6 +285,8 @@ async def build_agent(
     on_usage: Callable[..., None],
     *,
     # -- optional -----------------------------------------------------
+    departed_workspace: WorkspaceDeparture | None = None,
+    missing_working_dirs: tuple[str, ...] = (),
     model_registry: ModelProfileRegistry | None = None,
     on_sub_agent_usage: Callable[..., None] | None = None,
     on_side_call_usage: Callable[[Mapping[str, Any]], None] | None = None,
@@ -313,8 +358,8 @@ async def build_agent(
     -------
     AgentBuildResult
         All constructed components needed by the engine.
-    """
 
+    """
     prepared = PreparedAgent()
 
     async def _acquire(conversation: Conversation) -> AgentBuildResult:
@@ -331,6 +376,9 @@ async def build_agent(
             status: str = "",
             subject: str = "",
             detail: str = "",
+            stage: str = "",
+            stage_subject: str = "",
+            stage_status: str = "",
         ) -> None:
             if on_load_progress is not None:
                 await on_load_progress(
@@ -343,6 +391,7 @@ async def build_agent(
                     status=status,
                     subject=subject,
                     detail=detail,
+                    **({"stage": stage, "stage_subject": stage_subject, "stage_status": stage_status} if stage else {}),
                 )
 
         if profile.acp is not None:
@@ -364,7 +413,6 @@ async def build_agent(
 
         # Capture the session environment for this agent build.
         await _progress(AGENT_LOAD_PHASE_RUNTIME, "Capturing workspace context", status=AGENT_LOAD_STATUS_RUNNING)
-        runtime = SessionEnvironment.capture(workspace=workspace)
         serialize_implicit_windows = not settings.parallel_implicit_tools
 
         # Auto-loaded memory (files + folders configured on the profile).  Read
@@ -375,6 +423,21 @@ async def build_agent(
             profile.memory,
             workspace_cwd=workspace.primary_cwd if workspace else None,
         )
+        # The workspace's folders are runtime state: index them for the runtime
+        # reminder, never for the system prompt. Shell tool registration separately
+        # checks for working directories outside the workspace folder set.
+        workspace_index = (
+            workspace_index_lines(workspace, profile.memory, memory_content)
+            if workspace is not None and workspace.id
+            else ()
+        )
+        runtime = SessionEnvironment.capture(
+            workspace=workspace,
+            workspace_index=workspace_index,
+            departed_workspace=departed_workspace,
+            missing_working_dirs=missing_working_dirs,
+        )
+        memory_text = memory_content.text
         acp_depth = acp_sub_agent_depth()
         effective_sub_agents: list[dict[str, Any]] = []
         for ref in profile.sub_agents.agents:
@@ -388,7 +451,7 @@ async def build_agent(
             )
         agent_profile_fingerprint = agent_profile_context_fingerprint(
             profile,
-            memory_text=memory_content.text,
+            memory_text=memory_text,
             effective_sub_agents=effective_sub_agents,
             allow_user_interaction=allow_user_interaction,
         )
@@ -465,13 +528,14 @@ async def build_agent(
             spill_quota=spill_quota,
             debug_log_dir=last_words_log_dir,
             compaction_config=profile.compaction,
-            memory_text=memory_content.text,
+            memory_text=memory_text,
             warn_threshold_pct=settings.warn_threshold_pct,
             session_id=context_recall_session_id,
             parent_session_id=session_id,
             session_dir=effective_session_dir,
             skip_local_history_for_service_context=uses_responses_service_history,
             service_context_default_options=chat_options,
+            tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
         )
 
         ctx = create_context(context_inputs)
@@ -482,6 +546,7 @@ async def build_agent(
         invocation_publishers = InvocationPublishers(bus)
         client = await create_client(
             active_profile,
+            request_role=RequestRole.MAIN_AGENT,
             on_intermediate_text=on_intermediate,
             session_id=session_id,
             session_dir=effective_session_dir,
@@ -535,9 +600,8 @@ async def build_agent(
         # Collect workspace roots for file-write auto-approval (needed by both
         # the main agent's ApprovalMiddleware and each sub-agent's fresh one).
         workspace_roots: list[str] = []
-        if workspace:
-            workspace_roots.append(workspace.primary_cwd)
-            workspace_roots.extend(wd.path for wd in workspace.working_dirs)
+        if workspace is not None:
+            workspace_roots = [runtime.cwd, *(wd.path for wd in runtime.working_dirs)]
 
         # Build sub-agent tools at the composition root. The displaced owner
         # stays live until construction atomically installs this result.
@@ -588,12 +652,31 @@ async def build_agent(
                 shows_answer_text=sub_agent_shows_answer_text,
             )
             prepared.own(sub_agent_tools.cleanup)
+            sub_agent_entries: list[tuple[SubAgentRef, AgentProfile]] = []
+            # One counter for every ref the phase is done with, skipped or loaded, so the
+            # count never goes back and ends at the total.
+            resolved_count = 0
+
+            async def _sub_progress(ref: SubAgentRef, stage: str, subject: str, status: str) -> None:
+                await _progress(
+                    AGENT_LOAD_PHASE_SUB_AGENTS,
+                    f"Loading sub-agent {ref.profile}",
+                    server_name=ref.profile,
+                    current=resolved_count,
+                    total=sub_agent_total,
+                    status=AGENT_LOAD_STATUS_RUNNING,
+                    subject=ref.profile,
+                    stage=stage,
+                    stage_subject=subject,
+                    stage_status=status,
+                )
+
             for index, ref in enumerate(profile.sub_agents.agents, start=1):
                 await _progress(
                     AGENT_LOAD_PHASE_SUB_AGENTS,
                     f"Loading sub-agent {ref.profile}",
                     server_name=ref.profile,
-                    current=index - 1,
+                    current=resolved_count,
                     total=sub_agent_total,
                     status=AGENT_LOAD_STATUS_RUNNING,
                     subject=ref.profile,
@@ -601,11 +684,12 @@ async def build_agent(
                 sub_profile = agent_registry.get(ref.profile)
                 if sub_profile is None:
                     logger.warning("Sub-agent profile not found: %s", ref.profile)
+                    resolved_count += 1
                     await _progress(
                         AGENT_LOAD_PHASE_SUB_AGENTS,
                         f"Skipped sub-agent {ref.profile}",
                         server_name=ref.profile,
-                        current=index,
+                        current=resolved_count,
                         total=sub_agent_total,
                         status=AGENT_LOAD_STATUS_SKIPPED,
                         subject=ref.profile,
@@ -615,37 +699,45 @@ async def build_agent(
                 if registration_state in {"empty_command", "depth_limit"}:
                     reason = sub_agent_skip_reason(registration_state, acp_depth=acp_depth)
                     logger.warning("Skipping sub-agent profile %s: %s", ref.profile, reason)
+                    resolved_count += 1
                     await _progress(
                         AGENT_LOAD_PHASE_SUB_AGENTS,
                         f"Skipped sub-agent {ref.profile}: {reason}",
                         server_name=ref.profile,
-                        current=index,
+                        current=resolved_count,
                         total=sub_agent_total,
                         status=AGENT_LOAD_STATUS_SKIPPED,
                         subject=ref.profile,
                         detail=reason,
                     )
                     continue
-                if sub_profile.acp is not None:
-                    await sub_agent_tools.register_acp(ref, sub_profile, runtime)
-                else:
-                    await sub_agent_tools.register(
-                        ref,
-                        sub_profile,
-                        runtime,
-                        settings=settings,
-                        fallback_profile=active_profile,
-                        model_registry=model_registry,
-                    )
+                sub_agent_entries.append((ref, sub_profile))
+
+            async def _sub_agent_registered(ref: SubAgentRef) -> None:
+                nonlocal resolved_count
+                resolved_count += 1
                 await _progress(
                     AGENT_LOAD_PHASE_SUB_AGENTS,
                     f"Loaded sub-agent {ref.profile}",
                     server_name=ref.profile,
-                    current=index,
+                    current=resolved_count,
                     total=sub_agent_total,
                     status=AGENT_LOAD_STATUS_DONE,
                     subject=ref.profile,
                 )
+
+            # Every sub-agent's outside waits — MCP connections above all — run together;
+            # the registry still takes them in the declared order.
+            await sub_agent_tools.register_many(
+                sub_agent_entries,
+                runtime,
+                settings=settings,
+                fallback_profile=active_profile,
+                model_registry=model_registry,
+                initialization=initialization,
+                on_initialization_progress=_sub_progress,
+                on_registered=_sub_agent_registered,
+            )
             sub_agent_tool_instances = sub_agent_tools.get_tools()
             sub_agent_tool_names = [tool.name for tool in sub_agent_tool_instances]
             tools.extend(sub_agent_tool_instances)
@@ -702,7 +794,9 @@ async def build_agent(
                     subject=config.name,
                 )
 
-            mcp_tools = await mcp_adapter.connect_all(profile.tools.mcp, progress=_mcp_progress)
+            mcp_tools = await mcp_adapter.connect_all(
+                profile.tools.mcp, progress=_mcp_progress, acquisition_scope=initialization.mcp
+            )
             mcp_tools_by_server = mcp_adapter.tool_names_by_server
             tools.extend(mcp_tools)
             warn_if_tool_loading_unbinds_thinking(profile, active_profile, chat_options, mcp_tools_by_server)
@@ -723,14 +817,15 @@ async def build_agent(
 
         # Build skills provider (if configured)
         await _progress(AGENT_LOAD_PHASE_SKILLS, "Loading skills", status=AGENT_LOAD_STATUS_RUNNING)
-        context_providers = []
+        context_providers: list[ContextProvider] = []
         progressive_resume_provider = mcp_adapter.create_resume_provider() if mcp_adapter is not None else None
 
         skills_provider, skill_warnings = await create_skills_provider(
             profile.skills,
             runtime=runtime,
             session_dir=effective_session_dir,
-            project_skills_enabled=settings.project_skills_enabled,
+            workdir_skills_enabled=settings.workdir_skills_enabled,
+            discovery_scope=initialization.skills,
         )
         if skills_provider is not None:
             context_providers.append(skills_provider)
@@ -807,8 +902,10 @@ async def build_agent(
             runtime=runtime,
             max_context_tokens=active_profile.max_context_tokens,
             warn_threshold_pct=settings.warn_threshold_pct,
+            automatic_compaction=profile.compaction.enabled,
             sub_agent_names=[t.name for t in sub_agent_tools.get_tools()] if sub_agent_tools else None,
             shell_tool_enabled=KIND_SHELL in tool_kinds.values(),
+            workspace_section=True,
             tool_names=[*tool_names, *context_tool_names, *skill_tool_names],
             session_root=effective_session_dir,
             file_read_available=KIND_FILESYSTEM_READ in tool_kinds.values(),
@@ -930,7 +1027,9 @@ async def build_agent(
         approval_middleware = await create_approval(
             conversation,
             ApprovalInputs(
-                reuse=ApprovalReuseBinding(runtime, tools, session_id=session_id)
+                reuse=ApprovalReuseBinding(
+                    runtime, tools, session_id=session_id, workspace_id=workspace.id if workspace else None
+                )
                 if session_id or runtime.session_id
                 else None,
                 approval_policy=approval_policy,
@@ -1011,6 +1110,8 @@ async def build_agent(
             tool_kinds=tool_kinds,
             skill_names=skill_names,
             memory_files=memory_content.loaded_files,
+            instructions=_system_prompt(profile, memory_text, context_providers),
+            profile_instructions=profile.instructions or "",
             agent_profile_fingerprint=agent_profile_fingerprint,
             model_profile_fingerprint=model_profile_fingerprint,
             runtime_details=runtime_details,
@@ -1019,7 +1120,8 @@ async def build_agent(
         )
 
     try:
-        return await prepared.open(_acquire)
+        async with initialize_dependencies(mcp_cache) as initialization:
+            return await prepared.open(_acquire)
     except BaseException:
         await rollback_resources(prepared)
         raise

@@ -7,6 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from chrys.foundation.events.bus import EventBus
+from chrys.foundation.models.workspace import Workspace
 from chrys.orchestration.engine.build.loaded import AgentManifest, LoadedAgent
 from chrys.orchestration.engine.run.turn_hooks import TurnHookDispatcher
 from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
@@ -14,17 +15,24 @@ from chrys.orchestration.engine.state.active_session import ActiveSession
 from chrys.orchestration.engine.state.current_agent import CurrentAgent
 from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
 from chrys.orchestration.engine.state.session_writer import SessionWriter
+from chrys.orchestration.engine.workspaces import SessionWorkspaces, WorkspacePlan
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
 from chrys.service.session.persistence import SessionPersistence
+from chrys.service.workspaces.registry import RegistrySnapshot
 from tests.support.loaded_agents import install_loaded_agent
+
+
+def plan_workspace(workspace: Workspace) -> WorkspacePlan:
+    return SessionWorkspaces.plan(workspace=workspace, snapshot=RegistrySnapshot())
 
 
 def make_session(**overrides) -> ActiveSession:
     """Construct a session, overriding only its existing public state."""
     persistence = overrides.pop("persistence", None)
+    workspace = overrides.pop("workspace", None)
     session = ActiveSession(
         persistence=persistence if persistence is not None else SessionPersistence(None, EventBus()),
-        workspace=overrides.pop("workspace", None),
+        workspace_plan=plan_workspace(workspace) if workspace is not None else None,
         approval_mode=overrides.pop("approval_mode", None),
     )
     for name, value in overrides.items():

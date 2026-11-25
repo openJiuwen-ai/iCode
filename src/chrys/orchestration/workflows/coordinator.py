@@ -550,10 +550,8 @@ class WorkflowCoordinator:
                     await self._hooks.close()
             logger.debug("workflow run %s released the execution lease (session %s)", execution.run_id, session_id)
 
-    async def _load_run_settings(self, project_cwd: Path, *, request_id: str) -> Settings:
-        effective = await load_workflow_settings(
-            project_cwd, startup=self._startup_settings, handle=self._settings_handle
-        )
+    async def _load_run_settings(self, workdir: Path, *, request_id: str) -> Settings:
+        effective = await load_workflow_settings(workdir, startup=self._startup_settings, handle=self._settings_handle)
         for warning in settings_warning_events(effective):
             await self._bus.publish(replace(warning, request_id=request_id))
         return effective.settings
@@ -595,15 +593,15 @@ class WorkflowCoordinator:
                 f"The working directory no longer exists: {surrogate_safe_text(missing)}.",
             )
         config_dir = self._config_dir()
-        project_cwd = Path(workspace.primary_cwd)
-        settings = await self._load_run_settings(project_cwd, request_id=event.request_id)
+        workdir = Path(workspace.primary_cwd)
+        settings = await self._load_run_settings(workdir, request_id=event.request_id)
         if owner.state is not None and owner.state.model != event.target.model:
             raise _Rejection(
                 REJECT_SESSION_CHANGED, "The workflow session model changed. Reload the session before starting."
             )
         selected = owner.state.model if owner.state is not None else event.target.model
         settings, model = admission_settings(settings, selected, self._model_registry)
-        discovery = await asyncio.to_thread(discover_workflows, config_dir=config_dir, project_cwd=project_cwd)
+        discovery = await asyncio.to_thread(discover_workflows, config_dir=config_dir, workdir=workdir)
         source = discovery.find(event.target.workflow_id)
         if source is None:
             raise _Rejection(REJECT_WORKFLOW_NOT_FOUND, f"No workflow named {event.target.workflow_id!r} was found.")
@@ -641,7 +639,7 @@ class WorkflowCoordinator:
                 source,
                 environment=environment,
                 sdk=sdk,
-                workspace=project_cwd,
+                workspace=workdir,
                 bytecode_cache=worker_bytecode_cache_dir(config_dir),
                 ask_handler=callbacks.ask,
                 emit_handler=callbacks.emit,

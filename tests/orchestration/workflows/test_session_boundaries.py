@@ -22,7 +22,14 @@ from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.schema import HooksFile
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.workflows.discovery import global_workflows_dir
-from tests.orchestration.workflows._hosting import confirm, make_host, make_project, patch_runtime, run, write_workflow
+from tests.orchestration.workflows._hosting import (
+    confirm,
+    make_host,
+    make_workdir,
+    patch_runtime,
+    run,
+    write_workflow,
+)
 from tests.support.workflow_workers import python_workflow
 
 SOURCE = python_workflow("def check(text):\n    return text\n", "check")
@@ -32,7 +39,7 @@ async def test_shadowed_source_is_rejected_before_environment_or_module_executio
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     global_dir = global_workflows_dir(get_platform().config_dir)
     global_dir.mkdir(parents=True, exist_ok=True)
     # Elevated Windows runners otherwise create a file owned by Administrators,
@@ -69,7 +76,7 @@ async def test_session_hooks_outlive_runs_and_history_browsing_is_passive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", SOURCE)
     calls = []
     original_fire = HookManager.fire
@@ -78,7 +85,7 @@ async def test_session_hooks_outlive_runs_and_history_browsing_is_passive(
         calls.append((event, dict(payload)))
         return await original_fire(manager, event, payload, **kwargs)
 
-    async def build(factory, *, project_root, project_hooks_enabled, session_id, request_id=""):
+    async def build(factory, *, workdir, workdir_hooks_enabled, session_id, request_id=""):
         return HookManager(file=HooksFile(), hooks_dir=tmp_path / "hooks")
 
     monkeypatch.setattr(HookManager, "fire", create_autospec(original_fire, side_effect=fire))
@@ -106,8 +113,11 @@ async def test_session_hooks_outlive_runs_and_history_browsing_is_passive(
         await restored.load_workflow_session(session_id)
         assert len(calls) == before
         await run(restored, "review")
+        # ``session_restored`` alone says the session came back; a resume fires no
+        # ``session_start``, so an existing hook sees the same events it always did.
         assert calls[before][0] is HookEvent.SESSION_RESTORED
         assert calls[before][1]["restored_session_id"] == session_id
+        assert calls[before + 1][0] is HookEvent.WORKFLOW_RUN_START
     finally:
         await restored.shutdown()
     assert calls[-1][0] is HookEvent.SESSION_END
@@ -118,20 +128,20 @@ async def test_admission_warning_is_delivered_before_acceptance_with_request_ide
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "review", SOURCE)
     hooks = project / ".chrys" / "hooks"
     hooks.mkdir()
     (hooks / "hooks.yaml").write_text("hooks: [invalid")
     host = make_host(
-        tmp_path, project=project, settings=Settings(model_profile="mock-profile", project_hooks_enabled=True)
+        tmp_path, project=project, settings=Settings(model_profile="mock-profile", workdir_hooks_enabled=True)
     )
     try:
         await confirm(host, "review")
         result, events = await run(host, "review")
         assert result.outcome.value == "completed"
         warning = next(event for event in events if isinstance(event, Warning))
-        assert warning.code == "project_hooks_config_invalid" and warning.request_id
+        assert warning.code == "workdir_hooks_config_invalid" and warning.request_id
         assert warning.session_id == host.workflow_session_id
     finally:
         await host.shutdown()

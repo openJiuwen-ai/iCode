@@ -122,11 +122,12 @@ async def test_close_cancels_only_side_question_and_ignores_late_answer(
         question = "为什么不能无限重试?" * 20
         session.chat.load_text("/btw " + question)
         await wait_for(
-            lambda: str(session.bar.query_one("#send-btn", Button).label) == "Send side question",
+            lambda: session.bar.query_one("#running-send-btn", Button).display,
             pilot=session.pilot,
             description="send button targets side question",
         )
-        await click_when_settled(session.pilot, "#send-btn")
+        assert str(session.bar.query_one("#send-btn", Button).label) == "Interrupt"
+        await click_when_settled(session.pilot, "#running-send-btn")
         await wait_for(side.entered.is_set, pilot=session.pilot, description="side request started")
         await wait_for(lambda: panel.region.height > 0, pilot=session.pilot, description="side card laid out")
         assert panel.running
@@ -925,7 +926,7 @@ async def test_side_question_spanning_rebuild_answers_and_records_usage(
     client.hold = held
 
     @asynccontextmanager
-    async def scoped(profile, *, session_id, parent_session_id, session_dir):
+    async def scoped(profile, *, session_id, parent_session_id, session_dir, request_role):
         try:
             yield client
         finally:

@@ -52,8 +52,9 @@ from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile, ApprovalConfig, CompactionConfig, ToolsConfig
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.async_tasks import wait_for_completion, wait_for_started
 from tests.support.event_capture import collect_events
-from tests.support.waiting import wait_until
+from tests.support.waiting import wait_for, wait_until
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -685,24 +686,45 @@ async def test_usage_updates_publish_in_creation_order_with_slow_handlers(
     bus = EventBus()
     seen: list[tuple[int, int, str]] = []
     first_started = asyncio.Event()
-    second_seen = asyncio.Event()
+    release_first = asyncio.Event()
 
     async def _slow_collect(event: UsageUpdate) -> None:
         if event.usage_source_id == "sub-1":
             first_started.set()
-            await asyncio.sleep(0.05)
+            await release_first.wait()
         seen.append((event.total_tokens, event.total_session_tokens, event.usage_source_id))
-        if len(seen) >= 2:
-            second_seen.set()
 
     await bus.subscribe(UsageUpdate, _slow_collect)
     engine, _ = _build_engine(tmp_path, bus, agent_engine=agent_engine)
     await engine.start(_CODE)
 
-    engine.usage_publisher.accumulate_invocation_usage(total_tokens=10, usage_source_id="sub-1")
-    await asyncio.wait_for(first_started.wait(), timeout=1)
-    engine.usage_publisher.accumulate_invocation_usage(total_tokens=20, usage_source_id="sub-2")
-    await asyncio.wait_for(second_seen.wait(), timeout=1)
+    try:
+        engine.usage_publisher.accumulate_invocation_usage(total_tokens=10, usage_source_id="sub-1")
+        first = engine.usage_publisher.tail
+        assert first is not None
+        await wait_for_started(first_started, first, description="first usage handler started")
+        engine.usage_publisher.accumulate_invocation_usage(total_tokens=20, usage_source_id="sub-2")
+        second = engine.usage_publisher.tail
+        assert second is not None and second is not first
+
+        def second_waits_on_first() -> bool:
+            graph = asyncio.capture_call_graph(first, limit=0)
+            return graph is not None and any(parent.future is second for parent in graph.awaited_by)
+
+        # Observe the real await dependency before releasing the slow handler:
+        # merely queueing the second task does not prove that ordering holds.
+        await wait_for(
+            lambda: second.done() or second_waits_on_first(),
+            description="second usage publication waiting on the first",
+        )
+        if second.done():
+            await second
+        assert not second.done(), "later usage publication overtook the held first handler"
+        assert not first.done()
+        assert seen == []
+    finally:
+        release_first.set()
+        await wait_for_completion(engine.usage_publisher.settle())
 
     assert seen == [(10, 10, "sub-1"), (20, 30, "sub-2")]
 

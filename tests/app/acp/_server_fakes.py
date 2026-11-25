@@ -234,7 +234,9 @@ class _FakeStateStore:
         session_id: str,
         *,
         prefer_recovery: bool = False,
+        include_folds: bool = False,
     ) -> SessionTranscript:
+        _ = include_folds
         return SessionTranscript(
             messages=await self.load_session_raw(session_id, prefer_recovery=prefer_recovery),
             turns=[],
@@ -299,7 +301,7 @@ class _FakeManager:
         self.cancelled_sessions: list[str] = []
         self.closed_sessions: list[str] = []
         self.lifecycle_calls: list[str] = []
-        self.state_store = _FakeStateStore()
+        self.state_store: Any = _FakeStateStore()
 
     def get(self, session_id: str) -> _FakeSession:
         assert session_id == "s1"
@@ -373,13 +375,19 @@ class _FakeManager:
 
     async def session_history(self, *, cwd: str | None, session_id: str) -> tuple[str, SessionTranscript | None]:
         self.history_reads.append((cwd, session_id))
-        return session_id, await self.state_store.load_session_transcript(session_id)
+        return session_id, await self.state_store.load_session_transcript(session_id, include_folds=True)
 
     async def session_turn_context(self, *, cwd: str | None, session_id: str) -> tuple[str, Path, list[TurnRecord]]:
         self.turn_context_reads.append((cwd, session_id))
         return session_id, self.turn_context_dir, list(self.turn_records)
 
-    async def set_workspace(self, session_id: str, primary_cwd: str) -> WorkspaceUpdated:
+    async def set_workspace(
+        self,
+        session_id: str,
+        primary_cwd: str,
+        *,
+        warnings: list[Warning] | None = None,
+    ) -> WorkspaceUpdated:
         self.workspace_updates.append((session_id, primary_cwd))
         return WorkspaceUpdated(primary_cwd=primary_cwd, working_dirs=[primary_cwd], reference_files=[])
 

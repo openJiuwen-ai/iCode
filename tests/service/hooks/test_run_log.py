@@ -410,6 +410,24 @@ async def test_added_context_is_recorded(hooks_dir: Path, event: HookEvent) -> N
     assert applied is not None and applied.extra_context == "ruff found 2 issues"
 
 
+async def test_consecutive_hooks_that_withhold_the_result_each_get_an_audit_entry(hooks_dir: Path) -> None:
+    event = HookEvent.AFTER_TOOL_CALL
+    logged = _logged(
+        hooks_dir,
+        _hook("first", event, script=_result({"result_override": ""})),
+        _hook("second", event, script=_result({"result_override": "", "extra_context": "checked"})),
+        _hook("third", event),
+    )
+    decision = await logged.manager.fire(event, _tool())
+    assert decision.result_override == ""
+    assert [logged.only(name).effect for name in ("first", "second", "third")] == [
+        "replaced_result",
+        "replaced_result",
+        None,
+    ]
+    assert logged.detail("second").applied == HookRunApplied(result_override="", extra_context="checked")
+
+
 async def test_a_block_on_an_event_that_cannot_block_is_not_recorded_as_blocked(hooks_dir: Path) -> None:
     logged = _logged(
         hooks_dir, _hook("late-block", HookEvent.AFTER_TURN, script=_result({"action": "block", "reason": "x"}))
@@ -434,6 +452,8 @@ async def test_a_nonblocking_runs_decision_is_never_applied(
     hooks_dir: Path, mode: str, event: HookEvent, decision: dict[str, object]
 ) -> None:
     logged = _logged(hooks_dir, _hook("observer", event, mode=mode, script=_result(decision)))
+    assert logged.manager.has_hooks_for(event)
+    assert not logged.manager.has_hooks_for(event, blocking_only=True)
     result = await logged.manager.fire(event, _tool())
     assert result.blocked is False
     await wait_for(
@@ -687,13 +707,13 @@ async def test_the_detail_carries_the_configured_run_but_only_env_names(hooks_di
 
 
 async def test_the_detail_names_the_source_of_each_hook(hooks_dir: Path) -> None:
-    project_hook = _hook("from-project", HookEvent.AFTER_TURN)
+    workdir_hook = _hook("from-workdir", HookEvent.AFTER_TURN)
     global_hook = _hook("from-global", HookEvent.AFTER_TURN)
     manager = HookManager(
         file=MergedHooksFile(
-            project=HooksFile(hooks=[project_hook], source="/project/.chrys/hooks/hooks.yaml"),
+            workdir=HooksFile(hooks=[workdir_hook], source="/workdir/.chrys/hooks/hooks.yaml"),
             global_=HooksFile(hooks=[global_hook], source="/config/hooks/hooks.yaml"),
-            hooks=[project_hook, global_hook],
+            hooks=[workdir_hook, global_hook],
         ),
         hooks_dir=hooks_dir,
     )
@@ -701,9 +721,9 @@ async def test_the_detail_names_the_source_of_each_hook(hooks_dir: Path) -> None
     manager.record_runs(log, session_id=_SESSION)
     await manager.fire(HookEvent.AFTER_TURN, {"turn": 1})
     by_id = {record.hook_id: log.detail(record.run_id) for record in log.records()}
-    project, global_ = by_id["from-project"], by_id["from-global"]
-    assert project is not None and global_ is not None
-    assert (project.source, project.source_path) == ("project", "/project/.chrys/hooks/hooks.yaml")
+    workdir, global_ = by_id["from-workdir"], by_id["from-global"]
+    assert workdir is not None and global_ is not None
+    assert (workdir.source, workdir.source_path) == ("workdir", "/workdir/.chrys/hooks/hooks.yaml")
     assert (global_.source, global_.source_path) == ("global", "/config/hooks/hooks.yaml")
 
 

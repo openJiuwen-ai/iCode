@@ -17,7 +17,7 @@ from textual.widgets import Button, Static, Tooltip
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.dialogs.background_task import confirm_stopping
-from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog, NoticeDialog
+from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog, NoticeDialog, StartupSessionChoiceDialog
 from chrys.app.tui.screens.dialogs.editor import EditorDialog
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolCall
@@ -56,6 +56,21 @@ class _ConfirmationFrameApp(App):
             if region.width:
                 self.painted_sizes.append((region.width, region.height))
                 self.painted_button_regions.append(tuple(button.region for button in screen.query(Button)))
+
+
+@pytest.mark.parametrize(("keys", "start_new"), [("enter", False), ("left enter", True), ("escape", False)])
+async def test_startup_session_choice_retries_until_new_is_selected(keys: str, start_new: bool) -> None:
+    app = _ConfirmationFrameApp()
+    dialog = StartupSessionChoiceDialog(confirm_label="Start new session", cancel_label="Retry")
+    choices: list[bool | None] = []
+    async with app.run_test() as pilot:
+        await app.push_screen(dialog, choices.append)
+        await wait_for(lambda: screen_is_settled(app, dialog), pilot=pilot)
+        assert dialog.focused is dialog.query_one("#confirm-no", Button)
+        await pilot.press(*keys.split())
+        await wait_for(lambda: bool(choices), pilot=pilot)
+
+    assert choices == [start_new]
 
 
 @pytest.mark.parametrize("locale", ["en", "zh-Hans"])

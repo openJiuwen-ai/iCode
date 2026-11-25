@@ -27,6 +27,7 @@ from chrys.foundation.events.types import (
     WorkflowNodeStateChanged,
 )
 from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.kernel import ChatResponseUpdate, Content
 from chrys.orchestration.invoker.resources import Conversation
 from chrys.orchestration.invoker.runtime import ApprovalInputs
@@ -50,7 +51,7 @@ from tests.orchestration.workflows._hosting import (
     confirm,
     make_host,
     make_profile,
-    make_project,
+    make_workdir,
     patch_runtime,
     run,
     write_workflow,
@@ -61,6 +62,7 @@ from tests.support.event_capture import capture_events
 from tests.support.extensions import install_file_extension
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.workspace_engine import runtime_reminder, workspace_selection
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -86,7 +88,9 @@ def _child_profile() -> AgentProfile:
     return child
 
 
-def _hand_out_child_client(monkeypatch: pytest.MonkeyPatch, client: MockChatClient) -> None:
+def _hand_out_child_client(
+    monkeypatch: pytest.MonkeyPatch, client: MockChatClient, *, scopes: list[RequestScope | None] | None = None
+) -> None:
     """The node's sub-agent registration creates the child's client through the sub-agent module."""
 
     async def create_client(
@@ -97,7 +101,12 @@ def _hand_out_child_client(monkeypatch: pytest.MonkeyPatch, client: MockChatClie
         use_route_session_context: bool,
         session_dir: Path,
         tool_result_ceiling_tokens: int | None,
+        request_role: RequestRole,
+        request_scope: RequestScope | None,
     ) -> MockChatClient:
+        assert request_role is RequestRole.SUB_AGENT
+        if scopes is not None:
+            scopes.append(request_scope)
         return client
 
     monkeypatch.setattr(sub_agent_module, "create_client", create_client)
@@ -111,8 +120,9 @@ async def test_a_node_delegates_to_its_profile_sub_agents(tmp_path: Path, monkey
     node_client = MockChatClient(responses=[_delegate("inspect the tree"), MockResponse(text="node done")])
     child_client = MockChatClient(responses=[MockResponse(text="child says the tree is fine")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
-    _hand_out_child_client(monkeypatch, child_client)
-    project = make_project(tmp_path)
+    scopes: list[RequestScope | None] = []
+    _hand_out_child_client(monkeypatch, child_client, scopes=scopes)
+    project = make_workdir(tmp_path)
     write_workflow(project, "delegate", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=[_delegating_profile(), _child_profile()])
     starts = await capture_events(host.event_bus, InvocationStarted)
@@ -127,6 +137,7 @@ async def test_a_node_delegates_to_its_profile_sub_agents(tmp_path: Path, monkey
         await host.shutdown()
 
     assert result.outcome.value == "completed"
+    assert scopes == [RequestScope.WORKFLOW]
     assert child_client.call_count == 1
     node_start, child_start = starts
     assert node_start.origin.kind == "workflow_node"
@@ -160,7 +171,7 @@ async def test_a_node_has_sleep_though_its_profile_omits_it(tmp_path: Path, monk
     pause = MockResponse(tool_calls=[("sleep", "call-1", {"seconds": 0, "reason": "pause"})])
     node_client = MockChatClient(responses=[pause, MockResponse(text="node done")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client], builtin_tools=True)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "pause", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=[make_profile()])
     try:
@@ -178,9 +189,10 @@ async def test_a_node_has_sleep_though_its_profile_omits_it(tmp_path: Path, monk
 
 
 async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Profile skills and memory reach the node along with the installed reference folders."""
     node_client = MockChatClient(responses=[MockResponse(text="node done")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     (project / "NOTES.md").write_text("Remember: the build is green.", encoding="utf-8")
     skill_dir = tmp_path / "skills" / "review"
     skill_dir.mkdir(parents=True)
@@ -193,9 +205,18 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     )
     profile.memory = MemoryConfig(files=["NOTES.md"])
     write_workflow(project, "skilled", _WORKFLOW)
+    related = tmp_path / "related"
+    related.mkdir()
     host = make_host(tmp_path, project=project, profiles=[profile])
     try:
         await confirm(host, "skilled")
+        await host.start()
+        registry = host.engine.lifecycle.workspaces.registry
+        assert registry is not None
+        selected = registry.create("Selected", str(project), [str(related)])
+        change = workspace_selection(selected.id)
+        await host.engine.event_bus.publish(change, raise_handler_errors=True)
+        assert str(related) in runtime_reminder(host.engine)
         result, _events = await run(host, "skilled", input_text="Go")
     finally:
         await host.shutdown()
@@ -204,7 +225,113 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     ((messages, options),) = node_client.call_history
     assert "Remember: the build is green." in options["instructions"]
     assert "<name>review</name>" in (messages[-1].text or "")
+    assert "Project:" not in (messages[-1].text or "")
+    assert str(related) in (messages[-1].text or "")
     assert {"load_skill", "read_skill_resource", "run_skill_script"} <= {tool.name for tool in options["tools"]}
+
+
+async def test_extension_contexts_follow_parallel_invocations_of_the_same_sub_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_file_extension(
+        monkeypatch,
+        "owners",
+        """import asyncio
+from chrys.extensions import Extension, ToolContext
+
+extension = Extension()
+turns = {}
+calls = {}
+both_children = asyncio.Barrier(2)
+
+def identity(ctx):
+    return (ctx.session_id, ctx.agent_name, ctx.caller_name, ctx.invocation_type, ctx.invocation_id)
+
+@extension.context
+async def remember(ctx):
+    turns[ctx.prompt] = identity(ctx)
+
+@extension.tool(requires_approval=False)
+async def owner(ctx: ToolContext, label: str) -> str:
+    if ctx.caller_name == "Child":
+        await both_children.wait()
+    calls[label].append(identity(ctx))
+    return ctx.invocation_id
+
+@extension.before_tool
+async def before(call):
+    if call.name == "owner":
+        calls[call.arguments["label"]] = [identity(call.context)]
+
+@extension.after_tool
+async def after(call, result):
+    if call.name == "owner":
+        calls[call.arguments["label"]].append(identity(call.context))
+""",
+    )
+    profile, child = _delegating_profile(), _child_profile()
+    profile.extensions = child.extensions = ["owners"]
+    profile.sub_agents.max_total_concurrency = 2
+    profile.sub_agents.agents.append(SubAgentRef(profile=child.name, tool_name="Inspect"))
+
+    def owner_call(label: str) -> MockResponse:
+        return MockResponse(tool_calls=[("owner", label, {"label": label})])
+
+    main_client = MockChatClient(
+        responses=[
+            owner_call("main"),
+            MockResponse(
+                tool_calls=[("Child", "call-1", {"prompt": "First"}), ("Child", "call-2", {"prompt": "Second"})]
+            ),
+            MockResponse(tool_calls=[("Inspect", "call-3", {"prompt": "Third"})]),
+            MockResponse(text="Done"),
+        ]
+    )
+    child_client = MockChatClient(
+        responses=[
+            owner_call("one"),
+            owner_call("two"),
+            MockResponse(text="Done"),
+            MockResponse(text="Done"),
+            owner_call("three"),
+            MockResponse(text="Done"),
+        ]
+    )
+    patch_runtime(monkeypatch, [main_client])
+    _hand_out_child_client(monkeypatch, child_client)
+    host = make_host(tmp_path, project=make_workdir(tmp_path), profiles=[profile, child])
+    starts = await capture_events(host.event_bus, InvocationStarted)
+    tool_starts = await capture_events(host.event_bus, InvocationToolCallStart)
+    results = await capture_events(host.event_bus, InvocationToolCallResult)
+    try:
+        await host.run_until_final("Go")
+    finally:
+        await host.shutdown()
+
+    extension = sys.modules["_chrys_extension_owners"]
+    delegated = {e.call_id: e for e in tool_starts if e.tool_name in ("Child", "Inspect")}
+    children = [e for e in starts if e.origin.kind == "sub_agent"]
+    assert len(children) == len({e.origin.invocation_id for e in children}) == 3
+    main = next(e.origin for e in tool_starts if e.tool_name == "owner" and e.origin.kind == "turn")
+    assert main.session_id
+    expected_turns = {"Go": (main.session_id, profile.name, profile.name, "turn", main.invocation_id)}
+    for child_start in children:
+        call = delegated[child_start.parent_call_id]
+        expected_turns[call.args["prompt"]] = (
+            main.session_id,
+            child.name,
+            call.tool_name,
+            "sub_agent",
+            child_start.origin.invocation_id,
+        )
+    assert extension.turns == expected_turns
+    owner_calls = [e for e in tool_starts if e.tool_name == "owner"]
+    by_invocation = {identity[-1]: identity for identity in expected_turns.values()}
+    assert {e.origin.invocation_id for e in owner_calls} == set(by_invocation)
+    assert extension.calls == {e.args["label"]: [by_invocation[e.origin.invocation_id]] * 3 for e in owner_calls}
+    owner_results = [e for e in results if e.tool_name == "owner"]
+    assert len(owner_results) == 4
+    assert all(e.result == e.origin.invocation_id for e in owner_results)
 
 
 async def test_a_node_asks_its_extension_contexts_once_and_its_retry_keeps_their_text(
@@ -216,10 +343,10 @@ async def test_a_node_asks_its_extension_contexts_once_and_its_retry_keeps_their
         monkeypatch,
         "acme_task",
         "from chrys.extensions import Extension\nextension = Extension()\nASKED = []\n\n"
-        "@extension.context\nasync def task(ctx):\n    ASKED.append(ctx.prompt)\n"
+        "@extension.context\nasync def task(ctx):\n    ASKED.append((ctx.prompt, ctx.caller_name, ctx.invocation_type, ctx.invocation_id))\n"
         "    return f'Asked {len(ASKED)} time(s) to: {ctx.prompt}'\n",
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     target = project / "input.txt"
     target.write_text("Retained work", encoding="utf-8")
     client = ArchiveClient(target, "failed")
@@ -258,7 +385,9 @@ async def test_a_node_asks_its_extension_contexts_once_and_its_retry_keeps_their
             await asyncio.gather(task, return_exceptions=True)
 
     assert result.outcome.value == "completed"
-    assert sys.modules["_chrys_extension_acme_task"].ASKED == ["Read twice"]
+    assert failed.invocation_id
+    asked = sys.modules["_chrys_extension_acme_task"].ASKED
+    assert asked == [("Read twice", failed.node_id, "workflow_node", failed.invocation_id)]
     first, retried = client.call_history[0][0], client.call_history[-1][0]
     opener = first[-1]
     assert "Asked 1 time(s) to: Read twice" in (opener.text or "")
@@ -278,7 +407,7 @@ async def test_a_node_runs_its_extension_tool_hooks_around_its_calls(
         "@extension.before_tool\nasync def relative(call):\n    return {**call.arguments, 'path': 'input.txt'}\n\n"
         "@extension.after_tool\nasync def sign(call, result):\n    return f'{result.text} [acme read {call.arguments[\"path\"]}]'\n",
     )
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     (project / "input.txt").write_text("Retained work", encoding="utf-8")
     client = ArchiveClient(project / "elsewhere.txt", "completed")
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client], builtin_tools=True)
@@ -308,7 +437,7 @@ async def test_project_skills_reach_every_agent_only_when_the_user_turns_them_on
     node_client = MockChatClient(responses=[MockResponse(text="node done")])
     patch_runtime(monkeypatch, [main_client, node_client])
     _hand_out_child_client(monkeypatch, child_client)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     skill_dir = project / ".agents" / "skills" / "review"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("---\nname: review\ndescription: Reviews a change.\n---\n", encoding="utf-8")
@@ -320,7 +449,7 @@ async def test_project_skills_reach_every_agent_only_when_the_user_turns_them_on
         tmp_path,
         project=project,
         profiles=profiles,
-        settings=Settings(model_profile="mock-profile", project_skills_enabled=enabled),
+        settings=Settings(model_profile="mock-profile", workdir_skills_enabled=enabled),
     )
     try:
         await host.run_until_final("Go")
@@ -343,7 +472,7 @@ async def test_a_failed_node_child_ends_without_a_pause(tmp_path: Path, monkeypa
     child_client = ErrorMockChatClient(outcomes=[FrameworkBoom("boom")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
     _hand_out_child_client(monkeypatch, child_client)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "failing", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=[_delegating_profile(), _child_profile()])
     paused = await capture_events(host.event_bus, InvocationPaused)
@@ -399,7 +528,7 @@ async def test_the_text_a_node_child_wrote_never_stops_its_retry(
     monkeypatch.setattr(child_client, "_stream_updates", cut)
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
     _hand_out_child_client(monkeypatch, child_client)
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "retried", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=[_delegating_profile(), _child_profile()], stream=True)
     paused = await capture_events(host.event_bus, InvocationPaused)
@@ -424,7 +553,7 @@ async def test_a_mode_change_during_node_construction_reaches_its_sub_agents(
     apply to, so the node re-reads the launch policy once they exist."""
     node_client = MockChatClient(responses=[MockResponse(text="node done")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
-    project = make_project(tmp_path)
+    project = make_workdir(tmp_path)
     write_workflow(project, "modes", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=[_delegating_profile(), _child_profile()])
     real_create_approval, real_build = agent_node_build_module.create_approval, agent_node_module.build_kernel_node

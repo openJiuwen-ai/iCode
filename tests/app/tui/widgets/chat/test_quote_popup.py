@@ -21,7 +21,7 @@ from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.theme import TuiVariableDefaultsMixin
 from chrys.app.tui.widgets.btw import BtwAnswer, BtwPage, BtwPanel, BtwQuestion
-from chrys.app.tui.widgets.chat.messages import MessageCopyButton, UserMessage
+from chrys.app.tui.widgets.chat.messages import AgentMessage, MessageCopyButton, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
@@ -36,7 +36,7 @@ from chrys.foundation.text.draft_references import (
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.toasts import shown_toasts
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import rich_plain
+from tests.support.tui_helpers import click_when_settled, rich_plain
 from tests.support.waiting import wait_for
 
 
@@ -412,7 +412,7 @@ async def test_a_scrollbar_press_still_lets_the_scroll_withdraw_the_pill(source:
         if source == "chat":
             app.main_screen.schedule_chat_selection_reprojection(app.main_screen.query_one(ChatPanel))
         else:
-            card.post_message(BtwPanel.Scrolled())
+            card.post_message(BtwPanel.Scrolled(card.query_one(BtwPage)))
 
         await wait_for(lambda: not popup.is_shown, pilot=pilot, description="the scroll withdrew the pill")
 
@@ -614,4 +614,71 @@ async def test_a_drag_over_the_side_question_and_answer_quotes_both_with_their_l
 
         assert input_bar.draft().references.get("quote", 1) == DraftReference(
             "quote", 1, "why retry at all\n[Answer]\na bounded"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_side_card_quote_outlives_the_sidebar_text_its_drag_picked_up() -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        card = await _side_card(app, pilot, "a side question", "the side answer")
+        body = _side_body(card, "answer")
+        label = app.main_screen.query_one("#ctx-usage-label", Static)
+        input_bar = app.main_screen.query_one(InputBar)
+
+        app.main_screen._watch__select_state(_chat_drag_state(body, body, end_offset=Offset(4, 0)))
+        app.main_screen.selections = {body: SELECT_ALL, label: SELECT_ALL}
+        app.main_screen._watch__selecting(False)
+        popup = app.main_screen.query_one(QuoteSelectionPopup)
+        await wait_for(lambda: popup.is_shown, pilot=pilot, description="the quote pill is offered")
+        # The sidebar rebuilds its rows before the click.
+        await label.remove()
+        app.main_screen.clear_selection()
+        app.main_screen.post_message(QuoteSelectionPopup.Requested())
+        await pilot.pause()
+
+        assert input_bar.draft().references.get("quote", 1) == DraftReference(
+            "quote", 1, "the side answer\nContext Usage"
+        )
+
+
+@pytest.mark.asyncio
+async def test_releasing_a_drag_after_activity_arrives_updates_highlight_copy_and_quote() -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await panel.add_user_message("Select this prompt.")
+        await panel.add_thinking_delta("r1", "reasoning", "First thought.")
+        panel.finish_thinking_segment("r1")
+        await panel.add_answer_delta("a1", "Select this answer.")
+        await click_when_settled(pilot, panel.query_one("LiveProcessRow"))
+        user = panel.query_one(UserMessage).query_one(VirtualizedMarkdown)
+        answer = panel.query_one(AgentMessage).query_one(VirtualizedMarkdown)
+        await wait_for(
+            lambda: bool(answer.shown_source and user.shown_source), pilot=pilot, description="drag endpoints"
+        )
+        end = (answer.region.x + 13, answer.region.y)
+        await pilot.mouse_down(user, offset=(1, 0))
+        await pilot.hover(offset=end)
+        await wait_for(lambda: answer in screen.selections, pilot=pilot, description="drag reaches answer")
+
+        await panel.add_thinking_delta("r2", "reasoning", "New thought while dragging.")
+        panel.finish_thinking_segment("r2")
+        await pilot.pause()
+        # Pilot.mouse_up also sends a MouseMove; release at the stationary pointer.
+        _post_mouse(app, MouseUp, *end)
+        popup = screen.query_one(QuoteSelectionPopup)
+        await wait_for(lambda: popup.is_shown, pilot=pilot, description="quote offered on release")
+        copied = screen.get_selected_text()
+        assert copied and "New thought while dragging." in copied
+        highlighted = "".join(
+            picked[0]
+            for widget, selection in screen.selections.items()
+            if (picked := widget.get_selection(selection)) is not None
+        )
+        assert "New thought while dragging." in highlighted
+        await _click_pill(app, pilot, popup)
+        assert screen.query_one(InputBar).draft().references.get("quote", 1) == DraftReference(
+            "quote", 1, copied.strip()
         )

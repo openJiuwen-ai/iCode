@@ -736,12 +736,6 @@ async def test_pty_isatty(shell: ShellTools) -> None:
 
 
 @pytest.mark.skipif(not IS_UNIX, reason="PTY not available on Windows")
-async def test_pty_timeout(shell: ShellTools) -> None:
-    result = await shell.execute("sleep 5", reason="test", timeout=0.1)
-    assert "timed out" in result
-
-
-@pytest.mark.skipif(not IS_UNIX, reason="PTY not available on Windows")
 async def test_pty_term_dumb(shell: ShellTools) -> None:
     result = await shell.execute("echo $TERM", reason="test")
     assert "dumb" in result

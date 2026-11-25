@@ -188,3 +188,24 @@ When iCode can tell why a model request failed, it says so in plain words, with 
 | The model profile's maximum context window is larger than the server's limit | Set "Max Context Window" in the model profile to the server's limit that the message names, or less, and save. |
 
 iCode takes its proxy from the `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` environment variables, in upper or lower case, and supports `http://`, `https://`, `socks5://` and `socks5h://` proxies. If one of these variables holds an address iCode can't use, such as a `socks://` address that some Linux desktops set, iCode ignores that variable and shows a warning when it starts, then connects as if the variable were not set. The same goes for a `NO_PROXY` list iCode can't read. To use the proxy, change the variable to an address iCode supports, for example `socks5h://127.0.0.1:7897` for a SOCKS5 proxy, and restart iCode.
+
+## Route model requests by purpose
+
+iCode sends `Chrys-Request-Role` on model calls it makes. A gateway can match this header together with `Chrys-Model-Id` to choose an upstream within the configured service.
+
+| `Chrys-Request-Role` | Request |
+| --- | --- |
+| `main_agent` | Main chat agent or workflow node agent |
+| `sub_agent` | A delegated sub-agent |
+| `compaction` | A model-generated summary for context compaction |
+| `approval_judge` | Automatic tool approval review |
+| `pet` | The pet's reply |
+| `context_recall` | A query against compressed conversation history |
+| `session_title` | Session title generation |
+| `side_question` | A side question |
+| `rsi_optimizer` | A self-improvement optimizer request |
+| `model_test` | The model profile's **Test** action |
+
+Calls made on behalf of a workflow also carry `Chrys-Request-Scope: workflow`. Match both headers to route a workflow node agent (`main_agent` and `workflow`), or match the scope alone to cover its sub-agents, compaction and approval reviews. Other calls omit the scope header. iCode sets both headers automatically. Requests made directly by external ACP agents use the headers set by those agents.
+
+Keep the default gateway route for missing or unfamiliar values. For stateful Responses calls, send polls and requests with continuation handles to the upstream that holds their state. A compaction request can share the session ID and cached prompt prefix of the agent it serves, so route it without rebinding that agent's session.

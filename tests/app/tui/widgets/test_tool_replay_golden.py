@@ -29,7 +29,7 @@ from chrys.foundation.tool_kinds import (
     KIND_SUB_AGENT,
 )
 from chrys.kernel import Content
-from tests.support.tui_helpers import rich_plain
+from tests.support.tui_helpers import ChatPanelApp, open_process_for, rich_plain
 from tests.support.waiting import wait_for
 
 pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
@@ -57,15 +57,6 @@ _MULTI_ASK_RESULT = format_ask_user_result(
     _MULTI_ASK_QUESTIONS,
     (AskUserAnswer(("tenacity",), "stable"), AskUserAnswer(("TUI", "ACP")), AskUserAnswer()),
 )
-
-
-class _ChatPanelApp(App):
-    def __init__(self, *, expanded: bool = True) -> None:
-        self.expanded = expanded
-        super().__init__()
-
-    def compose(self) -> ComposeResult:
-        yield ChatPanel(tool_groups_expanded=lambda: self.expanded)
 
 
 class _ToolGroupApp(App):
@@ -108,6 +99,8 @@ def _ask_user_render_golden(tool: AskUserToolCall) -> tuple[str, str]:
 
 async def _wait_for_group_rebuild(pilot: object, group: ToolGroup) -> object:
     """Wait for subtree restoration and deferred diff/content workers to settle."""
+    open_process_for(group)
+    group.collapsed = False
 
     def rebuild_finished() -> bool:
         if not group._content_mounted or not group._tools:
@@ -202,17 +195,19 @@ async def test_live_and_replayed_simple_tool_cards_match_golden(
     args: dict[str, Any],
     result: str,
 ) -> None:
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         live = pilot.app.query_one(ChatPanel)
         live.set_tool_kinds({tool_name: tool_kind})
 
         await live.add_tool_start("call1", tool_name, tool_kind, args=args)
+        open_process_for(live.query(ToolGroup).last())
+        live.query(ToolGroup).last().collapsed = False
         await live.add_tool_result("call1", tool_name, result)
         group = live.query_one(ToolGroup)
         live_tool = await _wait_for_group_rebuild(pilot, group)
         live_golden = _tool_golden(live_tool)
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         replay = pilot.app.query_one(ChatPanel)
         replay.set_tool_kinds({tool_name: tool_kind})
 
@@ -236,16 +231,18 @@ async def test_ask_user_live_collapse_rebuild_and_restore_share_one_decode_golde
     args: dict[str, Any],
     result: str,
 ) -> None:
-    async with _ChatPanelApp(expanded=True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         panel.set_tool_kinds({"ask_user": KIND_ASK_USER})
         await panel.add_tool_start("call1", "ask_user", KIND_ASK_USER, args=args)
+        open_process_for(panel.query(ToolGroup).last())
+        panel.query(ToolGroup).last().collapsed = False
         await panel.add_tool_result("call1", "ask_user", result)
         baseline_tool = await _wait_for_group_rebuild(pilot, panel.query_one(ToolGroup))
         assert isinstance(baseline_tool, AskUserToolCall)
         baseline = _ask_user_render_golden(baseline_tool)
 
-    async with _ChatPanelApp(expanded=False).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         panel.set_tool_kinds({"ask_user": KIND_ASK_USER})
         await panel.add_tool_start("call1", "ask_user", KIND_ASK_USER, args=args)
@@ -257,7 +254,7 @@ async def test_ask_user_live_collapse_rebuild_and_restore_share_one_decode_golde
         assert isinstance(rebuilt_tool, AskUserToolCall)
         assert _ask_user_render_golden(rebuilt_tool) == baseline
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         panel.set_tool_kinds({"ask_user": KIND_ASK_USER})
         await panel.replay_history(_replay_messages(tool_name="ask_user", args=args, result=result))
@@ -272,17 +269,19 @@ async def test_live_and_replayed_file_edit_card_match_golden() -> None:
     result = "Edited README.md"
     snapshot = ("old\n", "new\n")
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         live = pilot.app.query_one(ChatPanel)
         live.set_tool_kinds({"edit_file": KIND_FILESYSTEM_WRITE})
 
         await live.add_tool_start("call1", "edit_file", KIND_FILESYSTEM_WRITE, args=args)
+        open_process_for(live.query(ToolGroup).last())
+        live.query(ToolGroup).last().collapsed = False
         await live.add_tool_result("call1", "edit_file", result, file_snapshot=snapshot)
         group = live.query_one(ToolGroup)
         live_tool = await _wait_for_group_rebuild(pilot, group)
         live_golden = _tool_golden(live_tool)
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         replay = pilot.app.query_one(ChatPanel)
         replay.set_tool_kinds({"edit_file": KIND_FILESYSTEM_WRITE})
 
@@ -302,17 +301,19 @@ async def test_live_and_replayed_write_file_card_match_golden() -> None:
     result = "Successfully wrote README.md (2 lines)"
     snapshot = ("", "hello\nworld\n")
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         live = pilot.app.query_one(ChatPanel)
         live.set_tool_kinds({"write_file": KIND_FILESYSTEM_WRITE})
 
         await live.add_tool_start("call1", "write_file", KIND_FILESYSTEM_WRITE, args=args)
+        open_process_for(live.query(ToolGroup).last())
+        live.query(ToolGroup).last().collapsed = False
         await live.add_tool_result("call1", "write_file", result, file_snapshot=snapshot)
         group = live.query_one(ToolGroup)
         live_tool = await _wait_for_group_rebuild(pilot, group)
         live_golden = _tool_golden(live_tool)
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         replay = pilot.app.query_one(ChatPanel)
         replay.set_tool_kinds({"write_file": KIND_FILESYSTEM_WRITE})
 
@@ -361,15 +362,17 @@ async def test_golden_oracle_detects_missing_streaming_tail_and_file_snapshot() 
 
 @pytest.mark.asyncio
 async def test_collapsed_complete_prune_rebuild_preserves_shell_streaming_golden() -> None:
-    async with _ChatPanelApp(expanded=True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("call1", "zsh", KIND_SHELL, args={"command": "pytest"})
+        open_process_for(panel.query(ToolGroup).last())
+        panel.query(ToolGroup).last().collapsed = False
         panel.update_tool_progress("call1", ["collecting", "tests passed"])
         await panel.add_tool_result("call1", "zsh", "tests passed\n[exit_code: 0]", duration_ms=17)
         group = panel.query_one(ToolGroup)
         baseline = _tool_golden(await _wait_for_group_rebuild(pilot, group))
 
-    async with _ChatPanelApp(expanded=False).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_tool_start("call1", "zsh", KIND_SHELL, args={"command": "pytest"})
         panel.update_tool_progress("call1", ["collecting", "tests passed"])
@@ -387,10 +390,12 @@ async def test_collapsed_complete_prune_rebuild_preserves_file_diff_golden() -> 
     args = {"path": "README.md"}
     snapshot = ("old\n", "new\n")
 
-    async with _ChatPanelApp(expanded=True).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         panel.set_tool_kinds({"edit_file": KIND_FILESYSTEM_WRITE})
         await panel.add_tool_start("call1", "edit_file", KIND_FILESYSTEM_WRITE, args=args)
+        open_process_for(panel.query(ToolGroup).last())
+        panel.query(ToolGroup).last().collapsed = False
         await panel.add_tool_result(
             "call1",
             "edit_file",
@@ -402,7 +407,7 @@ async def test_collapsed_complete_prune_rebuild_preserves_file_diff_golden() -> 
         baseline = _tool_golden(await _wait_for_group_rebuild(pilot, group))
         assert baseline["diff_mounted"] is True
 
-    async with _ChatPanelApp(expanded=False).run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         panel.set_tool_kinds({"edit_file": KIND_FILESYSTEM_WRITE})
         await panel.add_tool_start("call1", "edit_file", KIND_FILESYSTEM_WRITE, args=args)
@@ -473,17 +478,19 @@ async def test_live_and_replayed_image_result_tool_card_match_golden() -> None:
         "additional_properties": {"width": 1, "height": 1, "media_type": "image/png"},
     }
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         live = pilot.app.query_one(ChatPanel)
 
         await live.add_tool_start("call1", "view_image", "", args=args)
+        open_process_for(live.query(ToolGroup).last())
+        live.query(ToolGroup).last().collapsed = False
         await live.add_tool_result("call1", "view_image", result, image_contents=[image])
         await pilot.pause()
 
         live_tool = live.query_one(ToolGroup).get_tool("call1")
         live_golden = _tool_golden(live_tool)
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         replay = pilot.app.query_one(ChatPanel)
 
         await replay.replay_history(
@@ -524,7 +531,7 @@ async def test_live_and_restored_hosted_tool_cards_match_semantic_golden() -> No
     args = {"query": "Chrys"}
     result = "found"
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         live = pilot.app.query_one(ChatPanel)
         await live.add_tool_start(
             "hosted:1",
@@ -538,6 +545,8 @@ async def test_live_and_restored_hosted_tool_cards_match_semantic_golden() -> No
             provider_status="searching",
             provider_call_id="provider-search",
         )
+        open_process_for(live.query(ToolGroup).last())
+        live.query(ToolGroup).last().collapsed = False
         await live.add_tool_result(
             "hosted:1",
             "web_search",
@@ -571,7 +580,7 @@ async def test_live_and_restored_hosted_tool_cards_match_semantic_golden() -> No
         provider_phase="terminal",
         provider_status="completed",
     )
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         replay = pilot.app.query_one(ChatPanel)
         await replay.replay_history([{"role": "assistant", "contents": [call.to_dict(), paired_result.to_dict()]}])
         await pilot.pause()
@@ -705,18 +714,20 @@ async def test_live_and_replayed_successful_sub_agent_card_match_golden() -> Non
     args = {"prompt": "Inspect the workspace"}
     result = "Found the issue and updated the notes."
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         live = pilot.app.query_one(ChatPanel)
         live.set_tool_kinds({"explore_agent": KIND_SUB_AGENT})
 
         await live.add_tool_start("call1", "explore_agent", KIND_SUB_AGENT, args=args)
+        open_process_for(live.query(ToolGroup).last())
+        live.query(ToolGroup).last().collapsed = False
         await live.add_tool_result("call1", "explore_agent", result)
         await pilot.pause()
 
         live_tool = live.query_one(ToolGroup).get_tool("call1")
         live_golden = _tool_golden(live_tool)
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         replay = pilot.app.query_one(ChatPanel)
         replay.set_tool_kinds({"explore_agent": KIND_SUB_AGENT})
 
@@ -732,11 +743,13 @@ async def test_live_and_replayed_rejected_sub_agent_card_match_golden() -> None:
     args = {"prompt": "Inspect the workspace"}
     result = "Error: Tool execution was rejected by user."
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         live = pilot.app.query_one(ChatPanel)
         live.set_tool_kinds({"explore_agent": KIND_SUB_AGENT})
 
         await live.add_tool_start("call1", "explore_agent", KIND_SUB_AGENT, args=args)
+        open_process_for(live.query(ToolGroup).last())
+        live.query(ToolGroup).last().collapsed = False
         await live.add_tool_result(
             "call1",
             "explore_agent",
@@ -748,7 +761,7 @@ async def test_live_and_replayed_rejected_sub_agent_card_match_golden() -> None:
         live_tool = live.query_one(ToolGroup).get_tool("call1")
         live_golden = _tool_golden(live_tool)
 
-    async with _ChatPanelApp().run_test() as pilot:
+    async with ChatPanelApp().run_test() as pilot:
         replay = pilot.app.query_one(ChatPanel)
         replay.set_tool_kinds({"explore_agent": KIND_SUB_AGENT})
 

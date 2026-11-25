@@ -20,7 +20,7 @@ from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, notify_after_copy
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str
 from chrys.app.tui.support.gc_freeze import DetachedLruCache, GcFreezeBlockReason, detach_lru_cache, renew_lru_cache
@@ -240,13 +240,20 @@ class SessionJsonPanel(ScrollView):
     def on_click(self, event: Click) -> None:
         """Copy session path when the border is clicked (not the content area)."""
         if self._session_path and not self.scrollable_content_region.contains(event.screen_x, event.screen_y):
-            copy_text_to_clipboards(self.app, self._session_path)
-            self.notify(
+            dispatched = copy_text_to_clipboards(self.app, self._session_path)
+            notify_after_copy(
+                self,
                 self._render_message(_SESSION_PATH_COPIED.bind()),
+                dispatched=dispatched,
                 title=self._render_message(COPIED_TITLE.bind()),
                 timeout=1,
                 markup=False,
             )
+
+    @property
+    def session_path(self) -> str:
+        """The checkpoint path currently displayed by the viewer."""
+        return self._session_path
 
     def _resolve_session_path(self, session_id: str) -> Path | None:
         """Resolve the on-disk session JSON path for the given session ID."""
@@ -276,25 +283,29 @@ class SessionJsonPanel(ScrollView):
         is unchanged. Hiding deliberately releases the formatted content and
         mtime, so reopening performs a fresh load.
         """
-        path = self._resolve_session_path(session_id)
-        if path is None or not path.exists():
+        problem = None
+        try:
+            path = self._resolve_session_path(session_id)
+            mtime = path.stat().st_mtime if path is not None else 0.0
+        except FileNotFoundError, NotADirectoryError:
+            path = None
+        except OSError as exc:
+            path = None
+            problem = _SESSION_JSON_READ_ERROR.bind(error=str(exc))
+        if path is None:
             self._session_id = session_id
             self._session_path = ""
             self._formatted_json = ""
             self._file_mtime = 0.0
             self._update_border_title()
             self.border_subtitle = ""
-            self.set_status(self._render_message(_SESSION_JSON_NOT_FOUND.bind()))
+            self.set_status(self._render_message(problem or _SESSION_JSON_NOT_FOUND.bind()))
             return
-
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
 
         # Fast path: same session, file unchanged, cache populated — nothing to do.
         if (
             session_id == self._session_id
+            and str(path) == self._session_path
             and mtime == self._file_mtime
             and self._formatted_json
             and self._text_lines

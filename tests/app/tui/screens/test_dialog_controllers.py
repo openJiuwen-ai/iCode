@@ -875,6 +875,45 @@ def test_agent_load_controller_count_suffix_is_status_driven_for_zero_counts() -
     ]
 
 
+@pytest.mark.parametrize(
+    ("stage", "stage_subject", "stage_status", "expected"),
+    [
+        ("mcp", "search", "running", "Loading sub-agent Explore → Connecting MCP server search"),
+        ("mcp", "search", "done", "Loading sub-agent Explore → Connected MCP server search"),
+        ("mcp", "search", "failed", "Loading sub-agent Explore → Failed MCP server search"),
+        ("skills", "", "running", "Loading sub-agent Explore → Loading skills"),
+        ("skills", "", "done", "Loading sub-agent Explore → Skills loaded"),
+        ("skills", "", "failed", "Loading sub-agent Explore → Failed to load skills"),
+    ],
+)
+def test_agent_load_controller_preserves_outer_counts_for_child_stages(
+    stage: str, stage_subject: str, stage_status: str, expected: str
+) -> None:
+    port = _LoadPort()
+    controller = AgentLoadDialogController(port)
+    controller.dialog = port.create_agent_load_dialog(title="Loading", subtitle="Parent")
+    asyncio.run(
+        controller.on_progress(
+            AgentLoadProgress(
+                phase="sub_agents",
+                message="opaque protocol detail",
+                subject="Explore",
+                current=1,
+                total=4,
+                status="running",
+                stage=stage,
+                stage_subject=stage_subject,
+                stage_status=stage_status,
+            )
+        )
+    )
+    assert port.status_messages == [f"{expected} (1/4)"]
+    displayed, fields = port.dialogs[0].progress[-1]
+    assert displayed == expected
+    assert fields["current"] == 1 and fields["total"] == 4
+    assert fields["status"] == "running"
+
+
 def test_agent_load_controller_formats_session_history_percentage() -> None:
     port = _LoadPort()
     controller = AgentLoadDialogController(port)

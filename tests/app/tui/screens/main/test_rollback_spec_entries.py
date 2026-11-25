@@ -21,6 +21,7 @@ from chrys.app.tui.widgets.chat.messages import (
     UserMessage,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolGroup
 from chrys.app.tui.widgets.welcome import WelcomeWidget
 from chrys.foundation.config.settings import Settings
@@ -29,6 +30,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import Message
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.mutations.types import MutationOp, MutationSource
+from chrys.service.state.folds import FoldItem
 from tests.app.tui.screens.test_prompt_shortcut_send import hold_next, notices, running_session
 from tests.support.event_capture import capture_events
 from tests.support.rollback_spec import drain
@@ -127,10 +129,12 @@ async def test_compacted_originals_keep_copy_rollback_and_tool_rows():
         "contents": [{"type": "text", "text": "summary"}],
         "additional_properties": {HistoryMarkerKind.KEY: HistoryMarkerKind.SUMMARY, "_block_id": "spec-compressed"},
     }
-    async with ChatPanelApp(tool_groups_expanded=lambda: True).run_test(size=(100, 35)) as pilot:
+    async with ChatPanelApp().run_test(size=(100, 35)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         panel.set_tool_kinds({"read_file": "read_file"})
-        await panel.replay_history([summary], compressed_blocks={"spec-compressed": block}, rollback_targets={0})
+        await panel.replay_history(
+            [summary], folds=[FoldItem("spec-compressed", "condensed", block=block)], rollback_targets={0}
+        )
         await panel.wait_replay_complete()
         await pilot.pause()
         user = panel.query_one(UserMessage)
@@ -140,6 +144,8 @@ async def test_compacted_originals_keep_copy_rollback_and_tool_rows():
         assert user.query_one(MessageRollbackButton).display
         reply = next(m for m in panel.query(AgentMessage) if m.text == "original compacted reply")
         assert reply.query_one(MessageCopyButton).display
+        # The turn's steps fold behind its process row: open it to reach the tool row.
+        await click_when_settled(pilot, panel.query_one(ProcessBlock))
         group = panel.query_one(ToolGroup)
         group.collapsed = False
         await wait_for(

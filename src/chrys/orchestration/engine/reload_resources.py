@@ -29,16 +29,16 @@ _HOOKS_PARTLY_LOADED = msg(
 _HOOK_TRUST_FAILED_LOADED = msg(
     "controls.reload_hook_trust_failed_loaded",
     fallback=(
-        "Reload stopped: the hooks the new project trust setting needs can't be used.\n{detail}\n"
-        "Settings and hooks stay as they were, with project hooks still loaded."
+        "Reload stopped: the hooks the new working directory trust setting needs can't be used.\n{detail}\n"
+        "Settings and hooks stay as they were, with working directory hooks still loaded."
     ),
     multiline=True,
 )
 _HOOK_TRUST_FAILED_NOT_LOADED = msg(
     "controls.reload_hook_trust_failed_not_loaded",
     fallback=(
-        "Reload stopped: the hooks the new project trust setting needs can't be used.\n{detail}\n"
-        "Settings and hooks stay as they were, with project hooks still not loaded."
+        "Reload stopped: the hooks the new working directory trust setting needs can't be used.\n{detail}\n"
+        "Settings and hooks stay as they were, with working directory hooks still not loaded."
     ),
     multiline=True,
 )
@@ -71,9 +71,9 @@ def hooks_kept_report(problems: Sequence[HookFileProblem], *, rules_in_force: bo
     return definition.bind(detail=_problem_lines(problems))
 
 
-def hook_trust_failure(problems: Sequence[HookFileProblem], *, project_hooks_loaded: bool) -> MessageRef:
-    """Why a reload that changes project hook trust stopped, naming the hooks that stay in force."""
-    definition = _HOOK_TRUST_FAILED_LOADED if project_hooks_loaded else _HOOK_TRUST_FAILED_NOT_LOADED
+def hook_trust_failure(problems: Sequence[HookFileProblem], *, workdir_hooks_loaded: bool) -> MessageRef:
+    """Why a reload that changes working directory hook trust stopped, naming the hooks that stay in force."""
+    definition = _HOOK_TRUST_FAILED_LOADED if workdir_hooks_loaded else _HOOK_TRUST_FAILED_NOT_LOADED
     return definition.bind(detail=_problem_lines(problems))
 
 

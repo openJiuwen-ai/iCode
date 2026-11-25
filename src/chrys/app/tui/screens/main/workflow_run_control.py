@@ -198,7 +198,7 @@ class WorkflowRunControl:
             title=panel.definition.manifest.get("title") or panel.definition.workflow_id,
             description=panel.definition.manifest.get("description") or "",
             source_kind=panel.definition.source_kind,
-            working_directory=self.host.project_cwd or self.host.cwd(),
+            working_directory=self.host.workdir or self.host.cwd(),
             has_kernel_agents=has_kernel_agents,
             can_change_directory=(
                 self.host.session_view.selection is None

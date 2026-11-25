@@ -682,20 +682,11 @@ def write_file(
         "the write will be rejected.",
     ] = False,
 ) -> str:
-    """Write content to a file. Creates parent directories if needed.
+    """Create a file and missing parent directories; set overwrite=true to replace an existing file.
 
-    Use ``\\n`` for line breaks — the tool automatically applies the correct
-    line ending for the platform and file type.  When overwriting an existing
-    file, the original line ending style is preserved.  For new files, the
-    line ending is chosen by file extension (e.g. ``.sh`` → LF, ``.bat`` →
-    CRLF) and platform default (CRLF on Windows, LF on macOS/Linux).
-
-    On POSIX, new regular files request mode 0644 and new shell/shebang scripts
-    request mode 0755, with both filtered by the process umask. Overwriting an
-    existing file preserves its user/group/other rwx bits.
-
-    By default, refuses to overwrite existing files unless ``overwrite=true``.
-    """
+    Use \\n for line breaks. Existing line endings and POSIX rwx bits are preserved.
+    New files use extension/platform line endings; POSIX modes are 0644, or 0755
+    for shell/shebang scripts, filtered by umask."""
     return _write_file_impl(path, content, overwrite=overwrite)
 
 
@@ -956,17 +947,10 @@ def edit_file(
         "one occurrence and require it to be unique.",
     ] = False,
 ) -> str:
-    """Replace exact string occurrences in a file.
+    """Replace exact text; read the file first and include enough context for a unique match.
 
-    Line endings are handled automatically — use ``\\n`` in old_string and
-    new_string regardless of the file's actual line ending style.  The original
-    line ending style is detected and preserved on write. On POSIX, the file's
-    existing user/group/other rwx bits are also preserved.
-
-    When ``replace_all=false`` (default), the ``old_string`` must appear exactly
-    once. If it appears multiple times, the edit is rejected — include more
-    surrounding context in ``old_string`` to make the match unique.
-    """
+    By default old_string must occur exactly once; replace_all=true replaces every match.
+    Use \\n for line breaks. Existing line endings and POSIX rwx bits are preserved."""
     return _edit_file_impl(path, old_string, new_string, replace_all=replace_all)
 
 
@@ -1051,20 +1035,11 @@ class FilesystemTools:
             "the write will be rejected.",
         ] = False,
     ) -> str:
-        """Write content to a file. Creates parent directories if needed.
+        """Create a file and missing parent directories; set overwrite=true to replace an existing file.
 
-        Use ``\\n`` for line breaks — the tool automatically applies the correct
-        line ending for the platform and file type.  When overwriting an existing
-        file, the original line ending style is preserved.  For new files, the
-        line ending is chosen by file extension (e.g. ``.sh`` → LF, ``.bat`` →
-        CRLF) and platform default (CRLF on Windows, LF on macOS/Linux).
-
-        On POSIX, new regular files request mode 0644 and new shell/shebang scripts
-        request mode 0755, with both filtered by the process umask. Overwriting an
-        existing file preserves its user/group/other rwx bits.
-
-        By default, refuses to overwrite existing files unless ``overwrite=true``.
-        """
+        Use \\n for line breaks. Existing line endings and POSIX rwx bits are preserved.
+        New files use extension/platform line endings; POSIX modes are 0644, or 0755
+        for shell/shebang scripts, filtered by umask."""
         return _write_file_impl(path, content, overwrite=overwrite, base_cwd=self._runtime.cwd)
 
     @tool(kind=KIND_FILESYSTEM_WRITE)
@@ -1093,15 +1068,8 @@ class FilesystemTools:
             "one occurrence and require it to be unique.",
         ] = False,
     ) -> str:
-        """Replace exact string occurrences in a file.
+        """Replace exact text; read the file first and include enough context for a unique match.
 
-        Line endings are handled automatically — use ``\\n`` in old_string and
-        new_string regardless of the file's actual line ending style.  The original
-        line ending style is detected and preserved on write. On POSIX, the file's
-        existing user/group/other rwx bits are also preserved.
-
-        When ``replace_all=false`` (default), the ``old_string`` must appear exactly
-        once. If it appears multiple times, the edit is rejected — include more
-        surrounding context in ``old_string`` to make the match unique.
-        """
+        By default old_string must occur exactly once; replace_all=true replaces every match.
+        Use \\n for line breaks. Existing line endings and POSIX rwx bits are preserved."""
         return _edit_file_impl(path, old_string, new_string, replace_all=replace_all, base_cwd=self._runtime.cwd)

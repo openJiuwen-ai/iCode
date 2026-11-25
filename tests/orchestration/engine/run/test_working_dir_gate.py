@@ -11,10 +11,8 @@ real ones.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from unittest.mock import create_autospec
 
 import pytest
@@ -23,7 +21,6 @@ import chrys.orchestration.engine.build.builder as builder_module
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Error, InvocationMessage, UserMessage, UserRetry
 from chrys.foundation.models.workspace import Workspace
-from chrys.kernel import Message
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.execution import PendingRetry
 from chrys.orchestration.engine.run.retry import RetryCoordinator
@@ -39,38 +36,7 @@ from tests.orchestration.engine.run._engine_run_helpers import (
 from tests.support.event_capture import collect_events
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain
-
-
-class _HeldFirstCallClient(MockChatClient):
-    """Holds the first model call until the test releases it; later calls run at once."""
-
-    def __init__(self, responses: list[MockResponse]) -> None:
-        super().__init__(responses=responses)
-        self.first_call_entered = asyncio.Event()
-        self.release_first_call = asyncio.Event()
-        self._held = False
-
-    def _inner_get_response(
-        self,
-        *,
-        messages: Sequence[Message],
-        stream: bool,
-        options: Mapping[str, Any],
-        **kwargs: Any,
-    ) -> Any:
-        if self._held:
-            return super()._inner_get_response(messages=messages, stream=stream, options=options, **kwargs)
-        self._held = True
-        inner = super()._inner_get_response
-
-        async def held() -> Any:
-            self.first_call_entered.set()
-            await self.release_first_call.wait()
-            response = inner(messages=messages, stream=stream, options=options, **kwargs)
-            assert isinstance(response, Awaitable)
-            return await response
-
-        return held()
+from tests.support.workspace_engine import HeldFirstCallClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +47,13 @@ class _Started:
 
 
 async def _start_in(
-    agent_engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path, client: MockChatClient
+    agent_engine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    work: Path,
+    client: MockChatClient,
+    *,
+    workspace_id: str | None = None,
 ) -> _Started:
     """Start an engine whose workspace is *work*; sessions live elsewhere so *work* can be deleted."""
     events: list[object] = []
@@ -100,7 +72,7 @@ async def _start_in(
         state_store=JsonFileStateStore(tmp_path / "sessions"),
         initial_workspace=Workspace.from_cwd(str(work)),
     )
-    await engine.start(_PROFILE)
+    await engine.start(_PROFILE, workspace_id=workspace_id)
     return _Started(engine=engine, bus=bus, events=events)
 
 
@@ -140,6 +112,40 @@ async def test_fresh_prompt_is_refused_while_working_dir_missing_and_runs_once_i
     assert client.call_count == 1
     assert len(_filter(started.events, Error)) == 1
     assert engine.state == EngineState.IDLE
+
+
+@pytest.mark.parametrize("retry", [False, True])
+async def test_missing_unspecified_cwd_takes_precedence_over_workflow_ownership(
+    tmp_path, agent_engine, monkeypatch, retry
+):
+    from chrys.service.trajectory.preparation import PreparationTrace
+
+    work = tmp_path / "work"
+    work.mkdir()
+    client = MockChatClient(responses=[MockResponse(text="first")])
+    started = await _start_in(agent_engine, tmp_path, monkeypatch, work, client)
+    await started.bus.publish(UserMessage(text="first"))
+    await _final_agent_messages_after_run(started.engine, started.events)
+    work.rmdir()
+    lease = started.engine.turns.turn_state.lease
+    workflow = None
+    start_preparation = PreparationTrace.started
+
+    async def start_workflow_during_admission(trace):
+        nonlocal workflow
+        await start_preparation(trace)
+        if workflow is None:
+            workflow = lease.begin_workflow("workflow", "request")
+
+    monkeypatch.setattr(PreparationTrace, "started", start_workflow_during_admission)
+    try:
+        await started.bus.publish(UserRetry() if retry else UserMessage(text="second"), raise_handler_errors=True)
+    finally:
+        if workflow is not None:
+            lease.end_workflow(workflow)
+
+    assert workflow is not None
+    assert [error.code for error in _filter(started.events, Error)] == ["working_dir_missing"]
 
 
 async def test_user_retry_is_refused_while_working_dir_missing(
@@ -195,7 +201,7 @@ async def test_queued_retry_is_dropped_when_working_dir_disappears_and_the_engin
     monkeypatch.setattr(RetryCoordinator, "start_pending_retry_if_due", recording_dispatch)
     work = tmp_path / "work"
     work.mkdir()
-    client = _HeldFirstCallClient([MockResponse(text="first pass"), MockResponse(text="fresh after recreate")])
+    client = HeldFirstCallClient([MockResponse(text="first pass"), MockResponse(text="fresh after recreate")])
     started = await _start_in(agent_engine, tmp_path, monkeypatch, work, client)
     engine = started.engine
     lease = engine.turns.turn_state.lease
@@ -232,3 +238,27 @@ async def test_queued_retry_is_dropped_when_working_dir_disappears_and_the_engin
     assert _final_texts(started.events)[-1] == "fresh after recreate"
     assert engine.state == EngineState.IDLE
     assert dispatch_results == [str(work), None]
+
+
+async def test_queued_retry_uses_the_installed_workspace_after_an_edit(tmp_path, agent_engine, monkeypatch):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    registry = JsonFileStateStore(tmp_path / "sessions").workspace_registry
+    workspace = registry.create("Installed", str(primary))
+    client = HeldFirstCallClient([MockResponse(text="first pass"), MockResponse(text="answer after retry")])
+    started = await _start_in(agent_engine, tmp_path, monkeypatch, primary, client, workspace_id=workspace.id)
+    engine = started.engine
+    try:
+        await started.bus.publish(UserMessage(text="initial prompt"))
+        await asyncio.wait_for(client.first_call_entered.wait(), timeout=ENGINE_TURN_TIMEOUT)
+        await started.bus.publish(UserRetry())
+        assert engine.state is EngineState.PENDING_RETRY
+        registry.update(workspace.id, name="Edited", primary=str(primary))
+    finally:
+        client.release_first_call.set()
+    await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
+
+    assert not _filter(started.events, Error)
+    assert _final_texts(started.events)[-1] == "answer after retry"
+    assert engine.state is EngineState.IDLE
+    assert engine.workspace.name == "Installed"

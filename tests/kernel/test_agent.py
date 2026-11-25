@@ -911,7 +911,7 @@ class TestProviderPipeline:
     @pytest.mark.asyncio
     async def test_latest_usage_is_none_when_final_call_reports_no_usage(self, stream: bool) -> None:
         """A final call reporting no usage must surface latest=None (so
-        force-compress skips conservatively) — never fall back to the
+        after-run usage check skips conservatively) — never fall back to the
         tool-loop billing aggregate."""
         if stream:
             turns = [

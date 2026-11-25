@@ -23,7 +23,12 @@ from textual.widget import Widget
 from textual.widgets import Static, TabbedContent, TabPane
 
 from chrys.app.tui.binding_display import CLOSE_BINDING, COPY_BINDING, localized_binding
-from chrys.app.tui.clipboard import OSC52_COPY_MAX_BYTES, copy_text_to_clipboards, terminal_clipboard_size
+from chrys.app.tui.clipboard import (
+    OSC52_COPY_MAX_BYTES,
+    copy_text_to_clipboards,
+    notify_after_copy,
+    terminal_clipboard_size,
+)
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
@@ -74,15 +79,18 @@ def copy_and_notify(
 ) -> None:
     """Copy *payload* to the clipboards and tell how that went; a message with placeholders comes bound."""
     terminal_payload_too_large = terminal_clipboard_size(payload) > OSC52_COPY_MAX_BYTES
-    if copy_text_to_clipboards(screen.app, payload, max_terminal_bytes=OSC52_COPY_MAX_BYTES):
+    dispatched = copy_text_to_clipboards(screen.app, payload, max_terminal_bytes=OSC52_COPY_MAX_BYTES)
+    if dispatched:
         message, timeout = copied, 2
     elif terminal_payload_too_large:
         message, timeout = too_large, 3
     else:
         message, timeout = unavailable, 3
     localizer = widget_localizer(screen)
-    screen.notify(
+    notify_after_copy(
+        screen,
         render_str(localizer, message.bind() if isinstance(message, MessageDef) else message),
+        dispatched=dispatched,
         title=render_str(localizer, COPIED_TITLE.bind()),
         timeout=timeout,
         markup=False,

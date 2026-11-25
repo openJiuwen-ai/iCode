@@ -22,14 +22,20 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.side_questions import SideQuestionEntry
+from chrys.foundation.models.workspace import session_workdirs
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
+from chrys.orchestration.engine.run.turn_hooks import usage_payload
 from chrys.orchestration.invoker.content_projection import ContentProjector
 from chrys.orchestration.invoker.origin import BoundEmitter
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import check_operation
 from chrys.service.hooks.operation import HookOperation
-from chrys.service.llm.side_question import answer_side_question, conversation_snapshot
+from chrys.service.llm.side_question import (
+    answer_side_question,
+    conversation_snapshot,
+    side_question_instructions,
+)
 from chrys.service.session.side_questions import SideQuestionSessionSeed, load_side_questions, order_side_questions
 
 if TYPE_CHECKING:
@@ -127,7 +133,7 @@ class SideQuestions:
             agent_display_name=agent.display_name if agent else "",
             agent_profile_id=agent.id if agent else "",
             primary_cwd=workspace.primary_cwd if workspace else "",
-            working_dirs=tuple(directory.path for directory in workspace.working_dirs) if workspace else (),
+            working_dirs=tuple(directory.path for directory in session_workdirs(workspace)) if workspace else (),
             model_provider=profile.provider,
             model_api_style=profile.api_style or "",
             model_id=profile.model_id,
@@ -195,6 +201,14 @@ class SideQuestions:
                     "text": question,
                     "injected": False,
                     "side_question": True,
+                    # The fields every ``user_prompt_submit`` payload carries: a hook reads
+                    # them without asking which kind of input it was handed.
+                    "usage": usage_payload(self._session),
+                    # What this call itself puts at the top, not the main agent's instructions:
+                    # a side question answers with no tools, from a prompt of its own. Built
+                    # without this check's reminders, which do not exist yet and reach the call
+                    # the way a main turn's do, after the decision.
+                    "system_prompt": side_question_instructions(),
                 },
                 scope="session",
                 trajectory_context=trajectory,

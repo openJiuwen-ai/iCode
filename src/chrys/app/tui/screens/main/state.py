@@ -32,8 +32,11 @@ if TYPE_CHECKING:
         HookExecutionsChanged,
         InvocationContentAbandoned,
         InvocationMessage,
+        SessionReady,
+        SessionRestored,
         TurnStarted,
         UnansweredInputDropped,
+        WorkspaceUpdated,
     )
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -52,6 +55,9 @@ if TYPE_CHECKING:
     )
 
 
+type WorkspaceActionOwner = tuple[tuple[int, str], int, str, str, str | None, bool, bool, bool, bool, bool]
+
+
 @dataclass
 class MainScreenServices:
     """Service handles used by the main-screen controllers."""
@@ -66,6 +72,24 @@ class MainScreenServices:
     engine_provider: Callable[[], AgentEngine] | None = None
     workspace_mru_max_entries: int = DEFAULT_WORKSPACE_MRU_MAX_ENTRIES
 
+    def apply_workspace(
+        self, view: WorkspaceViewState, event: SessionReady | SessionRestored | WorkspaceUpdated
+    ) -> bool:
+        """Project a committed event into the view and report a change to the session's own roots."""
+        roots = [event.primary_cwd]
+        if event.workspace is None:
+            roots.extend(event.working_dirs)
+        changed = roots != view.session_roots
+        view.session_roots = roots
+        view.roots = (
+            [event.primary_cwd, *(directory.path for directory in event.workspace.working_dirs)]
+            if event.workspace is not None
+            else roots
+        )
+        view.workspace_id = event.workspace.id if event.workspace is not None else None
+        view.workspace_name = event.workspace.name if event.workspace is not None else ""
+        return changed
+
     def execution(self) -> ExecutionSnapshot:
         """Read the lease owner, including workflow admission and finalization."""
         return self.engine_provider().execution() if self.engine_provider is not None else ExecutionSnapshot("idle")
@@ -76,6 +100,27 @@ class MainScreenServices:
     def session_generation(self) -> int:
         """The engine's session generation; 0 without an engine."""
         return self.engine_provider().session_generation if self.engine_provider is not None else 0
+
+    def session_action_owner(self, state: MainScreenState) -> tuple[int, str]:
+        """The active session when a UI action starts."""
+        return self.session_generation(), state.runtime.main_usage_source_id
+
+    def workspace_action_owner(
+        self, state: MainScreenState, *, workflow_mode: bool, ignore_loading: bool = False
+    ) -> WorkspaceActionOwner:
+        """The session and view state an awaited workspace choice belongs to."""
+        return (
+            self.session_action_owner(state),
+            state.run.generation,
+            state.workspace.current_cwd,
+            state.workspace_marker.current_cwd,
+            state.workspace.workspace_id,
+            workflow_mode,
+            state.shell.active,
+            state.run.agent_running,
+            state.run.agent_loading and not ignore_loading,
+            self.execution_busy(),
+        )
 
     def turn_lifecycle_task(self) -> asyncio.Task[None] | None:
         """The live turn's lifecycle task (run, save, after-turn hooks), if any."""
@@ -152,7 +197,10 @@ class SessionViewState:
     """Session lifecycle flags owned by the UI."""
 
     restoring_session: bool = False
+    # A restore preflight owns its UI until it releases it or a backend load takes over.
+    load_owner: object | None = None
     creating_new_session: bool = False
+    failed_new_session_id: str | None = None
 
 
 @dataclass
@@ -169,7 +217,11 @@ class WorkspaceViewState:
 
     current_cwd: str = field(default_factory=safe_getcwd)
     current_git_branch: str = ""
+    workspace_id: str | None = None
+    workspace_name: str = ""
     roots: list[str] = field(default_factory=lambda: [safe_getcwd()])
+    session_roots: list[str] = field(default_factory=lambda: [safe_getcwd()])
+    """Session directories alone; workspace scope changes must not touch the workspace MRU."""
 
 
 @dataclass
@@ -231,7 +283,7 @@ class SubmitCoordinator:
     draft: ChatDraft | None = field(default=None, repr=False)
     returned: bool = False
     # The id the message can be withdrawn by while the engine admits it
-    # (``UserInjectCancel``); set only for a message carrying a prompt shortcut.
+    # (``UserInjectCancel``); a queued injection or a message carrying a prompt shortcut.
     message_id: str | None = None
     # Esc asked to withdraw it: a message not yet published is not published.
     withdrawn: bool = False
@@ -318,32 +370,37 @@ class SubmitCoordinator:
 class PendingInjectionState:
     """Tracks the mid-run injection queued behind the locked input bar.
 
-    At most one injection is pending at a time — the input stays locked
-    until the backend reports a ``UserInjectResult`` for it or the user
-    cancels it with Esc.
+    At most one injection owns the composer at a time. Its ownership ends
+    when the backend reports a ``UserInjectResult``, the user cancels, or
+    the turn ends and hands the draft back. Late outcomes may still render
+    a bubble, but cannot touch a draft handed back to the user. Steering
+    records intent; ``InvocationSteered`` is the execution fact.
     """
 
     injection_id: str | None = None
     text: str = ""
+    phase: Literal["queued", "steering"] = "queued"
 
     @property
     def active(self) -> bool:
-        """Return whether an injection is queued and awaiting its outcome."""
+        """Return whether a queued injection still owns the composer."""
         return self.injection_id is not None
 
     def begin(self, injection_id: str, text: str) -> None:
         """Track a newly queued injection."""
         self.injection_id = injection_id
         self.text = text
+        self.phase = "queued"
 
     def matches(self, injection_id: str | None) -> bool:
         """Return whether *injection_id* identifies the tracked injection."""
         return self.injection_id is not None and self.injection_id == injection_id
 
     def clear(self) -> None:
-        """Stop tracking after the outcome arrived or the user cancelled."""
+        """Release the composer after an outcome, cancellation or turn end."""
         self.injection_id = None
         self.text = ""
+        self.phase = "queued"
 
 
 @dataclass

@@ -334,9 +334,6 @@ _APPROVAL_SAFE_ENV_DROP = frozenset(
         # Tool configuration that can turn a read-only command into an exec.
         "GIT_ASKPASS",
         "GIT_CONFIG_COUNT",
-        "GIT_CONFIG_GLOBAL",
-        "GIT_CONFIG_NOSYSTEM",
-        "GIT_CONFIG_SYSTEM",
         "GIT_EXTERNAL_DIFF",
         "LESS",
         "LESSCLOSE",
@@ -386,9 +383,9 @@ def _approval_safe_env() -> dict[str, str]:
     env["PAGER"] = "cat"
     env["GIT_PAGER"] = "cat"
     # Keep Git's global/system config for read-only semantics (core.excludesFile,
-    # safe.directory), but pin every key that can execute another program. The
-    # environment config below wins over every file scope, including a
-    # repository's own .git/config.
+    # safe.directory), including the user's GIT_CONFIG_GLOBAL/SYSTEM/NOSYSTEM,
+    # but pin every key that can execute another program. The environment config
+    # below wins over every file scope, including a repository's own .git/config.
     env["GIT_CONFIG_COUNT"] = "7"
     env["GIT_CONFIG_KEY_0"] = "core.fsmonitor"
     env["GIT_CONFIG_VALUE_0"] = "false"
@@ -977,58 +974,39 @@ class ShellTools:
         shell_label = f"{shell.name} {shell.version}".strip() if shell.version else shell.name
         if shell.name in ("pwsh", "powershell"):
             output_guidance = (
-                "For large expected output, use PowerShell-native limiting/search commands "
-                "such as Select-Object -First/-Last, Select-String, or Get-Content -Tail. "
-                "To read a file's content, use the read_file tool instead of Get-Content (if present). "
+                "Limit output with Select-Object -First/-Last, Select-String, or Get-Content -Tail; "
+                "use the read_file tool instead of Get-Content (if present) for file contents. "
             )
         elif shell.name in _PIPEFAIL_SHELLS:
             output_guidance = (
-                "For large expected output, pipe through tail -n N or grep. "
-                "Pipelines fail when any stage fails (pipefail is enabled by default). "
-                "Avoid head and grep -q/-m in pipelines — they exit early and can kill "
-                "the upstream command with SIGPIPE, often causing the pipeline to exit "
-                "with status 141; if that happens, rerun without the early-exiting "
-                "stage to see the real status. "
+                "Limit output with tail -n N or grep. Pipelines use pipefail. "
+                "Avoid head and grep -q/-m: early exit can cause upstream SIGPIPE (141); "
+                "rerun without that stage to see the real status. "
             )
         else:
-            output_guidance = "For large expected output, pipe through head, tail, or grep. "
+            output_guidance = "For large output, pipe through head, tail, or grep. "
 
         if self._tasks is not None:
             timeout_guidance = (
-                "Commands run with a timeout (default 30s). Give commands whose results or file changes "
-                "you need now — installs, builds, tests, formatters, code generators — a timeout long "
-                "enough for them to finish. If a command is still running when its timeout expires, it is "
-                f"not killed (unless {MAX_RUNNING_TASKS} background commands already run): it moves to the "
-                "background and keeps running, and you get the output so far, "
-                "its pid, the path of a log file that receives all further output, and the command that "
-                "stops it. To start a server, watcher, or other long-running process, give it a short "
-                "timeout (about 5-15 seconds) so startup errors still appear in the result; `&` and "
-                f"`nohup` are not needed. A command that prints nothing and uses no CPU for {IDLE_SECONDS} seconds (for "
-                "example one waiting for a browser login) moves to the background early, and so does one "
-                "whose shell exits while processes it started still run. When a background command "
-                "finishes, its log ends with a line starting with `[icode] process`, such as "
-                "`[icode] process exited with code N`. To wait for it, "
-                "call sleep, which returns early with the end of the log when one of your background "
-                "commands finishes. To stop it, run "
-                "the shell command shown in the result, which creates its stop file (use the shell for "
-                "this, even though files are otherwise written with write_file); this stops every process "
-                "the command started, which killing the pid may not. Put commands that need the stopped "
-                "command's port or files in your next response, not in the same command or the same "
-                "batch of calls. "
+                "Timeout defaults to 30s. Give builds/tests enough time to finish; use 5-15s for servers/watchers. "
+                "At timeout a running command moves to the background, not killed, unless "
+                f"{MAX_RUNNING_TASKS} background commands already run. It also backgrounds after "
+                f"{IDLE_SECONDS}s with no output/CPU, or when its shell exits leaving children. "
+                "The result includes pid, log path, and a stop command; &/nohup are unnecessary. "
+                "Wait with sleep, which wakes with the log tail when a command finishes. "
+                "Completion appears as `[icode] process exited with code N`. "
+                "Stop with the exact shell command provided (allowed even for read-only agents): "
+                "it creates a stop file and stops the process tree. Killing only the pid may leave children. "
+                "Wait until a later response before reusing its ports/files. "
                 + (
-                    "Running background commands are listed in a system reminder at the start of each "
-                    "turn and are stopped when the session ends. "
+                    "Background commands survive turns, appear in reminders, and stop when the session ends. "
                     if self._session_wide_background
-                    else "Background commands you start are stopped when you finish, so do not report "
-                    "one as still running. "
+                    else "Background commands stop when you finish; do not report them as still running. "
                 )
             )
             handle_note = ""
         else:
-            timeout_guidance = (
-                "Commands run with a configurable timeout (default 30s). "
-                "Consider a larger timeout for builds, tests, downloads, and other long-running commands. "
-            )
+            timeout_guidance = "Timeout defaults to 30s; increase it for builds/tests or other long commands. "
             handle_note = "No asynchronous task handle is provided. "
 
         execute = self.execute
@@ -1037,133 +1015,47 @@ class ShellTools:
         description = (
             f"Execute a command in {shell_label} ({shell.path}). "
             f"{timeout_guidance}"
-            "This call waits for the command's result. Calls in the same response are dispatched "
-            "together with no guaranteed execution order. The calling agent resumes only after the "
-            "entire batch returns. Calls that depend on this result or could conflict through shared "
-            "state must go in a later response. "
+            "Calls in one response run together; you resume after the whole batch. "
+            "Put dependent calls or shared-state changes in later responses. "
             f"{handle_note}"
-            "Output is truncated to max_output_tokens (default 8000) preserving the first "
-            "and last portions with a truncation notice in the middle. Very large output "
-            "keeps only its beginning and end; the middle cannot be recovered. When possible, "
-            "the kept output is saved under the current session directory. "
+            "Output is truncated to max_output_tokens (default 8000), keeping beginning/end. "
+            "When possible, kept output is saved in the session directory; very large output loses its middle. "
             f"{output_guidance}"
-            "Set reason to a brief user-facing intent in the same language as the user's latest prompt; "
-            "it is shown to the user and audit logs. "
+            "Set reason to a brief intent in the user's language. "
             "Use timeout, workdir, and max_output_tokens to control runtime, cwd, and output size. "
-            "Do NOT use the shell to read/write/edit files or search code — "
-            "use the dedicated read_file, write_file, edit_file, grep, and glob tools instead. "
-            "Do NOT run interactive/TUI programs (vim, nano, less, htop, top) "
-            "or commands requiring user input (passwords, y/n prompts). "
-            "Use non-interactive flags when available "
-            "(e.g. --yes, --no-pager, --no-input, DEBIAN_FRONTEND=noninteractive)."
+            "Use dedicated file/search tools for reading, writing, editing, and locating code. "
+            "Use non-interactive commands; no TUI programs or prompts requiring input. "
         )
-        platform_info = self._runtime.platform
         if shell.name == "powershell":
             description += (
-                " IMPORTANT: This is Windows PowerShell 5.x, NOT bash/sh/cmd. "
-                "You MUST use PowerShell syntax — do NOT write bash/Unix commands. "
-                "Platform: Windows — paths use backslash (C:\\Users\\name\\project), "
-                "home dir is $env:USERPROFILE, "
-                "temp dir is $env:TEMP, program files at $env:ProgramFiles. "
-                "Command chaining: use ';' to separate commands — '&&' and '||' "
-                "are NOT supported and will cause syntax errors. "
-                "For conditional execution: "
-                "if ($LASTEXITCODE -eq 0) { next-command }. "
-                "Environment variables: $env:VAR (NOT $VAR or %VAR%). "
-                "Comparison operators: -eq, -ne, -gt, -lt, -ge, -le, -like, -match "
-                "(NOT ==, !=, >, <). "
-                "Logical operators: -and, -or, -not/! (NOT &&, ||). "
-                "Null output: | Out-Null or > $null (NOT > /dev/null). "
-                "Line continuation: backtick ` at end of line (NOT \\). "
-                'Here-strings: @" must end its line, "@ must start its own line '
-                "(NOT << 'EOF'). "
-                "Prefer full cmdlet names over aliases: Get-ChildItem, Select-String, "
-                "Remove-Item -Recurse -Force, Set-Location, Copy-Item, and Move-Item. "
-                "If you must use Get-Content in Windows PowerShell 5.x, specify "
-                "-Encoding UTF8; otherwise BOM-less UTF-8 can be decoded as the ANSI "
-                "code page and non-ASCII text can be corrupted. "
-                "Quoting: double quotes interpolate variables ($var expands), "
-                "single quotes are literal. "
-                "Exit codes: check $LASTEXITCODE for native commands, "
-                "$? for cmdlet success. "
-                "Examples: "
-                "Get-ChildItem C:\\project\\src -Filter *.py -Recurse. "
-                "Select-String -Path .\\*.log -Pattern 'error'. "
-                "$env:PATH -split ';'. "
-                "Test-Path C:\\Users\\name\\file.txt. "
-                "Join-Path $env:USERPROFILE 'Documents' 'project'."
+                "Windows PowerShell 5.x: use PowerShell syntax, not bash/cmd. "
+                "Use ';' between commands; '&&'/'||' are unsupported. For native success use "
+                "if ($LASTEXITCODE -eq 0) { next-command }. Env: $env:VAR; home: $env:USERPROFILE; temp: $env:TEMP. "
+                "Use -eq/-ne/-gt/-lt, -and/-or/-not, $null, and backtick continuation. "
+                "Prefer full cmdlet names over aliases. For Get-Content in Windows PowerShell 5.x, "
+                "set -Encoding UTF8 to avoid ANSI code page decoding. "
+                "Double quotes interpolate; single quotes are literal. Native exit: $LASTEXITCODE; cmdlet success: $?. "
             )
         elif shell.name == "pwsh":
+            platform_info = self._runtime.platform
             if platform_info.is_windows:
-                platform_note = (
-                    "Platform: Windows — paths use backslash "
-                    "(C:\\Users\\name\\project) or forward slash. "
-                    "Home dir: $HOME (e.g. C:\\Users\\name), "
-                    "temp dir: $env:TEMP, program files: $env:ProgramFiles. "
-                    "Path separator: ';'."
-                )
-                path_examples = (
-                    "Get-ChildItem C:\\project\\src -Filter *.py -Recurse. "
-                    "Join-Path $HOME 'Documents' 'project'. "
-                    "Test-Path C:\\Users\\name\\file.txt. "
-                    "$env:PATH -split ';'."
-                )
+                platform_note = "Windows: home $HOME, temp $env:TEMP, PATH separator ';'. "
             elif platform_info.is_macos:
-                platform_note = (
-                    "Platform: macOS — paths use forward slash "
-                    "(/Users/name/project). "
-                    "Home dir: $HOME (e.g. /Users/name), "
-                    "temp dir: $env:TMPDIR or /tmp. "
-                    "Path separator: ':'."
-                )
-                path_examples = (
-                    "Get-ChildItem ~/project/src -Filter *.py -Recurse. "
-                    "Join-Path $HOME 'Documents' 'project'. "
-                    "Test-Path /usr/local/bin/python3. "
-                    "$env:PATH -split ':'."
-                )
+                platform_note = "macOS: home $HOME, temp $env:TMPDIR or /tmp, PATH separator ':'. "
             else:
-                platform_note = (
-                    "Platform: Linux — paths use forward slash "
-                    "(/home/name/project). "
-                    "Home dir: $HOME (e.g. /home/name), "
-                    "temp dir: /tmp. "
-                    "Path separator: ':'."
-                )
-                path_examples = (
-                    "Get-ChildItem ~/project/src -Filter *.py -Recurse. "
-                    "Join-Path $HOME 'Documents' 'project'. "
-                    "Test-Path /usr/bin/python3. "
-                    "$env:PATH -split ':'."
-                )
+                platform_note = "Linux: home $HOME, temp /tmp, PATH separator ':'. "
             description += (
-                " IMPORTANT: This is PowerShell 7+ (cross-platform), NOT bash/sh. "
-                "You MUST use PowerShell syntax — do NOT write bash/Unix commands. "
-                f"{platform_note} "
-                "Command chaining: '&&' and '||' are supported as pipeline chain "
-                "operators (success/failure), ';' separates independent statements. "
-                "Environment variables: $env:VAR (NOT $VAR or export VAR=val). "
-                "Comparison operators: -eq, -ne, -gt, -lt, -ge, -le, -like, -match "
-                "(NOT ==, !=, >, <). "
-                "Logical operators: -and, -or, -not/! (do NOT use && or || as logical operators). "
-                "Null output: | Out-Null or > $null (NOT > /dev/null). "
-                "Line continuation: backtick ` at end of line (NOT \\). "
-                'Here-strings: @" must end its line, "@ must start its own line '
-                "(NOT << 'EOF'). "
-                "Ternary: $cond ? $trueVal : $falseVal. "
-                "Null-coalescing: $a ?? $default. "
-                "Prefer full cmdlet names over aliases: Get-ChildItem, Select-String, "
-                "Remove-Item -Recurse -Force, Set-Location, Copy-Item, and Move-Item. "
-                "Quoting: double quotes interpolate variables ($var expands), "
-                "single quotes are literal. "
-                "Exit codes: check $LASTEXITCODE for native commands, "
-                "$? for cmdlet success. "
-                f"Examples: {path_examples}"
+                "PowerShell 7+: use PowerShell syntax, not bash. "
+                f"{platform_note}"
+                "Env: $env:VAR. Use -eq/-ne/-gt/-lt and -and/-or/-not; '&&'/'||' chain pipelines. "
+                "Use ';' between independent statements, $null for null output, backtick continuation. "
+                "Prefer full cmdlet names over aliases. Double quotes interpolate; single quotes are literal. "
+                "Native exit: $LASTEXITCODE; cmdlet success: $?. "
             )
         execute.description = description
 
         tools = [execute]
-        if self._runtime.working_dirs:
+        if self._runtime.working_dirs or self._runtime.missing_working_dirs:
             list_dirs = self.list_workspace_dirs
             set_tool_kind(list_dirs, KIND_SHELL)
             tools.append(list_dirs)
@@ -1479,7 +1371,7 @@ class ShellTools:
         Returns directory paths with their labels and primary status.
         Useful for understanding the project structure across multiple repositories.
         """
-        if not self._runtime.working_dirs:
+        if not (self._runtime.working_dirs or self._runtime.missing_working_dirs):
             return f"No workspace active. Current directory: {self._runtime.cwd}"
         lines = [f"Workspace directories (cwd: {self._runtime.cwd}):"]
         for wd in self._runtime.working_dirs:
@@ -1487,6 +1379,7 @@ class ShellTools:
             label = f" [{wd.label}]" if wd.label else ""
             exists = " ok" if wd.exists else " MISSING"
             lines.append(f"  {wd.path}{label}{marker}{exists}")
+        lines.extend(f"  {path} MISSING" for path in self._runtime.missing_working_dirs)
         return "\n".join(lines)
 
 
@@ -1509,6 +1402,19 @@ def shell_name_for_tool(tool: object, *, fallback: str = "") -> str:
         return SHELL_NAME_MISMATCH
     shell_name = bound.shell.name
     return shell_name if tool.name == shell_name else SHELL_NAME_MISMATCH
+
+
+def shell_identity_is_renamed(tool: object) -> bool:
+    """Return whether a ShellTools executor's name no longer matches its bound shell.
+
+    Only the built-in executor has a shell identity to protect. A custom
+    ``KIND_SHELL`` tool (an extension or an engine test double) has no bound
+    shell name to compare, so it is not treated as a renamed executor.
+    """
+    if not isinstance(tool, FunctionTool):
+        return False
+    bound = tool.bound_instance
+    return isinstance(bound, ShellTools) and tool.name != bound.shell.name
 
 
 class _Timeout(Exception):

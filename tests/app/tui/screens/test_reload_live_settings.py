@@ -154,27 +154,12 @@ LIVE_KEYS = (
         choose_in_panel("ui.approval.defer_while_judging"),
         lambda session: session.main._approval_defer_while_judging(),
     ),
-    LiveKey(
-        "ui.chat.tool_groups_expanded",
-        choose_in_panel("ui.chat.tool_groups_expanded"),
-        lambda session: session.main._tool_groups_expanded(),
-    ),
-    LiveKey(
-        "ui.chat.show_thinking",
-        choose_in_panel("ui.chat.show_thinking"),
-        lambda session: session.main._thinking_expanded(),
-    ),
-    LiveKey(
-        "ui.chat.fold_finished_turns",
-        choose_in_panel("ui.chat.fold_finished_turns"),
-        lambda session: session.main._fold_finished_turns(),
-    ),
 )
 
 
 def test_the_table_covers_every_live_setting() -> None:
     assert {live.key for live in LIVE_KEYS} == {key for key, spec in SPECS.items() if spec.apply is Apply.LIVE}
-    assert len(LIVE_KEYS) == 16
+    assert len(LIVE_KEYS) == 13
 
 
 async def on_disk(session: Session, path: Path, key: str, value: Any) -> None:
@@ -216,15 +201,15 @@ async def test_a_saved_choice_gives_way_to_a_hand_edit(agent_engine, tmp_path, m
             assert not session.main._settings_persistence()._pending_values, key
 
 
-async def test_a_project_file_that_may_not_set_the_key_does_not_hold_the_saved_choice(
+async def test_a_workdir_file_that_may_not_set_the_key_does_not_hold_the_saved_choice(
     agent_engine, tmp_path, monkeypatch
 ) -> None:
     path = settings_path()
     activate_model_profile(MAIN_MODEL)
-    hand_edit(path, project__config_enabled=True)
-    project = Path.cwd() / ".chrys"
-    project.mkdir()
-    (project / "settings.yaml").write_text("ui.theme: dracula\n", encoding="utf-8")
+    hand_edit(path, workdir__config_enabled=True)
+    workdir = Path.cwd() / ".chrys"
+    workdir.mkdir()
+    (workdir / "settings.yaml").write_text("ui.theme: dracula\n", encoding="utf-8")
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         handle = session.app.settings_handle
         session.main._settings_coordinator().apply_live("ui.theme", "nord")
@@ -276,7 +261,7 @@ async def test_a_choice_that_never_reached_the_file_outlives_the_reload(agent_en
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         handle = session.app.settings_handle
         coordinator = session.main._settings_coordinator()
-        coordinator.apply_live("ui.chat.show_thinking", not handle.settings.chat_thinking_expanded)
+        coordinator.apply_live("ui.approval.defer_while_judging", not handle.settings.approval_defer_while_judging)
         await session.main._settings_persistence().flush()
         with monkeypatch.context() as patch:
             patch.setattr(
@@ -285,13 +270,17 @@ async def test_a_choice_that_never_reached_the_file_outlives_the_reload(agent_en
             coordinator.apply_live("ui.theme", "nord")
         assert "ui.theme" not in file_values(path)
 
-        hand_edit(path, ui__theme="gruvbox", ui__chat__show_thinking=handle.base.settings.chat_thinking_expanded)
+        hand_edit(
+            path,
+            ui__theme="gruvbox",
+            ui__approval__defer_while_judging=handle.base.settings.approval_defer_while_judging,
+        )
         lines = await reload_report(session)
 
         assert session.app.theme == "nord"
         assert handle.loaded.source_for("ui.theme").layer is Source.RUNTIME
         assert "ui.theme" in lines["controls.reload_shadowed"]
-        assert handle.loaded.source_for("ui.chat.show_thinking").layer is Source.USER
+        assert handle.loaded.source_for("ui.approval.defer_while_judging").layer is Source.USER
 
 
 async def test_a_key_chosen_again_during_the_reload_keeps_the_new_choice(agent_engine, tmp_path, monkeypatch) -> None:

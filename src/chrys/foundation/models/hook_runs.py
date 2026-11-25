@@ -11,9 +11,13 @@ from chrys.foundation.models.hook_confirmations import HookConfirmationOutcome
 
 HookRunState = Literal["queued", "running", "ended"]
 
-HookRunEffect = Literal["blocked", "modified_args", "added_reminder", "added_context", "asked"]
-"""What iCode took from a run; a run has at most one (the event groups that take each are disjoint).
-``asked``: the run asked the user to confirm; what the user chose is the run's ``confirmation``."""
+HookRunEffect = Literal["blocked", "asked", "modified_args", "added_reminder", "replaced_result", "added_context"]
+"""What iCode took from a run; the row names one, the first that applies in that order.
+``asked``: the run asked the user to confirm; what the user chose is the run's ``confirmation``.
+
+A run may do more than one at once — ``after_tool_call`` takes both ``result_override``
+and ``extra_context`` from one file — so this is the headline, not everything the
+run changed. ``HookRunApplied`` keeps each text; read that for what it actually did."""
 
 HookNotApplied = Literal["nonblocking", "unsupported", "failed", "failed_blocked"]
 """Why a run's decision was not taken: an ``async``/``fire_and_forget`` run's never is, the event
@@ -98,6 +102,8 @@ class HookRunApplied:
     """The changed arguments' full length in UTF-8 bytes when ``args`` was cut short; 0 when it is whole."""
     reminder: str = ""
     extra_context: str = ""
+    result_override: str = ""
+    """Replacement text. A replaced_result effect with empty text withholds the result."""
     not_applied: HookNotApplied | None = None
 
 
@@ -111,7 +117,7 @@ class HookRunDetail:
     on_error: str
     delivery: str
     source: str
-    """``project`` or ``global``; empty when unknown."""
+    """``workdir`` or ``global``; empty when unknown."""
     source_path: str
     run_type: str
     """``script``, ``command`` or ``shell``."""

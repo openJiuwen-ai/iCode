@@ -1236,6 +1236,7 @@ def test_target_output_caps_reasons_without_discarding_selection_evidence(
         "Smart Test selected 1 pytest target(s):",
         f"  {target}",
         "    <- reason-0; reason-1; reason-2; +3 more",
+        "Targets by source: rule 1.",
     ]
 
 
@@ -1269,7 +1270,7 @@ def test_covered_targets_are_pruned_before_pytest_and_directories_keep_configure
     pruned = chrys_test._prune_covered_targets(targets)
 
     assert pruned == ["tests/service", "tests/kernel/test_loop.py"]
-    command = chrys_test._pytest_command(pruned, architecture=False)
+    command = chrys_test._pytest_command(pruned)
     assert "-n" not in command
     assert "--dist" in command
 
@@ -1301,10 +1302,7 @@ def test_architecture_directory_is_classified_as_architecture() -> None:
     assert not selection.regular
 
 
-@pytest.mark.parametrize("architecture", [False, True])
-def test_long_target_transport_preserves_every_argument_and_cleans_up(
-    monkeypatch: pytest.MonkeyPatch, architecture: bool
-) -> None:
+def test_long_target_transport_preserves_every_argument_and_cleans_up(monkeypatch: pytest.MonkeyPatch) -> None:
     from _pytest.config.argparsing import Parser
 
     targets = [f"tests/space dir/test_file_{i}.py::test_case[value with spaces]" for i in range(181)]
@@ -1316,11 +1314,11 @@ def test_long_target_transport_preserves_every_argument_and_cleans_up(
         path = Path(args[-1][1:])
         files.append(path)
         assert Parser(_ispytest=True).parse([args[-1]]).file_or_dir == targets
-        assert args[:-1] == chrys_test._pytest_command(targets, architecture=architecture)[: -len(targets)]
+        assert args[:-1] == chrys_test._pytest_command(targets)[: -len(targets)]
         return subprocess.CompletedProcess(args, 1)
 
     monkeypatch.setattr(chrys_test, "_run_process", run)
-    assert chrys_test._execute_targets(targets, architecture=architecture).returncode == 1
+    assert chrys_test._execute_targets(targets).returncode == 1
     assert files and all(not path.exists() for path in files)
 
 
@@ -1341,7 +1339,7 @@ def test_argument_file_runs_exact_nodes_without_collecting_sibling_files(
         return subprocess.CompletedProcess(args, result.ret)
 
     monkeypatch.setattr(chrys_test, "_run_process", run)
-    assert chrys_test._execute_targets(targets, architecture=False).returncode == 0
+    assert chrys_test._execute_targets(targets).returncode == 0
 
 
 def test_character_limit_also_uses_exact_argument_file(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1352,7 +1350,7 @@ def test_character_limit_also_uses_exact_argument_file(monkeypatch: pytest.Monke
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(chrys_test, "_run_process", run)
-    assert chrys_test._execute_targets(targets, architecture=False).returncode == 0
+    assert chrys_test._execute_targets(targets).returncode == 0
 
 
 def _fixture_project(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -1462,7 +1460,6 @@ def auto_engine(engine_fixture): pass
     "global_code",
     [
         "GLOBAL = build_engine()\n",
-        "from chrys.kernel import engine\n",  # providers can execute global side effects on import
         """
         from typing import TYPE_CHECKING
         if TYPE_CHECKING:
@@ -1505,6 +1502,11 @@ def auto_engine(engine_fixture): pass
         def always():
             build_engine()
         """,
+        # An import nothing reads exists for its import-time side effect, even
+        # beside a name the provider does read.
+        "import chrys.kernel.engine\n",
+        "from chrys.kernel import engine as side_effect, unrelated\nUNRELATED = unrelated\n",
+        "import chrys.kernel.engine\nimport chrys.kernel.unrelated\nUNRELATED = chrys.kernel.unrelated\n",
     ],
 )
 def test_global_initialization_hooks_and_autouse_keep_their_consumers(
@@ -1516,6 +1518,23 @@ def test_global_initialization_hooks_and_autouse_keep_their_consumers(
     _write(root, "tests/test_plain.py", "def test_plain(): pass\n")
     _, selection = _fixture_selection(root)
     assert any(chrys_test._target_covers(target, "tests/test_plain.py::test_plain") for target in selection.regular)
+
+
+def test_a_provider_import_read_only_by_fixtures_does_not_select_every_test(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A module-level import the provider reads only inside a fixture body is
+    # that fixture's dependency, so tests that use none of its fixtures stay out.
+    root = _fixture_project(pytester, monkeypatch)
+    provider = root / "tests/support/providers.py"
+    provider.write_text(
+        "from chrys.kernel import engine as module_engine\n"
+        + provider.read_text()
+        + "@pytest.fixture\ndef module_engine_fixture():\n    return module_engine.create()\n"
+    )
+    _write(root, "tests/test_plain.py", "def test_plain(): pass\n")
+    _, selection = _fixture_selection(root)
+    assert not any(chrys_test._target_covers(target, "tests/test_plain.py::test_plain") for target in selection.regular)
 
 
 @pytest.mark.parametrize("body", ["request.getfixturevalue('engine_fixture')", "globals()['build_engine']()"])
@@ -1639,10 +1658,9 @@ def engine_fixture(): return build()
     )
     _write(root, "tests/test_helper.py", "def test_helper(engine_fixture): pass\ndef test_plain(): pass\n")
     _, selection = _fixture_selection(root)
-    # An ordinary module-level helper import is deliberately conservative:
-    # its provider can initialize shared state. Moving it inside the fixture
-    # makes the dependency opt-in while preserving the local helper walk.
-    assert "tests/test_helper.py" in selection.regular
+    # A module-level helper import reaches only the fixtures that call the
+    # helper, as an import inside the fixture does.
+    assert set(selection.regular) == {"tests/test_helper.py::test_helper"}
     _write(
         root,
         "tests/support/providers.py",
@@ -1691,7 +1709,7 @@ def test_selection_diagnostics_count_additions_without_duplicate_file_node_targe
 def test_long_argument_file_rejects_unrepresentable_newline_paths() -> None:
     targets = [f"tests/test_{i}.py" for i in range(181)] + ["tests/new\nline.py"]
     with pytest.raises(chrys_test.SmartTestError, match="newline path"):
-        chrys_test._execute_targets(targets, architecture=False)
+        chrys_test._execute_targets(targets)
 
 
 @pytest.mark.parametrize(

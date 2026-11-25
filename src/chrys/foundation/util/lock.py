@@ -89,6 +89,11 @@ class FileLock:
         self._fp: IO[bytes] | None = None
         self._proc_lock: threading.Lock | None = None
 
+    @property
+    def path(self) -> Path:
+        """The lock file selected when this handle was created."""
+        return self._path
+
     def __enter__(self) -> FileLock:
         self.acquire()
         return self

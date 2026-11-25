@@ -1404,7 +1404,7 @@ def test_loader_install_only_swaps_prepared_values() -> None:
         "try:\n    pass\nfinally:\n    pass",
         "self._settings_handle.install(completed.staged.loaded)",
         "stamp_history_item_ids(state)",
-        "self._workspace_change_tracker.retarget_roots(workspace)",
+        "self._workspace_change_tracker.resolve_retarget(workspace)",
         "self._session.runtime_meta.restore_context_calibration(strategy)",
         "os.path.realpath(cwd)",
     ],
@@ -1772,6 +1772,10 @@ def test_background_tasks_have_declared_owners() -> None:
     """Each task creation belongs to an explicitly reviewed lifetime owner."""
     root = SRC / "orchestration" / "engine"
     declared = {
+        ("state/lifecycle_permits", "LifecyclePermits", "finish_committed_session_step"): (
+            1,
+            "the committed transition drains the restore before releasing admission",
+        ),
         ("build/construction", "", "build_agent._on_injection_batch_consumed"): (
             1,
             "loader injection notification set",
@@ -1781,7 +1785,7 @@ def test_background_tasks_have_declared_owners() -> None:
             1,
             "lease snapshot chain; each publication awaits its predecessor, drained at run completion and owner shutdown",
         ),
-        ("loader", "AgentLoader", "_install_candidate"): (
+        ("loader", "AgentLoader", "normalize_candidate_profiles"): (
             1,
             "the candidate build drains profile normalization with finish_close before installing or discarding it",
         ),
@@ -1793,14 +1797,25 @@ def test_background_tasks_have_declared_owners() -> None:
             1,
             "a failed reload's connection abort, drained with finish_close before the hook manager settles",
         ),
+        ("loader", "AgentLoader", "_finish_workspace_install"): (
+            1,
+            "the committed workspace event is drained with finish_close before releasing the rebuild permit",
+        ),
         ("loader", "AgentLoader", "start_outbox_recovery"): (1, "session outbox recovery task"),
+        ("workspaces", "SessionWorkspaces", "warn_membership_write"): (
+            1,
+            "a committed operation's membership warning, drained with finish_close so a cancel cannot drop it",
+        ),
         ("run/coordinator", "TurnCoordinator", "_admit_user_message"): (2, "execution lease run task"),
         ("run/coordinator", "TurnCoordinator", "run_and_save"): (
             1,
             "the execution lease run task owns one fresh cleanup; finish_close drains its trajectory, save and result before pre_run, cancellation finalization or replacement",
         ),
         ("run/retry", "RetryCoordinator", "_handle_user_retry"): (2, "execution lease run task"),
-        ("run/retry", "RetryCoordinator", "_create_retry_run_task"): (2, "execution lease run task"),
+        ("run/retry", "RetryCoordinator", "_create_retry_run_task"): (
+            2,
+            "execution lease successor dispatches with the validated retry scope when available",
+        ),
         ("run/shortcut_commands", "ShortcutCommands", "_run"): (
             2,
             "prompt commands and their invalidation waiter, both drained before _run returns",
@@ -1817,8 +1832,12 @@ def test_background_tasks_have_declared_owners() -> None:
         (
             "session_lifecycle",
             "SessionLifecycle",
-            "_start_locked._report_trajectory_activation_failure._publish_warning",
+            "_bind_trajectory._report_trajectory_activation_failure._publish_warning",
         ): (1, "activation callback local set"),
+        ("session_lifecycle", "SessionLifecycle", "on_session_fork"): (
+            1,
+            "the fork and its project mapping, drained with finish_close so a cancelled caller still leaves the fork mapped",
+        ),
         ("side_questions", "SideQuestions", "request"): (
             1,
             "tracked request; user cancellation, rollback or session end cancels it with a bounded cleanup grace period",
@@ -1826,6 +1845,10 @@ def test_background_tasks_have_declared_owners() -> None:
         ("side_questions", "SideQuestions", "_run"): (
             1,
             "separately tracked commit; quiesce invalidates queued writes under the session write lock",
+        ),
+        ("state/controls", "RuntimeControls", "on_workspace_change"): (
+            1,
+            "the terminal reply is drained after the workspace permit is released, even on cancellation",
         ),
         ("state/controls", "RuntimeControls", "on_settings_reload"): (
             1,

@@ -6,16 +6,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.screens.main.session_handlers import RestoreRequest
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotRef, file_snapshot_inline_char_limit
-from chrys.foundation.branding import APP_DISPLAY_NAME
-from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
@@ -28,6 +27,7 @@ from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource
 from chrys.service.state.store import JsonFileStateStore
+from chrys.service.workspaces.registry import RegistrySnapshot
 from tests.support.tui_helpers import (
     main_screen_state_at,
     make_session_handler,
@@ -91,6 +91,38 @@ def test_do_session_restore_can_bypass_loading_guard_for_startup_restore() -> No
     assert len(published) == 1
     assert published[0].session_id == "startup-session"
     assert published[0].apply_saved_model is True
+
+
+async def test_declining_startup_workspace_keeps_the_legacy_checkpoint_in_place(tmp_path: Path) -> None:
+    store = JsonFileStateStore(tmp_path / "sessions")
+    session_id = "12345678abcd"
+    missing_cwd = tmp_path / "moved"
+    await store.save_session(session_id, {"messages": []}, primary_cwd=str(missing_cwd))
+    primary = store.session_dir(session_id) / "session.json"
+    legacy = store.sessions_root / f"{session_id}.json"
+    primary.replace(legacy)
+    primary.with_suffix(".json.bak").unlink()
+    original = legacy.read_bytes()
+    resolved = await store.resolve_startup_session(session_id)
+    assert resolved is not None
+
+    async def decline(path: str, workspace_restore: bool) -> None:
+        assert path == str(missing_cwd)
+        assert not workspace_restore
+        assert legacy.is_file() and not primary.exists()
+
+    async def unexpected_publish(event: object) -> None:
+        pytest.fail(f"Restore was published after the workspace prompt was declined: {event!r}")
+
+    screen = SimpleNamespace(
+        _state=MainScreenState(),
+        _services=MainScreenServices(bus=SimpleNamespace(publish=unexpected_publish), state_store=store),
+    )
+    handler = make_session_handler(screen)
+    handler._callbacks = replace(handler._callbacks, choose_missing_working_dir=decline)
+    result = await handler.do_session_restore(session_id, saved_cwd=resolved.primary_cwd)
+    assert result is RestoreRequest.DECLINED
+    assert legacy.read_bytes() == original and not primary.exists()
 
 
 def test_do_session_restore_disables_saved_model_when_startup_model_is_explicit() -> None:
@@ -175,6 +207,8 @@ def _resume_screen(
         async def list_sessions(self) -> list[object]:
             raise AssertionError("resume must not scan list_sessions()")
 
+        workspace_registry = SimpleNamespace(snapshot=RegistrySnapshot)
+
     async def publish(event: object) -> None:
         published.append(event)
 
@@ -197,7 +231,7 @@ def test_resume_last_session_opens_modal_before_lookup_and_restores_latest() -> 
     restoring: list[bool] = []
     screen = _resume_screen(latest="latest-session", calls=calls, published=published, restoring=restoring)
 
-    asyncio.run(make_session_handler(screen).resume_last_session())
+    asyncio.run(make_session_handler(screen).resume_session())
 
     assert [name for name, _ in calls] == ["lookup_modal", "load_latest", "restore_modal"]
     assert ("restore_modal", "latest-session") in calls
@@ -223,7 +257,7 @@ def test_resume_last_session_modal_is_open_while_lookup_blocks() -> None:
             lookup_release=release,
         )
         handler = make_session_handler(screen)
-        task = asyncio.create_task(handler.resume_last_session())
+        task = asyncio.create_task(handler.resume_session())
         await started.wait()
         assert calls == [("lookup_modal", ""), ("load_latest", None)]
         assert published == []
@@ -242,7 +276,7 @@ def test_resume_last_session_without_sessions_closes_modal_and_notifies() -> Non
     restoring: list[bool] = []
     screen = _resume_screen(latest=None, calls=calls, published=published, restoring=restoring)
 
-    asyncio.run(make_session_handler(screen).resume_last_session())
+    asyncio.run(make_session_handler(screen).resume_session())
 
     assert [name for name, _ in calls] == ["lookup_modal", "load_latest", "cancel", "notify"]
     assert calls[-1][1][1] == "warning"
@@ -259,7 +293,7 @@ def test_resume_last_session_lookup_failure_cleans_up() -> None:
         latest=RuntimeError("index exploded"), calls=calls, published=published, restoring=restoring
     )
 
-    asyncio.run(make_session_handler(screen).resume_last_session())
+    asyncio.run(make_session_handler(screen).resume_session())
 
     assert ("cancel", None) in calls
     assert ("debug", ("SessionRestore", "failed to look up latest session: index exploded")) in calls
@@ -275,7 +309,7 @@ def test_resume_last_session_ignores_running_or_loading_agent() -> None:
     screen = _resume_screen(latest="ignored", calls=calls, published=published)
     screen._state.run.agent_running = True
 
-    asyncio.run(make_session_handler(screen).resume_last_session())
+    asyncio.run(make_session_handler(screen).resume_session())
 
     assert calls == []
     assert published == []
@@ -369,13 +403,7 @@ def test_session_fork_dialog_hides_new_window_over_ssh(monkeypatch: pytest.Monke
     assert loading == [True]
 
 
-def test_on_session_forked_routes_dialog_results(monkeypatch: pytest.MonkeyPatch) -> None:
-    launcher_calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(
-        "chrys.app.tui.terminal.launcher.launch_new_chrys_window",
-        lambda session_id, *, cwd=None: launcher_calls.append((session_id, cwd)),
-    )
-
+def test_on_session_forked_routes_dialog_results() -> None:
     def run_case(
         result: str, new_session_id: str
     ) -> tuple[list[str], list[str], list[tuple[str, str, str]], list[bool]]:
@@ -436,6 +464,8 @@ def test_on_session_forked_routes_dialog_results(monkeypatch: pytest.MonkeyPatch
             )
         )
         assert pushes[0]._state == "success"
+        assert pushes[0]._fork_id == new_session_id
+        assert pushes[0]._cwd == "/workspace"
         assert loading == [True, False]
         callbacks[0](result)
         for worker in started_workers:
@@ -459,70 +489,6 @@ def test_on_session_forked_routes_dialog_results(monkeypatch: pytest.MonkeyPatch
     assert [status_text(message) for message in flashes] == [f"Opened fork: {session_short_id('fork-window')}"]
     assert restores == []
     assert notifications == [("Fork", "information", f"Created fork {session_short_id('fork-window')}")]
-    assert loading == [True, False, False]
-    assert launcher_calls == [("fork-window", "/workspace")]
-
-
-def test_on_session_forked_new_window_launcher_failure_warns(monkeypatch: pytest.MonkeyPatch) -> None:
-    pushes: list[object] = []
-    callbacks: list[object] = []
-    notifications: list[tuple[str, str, str]] = []
-    loading: list[bool] = []
-
-    class _FakeStatusBar:
-        def flash(self, _message: str) -> None:
-            raise AssertionError("status flash should not run on launcher failure")
-
-    def query_one(cls: type) -> object:
-        if cls.__name__ == "ChatPanel":
-            return SimpleNamespace(session_id="current-session")
-        if cls.__name__ == "StatusBar":
-            return _FakeStatusBar()
-        raise AssertionError(cls)
-
-    def push_screen(dialog: object, callback=None) -> None:
-        pushes.append(dialog)
-        callbacks.append(callback)
-
-    monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
-    from chrys.app.tui.terminal import launcher
-
-    with pytest.raises(launcher.TerminalLaunchError) as captured:
-        launcher.launch_new_chrys_window("probe")
-
-    def raise_launch_error(_session_id: str, *, cwd: str | None = None) -> None:
-        del cwd
-        raise captured.value
-
-    monkeypatch.setattr("chrys.app.tui.terminal.launcher.launch_new_chrys_window", raise_launch_error)
-    screen = SimpleNamespace(
-        app=SimpleNamespace(push_screen=push_screen),
-        query_one=query_one,
-        notify=lambda message, *, title, severity="information", **_kwargs: notifications.append(
-            (title, severity, message)
-        ),
-        _set_agent_loading=loading.append,
-        _state=main_screen_state_at("/workspace"),
-        _debug=lambda *_args: None,
-    )
-    handler = make_session_handler(screen, locale_controller=LocaleController(Settings(locale="zh-Hans")))
-
-    asyncio.run(handler._open_session_fork_dialog("current-session"))
-    asyncio.run(
-        handler.on_session_forked(
-            SessionForked(
-                session_id="current-session",
-                parent_session_id="current-session",
-                new_session_id="fork-window",
-            )
-        )
-    )
-    callbacks[0]("new_window")
-
-    assert notifications == [
-        ("Fork", "information", f"Created fork {session_short_id('fork-window')}"),
-        ("Fork", "warning", f"当前环境无法打开新的 {APP_DISPLAY_NAME} 窗口。"),
-    ]
     assert loading == [True, False, False]
 
 

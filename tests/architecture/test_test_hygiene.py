@@ -24,6 +24,7 @@ from tests.architecture import (
     test_hygiene_tui_locale_controller,
     test_hygiene_tui_prose,
     test_hygiene_user_turn_events,
+    test_hygiene_workspace_plans,
 )
 from tests.architecture._hygiene_core import (
     _ALLOWLIST_PIN_REGISTRY,
@@ -100,6 +101,7 @@ _RULE_MODULES = (
     test_hygiene_tui_locale_controller,
     test_hygiene_tui_prose,
     test_hygiene_user_turn_events,
+    test_hygiene_workspace_plans,
 )
 
 

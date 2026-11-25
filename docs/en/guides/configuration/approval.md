@@ -83,7 +83,7 @@ Tool calls that require approval open an **Approval Required** dialog showing th
 You can let iCode remember a Shell command or a file change you approve, so the same request does not ask you again. The approval dialog for a Shell command or a file write or edit shows a **Remember Approval** box:
 
 1. Check **Don't ask again for this command** (for files: **Don't ask again to modify these files**).
-2. Choose **This session** or **This project**. **This session** also applies after you restore the session; **This project** also applies in your other sessions in the same project.
+2. Choose **This session** or **This working directory**. **This session** also applies after you restore the session; **This working directory** also applies in your other sessions using the same physical directory that are not in a workspace. In a session that belongs to a [workspace](../daily-use/workspaces.md#workspaces), the second choice is **This workspace**, which applies in the workspace's other sessions; leaving the workspace ends reuse of its approvals in the session. The original command and path constraints still apply.
 3. Select **Approve**.
 
 The next time the agent makes the same request, it runs without a dialog. Only that command, or those files, are remembered; other operations still ask. Approving without checking the box approves this one call only. A few cases are never remembered:
@@ -105,15 +105,20 @@ Use the `icode approval` command to see and remove what you have remembered:
 
 ```bash
 icode approval list                          # everything you have remembered
-icode approval list --project /work/demo     # only one project
+icode approval list --workdir /work/demo     # only one working directory
 icode approval list --session SESSION_ID --json
 icode approval revoke GRANT_ID               # remove one approval by its ID from the list
-icode approval clear --project /work/demo    # remove all approvals for one project
+icode approval clear --workdir /work/demo    # remove all approvals for one working directory
 icode approval clear --session SESSION_ID    # remove all approvals for one session
+icode approval clear --workspace NAME       # remove all shared approvals for one workspace
 icode approval clear --all                   # remove everything
 ```
 
-Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a project stay until you remove them.
+Pass `--workdir` with `--session` to limit the selection to that session’s grants for the directory. A removed directory can still be used as a filter.
+
+Both filters require a non-empty value. Use `clear --all` on its own to remove every grant.
+
+Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a working directory or a workspace stay until you remove them. Pass a workspace name or ID to `--workspace` to select its shared approvals; for a deleted workspace, use its full ID.
 
 ## Understand automatic approval and safety protections
 
@@ -122,7 +127,7 @@ The following operations usually run without an approval dialog:
 - A single simple POSIX Shell command that does not access sensitive targets, such as `ls`, `cat`, or `grep`.
 - File writes within the working directory's Git repository that do not access sensitive targets.
 
-Automatic approval is intentionally narrow. The command must contain no pipe, redirection, glob, variable or command substitution, brace or tilde expansion, or other shell syntax that can change the words passed to the program; quoted literal text is allowed. A command with any of those constructs requires approval. PowerShell and `cmd` shell commands currently always require approval. Commands that can start another program or change system state are not auto-approved even when their name looks read-only — for example `rg --pre`, `less`, `more`, `tree -o`, `date -s`, and `hostname`. The `read_only` shell filter is a separate, best-effort filter and is not an approval boundary; see [Agent profile reference](../../reference/agent-profile.md#tools).
+Automatic approval is intentionally narrow. The command must contain no pipe, redirection, glob, variable or command substitution, brace or tilde expansion, or other shell syntax that can change the words passed to the program; quoted literal text is allowed. A command with any of those constructs requires approval. PowerShell and `cmd` shell commands currently always require approval. Commands that can start another program, read secrets, or change system state are not auto-approved even when their name looks read-only — for example `rg --pre`, `less`, `more`, `tree -o`, `date -s`, `hostname`, and `jq`. `ps` is limited to plain process listings, `pytest` always requires approval because a version query can load project code in older versions, and `git status` or a worktree `git diff` requires approval because Git may run a configured clean or process filter. Auto-approved Git commands keep your global and system Git configuration, including `GIT_CONFIG_GLOBAL`, but execution-capable Git settings are pinned. The `read_only` shell filter is a separate, best-effort filter and is not an approval boundary; see [Agent profile reference](../../reference/agent-profile.md#tools).
 
 Shell commands and file reads or writes that access sensitive targets such as `.env` files, credentials, and private keys still go through approval, even for read-only operations or writes within a Git working directory. This protection applies in manual and automatic modes. Bypass mode skips these approval protections.
 

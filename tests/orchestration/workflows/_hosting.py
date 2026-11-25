@@ -30,7 +30,8 @@ from chrys.service.profiles.agents.schema import AgentProfile, ApprovalConfig, C
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
-from chrys.service.workflows.discovery import project_workflows_dir
+from chrys.service.workflows.discovery import workdir_workflows_dir
+from chrys.service.workspaces.registry import WorkspaceRegistry
 from tests.support.tool_packs import install_tools
 
 PROFILE = "Headless"
@@ -123,7 +124,7 @@ def make_host(
         approval_mode=approval_mode,
         agent_registry=agents,
         model_registry=model_registry,
-        state_store=JsonFileStateStore(tmp_path / "sessions"),
+        state_store=JsonFileStateStore(tmp_path / "sessions", workspace_registry=WorkspaceRegistry()),
         cwd=str(project) if project is not None else None,
         workspace=workspace,
         allow_user_interaction=allow_user_interaction,
@@ -132,15 +133,15 @@ def make_host(
     )
 
 
-def make_project(tmp_path: Path) -> Path:
-    project = tmp_path / "project"
-    project_workflows_dir(project).mkdir(parents=True)
+def make_workdir(tmp_path: Path) -> Path:
+    project = tmp_path / "workdir"
+    workdir_workflows_dir(project).mkdir(parents=True)
     return project
 
 
 def write_workflow(project: Path, workflow_id: str, source: bytes) -> Path:
     """Write (or rewrite) a project workflow file as its author would; see tests/support/secure_files.py."""
-    path = project_workflows_dir(project) / f"{workflow_id}.py"
+    path = workdir_workflows_dir(project) / f"{workflow_id}.py"
     atomic_write_owner_only_bytes(path, source)
     return path
 
@@ -149,7 +150,7 @@ def write_workflow_package(
     project: Path, workflow_id: str, source: bytes, files: Mapping[str, bytes] | None = None
 ) -> Path:
     """Write (or rewrite) a project workflow folder ``<id>/<id>.py`` plus *files* (relative paths); returns the entry."""
-    folder = project_workflows_dir(project) / workflow_id
+    folder = workdir_workflows_dir(project) / workflow_id
     for relative, content in (files or {}).items():
         member = folder / relative
         member.parent.mkdir(parents=True, exist_ok=True)

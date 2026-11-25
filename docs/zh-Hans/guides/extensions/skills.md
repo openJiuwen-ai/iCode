@@ -10,10 +10,10 @@ Skill 是一组可复用的操作说明，可以附带参考资料和脚本，�
 | --- |--------------------------------------| --- |
 | iCode 用户 Skill 目录 | 希望 iCode 中所有“内置”类型的智能体都能使用           | 始终自动加载 |
 | Agent Skills 共享目录 | 希望在 iCode 与其他支持 Agent Skills 的工具之间共享 | 默认自动加载，可针对智能体关闭 |
-| `<working-directory>/.agents/skills` | 只希望在当前工作目录中使用                         | 勾选“加载项目 Skills”后才加载，也可针对智能体关闭 |
+| `<working-directory>/.agents/skills` | 只希望在当前工作目录中使用                         | 勾选“加载工作目录 Skills”后才加载，也可针对智能体关闭 |
 | 自定义目录 | 希望从指定位置加载                            | 需要在相应智能体配置中手动添加 |
 
-其中，`<working-directory>` 表示当前工作目录。工作目录中的 Skill 随仓库而来，因此需要先在“设置 → 安全管控 → 项目信任”中勾选“加载项目 Skills”（`project.skills_enabled`），iCode 才会加载。工作目录中有未加载的 Skill 时，iCode 会弹出提示。切换工作目录后，iCode 会重新加载新工作目录中的 Skill。
+其中，`<working-directory>` 表示当前工作目录。工作目录中的 Skill 随仓库而来，因此需要先在“设置 → 安全管控 → 工作目录信任”中勾选“加载工作目录 Skills”（`workdir.skills_enabled`），iCode 才会加载。工作目录中有未加载的 Skill 时，iCode 会弹出提示。切换工作目录后，iCode 会重新加载新工作目录中的 Skill。
 
 两个用户级 Skill 目录在不同平台上的路径如下：
 
@@ -28,7 +28,7 @@ iCode 会在已配置的 Skill 目录及其最多两层子目录中查找 `SKILL
 
 ## 安装并启用 Skill
 
-iCode 用户 Skill 目录始终自动加载。Agent Skills 共享目录默认也会自动加载；当前工作目录中的 Skill 目录在勾选“加载项目 Skills”后加载。若曾在智能体配置中关闭对应来源，需要重新启用。使用自定义目录时，需要将目录添加到相应智能体的配置中。
+iCode 用户 Skill 目录始终自动加载。Agent Skills 共享目录默认也会自动加载；当前工作目录中的 Skill 目录在勾选“加载工作目录 Skills”后加载。若曾在智能体配置中关闭对应来源，需要重新启用。使用自定义目录时，需要将目录添加到相应智能体的配置中。
 
 如需直接在智能体 YAML 中定义不带文件的内嵌 Skill，请参阅[智能体配置文件](../../reference/agent-profile.md#skillsinline)。
 
@@ -38,7 +38,7 @@ iCode 用户 Skill 目录始终自动加载。Agent Skills 共享目录默认也
 2. 根据 Skill 所在位置，确认对应的 Skill 来源已启用：
 
    * “从用户文件夹加载 Skills（如果存在）”对应 Agent Skills 共享目录；
-   * “从工作文件夹加载 Skills（如果存在）”对应 `<working-directory>/.agents/skills`，仅在“设置 → 安全管控 → 项目信任”中勾选了“加载项目 Skills”时生效。
+   * “从工作文件夹加载 Skills（如果存在）”对应 `<working-directory>/.agents/skills`，仅在“设置 → 安全管控 → 工作目录信任”中勾选了“加载工作目录 Skills”时生效。
 
 3. 如果 Skill 位于其他目录，点击“+ 添加”，填写 Skill 所在目录：
 
@@ -55,6 +55,8 @@ Skill 脚本向标准输出或标准错误输出超过 32 MiB 时，iCode 只保
 
 ## 确认 Skill 已加载
 
+智能体及其普通子智能体一起加载时，如果使用相同的 Skill 目录和扫描选项，iCode 会在本次加载中只扫描一次这些文件。每个智能体仍保留自己的 Skill 配置和脚本设置。加载窗口会显示正在加载 Skill 的子智能体。加载期间修改的文件会在后续刷新时生效。
+
 保存智能体配置并返回会话后，iCode 会重新加载 Skill。如果直接在磁盘上添加 Skill 目录或修改其中的文件，iCode 不会实时监控这些变化。下一次发送消息时，iCode 会先重新扫描当前智能体已启用的 Skill 目录，再处理该消息。
 
 可通过以下任一方式确认 Skill 已加载：
@@ -64,7 +66,7 @@ Skill 脚本向标准输出或标准错误输出超过 32 MiB 时，iCode 只保
 
 如果 Skill 未出现，请依次检查：
 
-* 使用 Agent Skills 共享目录或工作目录 Skill 目录时，是否已启用对应选项（工作目录 Skill 目录还需勾选“加载项目 Skills”）；使用自定义目录时，是否已将其添加到当前智能体。
+* 使用 Agent Skills 共享目录或工作目录 Skill 目录时，是否已启用对应选项（工作目录 Skill 目录还需勾选“加载工作目录 Skills”）；使用自定义目录时，是否已将其添加到当前智能体。
 * Skill 目录是否位于所选位置或其最多两层子目录中。
 * Skill 是否符合[创建 Skill 的基本规范](#创建-skill-的基本规范)。
 

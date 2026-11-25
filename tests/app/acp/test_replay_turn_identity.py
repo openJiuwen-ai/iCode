@@ -19,7 +19,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from chrys.kernel import Content, Message
 from chrys.orchestration.session_host import Cancelled, EndTurn
-from chrys.service.state.store import JsonFileStateStore
+from chrys.service.state.store import JsonFileStateStore, SessionTranscript
 from chrys.service.trajectory.state import TurnRecord
 from tests.app.acp._server_fakes import _FakeClient, _FakeHost, _FakeManager
 from tests.support.images import image_bytes
@@ -261,7 +261,7 @@ def test_history_payload_names_each_message_turn_and_reports_inherited_origin() 
         TurnRecord(turn_number=2, turn_id="turn-b", origin_session_id="parent-session"),
     ]
 
-    payload = session_history_payload("s1", messages, records)
+    payload = session_history_payload("s1", SessionTranscript(messages, records))
 
     # Every turn the session knows is listed in start order, including one whose
     # messages are not in this transcript: record ``turn-b`` was inherited from
@@ -272,6 +272,7 @@ def test_history_payload_names_each_message_turn_and_reports_inherited_origin() 
             {"turnId": "turn-a", "turnNumber": 1, "userMessageId": _CLIENT_MESSAGE_ID},
             {"turnId": "turn-b", "turnNumber": 2, "userMessageId": None, "inheritedFrom": "parent-session"},
         ],
+        "compressedBlocks": [],
         "messages": [
             {"turnId": "turn-a", "turnNumber": 1, "message": messages[0]},
             {"turnId": "turn-a", "turnNumber": 1, "message": messages[1]},
@@ -289,7 +290,7 @@ def test_history_payload_reports_a_forks_inherited_turns() -> None:
     ]
     records = [TurnRecord(turn_number=1, turn_id="turn-a", opening_item_id="item-1", origin_session_id="parent")]
 
-    payload = session_history_payload("s1", messages, records)
+    payload = session_history_payload("s1", SessionTranscript(messages, records))
 
     assert payload["turns"] == [{"turnId": "turn-a", "turnNumber": 1, "userMessageId": None, "inheritedFrom": "parent"}]
 

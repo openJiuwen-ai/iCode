@@ -30,7 +30,7 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.models.invocations import InvocationOrigin
-from tests.orchestration.workflows._hosting import make_project
+from tests.orchestration.workflows._hosting import make_workdir
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import wait_for
@@ -43,11 +43,13 @@ if TYPE_CHECKING:
     from rich.console import Console, ConsoleOptions
     from rich.segment import Segment
 
+pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
+
 
 async def test_execution_transitions_invalidate_workflow_bindings_without_focus_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine = WorkflowEngine()
     app = make_chrys_app(tmp_path / "sessions", engine=engine)
     async with app.run_test(size=(140, 50)) as pilot:
@@ -75,7 +77,7 @@ async def test_twelve_thousand_events_coalesce_without_main_layout_or_footer_rec
     monkeypatch: pytest.MonkeyPatch,
     hidden: bool,
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     engine, bus = WorkflowEngine(), EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(140, 50)) as pilot:
@@ -226,7 +228,7 @@ async def test_twelve_thousand_events_coalesce_without_main_layout_or_footer_rec
 async def test_code_tab_lexes_each_width_once_and_a_revisit_keeps_the_rendered_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(make_project(tmp_path))
+    monkeypatch.chdir(make_workdir(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(140, 50)) as pilot:
         main = app._main_screen

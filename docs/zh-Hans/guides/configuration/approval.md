@@ -83,7 +83,7 @@
 你可以让 iCode 记住你批准过的 Shell 命令或文件修改，之后智能体发出相同请求时不再询问。Shell 命令和文件写入、编辑的审批窗口中会出现“记住审批”框：
 
 1. 勾选“相同命令不再询问”（文件为“修改这些文件不再询问”）。
-2. 选择“本会话”或“本项目”。“本会话”在恢复该会话后仍然有效；“本项目”在同一项目的其他会话中也有效。
+2. 选择“本会话”或“此工作目录”。“本会话”在恢复该会话后仍然有效；“此工作目录”在使用同一实际目录、且不属于任何工作区的其他会话中也有效。属于[工作区](../daily-use/workspaces.md#工作区)的会话中，第二项是“此工作区”，在同一工作区的其他会话中也有效；离开工作区后，会话停止复用该工作区的审批。原有的命令和路径限制仍然适用。
 3. 选择“批准”。
 
 之后智能体再发出相同请求时会直接运行，不再弹出审批窗口。只会记住这条命令或这些文件，其他操作仍会询问。不勾选直接批准，只批准本次调用。以下情况不会被记住：
@@ -105,15 +105,20 @@
 
 ```bash
 icode approval list                          # 列出所有已记住的审批
-icode approval list --project /work/demo     # 只看某个项目
+icode approval list --workdir /work/demo     # 只看某个工作目录
 icode approval list --session SESSION_ID --json
 icode approval revoke GRANT_ID               # 按列表中的 ID 删除一条
-icode approval clear --project /work/demo    # 删除某个项目的全部审批
+icode approval clear --workdir /work/demo    # 删除某个工作目录的全部审批
 icode approval clear --session SESSION_ID    # 删除某个会话的全部审批
+icode approval clear --workspace NAME       # 删除某个工作区的全部共享审批
 icode approval clear --all                   # 全部删除
 ```
 
-会话的审批会随该会话一起删除，用 `/fork` 创建分支时不会被复制到分支。项目的审批会一直保留，直到你删除。
+同时指定 `--workdir` 和 `--session` 可以只选中该会话在指定目录的审批记录。目录移除后仍可按原路径筛选。
+
+两个筛选选项都必须提供非空值。要删除所有审批，请单独使用 `clear --all`。
+
+会话的审批会随该会话一起删除，用 `/fork` 创建分支时不会被复制到分支。工作目录和工作区的审批会一直保留，直到你删除。向 `--workspace` 传入工作区名称或 ID 可选中该工作区的共享审批；工作区已删除时，请使用完整 ID。
 
 ## 了解自动放行与安全保护
 
@@ -122,7 +127,7 @@ icode approval clear --all                   # 全部删除
 - 单条、简单且不访问敏感目标的 POSIX Shell 命令，例如 `ls`、`cat`、`grep`。
 - 工作目录 Git 仓库内、且不访问敏感目标的文件写入。
 
-自动放行的范围被有意收窄：命令中不能包含管道、重定向、通配符、变量或命令替换、花括号或波浪号展开，以及其他会改变传给程序的实际参数的 Shell 语法；引号内的字面文本可以保留。包含上述任一结构的命令都需要审批。PowerShell 和 `cmd` Shell 命令目前一律需要审批。即使命令名看起来只读，只要它可以启动其他程序或改变系统状态，也不会自动放行，例如 `rg --pre`、`less`、`more`、`tree -o`、`date -s` 和 `hostname`。`read_only` Shell 过滤器是另一套尽力而为的过滤规则，不是审批边界；参阅[智能体配置参考](../../reference/agent-profile.md#tools)。
+自动放行的范围被有意收窄：命令中不能包含管道、重定向、通配符、变量或命令替换、花括号或波浪号展开，以及其他会改变传给程序的实际参数的 Shell 语法；引号内的字面文本可以保留。包含上述任一结构的命令都需要审批。PowerShell 和 `cmd` Shell 命令目前一律需要审批。即使命令名看起来只读，只要它可以启动其他程序、读取密钥或改变系统状态，也不会自动放行，例如 `rg --pre`、`less`、`more`、`tree -o`、`date -s`、`hostname` 和 `jq`。`ps` 仅放行普通的进程列表形式；`pytest` 一律需要审批，因为旧版本的版本查询也可能加载项目代码；`git status` 或工作区 `git diff` 也需要审批，因为 Git 可能运行已配置的 clean 或 process 过滤器。自动放行的 Git 命令会保留用户的全局和系统 Git 配置（包括 `GIT_CONFIG_GLOBAL`），但会固定可执行配置项。`read_only` Shell 过滤器是另一套尽力而为的过滤规则，不是审批边界；参阅[智能体配置参考](../../reference/agent-profile.md#tools)。
 
 Shell 命令和文件读写访问 `.env`、凭据、私钥等敏感目标时，即使操作只读取文件或写入 Git 工作目录，也仍会进入审批流程。该保护适用于“手动”和“自动”模式；“绕过”模式会跳过这些审批保护。
 

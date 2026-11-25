@@ -33,6 +33,7 @@ from rich.console import Console
 
 from chrys import __version__
 from chrys.app.cli.app import _TUI_SUBPROCESS_COMMAND
+from chrys.app.parsing import add_startup_session_option, startup_session_id
 from chrys.app.tui.clipboard import BROWSER_CLIPBOARD_META_TYPE
 from chrys.app.tui.util.logo import TUI_LOGO
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
@@ -324,12 +325,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable textual-serve debug mode and Textual devtools for spawned app sessions.",
     )
+    add_startup_session_option(parser)
     return parser
 
 
-def build_tui_command() -> str:
+def build_tui_command(session_id: str | None = None) -> str:
     """Return the shell command used by textual-serve to launch the Chrys TUI."""
-    return _shell_join([*_entrypoint_argv(), _TUI_SUBPROCESS_COMMAND])
+    argv = [*_entrypoint_argv(), _TUI_SUBPROCESS_COMMAND]
+    if session_id is not None:
+        argv.extend(["--session", startup_session_id(session_id)])
+    return _shell_join(argv)
 
 
 def _entrypoint_argv() -> list[str]:
@@ -1160,7 +1165,7 @@ def run_command(args: argparse.Namespace) -> None:
     if auth_config is not None:
         server_kwargs["auth_config"] = auth_config
     server = server_class(
-        build_tui_command(),
+        build_tui_command(args.session),
         **server_kwargs,
     )
     try:

@@ -34,6 +34,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import DisplayBlock
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.kernel import Content, Message
@@ -176,6 +177,7 @@ class _Bus:
 class _Executor:
     def __init__(self) -> None:
         self.conversation = self
+        self.origin = InvocationOrigin("turn", "", "vision-turn", None)
         self.user_message = ""
         self.run_calls: list[tuple[list[Any], Any]] = []
         self.run_failed = False
@@ -379,7 +381,10 @@ class _HostPermits:
 
 class _Host:
     def __init__(self, tmp_path: Path, *, vision: bool, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.current = make_current(loaded=SimpleNamespace(), manifest=make_manifest())
+        self.current = make_current(
+            loaded=SimpleNamespace(agent=SimpleNamespace(context_providers=[])),
+            manifest=make_manifest(),
+        )
         self._current = self.current
         self.permits = _HostPermits()
         self.session = SimpleNamespace(mark_surface=lambda: None)
@@ -830,7 +835,7 @@ async def test_requeued_notice_delivers_once_joined_before_new_boundary(
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
     tracker = host._workspace_change_tracker
     host._settings_handle.override(workspace_change_notice=True)
-    tracker.retarget_roots(host.session.workspace)
+    tracker.apply_retarget(tracker.resolve_retarget(host.session.workspace))
     tracker.capture_baseline(1)
     tracker.queue_safety_notice("retained files")
     middleware = SystemReminderMiddleware(file_change_provider=tracker.take_pending_notice)
@@ -869,7 +874,7 @@ async def test_target_zero_safety_delivers_with_empty_and_nonempty_boundary(
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
     host._settings_handle.override(workspace_change_notice=True)
     tracker = host._workspace_change_tracker
-    tracker.retarget_roots(host.session.workspace)
+    tracker.apply_retarget(tracker.resolve_retarget(host.session.workspace))
     tracker.capture_baseline(1)
     tracker.queue_safety_notice("Files retained from the discarded conversation:")
     if with_boundary:
@@ -933,7 +938,7 @@ async def test_disabled_setting_delivers_queued_safety_once_without_compute(
 async def test_reenable_after_invalidate_does_not_flood(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
     tracker = host._workspace_change_tracker
-    tracker.retarget_roots(host.session.workspace)
+    tracker.apply_retarget(tracker.resolve_retarget(host.session.workspace))
     tracker.capture_baseline(1)
     (tmp_path / "offline.txt").write_text("x", encoding="utf-8")
     tracker.invalidate()

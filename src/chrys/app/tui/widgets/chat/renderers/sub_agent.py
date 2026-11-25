@@ -21,6 +21,7 @@ from textual.widgets import Button, Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
 from chrys.app.tui.util.invocation_progress import invocation_progress_parts
+from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptJournal,
@@ -1107,8 +1108,8 @@ class SubAgentToolCall(BaseToolCard):
         self.remove_class("-paused")
         self.remove_class("-sleeping")
         with suppress(Exception):
-            self.query_one("#sa-retry-banner", Static).update("")
-            self.query_one("#sa-pause-info", Static).update("")
+            update_static_in_place(self.query_one("#sa-retry-banner", Static), "")
+            update_static_in_place(self.query_one("#sa-pause-info", Static), "")
 
     def set_complete(self, result: str, duration_ms: int = 0, **kwargs: Any) -> None:
         """Mark this sub-agent call as complete (parent tool call finished).

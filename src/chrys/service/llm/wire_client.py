@@ -14,8 +14,8 @@ factory composes the production stack::
 for every protocol: it drops the loop's trajectory handle from the call
 keywords, lets its :class:`~chrys.service.llm.observer.WireCallObserver`
 report the request, and dispatches to the protocol's ``_send`` or
-``_open_stream``. :class:`RequestHeaders` holds the Chrys metadata each
-protocol stamps on the request it builds, at the end of :meth:`WireClient._finalize_request`.
+``_open_stream``. :class:`RequestHeaders` supplies session headers during
+request building and default routing metadata for the per-attempt HTTP hook.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from chrys.foundation.util.chrys_headers import (
     SESSION_ID_HEADER,
     X_PARENT_SESSION_ID_HEADER,
     X_SESSION_ID_HEADER,
+    RequestRole,
     is_chrys_managed_header_name,
 )
 from chrys.foundation.util.header_charset import (
@@ -46,6 +47,7 @@ from chrys.service.llm.route_sessions import llm_parent_session_id, llm_route_se
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Sequence
 
+    from chrys.foundation.util.chrys_headers import RequestScope
     from chrys.kernel.compaction import CompactionStrategy, TokenizerProtocol
     from chrys.kernel.types import ChatResponse, ChatResponseUpdate, Message, ResponseStream
     from chrys.service.llm.observer import WireCallObserver
@@ -87,7 +89,7 @@ def _reject_wire_unsafe_request_values(model_id: Any, headers: Mapping[Any, Any]
 
 @dataclass(frozen=True, slots=True)
 class RequestHeaders:
-    """The Chrys metadata headers one client stamps on every request it builds.
+    """Session and routing metadata bound to one wire client.
 
     *use_route_session_context* makes the per-invocation route-session
     ContextVars win over the client's own session ids, for clients that
@@ -97,6 +99,8 @@ class RequestHeaders:
     session_id: str | None = None
     parent_session_id: str | None = None
     use_route_session_context: bool = False
+    request_role: RequestRole | None = None
+    request_scope: RequestScope | None = None
 
     def route_session_id(self) -> str | None:
         """The session the request being built belongs to, as the session headers name it."""
@@ -198,9 +202,9 @@ class WireClient(ChatTelemetryLayer, BaseChatClient):
         options: Mapping[str, Any],
         **kwargs: Any,
     ) -> Awaitable[ChatResponse[Any]] | ResponseStream[ChatResponseUpdate, ChatResponse[Any]]:
-        # The trajectory exchange trace is a loop-to-client handle, never a
-        # provider request parameter: drop it before any kwargs are forwarded.
+        # Internal request metadata is consumed here before kwargs reach the codec.
         forwarded_trace = kwargs.pop(TRAJECTORY_EXCHANGE_KWARG, None)
+        role_override = kwargs.pop("_chrys_request_role", None)
         from chrys.service.llm.observer import WireCall
 
         # Options name a model only to override the client's, so the client's goes on the record otherwise.
@@ -215,7 +219,13 @@ class WireClient(ChatTelemetryLayer, BaseChatClient):
         except BaseException as exc:
             call.failed(exc)
             raise
-        return call.observe(result)
+        metadata = self._request_headers
+        default_role = metadata.request_role if metadata is not None else None
+        return call.observe(
+            result,
+            request_role=role_override if isinstance(role_override, RequestRole) else default_role,
+            request_scope=metadata.request_scope if metadata is not None else None,
+        )
 
     def _dispatch(
         self,

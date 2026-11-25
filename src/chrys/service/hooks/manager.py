@@ -55,7 +55,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _ARGS_OVERRIDE_EVENTS = frozenset({HookEvent.BEFORE_TOOL_CALL})
 _SYSTEM_REMINDER_EVENTS = frozenset({HookEvent.USER_PROMPT_SUBMIT})
-_EXTRA_CONTEXT_EVENTS = frozenset({HookEvent.AFTER_TOOL_CALL, HookEvent.TOOL_ERROR})
+# ``before_tool_call`` context does not change whether the call runs: it is a note for the
+# model, delivered with this call's result once the call has run (see ``hook_dispatch``).
+_EXTRA_CONTEXT_EVENTS = frozenset({HookEvent.BEFORE_TOOL_CALL, HookEvent.AFTER_TOOL_CALL, HookEvent.TOOL_ERROR})
+_RESULT_OVERRIDE_EVENTS = frozenset({HookEvent.AFTER_TOOL_CALL, HookEvent.TOOL_ERROR})
 MAX_CONFIRMED_RECHECKS = 3
 """Passes after the first that one dispatch runs because an argument changed after the user approved an ask."""
 ASK_REASON_MAX_CHARS = 1000
@@ -267,12 +270,12 @@ class HookManager:
 
         Empty when no source had a path (e.g. a synthetic empty
         config). Populated by :class:`MergedHooksFile` with both
-        project and global paths in load order. Used for log lines
+        working directory and global paths in load order. Used for log lines
         and the future ``/hooks`` TUI screen.
         """
         return list(self._file.sources)
 
-    def has_hooks_for(self, event: HookEvent) -> bool:
+    def has_hooks_for(self, event: HookEvent, *, blocking_only: bool = False) -> bool:
         """Cheap fast-path check.
 
         Wire-up sites guard with this so we don't even build payloads
@@ -280,7 +283,10 @@ class HookManager:
         call when hooks are unused — and "no hooks at all" is the
         common case.
         """
-        return any(h.enabled and h.event == event for h in self._file.hooks)
+        return any(
+            h.enabled and h.event == event and (not blocking_only or h.execution.mode == "blocking")
+            for h in self._file.hooks
+        )
 
     def executions(self) -> tuple[HookExecutionView, ...]:
         """The runs in flight now (queued or running, waited on or not), oldest first."""
@@ -353,6 +359,23 @@ class HookManager:
             envelope["confirmation_available"] = (
                 operation is not None and self.confirmations is not None and self.confirmations.available()
             )
+            # What makes a re-check recognisable as one: the same operation, a later check of
+            # it. A hook that keeps per-call state counts the operation once, however often
+            # the arguments change, instead of seeing a new call each time.
+            envelope["operation"] = (
+                {
+                    "id": operation.operation_id,
+                    "revision": operation.revision,
+                    "check": operation.check_count,
+                }
+                if operation is not None
+                else None
+            )
+        if event == HookEvent.BEFORE_TOOL_CALL:
+            # Tells a hook its ``extra_context`` reaches the model; absent on an iCode that drops it.
+            envelope["extra_context_available"] = True
+        if event in _RESULT_OVERRIDE_EVENTS:
+            envelope["result_override_available"] = True
 
         # Two passes: blocking hooks run sequentially so the first
         # ``block`` short-circuits; non-blocking hooks then spawn in
@@ -402,6 +425,12 @@ class HookManager:
         if event in GATED_EVENTS:
             # An ``async`` or ``fire_and_forget`` run returns after the operation went on: it cannot ask.
             envelope["confirmation_available"] = False
+        if event == HookEvent.BEFORE_TOOL_CALL:
+            # Nor can it add context: its result file is not read.
+            envelope["extra_context_available"] = False
+        if event in _RESULT_OVERRIDE_EVENTS:
+            # An ``async`` or ``fire_and_forget`` run returns after the model read the result: it cannot replace it.
+            envelope["result_override_available"] = False
         for hook in nonblocking:
             if operation is not None and not operation.pending:
                 # Withdrawn meanwhile (while an earlier one started, say): no later one starts.
@@ -449,6 +478,13 @@ class HookManager:
         while True:
             decision = HookDecision()
             recheck = False
+            if rechecks and operation is not None:
+                # A later pass is a later check of the operation: the hooks it runs
+                # must see the new number, not the one the first pass was handed.
+                # Without this a hook that de-duplicates by ``check`` skips the
+                # arguments the user just approved a change to.
+                operation.begin_check()
+                _refresh_operation(envelope, operation)
             for hook in blocking:
                 if self._closed or self._session_drain_generation != dispatch.session_drain_generation:
                     if operation is not None and operation.invalidate("hooks_closed", closing_hooks=True):
@@ -469,6 +505,11 @@ class HookManager:
                     approved = True
                 if step.args_changed and operation is not None:
                     changed = operation.replace_arguments(_tool_args(envelope))
+                    if changed:
+                        # The arguments are a version of their own from here on: a hook
+                        # later in this same pass reads them with the revision that goes
+                        # with them, not the one the envelope was built with.
+                        _refresh_operation(envelope, operation)
                     if changed and approved:
                         recheck = True
                         changed_by = step.run_id
@@ -583,12 +624,20 @@ class HookManager:
             decision.invalidated = True
             return _BlockingStep(run_id=run.run_id)
         event = dispatch.event
+        result.unusable = _unusable_result(event, result)
         blocked_before = decision.blocked
         override_before = decision.args_override
         reminders_before = len(decision.system_reminders)
         contexts_before = len(decision.extra_context)
         try:
-            ask = _merge_blocking_result(decision, hook, result, event=event, tool=envelope.get("tool"))
+            ask = _merge_blocking_result(
+                decision,
+                hook,
+                result,
+                event=event,
+                tool=envelope.get("tool"),
+                envelope=envelope,
+            )
             # Compared as JSON, what the tool gets: a hook returning the arguments as they were
             # changed nothing, while 1 turned to true did, though Python finds them equal.
             args_changed = False
@@ -954,6 +1003,8 @@ class HookManager:
         max_retries = self._file.settings.outbox_max_retries
         queued = 0
         for job in stale:
+            if self._outbox.skip_pending(job.job_id):
+                continue
             if job.retries >= max_retries:
                 logger.warning(
                     "Outbox job %s (hook=%s) exceeded max_retries=%d; moving to failed/",
@@ -1021,7 +1072,7 @@ class HookManager:
         return matches[0], ""
 
     def _resolve_legacy_recovery_hook_by_source(self, job: OutboxJob) -> HookConfig | None:
-        """Resolve pre-source-path jobs that only recorded project/global."""
+        """Resolve pre-source-path jobs that only recorded working directory/global."""
         matches = [
             hook
             for hook in self._hooks_by_id.get(job.hook_id, [])
@@ -1164,8 +1215,10 @@ class HookManager:
         # fire_and_forget
         if hook.execution.detach:
             try:
-                if job is not None:
-                    self._outbox.mark_started(job)
+                if job is not None and not self._outbox.mark_started(job):
+                    if trace is not None:
+                        trace.finished_soon(outcome=HookOutcome.ABANDONED)
+                    return
                 log_path = await self._runner.spawn_detached(hook, payload, job=job, payload_text=run.payload_text)
             except asyncio.CancelledError:
                 if trace is not None:
@@ -1282,8 +1335,10 @@ class HookManager:
             # took a step only this handler closes it.
             async with self._sem:
                 await self._report(self._take_slot(run))
-                if job is not None:
-                    self._outbox.mark_started(job)
+                if job is not None and not self._outbox.mark_started(job):
+                    if trace is not None:
+                        trace.finished_soon(outcome=HookOutcome.CANCELLED)
+                    return HookResult(hook_id=hook.id, exit_code=None)
                 run.output = HookResult(hook_id=hook.id, exit_code=None)
                 result = await self._runner.run_and_wait(
                     hook, payload, payload_text=run.payload_text, result=run.output
@@ -1348,9 +1403,9 @@ def _build_envelope(event: HookEvent, payload: dict[str, Any]) -> dict[str, Any]
 def _hook_sources(file: MergedHooksFile) -> dict[int, str]:
     """Map hook object identity to its merged configuration layer."""
     sources: dict[int, str] = {}
-    if file.project is not None:
-        for hook in file.project.hooks:
-            sources[id(hook)] = "project"
+    if file.workdir is not None:
+        for hook in file.workdir.hooks:
+            sources[id(hook)] = "workdir"
     if file.global_ is not None:
         for hook in file.global_.hooks:
             sources[id(hook)] = "global"
@@ -1360,9 +1415,9 @@ def _hook_sources(file: MergedHooksFile) -> dict[int, str]:
 def _hook_source_paths(file: MergedHooksFile) -> dict[int, str]:
     """Map hook object identity to the hooks config file that supplied it."""
     sources: dict[int, str] = {}
-    if file.project is not None and file.project.source:
-        for hook in file.project.hooks:
-            sources[id(hook)] = file.project.source
+    if file.workdir is not None and file.workdir.source:
+        for hook in file.workdir.hooks:
+            sources[id(hook)] = file.workdir.source
     if file.global_ is not None and file.global_.source:
         for hook in file.global_.hooks:
             sources[id(hook)] = file.global_.source
@@ -1398,6 +1453,14 @@ def _tool_args(envelope: dict[str, Any]) -> Any:
     return tool.get("args") if isinstance(tool, dict) else None
 
 
+def _refresh_operation(envelope: dict[str, Any], operation: HookOperation) -> None:
+    """Rewrite the envelope's ``operation`` for a later pass of the same dispatch."""
+    current = envelope.get("operation")
+    if isinstance(current, dict):
+        current["revision"] = operation.revision
+        current["check"] = operation.check_count
+
+
 def _text_field(fields: dict[str, Any], key: str) -> str:
     """*fields*' *key* when it is a string, else empty."""
     value = fields.get(key)
@@ -1410,21 +1473,54 @@ def _decision_action(decision: dict[str, Any]) -> str:
     return action.lower() if isinstance(action, str) and action else "allow"
 
 
-def _asks_unsupported(event: HookEvent, decision: dict[str, Any]) -> bool:
-    """Whether a result file asks for something *event* does not take."""
+_KNOWN_ACTIONS = frozenset({"allow", "block", "modify", "ask", "warn"})
+"""The ``action`` values a result file may name.
+
+``warn`` means "let it through, and tell the model": it carries its text in
+``extra_context`` and changes no decision, so a hook writing it gets what it
+meant instead of the call being refused as an unknown action.
+"""
+
+
+def _unusable_result(event: HookEvent, result: HookResult) -> str:
+    """Why a gating run that exited ``0`` left nothing iCode can act on; empty when it did not.
+
+    Its result file was invalid, or named an action iCode does not know (a typo, or one
+    a newer hook expects). Taken as allow, either would let the operation through
+    unchecked, though the hook meant to decide it; counted as failed, ``on_error`` decides.
+    """
+    if event not in GATED_EVENTS or _result_failed(result):
+        return ""
+    if result.result_file == "invalid":
+        return "invalid_result_file"
+    action = result.decision.get("action")
+    if action not in (None, "") and not (isinstance(action, str) and action.lower() in _KNOWN_ACTIONS):
+        return "unknown_action"
+    return ""
+
+
+def _asks_unsupported(event: HookEvent, decision: dict[str, Any], *, unusable: str = "") -> bool:
+    """Whether a result file asks for something *event* does not take.
+
+    An action iCode does not know was never asked for — the run's other fields
+    still apply (:func:`_merge_blocking_result`), so it is not counted here.
+    """
     action = _decision_action(decision)
+    if unusable == "unknown_action":
+        action = "allow"
     return (
         (action in ("block", "ask") and event not in GATED_EVENTS)
         or (action == "modify" and event not in _ARGS_OVERRIDE_EVENTS)
         or (bool(decision.get("system_reminder")) and event not in _SYSTEM_REMINDER_EVENTS)
         or (bool(decision.get("extra_context")) and event not in _EXTRA_CONTEXT_EVENTS)
+        or (decision.get("result_override") is not None and event not in _RESULT_OVERRIDE_EVENTS)
     )
 
 
 def _asks_anything(decision: dict[str, Any]) -> bool:
     action = _decision_action(decision)
     return action in ("block", "modify", "ask") or bool(
-        decision.get("system_reminder") or decision.get("extra_context")
+        decision.get("system_reminder") or decision.get("extra_context") or decision.get("result_override") is not None,
     )
 
 
@@ -1450,7 +1546,10 @@ def _blocking_effect(
         return "blocked", HookRunApplied(
             block_reason=decision.block_reason, not_applied="failed_blocked" if failed else None
         )
-    if failed:
+    # An action iCode does not know leaves the rest of the file readable, and that
+    # rest still counts (see ``_merge_blocking_result``); every other failure —
+    # a nonzero exit, a timeout, a file that is not JSON — takes the whole file away.
+    if failed and result.unusable != "unknown_action":
         return None, HookRunApplied(not_applied="failed")
     if asked:
         return "asked", HookRunApplied()
@@ -1458,9 +1557,15 @@ def _blocking_effect(
         return "modified_args", HookRunApplied(args=indented_json(args_after))
     if len(decision.system_reminders) > reminders_before:
         return "added_reminder", HookRunApplied(reminder=decision.system_reminders[-1])
+    # Attribute an explicit replacement to the run that wrote it, even if two
+    # consecutive hooks chose the same text (including the empty string).
+    override = result.decision.get("result_override")
+    if event in _RESULT_OVERRIDE_EVENTS and isinstance(override, str):
+        extra = decision.extra_context[-1] if len(decision.extra_context) > contexts_before else ""
+        return "replaced_result", HookRunApplied(result_override=override, extra_context=extra)
     if len(decision.extra_context) > contexts_before:
         return "added_context", HookRunApplied(extra_context=decision.extra_context[-1])
-    if _asks_unsupported(event, result.decision):
+    if _asks_unsupported(event, result.decision, unusable=result.unusable):
         return None, HookRunApplied(not_applied="unsupported")
     return None, HookRunApplied()
 
@@ -1486,6 +1591,13 @@ def _apply_args_override_to_envelope(envelope: dict[str, Any], args_override: di
     args.update(args_override)
 
 
+def _apply_result_override_to_envelope(envelope: dict[str, Any], result_override: str) -> None:
+    """Write a blocking hook's result replacement into the envelope's ``result``."""
+    result = envelope.get("result")
+    if isinstance(result, dict):
+        result["text"] = result_override
+
+
 def _merge_blocking_result(
     decision: HookDecision,
     hook: HookConfig,
@@ -1493,6 +1605,7 @@ def _merge_blocking_result(
     *,
     event: HookEvent,
     tool: object = None,
+    envelope: dict[str, Any] | None = None,
 ) -> str | None:
     """Fold one blocking hook's outcome into the running :class:`HookDecision`.
 
@@ -1521,9 +1634,18 @@ def _merge_blocking_result(
             )
         # A failed hook's decision file may be partial or stale.  Honour
         # only the configured error policy and ignore any action payload.
-        return None
+        if not result.unusable:
+            return None
+        # Except one that parsed whole and only names an action iCode does not
+        # know: its other fields were written deliberately and mean what they
+        # say, so the unknown action alone is dropped below. Treating a name
+        # this version adds as taking the whole file away would change what an
+        # existing hook decided, which no addition may do.
 
     action = _decision_action(result.decision)
+    if result.unusable and action not in _KNOWN_ACTIONS:
+        # The action is the only part unreadable: the fields beside it still count.
+        action = "allow"
     if action == "block":
         if event in GATED_EVENTS:
             decision.blocked = True
@@ -1549,6 +1671,15 @@ def _merge_blocking_result(
     extra = result.decision.get("extra_context")
     if event in _EXTRA_CONTEXT_EVENTS and isinstance(extra, str) and extra:
         decision.extra_context.append(extra)
+    override = result.decision.get("result_override")
+    if event in _RESULT_OVERRIDE_EVENTS and isinstance(override, str):
+        decision.result_override = override
+        # Write it back so the next hook reads the text this one produced, as an
+        # argument override already does for ``tool.args``. Without this each hook
+        # washes out the original independently and the last one wins, so a chain
+        # of cleaners loses everything the earlier ones did.
+        if envelope is not None:
+            _apply_result_override_to_envelope(envelope, override)
     return None
 
 
@@ -1596,7 +1727,7 @@ def _log_nonblocking_spawn_failure(hook: HookConfig, exc: Exception) -> None:
 
 
 def _result_failed(result: HookResult) -> bool:
-    return result.timed_out or result.exit_code is None or result.exit_code != 0
+    return result.timed_out or result.exit_code is None or result.exit_code != 0 or bool(result.unusable)
 
 
 def _hook_outcome(result: HookResult, *, blocked: bool, asked: bool = False) -> str:
@@ -1605,7 +1736,7 @@ def _hook_outcome(result: HookResult, *, blocked: bool, asked: bool = False) -> 
         return HookOutcome.TIMED_OUT
     if result.exit_code is None:
         return HookOutcome.LAUNCH_ERROR
-    if result.exit_code != 0:
+    if result.exit_code != 0 or result.unusable:
         return HookOutcome.FAILED
     if blocked:
         return HookOutcome.BLOCKED
@@ -1622,6 +1753,8 @@ def _result_failure_label(result: HookResult) -> str:
         return "timeout"
     if result.exit_code is None:
         return "launch_error"
+    if result.unusable:
+        return result.unusable
     return f"exit_code={result.exit_code}"
 
 

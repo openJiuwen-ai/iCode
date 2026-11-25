@@ -106,18 +106,18 @@ If you installed with uv, the command only shows what to run: `uv tool uninstall
 
 iCode keeps its data in `~/.chrys` (`%APPDATA%\chrys` on Windows): your settings, API keys, model profiles, agents, skills, sessions and more. Uninstalling keeps this folder. To delete it and everything in it as well, run `icode uninstall --purge`; if you save sessions in another folder, the `sessions` folder there is deleted too. If you installed with uv, do this before `uv tool uninstall`, while the `icode` command still exists. Add `--yes` to skip the confirmation.
 
-## 2. Start iCode in a project
+## 2. Start iCode in a working directory
 
 Start this tutorial in a project managed with Git or one that you can safely restore. Before asking an agent to modify files, save any unsaved content and record existing changes with a Git commit. This lets you distinguish the agent's changes and restore the previous state if needed.
 
-In a terminal, go to the project directory and start iCode:
+In a terminal, go to the working directory and start iCode:
 
 ```shell
-cd <project-directory>
+cd <working-directory>
 icode
 ```
 
-Replace `<project-directory>` with the actual path to your project. To switch directories after startup, see [Working directory](../guides/daily-use/workspaces.md).
+Replace `<working-directory>` with the actual path to your project. To switch directories after startup, see [Working directory](../guides/daily-use/workspaces.md).
 
 iCode first prints `Starting iCode...` and shows a loading screen while it gets ready. When the main screen appears, it keeps showing that it is loading until the agent is ready.
 
@@ -169,7 +169,7 @@ The following examples assume the current project is a to-do app and illustrate 
 Analyze the task list implementation and propose a plan for adding a "Clear completed tasks" feature. Explain which files need to change and the implementation steps.
 ```
 
-Q&A Agent may search for files, read their contents, or run read-only commands. Tool calls appear as cards, grouped under one header while the agent works through them. While they run, the header shows what the agent is doing; once they are done, it says what the calls did, by kind, for example `▸ Read 3 files · searched for 2 patterns · ran 1 command`, and ends with how many failed or were interrupted, if any, which stay in view when the window is too narrow for the whole line. When the agent made a single call there and it succeeded, the header says what that call did instead, for example `▸ Read src/app.py` or `▸ Ran zsh command: Run the tests`; a path inside the folder you work in is shown relative to it. While the agent waits with `sleep`, the header shows why and counts down the time left, for example `Sleeping: Waiting for CI · 29s left`; to stop waiting, open the cards and click **Skip**. Once done, it says how long the agent slept and why, for example `▸ Slept 23s: Waiting for CI`. Click the header to show or hide the cards. After completing its analysis, the agent presents an implementation plan.
+Q&A Agent may search for files, read their contents, or run read-only commands. Open the work process to see them. Tool calls appear as cards, grouped under one header while the agent works through them. While they run, the header shows what the agent is doing; once they are done, it says what the calls did, by kind, for example `▸ Read 3 files · searched for 2 patterns · ran 1 command`, and ends with how many failed or were interrupted, if any, which stay in view when the window is too narrow for the whole line. When the agent made a single call there and it succeeded, the header says what that call did instead, for example `▸ Read src/app.py` or `▸ Ran zsh command: Run the tests`; a path inside the folder you work in is shown relative to it. While the agent waits with `sleep`, the header shows why and counts down the time left, for example `Sleeping: Waiting for CI · 29s left`; to stop waiting, open the work process and the cards, then click **Skip**. Once done, it says how long the agent slept and why, for example `▸ Slept 23s: Waiting for CI`. Click the header to show or hide the cards. After completing its analysis, the agent presents an implementation plan.
 
 ### Use Code Agent
 
@@ -207,7 +207,7 @@ In other multi-line fields, **Enter** and **Shift+Enter** start a new line. In t
 
 ### Attach images, quote the conversation and paste long text
 
-Paste a screenshot or an image, or drop an image file into the message box, and it shows as **[Image #1]**. To quote part of the conversation, select it with the mouse and click **Quote** when it appears; **[Quote #1]** is added where the cursor is. Long pasted text, more than 800 characters or six lines or more (fewer in a very short terminal), shows as **[Pasted text #1 +5 lines]**. Keep typing around them as usual; each message numbers each kind from 1.
+Paste a screenshot or an image, or drop an image file into the message box, and it shows as **[Image #1]**. To quote part of the conversation, select it with the mouse and click **Quote** when it appears; **[Quote #1]** is added where the cursor is. Long pasted text, more than 800 characters or six lines or more (fewer in a very short terminal), shows as **[Pasted text #1 +5 lines]**. Keep typing around them as usual; each message numbers each kind from 1. In `/diff`, point at a line to reveal 💬, click its number to write a comment (Shift+Enter for a new line), then press Enter to add it to the message box; click 💬 to edit, and return to chat to send. The quote also carries the line before and after it; click the label to preview it, with 💬 on the quoted line.
 
 Click an image or quote label for a read-only preview. A label is edited as one piece: the cursor steps over it, and Backspace or Delete removes all of it. Click a pasted-text label to edit that text in the prompt editor; it stays folded while it is still long. Press **Ctrl+O** to open the prompt editor on the full text to be sent: save without changes to keep the labels; after any change, the message box shows the full text. Press **Ctrl+Z** to undo a save that changed the message.
 
@@ -225,7 +225,9 @@ For example, `$x^{n+1}$` displays as xⁿ⁺¹ and `$90^\circ$` as 90°.
 
 Mermaid code blocks appear as diagrams; choose **Open full diagram** to view and scroll the full result. Some diagrams are simplified with a notice; unsupported diagrams stay as source.
 
-When the model service returns readable thinking, a folded row above the reply shows **Thinking**. As text arrives, the row adds an estimated token count and then the recent speed, for example `Thinking (3.2k tokens · 70 tok/s)`. The figures appear in muted text and update once a second. When thinking ends, the row shows **Thought:** followed by the opening words. Click it at any time, even while the model is still writing, to unfold it and read it in full, or to fold it again (`/fold` folds or unfolds all complete thinking, tool groups and text between tool calls at once). Once the model moves on to a tool call or its reply, the thinking folds, as tool groups do; so does text the model writes before a tool call, to one line showing how it begins. Thinking has no **Copy** button, and copying replies leaves it out. To see thinking unfolded while the model writes it, turn on **Expand thinking by default** in the Settings dialog (**General** → **Display preferences**).
+iCode folds thinking, text between tool calls and tool groups into one line while the agent works. The line shows the latest activity, then summarizes the process when the agent starts its reply after the steps finish. Click it to see each step, then click the heading or the vertical line along the left to fold the process again. If a tool asks a question or a sub-agent pauses for your input, its tool group appears below the folded line. After a successful reply, the process folds again and the heading summarizes any tool calls.
+
+When the model service returns readable thinking, a folded row above the reply shows **Thinking**. As text arrives, the row adds an estimated token count and then the recent speed, for example `Thinking (3.2k tokens · 70 tok/s)`. The figures appear in muted text and update once a second. When thinking ends, the row shows **Thought:** followed by the opening words. After opening the process, click it at any time, even while the model is still writing, to unfold it and read it in full, or to fold it again (`/fold` folds or unfolds all complete thinking, tool groups and text between tool calls at once). Once the model moves on to a tool call or its reply, the thinking folds, as tool groups do; so does text the model writes before a tool call, to one line showing how it begins. Thinking has no **Copy** button, and copying replies leaves it out.
 
 Mouse selection copies what is displayed, without adding newlines for screen wrapping. Use **Copy** beside the message header to copy the original Markdown and LaTeX. Reopening an older conversation uses the current rendering.
 

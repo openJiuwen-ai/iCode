@@ -584,7 +584,7 @@ def test_run_resuming_a_session_whose_directory_is_gone_suggests_workdir(
     _patch_restore_failure(monkeypatch)
     _use_locale(monkeypatch, locale)
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abcd1234", "--quiet"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abcd1234abcd", "--quiet"])
 
     output = capsys.readouterr()
     assert rc == 1
@@ -598,7 +598,7 @@ def test_run_resuming_a_session_whose_directory_is_gone_reports_english_json(
     _patch_restore_failure(monkeypatch)
     _use_locale(monkeypatch, "zh-Hans")
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abcd1234", "--json"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abcd1234abcd", "--json"])
 
     assert rc == 1
     assert json.loads(capsys.readouterr().err) == {

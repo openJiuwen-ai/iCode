@@ -10,10 +10,10 @@ Choose an installation location based on where the skill should be available and
 | --- | --- | --- |
 | iCode user skills directory | Make skills available to all agents of the "Built-in" type in iCode | Always loaded automatically |
 | Agent Skills shared directory | Share skills between iCode and other tools that support Agent Skills | Loaded automatically by default; can be disabled per agent |
-| `<working-directory>/.agents/skills` | Make skills available only in the current working directory | Loaded only after you turn on “Load project skills”; can also be disabled per agent |
+| `<working-directory>/.agents/skills` | Make skills available only in the current working directory | Loaded only after you turn on “Load working directory skills”; can also be disabled per agent |
 | Custom directory | Load skills from a specific location | Must be added manually to the corresponding agent's configuration |
 
-Here, `<working-directory>` is the current working directory. Skills in a working directory come with the repository, so iCode does not load them until you turn on “Load project skills” under “Settings → Safety → Project trust” (`project.skills_enabled`). When the working directory has skills that are not loaded, iCode shows a notice. When you switch working directories, iCode reloads the skills from the new working directory.
+Here, `<working-directory>` is the current working directory. Skills in a working directory come with the repository, so iCode does not load them until you turn on “Load working directory skills” under “Settings → Safety → Working directory trust” (`workdir.skills_enabled`). When the working directory has skills that are not loaded, iCode shows a notice. When you switch working directories, iCode reloads the skills from the new working directory.
 
 The two user-level skills directories have the following paths on each platform:
 
@@ -28,7 +28,7 @@ iCode searches for `SKILL.md` files in configured skills directories and up to t
 
 ## Install and enable skills
 
-The iCode user skills directory is always loaded automatically. The Agent Skills shared directory is also loaded automatically by default. The current working directory's skills directory loads once “Load project skills” is on. If a source has been disabled in the agent's configuration, enable it again. For a custom directory, add it to the corresponding agent's configuration.
+The iCode user skills directory is always loaded automatically. The Agent Skills shared directory is also loaded automatically by default. The current working directory's skills directory loads once “Load working directory skills” is on. If a source has been disabled in the agent's configuration, enable it again. For a custom directory, add it to the corresponding agent's configuration.
 
 To define an inline skill without files directly in an agent's YAML, see [Agent profile reference](../../reference/agent-profile.md#skillsinline).
 
@@ -38,7 +38,7 @@ To check or adjust an agent's skill configuration:
 2. Confirm that the source corresponding to the skill's location is enabled:
 
    * "Load skills from user folder (if present)" corresponds to the Agent Skills shared directory.
-   * "Load skills from working folder (if present)" corresponds to `<working-directory>/.agents/skills`. It takes effect only while “Load project skills” is on in “Settings → Safety → Project trust”.
+   * "Load skills from working folder (if present)" corresponds to `<working-directory>/.agents/skills`. It takes effect only while “Load working directory skills” is on in “Settings → Safety → Working directory trust”.
 
 3. If the skill is in another directory, click "+ Add" and enter the directory containing the skill:
 
@@ -55,6 +55,8 @@ When a skill script prints more than 32 MiB to standard output or standard error
 
 ## Confirm that skills have loaded
 
+When an agent and its local sub-agents load together with the same skills directories and scanning options, iCode scans those files once for that load. Each agent keeps its own skill configuration and script settings. The loading dialog shows which sub-agent is loading skills. Files edited during loading are picked up on a later refresh.
+
 After you save the agent's configuration and return to the session, iCode reloads its skills. If you add skill directories or change their files directly on disk, iCode does not monitor those changes in real time. The next time you send a message, iCode rescans the current agent's enabled skills directories before processing the message.
 
 Use either of the following methods to confirm that a skill has loaded:
@@ -64,7 +66,7 @@ Use either of the following methods to confirm that a skill has loaded:
 
 If the skill does not appear, check the following in order:
 
-* For the Agent Skills shared directory or working directory skills directory, confirm that the corresponding option is enabled (the working directory skills directory also needs “Load project skills”). For a custom directory, confirm that it has been added to the current agent.
+* For the Agent Skills shared directory or working directory skills directory, confirm that the corresponding option is enabled (the working directory skills directory also needs “Load working directory skills”). For a custom directory, confirm that it has been added to the current agent.
 * Confirm that the skill directory is at the selected location or within at most two levels of subdirectories.
 * Confirm that the skill meets the [basic requirements for creating skills](#basic-requirements-for-creating-skills).
 

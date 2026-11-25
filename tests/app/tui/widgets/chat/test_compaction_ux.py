@@ -37,7 +37,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ
 from tests.support.frozen_clock import freeze_monotonic
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import ChatPanelApp, mount_sub_agent_detail
+from tests.support.tui_helpers import ChatPanelApp, mount_sub_agent_detail, open_process_for
 from tests.support.waiting import wait_for
 
 
@@ -488,6 +488,7 @@ async def test_a_compaction_card_keeps_a_blank_row_below_a_folded_tool_group() -
         await panel.add_compaction_start("c-1")
         group = panel.query_one(ToolGroup)
         card = panel.query_one(CompactionCard)
+        open_process_for(group)
         await wait_for(
             lambda: group.collapsed and card.region.height > 0 and screen_is_settled(app, app.screen),
             pilot=pilot,

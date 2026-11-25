@@ -31,6 +31,7 @@ from tests.orchestration.engine._rollback_helpers import (
     fake_restore_factory,
     seed_turns,
 )
+from tests.support.components import plan_workspace
 from tests.support.event_capture import assert_display_message, collect_events
 
 # ===========================================================================
@@ -67,7 +68,7 @@ class TestRollbackFileRevert:
 
         async def _fake_trajectory_rollback(*, superseded_turns: list[Any], target_turns: list[Any]) -> None:
             # The reset replaced the state with an empty one, and the bound
-            # state carried no registry to begin with, so nothing is named.
+            # state carried no registry to begin with, so the session is Unspecified.
             assert superseded_turns == []
             assert target_turns == []
             lifecycle.append("trajectory.rollback")
@@ -86,7 +87,7 @@ class TestRollbackFileRevert:
         self, tmp_path: Path, *, engine_services
     ) -> None:
         engine = _make_engine(tmp_path, engine_services=engine_services)
-        engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
         engine_services(engine).history.bind(_state_after_turns(1))
         target = tmp_path / "retained.txt"
         target.write_text("before", encoding="utf-8")
@@ -129,7 +130,7 @@ class TestRollbackFileRevert:
         self, tmp_path: Path, *, engine_services
     ) -> None:
         engine = _make_engine(tmp_path, engine_services=engine_services)
-        engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
         engine_services(engine).history.bind(_state_after_turns(1))
         selected = tmp_path / "selected.txt"
         selected.write_text("before-selected", encoding="utf-8")
@@ -156,7 +157,7 @@ class TestRollbackFileRevert:
 
     async def test_welcome_failed_restore_reports_retained_paths(self, tmp_path: Path, *, engine_services) -> None:
         engine = _make_engine(tmp_path, engine_services=engine_services)
-        engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
         engine_services(engine).history.bind(_state_after_turns(1))
         target = tmp_path / "blocked.txt"
         target.write_text("before", encoding="utf-8")
@@ -180,7 +181,7 @@ class TestRollbackFileRevert:
         self, tmp_path: Path, *, engine_services
     ) -> None:
         engine = _make_engine(tmp_path, engine_services=engine_services)
-        engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
         engine_services(engine).history.bind(_state_after_turns(1))
         first = tmp_path / "first.txt"
         first.write_text("before-first", encoding="utf-8")
@@ -203,7 +204,7 @@ class TestRollbackFileRevert:
         self, tmp_path: Path, *, engine_services
     ) -> None:
         engine = _make_engine(tmp_path, engine_services=engine_services)
-        engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
         store = await seed_turns(engine, 2, engine_services=engine_services)
 
         selected = tmp_path / "selected.txt"
@@ -235,7 +236,7 @@ class TestRollbackFileRevert:
     ) -> None:
         """A rolled-back turn with truncated detection and zero recorded rows still warns."""
         engine = _make_engine(tmp_path, engine_services=engine_services)
-        engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
         engine_services(engine).history.bind(_state_after_turns(1))
         tracker = MutationTracker(SnapshotStore(tmp_path / "mutation_store"))
         tracker.start_turn(1)
@@ -256,7 +257,7 @@ class TestRollbackFileRevert:
     ) -> None:
         """The incomplete-detection caveat fires even when every known candidate restored."""
         engine = _make_engine(tmp_path, engine_services=engine_services)
-        engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
         store = await seed_turns(engine, 2, engine_services=engine_services)
 
         target = tmp_path / "restored.txt"
@@ -282,7 +283,7 @@ class TestRollbackFileRevert:
     ) -> None:
         """Truncated detection on a turn the rollback keeps does not trigger the caveat."""
         engine = _make_engine(tmp_path, engine_services=engine_services)
-        engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
         store = await seed_turns(engine, 2, engine_services=engine_services)
 
         target = tmp_path / "restored.txt"
@@ -463,7 +464,7 @@ async def test_rollback_reverts_explicit_turn_ids_above_target(
 
     restore_calls: list[tuple[str, bool]] = []
 
-    async def fake_restore(event) -> None:
+    async def fake_restore(event, *, for_rollback: bool = False) -> None:
         restore_calls.append((event.session_id, event.apply_saved_model))
 
     monkeypatch.setattr(engine.lifecycle, "on_session_restore", fake_restore)

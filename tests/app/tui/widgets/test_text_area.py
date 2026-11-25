@@ -14,6 +14,7 @@ from textual.geometry import Size
 from textual.widgets import TextArea
 from textual.widgets.text_area import Selection
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.widgets.text_area import EnhancedTextArea
 from chrys.foundation.config.settings import Settings
@@ -119,6 +120,7 @@ async def test_right_click_copies_selection_then_clears_it(monkeypatch: pytest.M
         )
 
         assert app.clipboard == "copy"
+        await wait_for_clipboard(app)
         assert copied == ["copy"]
         assert ta.selected_text == ""
 
@@ -204,6 +206,7 @@ async def test_right_click_dispatch_prevents_text_area_base_mouse_down(
 
         await ta._on_message(event)
 
+        await wait_for_clipboard(app)
         assert copied == ["copy"]
         assert ta.selected_text == ""
         assert event._no_default_action is True
@@ -306,6 +309,7 @@ async def test_action_copy_uses_cross_platform_clipboard() -> None:
 
         with patch("chrys.app.tui.clipboard.clipboard_copy") as os_copy:
             ta.action_copy()
+            await wait_for_clipboard(app)
         assert os_copy.call_args.args == ("abc",)
         assert app.clipboard == "abc"
 
@@ -386,3 +390,51 @@ async def test_render_line_with_zero_content_width_returns_blank(monkeypatch: py
         rendered = ta.render_line(0)
 
         assert rendered.cell_length == 0
+
+
+def _queued_key_area(kind: str) -> EnhancedTextArea:
+    from chrys.app.tui.screens.dialogs.approval.dialog import _ApprovalReasonTextArea
+    from chrys.app.tui.screens.diff.comment_bar import DiffCommentInput
+    from chrys.app.tui.widgets.ask_user_controls import _AskUserTextArea
+    from chrys.app.tui.widgets.editor import EditorMode, MessageEditor
+
+    if kind.startswith("editor-"):
+        return MessageEditor(text="", mode=EditorMode(kind.removeprefix("editor-")))
+    return {
+        "plain": EnhancedTextArea,
+        "approval-reason": _ApprovalReasonTextArea,
+        "ask-user": _AskUserTextArea,
+        "diff-comment": DiffCommentInput,
+    }[kind]()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind",
+    ["plain", "approval-reason", "ask-user", "diff-comment", "editor-standard", "editor-emacs", "editor-vim"],
+)
+@pytest.mark.parametrize(
+    ("queued", "expected"),
+    [
+        ((("backspace", None), ("x", "x")), "abx"),
+        ((("left", None), ("backspace", None), ("x", "x")), "axc"),
+        ((("ctrl+z", None), ("x", "x")), "x"),
+    ],
+    ids=["backspace", "move-backspace", "undo"],
+)
+async def test_keys_typed_at_once_take_effect_in_the_order_typed(kind, queued, expected) -> None:
+    """A binding typed ahead of a character runs first in every multi-line input and keymap."""
+    area = _queued_key_area(kind)
+    app = _Harness(text_area=area)
+    async with app.run_test() as pilot:
+        area.focus()
+        await wait_for(lambda: area.has_focus, pilot=pilot, description="input focused")
+        if kind == "editor-vim":
+            await pilot.press("i")
+        await pilot.press("a", "b", "c")
+        for key, character in queued:
+            app.post_message(Key(key, character))
+        await wait_for(lambda: area.text != "abc", pilot=pilot, description="queued keys handled")
+        await pilot.pause()
+
+        assert area.text == expected

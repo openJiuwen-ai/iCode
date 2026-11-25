@@ -5,12 +5,15 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
 import chrys.foundation.platform as platform_mod
+from chrys.foundation.config import settings_store
 from chrys.foundation.config.coercion import CoerceReason, CoerceStatus
 from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.runtime_pointer import set_model_pointer
@@ -18,7 +21,10 @@ from chrys.foundation.config.settings import MAX_TRANSIENT_RETRIES_LIMIT, Settin
 from chrys.foundation.config.settings_store import load_settings, persist
 from chrys.foundation.config.spec import Apply, Kind, SettingOrigin, Source, specs_by_field
 from chrys.foundation.config.user_settings import user_settings_path
+from chrys.foundation.config.yaml_store import ConfigDocumentError
+from chrys.foundation.models.workspace import path_identity
 from chrys.foundation.text.images import MAX_IMAGE_BYTES
+from tests.support.symlinks import symlink_or_skip
 
 
 @pytest.fixture
@@ -37,6 +43,93 @@ def _write_user_yaml(config_dir: Path, text: str) -> Path:
     path = config_dir / "settings.yaml"
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def test_load_settings_records_the_directory_it_was_loaded_for(config_dir: Path, tmp_path: Path) -> None:
+    """A load's own directory belongs to it whether or not the gate lets its layer be read."""
+    freeze_process_env()
+    workdir = tmp_path / "workspace"
+    workdir.mkdir()
+
+    assert load_settings().workdir_identity is None
+    assert load_settings(workdir=workdir).workdir_identity == path_identity(workdir)
+    _write_user_yaml(config_dir, "workdir:\n  config_enabled: true\n")
+    assert load_settings(workdir=workdir).workdir_identity == path_identity(workdir)
+
+
+@pytest.mark.parametrize(
+    ("swaps", "read_from"),
+    [
+        pytest.param({"before_load": "second"}, "second", id="before-the-load"),
+        pytest.param({"before_read": "second"}, "first", id="after-resolving-before-reading"),
+        pytest.param({"after_read": "second"}, "first", id="after-reading"),
+        pytest.param({"before_read": "second", "after_read": "first"}, "first", id="away-and-back"),
+    ],
+)
+def test_settings_always_carry_the_identity_of_the_folder_they_were_read_from(
+    config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, swaps: dict[str, str], read_from: str
+) -> None:
+    """A link retargeted at any point of the load never pairs one folder's values with another's identity."""
+    freeze_process_env()
+    _write_user_yaml(config_dir, "workdir:\n  config_enabled: true\n")
+    folders = {"first": tmp_path / "first", "second": tmp_path / "second"}
+    for name, retries in (("first", 3), ("second", 5)):
+        (folders[name] / ".chrys").mkdir(parents=True)
+        (folders[name] / ".chrys" / "settings.yaml").write_text(f"llm:\n  retry:\n    max_transient: {retries}\n")
+    link = tmp_path / "link"
+    symlink_or_skip(link, folders["first"], target_is_directory=True)
+
+    def point_link(moment: str) -> None:
+        if moment in swaps:
+            link.unlink()
+            symlink_or_skip(link, folders[swaps[moment]], target_is_directory=True)
+
+    read_file_layers = settings_store._read_file_layers
+
+    def read_with_swaps(*args: Any, **kwargs: Any) -> Any:
+        point_link("before_read")
+        layers = read_file_layers(*args, **kwargs)
+        point_link("after_read")
+        return layers
+
+    monkeypatch.setattr(settings_store, "_read_file_layers", read_with_swaps)
+    point_link("before_load")
+    loaded = load_settings(workdir=link)
+
+    assert loaded.settings.max_transient_retries == {"first": 3, "second": 5}[read_from]
+    assert loaded.workdir_identity == path_identity(folders[read_from])
+    assert loaded.source_for("llm.retry.max_transient").path == link / ".chrys" / "settings.yaml"
+
+
+def test_a_strict_reload_names_the_broken_folder_file_as_the_user_spelled_it(config_dir: Path, tmp_path: Path) -> None:
+    freeze_process_env()
+    _write_user_yaml(config_dir, "workdir:\n  config_enabled: true\n")
+    folder = tmp_path / "folder"
+    (folder / ".chrys").mkdir(parents=True)
+    (folder / ".chrys" / "settings.yaml").write_text("llm: [broken\n")
+    link = tmp_path / "link"
+    symlink_or_skip(link, folder, target_is_directory=True)
+
+    with pytest.raises(ConfigDocumentError) as raised:
+        load_settings(workdir=link, manual_reload=True)
+
+    assert str(link / ".chrys" / "settings.yaml") in str(raised.value)
+    assert str(folder) not in str(raised.value)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows folds '..' before walking the path")
+def test_a_working_directory_that_cannot_be_walked_reads_no_folder_config(config_dir: Path, tmp_path: Path) -> None:
+    """``missing/..`` names no folder, so lexical folding must not read the folder around it."""
+    freeze_process_env()
+    _write_user_yaml(config_dir, "workdir:\n  config_enabled: true\n")
+    project = tmp_path / "project"
+    (project / ".chrys").mkdir(parents=True)
+    (project / ".chrys" / "settings.yaml").write_text("llm:\n  retry:\n    max_transient: 5\n")
+
+    loaded = load_settings(workdir=project / "missing" / "..")
+
+    assert loaded.source_for("llm.retry.max_transient").layer is not Source.WORKDIR
+    assert loaded.settings.max_transient_retries == load_settings(env={}).settings.max_transient_retries
 
 
 def test_search_ignore_setting_defaults_and_round_trips(config_dir: Path) -> None:
@@ -385,22 +478,22 @@ def test_approval_timeout_preserves_explicit_zero_and_positive_values(config_dir
 def test_settings_reload_ignores_legacy_files(config_dir, tmp_path, monkeypatch, yaml_theme) -> None:
     _clear_theme(monkeypatch)
     freeze_process_env()
-    project = tmp_path / "workspace"
-    project.mkdir()
+    workdir = tmp_path / "workspace"
+    workdir.mkdir()
     if yaml_theme is not None:
         _write_user_yaml(config_dir, f"ui:\n  theme: {yaml_theme}\n")
     user_env = _write_user_env(config_dir, "CHRYS_THEME=solar\n")
-    project_env = project / ".env"
-    project_env.write_text("CHRYS_THEME=solar\n", encoding="utf-8")
+    workdir_env = workdir / ".env"
+    workdir_env.write_text("CHRYS_THEME=solar\n", encoding="utf-8")
 
     for changed in ("solar", "midnight"):
-        for path in (user_env, project_env):
+        for path in (user_env, workdir_env):
             path.write_text(f"CHRYS_THEME={changed}\n", encoding="utf-8")
-        loaded = load_settings(project_root=project)
+        loaded = load_settings(workdir=workdir)
         assert loaded.settings.theme == (yaml_theme or Settings().theme)
         assert loaded.source_for("ui.theme").layer is (Source.USER if yaml_theme else Source.DEFAULT)
         assert loaded.warnings == ()
-        for path in (user_env, project_env):
+        for path in (user_env, workdir_env):
             assert path.read_text(encoding="utf-8") == f"CHRYS_THEME={changed}\n"
 
 
@@ -464,7 +557,7 @@ def test_bad_edit_keeps_last_document_across_readers_and_refuses_writes(config_d
     with pytest.raises(ConfigDocumentError, match="line 1"):
         load_settings(manual_reload=True)
     assert get_global_default_profile_id() == "A"
-    loaded = load_settings(project_root=config_dir.parent)
+    loaded = load_settings(workdir=config_dir.parent)
     assert loaded.document_error
     assert loaded.settings.ask_user_timeout_seconds == 65
     assert isinstance(persist_theme("chrys"), ConfigDocumentError)

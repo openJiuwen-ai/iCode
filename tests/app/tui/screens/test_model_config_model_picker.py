@@ -28,7 +28,6 @@ from tests.app.tui.screens._model_list_support import (
     _close_list,
     _open_by_arrow,
     _open_by_down,
-    assert_overlay_visible,
     fetch_list,
     focus_handled,
     model_input,
@@ -38,6 +37,7 @@ from tests.app.tui.screens._model_list_support import (
     overlay_expanded,
     overlay_texts,
     type_into,
+    wait_for_overlay_visible,
 )
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for, wait_until, wait_until_quiet
@@ -90,11 +90,11 @@ async def opened_list(
 
 @pytest.mark.parametrize("by", ["fetch", "arrow", "down"])
 async def test_exact_id_opens_everything_with_it_highlighted(fake_discover: FakeDiscover, by: str) -> None:
-    async with opened_list(fake_discover, "openai/gpt-5.5", by=by) as (screen, _pilot):
+    async with opened_list(fake_discover, "openai/gpt-5.5", by=by) as (screen, pilot):
         assert overlay_texts(screen) == ordered("openai/gpt-5.5")
         assert overlay(screen).highlighted == 0
         assert overlay(screen).has_focus
-        assert_overlay_visible(screen)
+        await wait_for_overlay_visible(screen, pilot)
 
 
 @pytest.mark.parametrize("by", ["fetch", "arrow", "down"])
@@ -156,7 +156,7 @@ async def test_pasting_while_open_edits_the_input_and_reorders(fake_discover: Fa
         )
         assert overlay(screen).highlighted == 0
         assert overlay_expanded(screen)
-        assert_overlay_visible(screen)
+        await wait_for_overlay_visible(screen, pilot)
         assert overlay(screen).has_focus
         assert model.cursor_position == len(model.value)
 
@@ -652,7 +652,7 @@ async def test_opening_scrolls_the_form_so_the_list_sits_below_the_input(
             lambda: (scroll.scroll_y, menu.region, model.region), description="form scrolled", pilot=pilot
         )
 
-        assert_overlay_visible(screen)
+        await wait_for_overlay_visible(screen, pilot)
         assert model.region.height > 0, model.region
         assert scroll.region.contains_region(model.region), (model.region, scroll.region)
         assert menu.region.y > model.region.y, (menu.region, model.region)

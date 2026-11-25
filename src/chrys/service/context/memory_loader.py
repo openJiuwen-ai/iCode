@@ -30,6 +30,7 @@ from pathlib import Path
 
 from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import msg
+from chrys.foundation.models.workspace import path_identity
 from chrys.foundation.platform.paths import is_absolute_path as _is_absolute_path
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
@@ -129,18 +130,18 @@ def load_memory_content(
     folder_candidates: dict[str, list[_Candidate]] = {}
     # Each physical file loads once: explicit files win over
     # folder-discovered duplicates, earlier folders over later ones.
-    # Identity is filesystem-aware (see _file_identity) so case aliases on
+    # Identity is filesystem-aware (see path_identity) so case aliases on
     # case-insensitive filesystems and symlinked spellings collapse.
     seen_files: set[object] = set()
 
     # Files: each configured path resolves to a single file.  Relative files
     # stay workspace-contained; absolute files are intentionally allowed.
     for raw in memory.files:
-        path = _safe_resolve_file(raw, base)
-        if path is None or not path.is_file() or path.suffix.lower() not in _ALLOWED_SUFFIXES:
+        path = memory_file_path(raw, base)
+        if path is None:
             missing.append(raw)
             continue
-        identity = _file_identity(path)
+        identity = path_identity(path)
         if identity in seen_files:
             continue
         seen_files.add(identity)
@@ -158,7 +159,7 @@ def load_memory_content(
         if folder is None or not folder.is_dir():
             missing.append(raw)
             continue
-        folder_identity = _file_identity(folder)
+        folder_identity = path_identity(folder)
         if folder_identity in seen_folders:
             # Alias (symlink / case spelling) of an already-scanned folder —
             # its files are all loaded there; re-registering would overwrite
@@ -570,6 +571,14 @@ def _flag_duplicates(
             seen[norm] = i
 
 
+def memory_file_path(raw: str, base: Path) -> Path | None:
+    """An existing eligible reference file, shared by full loading and workspace indexes."""
+    path = _safe_resolve_file(raw, base)
+    if path is None or not path.is_file() or path.suffix.lower() not in _ALLOWED_SUFFIXES:
+        return None
+    return path
+
+
 def _safe_resolve_file(raw: str, base: Path) -> Path | None:
     """Resolve a configured file path.
 
@@ -635,26 +644,6 @@ def _safe_resolve_folder(raw: str, base: Path) -> Path | None:
     return resolved
 
 
-def _file_identity(path: Path) -> object:
-    """Filesystem-aware identity key: same physical file/dir → same key.
-
-    ``(st_dev, st_ino)`` collapses case aliases on case-insensitive
-    filesystems ("DOCS/SPEC.MD" vs "docs/spec.md"), symlinked spellings,
-    and hardlinks — a raw ``realpath`` string preserves the queried case
-    and misses the first class.  Falls back to the case-folded realpath
-    when ``stat`` fails or the filesystem reports no inode (st_ino == 0 on
-    some Windows network shares — a zero inode is NOT an identity; two
-    distinct files would collide on it).
-    """
-    try:
-        st = os.stat(path)
-    except OSError:
-        return os.path.normcase(os.path.realpath(path))
-    if st.st_ino:
-        return (st.st_dev, st.st_ino)
-    return os.path.normcase(os.path.realpath(path))
-
-
 def _rel(path: Path, base: Path) -> str:
     """Return *path* relative to *base* in POSIX form.
 
@@ -693,7 +682,7 @@ def _walk_folder(folder: Path, base: Path, seen_files: set[object]) -> list[Path
     files are found — breadth-first, so shallow (typically curated) files
     win over deep ones when the cap bites.
 
-    Only files whose physical identity (see ``_file_identity``) is not
+    Only files whose physical identity (see ``path_identity``) is not
     already in *seen_files* are collected — and only those count toward
     ``FOLDER_MAX_FILES``, so aliases of an already-loaded file (explicit,
     earlier-folder, or within this folder) cannot crowd unique files out
@@ -763,7 +752,7 @@ def _walk_folder(folder: Path, base: Path, seen_files: set[object]) -> list[Path
             if not file_real.is_relative_to(base):
                 # Single-file symlink pointing outside the workspace.
                 continue
-            identity = _file_identity(file_path)
+            identity = path_identity(file_path)
             if identity in seen_files:
                 continue
             seen_files.add(identity)

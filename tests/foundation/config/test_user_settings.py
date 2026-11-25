@@ -25,6 +25,16 @@ def test_flatten_skips_the_reserved_housekeeping_keys() -> None:
     assert unknown == ()
 
 
+def test_flatten_skips_a_retired_setting_in_any_spelling() -> None:
+    for doc in (
+        {"ui": {"theme": "dark", "chat": {"fold_finished_turns": False}}},
+        {"ui.chat.fold_finished_turns": True, "ui": {"theme": "dark"}},
+    ):
+        values, unknown = flatten_user_doc(doc, KNOWN)
+        assert values == {"ui.theme": "dark"}
+        assert unknown == ()
+
+
 def test_flatten_reports_unknown_leaves_without_dropping_known_siblings() -> None:
     doc = {"ui": {"theme": "dark", "them": "typo"}, "stray": 1}
     values, unknown = flatten_user_doc(doc, KNOWN)
