@@ -7113,14 +7113,26 @@ msgstr "选择文件"
 msgid "tui.file_picker.title.folder"
 msgstr "选择文件夹"
 
+#. English: Copy Resume Command
+#. chrys-meta={"fingerprint":"ed3daf53ad572911c1165cd3d6f114eca024467b71c56c115adc3933df0884d4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/fork_session.py
+msgid "tui.fork_session.button.copy_command"
+msgstr "复制恢复命令"
+
+#. English: Open in New Tab
+#. chrys-meta={"fingerprint":"4c830c9c42f90dc68c0488b7e2a2c8fa78df8f23449349d02e329d11a92447f6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/fork_session.py
+msgid "tui.fork_session.button.new_tab"
+msgstr "在新标签页打开"
+
 #. English: Ok
 #. chrys-meta={"fingerprint":"d42d95676a5fb59c33cf368c1c8fc71930805c1f4111bb007f02ca6bc05ed42a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/fork_session.py
 msgid "tui.fork_session.button.ok"
 msgstr "确定"
 
-#. English: Open New Window
-#. chrys-meta={"fingerprint":"79a6673345a27d87b4ac35a660e8121e95ee63b486548aa790de5bfa1b719ec2","multiline":false,"placeholders":[]}
+#. English: Open in New Window
+#. chrys-meta={"fingerprint":"03c5bbed4f8a25b107dc9600fb374d02476f67d94dea6de8bf7972fe94882035","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/fork_session.py
 msgid "tui.fork_session.button.open_new_window"
 msgstr "在新窗口中打开"
@@ -7148,6 +7160,36 @@ msgstr "已创建分支 {fork_short_id}。"
 #: src/chrys/app/tui/screens/dialogs/fork_session.py
 msgid "tui.fork_session.creating"
 msgstr "正在创建会话分支..."
+
+#. English: macOS denied permission to control the terminal.
+#. chrys-meta={"fingerprint":"11a4a2110d21bd176b512e784b7999949f68a031022cc5714ce09c3cf1aa5d2d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.denied"
+msgstr "macOS 拒绝了控制终端的权限。"
+
+#. English: The terminal could not open the tab: {error}
+#. chrys-meta={"fingerprint":"75c63f6ea74b91bbc0e420caecb8d02ea32d1869ef96ddb98871c44cc74bc1c8","multiline":false,"placeholders":["error"]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.failed"
+msgstr "终端无法打开标签页：{error}"
+
+#. English: Could not uniquely identify the originating terminal.
+#. chrys-meta={"fingerprint":"2e1d0c18e2dd714c166ced42a3999043bb9e21e9b93e9f97e7181d7213233157","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.source_gone"
+msgstr "无法唯一确定发起分叉的终端。"
+
+#. English: The terminal did not confirm whether the tab opened.
+#. chrys-meta={"fingerprint":"f08ea0d5004c68bec12a6297ceb0df44f0f8d12e476508a9fdc38529c21cdc4e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.timeout"
+msgstr "终端未确认标签页是否已打开。"
+
+#. English: This terminal cannot identify the originating window for a new tab.
+#. chrys-meta={"fingerprint":"46d58266af3fb4d5bf5703e2ca7ed07a05f79b2c71f778276514978afb4c039b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/fork_tab.py
+msgid "tui.fork_session.tab.unavailable"
+msgstr "当前终端无法为新标签页定位发起分叉的窗口。"
 
 #. English: Fork Failed
 #. chrys-meta={"fingerprint":"5c2dff15f2a53274d67bcb434db898de398827f16748b62ed8110df088224b23","multiline":false,"placeholders":[]}
@@ -8483,17 +8525,17 @@ msgstr ""
 "点击过程标题可以只切换该片段。\n"
 "查看较长会话时可用它精简视图。"
 
-#. English: Create an independent branch of the current session.  The current
-#. window stays on the existing session. After the fork is created, choose
-#. whether to stay here or switch this window to the forked session.
-#. chrys-meta={"fingerprint":"8fa3c6cfea1e5f4ad5e2af6d109848eee72d121c1f9c862581bce84c78ced01a","multiline":true,"placeholders":[]}
+#. English: Create an independent branch of the current session.  Switch to the
+#. fork here, open it in a supported terminal, or copy the resume command to
+#. run in another tab.
+#. chrys-meta={"fingerprint":"cedd41950a48b4cf28b8504b97cf46ad0397ae2289fb91fc653c8180280247db","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.fork.body"
 msgstr ""
 "为当前会话创建一个独立分支。\n"
 "\n"
-"当前窗口会留在现有会话。分支创建后，可选择\n"
-"留在这里，或将此窗口切换到分支会话。"
+"可以在这里切换到分支，在支持的终端中打开分支，\n"
+"也可以复制恢复命令，在其他标签页运行。"
 
 #. English: ALIASES
 #. chrys-meta={"fingerprint":"6c2cade5eb24c3067fd4ec4bf38798be874aa1f57f9b53d97658552c51c951e5","multiline":false,"placeholders":[]}
@@ -13408,6 +13450,12 @@ msgstr "无法打开 {label}：启动程序退出状态为 {failure_code}。"
 #: src/chrys/app/tui/terminal/launcher.py
 msgid "tui.terminal.launch.macos_failed"
 msgstr "无法打开 Terminal：{error}"
+
+#. English: The terminal did not confirm whether the window opened.
+#. chrys-meta={"fingerprint":"54506f6a20a5af854cfd94232c763f55b26221481b7a8e0352565d3fca78f058","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/terminal/launcher.py
+msgid "tui.terminal.launch.no_reply"
+msgstr "终端未确认窗口是否已打开。"
 
 #. English: Opening a new {app} window is not available in the current
 #. environment.
