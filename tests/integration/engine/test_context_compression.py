@@ -187,8 +187,6 @@ class TestCompress:
         assert len(state["compressed_msgs"]) == 1
         assert state["compressed_msgs"][0].turn_range == (1, 3)
 
-        # State messages should be unaffected (they're replaced by summary anyway)
-
     def test_compress_invalid_marker_raises(self) -> None:
         state = _build_multi_turn_state(2)
         with pytest.raises(ValueError, match="not found"):
