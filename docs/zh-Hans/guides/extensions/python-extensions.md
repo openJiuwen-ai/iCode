@@ -150,16 +150,17 @@ iCode 在导入扩展时会检查每个工具：函数不是 `async def`、参�
 | --- | --- |
 | `cwd` | 当前[工作目录](../daily-use/workspaces.md)；以它为基准解析相对路径 |
 | `workspace_dirs` | 工作目录，以及其后的各个附加工作目录 |
-| `agent_name` | 调用该工具的智能体名称 |
-| `agent_id` | 主智能体为 `None`，子代理工具为 `sub:<tool_name>`，工作流节点的每次激活为 `workflow:<invocation_id>` |
+| `agent_name` | 调用该工具的智能体所使用的 profile 名 |
+| `caller_name` | 主智能体的 profile 名、子代理注册的工具名（如 `Explore`）或工作流节点 ID |
+| `invocation_type` | 与 `invocation_id` 对应的调用类型。扩展回调中为 `turn`、`sub_agent` 或 `workflow_node`，在调用之外为 `None` |
 | `invocation_id` | 当前主智能体回合、单次子代理调用或工作流节点激活的 ID，在调用之外为 `None` |
 | `session_id` | 会话 ID，或 `None` |
 | `data_dir` | 存放扩展自身文件的文件夹，跨会话保留：iCode 配置目录中的 `extension-data/<扩展 ID>` |
 | `session_data_dir` | 存放扩展在本会话中文件的文件夹，位于会话目录内；会话没有目录时为 `None`。复刻会话时会复制这个文件夹，因此请保存相对于它的路径 |
 
-工具、每轮上下文和工具钩子读到的 `agent_id` 相同。扩展可将它与 `session_id`、`agent_name` 一起用于区分资源归属。子代理 ID 只取决于工具名。多次调用同一工具会得到相同的 ID，不同工作流节点注册同名子代理工具时也是如此。工作流节点重试时保留原 ID，再次激活时获得新 ID。
+如果把名为 `Researcher` 的 profile 注册为工具 `Explore`，插件会读到 `agent_name="Researcher"` 和 `caller_name="Explore"`。并行调用两次 `Explore`，调用方名称和类型相同，调用 ID 各不相同。每次调用内部，工具、钩子和每轮上下文读到的这三个值一致。
 
-如果资源应由单次调用独享，将 `invocation_id` 加入资源键。并行调用同一子代理工具两次会得到两个不同的调用 ID。每次调用内部，工具、工具钩子和每轮上下文读到的调用 ID 相同。工作流节点重试时沿用本次激活的调用 ID。
+单次调用独享的资源可用 `(session_id, invocation_type, invocation_id)` 作键。同一会话内，若要让同名、同类型调用方的多次调用共享资源，可用 `(session_id, invocation_type, caller_name)` 作键。工作流节点重试时保留调用 ID，再次激活时获得新 ID。
 
 iCode 会在工具首次使用这两个文件夹时创建它们，且只有你可以读取。上下文只在传给它的那次调用中有效：不要留到之后的调用中使用。工具只能通过其结果改变 iCode 的状态；它修改的其他内容都是文件和服务，就像你运行的任何程序一样。
 
@@ -340,7 +341,7 @@ def test_reads_the_version(tmp_path):
     assert asyncio.run(pyproject_version(ctx)) == "1.2.0"
 ```
 
-`ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=..., agent_id=..., invocation_id=...)` 只为工具提供你传入的文件夹：未传入 `data_dir` 时访问 `ctx.data_dir` 会报错；未传入 `session_data_dir` 时 `ctx.session_data_dir` 为 `None`。
+`ToolContext.for_testing(cwd, data_dir=..., session_data_dir=..., agent_name=..., session_id=..., caller_name=..., invocation_type=..., invocation_id=...)` 只为工具提供你传入的文件夹：未传入 `data_dir` 时访问 `ctx.data_dir` 会报错；未传入 `session_data_dir` 时 `ctx.session_data_dir` 为 `None`。
 
 上下文和工具钩子同样是普通的异步函数。用 `TurnContext.for_testing(tmp_path, prompt="...")` 调用上下文；用你构造的 `ToolCall` 和 `ToolResult` 调用钩子：
 

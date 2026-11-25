@@ -313,11 +313,17 @@ def bind_extension(extension_id: str, extension: Extension, build: ToolBuild) ->
     """Everything the extension declares, bound for one agent build."""
     fields = _context_fields(extension_id, build)
 
+    def invocation_fields() -> dict[str, Any]:
+        origin = current_invocation_origin.get()
+        if origin is None:
+            return fields
+        return {**fields, "invocation_type": origin.kind, "invocation_id": origin.invocation_id}
+
     def turn_context(prompt: str) -> TurnContext:
-        return TurnContext(prompt=prompt, invocation_id=_invocation_id(), **fields)
+        return TurnContext(prompt=prompt, **invocation_fields())
 
     def tool_context() -> ToolContext:
-        return ToolContext(invocation_id=_invocation_id(), **fields)
+        return ToolContext(**invocation_fields())
 
     return BoundExtension(
         tools=[_bind(extension_id, declaration, tool_context, build.session_dir) for declaration in extension.tools],
@@ -348,11 +354,6 @@ def context_failed_warning(context: BoundContext, reason: str) -> Warning:
     )
 
 
-def _invocation_id() -> str | None:
-    origin = current_invocation_origin.get()
-    return origin.invocation_id if origin is not None else None
-
-
 def _context_fields(extension_id: str, build: ToolBuild) -> dict[str, Any]:
     """What the extension's ``ToolContext`` and ``TurnContext`` say about the build."""
     runtime = build.runtime
@@ -361,7 +362,7 @@ def _context_fields(extension_id: str, build: ToolBuild) -> dict[str, Any]:
         "cwd": folders[0],
         "workspace_dirs": folders,
         "agent_name": build.agent_name,
-        "agent_id": build.agent_id,
+        "caller_name": build.caller_name if build.caller_name is not None else build.agent_name,
         "session_id": build.session_id or None,
         "_data_dir": partial(_private_dir, get_platform().config_dir / EXTENSION_DATA_DIR_NAME / extension_id),
         "_session_data_dir": (

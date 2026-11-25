@@ -257,7 +257,7 @@ async def _build_kernel_node(
     tool_build = tool_packs.ToolBuild(
         tools=profile.tools,
         agent_name=profile.name,
-        agent_id=f"workflow:{invocation_id}",
+        caller_name=node_id,
         runtime=environment,
         settings=res.settings,
         session_id=session_id,

@@ -643,7 +643,7 @@ class SubAgentTools:
             tool_build = tool_packs.ToolBuild(
                 tools=profile.tools,
                 agent_name=profile.name,
-                agent_id=f"sub:{tool_name}",
+                caller_name=tool_name,
                 runtime=runtime,
                 settings=settings,
                 session_id=self._session_id,
