@@ -811,9 +811,10 @@ def test_retry_rollback_restores_pre_compression_history_and_pre_output_floor() 
 
     rollback.restore(snapshot)
 
-    assert [message.text for message in history["messages"]] == ["first", "second"]
-    assert history["compressed_msgs"] == []
-    assert history[PRE_OUTPUT_HISTORY_LEN_STATE_KEY] == 2
+    restored = session.state["chrys_history"]
+    assert [message.text for message in restored["messages"]] == ["first", "second"]
+    assert restored["compressed_msgs"] == []
+    assert restored[PRE_OUTPUT_HISTORY_LEN_STATE_KEY] == 2
     assert restored_approval_snapshots == [approval_snapshot]
 
 
