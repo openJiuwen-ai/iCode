@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -158,6 +159,57 @@ async def test_settings_queue_flush_can_surface_an_environmental_failure(monkeyp
     queue.schedule({"ui.theme": "light"})
     await queue.flush(notify_on_failure=True)
     assert [str(exc) for exc in failures] == ["locked"]
+
+
+async def test_immediate_write_commits_the_pending_batch_before_later_edits(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _Recorder()
+    receipts: list[str] = []
+    key = "approval.default_mode"
+    queue = _queue(monkeypatch, recorder, on_written=lambda result: receipts.append(result.written[key]))
+
+    queue.schedule({key: "manual"})
+    await queue.persist_immediately({key: "bypass"})
+    queue.schedule({key: "auto"})
+    assert await queue.flush()
+    assert receipts == ["manual", "bypass", "auto"]
+
+
+async def test_flush_joins_an_immediate_write_after_the_debounce_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    from threading import Event
+
+    from tests.support.waiting import DEFAULT_WAIT_TIMEOUT
+
+    recorder = _Recorder()
+    queue = _queue(monkeypatch, recorder)
+    key = "approval.default_mode"
+
+    release = Event()
+    committed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def hold_receipt(values, **kwargs):
+        result = recorder.persist(values, **kwargs)
+        if values[key] == "bypass":
+            loop.call_soon_threadsafe(committed.set)
+            assert release.wait(DEFAULT_WAIT_TIMEOUT)
+        return result
+
+    monkeypatch.setattr(settings_persistence, "persist", hold_receipt)
+
+    queue.schedule({key: "manual"})
+    debounce = queue.save_task
+    assert debounce is not None
+    async with asyncio.TaskGroup() as tasks:
+        tasks.create_task(queue.persist_immediately({key: "bypass"}), eager_start=True)
+        await debounce
+        await asyncio.wait_for(committed.wait(), DEFAULT_WAIT_TIMEOUT)
+        flush = tasks.create_task(queue.flush(), eager_start=True)
+        try:
+            assert not flush.done()
+        finally:
+            release.set()
+    assert flush.result() is True
+    assert [values[key] for values, _, _ in recorder.calls] == ["manual", "bypass"]
 
 
 async def test_settings_queue_an_empty_schedule_is_inert(monkeypatch: pytest.MonkeyPatch) -> None:

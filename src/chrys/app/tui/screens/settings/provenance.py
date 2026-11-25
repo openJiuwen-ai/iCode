@@ -56,9 +56,14 @@ def is_greyed_layer(origin: SettingOrigin) -> bool:
 
 def provenance_view(loaded: LoadedSettings, key: str) -> ProvenanceView:
     """Describe how *key* renders given where its effective value came from."""
-    origin = loaded.source_for(key)
+    origin = loaded.controlling_source_for(key)
     if key in loaded.sealed_keys:
-        return ProvenanceView(editable=True, badge=_BADGE_SEALED.bind(), hint=_sealed_hint(loaded, key), sealed=True)
+        return ProvenanceView(
+            editable=not is_greyed_layer(origin),
+            badge=_BADGE_SEALED.bind(),
+            hint=_sealed_hint(loaded, key),
+            sealed=True,
+        )
     layer = origin.layer
     if layer is Source.WORKDIR:
         path = DisplayPath(origin.path) if origin.path is not None else DisplayPath("settings.yaml")
@@ -78,9 +83,9 @@ def provenance_view(loaded: LoadedSettings, key: str) -> ProvenanceView:
 
 def _sealed_hint(loaded: LoadedSettings, key: str) -> MessageRef:
     """The verdict that sealed *key*: the last rejection the loader recorded for it."""
-    for warning in reversed(loaded.warnings):
-        if warning.key == key and warning.rejected:
-            return warning_display_message(warning)
+    warning = loaded.sealing_warning(key)
+    if warning is not None:
+        return warning_display_message(warning)
     return _HINT_SEALED.bind()
 
 

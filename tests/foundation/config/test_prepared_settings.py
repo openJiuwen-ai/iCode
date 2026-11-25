@@ -168,6 +168,20 @@ def test_a_write_with_no_choice_behind_it_or_outside_the_live_tier_confirms_noth
     assert handle.confirmed_overrides() == {}
 
 
+def test_a_manual_file_edit_supersedes_the_confirmed_next_launch_approval_mode() -> None:
+    handle = SettingsHandle(LoadedSettings(settings=Settings(), provenance={}))
+    handle.note_approval_default_written("bypass")
+    candidate = LoadedSettings(
+        settings=Settings(default_approval_mode="manual"),
+        provenance={},
+        file_values={"default_approval_mode": "manual"},
+        confirmed_overrides=handle.confirmed_overrides(),
+    )
+    handle.install_prepared(handle.prepare(candidate))
+    assert handle.settings.default_approval_mode == "manual"
+    assert _source(handle, "approval.default_mode") is not Source.RUNTIME
+
+
 def test_a_choice_made_after_the_load_was_prepared_stays_and_the_others_end() -> None:
     handle = SettingsHandle(LoadedSettings(settings=Settings(), provenance={}))
     handle.override(theme="picked", locale="zh-Hans")

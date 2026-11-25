@@ -470,11 +470,12 @@ class SetApprovalMode(Event):
     The engine updates ``ApprovalMiddleware`` and echoes ``ApprovalModeUpdated``
     so the TUI can refresh the badge from the authoritative backend state.
     ``persist`` controls whether the mode is also written as the global default;
-    ACP standard session-mode changes are session-scoped and set this false.
+    ACP session-mode changes set this false. A frontend that owns an ordered
+    settings writer can request "frontend" and save the confirmed mode itself.
     """
 
     mode: str = ""  # "manual" | "auto" | "bypass"
-    persist: bool = True
+    persist: bool | Literal["frontend"] = True
 
 
 @dataclass
@@ -1001,6 +1002,10 @@ class ApprovalModeUpdated(Event):
     """
 
     mode: str = ""  # "manual" | "auto" | "bypass"
+    saved_as_default: bool = False
+    """This update also committed the global default for future launches."""
+    save_in_frontend: bool = False
+    """The requesting frontend owns the write for this confirmed choice."""
 
 
 @dataclass

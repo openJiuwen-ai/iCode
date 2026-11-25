@@ -561,10 +561,7 @@ class AcpSessionManager:
 
         Validation is the settings store's own: the same coercer that will
         read the value back judges it on the way in, and a rejected value
-        never reaches the file. ``bypass`` never persists —
-        :func:`chrys.foundation.config.settings_store.persist` downgrades it
-        to ``auto`` so the next launch cannot start in unattended
-        auto-approval mode.
+        never reaches the file.
 
         No ``os.environ`` mirror: a mirrored value would come back as the
         ``ENV`` layer and outrank the very document this just wrote. The one
