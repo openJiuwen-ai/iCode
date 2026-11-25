@@ -115,8 +115,31 @@ async def _page_state(session: Any, cdp_session_id: str | None) -> dict[str, Any
     return await page_state(session, cdp_session_id, evaluate=eval_value)
 
 
+def _owned_page_ids(session: Any) -> set[str]:
+    pages_fn = getattr(session, "pages", None)
+    if not callable(pages_fn):
+        return set()
+    return {str(page.target_id) for page in pages_fn() if getattr(page, "target_id", None)}
+
+
+def _new_tab_since(session: Any, before_ids: set[str]) -> str | None:
+    pages_fn = getattr(session, "pages", None)
+    if not callable(pages_fn):
+        return None
+    for page in pages_fn():
+        tid = str(getattr(page, "target_id", "") or "")
+        if tid and tid not in before_ids:
+            return tid
+    return None
+
+
 async def _settled_effect(
-    session: Any, cdp_session_id: str | None, before: dict[str, Any], dialog_seq: int
+    session: Any,
+    cdp_session_id: str | None,
+    before: dict[str, Any],
+    dialog_seq: int,
+    *,
+    pages_before: set[str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     try:
         after = await _page_state(session, cdp_session_id)
@@ -127,6 +150,8 @@ async def _settled_effect(
     if session.dialog_since(dialog_seq) is not None:
         return "dialog", {}
     effect = _classify_effect(before, after)
+    if pages_before is not None and effect != "navigation" and _new_tab_since(session, pages_before):
+        return "new_tab", after
     for _ in range(_CLICK_POLLS):
         if effect != "none":
             break
@@ -140,6 +165,8 @@ async def _settled_effect(
         if session.dialog_since(dialog_seq) is not None:
             return "dialog", {}
         effect = _classify_effect(before, after)
+        if pages_before is not None and effect != "navigation" and _new_tab_since(session, pages_before):
+            return "new_tab", after
     return effect, after
 
 
@@ -648,6 +675,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         dispatch=dispatch,
     )
     dialog_seq = session.dialog_seq
+    pages_before = _owned_page_ids(session)
     if dispatch == "dom":
 
         async def send_click() -> None:
@@ -716,7 +744,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         target_ref=entry.token,
         dispatch=dispatch,
     )
-    effect, _ = await _settled_effect(session, cdp_session_id, before, dialog_seq)
+    effect, _ = await _settled_effect(session, cdp_session_id, before, dialog_seq, pages_before=pages_before)
     if effect == "dialog":
         text = _dialog_blocked(session, entry, label, session.dialog_since(dialog_seq), action_id)
         record_action(
@@ -733,10 +761,13 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         return WriteOutcome(
             status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
         )
+    new_tab_id = _new_tab_since(session, pages_before)
+    if new_tab_id is not None and effect != "navigation":
+        effect = "new_tab"
     verified_control = False
-    if not baseline_ok:
+    if not baseline_ok and effect != "new_tab":
         effect = "unknown"
-    elif effect not in ("navigation", "unknown") and _has_control_state(facts):
+    elif effect not in ("navigation", "new_tab", "unknown") and _has_control_state(facts):
         orig_effect = effect
         if effect == "dom":
             effect = "dom_elsewhere"
@@ -825,10 +856,10 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
         )
 
-    if effect in ("navigation", "dom", "target_detached"):
+    if effect in ("navigation", "new_tab", "dom", "target_detached"):
         session.note_success(session.target_id)
 
-    status = "succeeded" if effect in ("navigation", "dom", "target_detached") else "uncertain"
+    status = "succeeded" if effect in ("navigation", "new_tab", "dom", "target_detached") else "uncertain"
     lines = [
         f"已点击 {entry.token}（{label}）",
         "dispatch=sent",
@@ -836,6 +867,9 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         f"status={status} retryable=false",
         evidence_line(session, action_id),
     ]
+    if effect == "new_tab" and new_tab_id is not None:
+        lines.append(f"tab_id={new_tab_id}")
+        lines.append(f"已在新标签页打开（tab_id={new_tab_id}）；可用 browser_tab_switch 切换查看")
     if verified_control:
         lines.append("verified=control_state")
     if where == "corner":

@@ -677,3 +677,94 @@ def test_broker_close_after_host_restart_reusing_slot_closes_remote_session(tmp_
             ext._browsers.clear()
 
     asyncio.run(scenario())
+
+
+def test_broker_cancels_readonly_wait_and_releases_lease_on_client_disconnect(tmp_path) -> None:
+    """P2 #5: cancelling a long read-only wait releases the lease immediately so the next call succeeds."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def tool_caller(_session, tool, _arguments):
+        if tool.name == "browser_wait_for":
+            started.set()
+            try:
+                await asyncio.sleep(10.0)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        return [{"type": "text", "text": f"ok:{tool.name}"}]
+
+    async def scenario() -> None:
+        broker = BrokerServer(
+            _cfg(tmp_path),
+            session_factory=lambda _cfg: SimpleNamespace(snapshot=SimpleNamespace(url="", title="")),
+            tool_caller=tool_caller,
+        )
+        await broker.start()
+        try:
+            first = BrokerClient(_cfg(tmp_path), owner="owner-a", session_id="wait-session")
+            wait_task = asyncio.create_task(
+                first.call("browser_wait_for", {"condition": "stable", "timeout_ms": 10000})
+            )
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            wait_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await wait_task
+
+            await asyncio.wait_for(cancelled.wait(), timeout=2.0)
+            for _ in range(50):
+                if not broker.leases:
+                    break
+                await asyncio.sleep(0.01)
+            assert broker.leases == {}
+
+            second = BrokerClient(_cfg(tmp_path), owner="owner-a", session_id="wait-session")
+            blocks = await second.call("browser_snapshot", {})
+            assert blocks == [{"type": "text", "text": "ok:browser_snapshot"}]
+            await second.aclose()
+        finally:
+            await broker.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_broker_does_not_cancel_inflight_write_on_client_disconnect(tmp_path) -> None:
+    """P2 #5: mutating calls keep uncertain semantics and are not cancelled mid-flight on disconnect."""
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    was_cancelled = False
+
+    async def tool_caller(_session, tool, _arguments):
+        nonlocal was_cancelled
+        if tool.name == "browser_click":
+            started.set()
+            try:
+                await asyncio.sleep(0.15)
+            except asyncio.CancelledError:
+                was_cancelled = True
+                raise
+            finally:
+                finished.set()
+        return [{"type": "text", "text": "clicked"}]
+
+    async def scenario() -> None:
+        broker = BrokerServer(
+            _cfg(tmp_path),
+            session_factory=lambda _cfg: SimpleNamespace(snapshot=SimpleNamespace(url="", title="")),
+            tool_caller=tool_caller,
+        )
+        await broker.start()
+        try:
+            first = BrokerClient(_cfg(tmp_path), owner="owner-a", session_id="write-session")
+            write_task = asyncio.create_task(first.call("browser_click", {"target": "Submit"}))
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            write_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await write_task
+
+            await asyncio.wait_for(finished.wait(), timeout=2.0)
+            assert was_cancelled is False
+        finally:
+            await broker.aclose()
+
+    asyncio.run(scenario())

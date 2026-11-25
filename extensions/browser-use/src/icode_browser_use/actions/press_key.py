@@ -17,7 +17,7 @@ from .actionability import (
     is_text_field,
     mark_dispatched,
     new_action_id,
-    normalize_text,
+    poll_submit_outcome,
     prepare_action,
     record_action,
     submit_verdict,
@@ -302,34 +302,19 @@ async def _settle_submit(
     action_id: str,
 ) -> ToolBlock:
     """Judge a plain Enter in a text field with the same verdict as ``browser_fill(submit=true)``."""
-    replaced = False
-    after_field = before_field
-    after_page = before_page
-    for _ in range(_SUBMIT_POLLS):
-        await _sleep(_SUBMIT_POLL_SECONDS)
-        dialog = session.dialog_since(dialog_seq)
-        if dialog is not None:
-            return _blocked_dialog_result(session, key_spec, label, dialog, action_id)
-        try:
-            after_field = await field_state(session, object_id, cdp_session_id, call=call_value)
-        except ConnectionClosed:
-            raise
-        except StaleRef:
-            replaced = True
-            break
-        except (CDPTimeout, BrowserError):
-            after_field = {}
-            break
-        try:
-            after_page = await _page_state(session, cdp_session_id)
-        except ConnectionClosed:
-            raise
-        except (CDPTimeout, BrowserError):
-            after_page = {}
-            break
-        if not normalize_text(after_field.get("text")) or before_page.get("href") != after_page.get("href"):
-            break
-    dialog = session.dialog_since(dialog_seq)
+    after_field, after_page, replaced, dialog = await poll_submit_outcome(
+        session,
+        object_id,
+        cdp_session_id,
+        before_field,
+        before_page,
+        dialog_seq,
+        budget=_SUBMIT_POLLS,
+        poll_interval=_SUBMIT_POLL_SECONDS,
+        sleep=_sleep,
+        read_field=lambda: field_state(session, object_id, cdp_session_id, call=call_value),
+        read_page=lambda: _page_state(session, cdp_session_id),
+    )
     if dialog is not None:
         return _blocked_dialog_result(session, key_spec, label, dialog, action_id)
     verdict, submitted = submit_verdict(before_field, after_field, before_page, after_page, replaced=replaced)

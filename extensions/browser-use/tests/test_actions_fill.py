@@ -579,3 +579,168 @@ def test_fill_stale_ref_is_not_refreshed_and_surfaces_stale_ref(monkeypatch) -> 
     assert captures == []
     assert session.client.calls == []
     assert session.successes == 0
+
+
+def test_fill_stops_when_clear_shifts_focus_to_another_field(monkeypatch) -> None:
+    """P1 #1: if clearing field 1 triggers an input event that moves focus to field 2, never type into field 2."""
+    from icode_browser_use.errors import BadRequest
+
+    session = FakeSession()
+    session.state = {"tag": "input", "editable": False, "focused": True, "text": "old"}
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "input",
+                    "type": "text",
+                    "readOnly": False,
+                    "disabled": False,
+                },
+            }
+        if "new Event('input'" in function:
+            # Simulate page oninput handler shifting focus to field 2.
+            session.state["text"] = ""
+            session.state["focused"] = False
+            return {"type": "object", "value": True}
+        return {"type": "object", "value": dict(session.state)}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    try:
+        asyncio.run(
+            fill.run(
+                session,
+                {"target": "first", "text": "replacement", "clear": True, "submit": False, "keypress_fallback": False},
+            )
+        )
+    except BadRequest as exc:
+        assert "失去焦点" in str(exc)
+    else:
+        raise AssertionError("expected BadRequest when clear shifts focus")
+    assert session.client.calls == []
+
+
+def test_fill_stops_before_fallback_and_enter_when_insert_shifts_focus(monkeypatch) -> None:
+    """P1 #1: if Input.insertText shifts focus away, neither fallback typing nor Enter runs on the other field."""
+    session = FakeSession()
+    session.state = {"tag": "input", "editable": False, "focused": True, "text": ""}
+    session.client.update_on_insert = False
+
+    original_send = session.client.send
+
+    async def shifting_send(method, params=None, session_id=None, timeout=None):
+        result = await original_send(method, params, session_id, timeout)
+        if method == "Input.insertText":
+            session.state["focused"] = False
+        return result
+
+    session.client.send = shifting_send
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "input",
+                    "type": "text",
+                    "readOnly": False,
+                    "disabled": False,
+                },
+            }
+        return {"type": "object", "value": dict(session.state)}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "first", "text": "replacement", "clear": False, "submit": True, "keypress_fallback": False},
+        )
+    )
+    text = blocks[0]["text"]
+    assert "status=uncertain" in text
+    assert "focus_lost" in text
+    assert all(call[0] != "Input.dispatchKeyEvent" for call in session.client.calls)
+
+
+def test_fill_rich_text_clear_verifies_selection_before_backspace(monkeypatch) -> None:
+    """P1 #2: when in-editor selection fails, never send Backspace to nibble an existing draft."""
+    from icode_browser_use.errors import BadRequest
+
+    session = FakeSession()
+    session.state = {"tag": "div", "editable": True, "focused": True, "text": "an existing draft"}
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {"type": "object", "value": dict(FOCUS_VALUE)}
+        if "range.selectNodeContents" in function:
+            return {"type": "object", "value": {"focused": True, "selected": False, "empty": False}}
+        if "this.isContentEditable" in function:
+            return {"type": "object", "value": dict(session.state)}
+        return {"type": "object", "value": True}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    try:
+        asyncio.run(
+            fill.run(
+                session,
+                {"target": "editor", "text": "new draft", "clear": True, "submit": False, "keypress_fallback": False},
+            )
+        )
+    except BadRequest as exc:
+        assert "选中全部内容" in str(exc)
+    else:
+        raise AssertionError("expected BadRequest when selection cannot be verified")
+    assert session.client.calls == []
+    assert session.state["text"] == "an existing draft"
+
+
+def test_fill_submit_navigation_succeeds_even_when_old_input_is_destroyed(monkeypatch) -> None:
+    """Independent #7: GET form navigation destroys old input object_id; page href change still proves submission."""
+    session = FakeSession()
+    pages = [
+        {"href": "http://example.com/search", "mutations": 0, "toasts": []},
+        {"href": "http://example.com/done?q=testing", "mutations": 0, "toasts": []},
+    ]
+    entered = False
+    original_send = session.client.send
+
+    async def nav_send(method, params=None, session_id=None, timeout=None):
+        nonlocal entered
+        result = await original_send(method, params, session_id, timeout)
+        if method == "Input.dispatchKeyEvent" and (params or {}).get("key") == "Enter":
+            entered = True
+        return result
+
+    session.client.send = nav_send
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {"type": "object", "value": dict(FOCUS_VALUE)}
+        if "this.isContentEditable" in function:
+            if entered:
+                raise StaleRef("Execution context was destroyed")
+            return {"type": "object", "value": dict(session.state)}
+        return {"type": "object", "value": True}
+
+    async def fake_eval_value(*_args, **_kwargs):
+        return pages.pop(0) if len(pages) > 1 else pages[0]
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "eval_value", fake_eval_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "q", "text": "testing", "clear": False, "submit": True, "keypress_fallback": False},
+        )
+    )
+    text = blocks[0]["text"]
+    assert "已提交（页面已跳转）" in text
+    assert "status=succeeded" in text
+    assert session.successes == 1

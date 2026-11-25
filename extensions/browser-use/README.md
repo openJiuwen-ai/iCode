@@ -144,7 +144,7 @@ On `browser_close`, the plugin runtime appends a `[BROWSER_SESSION_FACTS]` block
 
 To avoid `open → navigate` and `click/fill → wait → extract → sleep → extract` loops while preserving the strict **at-most-one-write-per-call** invariant:
 
-- **One-step navigate**: call `browser_navigate(url=...)` without `browser_id` to allocate a new handle and navigate in a single call and single approval (returning `browser_id` + compact snapshot). Pass an existing `browser_id` to reuse a handle, or use `browser_open` when managing lifecycle explicitly.
+- **One-step navigate**: call `browser_navigate(url=...)` without `browser_id` when no browser is open for this session/agent to allocate a new handle and navigate in a single call and single approval (returning `browser_id` + compact snapshot). Once a handle is open, pass `browser_id` explicitly to reuse it or call `browser_open` for a separate handle (preventing parallel same-profile sub-agents from silently hijacking each other's page).
 - **Wait-and-deliver**: `browser_wait_for(..., return_mode="ref" | "snapshot" | "text", max_chars=2000)` returns the matched `@eN#epoch` ref, scoped snapshot, or bounded text immediately when the condition settles. `condition="stable"` explicitly marks `completion=inferred_stable`, and timeouts with `return_mode="text"` return `partial_text` and `observed_chars` progress.
 - **Post-write read-only `expect`**: `browser_click` and `browser_fill` accept optional `expect_condition`, `expect_target`, `expect_value`, `expect_timeout_ms`, and `expect_return`. When `expect_condition="text_changed"`, the read-only baseline is captured *before* dispatch; the write action is still dispatched at most once and never auto-retried, and blocked/unconfirmed writes skip `expect` cleanly.
 
@@ -394,7 +394,7 @@ covered nothing is sent (`dispatch=not_sent`, `status=blocked`), and when a hit 
 cannot be answered nothing is sent either (`status=uncertain`). Elements with no
 layout box fail fast with a readable bad-request diagnostic instead of a raw CDP
 error. Every click result reports `dispatch=not_sent|sent|unknown`,
-`effect=navigation|dom|target_detached|dom_elsewhere|focus|none|unknown` and
+`effect=navigation|new_tab|dom|target_detached|dom_elsewhere|focus|none|unknown` and
 `status=succeeded|uncertain|blocked`; there is no JS second click. Delayed
 asynchronous toggles (including `input[type=submit|button]`) are confirmed via
 `verified=control_state` once the control's label/value/pressed state settles,
@@ -631,12 +631,15 @@ re-encodes anything larger to JPEG at a 2048 px long edge. A full-page capture t
 plugin accepts can therefore reach the model downscaled; clip with `target` when
 detail matters.
 
-At most two browsers may be open per agent build; an idle browser closes itself
+At most two browsers may be open per owner scope; an idle browser closes itself
 after `idle_close_seconds` (600 s by default) and restarts from the same profile
-on the next call. With iCode 0.36+, a sub-agent tool and a workflow activation
-carry their own `ToolContext.agent_id`, so two builds that share the session and
-profile name still get separate handles, profiles, journals and slots; older
-hosts fall back to the session/profile pair.
+on the next call. On current iCode hosts (`ToolContext` carries `session_id` and
+`agent_name` without a per-build `agent_id`), ownership is scoped to
+`(session_id, agent_name)`: different sessions or profile names are isolated,
+while concurrent sub-agents sharing the same profile name in one session share
+that owner scope and should use `max_concurrency: 1` (or distinct profile names)
+and pass explicit `browser_id` values. If a host provides `ToolContext.agent_id`,
+the plugin includes it automatically to isolate same-profile builds.
 
 ## Recovery after a restart
 
@@ -662,7 +665,7 @@ file.
   only**: the page is new, so the previous DOM and history are gone. Broker
   mode may return the existing page — check it with `browser_snapshot`. Nothing
   is navigated and no action is replayed.
-- Recovery is scoped to one session, agent profile and agent build. A forked session copies the
+- Recovery is scoped to one session and agent owner key (`(session_id, agent_name)`, plus `agent_id` when supplied by the host). A forked session copies the
   manifest but carries a different session id, so it only sees an `unclaimable`
   count and must call `browser_open`. Another agent never sees your handles or
   origins.

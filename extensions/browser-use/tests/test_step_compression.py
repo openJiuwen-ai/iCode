@@ -387,8 +387,13 @@ async def test_one_step_navigate_reuses_single_open_browser_and_cleans_up_on_fai
     try:
         first = await reloaded.browser_navigate(ctx, "https://example.com/a")
         bid = first.splitlines()[0].split("browser_id: ", 1)[1].strip()
-        # Omitting browser_id when 1 browser is already open reuses that handle.
-        second = await reloaded.browser_navigate(ctx, "https://example.com/b")
+        # Omitting browser_id when a browser is already open must require an explicit browser_id
+        # (never silently hijack another parallel branch's handle).
+        with pytest.raises(ToolError) as exc_info:
+            await reloaded.browser_navigate(ctx, "https://example.com/b")
+        assert exc_info.value.code == "browser_id_required"
+        # Passing the explicit browser_id reuses that handle.
+        second = await reloaded.browser_navigate(ctx, "https://example.com/b", bid)
         assert second.startswith(f"browser_id: {bid}\n")
         assert len(reloaded._browsers) == 1
     finally:

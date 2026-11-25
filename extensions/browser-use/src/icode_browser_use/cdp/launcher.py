@@ -22,6 +22,7 @@ The launch sequence is fixed and mirrors the design (3.2 / 11.3):
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
 import ctypes
 import hashlib
@@ -31,10 +32,11 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Final
+from typing import Any, BinaryIO, Final, Literal
 
 from .._proc import windows_hidden_kwargs
 from ..config import CHROME_READY_TIMEOUT, BrowserConfig
@@ -55,15 +57,47 @@ _CREATE_SUSPENDED: Final = 0x00000004
 _PR_SET_PDEATHSIG: Final = 1
 _SIGKILL: Final = 9
 
-_WHICH_NAMES: Final = (
+_CHROME_WHICH_NAMES: Final = (
     "google-chrome",
     "google-chrome-stable",
     "chrome",
     "chromium",
     "chromium-browser",
+)
+
+_WHICH_NAMES: Final = (
+    *_CHROME_WHICH_NAMES,
     "msedge",
     "microsoft-edge",
 )
+
+_LIVE_CHILDREN_LOCK = threading.Lock()
+_LIVE_CHILDREN: dict[int, ChildProcess] = {}
+_ATEXIT_REGISTERED = False
+
+
+def _register_live_child(child: ChildProcess) -> None:
+    global _ATEXIT_REGISTERED
+    with _LIVE_CHILDREN_LOCK:
+        _LIVE_CHILDREN[id(child)] = child
+        if not _ATEXIT_REGISTERED:
+            atexit.register(_cleanup_live_children)
+            _ATEXIT_REGISTERED = True
+
+
+def _unregister_live_child(child: ChildProcess) -> None:
+    with _LIVE_CHILDREN_LOCK:
+        _LIVE_CHILDREN.pop(id(child), None)
+
+
+def _cleanup_live_children() -> None:
+    """Terminate any Owned browser processes still alive when the host process exits."""
+    with _LIVE_CHILDREN_LOCK:
+        children = list(_LIVE_CHILDREN.values())
+        _LIVE_CHILDREN.clear()
+    for child in children:
+        with contextlib.suppress(Exception):
+            child.terminate_tree_sync(timeout=1.5)
 
 
 @dataclass
@@ -79,17 +113,44 @@ class ChildProcess:
     _popen: subprocess.Popen = field(compare=False, repr=False)
     _job: int | None = field(default=None, compare=False, repr=False)
     _terminated: bool = field(default=False, compare=False, repr=False)
+    _pid_file: Path | None = field(default=None, compare=False, repr=False)
 
     @property
     def alive(self) -> bool:
         """True while the child has not exited."""
         return self._popen.poll() is None
 
+    def terminate_tree_sync(self, *, timeout: float = _KILL_TIMEOUT) -> None:
+        """Synchronously kill the child's whole process tree (safe for ``atexit``); idempotent and never raises."""
+        if self._terminated:
+            return
+        self._terminated = True
+        _unregister_live_child(self)
+        popen = self._popen
+        try:
+            if popen.poll() is None:
+                if sys.platform == "win32":
+                    _terminate_windows(self.pid, self._job)
+                else:
+                    _posix_kill_group(self.pid)
+                try:
+                    popen.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    with contextlib.suppress(Exception):
+                        popen.kill()
+            self._close_job()
+        except Exception as exc:  # teardown must never propagate
+            log(f"终止 Chrome 进程树失败（pid={self.pid}）：{exc!r}")
+        finally:
+            if self._pid_file is not None:
+                _remove(self._pid_file)
+
     async def terminate_tree(self, *, timeout: float = _KILL_TIMEOUT) -> None:
         """Kill the child's whole process tree; idempotent and never raises."""
         if self._terminated:
             return
         self._terminated = True
+        _unregister_live_child(self)
         popen = self._popen
         try:
             if popen.poll() is not None:
@@ -107,6 +168,9 @@ class ChildProcess:
             self._close_job()
         except Exception as exc:  # teardown must never propagate
             log(f"终止 Chrome 进程树失败（pid={self.pid}）：{exc!r}")
+        finally:
+            if self._pid_file is not None:
+                _remove(self._pid_file)
 
     def _close_job(self) -> None:
         if self._job is not None:
@@ -161,7 +225,7 @@ def _report(exe: str) -> str:
     return exe
 
 
-def _fixed_candidates() -> list[str]:
+def _fixed_candidates(*, include_edge: bool = True) -> list[str]:
     """Step 1: the standard install locations, in priority order."""
     if sys.platform == "win32":
         candidates: list[str] = []
@@ -172,22 +236,33 @@ def _fixed_candidates() -> list[str]:
         ):
             if root:
                 candidates.append(str(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"))
-        edge_root = os.environ.get("ProgramFiles(x86)")
-        if edge_root:
-            candidates.append(str(Path(edge_root) / "Microsoft" / "Edge" / "Application" / "msedge.exe"))
+        if include_edge:
+            for edge_root in (
+                os.environ.get("ProgramFiles(x86)"),
+                os.environ.get("ProgramFiles"),
+            ):
+                if edge_root:
+                    path = str(Path(edge_root) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+                    if path not in candidates:
+                        candidates.append(path)
+            prog = os.environ.get("ProgramFiles")
+            if prog:
+                candidates.append(str(Path(prog) / "Chromium" / "Application" / "chrome.exe"))
         return candidates
     if sys.platform == "darwin":
-        return [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ]
-    return [
+        candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+        if include_edge:
+            candidates.append("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+        return candidates
+    candidates = [
         "/usr/bin/google-chrome-stable",
         "/usr/bin/google-chrome",
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
-        "/usr/bin/microsoft-edge",
     ]
+    if include_edge:
+        candidates.append("/usr/bin/microsoft-edge")
+    return candidates
 
 
 def _registry_candidate() -> str | None:
@@ -210,19 +285,36 @@ def _registry_candidate() -> str | None:
     return None
 
 
-def discover_chrome() -> str | None:
-    """Find a browser exe: fixed paths -> trusted HKLM registry -> ``which``."""
-    for candidate in _fixed_candidates():
+def find_browser_executable(
+    *,
+    purpose: Literal["automation", "bridge", "chrome_devtools"] = "automation",
+    log_result: bool = True,
+) -> Path | None:
+    """Find a browser executable for *purpose*: fixed paths -> trusted HKLM registry -> ``which``.
+
+    ``chrome_devtools`` searches Chrome/Chromium only (for Chrome 144+ native DevTools
+    remote debugging); ``automation`` and ``bridge`` include Edge across all platforms so
+    Owned launch and Bridge diagnostics always agree.
+    """
+    include_edge = purpose != "chrome_devtools"
+    which_names = _WHICH_NAMES if include_edge else _CHROME_WHICH_NAMES
+    for candidate in _fixed_candidates(include_edge=include_edge):
         if os.path.isfile(candidate):
-            return _report(candidate)
+            return Path(_report(candidate) if log_result else candidate)
     registered = _registry_candidate()
     if registered:
-        return _report(registered)
-    for name in _WHICH_NAMES:
+        return Path(_report(registered) if log_result else registered)
+    for name in which_names:
         found = shutil.which(name)
         if found:
-            return _report(found)
+            return Path(_report(found) if log_result else found)
     return None
+
+
+def discover_chrome() -> str | None:
+    """Find a browser exe: fixed paths -> trusted HKLM registry -> ``which``."""
+    found = find_browser_executable(purpose="automation", log_result=True)
+    return str(found) if found is not None else None
 
 
 # --------------------------------------------------------------------- argv
@@ -427,9 +519,9 @@ def _spawn(argv: list[str], *, log_path: Path) -> ChildProcess:
     """Start the browser: ``stdin=DEVNULL``, stdout/stderr into a file (no pipe)."""
     log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(log_path, "ab", buffering=0) as log_file:
-        if sys.platform == "win32":
-            return _spawn_windows(argv, log_file)
-        return _spawn_posix(argv, log_file)
+        child = _spawn_windows(argv, log_file) if sys.platform == "win32" else _spawn_posix(argv, log_file)
+    _register_live_child(child)
+    return child
 
 
 def _posix_kill_group(pid: int) -> None:
@@ -768,8 +860,10 @@ async def launch_chrome(
 
     argv = chrome_argv(exe, profile, headless=cfg.headless)
     child = _spawn(argv, log_path=state_dir / "chrome.log")
+    pid_file = state_dir / "chrome.pid"
+    child._pid_file = pid_file
     try:
-        _write_pid_file(state_dir / "chrome.pid", child)
+        _write_pid_file(pid_file, child)
         port = await _await_devtools_port(port_file, child, ready_timeout)
         browser_ws = await _browser_ws_endpoint(port)
     except BaseException:

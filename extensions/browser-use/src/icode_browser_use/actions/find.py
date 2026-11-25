@@ -7,7 +7,7 @@ from typing import Any
 
 from ..snapshot.serializer import sanitize_text
 from ..types import ToolBlock, text_block
-from ._shared import snapshot_is_stale
+from ._shared import snapshot_needs_refresh
 
 NAME = "browser_find"
 
@@ -92,7 +92,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         from ..errors import BadRequest
 
         raise BadRequest("browser_find requires a non-empty query")
-    if arguments.get("fresh") or getattr(session, "snapshot_dirty", False) or snapshot_is_stale(session):
+    if arguments.get("fresh") or snapshot_needs_refresh(session):
         from . import snapshot
 
         await snapshot.run(session, {"scope": "viewport", "interactive_only": False})

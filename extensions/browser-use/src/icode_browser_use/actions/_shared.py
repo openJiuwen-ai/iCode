@@ -147,18 +147,24 @@ def snapshot_is_stale(session: Any) -> bool:
     return not nodes or any(node.epoch != session.page_epoch for node in nodes)
 
 
+def snapshot_needs_refresh(session: Any) -> bool:
+    """True when the snapshot is stale (missing/old epoch) or dirtied by a write action."""
+    return bool(getattr(session, "snapshot_dirty", False)) or snapshot_is_stale(session)
+
+
 async def resolve_target(session: Any, spec: str) -> Any:
-    """``session.resolve_target`` for an action: free text first refreshes a stale snapshot.
+    """``session.resolve_target`` for an action: free text first refreshes a stale or dirty snapshot.
 
     A ``@eN#epoch`` reference is never refreshed (staleness is the answer); free
     text means "whatever matches on the page now", so a snapshot the page has
-    outgrown (navigation, epoch bump) is retaken before ranking. The retake is the
-    bare capture (as ``browser_wait_for`` does): login detection and mutation
-    bookkeeping stay with ``browser_snapshot``, so an action never flips the
-    session into the login-wait state on its own.
+    outgrown (navigation, epoch bump, or an in-page write that marked the
+    snapshot dirty) is retaken before ranking. The retake is the bare capture
+    (as ``browser_wait_for`` does): login detection and mutation bookkeeping
+    stay with ``browser_snapshot``, so an action never flips the session into
+    the login-wait state on its own.
     """
     text = str(spec or "").strip()
-    if text and not text.startswith("@") and snapshot_is_stale(session):
+    if text and not text.startswith("@") and snapshot_needs_refresh(session):
         await capture_and_register(session)
     return session.resolve_target(spec)
 

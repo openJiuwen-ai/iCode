@@ -132,3 +132,53 @@ def test_uninstall_removes_manifest_and_registrations(tmp_path: Path) -> None:
     )
     assert calls == [("chrome", path), ("chromium", path), ("edge", path)]
     assert not path.exists()
+
+
+def test_uninstall_keeps_shared_manifest_until_last_browser_is_removed(tmp_path: Path) -> None:
+    """Independent #9: uninstalling Edge while Chrome still points to the shared manifest must keep it."""
+    path = tmp_path / "com.chrys.browser.json"
+    registry: dict[str, Path] = {}
+
+    install_native_host(
+        tmp_path / "host.exe",
+        "abcdefghijklmnop",
+        manifest_path=path,
+        browsers=("chrome", "edge"),
+        registry_writer=lambda browser, manifest: registry.__setitem__(browser, manifest),
+    )
+    assert path.is_file()
+
+    # Uninstall only Edge -> Chrome still points to path, so manifest must stay.
+    uninstall_native_host(
+        manifest_path=path,
+        browsers=("edge",),
+        registry_deleter=lambda browser, _manifest: registry.pop(browser, None),
+        registry_reader=lambda browser: registry.get(browser),
+    )
+    assert "edge" not in registry
+    assert "chrome" in registry
+    assert path.is_file()
+
+    # Uninstall Chrome (the last registration) -> shared manifest is now deleted.
+    uninstall_native_host(
+        manifest_path=path,
+        browsers=("chrome",),
+        registry_deleter=lambda browser, _manifest: registry.pop(browser, None),
+        registry_reader=lambda browser: registry.get(browser),
+    )
+    assert registry == {}
+    assert not path.exists()
+
+
+def test_macos_edge_discovery_matches_between_owned_and_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Independent #9: on macOS with only Edge installed, both Owned and Bridge discovery find Edge."""
+    from icode_browser_use.cdp import launcher
+
+    edge_path = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher.os.path, "isfile", lambda candidate: str(candidate) == edge_path)
+    monkeypatch.setattr(launcher.shutil, "which", lambda _name: None)
+
+    assert launcher.discover_chrome() == str(Path(edge_path))
+    assert bridge_install.default_browser_executable() == Path(edge_path)
+    assert bridge_install.default_chrome_executable() is None

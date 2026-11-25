@@ -133,3 +133,62 @@ def test_attached_idle_shutdown_keeps_the_browser_and_closes_our_tab(tmp_path: P
     assert "Browser.close" not in methods(client)
     assert ("Target.closeTarget", {"targetId": "target-1"}, None) in client.calls
     assert client.closed == 1
+
+
+def test_attached_reconnect_reuses_original_tab_without_leaking_a_second_tab(tmp_path: Path) -> None:
+    """Independent #8: after a CDP disconnect, Attach mode reattaches to its surviving tab instead of creating a duplicate."""
+    created_targets = ["target-1", "target-2"]
+    live_targets = [{"targetId": "target-1", "type": "page", "url": "https://example.com"}]
+    clients: list[FakeClient] = []
+
+    class ReconnectFakeClient(FakeClient):
+        def __init__(self, version: str = "Edge/135") -> None:
+            super().__init__()
+            self._version = version
+
+        async def send(self, method: str, params=None, session_id=None, timeout=None):
+            self.calls.append((method, params, session_id))
+            if method == "Browser.getVersion":
+                return {"product": self._version, "revision": "rev-1", "userAgent": self._version}
+            if method == "Target.getTargets":
+                return {"targetInfos": list(live_targets)}
+            if method == "Target.createTarget":
+                return {"targetId": created_targets.pop(0)}
+            if method == "Target.attachToTarget":
+                tid = (params or {}).get("targetId", "")
+                return {"sessionId": f"session-for-{tid}"}
+            if method == "Page.getFrameTree":
+                return {"frameTree": {"frame": {"id": "frame-1", "url": "https://example.com"}}}
+            if method == "Page.addScriptToEvaluateOnNewDocument":
+                return {"identifier": "probe-1"}
+            return {}
+
+    async def client_factory(_ws: str) -> FakeClient:
+        client = ReconnectFakeClient()
+        clients.append(client)
+        return client
+
+    config = BrowserConfig(
+        allowed_domains=("example.com",),
+        state_dir=tmp_path / "state",
+        cdp_url="ws://existing",
+    )
+    session = BrowserSession(config, client_factory=client_factory)
+
+    async def scenario() -> None:
+        await session.ensure_started()
+        assert session.target_id == "target-1"
+        assert methods(clients[0]).count("Target.createTarget") == 1
+
+        # Simulate CDP disconnect and reconnect on the same browser.
+        session.mark_disconnected()
+        await session.ensure_started()
+        assert len(clients) == 2
+        assert session.target_id == "target-1"
+        assert "Target.createTarget" not in methods(clients[1])
+        assert ("Target.attachToTarget", {"targetId": "target-1", "flatten": True}, None) in clients[1].calls
+
+        await session.aclose()
+        assert ("Target.closeTarget", {"targetId": "target-1"}, None) in clients[1].calls
+
+    asyncio.run(scenario())

@@ -183,6 +183,58 @@ FIELD_STATE_FN = (
     "}"
 )
 
+FOCUS_CHECK_FN = (
+    "function(){"
+    " if(!this.isConnected) return {focused:false};"
+    " const root=(this.getRootNode && this.getRootNode())||document;"
+    " let active=(root && root.activeElement) || document.activeElement;"
+    " while (active && active.shadowRoot && active.shadowRoot.activeElement) { active=active.shadowRoot.activeElement; }"
+    " return {focused:active===this || (!!active && !!(this.contains && this.contains(active)))};"
+    "}"
+)
+
+SELECT_ALL_FN = (
+    "function(){"
+    " if(!this.isConnected) return {focused:false, selected:false, empty:false};"
+    " const root=(this.getRootNode && this.getRootNode())||document;"
+    " let active=(root && root.activeElement) || document.activeElement;"
+    " while (active && active.shadowRoot && active.shadowRoot.activeElement) { active=active.shadowRoot.activeElement; }"
+    " const focused=active===this || (!!active && !!(this.contains && this.contains(active)));"
+    " if (!focused) return {focused:false, selected:false, empty:false};"
+    " const tag=(this.tagName||'').toLowerCase();"
+    " const norm=s=>String(s||'').replace(/\\s+/g,' ').trim();"
+    " if (tag==='input' || tag==='textarea') {"
+    "  const val=String(this.value||'');"
+    "  if (!val) return {focused:true, selected:true, empty:true};"
+    "  if (typeof this.select==='function') this.select();"
+    "  let selected=true;"
+    "  try {"
+    "   if (typeof this.selectionStart==='number' && typeof this.selectionEnd==='number') {"
+    "    selected=(this.selectionStart===0 && this.selectionEnd===val.length);"
+    "   }"
+    "  } catch (_) {}"
+    "  return {focused:true, selected, empty:false};"
+    " }"
+    " if (this.isContentEditable) {"
+    "  const expected=norm(this.innerText);"
+    "  if (!expected) return {focused:true, selected:true, empty:true};"
+    "  const range=document.createRange();"
+    "  range.selectNodeContents(this);"
+    "  const sel=(root && typeof root.getSelection==='function' ? root.getSelection() : null) || window.getSelection();"
+    "  if (!sel) return {focused:true, selected:false, empty:false};"
+    "  sel.removeAllRanges();"
+    "  sel.addRange(range);"
+    "  if (sel.rangeCount < 1) return {focused:true, selected:false, empty:false};"
+    "  const r=sel.getRangeAt(0);"
+    "  const inTarget=n=>!!n && (n===this || !!(this.contains && this.contains(n)));"
+    "  const selText=norm(sel.toString()) || norm(r.toString());"
+    "  const selected=!r.collapsed && inTarget(r.startContainer) && inTarget(r.endContainer) && selText===expected;"
+    "  return {focused:true, selected, empty:false};"
+    " }"
+    " return {focused:true, selected:false, empty:false};"
+    "}"
+)
+
 
 async def target_facts(
     session: Any,
@@ -235,6 +287,34 @@ async def field_state(
     call: JsonCall = call_value,
 ) -> dict[str, Any]:
     response = await call(session, object_id, FIELD_STATE_FN, cdp_session_id=cdp_session_id)
+    value = response.get("value") if isinstance(response, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+async def target_focused(
+    session: Any,
+    object_id: str,
+    cdp_session_id: str | None,
+    *,
+    call: JsonCall = call_value,
+) -> bool | None:
+    """Return whether *object_id* still holds focus, or ``None`` when the probe omits it."""
+    response = await call(session, object_id, FOCUS_CHECK_FN, cdp_session_id=cdp_session_id)
+    value = response.get("value") if isinstance(response, dict) else None
+    if isinstance(value, dict) and "focused" in value:
+        return bool(value["focused"])
+    return None
+
+
+async def select_all_target(
+    session: Any,
+    object_id: str,
+    cdp_session_id: str | None,
+    *,
+    call: JsonCall = call_value,
+) -> dict[str, Any]:
+    """Select all contents inside *object_id* after verifying focus; return ``{focused, selected, empty}``."""
+    response = await call(session, object_id, SELECT_ALL_FN, cdp_session_id=cdp_session_id)
     value = response.get("value") if isinstance(response, dict) else None
     return value if isinstance(value, dict) else {}
 
@@ -585,7 +665,13 @@ def submit_verdict(
 
     Only an emptied field or a navigation count as submitted; a page update alone is reported
     as unconfirmed, and a new toast carrying a rejection word is reported as rejected.
+    Page navigation is evaluated independently of field readback because a full-page form
+    submission destroys the old input's execution context.
     """
+    href_before = before_page.get("href")
+    href_after = after_page.get("href")
+    if isinstance(href_before, str) and isinstance(href_after, str) and href_before != href_after:
+        return "已提交（页面已跳转）", True
     if "text" not in after_field or "text" not in before_field:
         return "提交状态未知（字段回读失败），请 browser_snapshot 复核", False
     before_text = normalize_text(before_field.get("text"))
@@ -605,10 +691,6 @@ def submit_verdict(
                 False,
             )
         return "已提交（输入框已清空）", True
-    href_before = before_page.get("href")
-    href_after = after_page.get("href")
-    if isinstance(href_before, str) and isinstance(href_after, str) and href_before != href_after:
-        return "已提交（页面已跳转）", True
     if rejection:
         return f"提交被拒：{rejection}", False
     if after_page and before_page.get("mutations") != after_page.get("mutations"):
@@ -622,3 +704,68 @@ def submit_verdict(
         "提交未确认：输入框仍有内容且页面无变化；请用 browser_snapshot 找到提交按钮，不要重复按 Enter",
         False,
     )
+
+
+async def poll_submit_outcome(
+    session: Any,
+    object_id: str,
+    cdp_session_id: str | None,
+    before_field: dict[str, Any],
+    before_page: dict[str, Any],
+    dialog_seq: int,
+    *,
+    budget: int,
+    poll_interval: float,
+    sleep: Callable[[float], Awaitable[Any]],
+    read_field: Callable[[], Awaitable[dict[str, Any]]],
+    read_page: Callable[[], Awaitable[dict[str, Any]]],
+) -> tuple[dict[str, Any], dict[str, Any], bool, Any]:
+    """Poll field and page state independently after a submit Enter.
+
+    Returns ``(after_field, after_page, replaced, dialog_seen)``. A destroyed or
+    stale field never prevents reading ``after_page`` so cross-document form
+    navigations are still observed as independent proof of submission.
+    """
+    from ..errors import CDPTimeout
+
+    replaced = False
+    after_field = before_field
+    after_page = before_page
+    before_href = before_page.get("href")
+    for _ in range(budget):
+        await sleep(poll_interval)
+        dialog_seen = session.dialog_since(dialog_seq)
+        if dialog_seen is not None:
+            return after_field, after_page, replaced, dialog_seen
+        field_done = False
+        if not replaced:
+            try:
+                after_field = await read_field()
+            except ConnectionClosed:
+                raise
+            except StaleRef:
+                replaced = True
+                field_done = True
+            except (CDPTimeout, BrowserError):
+                after_field = {}
+                field_done = True
+        try:
+            after_page = await read_page()
+        except ConnectionClosed:
+            raise
+        except (CDPTimeout, BrowserError):
+            snap_url = str(getattr(getattr(session, "snapshot", None), "url", "") or "")
+            if isinstance(before_href, str) and snap_url and snap_url != before_href:
+                after_page = {"href": snap_url}
+                break
+            after_page = {}
+            if field_done or not normalize_text(after_field.get("text")):
+                break
+            continue
+        if isinstance(before_href, str) and isinstance(after_page.get("href"), str) and before_href != after_page["href"]:
+            break
+        if not replaced and "text" in after_field and not normalize_text(after_field.get("text")):
+            break
+        if field_done:
+            break
+    return after_field, after_page, replaced, session.dialog_since(dialog_seq)

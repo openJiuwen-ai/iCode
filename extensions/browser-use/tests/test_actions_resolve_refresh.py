@@ -84,3 +84,36 @@ def test_a_capture_failure_propagates_before_resolving(monkeypatch: pytest.Monke
         asyncio.run(_shared.resolve_target(session, "评论"))
 
     assert session.calls == []
+
+
+def test_free_text_refreshes_a_dirty_snapshot_on_the_same_epoch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P2 #6: after an in-page write dirties the snapshot, free-text actions refresh before resolving."""
+    session = _stale_session()
+    session.snapshot.nodes = [_node(7)]
+    session.snapshot_dirty = True
+
+    async def fake_capture(_session, **kwargs):
+        session.calls.append(("capture", kwargs))
+        _session.snapshot_dirty = False
+        _session.snapshot.nodes = [_node(_session.page_epoch)]
+        return _session.snapshot.nodes, None
+
+    monkeypatch.setattr(_shared, "capture_and_register", fake_capture)
+
+    entry = asyncio.run(_shared.resolve_target(session, "Archive"))
+
+    assert session.calls == [("capture", {}), ("resolve", "Archive")]
+    assert entry.token == "@e1#7"
+
+
+def test_explicit_ref_does_not_refresh_a_dirty_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P2 #6: explicit @ref keeps strict checking and never silently refreshes on dirty."""
+    session = _stale_session()
+    session.snapshot.nodes = [_node(7)]
+    session.snapshot_dirty = True
+    _patch_capture(monkeypatch, session)
+
+    entry = asyncio.run(_shared.resolve_target(session, "@e1#7"))
+
+    assert session.calls == [("resolve", "@e1#7")]
+    assert entry.token == "@e1#7"

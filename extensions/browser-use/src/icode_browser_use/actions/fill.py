@@ -5,10 +5,9 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Any
 
-from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed, StaleRef
+from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed
 from ..types import ToolBlock, text_block
 from ._shared import call_value, dialog_since, eval_value, resolve_target, send_watching_dialog
 from .actionability import (
@@ -20,9 +19,12 @@ from .actionability import (
     new_action_id,
     normalize_text,
     page_state,
+    poll_submit_outcome,
     prepare_action,
     record_action,
+    select_all_target,
     submit_verdict,
+    target_focused,
 )
 from .wait_for import EXPECT_PARAMS, prepare_expect_baseline, run_post_write_expect
 
@@ -121,33 +123,32 @@ async def _press_key(
     )
 
 
-async def _select_and_delete(session: Any, cdp_session_id: str | None) -> None:
-    """Select-all (Cmd+A on macOS, Ctrl+A elsewhere) then Backspace, after verifying focus."""
-    select_mod = 4 if sys.platform == "darwin" else 2
-    await _dispatch_key(
-        session,
-        "keyDown",
-        cdp_session_id=cdp_session_id,
-        key="a",
-        code="KeyA",
-        windowsVirtualKeyCode=65,
-        modifiers=select_mod,
-    )
-    await _dispatch_key(
-        session,
-        "keyUp",
-        cdp_session_id=cdp_session_id,
-        key="a",
-        code="KeyA",
-        windowsVirtualKeyCode=65,
-        modifiers=select_mod,
-    )
+class _FocusLost(Exception):
+    """Internal signal: the target element lost focus before a keyboard step."""
+
+
+async def _ensure_focused(session: Any, object_id: str, cdp_session_id: str | None) -> None:
+    focused = await target_focused(session, object_id, cdp_session_id, call=call_value)
+    if focused is False:
+        raise _FocusLost("target lost focus")
+
+
+async def _select_and_delete(session: Any, object_id: str, cdp_session_id: str | None) -> None:
+    """Verify focus, select all inside the target editor and verify the selection, then Backspace."""
+    result = await select_all_target(session, object_id, cdp_session_id, call=call_value)
+    if result.get("focused") is False:
+        raise _FocusLost("target lost focus before select-all")
+    if result.get("empty") is True:
+        return
+    if result.get("selected") is False:
+        raise BadRequest("无法在目标编辑器内选中全部内容；未执行删除/输入")
     await _press_key(session, "Backspace", "Backspace", 8, cdp_session_id=cdp_session_id)
 
 
-async def _type_characters(session: Any, text: str, cdp_session_id: str | None) -> None:
-    """Type raw key events; only `char` carries the text, so it is inserted once."""
+async def _type_characters(session: Any, object_id: str, text: str, cdp_session_id: str | None) -> None:
+    """Type raw key events; re-verify focus before each character so focus shifts never write to another field."""
     for char in text:
+        await _ensure_focused(session, object_id, cdp_session_id)
         await _dispatch_key(session, "keyDown", cdp_session_id=cdp_session_id, key=char)
         await _dispatch_key(session, "char", cdp_session_id=cdp_session_id, key=char, text=char, unmodifiedText=char)
         await _dispatch_key(session, "keyUp", cdp_session_id=cdp_session_id, key=char)
@@ -191,11 +192,19 @@ async def _focus(session: Any, object_id: str, cdp_session_id: str | None) -> No
 
 async def _clear(session: Any, object_id: str, cdp_session_id: str | None) -> None:
     await call_value(session, object_id, _CLEAR_FN, cdp_session_id=cdp_session_id)
-    await _select_and_delete(session, cdp_session_id)
     state = await _read_state(session, object_id, cdp_session_id)
+    if state.get("focused") is False:
+        raise _FocusLost("target lost focus during clear")
     if _normalize_text(state.get("text")):
-        await _select_and_delete(session, cdp_session_id)
+        await _select_and_delete(session, object_id, cdp_session_id)
         state = await _read_state(session, object_id, cdp_session_id)
+        if state.get("focused") is False:
+            raise _FocusLost("target lost focus after clear")
+    if _normalize_text(state.get("text")):
+        await _select_and_delete(session, object_id, cdp_session_id)
+        state = await _read_state(session, object_id, cdp_session_id)
+        if state.get("focused") is False:
+            raise _FocusLost("target lost focus after clear")
     if _normalize_text(state.get("text")):
         raise BadRequest("无法清空目标字段（清空后仍有内容）；未继续输入")
 
@@ -250,6 +259,10 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             await _clear(session, object_id, cdp_session_id)
         except ConnectionClosed:
             raise
+        except _FocusLost as exc:
+            raise BadRequest("目标在清空过程中失去焦点；已停止输入，未向其他字段写入") from exc
+        except BadRequest:
+            raise
         except (CDPTimeout, BrowserError) as exc:
             return _uncertain_fill(session, entry, f"clear_failed:{type(exc).__name__}", action_id, dispatched=False)
 
@@ -290,22 +303,28 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     mismatch = False
     try:
         if keypress_fallback:
+            if state.get("focused") is False:
+                raise _FocusLost("target lost focus before keypress fallback")
             used_fallback = True
             if _normalize_text(state.get("text")):
-                await _select_and_delete(session, cdp_session_id)
-            await _type_characters(session, text, cdp_session_id)
+                await _select_and_delete(session, object_id, cdp_session_id)
+            await _type_characters(session, object_id, text, cdp_session_id)
             await _sleep(0)
             state = await _read_state(session, object_id, cdp_session_id)
         elif not _values_match(state.get("text"), text, clear=clear):
             if not _normalize_text(state.get("text")):
+                if state.get("focused") is False:
+                    raise _FocusLost("target lost focus before fallback typing")
                 used_fallback = True
-                await _type_characters(session, text, cdp_session_id)
+                await _type_characters(session, object_id, text, cdp_session_id)
                 await _sleep(0)
                 state = await _read_state(session, object_id, cdp_session_id)
             else:
                 mismatch = True
     except ConnectionClosed:
         raise
+    except _FocusLost:
+        return _uncertain_fill(session, entry, "focus_lost", action_id)
     except (CDPTimeout, BrowserError) as exc:
         return _uncertain_fill(session, entry, f"input_fallback_failed:{type(exc).__name__}", action_id)
 
@@ -316,6 +335,8 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     submitted = False
     if submit and mismatch:
         submit_line = "未提交：读回与输入不一致，先核对字段状态；不要按 Enter"
+    elif submit and state.get("focused") is False:
+        submit_line = "未提交：输入后目标已失去焦点，未按 Enter；请 browser_snapshot 核对"
     elif submit:
         before_field = state
         try:
@@ -336,46 +357,31 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             except (CDPTimeout, BrowserError) as exc:
                 submit_line = f"提交可能已发出（Enter 发送失败：{type(exc).__name__}），不要重复按 Enter"
             else:
-                replaced = False
-                after_field = before_field
-                after_page = before_page
                 if dialog_seen is not None:
                     submit_line = (
                         f"提交结果未确认：{dialog_seen.fields()}；"
                         "请先调用 browser_dialog，再 browser_snapshot 复核，不要重复按 Enter"
                     )
                 else:
-                    for _ in range(_SUBMIT_BUDGET):
-                        await _sleep(_SUBMIT_POLL)
-                        dialog_seen = session.dialog_since(dialog_seq)
-                        if dialog_seen is not None:
-                            submit_line = (
-                                f"提交结果未确认：{dialog_seen.fields()}；"
-                                "请先调用 browser_dialog，再 browser_snapshot 复核，不要重复按 Enter"
-                            )
-                            break
-                        try:
-                            after_field = await _read_state(session, object_id, cdp_session_id)
-                        except ConnectionClosed:
-                            raise
-                        except StaleRef:
-                            replaced = True
-                            break
-                        except (CDPTimeout, BrowserError):
-                            after_field = {}
-                            break
-                        try:
-                            after_page = await _page_state(session, cdp_session_id)
-                        except ConnectionClosed:
-                            raise
-                        except (CDPTimeout, BrowserError):
-                            after_page = {}
-                            break
-                        if not _normalize_text(after_field.get("text")) or before_page.get("href") != after_page.get(
-                            "href"
-                        ):
-                            break
-                    if dialog_seen is None:
+                    after_field, after_page, replaced, dialog_seen = await poll_submit_outcome(
+                        session,
+                        object_id,
+                        cdp_session_id,
+                        before_field,
+                        before_page,
+                        dialog_seq,
+                        budget=_SUBMIT_BUDGET,
+                        poll_interval=_SUBMIT_POLL,
+                        sleep=_sleep,
+                        read_field=lambda: _read_state(session, object_id, cdp_session_id),
+                        read_page=lambda: _page_state(session, cdp_session_id),
+                    )
+                    if dialog_seen is not None:
+                        submit_line = (
+                            f"提交结果未确认：{dialog_seen.fields()}；"
+                            "请先调用 browser_dialog，再 browser_snapshot 复核，不要重复按 Enter"
+                        )
+                    else:
                         submit_line, submitted = _submit_verdict(
                             before_field, after_field, before_page, after_page, replaced=replaced
                         )

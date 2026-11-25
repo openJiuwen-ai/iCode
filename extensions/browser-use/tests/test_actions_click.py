@@ -1291,3 +1291,35 @@ def test_no_layout_object_cdp_error_is_translated_to_bad_request() -> None:
         asyncio.run(click._visible_quad(session, "obj", None))
     assert "无可见布局盒模型" in str(exc_info.value)
     assert "[in-view]" in str(exc_info.value)
+
+
+def test_click_opening_new_tab_reports_new_tab_and_tab_id(monkeypatch) -> None:
+    """Independent #7: clicking a link that creates a child tab reports effect=new_tab and tab_id."""
+    session = FakeSession()
+    pages = [SimpleNamespace(target_id="t")]
+    session.pages = lambda: list(pages)
+
+    async def fake_call_value(*_args, **_kwargs):
+        return {"type": "object", "value": _facts("Open Docs", tag="a")}
+
+    async def fake_eval_value(*_args, **_kwargs):
+        return _page()
+
+    async def fake_hit_point(*_args, **_kwargs):
+        return 10.0, 10.0
+
+    async def fake_dispatch(*_args, **_kwargs):
+        pages.append(SimpleNamespace(target_id="t-child-2"))
+
+    monkeypatch.setattr(click, "call_value", fake_call_value)
+    monkeypatch.setattr(click, "eval_value", fake_eval_value)
+    monkeypatch.setattr(click, "_hit_point", fake_hit_point)
+    monkeypatch.setattr(click, "_dispatch_click", fake_dispatch)
+    monkeypatch.setattr(click, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(click.run(session, {"target": "Open Docs", "button": "left", "click_count": 1}))
+    text = blocks[0]["text"]
+    assert "effect=new_tab" in text
+    assert "tab_id=t-child-2" in text
+    assert "status=succeeded" in text
+    assert session.successes == 1

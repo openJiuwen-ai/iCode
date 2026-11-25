@@ -187,16 +187,43 @@ def uninstall_native_host(
     manifest_path: Path | None = None,
     browsers: Sequence[str] = ("chrome", "edge"),
     registry_deleter: Callable[[str, Path], None] | None = None,
+    registry_reader: Callable[[str], Path | None] | None = None,
 ) -> None:
-    """Remove the registrations and the manifest; missing entries are ignored."""
+    """Remove the requested registrations; delete the shared manifest only when no browser still references it."""
     path = manifest_path or native_manifest_path()
     deleter = registry_deleter or _default_registry_deleter
     for browser in browsers:
         if browser not in _REGISTRY_KEYS:
             raise ValueError(f"unknown browser {browser!r}")
         deleter(browser, path)
+    remaining = [browser for browser in _REGISTRY_KEYS if browser not in set(browsers)]
+    reader = registry_reader or (registered_manifest if registry_deleter is None else None)
+    if remaining and reader is not None and _manifest_still_referenced(path, remaining, reader):
+        return
     with contextlib.suppress(OSError):
         path.unlink()
+
+
+def _manifest_still_referenced(
+    path: Path,
+    remaining_browsers: Sequence[str],
+    reader: Callable[[str], Path | None],
+) -> bool:
+    """True when any remaining browser still has a native-host registration pointing to *path*."""
+    resolved_target = path.resolve()
+    for browser in remaining_browsers:
+        registered = reader(browser)
+        if registered is None:
+            continue
+        try:
+            if registered.resolve() == resolved_target:
+                return True
+        except OSError:
+            if str(registered) == str(path):
+                return True
+        if registered.is_file() and path.is_file() and same_manifest(registered, path):
+            return True
+    return False
 
 
 def _default_registry_writer(browser: str, manifest_path: Path) -> None:
@@ -239,27 +266,10 @@ def _native_messaging_dir(browser: str) -> Path:
 
 
 def default_chrome_executable() -> Path | None:
-    """Best-effort Chrome/Chromium executable for opening the extensions page."""
-    if sys.platform == "win32":
-        for base in (
-            os.environ.get("PROGRAMFILES"),
-            os.environ.get("PROGRAMFILES(X86)"),
-            os.environ.get("LOCALAPPDATA"),
-        ):
-            if base:
-                candidate = Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"
-                if candidate.is_file():
-                    return candidate
-        which = shutil.which("chrome") or shutil.which("chrome.exe")
-        return Path(which) if which else None
-    if sys.platform == "darwin":
-        candidate = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-        return candidate if candidate.is_file() else None
-    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
-        which = shutil.which(name)
-        if which:
-            return Path(which)
-    return None
+    """Best-effort Chrome/Chromium executable (e.g. for Chrome 144+ DevTools remote debugging)."""
+    from ..cdp.launcher import find_browser_executable
+
+    return find_browser_executable(purpose="chrome_devtools", log_result=False)
 
 
 def _default_chrome_user_data_dir() -> Path:
@@ -339,7 +349,7 @@ def _open_folder(path: Path) -> None:
 
 def open_browser_setup(extension_dir: Path, *, chrome_path: Path | None = None) -> None:
     """Open the two things the one-time Load unpacked step needs."""
-    chrome = chrome_path if chrome_path is not None else default_chrome_executable()
+    chrome = chrome_path if chrome_path is not None else default_browser_executable()
     if chrome is not None:
         try:
             _launch([str(chrome), "chrome://extensions"])
@@ -357,27 +367,10 @@ def open_browser_setup(extension_dir: Path, *, chrome_path: Path | None = None) 
 
 
 def default_browser_executable() -> Path | None:
-    """Best-effort Chrome/Chromium/Edge executable for diagnostics."""
-    chrome = default_chrome_executable()
-    if chrome and chrome.is_file():
-        return chrome
-    if sys.platform == "win32":
-        for candidate in (
-            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
-            / "Microsoft"
-            / "Edge"
-            / "Application"
-            / "msedge.exe",
-            Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
-            / "Microsoft"
-            / "Edge"
-            / "Application"
-            / "msedge.exe",
-            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Chromium" / "Application" / "chrome.exe",
-        ):
-            if candidate.is_file():
-                return candidate
-    return None
+    """Best-effort Chrome/Chromium/Edge executable for Bridge setup and diagnostics."""
+    from ..cdp.launcher import find_browser_executable
+
+    return find_browser_executable(purpose="bridge", log_result=False)
 
 
 def _pid_alive(pid: int) -> bool:

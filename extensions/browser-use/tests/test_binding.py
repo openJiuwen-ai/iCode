@@ -67,3 +67,47 @@ def test_real_iCode_binding_exposes_nine_tools_and_hooks(tmp_path: Path) -> None
     assert [hook.declaration.name for hook in bound.before_tool_hooks] == ["browser_guard"]
     assert bound.after_tool_hooks == []
     assert bound.details.tools == EXPECTED_TOOLS
+
+
+def test_real_binding_same_profile_requires_explicit_browser_id_when_open(tmp_path: Path, monkeypatch) -> None:
+    """P1 #3: two real bindings sharing (session_id, agent_name) must not auto-select the other's handle."""
+    if "browser" not in discover_extensions().sources:
+        pytest.skip("icode-browser-use is not installed as a distribution in this environment")
+
+    from icode_browser_use import extension as ext
+
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    ext._browsers.clear()
+    loaded = asyncio.run(load_extensions(["browser"]))
+    assert len(loaded) == 1 and loaded[0].extension is not None
+
+    async def fake_run(browser, name: str, arguments: dict[str, object]) -> str:
+        return f"loaded {arguments.get('url', '')}"
+
+    monkeypatch.setattr(ext, "_run", fake_run)
+
+    build1 = SimpleNamespace(
+        runtime=SimpleNamespace(cwd=tmp_path, working_dirs=()),
+        agent_name="Browser",
+        session_id="chat-1",
+        session_dir=tmp_path / "session",
+    )
+    build2 = SimpleNamespace(
+        runtime=SimpleNamespace(cwd=tmp_path, working_dirs=()),
+        agent_name="Browser",
+        session_id="chat-1",
+        session_dir=tmp_path / "session",
+    )
+    bound1 = bind_extension("browser", loaded[0].extension, build1)
+    bound2 = bind_extension("browser", loaded[0].extension, build2)
+    nav1 = next(tool for tool in bound1.tools if tool.name == "browser_navigate")
+    nav2 = next(tool for tool in bound2.tools if tool.name == "browser_navigate")
+
+    try:
+        first = asyncio.run(nav1.func(url="https://example.com/one"))
+        assert "browser_id:" in first
+        second = asyncio.run(nav2.func(url="https://example.com/two"))
+        assert "Error:" in second
+        assert "browser_id" in second
+    finally:
+        ext._browsers.clear()

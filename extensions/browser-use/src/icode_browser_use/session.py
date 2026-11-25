@@ -261,6 +261,11 @@ class BrowserSession:
         #: True while ``_open_page`` creates and attaches its own tab; attach events
         #: for that tab must not be mistaken for a popup or a foreign page.
         self._opening_page = False
+        #: Attach-mode owned target IDs remembered across an unexpected CDP disconnect
+        #: so reconnect can reattach (or close) the original tab instead of leaking it.
+        self._detached_target_ids: list[str] = []
+        #: Best-effort browser identity (product/revision) for Attach reconnect checks.
+        self._browser_identity: str = ""
 
         self._page_epoch: int = secrets.randbits(32)
         self._ref_map: dict[int, RefEntry] = {}
@@ -682,6 +687,54 @@ class BrowserSession:
         self._started_once = True
         self._state = "ready"
 
+    async def _read_browser_identity(self) -> str:
+        """Read a coarse browser identity string for Attach reconnect verification."""
+        client = self._client
+        if client is None or not self._transport.browser_commands:
+            return ""
+        try:
+            info = await client.send("Browser.getVersion", timeout=min(5.0, self.cfg.cdp_timeout))
+        except Exception:
+            return ""
+        if not isinstance(info, dict):
+            return ""
+        parts = [str(info.get(key) or "") for key in ("product", "revision", "userAgent")]
+        return "|".join(parts) if any(parts) else ""
+
+    async def _find_reattach_target(self, targets: TargetManager) -> str:
+        """Return a surviving detached Attach-mode target on the same browser, or ``""``."""
+        detached = list(self._detached_target_ids)
+        self._detached_target_ids.clear()
+        if not detached or self._transport.owns_browser or not self._transport.browser_commands:
+            return ""
+        if self._browser_identity:
+            current_identity = await self._read_browser_identity()
+            if current_identity and current_identity != self._browser_identity:
+                return ""
+        client = self._client
+        if client is None:
+            return ""
+        try:
+            response = await client.send("Target.getTargets", timeout=min(5.0, self.cfg.cdp_timeout))
+        except Exception:
+            return ""
+        infos = response.get("targetInfos") if isinstance(response, dict) else None
+        if not isinstance(infos, list):
+            return ""
+        live_pages = {
+            str(info.get("targetId", ""))
+            for info in infos
+            if isinstance(info, dict) and info.get("type") == "page" and info.get("targetId")
+        }
+        surviving = [tid for tid in detached if tid in live_pages]
+        if not surviving:
+            return ""
+        primary = surviving[0]
+        for extra in surviving[1:]:
+            with contextlib.suppress(Exception):
+                await targets.close(extra)
+        return primary
+
     async def _open_page(self) -> None:
         targets = self._targets
         if targets is None:
@@ -695,14 +748,27 @@ class BrowserSession:
         previous_frame = self._main_frame_id
         previous_title = self._snapshot.title
         created = ""
+        reattach_id = await self._find_reattach_target(targets)
         self._target_id = ""
         self._snapshot.title = ""
         self._opening_page = True
         try:
-            target_id = await targets.create_target()
-            created = target_id
-            self._target_id = target_id
-            session_id = await targets.attach(target_id)
+            target_id = ""
+            session_id = ""
+            if reattach_id:
+                try:
+                    self._target_id = reattach_id
+                    session_id = await targets.attach(reattach_id)
+                    target_id = reattach_id
+                except Exception:
+                    self._target_id = ""
+                    with contextlib.suppress(Exception):
+                        await targets.close(reattach_id)
+            if not target_id:
+                target_id = await targets.create_target()
+                created = target_id
+                self._target_id = target_id
+                session_id = await targets.attach(target_id)
             self._session_id = session_id
             frame = await self._enable_page(session_id)
             self._main_frame_id = str(frame.get("id", ""))
@@ -738,6 +804,8 @@ class BrowserSession:
                     discover_pages=self._transport.owns_browser,
                     download_dir=str(self._download_dir) if self._download_dir is not None else None,
                 )
+            if not self._transport.owns_browser and self._transport.browser_commands and not self._browser_identity:
+                self._browser_identity = await self._read_browser_identity()
         except BaseException:
             self._target_id = previous
             self._session_id = previous_session
@@ -952,6 +1020,22 @@ class BrowserSession:
         client = self._client
         child = self._child
         target_id = self._target_id or None
+        owned_targets = [
+            tid for tid in ([self._target_id] + [t for t in self._page_order if t != self._target_id]) if tid
+        ]
+        if (
+            client is None
+            and not self._transport.owns_browser
+            and self._transport.browser_commands
+            and not self._closed
+            and owned_targets
+        ):
+            for tid in owned_targets:
+                if tid not in self._detached_target_ids:
+                    self._detached_target_ids.append(tid)
+        elif self._closed:
+            self._detached_target_ids.clear()
+            self._browser_identity = ""
         # The next browser may reuse tab ids (Bridge ids are Chrome tab numbers).
         self._page_log.clear()
         self._client = None
@@ -979,6 +1063,11 @@ class BrowserSession:
                 self._discard_download_files(info)
         self._bump_epoch()
         self._reset_budgets()
+        if client is not None and not self._transport.owns_browser and self._transport.browser_commands:
+            for extra_id in owned_targets:
+                if extra_id != target_id:
+                    with contextlib.suppress(Exception):
+                        await client.send("Target.closeTarget", {"targetId": extra_id}, timeout=5.0)
         # The transport decides whether that means "close the browser" (owned) or
         # "close our tab and disconnect" (attached); it never raises.
         await self._transport.stop(client, child, target_id=target_id)

@@ -4,11 +4,14 @@
 
 One extension id (``browser``) owns a registry of ``browser_id -> BrowserSession``.
 Every id gets its own state directory (one slot under the owner's profile folder),
-so it also gets its own Chrome profile and instance lock: two sub-agents or
-workflow nodes in one iCode session never share a page. ``ToolContext.agent_id``
-keeps builds apart even when they share the session and profile name; the main
-agent has none and keeps the session/profile key. The adapter never imports
-iCode beyond ``chrys.extensions``; the core itself does not import iCode at all.
+so it also gets its own Chrome profile and instance lock. Ownership is keyed by
+``(ToolContext.session_id, ToolContext.agent_name)`` (plus ``ToolContext.agent_id``
+when a host provides one): agents with different sessions or profile names never
+share a page, while concurrent builds sharing the same session and profile name on
+hosts without ``ToolContext.agent_id`` share that owner scope and must pass
+explicit ``browser_id`` values (or use distinct profiles / ``max_concurrency: 1``).
+The adapter never imports iCode beyond ``chrys.extensions``; the core itself does
+not import iCode at all.
 
 Configuration uses ``ICODE_BROWSER_*`` environment variables:
 
@@ -794,16 +797,14 @@ async def browser_navigate(
         browser = _get(ctx, browser_id)
     else:
         mine = _mine(ctx)
-        if len(mine) > 1:
+        if mine:
             raise ToolError(
-                "Several browsers are open; pass browser_id to choose which one to navigate.",
+                "A browser is already open for this session/agent; pass browser_id to reuse it, "
+                "or call browser_open to allocate a separate handle.",
                 code="browser_id_required",
             )
-        if len(mine) == 1:
-            browser = mine[0]
-        else:
-            browser = _open(ctx)
-            allocated = True
+        browser = _open(ctx)
+        allocated = True
     try:
         text = await _run(browser, "browser_navigate", {"url": url})
     except ToolError as exc:
@@ -927,7 +928,7 @@ async def browser_click(
     The mouse click targets the element's centre and, when that is covered, points near its
     corners (result shows hit_point=corner); when every point is covered nothing is sent
     (status=blocked), and when a hit test cannot be answered nothing is sent either
-    (status=uncertain). The result reports effect=navigation|dom|dom_elsewhere|focus|none|unknown;
+    (status=uncertain). The result reports effect=navigation|new_tab|dom|dom_elsewhere|focus|none|unknown;
     verified=control_state means the same control changed its accessibility state or label.
     There is never an automatic JS second click. Pass expect_condition (and optionally
     expect_return='ref'|'snapshot'|'text') to run a single read-only verification right after

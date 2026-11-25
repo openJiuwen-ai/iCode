@@ -51,6 +51,24 @@ def _session_state_dir(root: Path, session_id: str) -> Path:
 MAX_BROKER_SESSIONS = 8
 MAX_BROKER_SESSIONS_PER_OWNER = 2
 
+#: Read-only tools that have no side effects and may be cancelled immediately when
+#: the calling client disconnects (releasing the session lease and action lock).
+#: Mutating tools are never cancelled on disconnect so in-flight writes keep their
+#: uncertain semantics.
+_CANCELLABLE_READ_TOOLS = frozenset(
+    {
+        "browser_wait_for",
+        "browser_snapshot",
+        "browser_find",
+        "browser_extract",
+        "browser_screenshot",
+        "browser_tabs",
+        "browser_downloads",
+        "browser_logs",
+        "browser_action_status",
+    }
+)
+
 
 def _consume_task_error(task: asyncio.Task[None]) -> None:
     """Retrieve a detached teardown task's exception so asyncio never warns."""
@@ -152,7 +170,12 @@ class BrokerServer:
                 message = await read_async_frame(reader, limit=MAX_TCP_MESSAGE_BYTES)
                 if message is None:
                     return
-                response = await self._dispatch(message, writer)
+                if message.get("op") == "call" and str(message.get("tool") or "") in _CANCELLABLE_READ_TOOLS:
+                    response = await self._dispatch_cancellable_read(message, reader, writer)
+                    if response is None:
+                        return
+                else:
+                    response = await self._dispatch(message, writer)
                 writer.write(encode_message(response, limit=MAX_TCP_MESSAGE_BYTES))
                 await writer.drain()
         except (
@@ -170,6 +193,40 @@ class BrokerServer:
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
             await self._evict_idle_sessions()
+
+    async def _watch_client_eof(self, reader: asyncio.StreamReader) -> bool:
+        """Wait until the client closes the connection (EOF/error) while a read-only call runs."""
+        try:
+            data = await reader.read(1)
+        except (ConnectionError, OSError):
+            return True
+        return data == b""
+
+    async def _dispatch_cancellable_read(
+        self,
+        message: dict[str, Any],
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> dict[str, Any] | None:
+        """Run a read-only tool call, cancelling it promptly if the client disconnects."""
+        dispatch_task = asyncio.create_task(self._dispatch(message, writer))
+        eof_task = asyncio.create_task(self._watch_client_eof(reader))
+        try:
+            done, _pending = await asyncio.wait(
+                {dispatch_task, eof_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if eof_task in done and not dispatch_task.done():
+                dispatch_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await dispatch_task
+                return None
+            return dispatch_task.result()
+        finally:
+            if not eof_task.done():
+                eof_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await eof_task
 
     def _release_for_connection(self, writer: asyncio.StreamWriter) -> None:
         for lease_id, lease in list(self.leases.items()):
