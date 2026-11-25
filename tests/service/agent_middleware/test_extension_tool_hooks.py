@@ -23,6 +23,7 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_ERRORED_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
     TOOL_INTERRUPTED_METADATA_KEY,
+    TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY,
     TOOL_RESULT_METADATA_KEY,
 )
 from chrys.foundation.util.sub_agent_context import sub_agent_parent_result_metadata
@@ -294,7 +295,7 @@ async def _read_checkpoint(recorder: LoopRecorder, tmp_path: Path) -> Content:
 
 
 @_MIDDLEWARES
-@pytest.mark.parametrize("outcome", ["completed", "cancel_pending", "cancel_applied"])
+@pytest.mark.parametrize("outcome", ["completed", "cancel_pending", "cancel_second_pending", "cancel_applied"])
 async def test_recover_result_while_a_hook_withholds_it(
     make: Callable[[EventBus, ExtensionToolHooks], FunctionMiddleware], tmp_path: Path, outcome: str
 ) -> None:
@@ -303,9 +304,18 @@ async def test_recover_result_while_a_hook_withholds_it(
     publishing = asyncio.Event()
     extension = Extension()
 
+    if outcome == "cancel_second_pending":
+
+        @extension.after_tool
+        async def first_review(_call: ToolCall, result: ToolResult) -> str:
+            assert result.text == "unreviewed output"
+            return "partially reviewed"
+
+    seen: list[str] = []
+
     @extension.after_tool
     async def withhold(_call: ToolCall, result: ToolResult) -> str:
-        assert result.text == "unreviewed output"
+        seen.append(result.text)
         entered.set()
         await release.wait()
         return ""
@@ -350,6 +360,7 @@ async def test_recover_result_while_a_hook_withholds_it(
         if task.done():
             await task
             pytest.fail("call ended before the result hook")
+        assert seen == ["partially reviewed" if outcome == "cancel_second_pending" else "unreviewed output"]
         assert recorder.loop_messages is not None
         pending = recorder.loop_messages[-1].contents[0]
         assert recorder.loop_messages[-1].contents[0] is pending
@@ -358,7 +369,8 @@ async def test_recover_result_while_a_hook_withholds_it(
         assert links.items() <= saved.additional_properties[TOOL_RESULT_METADATA_KEY].items()
         assert recorder.committed_count == 1
 
-        if outcome != "cancel_pending":
+        cancel_pending = outcome in ("cancel_pending", "cancel_second_pending")
+        if not cancel_pending:
             release.set()
         if outcome == "cancel_applied":
             await wait_for(lambda: publishing.is_set() or task.done())
@@ -372,12 +384,14 @@ async def test_recover_result_while_a_hook_withholds_it(
             recorder.restore(before_call)
         assert recorder.loop_messages is not None
         (result,) = [c for m in recorder.loop_messages for c in m.contents if c.type == "function_result"]
-        assert result.result == (INTERRUPTED_TOOL_RESULT_TEXT if outcome == "cancel_pending" else "")
+        assert result.result == (INTERRUPTED_TOOL_RESULT_TEXT if cancel_pending else "")
         metadata = result.additional_properties[TOOL_RESULT_METADATA_KEY]
         assert links.items() <= metadata.items()
         assert metadata[PROCESS_EXIT_CODE_METADATA_KEY] == 0
         assert bool(metadata.get(TOOL_INTERRUPTED_METADATA_KEY)) == (outcome != "completed")
-        assert bool(metadata.get(TOOL_FAILED_METADATA_KEY)) == (outcome == "cancel_pending")
+        assert bool(metadata.get(TOOL_FAILED_METADATA_KEY)) == cancel_pending
+        if cancel_pending:
+            assert metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] is True
         assert recorder.committed_count == 1
     finally:
         release.set()

@@ -16,6 +16,7 @@ from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
 from tests.orchestration.engine._recovery_helpers import CheckpointComponents, _profile, make_checkpoint_components
+from tests.support.components import plan_workspace
 from tests.support.loaded_agents import install_loaded_agent
 from tests.support.waiting import wait_until
 
@@ -39,7 +40,7 @@ def _seed_identity_components(store: JsonFileStateStore, tmp_path: Path) -> tupl
     profile = _profile("Original", "Original display")
     profile.id = "agent-id"
     components.session.agent_profile = profile
-    components.session.workspace = workspace
+    components.session.install_workspace(plan_workspace(workspace))
     components.session.surface = SessionSurface.CLI
     components.session.mark_surface()
     install_loaded_agent(
@@ -144,7 +145,7 @@ async def test_barrier_waiting_for_background_write_keeps_all_captured_metadata(
         assert await wait_until(lambda: components.writer.snapshot_seq == 2)
         components.session.session_id = "replacement"
         components.session.agent_profile = _profile("Replacement")
-        components.session.workspace = Workspace(primary_cwd=str(tmp_path / "replacement"))
+        components.session.install_workspace(plan_workspace(Workspace(primary_cwd=str(tmp_path / "replacement"))))
         install_loaded_agent(
             components,
             agent_profile_fingerprint="replacement-agent",

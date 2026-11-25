@@ -26,7 +26,7 @@ from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 from chrys.service.state.locks import ActiveSessionGuard
 from chrys.service.state.store import JsonFileStateStore, StateStore, session_write_lock_path
 from chrys.service.todos.tracker import TodoTracker
-from tests.support.components import make_session
+from tests.support.components import make_session, plan_workspace
 
 
 @pytest.mark.parametrize("store_kind", ["json", "custom", "none"])
@@ -69,7 +69,7 @@ def test_workspace_cwd_uses_the_current_workspace_or_fallback(tmp_path, monkeypa
     session = make_session(persistence=SessionPersistence(None, EventBus()), workspace=None, approval_mode=None)
     assert session.workspace_cwd() == str(tmp_path)
     workspace = Workspace(primary_cwd=str(tmp_path / "workspace"))
-    session.workspace = workspace
+    session.install_workspace(plan_workspace(workspace))
     assert session.workspace_cwd() == workspace.primary_cwd
 
 
@@ -123,6 +123,27 @@ def test_guard_ensure_install_and_release(tmp_path):
         contender.release()
 
 
+def test_runtime_id_names_only_the_live_session_in_any_spelling(tmp_path):
+    live = "4201eebc-ca45-4328-8882-272f3d7c41cb"
+    same_prefix = "4201eebc-ca45-4999-8882-272f3d7c41cb"
+    store = JsonFileStateStore(tmp_path)
+    session = make_session(persistence=SessionPersistence(store, EventBus()), workspace=None, approval_mode=None)
+    session.session_id = live
+    try:
+        # The lock is named by the short id, so it also answers for the other session.
+        assert session.guard.ensure(live)
+        assert session.guard.owns(same_prefix)
+        assert session.owns_runtime_id(live)
+        assert session.owns_runtime_id(live.upper())
+        assert session.owns_runtime_id(live.replace("-", ""))
+        assert not session.owns_runtime_id(same_prefix)
+        assert not session.owns_runtime_id(session_short_id(live))
+        session.session_id = None
+        assert not session.owns_runtime_id(live)
+    finally:
+        session.guard.release()
+
+
 def test_guard_without_store_does_not_claim_a_lock():
     session = make_session(persistence=SessionPersistence(None, EventBus()), workspace=None, approval_mode=None)
     assert session.guard.ensure("session")
@@ -159,20 +180,19 @@ def test_begin_preserves_live_state_and_initializes_missing_identity(tmp_path, h
     session = _session()
     profile = AgentProfile(name="Code")
     live = Workspace(primary_cwd=str(tmp_path / "live")) if workspace_kind == "live" else None
-    candidate = Workspace(primary_cwd=str(tmp_path / "candidate")) if workspace_kind == "candidate" else None
-    session.workspace = live
+    if live is not None:
+        session.install_workspace(plan_workspace(live))
     session.session_id = "existing" if has_identity else None
     session.session_end_fired = True
     before = vars(session).copy()
 
-    session.begin(agent_profile=profile, workspace=candidate)
+    session.begin(agent_profile=profile)
 
     assert session.session_id == "existing" if has_identity else UUID(session.session_id).version == 4
-    assert session.workspace is live if workspace_kind != "default" else isinstance(session.workspace, Workspace)
+    assert session.workspace is live
     assert vars(session) == before | {
         "session_end_fired": False,
         "agent_profile": profile,
-        "workspace": session.workspace,
         "session_id": session.session_id,
     }
 
@@ -184,7 +204,7 @@ def test_install_build_changes_only_completed_session_fields(install_trackers):
     session.todo_tracker = create_autospec(TodoTracker, instance=True)
     staged = create_autospec(StagedBuild, instance=True)
     staged.agent_profile = AgentProfile(name="Other")
-    staged.workspace = Workspace(primary_cwd="/workspace")
+    staged.workspace_plan = plan_workspace(Workspace(primary_cwd="/workspace"))
     staged.hook_manager = create_autospec(HookManager, instance=True)
     staged.mutation_coordinator = create_autospec(MutationCoordinator, instance=True)
     mutation_tracker = create_autospec(MutationTracker, instance=True) if install_trackers else None
@@ -195,7 +215,7 @@ def test_install_build_changes_only_completed_session_fields(install_trackers):
 
     assert vars(session) == before | {
         "agent_profile": staged.agent_profile,
-        "workspace": staged.workspace,
+        "workspace_plan": staged.workspace_plan,
         "hook_manager": staged.hook_manager,
         "mutation_coordinator": staged.mutation_coordinator,
         "mutation_tracker": mutation_tracker if install_trackers else before["mutation_tracker"],
@@ -213,16 +233,17 @@ def test_reset_replaces_only_per_session_fields(tmp_path, with_workspace):
     session.mutation_coordinator = create_autospec(MutationCoordinator, instance=True)
     session.todo_tracker = create_autospec(TodoTracker, instance=True)
     workspace = Workspace(primary_cwd=str(tmp_path)) if with_workspace else None
+    if workspace is not None:
+        session.install_workspace(plan_workspace(workspace))
     before = vars(session).copy()
 
-    session.reset(session_id="reset", workspace=workspace)
+    session.reset(session_id="reset")
 
-    assert session.workspace is workspace if with_workspace else isinstance(session.workspace, Workspace)
+    assert session.workspace is workspace
     assert session.spill_quota is not before["spill_quota"]
     assert session.runtime_meta is not before["runtime_meta"]
     assert vars(session) == before | {
         "shutting_down": False,
-        "workspace": session.workspace,
         "session_id": "reset",
         "turn_number": 0,
         "spill_quota": session.spill_quota,

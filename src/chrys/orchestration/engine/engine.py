@@ -54,6 +54,7 @@ from chrys.foundation.events.types import (
     UserRetry,
     UserRollback,
     WorkspaceChange,
+    WorkspaceOperation,
 )
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.models.workspace import Workspace
@@ -92,6 +93,7 @@ if TYPE_CHECKING:
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
+    from chrys.service.workspaces.registry import RegistrySnapshot
 
 
 # Session-keyed registry of live engines, for app features that run beside the session (the buddy).
@@ -506,9 +508,18 @@ class AgentEngine:
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         workspace: Workspace | None = None,
+        workspace_id: str | None = None,
+        workspace_snapshot: RegistrySnapshot | None = None,
     ) -> None:
         await self._subscribe_event_handlers()
-        await self._lifecycle.start(profile, operation=operation, staged_loaded=staged_loaded, workspace=workspace)
+        await self._lifecycle.start(
+            profile,
+            operation=operation,
+            staged_loaded=staged_loaded,
+            workspace=workspace,
+            workspace_id=workspace_id,
+            workspace_snapshot=workspace_snapshot,
+        )
 
     async def prepare(self, fallback_profile: AgentProfile | None = None) -> None:
         """Subscribe handlers and optionally seed the profile used by legacy restores."""
@@ -718,9 +729,9 @@ class AgentEngine:
             workflow_active_display=_WORKFLOW_ROLLBACK_ACTIVE.bind(),
         )
 
-    async def reset_after_failed_startup_restore(self) -> None:
+    async def reset_after_failed_startup_restore(self, *, reload_settings: bool = True) -> None:
         """Return a partial startup restore to a clean, unlocked baseline."""
-        await self._lifecycle.reset_after_failed_startup_restore()
+        await self._lifecycle.reset_after_failed_startup_restore(reload_settings=reload_settings)
 
     async def _on_user_message(self, event: UserMessage) -> None:
         """Handle a user message by running the executor as an async task."""
@@ -865,7 +876,25 @@ class AgentEngine:
         await self._session_operation("start a new session", lambda: self._lifecycle.on_new_session(_event))
 
     async def on_session_restore(self, event: SessionRestore) -> None:
-        """Handle session restore — load saved session state."""
+        """Load saved state, or select a workspace for the already active conversation."""
+        if (
+            event.workspace_operation is not WorkspaceOperation.NONE
+            and event.session_id is not None
+            and self._session.owns_runtime_id(event.session_id)
+        ):
+            await self._on_workspace_change(
+                WorkspaceChange(
+                    event_id=event.event_id,
+                    session_id=event.session_id,
+                    primary_cwd=event.primary_cwd,
+                    workspace_id=event.workspace_id,
+                    workspace_operation=event.workspace_operation,
+                    require_leave_confirmation=event.require_leave_confirmation,
+                    confirmation=event.confirmation,
+                    workspace_snapshot=event.workspace_snapshot,
+                )
+            )
+            return
         await self._session_operation(
             "restore a session",
             lambda: self._lifecycle.on_session_restore(event),

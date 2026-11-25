@@ -660,9 +660,23 @@ class MainScreenViewAdapter:
             on_result,
         )
 
-    async def restore_workflow_session(self, session_id: str) -> None:
-        if self._screen._workflow.workflow_mode:
-            await self._screen._workflow.session_view.restore_session(session_id)
+    async def restore_workflow_session(self, session_id: str, *, open_from_chat: bool = False) -> None:
+        from chrys.app.tui.session_lookup import RESUME_TITLE, SESSION_NOT_FOUND
+        from chrys.app.tui.widgets.workflow import text
+
+        screen = self._screen
+        if open_from_chat:
+            screen._set_workflow_mode(True)
+        if not screen._workflow.workflow_mode:
+            if open_from_chat and (notice := screen._app_mode_busy_notice()) is not None:
+                self.notify(notice, title=text.MODE_BUSY_TITLE.bind(), severity="warning")
+            return
+
+        def missing() -> None:
+            screen._set_workflow_mode(False)
+            self.notify(SESSION_NOT_FOUND.bind(session_id=session_id), title=RESUME_TITLE.bind(), severity="warning")
+
+        await screen._workflow.session_view.restore_session(session_id, on_missing=missing if open_from_chat else None)
 
     def toggle_sidebar(self) -> None:
         self._screen.query_one(SidebarPanel).toggle()

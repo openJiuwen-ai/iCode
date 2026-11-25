@@ -39,6 +39,7 @@ from tests.orchestration.engine._rollback_helpers import (
     fake_start_factory,
     seed_turns,
 )
+from tests.support.components import plan_workspace
 from tests.support.event_capture import assert_display_message
 from tests.support.loaded_agents import install_loaded_agent
 
@@ -103,7 +104,7 @@ class TestRollbackSwap:
 
         observed: dict[str, Any] = {}
 
-        async def _fake_restore(event: Any) -> None:
+        async def _fake_restore(event: Any, *, for_rollback: bool = False) -> None:
             observed["suppress_during_restore"] = engine.session.suppress_save
             observed["session_id"] = event.session_id
 
@@ -138,9 +139,9 @@ class TestRollbackSwap:
         engine_services(engine).history.bind({"messages": [Message("user", ["hello"])], "compressed_msgs": []})
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir()
-        engine.session.workspace = Workspace.from_cwd(str(workspace_root))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(workspace_root))))
         tracker = engine_services(engine).workspace_change_tracker
-        tracker.retarget_roots(engine.session.workspace)
+        tracker.apply_retarget(tracker.resolve_retarget(engine.session.workspace))
         original_baseline = tracker.capture_baseline(1)
 
         session_dir = tmp_path / "rb_test"
@@ -149,7 +150,7 @@ class TestRollbackSwap:
         engine.rollback.write_snapshot()
         save_payloads: list[dict[str, Any] | None] = []
 
-        async def _fake_restore(_event: Any) -> None:
+        async def _fake_restore(_event: Any, *, for_rollback: bool = False) -> None:
             assert engine.session.suppress_save is True
 
         async def _fake_save(*, raise_on_error: bool = False) -> bool:
@@ -177,9 +178,9 @@ class TestRollbackSwap:
 
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir()
-        engine.session.workspace = Workspace.from_cwd(str(workspace_root))
+        engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(workspace_root))))
         tracker = engine_services(engine).workspace_change_tracker
-        tracker.retarget_roots(engine.session.workspace)
+        tracker.apply_retarget(tracker.resolve_retarget(engine.session.workspace))
 
         entered = threading.Event()
         release = threading.Event()
@@ -201,7 +202,7 @@ class TestRollbackSwap:
             order.append("save")
             generation_after_finalization.append(engine.session_generation)
 
-        async def _fake_restore(event: Any) -> None:
+        async def _fake_restore(event: Any, *, for_rollback: bool = False) -> None:
             order.append("restore")
             loaded = await store.load_session(event.session_id)
             assert loaded is not None
@@ -262,7 +263,7 @@ class TestRollbackSwap:
 
         await store.save_session("rb_test", pre_rollback_state)
 
-        async def _fake_restore(_event: Any) -> None: ...
+        async def _fake_restore(_event: Any, *, for_rollback: bool = False) -> None: ...
 
         engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
 
@@ -293,7 +294,7 @@ class TestRollbackSwap:
         (snap_dir / "turn_2.json").write_text((session_dir / "session.json").read_text(encoding="utf-8"), "utf-8")
         await store.save_session("rb_test", pre_rollback_state, last_surface=SessionSurface.ACP)
 
-        async def _fake_restore(_event: Any) -> None: ...
+        async def _fake_restore(_event: Any, *, for_rollback: bool = False) -> None: ...
 
         engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
 
@@ -336,7 +337,7 @@ class TestRollbackSwap:
         meta = await store.load_session_meta("rb_test", prefer_recovery=True)
         assert meta is not None and meta.last_surface == SessionSurface.ACP
 
-        async def _restore_ignoring_recovery(event: Any) -> None:
+        async def _restore_ignoring_recovery(event: Any, *, for_rollback: bool = False) -> None:
             assert event.ignore_recovery is True
             store.delete_recovery_session(event.session_id)
 
@@ -371,7 +372,7 @@ class TestRollbackSwap:
         (snap_dir / "turn_2.json").write_text((session_dir / "session.json").read_text(encoding="utf-8"), "utf-8")
         await store.save_session("rb_test", pre_rollback_state)
 
-        async def _fake_restore(event: Any) -> None:
+        async def _fake_restore(event: Any, *, for_rollback: bool = False) -> None:
             loaded = await store.load_session(event.session_id)
             assert loaded is not None
             engine_services(engine).history.bind(loaded)
@@ -518,7 +519,7 @@ class TestRollbackSwap:
                 raise OSError("simulated backup failure")
             real_atomic_copy_file(source, dest)
 
-        async def _fake_restore(_event: Any) -> None: ...
+        async def _fake_restore(_event: Any, *, for_rollback: bool = False) -> None: ...
 
         monkeypatch.setattr(engine_module, "atomic_copy_file", fail_backup_copy)
         engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
@@ -751,7 +752,7 @@ class TestRollbackSwap:
         results: list[RollbackResult] = []
         await _collect_events(engine.event_bus, RollbackResult, results)
 
-        async def _fake_restore(_event: Any) -> None: ...
+        async def _fake_restore(_event: Any, *, for_rollback: bool = False) -> None: ...
 
         engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
 
@@ -811,7 +812,7 @@ class TestRollbackSwapSemantics:
         session_file.write_text(json.dumps(post_compress), encoding="utf-8")
 
         # Stub restore so the test focuses on the swap itself.
-        async def _fake_restore(_event: Any) -> None: ...
+        async def _fake_restore(_event: Any, *, for_rollback: bool = False) -> None: ...
 
         engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
 
@@ -883,7 +884,7 @@ class TestRollbackSwapSemantics:
         engine_services(engine).history.bind({"messages": [Message("user", ["current"])], "compressed_msgs": []})
         engine.session.turn_number = 2
 
-        async def _fake_restore(_event: Any) -> None: ...
+        async def _fake_restore(_event: Any, *, for_rollback: bool = False) -> None: ...
 
         engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
 

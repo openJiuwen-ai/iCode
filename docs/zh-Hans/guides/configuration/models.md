@@ -188,3 +188,24 @@ iCode 能判断模型请求失败的原因时，会用通俗的话说明原因�
 | 模型配置的最大上下文窗口大于服务端支持的上限 | 在模型配置中把“最大上下文窗口”改为提示中给出的服务端上限或更小，并保存。 |
 
 iCode 从环境变量 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY`（大小写均可）读取代理，支持 `http://`、`https://`、`socks5://` 和 `socks5h://` 代理。如果其中某个变量的地址 iCode 无法使用，例如部分 Linux 桌面设置的 `socks://` 地址，iCode 启动时会忽略该变量并显示警告，之后按未设置该变量的情况连接。iCode 无法解析的 `NO_PROXY` 列表也会这样处理。如需使用该代理，请把变量改为 iCode 支持的地址，例如 SOCKS5 代理可改为 `socks5h://127.0.0.1:7897`，然后重启 iCode。
+
+## 按请求用途路由模型调用
+
+iCode 发起模型调用时会发送 `Chrys-Request-Role`。网关可以结合 `Chrys-Model-Id`，在已配置的模型服务内选择上游。
+
+| `Chrys-Request-Role` | 请求用途 |
+| --- | --- |
+| `main_agent` | 聊天主 agent 或工作流节点 agent |
+| `sub_agent` | 受委派的子 agent |
+| `compaction` | 为上下文压缩生成摘要 |
+| `approval_judge` | 自动审核工具调用 |
+| `pet` | 宠物回复 |
+| `context_recall` | 查询已压缩的对话历史 |
+| `session_title` | 生成会话标题 |
+| `side_question` | 回答旁路提问 |
+| `rsi_optimizer` | 自我改进优化器请求 |
+| `model_test` | 模型配置中的**测试**操作 |
+
+工作流发起的调用还会带上 `Chrys-Request-Scope: workflow`。网关可以同时匹配 `main_agent` 和 `workflow` 来选择工作流节点 agent 的路由，或只匹配 `workflow` 来覆盖其子 agent、压缩和审批请求。其他调用省略归属头。两个请求头由 iCode 自动设置。外部 ACP agent 直接发出的请求使用其自身设置的请求头。
+
+网关遇到缺失或未知的值时可走默认路由。对于有状态的 Responses 调用，轮询和带续接句柄的请求应发往持有该状态的原上游。压缩请求可能复用发起它的 agent 的 session ID 和缓存前缀，网关应保留该 agent 的会话路由绑定。

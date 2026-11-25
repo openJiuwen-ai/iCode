@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from ntpath import relpath as windows_relpath
 from pathlib import Path, PureWindowsPath
@@ -11,10 +12,45 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.models.workspace import WorkingDir, Workspace, WorkspaceConfirmation
 from chrys.service.mutations import workspace_changes
 from chrys.service.mutations.git_state import GitHeadState, GitStatusResult, canonical_path
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
+
+
+def test_unspecified_link_entry_is_displayed_under_the_users_cwd_alias(tmp_path: Path) -> None:
+    from tests.support.symlinks import symlink_or_skip
+
+    real, alias, outside = (tmp_path / name for name in ("repo", "alias", "outside"))
+    real.mkdir()
+    outside.mkdir()
+    symlink_or_skip(alias, real, target_is_directory=True)
+    symlink_or_skip(real / "link", outside, target_is_directory=True)
+    scope = workspace_changes._ResolvedScope((), display_roots=((canonical_path(str(real)), str(alias)),))
+
+    assert workspace_changes._display_path(str(real / "link"), scope) == str(alias / "link")
+    assert not workspace_changes._path_in_git_scope(str(real), str(alias / "link"), (".",))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX symlink traversal")
+def test_workspace_baseline_resolves_symlink_before_parent_traversal(tmp_path: Path) -> None:
+    from tests.support.symlinks import symlink_or_skip
+
+    primary, physical, lexical = tmp_path / "primary", tmp_path / "real" / "refs", tmp_path / "refs"
+    link_target = physical.parent / "nested"
+    for directory in (primary, physical, lexical, link_target):
+        directory.mkdir(parents=True, exist_ok=True)
+    alias = tmp_path / "alias"
+    symlink_or_skip(alias, link_target, target_is_directory=True)
+    related = str(alias / ".." / "refs")
+    workspace = Workspace(str(primary), [WorkingDir(related)])
+
+    scope = workspace_changes._resolve_workspace_scope(workspace)
+    physical_root = str(physical.resolve())
+    assert [root.root for root in scope.roots] == [str(primary.resolve()), physical_root]
+    assert canonical_path(related) == physical_root
+    assert WorkspaceConfirmation.capture(None, related).resolved_cwd == physical_root
+    assert workspace_changes._display_path(str(physical / "file.txt"), scope) == os.path.join(physical_root, "file.txt")
 
 
 @pytest.mark.parametrize("scope", [(".",), ("child",)])
@@ -49,6 +85,11 @@ def test_restore_filters_foreign_mount_and_keeps_comparable_files(
     child = tmp_path / "child"
     child.mkdir()
     root = canonical_path(str(tmp_path))
+    monkeypatch.setattr(
+        workspace_changes,
+        "resolve_git_root",
+        create_autospec(workspace_changes.resolve_git_root, return_value=root),
+    )
     kept = os.path.join(root, "child", "kept.txt")
     outside = os.path.join(root, "..", "outside.txt")
     device = r"\\.\nul"
@@ -78,11 +119,8 @@ def test_restore_filters_foreign_mount_and_keeps_comparable_files(
         return original_relpath(path, start)
 
     monkeypatch.setattr(os.path, "relpath", create_autospec(original_relpath, side_effect=relpath))
-    monkeypatch.setattr(
-        workspace_changes, "resolve_git_root", create_autospec(workspace_changes.resolve_git_root, return_value=root)
-    )
     tracker = WorkspaceChangeTracker()
-    tracker.restore(payload, Workspace.from_cwd(str(tmp_path if scope == "." else child)))
+    tracker.restore(payload, Workspace(str(tmp_path if scope == "." else child), id="ws_app", name="App"))
 
     baseline = tracker.baseline
     assert baseline is not None
@@ -101,6 +139,11 @@ def test_git_capture_does_not_persist_paths_resolved_to_another_mount(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = canonical_path(str(tmp_path))
+    monkeypatch.setattr(
+        workspace_changes,
+        "resolve_git_root",
+        create_autospec(workspace_changes.resolve_git_root, return_value=root),
+    )
     device = r"\\.\nul"
     original_lexical = workspace_changes.lexical_display_path
     original_relpath = os.path.relpath
@@ -117,9 +160,6 @@ def test_git_capture_does_not_persist_paths_resolved_to_another_mount(
         workspace_changes, "lexical_display_path", create_autospec(original_lexical, side_effect=lexical)
     )
     monkeypatch.setattr(
-        workspace_changes, "resolve_git_root", create_autospec(workspace_changes.resolve_git_root, return_value=root)
-    )
-    monkeypatch.setattr(
         workspace_changes,
         "read_git_head",
         create_autospec(workspace_changes.read_git_head, return_value=GitHeadState("head", "branch")),
@@ -133,10 +173,38 @@ def test_git_capture_does_not_persist_paths_resolved_to_another_mount(
         ),
     )
     tracker = WorkspaceChangeTracker()
-    tracker.retarget_roots(Workspace.from_cwd(str(tmp_path)))
+    tracker.apply_retarget(tracker.resolve_retarget(Workspace(str(tmp_path), id="ws_app", name="App")))
 
     baseline = tracker.capture_baseline(1)
 
     assert baseline.degraded == {}
     assert set(baseline.roots[root].files) == {os.path.join(root, "deleted.txt")}
     assert baseline.roots[root].files[os.path.join(root, "deleted.txt")].exists is False
+
+
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize("has_workspace", [False, True])
+def test_git_scope_expansion_drops_the_previous_comparison(tmp_path, git_repo_factory, restore, has_workspace):
+    repo = git_repo_factory(tmp_path / "repo")
+    child = repo / "pkg"
+    child.mkdir()
+    tracker = WorkspaceChangeTracker()
+    membership = {"id": "workspace", "name": "Team"} if has_workspace else {}
+    tracker.apply_retarget(tracker.resolve_retarget(Workspace(str(child), **membership)))
+    tracker.capture_baseline(1)
+    expanded = Workspace(str(repo), **membership)
+    if restore:
+        saved = tracker.serialize()
+        tracker = WorkspaceChangeTracker()
+        tracker.restore(saved, expanded)
+    else:
+        tracker.apply_retarget(tracker.resolve_retarget(expanded))
+    (child / "external.txt").write_text("external change", encoding="utf-8")
+
+    notice = tracker.compute_turn_notice(
+        turn_id=2, mutation_tracker=None, agent_turn_id=None, overlap_turn_id=None, cwd=str(repo), max_entries=20
+    )
+
+    assert notice is not None and "no comparable previous baseline" in notice
+    assert "external.txt" not in notice
+    assert "comparable_scope" not in json.dumps(tracker.serialize())

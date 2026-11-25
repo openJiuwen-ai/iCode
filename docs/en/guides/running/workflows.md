@@ -45,6 +45,8 @@ When the run ends with a result, click “Result” to the right of “■ Cance
 
 A workflow session can save multiple runs. Click the “Run 1”, “Run 2”, and subsequent run tabs above “Workflow”, “Info”, and the other tabs to browse each run. After quitting and reopening iCode, first switch to “Workflow” through the app mode selector in the upper left. Press `F1` or click `f1 Sessions` at the bottom of the interface, then select a workflow session to view its historical inputs, outputs, and node records.
 
+Agent nodes use the folders you confirmed for the workflow session. Chat workspace folders are separate.
+
 ## Create your first workflow
 
 Next, write your own workflow. Create a `.chrys/workflows/` directory in your working directory if it does not already exist. Save all the workflow files below in this directory.

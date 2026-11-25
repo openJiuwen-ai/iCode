@@ -8,11 +8,13 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from chrys.app.tui.screens.main.input_flow import InputFlowController
 from chrys.app.tui.screens.main.ports import InputSubmission
+from chrys.app.tui.screens.main.prompt_card import PendingSwitch
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import (
@@ -23,10 +25,12 @@ from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
+    AgentLoadFailed,
     Error,
     InvocationContentDelta,
     InvocationContentFinished,
     InvocationMessage,
+    SessionOnlySwitch,
     UserInjectSteer,
     UserInterrupt,
     UserMessage,
@@ -410,6 +414,36 @@ async def test_retry_reserves_before_worker_start_and_releases_after_admission(o
         assert published == ["first note", "try again"]
 
 
+class _FailureStatusBar:
+    def __init__(self, order: list[object]) -> None:
+        self.order = order
+
+    def flash(self, message: str, *, error: bool = False) -> None:
+        self.order.append(f"flash:{status_text(message)}:{error}")
+
+
+class _FailureInputBar:
+    def __init__(self, on_unlock: Callable[[], None], *, retry_mode: bool = False) -> None:
+        self.locked = True
+        self._retry_label = "Continue" if retry_mode else ""
+        self.retry_mode = retry_mode
+        self.value = ""
+        self.restored: str | ChatDraft | None = None
+        self.on_unlock = on_unlock
+
+    def restore_draft(self, draft: str | ChatDraft) -> bool:
+        self.value = draft.text if isinstance(draft, ChatDraft) else draft
+        self.restored = draft
+        return True
+
+    def draft(self) -> ChatDraft:
+        return ChatDraft(self.value)
+
+    def unlock_and_keep(self) -> None:
+        self.locked = False
+        self.on_unlock()
+
+
 @pytest.mark.parametrize(
     "error_code",
     [
@@ -438,44 +472,20 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         def hide_trailing_status_action(self) -> None:
             order.append("hide_status_action")
 
-    class _FakeStatusBar:
-        def flash(self, message: str, *, error: bool = False) -> None:
-            order.append(f"flash:{message}:{error}")
-
-    class _FakeInputBar:
-        def __init__(self) -> None:
-            self.locked = True
-            self._retry_label = "Continue" if initial_retry_mode else ""
-            self.retry_mode = initial_retry_mode
-            self.value = ""
-            self.restored: str | ChatDraft | None = None
-
-        def restore_draft(self, draft: str | ChatDraft) -> bool:
-            self.value = draft.text if isinstance(draft, ChatDraft) else draft
-            self.restored = draft
-            return True
-
-        def draft(self) -> ChatDraft:
-            return ChatDraft(self.value)
-
-        def unlock_and_keep(self) -> None:
-            self.locked = False
-            order.append("unlock")
-
     class _FakeChatPanel:
         async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             order.append(("error", message, action_label))
 
     def query_one(cls: object) -> object:
         if cls.__name__ == "StatusBar":
-            return _FakeStatusBar()
+            return _FailureStatusBar(order)
         if cls.__name__ == "InputBar":
             return input_bar
         if cls.__name__ == "ChatPanel":
             return _FakeChatPanel()
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
-    input_bar = _FakeInputBar()
+    input_bar = _FailureInputBar(lambda: order.append("unlock"), retry_mode=initial_retry_mode)
     view = _FlowView()
     screen = SimpleNamespace(
         _state=state,
@@ -508,6 +518,7 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         await bus.subscribe(UserRetry, _fail_retry)
         await bus.subscribe(Error, handler.on_error)
         await bus.subscribe(Warning, handler.on_warning)
+        await bus.subscribe(AgentLoadFailed, handler.on_agent_load_failed)
         controller.request_retry(text, draft)
         await _run_started(scheduled)
 
@@ -536,6 +547,57 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         assert input_bar.retry_mode is True
         if text:
             assert f"retry-note:{text}" in view.calls
+
+
+def _load_failure_handler(state: MainScreenState, order: list[object]) -> Any:
+    """The screen's backend handler, its status bar and composer recording into *order*."""
+
+    widgets = {"StatusBar": _FailureStatusBar(order), "InputBar": _FailureInputBar(lambda: None)}
+    screen = SimpleNamespace(
+        _state=state,
+        query_one=lambda cls: widgets[cls.__name__],
+        _debug=lambda *_args: None,
+        notify=lambda message, **_kwargs: order.append(f"toast:{status_text(message)}"),
+    )
+    handler = make_backend_handler(screen)
+    handler._agent_load_dialog = None
+    return handler, widgets["InputBar"]
+
+
+async def test_explicit_new_session_build_failure_is_only_presented_once() -> None:
+    state = MainScreenState()
+    state.session.creating_new_session = True
+    order: list[object] = []
+    handler, _input_bar = _load_failure_handler(state, order)
+    await handler.on_agent_load_failed(AgentLoadFailed(operation="new_session", session_id="new", message="no model"))
+    await handler.on_error(Error(code="session_new_failed", session_id="new", message="no model"))
+
+    assert order == ["flash:Agent load failed: no model:True"]
+    assert not state.session.creating_new_session
+
+
+def test_a_failed_shortcut_switch_still_reports_the_model_left_out() -> None:
+    """A failed shortcut switch still reports that the chosen model was skipped."""
+    bus = EventBus()
+    state = MainScreenState()
+    handler, _input_bar = _load_failure_handler(state, [])
+    controller, _state, _view = _make_input_flow_controller(bus, state=state)
+    left_out: list[bool] = []
+    controller._model_left_out = lambda: left_out.append(True)
+
+    async def switch(event: SessionOnlySwitch) -> None:
+        event.model_left_out = True
+        await bus.publish(AgentLoadFailed(operation="switch", agent_profile="beta", message="no model"))
+
+    async def _run() -> bool:
+        await bus.subscribe(SessionOnlySwitch, switch)
+        await bus.subscribe(AgentLoadFailed, handler.on_agent_load_failed)
+        state.submit.begin("Review this")
+        return await controller._switch_session(PendingSwitch(agent="beta", model_profile="fast"))
+
+    assert asyncio.run(_run()) is False
+    assert state.submit.blocked is False
+    assert left_out == [True]
 
 
 @pytest.mark.parametrize("status", ["error", "interrupted"])

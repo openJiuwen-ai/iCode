@@ -35,6 +35,7 @@ from chrys.service.tools.builtins.filesystem import FilesystemTools
 from chrys.service.tools.builtins.shell import ShellTools
 from tests.kernel._fakes import _call_response, _result_contents, _stack, _text_response, _user
 from tests.support.symlinks import symlink_or_skip
+from tests.support.workspace_registry import make_workdir_alias, retarget_workdir_alias
 
 
 @pytest.fixture
@@ -156,8 +157,68 @@ async def test_write_through_an_alias_to_credentials_is_never_remembered(runtime
         await bus.unsubscribe(ApprovalRequest, approve)
 
 
-@pytest.mark.parametrize("approved_by", ["grant", "person"])
-@pytest.mark.parametrize("names", [("first", "second"), ("Project", "project")], ids=["other", "case"])
+async def test_child_build_keeps_registered_workspace_approval_roots(runtime, tmp_path, monkeypatch):
+    from chrys.foundation.models.workspace import WorkingDir
+
+    first, second, link = make_workdir_alias(tmp_path, "first", "second", "ref")
+    from chrys.orchestration.sub_agents import tools as children
+    from chrys.service.agent_middleware.control.approval import _is_workspace_git_path
+    from tests.orchestration.engine.build.test_workspace_context import _build
+    from tests.support.initialization_build import InitializationBuild
+
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    for root in (first, second):
+        (root / ".git").mkdir()
+    probe = InitializationBuild(tmp_path / "build", 1, [])
+    probe.root.mkdir()
+    probe.install(monkeypatch)
+    child = probe.registry.get("Child0")
+    child.approval = ApprovalConfig(default="require")
+    requests = []
+    approved, rejected = AsyncMock(spec=lambda: None), AsyncMock(spec=lambda: None)
+
+    async def refuse(event):
+        requests.append(event)
+        await probe.bus.publish(ApprovalResponse(request_id=event.request_id, approved=False))
+
+    await probe.bus.subscribe(ApprovalRequest, refuse)
+    create_approval = children.create_approval
+
+    async def inspect_approval(owner, inputs):
+        middleware = await create_approval(owner, inputs)
+        tool = next(tool for tool in FilesystemTools(runtime).tools() if tool.name == "write_file")
+        for root, run in ((first, approved), (second, rejected)):
+            await middleware.process(
+                FunctionInvocationContext(tool, {"path": str(root / "new.txt"), "content": "probe"}), run
+            )
+        return middleware
+
+    monkeypatch.setattr(children, "create_approval", inspect_approval)
+    workspace = Workspace(str(cwd), [WorkingDir(str(link))], id="team", name="Team")
+    result = await _build(probe, workspace)
+    try:
+        roots = result.bindings.approval._workspace_roots
+        assert _is_workspace_git_path(str(first / "new.txt"), roots)
+        retarget_workdir_alias(link, second)
+        assert not _is_workspace_git_path(str(second / "new.txt"), roots)
+        await result.sub_agent_tools.get_tools()[0].invoke(arguments={"prompt": "probe"}, skip_parsing=True)
+        assert len(requests) == 1
+        approved.assert_awaited_once()
+        rejected.assert_not_awaited()
+    finally:
+        await result.prepared.aclose()
+        await probe.bus.unsubscribe(ApprovalRequest, refuse)
+
+
+@pytest.mark.parametrize(
+    ("approved_by", "names"),
+    [
+        pytest.param(by, names, id=f"{label}-{by}")
+        for label, names in (("other", ("first", "second")), ("case", ("Project", "workdir")))
+        for by in ("grant", "person")
+    ],
+)
 async def test_shell_call_does_not_follow_a_retargeted_working_directory(
     runtime, tmp_path, monkeypatch, approved_by, names
 ):

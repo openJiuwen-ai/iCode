@@ -704,8 +704,24 @@ async def test_an_env_pinned_bypass_shows_as_the_current_choice_without_writing(
         assert ports.persisted == [] and ports.confirms == []
 
 
-@pytest.mark.asyncio
-async def test_a_dormant_workdir_file_swaps_the_workdir_gate_hint_until_the_gate_is_on() -> None:
+@pytest.mark.parametrize(
+    ("locale", "dormant_hint", "enabled_hint"),
+    [
+        (
+            "en",
+            "Working directory settings found (2 keys) — enable to apply them.",
+            "Load settings from .chrys/settings.yaml in each session's primary working directory.",
+        ),
+        (
+            "zh-Hans",
+            "发现工作目录设置（2 个键）— 启用后生效。",  # noqa: RUF001 - Exact Chinese catalog text.
+            "加载各会话主工作目录中 .chrys/settings.yaml 的设置。",
+        ),
+    ],
+)
+async def test_a_dormant_workdir_file_swaps_the_workdir_gate_hint_until_the_gate_is_on(
+    locale: str, dormant_hint: str, enabled_hint: str
+) -> None:
     from pathlib import Path
 
     from chrys.foundation.config.settings_store import DormantWorkdirConfig, LoadedSettings
@@ -722,19 +738,23 @@ async def test_a_dormant_workdir_file_swaps_the_workdir_gate_hint_until_the_gate
             ),
         )
     )
-    app = Host()
+    controller = LocaleController(Settings())
+    controller.switch_locale(locale)
+    app = Host(controller)
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(pilot, ports, initial_tab="safety")
+        dialog = SettingsDialog(ports, initial_tab="safety", locale_controller=controller)
+        await app.push_screen(dialog)
+        await wait_for_every_tab(dialog, pilot)
         await pilot.pause()
         row = _rows(dialog)["workdir.config_enabled"]
 
-        assert _hint(row) == "Working directory settings found (2 keys) — enable to apply them."
+        assert _hint(row) == dormant_hint
 
         row.query_one(Checkbox).value = True
         await pilot.pause()
 
         assert ports.persisted == [{"workdir.config_enabled": True}]
-        assert _hint(row).startswith("Load settings from .chrys/settings.yaml")
+        assert _hint(row) == enabled_hint
 
 
 @pytest.mark.asyncio

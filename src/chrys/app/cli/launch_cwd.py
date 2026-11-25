@@ -3,7 +3,7 @@
 """Check that the directory a command was launched from still exists.
 
 A shell can keep a directory as its cwd after it was deleted or moved. Commands
-that use the cwd to resolve working directory settings check it after
+that use the cwd to resolve a workspace or working directory settings check it after
 parsing their arguments. A valid absolute ``-C`` path also passes this check.
 Otherwise, a missing cwd stops the command with a single error message.
 """
@@ -11,6 +11,18 @@ Otherwise, a missing cwd stops the command with a single error message.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
+
+from chrys.service.workspaces.paths import MissingWorkspacePrimary, resolve_workspace_directory
+from chrys.service.workspaces.registry import (
+    RegistrySnapshot,
+    WorkspaceRegistry,
+    workspace_selector_ambiguous,
+    workspace_selector_not_found,
+)
+
+if TYPE_CHECKING:
+    from chrys.foundation.models.workspace import Workspace
 
 LAUNCH_CWD_MISSING_CODE = "working_dir_missing"
 
@@ -39,3 +51,41 @@ def launch_cwd_missing_message(*, workdir_flag: bool, workdir: str = "") -> str 
         else "cd to an existing directory."
     )
     return f"The current directory no longer exists; {hint}"
+
+
+def resolve_workspace_selector(selector: str) -> tuple[Workspace, RegistrySnapshot]:
+    """Resolve a workspace by exact ID, case-insensitive name or ID prefix."""
+    if not selector.strip():
+        raise workspace_selector_not_found(selector)
+    registry = WorkspaceRegistry()
+    snapshot = registry.snapshot()
+    if snapshot.error:
+        raise snapshot.error
+    selected = snapshot.workspace(selector)
+    if selected is None:
+        matches = [
+            workspace
+            for workspace in snapshot.workspaces
+            if workspace.name.casefold() == selector.casefold() or workspace.id.startswith(selector)
+        ]
+        if len(matches) > 1:
+            raise workspace_selector_ambiguous(selector)
+        if not matches:
+            raise workspace_selector_not_found(selector)
+        selected = matches[0]
+    return selected, snapshot
+
+
+def open_launch_workspace(selector: str) -> tuple[Workspace, RegistrySnapshot, str]:
+    """Enter the selected folder before loading working directory configuration."""
+    selected, snapshot = resolve_workspace_selector(selector)
+    resolved = resolve_workspace_directory(selected.primary_cwd)
+    if resolved is None:
+        raise MissingWorkspacePrimary(selected.primary_cwd)
+    try:
+        # Windows can keep the link spelling as the cwd. Enter the target so
+        # relative paths still resolve there if the registry's link is retargeted.
+        os.chdir(resolved)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise MissingWorkspacePrimary(selected.primary_cwd) from exc
+    return selected, snapshot, os.getcwd()

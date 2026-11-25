@@ -393,6 +393,7 @@ class SessionTitleUpdater:
         session_dir: Path | None,
     ) -> AsyncGenerator[Any]:
         """Lease the cached client for one call, replacing it when its route or profile changed."""
+        from chrys.foundation.util.chrys_headers import RequestRole
         from chrys.service.llm.clients import create_client
 
         stale: _TitleClientSlot | None = None
@@ -403,6 +404,7 @@ class SessionTitleUpdater:
             if slot is None or slot.route_id != route_session_id or slot.profile_snapshot != profile:
                 client = await create_client(
                     profile,
+                    request_role=RequestRole.SESSION_TITLE,
                     session_id=route_session_id,
                     parent_session_id=session_id,
                     session_dir=session_dir,

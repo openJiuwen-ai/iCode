@@ -36,6 +36,7 @@ from chrys.foundation.i18n import DisplayPath
 from chrys.foundation.models.workspace import Workspace
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.state import lifecycle_permits
+from chrys.orchestration.engine.workspaces import MembershipWrite, WorkspacePlan
 from chrys.orchestration.sub_agents.tools import SubAgentTools
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
@@ -50,6 +51,7 @@ from tests.orchestration.engine._recovery_helpers import (
     _registry,
     stub_engine_start,
 )
+from tests.support.components import plan_workspace
 from tests.support.event_capture import assert_display_message, collect_events
 from tests.support.loaded_agents import install_loaded_agent
 
@@ -98,8 +100,10 @@ async def test_profile_switch_retries_start_when_no_executor(monkeypatch: pytest
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
+        assert commit_workspace is None
         calls.append((profile, operation))
         engine.session.agent_profile = profile
         executor = MagicMock()
@@ -203,16 +207,18 @@ async def test_workspace_change_starts_from_failed_build_without_executor(
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
+        assert commit_workspace is None
         calls.append((start_profile, operation))
         executor = MagicMock()
         executor.backend.history_state = {"messages": []}
         install_loaded_agent(engine, bindings=executor)
         # A successful start commits the staged workspace; the double honors
         # the same contract now that nothing pre-assigns it.
-        if workspace is not None:
-            engine.session.workspace = workspace
+        if workspace_plan is not None:
+            engine.session.install_workspace(workspace_plan)
 
     monkeypatch.setattr(engine.lifecycle, "start", fake_start)
 
@@ -240,7 +246,7 @@ async def test_failed_workspace_change_without_executor_keeps_the_old_root(
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.session_id = "sid"
     engine.session.agent_profile = profile
-    engine.session.workspace = Workspace.from_cwd(str(old_root))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(old_root))))
     old_settings = engine.settings
 
     async def failing_build(_profile: AgentProfile, _staged: Any, **_kwargs: object) -> None:
@@ -283,12 +289,16 @@ async def test_failed_workspace_change_load_publishes_a_terminal_error(
 
     monkeypatch.setattr("chrys.orchestration.engine.state.controls.load_settings", failing_load)
 
+    request = WorkspaceChange(primary_cwd=str(new_root))
     with pytest.raises(RuntimeError, match="unreadable config"):
-        await engine._on_workspace_change(WorkspaceChange(primary_cwd=str(new_root)))
+        await engine._on_workspace_change(request)
+
+    assert not engine.turns.turn_state.lease.prompt_admission_closed
 
     assert engine.settings is old_settings
-    assert [error.code for error in errors] == ["workspace_change_failed"]
-    assert errors[0].session_id == "sid"
+    assert [(error.code, error.message, error.session_id) for error in errors] == [
+        ("workspace_change_failed", "unreadable config", "sid")
+    ]
 
 
 async def test_workspace_change_soft_restarts_live_executor(
@@ -302,7 +312,7 @@ async def test_workspace_change_soft_restarts_live_executor(
     calls: list[tuple[AgentProfile, str, str]] = []
 
     async def fake_soft_restart(start_profile: AgentProfile, **kwargs: Any) -> None:
-        workspace = kwargs["workspace"]
+        workspace = kwargs["workspace_plan"].workspace
         calls.append((start_profile, workspace.primary_cwd, kwargs["operation"]))
 
     monkeypatch.setattr(engine.lifecycle, "reload", fake_soft_restart)
@@ -326,7 +336,7 @@ async def test_workspace_change_derives_settings_from_the_new_root(
     replacement_settings = Settings(default_approval_mode="auto")
     engine = assemble_agent_engine(EventBus(), settings=Settings())
     engine.session.agent_profile = profile
-    engine.session.workspace = Workspace.from_cwd(str(old_root))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(old_root))))
     load_kwargs: dict[str, Any] = {}
 
     def fake_load(**kwargs: Any) -> LoadedSettings:
@@ -565,18 +575,18 @@ async def test_workspace_change_to_a_missing_directory_is_refused_before_any_reb
     engine = assemble_agent_engine(bus, settings=Settings(), agent_registry=_registry(_profile()))
     engine.session.session_id = "sid"
     engine.session.agent_profile = _profile()
-    engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path))))
     install_loaded_agent(engine, bindings=object())  # type: ignore[assignment]
     acquire_calls: list[lifecycle_permits.RebuildControlToken] = []
+    original_acquire = engine.permits.acquire_rebuild_permit
 
-    async def record_acquire(
-        token: lifecycle_permits.RebuildControlToken,
-    ) -> lifecycle_permits.RebuildPermitDenied:
+    async def record_acquire(token: lifecycle_permits.RebuildControlToken) -> lifecycle_permits.RebuildPermit:
         acquire_calls.append(token)
-        return lifecycle_permits.RebuildPermitDenied(reason="superseded", code="unexpected", message="unexpected")
+        return await original_acquire(token)
 
     monkeypatch.setattr(engine.permits, "acquire_rebuild_permit", record_acquire)
     missing = tmp_path / "missing"
+    loaded = engine.current.loaded
 
     await engine._on_workspace_change(WorkspaceChange(primary_cwd=str(missing)))
 
@@ -584,6 +594,7 @@ async def test_workspace_change_to_a_missing_directory_is_refused_before_any_reb
     assert errors[0].message == f"Working directory does not exist: {missing}"
     assert_display_message(errors[0], "controls.workspace_missing", {"path": DisplayPath(str(missing))})
     assert acquire_calls == []
+    assert engine.current.loaded is loaded
     assert engine.session.workspace.primary_cwd == str(tmp_path)
 
 
@@ -607,7 +618,7 @@ async def test_already_satisfied_denials_publish_typed_success(monkeypatch: pyte
     install_loaded_agent(
         engine, active_profile=ModelProfile(id="model-1", name="Model", provider="openai", model_id="gpt-5")
     )
-    engine.session.workspace = Workspace.from_cwd(current)
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(current)))
     denied = lifecycle_permits.RebuildPermitDenied(
         reason="superseded",
         code="runtime_mutation_superseded",
@@ -674,7 +685,7 @@ async def test_terminal_denials_are_not_masked_by_live_satisfied_state(
     install_loaded_agent(
         engine, active_profile=ModelProfile(id="model-1", name="Model", provider="openai", model_id="gpt-5")
     )
-    engine.session.workspace = Workspace.from_cwd(current)
+    engine.session.install_workspace(plan_workspace(Workspace.from_cwd(current)))
     denied = lifecycle_permits.RebuildPermitDenied(reason=reason, code=code, message=reason)
 
     async def deny_after_boundary(
@@ -723,13 +734,15 @@ async def test_concurrent_profile_switch_waiters_supersede_after_first_rebuild(
     async def fake_soft_restart_with_permit(
         _permit: lifecycle_permits.RebuildPermit,
         profile: AgentProfile,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
     ) -> None:
-        _ = workspace, operation
+        assert commit_workspace is None
+        _ = workspace_plan, operation
         calls.append(profile.name)
         restart_entered.set()
         await release_restart.wait()
@@ -791,13 +804,15 @@ async def test_runtime_mutation_success_publishes_before_rebuild_permit_release(
 
     async def fake_soft_restart(
         _profile: AgentProfile,
-        workspace: Workspace | None = None,
+        workspace_plan: WorkspacePlan | None = None,
+        commit_workspace: MembershipWrite | None = None,
         *,
         operation: str = "switch",
         staged_loaded: LoadedSettings | None = None,
         session: Mapping[str, Any] | None = None,
     ) -> None:
-        _ = workspace, operation
+        assert commit_workspace is None
+        _ = workspace_plan, operation
         install_loaded_agent(
             engine, active_profile=ModelProfile(id="new-model", name="New", provider="openai", model_id="gpt-5")
         )

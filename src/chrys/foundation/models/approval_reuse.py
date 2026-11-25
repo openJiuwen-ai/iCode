@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-ReuseChoice = Literal["", "EXACT_SESSION", "EXACT_WORKDIR", "PREFIX_SESSION", "PREFIX_WORKDIR"]
+ReuseChoice = Literal["", "EXACT_SESSION", "EXACT_WORKSPACE", "PREFIX_SESSION", "PREFIX_WORKSPACE"]
 
 
 @dataclass(frozen=True)
@@ -21,3 +21,4 @@ class ApprovalReuseOffer:
     kind: Literal["command", "files"]
     targets: tuple[str, ...]
     prefix: bool = False
+    workspace: bool = False

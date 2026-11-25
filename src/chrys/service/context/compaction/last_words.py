@@ -66,6 +66,7 @@ from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
 from chrys.foundation.trajectory.event_types import RetryMode, RetryReason
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.kernel import (
     TOOL_CALL_CONTENT_TYPES,
     Content,
@@ -731,6 +732,8 @@ class LastWordsGenerator:
         publish_retry: Callable[[RetryAttemptInfo], Awaitable[None]] | None = None,
         publish_status: Callable[[CompactionStatus], Awaitable[None]] | None = None,
         report_usage: Callable[[Mapping[str, Any]], None] | None = None,
+        *,
+        request_scope: RequestScope | None = None,
     ) -> None:
         self._profile = profile
         self._template = template
@@ -739,6 +742,7 @@ class LastWordsGenerator:
         self._session_id = session_id
         self._parent_session_id = parent_session_id
         self._session_dir = session_dir
+        self._request_scope = request_scope
         self._max_transient_retries = max(
             0,
             max_transient_retries if max_transient_retries is not None else type(self)._MAX_RETRIES,
@@ -783,6 +787,8 @@ class LastWordsGenerator:
 
                 self._client = await create_client(
                     self._profile,
+                    request_role=RequestRole.COMPACTION,
+                    request_scope=self._request_scope,
                     session_id=self._session_id,
                     parent_session_id=self._parent_session_id,
                     session_dir=self._session_dir,

@@ -220,11 +220,17 @@ def test_same_turn_verify_starting_after_the_edit_terminal_is_verified(tmp_path:
     assert row.state is ChangeVerificationState.VERIFIED
 
 
-def test_same_turn_verify_overlapping_another_mutator_does_not_vouch_for_the_edit(tmp_path: Path) -> None:
-    """The edit's terminal is not the only write the verify must follow: a
-    shell mutator still in flight when the verify starts can rewrite the
-    file after the check, so the row must not claim verified."""
-    mutator_call = "a" * 32
+@pytest.mark.parametrize(
+    ("command", "mutator_call", "fingerprint"),
+    [
+        pytest.param("python mutate.py", "a" * 32, "mutator-fingerprint", id="shell-mutator"),
+        pytest.param("ruff check --fix", "e" * 32, "fixer-fingerprint", id="verify-classified-fixer"),
+    ],
+)
+def test_same_turn_verify_overlapping_another_mutator_does_not_vouch_for_the_edit(
+    tmp_path: Path, command: str, mutator_call: str, fingerprint: str
+) -> None:
+    """Even a verify-classified fixer can rewrite the file after the check finishes."""
     path = _installed_log(tmp_path)
     log = EventLog()
     log.coverage()
@@ -251,7 +257,7 @@ def test_same_turn_verify_overlapping_another_mutator_does_not_vouch_for_the_edi
             "tool_name": "Bash",
             "tool_kind": "shell",
             "call_item_id": mutator_call,
-            "argument_fingerprint": "mutator-fingerprint",
+            "argument_fingerprint": fingerprint,
         },
     )
     log.span(
@@ -299,101 +305,7 @@ def test_same_turn_verify_overlapping_another_mutator_does_not_vouch_for_the_edi
                     },
                     "messages": [
                         _command_message(_VERIFY_CALL, "pytest -q"),
-                        _command_message(mutator_call, "python mutate.py"),
-                    ],
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    change = analyze_trajectory(path).change_verification
-
-    assert change is not None
-    (row,) = change.rows
-    assert row.state is ChangeVerificationState.AFTER_VERIFY
-
-
-def test_same_turn_fixer_verify_overlapping_the_candidate_does_not_vouch(tmp_path: Path) -> None:
-    """A verify-classified fixer (`ruff --fix` matches the word list yet
-    mutates files) still in flight when the candidate verify starts can
-    rewrite the file after the check, so the row must not claim verified."""
-    fixer_call = "e" * 32
-    path = _installed_log(tmp_path)
-    log = EventLog()
-    log.coverage()
-    log.add("turn.started", 0, turn_id=_TURN_ONE, payload={"turn_number": 1})
-    log.span(
-        "tool.operation",
-        "8" * 32,
-        _NS,
-        2 * _NS,
-        turn_id=_TURN_ONE,
-        start_payload={
-            "tool_name": "write_file",
-            "tool_kind": "filesystem.write",
-            "call_item_id": "6" * 32,
-            "argument_fingerprint": "edit-fingerprint",
-        },
-    )
-    log.add(
-        "tool.operation.started",
-        3 * _NS,
-        turn_id=_TURN_ONE,
-        operation_id="b" * 32,
-        payload={
-            "tool_name": "Bash",
-            "tool_kind": "shell",
-            "call_item_id": fixer_call,
-            "argument_fingerprint": "fixer-fingerprint",
-        },
-    )
-    log.span(
-        "tool.operation",
-        "9" * 32,
-        4 * _NS,
-        5 * _NS,
-        turn_id=_TURN_ONE,
-        start_payload={
-            "tool_name": "Bash",
-            "tool_kind": "shell",
-            "call_item_id": _VERIFY_CALL,
-            "argument_fingerprint": "verify-fingerprint",
-        },
-    )
-    log.add(
-        "tool.operation.finished",
-        6 * _NS,
-        turn_id=_TURN_ONE,
-        operation_id="b" * 32,
-        payload={"outcome": "success", "duration_ms": 3_000},
-        measurements={"/payload/duration_ms": measurement("monotonic_clock", method_version=1)},
-    )
-    log.add("turn.finished", 7 * _NS, turn_id=_TURN_ONE, payload={"end_reason": "cancelled", "duration_ms": 0})
-    log.write(path)
-    path.parents[1].joinpath("session.json").write_text(
-        json.dumps(
-            {
-                "state": {
-                    "chrys_mutations": {
-                        "turns": [
-                            {
-                                "turn_id": 1,
-                                "detection_truncated": False,
-                                "mutations": [
-                                    {
-                                        "path": "changed.py",
-                                        "before_hash": "be" * 32,
-                                        "after_hash": "af" * 32,
-                                        "provenance": "proven",
-                                    }
-                                ],
-                            }
-                        ]
-                    },
-                    "messages": [
-                        _command_message(_VERIFY_CALL, "pytest -q"),
-                        _command_message(fixer_call, "ruff check --fix"),
+                        _command_message(mutator_call, command),
                     ],
                 }
             }

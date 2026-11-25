@@ -13,6 +13,7 @@ runs once.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from types import MappingProxyType
 from typing import Any
 
@@ -24,6 +25,7 @@ from chrys.kernel import Message
 from chrys.service.llm.openai_responses import ResponsesApiClient
 from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
 from chrys.service.llm.openai_responses.decode import decode_usage
+from tests.service.llm._non_strict_schemas import non_strict_schema_cases
 from tests.service.llm._responses_wire import Script, blocking, respond
 
 
@@ -162,110 +164,10 @@ def test_unstrictifiable_raw_schema_sent_non_strict_verbatim() -> None:
     assert format_config["schema"] == {"type": "object", "properties": {"anything": True}}
 
 
-@pytest.mark.parametrize(
-    "raw",
-    [
-        {"type": "object", "properties": {"a": {"type": "string"}}, "additionalProperties": True},
-        {
-            "type": "object",
-            "properties": {"inner": {"type": "object", "properties": {}, "additionalProperties": True}},
-        },
-        {"type": "object", "properties": {}, "additionalProperties": {"type": "string"}},
-    ],
-)
-def test_explicitly_open_schema_sent_non_strict_verbatim(raw: dict[str, Any]) -> None:
-    # The strictifier preserves an explicit non-false additionalProperties
-    # anywhere in the tree; strict mode rejects exactly that, so the schema
-    # must go to the wire non-strict, verbatim.
-    format_config = _prepare({"response_format": {**raw, "title": "Open"}})["text"]["format"]
-    assert format_config["name"] == "Open"
-    assert "strict" not in format_config
-    assert format_config["schema"] == raw
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        {
-            "type": "object",
-            "properties": {"choice": {"oneOf": [{"type": "object", "properties": {"value": {"type": "string"}}}]}},
-        },
-        {
-            "type": "object",
-            "properties": {
-                "x": {"allOf": [{"type": "object", "properties": {}}, {"type": "object", "properties": {}}]}
-            },
-        },
-        {"type": "object", "properties": {}, "patternProperties": {"^x": {"type": "object", "properties": {}}}},
-        {"type": "object", "properties": {"a": {"type": "string"}}, "dependentRequired": {"a": ["b"]}},
-        {"type": "object", "properties": {"a": {"type": "string"}}, "dependentSchemas": {"a": {"type": "string"}}},
-        {
-            "type": "object",
-            "properties": {},
-            "patternProperties": {
-                "^x": {
-                    "type": "object",
-                    "properties": {"value": {"type": "string"}},
-                    "additionalProperties": False,
-                }
-            },
-        },
-        {
-            "type": "object",
-            "properties": {},
-            "patternProperties": {
-                "^x": {
-                    "type": "object",
-                    "properties": {"value": {"type": "string"}},
-                    "additionalProperties": False,
-                    "required": ["value", "value"],
-                }
-            },
-        },
-        {
-            "type": "object",
-            "properties": {},
-            "patternProperties": {
-                "^x": {
-                    "type": "object",
-                    "properties": {"value": {"type": "string"}},
-                    "additionalProperties": False,
-                    "required": [["value"]],
-                }
-            },
-        },
-    ],
-)
-def test_unstrictified_branches_sent_non_strict_verbatim(raw: dict[str, Any]) -> None:
-    # The strictifier does not traverse oneOf or patternProperties (their
-    # objects stay open) and leaves multi-entry allOf and the dependent*
-    # keywords in place; strict mode rejects all of them, so none may go out
-    # strict. The dependent* values hold property names or primitive
-    # subschemas, so only the keyword gate can catch them. The last three
-    # shapes exercise the required-completeness leg on a pre-closed object:
-    # missing required, duplicate names that a bare set comparison would
-    # collapse, and an unhashable entry that must fall back instead of
-    # raising from set().
-    format_config = _prepare({"response_format": {**raw, "title": "Branch"}})["text"]["format"]
-    assert format_config["name"] == "Branch"
-    assert "strict" not in format_config
-    assert format_config["schema"] == raw
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        {"type": "string"},
-        {"type": "object", "properties": {}, "anyOf": [{"type": "object", "properties": {}}]},
-        {"anyOf": [{"type": "object", "properties": {}}, {"type": "object", "properties": {}}]},
-    ],
-)
-def test_strict_root_contract_violations_sent_non_strict_verbatim(raw: dict[str, Any]) -> None:
-    # Structured Outputs requires the root to be an object schema and
-    # forbids a root-level anyOf; the strictifier passes such roots through
-    # unchanged, so they must go to the wire non-strict, verbatim.
-    format_config = _prepare({"response_format": {**raw, "title": "Root"}})["text"]["format"]
-    assert format_config["name"] == "Root"
+@non_strict_schema_cases()
+def test_non_strict_schema_sent_verbatim(title: str, raw: dict[str, Any]) -> None:
+    format_config = _prepare({"response_format": {**deepcopy(raw), "title": title}})["text"]["format"]
+    assert format_config["name"] == title
     assert "strict" not in format_config
     assert format_config["schema"] == raw
 

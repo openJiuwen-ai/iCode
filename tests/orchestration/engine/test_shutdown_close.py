@@ -50,6 +50,7 @@ from chrys.service.trajectory.hooks import HookOutcome
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationScope, PreparationTrace
 from chrys.service.trajectory.waits import WaitOutcome
 from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.components import plan_workspace
 from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent, reminder_resources
 from tests.support.turn_services import make_turn_retry
 
@@ -715,14 +716,14 @@ async def test_start_without_hooks_config_does_not_create_hook_runtime_dirs(
 
     bus = EventBus()
     engine = agent_engine(bus, settings=Settings())
-    engine.session.workspace = Workspace(primary_cwd=str(tmp_path))
+    engine.session.install_workspace(plan_workspace(Workspace(primary_cwd=str(tmp_path))))
 
     async def _build_agent(_profile: AgentProfile, staged: StagedBuild) -> CompletedBuild:
         return CompletedBuild(
             staged=staged,
             settings=engine.settings_handle.prepare(staged.loaded),
             workspace_retarget=engine_services(engine).workspace_change_tracker.resolve_retarget(
-                staged.workspace,
+                staged.workspace_plan.workspace,
                 resolve_scope=engine.settings_handle.prepare(staged.loaded).effective.settings.workspace_change_notice,
             ),
             loaded=make_loaded_agent(bindings=_BareExecutor()),

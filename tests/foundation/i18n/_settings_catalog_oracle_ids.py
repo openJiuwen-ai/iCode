@@ -12,6 +12,7 @@ SETTINGS_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "settings.clamped.maximum",
         "settings.clamped.minimum",
         "settings.workdir_config_dormant",
+        "settings.workdir_config_read_failed",
         "settings.workdir_hooks_dormant",
         "settings.workdir_skills_dormant",
         "settings.document_read_failed",

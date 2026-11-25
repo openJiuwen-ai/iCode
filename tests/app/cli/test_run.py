@@ -175,7 +175,7 @@ def _prepared_runtime(
     )
 
 
-def _settings(*, restoring_session: bool = False) -> headless.PreparedRuntime:
+def _settings(*, restoring_session: bool = False, workspace_cwd: str = "") -> headless.PreparedRuntime:
     return _prepared_runtime()
 
 
@@ -698,6 +698,7 @@ def test_run_command_writes_the_target_roots_warnings_in_json_mode(
         "warning": expected.message,
         "code": "setting_rejected",
     }
+    assert FakeHost.instances[0].on_event is None
 
 
 def test_run_command_without_a_session_does_not_drive_an_early_start(
@@ -1412,7 +1413,7 @@ def test_run_command_help_shows_task_option() -> None:
     assert "-t FILE" in help_text
     assert "--task FILE" in help_text
     assert "encoding auto-detected" in help_text
-    assert "resolved relative to --workdir" in help_text
+    assert "relative to --workdir or the --workspace primary folder" in " ".join(help_text.split())
 
 
 def test_run_command_help_uses_capitalized_help_text() -> None:

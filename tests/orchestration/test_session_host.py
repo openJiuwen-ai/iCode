@@ -38,6 +38,8 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import DisplayBlock, DisplaySequence, Localizer, MessageRef
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.todos import TodoItem
+from chrys.foundation.models.workspace import WorkingDir, Workspace
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.orchestration.session_host import (
     AgentProfileNotFoundError,
     ChrysSessionHost,
@@ -85,6 +87,8 @@ def _hand_out_sub_agent_client(monkeypatch: pytest.MonkeyPatch, client: MockChat
         use_route_session_context: bool,
         session_dir: Path,
         tool_result_ceiling_tokens: int | None,
+        request_role: RequestRole,
+        request_scope: RequestScope | None,
     ) -> MockChatClient:
         return client
 
@@ -104,24 +108,33 @@ def _pending_event_stream_tasks() -> list[asyncio.Task[Any]]:
     return pending
 
 
-def test_session_host_normalizes_relative_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("relative", [False, True])
+async def test_session_host_initial_workspace_uses_validated_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, relative: bool
+) -> None:
     base = tmp_path / "base"
     workdir = base / "workdir"
     workdir.mkdir(parents=True)
     monkeypatch.chdir(base)
     settings, model_registry = _make_settings_and_models()
+    _patch_runtime(monkeypatch, [MockChatClient(responses=[])], [])
 
     host = ChrysSessionHost(
         profile_name="Headless",
-        cwd="workdir",
+        cwd="workdir" if relative else str(workdir),
         settings=settings,
         agent_registry=_make_agent_registry(_make_profile(approval_default="skip")),
         model_registry=model_registry,
         state_store=JsonFileStateStore(tmp_path / "sessions"),
     )
 
-    assert host.engine.workspace is not None
-    assert Path(host.engine.workspace.primary_cwd) == workdir
+    monkeypatch.chdir(tmp_path)
+    try:
+        await host.start()
+        assert host.engine.workspace is not None
+        assert Path(host.engine.workspace.primary_cwd) == workdir
+    finally:
+        await host.shutdown()
 
 
 @pytest.mark.asyncio
@@ -540,11 +553,54 @@ async def test_session_host_streams_startup_failure_before_raising(monkeypatch: 
         with pytest.raises(RuntimeError, match="client boom"):
             async for event in host.iter_run_events("prompt"):
                 events.append(event)
+        failed_id = host.session_id
+        assert failed_id is not None
+
+        _patch_runtime(monkeypatch, [MockChatClient(responses=[])], [])
+        await host.start()
+        assert host.session_id is not None and host.session_id != failed_id
     finally:
         await host.shutdown()
 
     assert any(isinstance(event, AgentLoadStarted) for event in events)
     assert any(isinstance(event, AgentLoadFailed) and "client boom" in event.message for event in events)
+
+
+@pytest.mark.parametrize("with_additional_directory", [False, True])
+async def test_session_host_retry_reuses_launch_directories(monkeypatch, tmp_path, with_additional_directory) -> None:
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    monkeypatch.chdir(tmp_path)
+    settings, models = _make_settings_and_models()
+    launch_workspace = None
+    if with_additional_directory:
+        launch_workspace = Workspace(str(primary), [WorkingDir(str(primary), is_primary=True), WorkingDir(str(extra))])
+    host = ChrysSessionHost(
+        profile_name="Headless",
+        cwd=str(primary),
+        workspace=launch_workspace,
+        settings=settings,
+        model_registry=models,
+        agent_registry=_make_agent_registry(_make_profile()),
+        state_store=JsonFileStateStore(tmp_path / "sessions"),
+    )
+
+    async def fail_build(*args, **kwargs):
+        raise RuntimeError("first build failed")
+
+    monkeypatch.setattr(builder_module, "create_client", fail_build)
+    try:
+        with pytest.raises(RuntimeError, match="first build failed"):
+            await host.start()
+        _patch_runtime(monkeypatch, [MockChatClient(responses=[])], [])
+        await host.start()
+
+        assert host.engine.workspace == (launch_workspace or Workspace(str(primary)))
+        assert host.engine.settings.model_profile == settings.model_profile
+    finally:
+        await host.shutdown()
 
 
 @pytest.mark.asyncio

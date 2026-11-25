@@ -577,11 +577,45 @@ async def test_begin_delete_session_canonicalizes_short_ids_and_scopes_by_cwd(tm
     from_short = await manager.begin_delete_session(cwd=str(project), session_id=session_short_id("saved-session"))
 
     assert canonical == "saved-session"
-    assert from_short == "saved-session"
+    assert from_short == canonical
     with pytest.raises(AcpSessionError):
         await manager.begin_delete_session(cwd=str(other), session_id="saved-session")
     with pytest.raises(AcpSessionError):
         await manager.begin_delete_session(cwd=str(project), session_id="missing-session")
+
+
+async def test_delete_session_rejects_an_ambiguous_short_id_before_touching_active_host(tmp_path) -> None:
+    from chrys.foundation.util.session_ids import session_short_id
+    from tests.service.state._store_helpers import write_legacy_envelope
+
+    store = JsonFileStateStore(tmp_path / "sessions")
+    active_id = "ABCDEF12-3456-1111-1111-111111111111"
+    other_id = "abcdef12-3456-2222-2222-222222222222"
+    short = session_short_id(other_id)
+    assert session_short_id(active_id).lower() == short
+    await store.save_session(active_id, {"messages": []}, primary_cwd=str(tmp_path))
+    # The modern and legacy entries also coexist on case-insensitive volumes.
+    legacy = write_legacy_envelope(tmp_path / "sessions" / f"{short}.json", other_id, primary_cwd=str(tmp_path))
+    saved = store.session_dir(active_id) / "session.json"
+    before = (saved.read_bytes(), legacy.read_bytes())
+    manager = _manager(str(tmp_path), store)
+    host = _CloseHost()
+    managed = ManagedSession(  # type: ignore[arg-type]
+        session_id=active_id,
+        cwd=str(tmp_path),
+        profile_name="Code",
+        host=host,
+    )
+    manager._sessions[active_id] = managed
+
+    with pytest.raises(AcpSessionError, match="ambiguous"):
+        await manager.delete_session(cwd=str(tmp_path), session_id=short)
+
+    assert (saved.read_bytes(), legacy.read_bytes()) == before
+    assert {meta.session_id for meta in await store.list_sessions()} == {active_id, other_id}
+    assert manager.get(active_id) is managed
+    assert not managed.closing
+    assert not host.shutdown_called
 
 
 @pytest.mark.asyncio
@@ -984,8 +1018,8 @@ def test_session_info_prefers_title_overlays() -> None:
         title="fix the login bug",
         generated_title="Login bug fix",
     )
-    info = session_manager_module._session_info(meta)
+    info = session_manager_module._session_info(meta, meta.primary_cwd, False)
     assert info.title == "Login bug fix"
 
     meta.custom_title = "My session"
-    assert session_manager_module._session_info(meta).title == "My session"
+    assert session_manager_module._session_info(meta, meta.primary_cwd, False).title == "My session"

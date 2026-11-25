@@ -132,7 +132,11 @@ async def test_a_python_chain_runs_to_completion_with_a_durable_record(
         assert accepted[0].run_id == result.run_id
         started = of_type(events, WorkflowRunStarted)
         assert len(started) == 1
-        assert (started[0].workflow_id, started[0].source_kind, started[0].title) == ("chain", SOURCE_KIND_WORKDIR, "t")
+        assert (started[0].workflow_id, started[0].source_kind, started[0].title) == (
+            "chain",
+            SOURCE_KIND_WORKDIR,
+            "t",
+        )
         assert started[0].spec_digest == preview.spec_digest
         assert started[0].resolved_nodes == []
         states = [(e.node_id, e.attempt, e.state) for e in of_type(events, WorkflowNodeStateChanged)]

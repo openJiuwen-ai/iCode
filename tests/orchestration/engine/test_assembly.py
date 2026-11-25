@@ -29,6 +29,7 @@ from chrys.orchestration.engine.state.current_agent import CurrentAgent
 from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
 from chrys.orchestration.engine.state.session_writer import SessionWriter
 from chrys.orchestration.engine.usage import UsagePublisher
+from chrys.orchestration.engine.workspaces import MembershipWrite
 from chrys.service.agent_middleware.system_reminder import CurrentRunReminderScope
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.state.store import JsonFileStateStore
@@ -210,7 +211,12 @@ async def test_start_runs_inside_session_transition_boundary(monkeypatch: pytest
         staged_loaded: object = None,
         session: object = None,
         workspace: object = None,
+        workspace_plan: object = None,
+        workspace_id: str | None = None,
+        workspace_snapshot: object = None,
+        commit_workspace: MembershipWrite | None = None,
     ) -> None:
+        assert commit_workspace is None
         calls.append(operation)
 
     monkeypatch.setattr(engine.lifecycle, "_start_locked", fake_start_locked)

@@ -276,7 +276,8 @@ sys.stdin.buffer.read()
     monkeypatch.setattr(clipboard_process, "_WRITE_TIMEOUT_SECONDS", 0)
     copying = asyncio.create_task(clipboard_process._copy("must not be delivered"))
     try:
-        await wait_for(lambda: started.exists() or copying.done(), timeout=ENGINE_TURN_TIMEOUT)
+        # The child can publish its marker before the parent records the process handle.
+        await wait_for(lambda: copying.done() or (processes and started.exists()), timeout=ENGINE_TURN_TIMEOUT)
         if copying.done():
             await copying
         assert started.exists()
@@ -289,8 +290,9 @@ sys.stdin.buffer.read()
         else:
             if outcome == "write_timeout":
                 permit.touch()
+            await wait_for(copying.done, timeout=ENGINE_TURN_TIMEOUT, description="clipboard worker timeout")
             with pytest.raises(TimeoutError):
-                await asyncio.wait_for(copying, timeout=ENGINE_TURN_TIMEOUT)
+                await copying
         assert processes[0].returncode is not None
         assert not child.is_running()
         assert not clipboard_process._unconfirmed_exit

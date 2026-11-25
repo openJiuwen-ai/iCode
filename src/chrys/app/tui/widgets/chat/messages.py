@@ -960,6 +960,8 @@ class StreamedMarkdownMessage(GuideFoldMixin, FoldGap, ProcessMember):
         self._source_text = text
         self._body_stale = True
         self._is_final = is_final
+        if self._md_widget is not None:
+            self._md_widget.set_streaming(not is_final)
         if is_final:
             self._sync_body()
             self.remove_class("--streaming")

@@ -15,14 +15,15 @@ from chrys.foundation.models.workspace import Workspace
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.session.persistence import SessionPersistence
-from tests.support.components import make_current, make_hooks, make_session
+from tests.support.components import make_current, make_hooks, make_session, plan_workspace
 from tests.support.waiting import wait_for
 
 
 async def test_interrupt_hook_uses_manager_and_identity_captured_before_dispatch(tmp_path) -> None:
     session = make_session(persistence=SessionPersistence(None, EventBus()), workspace=None, approval_mode=None)
     original_cwd = str(tmp_path / "original")
-    session.reset(session_id="original", workspace=Workspace.from_cwd(original_cwd))
+    session.install_workspace(plan_workspace(Workspace.from_cwd(original_cwd)))
+    session.reset(session_id="original")
     session.agent_profile = SimpleNamespace(name="Original")
     original = create_autospec(HookManager, instance=True)
     replacement = create_autospec(HookManager, instance=True)
@@ -36,7 +37,8 @@ async def test_interrupt_hook_uses_manager_and_identity_captured_before_dispatch
     original.fire.side_effect = record
     hooks = make_hooks(session=session, current=make_current())
     hooks.schedule_user_interrupt()
-    session.reset(session_id="replacement", workspace=Workspace.from_cwd(str(tmp_path / "replacement")))
+    session.install_workspace(plan_workspace(Workspace.from_cwd(str(tmp_path / "replacement"))))
+    session.reset(session_id="replacement")
     session.hook_manager = replacement
     session.agent_profile = SimpleNamespace(name="Replacement")
     await wait_for(dispatched.is_set, description="detached interrupt observer dispatches")

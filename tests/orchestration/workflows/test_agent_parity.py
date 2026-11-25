@@ -27,6 +27,7 @@ from chrys.foundation.events.types import (
     WorkflowNodeStateChanged,
 )
 from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
+from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.kernel import ChatResponseUpdate, Content
 from chrys.orchestration.invoker.resources import Conversation
 from chrys.orchestration.invoker.runtime import ApprovalInputs
@@ -61,6 +62,7 @@ from tests.support.event_capture import capture_events
 from tests.support.extensions import install_file_extension
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.workspace_engine import runtime_reminder, workspace_selection
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -86,7 +88,9 @@ def _child_profile() -> AgentProfile:
     return child
 
 
-def _hand_out_child_client(monkeypatch: pytest.MonkeyPatch, client: MockChatClient) -> None:
+def _hand_out_child_client(
+    monkeypatch: pytest.MonkeyPatch, client: MockChatClient, *, scopes: list[RequestScope | None] | None = None
+) -> None:
     """The node's sub-agent registration creates the child's client through the sub-agent module."""
 
     async def create_client(
@@ -97,7 +101,12 @@ def _hand_out_child_client(monkeypatch: pytest.MonkeyPatch, client: MockChatClie
         use_route_session_context: bool,
         session_dir: Path,
         tool_result_ceiling_tokens: int | None,
+        request_role: RequestRole,
+        request_scope: RequestScope | None,
     ) -> MockChatClient:
+        assert request_role is RequestRole.SUB_AGENT
+        if scopes is not None:
+            scopes.append(request_scope)
         return client
 
     monkeypatch.setattr(sub_agent_module, "create_client", create_client)
@@ -111,7 +120,8 @@ async def test_a_node_delegates_to_its_profile_sub_agents(tmp_path: Path, monkey
     node_client = MockChatClient(responses=[_delegate("inspect the tree"), MockResponse(text="node done")])
     child_client = MockChatClient(responses=[MockResponse(text="child says the tree is fine")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
-    _hand_out_child_client(monkeypatch, child_client)
+    scopes: list[RequestScope | None] = []
+    _hand_out_child_client(monkeypatch, child_client, scopes=scopes)
     project = make_workdir(tmp_path)
     write_workflow(project, "delegate", _WORKFLOW)
     host = make_host(tmp_path, project=project, profiles=[_delegating_profile(), _child_profile()])
@@ -127,6 +137,7 @@ async def test_a_node_delegates_to_its_profile_sub_agents(tmp_path: Path, monkey
         await host.shutdown()
 
     assert result.outcome.value == "completed"
+    assert scopes == [RequestScope.WORKFLOW]
     assert child_client.call_count == 1
     node_start, child_start = starts
     assert node_start.origin.kind == "workflow_node"
@@ -178,6 +189,7 @@ async def test_a_node_has_sleep_though_its_profile_omits_it(tmp_path: Path, monk
 
 
 async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Profile skills and memory reach the node along with the installed reference folders."""
     node_client = MockChatClient(responses=[MockResponse(text="node done")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
     project = make_workdir(tmp_path)
@@ -193,9 +205,18 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     )
     profile.memory = MemoryConfig(files=["NOTES.md"])
     write_workflow(project, "skilled", _WORKFLOW)
+    related = tmp_path / "related"
+    related.mkdir()
     host = make_host(tmp_path, project=project, profiles=[profile])
     try:
         await confirm(host, "skilled")
+        await host.start()
+        registry = host.engine.lifecycle.workspaces.registry
+        assert registry is not None
+        selected = registry.create("Selected", str(project), [str(related)])
+        change = workspace_selection(selected.id)
+        await host.engine.event_bus.publish(change, raise_handler_errors=True)
+        assert str(related) in runtime_reminder(host.engine)
         result, _events = await run(host, "skilled", input_text="Go")
     finally:
         await host.shutdown()
@@ -204,6 +225,8 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     ((messages, options),) = node_client.call_history
     assert "Remember: the build is green." in options["instructions"]
     assert "<name>review</name>" in (messages[-1].text or "")
+    assert "Project:" not in (messages[-1].text or "")
+    assert str(related) in (messages[-1].text or "")
     assert {"load_skill", "read_skill_resource", "run_skill_script"} <= {tool.name for tool in options["tools"]}
 
 
