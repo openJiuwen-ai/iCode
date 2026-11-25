@@ -135,6 +135,11 @@ class ShellPanel(Widget):
         self.display = False
 
     @property
+    def has_live_shell(self) -> bool:
+        """A hidden PTY can still own running jobs, even at a shell prompt."""
+        return self._shell is not None and not self._shell.is_finished
+
+    @property
     def is_visible(self) -> bool:
         return self.display
 

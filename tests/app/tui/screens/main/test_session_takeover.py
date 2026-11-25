@@ -17,6 +17,7 @@ from textual.widgets import Button
 
 from chrys.app.tui.screens.dialogs import SessionInUseDialog
 from chrys.app.tui.session_takeover import TakeoverListener, query_owner
+from chrys.app.tui.widgets.sidebar.buddy import BuddyPanel
 from chrys.foundation.platform.process import kill_windows_process_tree
 from chrys.kernel import Message
 from chrys.service.profiles.models.serializer import save_profile
@@ -128,13 +129,17 @@ async def test_link_retarget_after_idle_probe_does_not_close_original_window(
     assert calls == [(peer, "take")]
 
 
+@pytest.mark.parametrize("worker_owner", ["main", "buddy"])
 async def test_queued_ui_work_blocks_owner_before_the_worker_runs(
-    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, worker_owner: str
 ) -> None:
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         await wait_for(session.app._takeover_idle, pilot=session.pilot)
         release = asyncio.Event()
-        session.main._start_worker(release.wait)
+        if worker_owner == "buddy":
+            session.main.query_one(BuddyPanel).run_worker(release.wait, group="buddy-count")
+        else:
+            session.main._start_worker(release.wait)
         try:
             # Same event-loop turn as scheduling a submit: the worker cannot have started yet.
             assert not session.app._takeover_idle()

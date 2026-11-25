@@ -80,6 +80,11 @@ class BuddyCommandController:
         elif not self._pet_in_hand():
             self._count = self._change(self._pet())
 
+    @property
+    def busy(self) -> bool:
+        """Pending command changes or a pet reply started from either TUI surface."""
+        return self._replies.answering or any(not change.done() for change in self._changes)
+
     def _pet_in_hand(self) -> bool:
         # Judged as the command arrives: queued behind earlier commands, a pet would otherwise be
         # answered again once the count or the answer still in hand had finished ahead of them.

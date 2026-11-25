@@ -135,6 +135,7 @@ from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.app.tui.widgets.editor import MESSAGE_EDITOR_MAX_CHARACTERS, EditorBufferSnapshot, EditorMode
 from chrys.app.tui.widgets.sidebar.background_tasks import BackgroundTaskList
+from chrys.app.tui.widgets.sidebar.buddy import BuddyPanel
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
 from chrys.app.tui.widgets.sidebar.diff_preview import DiffPreview, SidebarChatPanel, preview_rows
 from chrys.app.tui.widgets.sidebar.hooks import HookRunList
@@ -3096,12 +3097,19 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._workflow.browser.enter_selection()
 
     def idle_for_takeover(self) -> bool:
+        shell = self.query_one_optional(ShellPanel)
         # run_worker registers synchronously, before the worker claims a submit or restore.
         return (
-            self._can_switch_app_mode()
+            shell is not None
+            and not shell.has_live_shell
+            and self._can_switch_app_mode()
             and not self._workflow.workflow_mode
             and not self._btw.panel.running
-            and not any(worker.node is self and not worker.is_finished for worker in self.workers)
+            and not self._suggestions.buddy_command.busy
+            and not any(
+                not worker.is_finished and (worker.node is self or isinstance(worker.node, BuddyPanel))
+                for worker in self.workers
+            )
         )
 
     def _can_switch_app_mode(self) -> bool:

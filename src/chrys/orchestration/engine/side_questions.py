@@ -98,6 +98,11 @@ class SideQuestions:
         self._closed = False
         self._writes_cancelled = threading.Event()
 
+    @property
+    def busy(self) -> bool:
+        """Include answers already shown whose save is still queued."""
+        return bool(self._run_tasks or self._commit_tasks)
+
     async def subscribe(self) -> None:
         await self._bus.subscribe(SideQuestionRequested, self.request)
         await self._bus.subscribe(SideQuestionCancelled, self.cancel)

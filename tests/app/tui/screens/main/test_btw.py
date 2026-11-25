@@ -1011,6 +1011,9 @@ async def test_session_transition_preserves_pending_side_save(
             await wait_for(entered.is_set, pilot=session.pilot)
             commit = next(iter(session.engine._side_questions._commit_tasks))
             await asyncio.gather(*tuple(session.engine._side_questions._run_tasks))
+            assert not panel.running
+            assert session.engine.side_questions_busy
+            assert not session.app._takeover_idle()
             event = (
                 ev.SetModelProfile(profile_id=FAST_MODEL)
                 if transition == "model"
