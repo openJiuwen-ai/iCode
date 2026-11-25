@@ -4,24 +4,31 @@
 
 Chrome launches this executable when the extension calls ``connectNative``. The
 plugin writes ``bridge.json`` (port + token) first; this host dials it, proves
-the token, then copies frames in both directions until either side closes.
+the token and verifies the server's HMAC over a fresh nonce, then copies frames
+in both directions until either side closes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import BinaryIO, Mapping
+from typing import BinaryIO
 
+from .._proc import atomic_write_private
 from ..config import BrowserEnv
 from .protocol import (
     MAX_TCP_MESSAGE_BYTES,
     ChunkAssembler,
+    ProtocolError,
     encode_message,
     read_async_frame,
     read_message,
@@ -30,13 +37,53 @@ from .protocol import (
 )
 
 
+def bridge_pointer_file(env: Mapping[str, str] | None = None) -> Path:
+    """Fixed per-user pointer file recording a non-default ``bridge.json`` path."""
+    source = os.environ if env is None else env
+    if sys.platform == "win32":
+        local_appdata = source.get("LOCALAPPDATA")
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+    else:
+        base = Path.home() / ".local" / "share"
+    return base / "icode-browser-use" / "bridge-pointer.txt"
+
+
+def write_bridge_pointer(target: Path, env: Mapping[str, str] | None = None) -> None:
+    """Record *target* in the fixed per-user pointer file so Chrome's host can find it."""
+    pointer = bridge_pointer_file(env)
+    with contextlib.suppress(OSError):
+        atomic_write_private(pointer, str(target.resolve()) + "\n", strict=False)
+
+
 def bridge_file(env: Mapping[str, str] | None = None) -> Path:
-    """Must match the plugin's default (``BrowserConfig.bridge_file``)."""
+    """Must match the plugin's default (``BrowserConfig.bridge_file``).
+
+    When Chrome launches the host, it does not inherit iCode's custom
+    ``ICODE_BROWSER_STATE_DIR`` / ``ICODE_BROWSER_BRIDGE_FILE`` env vars. If
+    neither env var is set, fall back to the pointer file written by the plugin
+    when it exists and targets an existing discovery file.
+    """
     source = BrowserEnv(env)
     override = (source.get("BRIDGE_FILE") or "").strip()
     if override:
         return Path(override).expanduser()
+    state_override = (source.get("STATE_DIR") or "").strip()
+    if state_override:
+        return Path(state_override).expanduser() / "bridge.json"
+    pointer = bridge_pointer_file(env)
+    if pointer.is_file():
+        with contextlib.suppress(OSError):
+            pointed = pointer.read_text(encoding="utf-8").strip()
+            if pointed:
+                candidate = Path(pointed).expanduser()
+                if candidate.is_file():
+                    return candidate
     return source.state_dir() / "bridge.json"
+
+
+def compute_server_hmac(token: str, nonce: str) -> str:
+    """Compute the expected server handshake MAC proving possession of *token*."""
+    return hmac.new(token.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 async def pump(
@@ -83,12 +130,30 @@ async def pump(
             task.cancel()
 
 
+async def _authenticate(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, token: str, *, timeout: float = 5.0
+) -> None:
+    """Mutually authenticate: send nonce first, verify server HMAC, then reveal token."""
+    nonce = secrets.token_hex(16)
+    writer.write(encode_message({"nonce": nonce}))
+    await writer.drain()
+    try:
+        reply = await asyncio.wait_for(read_async_frame(reader, limit=65536), timeout)
+    except (asyncio.TimeoutError, ProtocolError, OSError) as exc:
+        raise OSError(f"bridge server handshake failed: {exc}") from exc
+    received = reply.get("hmac") if isinstance(reply, dict) else None
+    expected = compute_server_hmac(token, nonce)
+    if not isinstance(received, str) or not secrets.compare_digest(received, expected):
+        raise OSError("bridge server failed mutual authentication (invalid HMAC)")
+    writer.write(encode_message({"token": token}))
+    await writer.drain()
+
+
 async def _run(port: int, token: str) -> None:
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
-        writer.write(encode_message({"token": token}))
-        await writer.drain()
-        # Tell the extension that the host reached the plugin bridge, not merely
+        await _authenticate(reader, writer, token)
+        # Tell the extension that the host reached the verified plugin bridge, not merely
         # that Chrome opened a native-messaging port.
         await asyncio.to_thread(write_message, sys.stdout.buffer, {"method": "Bridge.ready", "params": {}})
         await pump(sys.stdin.buffer, sys.stdout.buffer, reader, writer)

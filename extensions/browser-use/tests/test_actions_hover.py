@@ -60,14 +60,10 @@ async def _no_sleep(_seconds):
 def test_hover_moves_the_mouse_without_clicking(monkeypatch) -> None:
     session = FakeSession()
 
-    async def fake_hit_point(*_args, **_kwargs):
-        return 10.0, 20.0
+    async def fake_locate(*_args, **_kwargs):
+        return 10.0, 20.0, "centre", {"inside": True}
 
-    async def fake_hit_test(*_args, **_kwargs):
-        return {"inside": True}
-
-    monkeypatch.setattr(hover, "_hit_point", fake_hit_point)
-    monkeypatch.setattr(hover, "hit_test", fake_hit_test)
+    monkeypatch.setattr(hover, "_locate_hit", fake_locate)
     monkeypatch.setattr(hover, "_sleep", _no_sleep)
     blocks = asyncio.run(hover.run(session, {"target": "评论"}))
     assert session.client.calls == [
@@ -85,14 +81,10 @@ def test_hover_moves_the_mouse_without_clicking(monkeypatch) -> None:
 def test_hover_refuses_when_hit_test_is_inconclusive(monkeypatch) -> None:
     session = FakeSession()
 
-    async def fake_hit_point(*_args, **_kwargs):
-        return 10.0, 20.0
+    async def fake_locate(*_args, **_kwargs):
+        return 10.0, 20.0, "unverified", None
 
-    async def fake_hit_test(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(hover, "_hit_point", fake_hit_point)
-    monkeypatch.setattr(hover, "hit_test", fake_hit_test)
+    monkeypatch.setattr(hover, "_locate_hit", fake_locate)
     blocks = asyncio.run(hover.run(session, {"target": "评论"}))
     assert session.client.calls == []
     assert "status=uncertain" in blocks[0]["text"]

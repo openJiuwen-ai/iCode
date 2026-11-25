@@ -32,31 +32,48 @@ _MAX_RAW_TEXT = 1000
 _ERROR_TYPES = frozenset({"error", "assert"})
 _API_TYPES = frozenset({"XHR", "Fetch"})
 
-#: A URL query/fragment (absolute or relative). Masked when it carries a ``=`` value;
-#: a stack frame's trailing ``:line:col`` is kept.
+#: A URL query/fragment (absolute or relative). Masked when it carries a ``=`` value
+#: or a long opaque token (>= 16 chars after ?/#); a stack frame's trailing ``:line:col`` is kept.
 _QUERY_RE = re.compile(r"[?#][^\s\"'<>()]*")
 _POSITION_RE = re.compile(r"(?::\d+){1,2}$")
-#: ``user:password@`` or a bare ``token@`` in a URL.
-_USERINFO_RE = re.compile(r"\b((?:https?|wss?|ftp)://)[^/?#\s@]+@", re.IGNORECASE)
-#: A secret word and its value: ``access_token=x``, ``"password": "x y"``, ``{\"token\":\"x\"}``,
-#: ``Authorization: Bearer x``. The word is matched first and its prefix left alone, so
-#: the scan never backtracks over keys; short words are whole-word only (``author=`` stays).
+#: ``user:password@`` or a bare ``token@`` in a URL (matches up to the last ``@`` in authority).
+_USERINFO_RE = re.compile(r"\b((?:https?|wss?|ftp)://)[^/?#\s]+@", re.IGNORECASE)
+#: Multi-cookie headers/assignments (``Cookie: a=1; b=2`` or ``cookie=a=1; b=2``): mask the full value list.
+_COOKIE_HEADER_RE = re.compile(
+    r"(\b(?:set-)?cookie)\s*([:=])\s*[^\r\n\"'{}]+",
+    re.IGNORECASE,
+)
+#: A secret word and its value: ``access_token=x``, ``"password": "x \"y\""``, ``{\"token\":\"x\"}``,
+#: ``Authorization: Bearer x``. Supports JSON backslash escapes without backtracking.
 _SECRET_RE = re.compile(
     r"(token|secret|password|passwd|api[_-]?key|authorization|cookie|signature|credential"
     r"|session[_-]?id|\bsid|jwt|\bpwd\b|\bauth\b|\bsession\b)"
-    r"\\?[\"']?\s*[:=]\s*(?:\\?\"[^\"\\]*\\?\"|'[^']*'|(?:bearer\s+|basic\s+)?[^\s,;&\"'}\\]+)",
+    r"\\?[\"']?\s*[:=]\s*(?:\\?\"(?:\\.|[^\"\\])*\\?\"|'(?:\\.|[^'\\])*'"
+    r"|(?:(?:bearer|basic|token|apikey|digest)\s+)?[^\s,;&\"'}\\]+)",
     re.IGNORECASE,
 )
-#: A bearer token on its own (``retry with Bearer eyJ…``).
-_BEARER_RE = re.compile(r"\b(bearer)\s+[\w.~+/=-]{8,}", re.IGNORECASE)
+#: Digest auth parameters (``Digest username="alice", response="..."``): mask the whole parameter list.
+_DIGEST_AUTH_RE = re.compile(r"\b(digest)\s+[A-Za-z0-9_-]+\s*=[^\r\n{}]+", re.IGNORECASE)
+#: Standalone auth credentials (``Bearer eyJ…``, ``Basic dXNlcjpwYXNz``, ``ApiKey k123``, ``Token tok_123``).
+_AUTH_SCHEME_RE = re.compile(r"\b(bearer|basic|apikey|token)\s+([\w.~+/=-]{6,})", re.IGNORECASE)
+#: A bare JWT token anywhere in text (including unsigned/empty-signature ``eyJ... . eyJ... .``).
+_BARE_JWT_RE = re.compile(r"\beyJ[\w-]{4,}\.[\w-]{4,}\.(?:[\w-]{4,}\b)?")
+
+
+def _mask_auth_scheme(match: re.Match[str]) -> str:
+    scheme, value = match.group(1), match.group(2)
+    if scheme.lower() == "token" and value.isalpha() and len(value) < 16:
+        return match.group(0)
+    return f"{scheme} ***"
 
 
 def _mask_query(match: re.Match[str]) -> str:
     query = match.group(0)
-    if "=" not in query:
-        return query
     position = _POSITION_RE.search(query)
-    return "?…" + (position.group(0) if position else "")
+    body = query[: position.start()] if position else query
+    if "=" not in body and len(body) < 17:
+        return query
+    return (body[0] + "…") + (position.group(0) if position else "")
 
 
 def _short_url(url: str) -> str:
@@ -69,8 +86,14 @@ def scrub(text: str) -> str:
     the shared redaction (whitespace collapsed, truncated). Linear in the bounded input."""
     text = _QUERY_RE.sub(_mask_query, text[:_MAX_RAW_TEXT])
     text = _USERINFO_RE.sub(r"\1", text)
+    text = _DIGEST_AUTH_RE.sub(lambda match: f"{match.group(1)} ***", text)
+    text = _COOKIE_HEADER_RE.sub(
+        lambda match: f"{match.group(1)}: ***" if match.group(2) == ":" else f"{match.group(1)}=***",
+        text,
+    )
     text = _SECRET_RE.sub(lambda match: f"{match.group(1)}=***", text)
-    text = _BEARER_RE.sub(lambda match: f"{match.group(1)} ***", text)
+    text = _AUTH_SCHEME_RE.sub(_mask_auth_scheme, text)
+    text = _BARE_JWT_RE.sub("***", text)
     return redact_message(text)
 
 

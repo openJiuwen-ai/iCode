@@ -1,6 +1,6 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-import { originOf, readPermissions, setPermission } from "./permissions.js";
+import { originOf, permissionFor, readPermissions, setPermission } from "./permissions.js";
 
 const LABELS = { allow: "Allowed", ask: "Ask", block: "Blocked" };
 const rows = document.getElementById("rows");
@@ -15,7 +15,7 @@ async function render() {
   empty.hidden = origins.length > 0;
 
   for (const origin of origins) {
-    const state = permissions[origin] || "ask";
+    const state = await permissionFor(origin);
     const row = document.createElement("div");
     row.className = "row";
 

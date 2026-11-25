@@ -3,7 +3,7 @@
 
 Example (the wheel must already exist; host version must be an exact release)::
 
-    python scripts/wheel_extension_smoke.py --wheel dist/icode_browser_use-0.3.2-py3-none-any.whl \
+    python scripts/wheel_extension_smoke.py --wheel dist/icode_browser_use-0.3.3-py3-none-any.whl \
         --host-version 0.35.2 --allow-public-network \
         --executable "C:/Program Files/Google/Chrome/Application/chrome.exe"
 
@@ -260,7 +260,7 @@ async def run_installed(args, root: Path) -> None:
             )
         require(sessions[0].cfg.state_dir != sessions[1].cfg.state_dir, "Handles share state")
         require(sessions[0].cfg.chrome_profile_dir != sessions[1].cfg.chrome_profile_dir, "Handles share profile")
-        for browser_id, session in zip(handles, sessions):
+        for browser_id, session in zip(handles, sessions, strict=True):
             nav = await invoke(
                 tools, "browser_navigate", browser_id=browser_id, url="https://www.iana.org/domains/reserved"
             )

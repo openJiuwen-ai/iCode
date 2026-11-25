@@ -48,12 +48,10 @@ either as a wheel or in editable mode. Browser paths are discovered; `scripts/sm
 `CHRYS_ICODE_SRC` or `ICODE_SRC` for the host checkout, with the containing iCode
 checkout as the default.
 
-The host's opt-in four-path test (`iCode/tests/integration/test_browser_four_paths.py`)
-imports this fixture site and the plugin source directly. It carries only
-`pytest.mark.timeout(180)` (the hygiene guard forbids the `integration` marker under
-`tests/integration`) and every case skips unless `CHRYS_BROWSER_E2E=1`. It uses
-`extensions/browser-use/` by default and accepts `CHRYS_BROWSER_SRC` to select
-a different checkout. It uses `CHRYS_CHROME` or discovers the browser automatically.
+The opt-in real-Chrome regression suite (`tests/e2e/test_real_chrome.py`)
+imports this fixture site and the plugin source directly; every case skips
+unless `CHRYS_BROWSER_E2E=1`. It uses `CHRYS_CHROME` or discovers the browser
+automatically.
 
 These scripts execute whatever `CHRYS_CHROME`, `ICODE_BROWSER_EXECUTABLE` or
 `CHRYS_ICODE_SRC` name, and insert that checkout on `sys.path`: point them only at a real
@@ -64,7 +62,7 @@ browser and at your own checkout.
 Build the wheel first. With `uv`, Python and Chrome/Edge available, run:
 
 ```powershell
-python scripts/wheel_extension_smoke.py --wheel dist/icode_browser_use-0.3.2-py3-none-any.whl --host-version 0.35.2 --allow-public-network
+python scripts/wheel_extension_smoke.py --wheel dist/icode_browser_use-0.3.3-py3-none-any.whl --host-version 0.35.2 --allow-public-network
 ```
 
 `--wheel` selects the exact existing artifact; the runner installs it together

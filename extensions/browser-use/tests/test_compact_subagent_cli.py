@@ -204,7 +204,7 @@ def test_subagent_install_writes_least_privilege_profile(tmp_path, capsys):
     assert "name: Browser" in content
     assert "extensions:" in content
     assert "- browser" in content
-    assert "- filesystem.read" in content
+    assert "- filesystem.read" not in content
     assert "- shell" not in content
     assert "- filesystem.write" not in content
     assert "BROWSER_SESSION_FACTS" in content

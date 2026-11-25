@@ -8,7 +8,7 @@ from typing import Any
 
 from ..errors import BadRequest, BrowserError, ConnectionClosed
 from ..types import ToolBlock, text_block
-from .actionability import evidence_line, mark_dispatched, new_action_id, prepare_action, record_action
+from .actionability import amark_dispatched, aprepare_action, arecord_action, evidence_line, new_action_id
 
 NAME = "browser_dialog"
 
@@ -47,10 +47,10 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 evidence_line(session, action_id),
             ]
         )
-        record_action(session, action_id, NAME, "blocked", result)
+        await arecord_action(session, action_id, NAME, "blocked", result)
         return [text_block(result)]
 
-    prepare_action(session, action_id, NAME, f"prepared {action} of {info.kind} dialog seq={info.seq}")
+    await aprepare_action(session, action_id, NAME, f"prepared {action} of {info.kind} dialog seq={info.seq}")
     try:
         closed, sent = await session.handle_dialog(accept=action == "accept", text=text)
     except ConnectionClosed:
@@ -64,7 +64,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 evidence_line(session, action_id),
             ]
         )
-        record_action(session, action_id, NAME, "blocked", result)
+        await arecord_action(session, action_id, NAME, "blocked", result)
         return [text_block(result)]
     except BrowserError as exc:
         result = "\n".join(
@@ -75,10 +75,13 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 evidence_line(session, action_id),
             ]
         )
-        record_action(session, action_id, NAME, "uncertain", result)
+        await arecord_action(session, action_id, NAME, "uncertain", result)
         return [text_block(result)]
 
-    mark_dispatched(session, action_id, NAME, f"dispatched {action} of {info.kind} dialog seq={info.seq}")
+    await amark_dispatched(session, action_id, NAME, f"dispatched {action} of {info.kind} dialog seq={info.seq}")
+    mark_dirty = getattr(session, "mark_dirty", None)
+    if callable(mark_dirty):
+        mark_dirty()
     handled = sent and closed.reason == "handled by browser_dialog"
     status = "succeeded" if handled else "uncertain"
     lines = [
@@ -93,5 +96,5 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     if handled:
         lines.append("提示：对话框打开期间的动作结果不可判定，请 browser_snapshot 复核，不要重复点击/提交")
     result = "\n".join(lines)
-    record_action(session, action_id, NAME, status, result)
+    await arecord_action(session, action_id, NAME, status, result)
     return [text_block(result)]

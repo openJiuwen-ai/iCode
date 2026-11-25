@@ -20,6 +20,11 @@ if ICODE_SRC.is_dir():
 
 @pytest.fixture(autouse=True)
 def isolated_browser_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Keep the developer's saved browser connection out of plugin tests."""
+    """Keep the developer's saved browser connection, AppData, and env vars out of plugin tests."""
+    for key in list(os.environ):
+        if key.startswith("ICODE_BROWSER_"):
+            monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))

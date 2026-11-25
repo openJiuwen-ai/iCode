@@ -34,9 +34,15 @@ class _NavClient:
                 await asyncio.sleep(delay)
             frame_id = "main" if page_session == "page" else "other"
             if loader in {"beforeunload", "alert"}:  # beforeunload holds the navigation; alert comes from the new page
-                await self._emit("Page.javascriptDialogOpening", {"type": loader, "message": "", "url": "https://example.com/"}, page_session)
+                await self._emit(
+                    "Page.javascriptDialogOpening",
+                    {"type": loader, "message": "", "url": "https://example.com/"},
+                    page_session,
+                )
             elif loader == "soft":  # the page's own pushState/replaceState on the main frame
-                await self._emit("Page.navigatedWithinDocument", {"frameId": frame_id, "url": "https://example.com/#s"}, page_session)
+                await self._emit(
+                    "Page.navigatedWithinDocument", {"frameId": frame_id, "url": "https://example.com/#s"}, page_session
+                )
             elif loader.startswith("load:"):
                 await self._emit("Page.lifecycleEvent", {"name": "load", "loaderId": loader[5:]}, page_session)
             elif loader.startswith("commit:"):
@@ -97,7 +103,6 @@ def test_following_navigations_registers_no_per_call_listener(monkeypatch) -> No
     assert {method: len(handlers) for method, handlers in client.handlers.items()} == before
 
 
-
 def test_a_same_document_navigation_right_after_the_commit_does_not_skip_its_load(monkeypatch) -> None:
     # SPA routers often replaceState right after commit; the load of the commit must still be awaited.
     session, _client = _session([(0.05, "page", "commit:L2"), (0.0, "page", "soft"), (0.5, "page", "load:L2")])
@@ -107,6 +112,7 @@ def test_a_same_document_navigation_right_after_the_commit_does_not_skip_its_loa
 def test_a_reload_is_not_satisfied_by_the_old_page_pushing_state(monkeypatch) -> None:
     session, _client = _session([(0.05, "page", "soft"), (0.3, "page", "L2")])
     assert _follow(session, monkeypatch) >= 0.3
+
 
 def test_history_step_is_not_satisfied_by_the_old_page_pushing_state(monkeypatch) -> None:
     # The old page replaceStates while the history step's own commit is still on the network.
@@ -122,11 +128,7 @@ def test_history_step_is_not_satisfied_by_the_old_page_pushing_state(monkeypatch
     monkeypatch.setattr(back, "capture_and_register", fake_capture)
     monkeypatch.setattr(back, "_page_title", fake_title)
     monkeypatch.setattr(back, "detect_login", lambda *_args: None)
-    asyncio.run(
-        back.follow_navigation(
-            session, "Page.navigateToHistoryEntry", {}, expected_url="https://example.com/"
-        )
-    )
+    asyncio.run(back.follow_navigation(session, "Page.navigateToHistoryEntry", {}, expected_url="https://example.com/"))
     assert time.monotonic() - started >= 0.3
 
 
@@ -144,9 +146,7 @@ def test_a_same_document_history_step_is_done_at_its_own_url(monkeypatch) -> Non
     monkeypatch.setattr(back, "_page_title", fake_title)
     monkeypatch.setattr(back, "detect_login", lambda *_args: None)
     asyncio.run(
-        back.follow_navigation(
-            session, "Page.navigateToHistoryEntry", {}, expected_url="https://example.com/#s"
-        )
+        back.follow_navigation(session, "Page.navigateToHistoryEntry", {}, expected_url="https://example.com/#s")
     )
     assert time.monotonic() - started < 1.0
 
@@ -166,6 +166,7 @@ def test_a_beforeunload_dialog_is_reported_not_waited_out(monkeypatch) -> None:
     assert "dialog=beforeunload" in text and "status=blocked" in text and "browser_dialog" in text
     assert captured == [], "the old page must not be returned as the reloaded one"
 
+
 def test_a_commit_survives_a_burst_of_same_document_navigations(monkeypatch) -> None:
     session, client = _session([])
 
@@ -174,10 +175,13 @@ def test_a_commit_survives_a_burst_of_same_document_navigations(monkeypatch) -> 
         frame = {"id": "main", "loaderId": "L3", "url": "https://example.com/"}
         await client._emit("Page.frameNavigated", {"frame": frame}, "page")
         for index in range(40):
-            await client._emit("Page.navigatedWithinDocument", {"frameId": "main", "url": f"https://example.com/#{index}"}, "page")
+            await client._emit(
+                "Page.navigatedWithinDocument", {"frameId": "main", "url": f"https://example.com/#{index}"}, "page"
+            )
         return await session.wait_for_navigation(after=after, timeout=0.2, cross_document=True)
 
     assert asyncio.run(scenario()) == "L3"
+
 
 def _follow_text(session, monkeypatch, method="Page.navigateToHistoryEntry", **kwargs):
     async def fake_capture(_session, **_kwargs):
@@ -217,6 +221,7 @@ def test_a_dialog_from_the_loading_page_is_reported_as_after_the_commit(monkeypa
     assert "dialog=alert" in text and "status=blocked" in text
     assert "导航已提交" in text and "尚未发生" not in text
 
+
 def test_a_history_step_that_only_moves_an_iframe_finishes_on_its_commit(monkeypatch) -> None:
     # Joint session history: the entry has the main frame's own URL, only a child frame navigates.
     session, client = _session([])
@@ -251,6 +256,7 @@ def test_a_child_frame_never_satisfies_a_step_to_another_url_or_a_plain_navigate
         return await scenario("https://example.com/other"), await scenario(None)
 
     assert asyncio.run(both()) == (None, None)
+
 
 def test_the_old_page_pushing_state_does_not_make_a_beforeunload_look_committed(monkeypatch) -> None:
     session, _client = _session([(0.02, "page", "soft"), (0.03, "page", "beforeunload")])

@@ -143,12 +143,16 @@ def html_to_markdown(html: str) -> str:
     text = unescape(text)
 
     for index, code in enumerate(blocks):
-        fenced = "```\n" + unescape(code).strip("\n") + "\n```"
-        text = text.replace(f"\x00CODE{index}\x00", fenced)
+        clean_code = _TAG_RE.sub("", code)
+        blocks[index] = unescape(clean_code).strip("\n")
 
     text = _SPACES_RE.sub(" ", text)
     text = "\n".join(line.strip() for line in text.splitlines())
-    return _BLANK_RE.sub("\n\n", text).strip()
+    text = _BLANK_RE.sub("\n\n", text).strip()
+    for index, code in enumerate(blocks):
+        fenced = "```\n" + code + "\n```"
+        text = text.replace(f"\x00CODE{index}\x00", fenced)
+    return text
 
 
 def _snapshot_subtree_text(session: Any, entry: Any) -> str:
@@ -176,30 +180,6 @@ def _snapshot_subtree_text(session: Any, entry: Any) -> str:
     return "[shadow DOM text from snapshot]\n" + "\n".join(lines)
 
 
-async def _extract_element(session: Any, query: str, fmt: str) -> str:
-    entry = await resolve_target(session, query)
-    object_id = await session.resolve_object_id(entry)
-    cdp_session_id = entry.cdp_session_id
-    if fmt == "text":
-        result = await call_value(session, object_id, _TEXT_FN, cdp_session_id=cdp_session_id)
-        text = as_text(result.get("value"))
-        if not text.strip():
-            fallback = _snapshot_subtree_text(session, entry)
-            if fallback:
-                return fallback
-        return text
-    result = await call_value(session, object_id, _HTML_FN, cdp_session_id=cdp_session_id)
-    html = as_text(result.get("value"))
-    return html if fmt == "html" else html_to_markdown(html)
-
-
-async def _extract_page(session: Any, fmt: str) -> str:
-    if fmt == "text":
-        return as_text(await eval_value(session, _PAGE_TEXT_EXPR))
-    html = as_text(await eval_value(session, "document.documentElement.outerHTML"))
-    return html if fmt == "html" else html_to_markdown(html)
-
-
 def page_of(content: str, offset: int, max_chars: int) -> str:
     """The *max_chars* window of *content* at *offset*, marking where the next one starts."""
     if offset and offset >= len(content):
@@ -211,15 +191,123 @@ def page_of(content: str, offset: int, max_chars: int) -> str:
     return window
 
 
+_TEXT_SLICE_FN = (
+    f"function(off, maxChars){{{_DEEP_TEXT_JS}"
+    " const s = deepText(this);"
+    " return {len: s.length, chunk: s.slice(off, off + maxChars)};"
+    "}"
+)
+_HTML_SLICE_FN = (
+    "function(off, maxChars){"
+    " const s = this.outerHTML || '';"
+    " return {len: s.length, chunk: s.slice(off, off + maxChars)};"
+    "}"
+)
+
+
+def _format_slice(total_len: int, chunk: str, offset: int, max_chars: int) -> str:
+    if offset and offset >= total_len:
+        return f"offset={offset} 已超出内容长度 {total_len}（没有更多内容）"
+    end = offset + len(chunk)
+    if end < total_len:
+        return chunk + f"… (+{total_len - end} more chars; next offset={end})"
+    return chunk
+
+
+async def _extract_element(
+    session: Any,
+    query: str,
+    fmt: str,
+    *,
+    offset: int = 0,
+    max_chars: int | None = None,
+) -> str:
+    entry = await resolve_target(session, query)
+    object_id = await session.resolve_object_id(entry)
+    cdp_session_id = entry.cdp_session_id
+    if fmt == "markdown":
+        result = await call_value(session, object_id, _HTML_FN, cdp_session_id=cdp_session_id)
+        md = html_to_markdown(as_text(result.get("value")))
+        return page_of(md, offset, max_chars) if max_chars is not None else md
+    if max_chars is not None:
+        fn = _TEXT_SLICE_FN if fmt == "text" else _HTML_SLICE_FN
+        result = await call_value(
+            session,
+            object_id,
+            fn,
+            cdp_session_id=cdp_session_id,
+            arguments=[{"value": offset}, {"value": max_chars}],
+        )
+        value = result.get("value")
+        if isinstance(value, dict) and "chunk" in value and "len" in value:
+            chunk = as_text(value["chunk"])
+            total = int(value["len"])
+            if fmt == "text" and total == 0:
+                fallback = _snapshot_subtree_text(session, entry)
+                if fallback:
+                    return page_of(fallback, offset, max_chars)
+            return _format_slice(total, chunk, offset, max_chars)
+        text = as_text(value)
+        if fmt == "text" and not text.strip():
+            fallback = _snapshot_subtree_text(session, entry)
+            if fallback:
+                return page_of(fallback, offset, max_chars)
+        return page_of(text, offset, max_chars)
+    if fmt == "text":
+        result = await call_value(session, object_id, _TEXT_FN, cdp_session_id=cdp_session_id)
+        text = as_text(result.get("value"))
+        if not text.strip():
+            fallback = _snapshot_subtree_text(session, entry)
+            if fallback:
+                return fallback
+        return text
+    result = await call_value(session, object_id, _HTML_FN, cdp_session_id=cdp_session_id)
+    return as_text(result.get("value"))
+
+
+async def _extract_page(
+    session: Any,
+    fmt: str,
+    *,
+    offset: int = 0,
+    max_chars: int | None = None,
+) -> str:
+    if fmt == "markdown":
+        md = html_to_markdown(as_text(await eval_value(session, "document.documentElement.outerHTML")))
+        return page_of(md, offset, max_chars) if max_chars is not None else md
+    if max_chars is not None:
+        if fmt == "text":
+            expr = (
+                f"(()=>{{{_DEEP_TEXT_JS}"
+                " const s = document.body ? deepText(document.body) : '';"
+                f" return {{len: s.length, chunk: s.slice({offset}, {offset + max_chars})}};"
+                "})()"
+            )
+        else:
+            expr = (
+                "(()=>{"
+                " const s = document.documentElement ? document.documentElement.outerHTML : '';"
+                f" return {{len: s.length, chunk: s.slice({offset}, {offset + max_chars})}};"
+                "})()"
+            )
+        value = await eval_value(session, expr)
+        if isinstance(value, dict) and "chunk" in value and "len" in value:
+            return _format_slice(int(value["len"]), as_text(value["chunk"]), offset, max_chars)
+        return page_of(as_text(value), offset, max_chars)
+    if fmt == "text":
+        return as_text(await eval_value(session, _PAGE_TEXT_EXPR))
+    return as_text(await eval_value(session, "document.documentElement.outerHTML"))
+
+
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     query = (arguments.get("query") or "").strip()
     fmt = arguments["format"]
     max_chars = arguments["max_chars"]
+    offset = arguments["offset"]
 
     if query:
-        content = await _extract_element(session, query, fmt)
+        content = await _extract_element(session, query, fmt, offset=offset, max_chars=max_chars)
     else:
-        content = await _extract_page(session, fmt)
-    content = page_of(content, arguments["offset"], max_chars)
+        content = await _extract_page(session, fmt, offset=offset, max_chars=max_chars)
     session.note_success(session.target_id)
     return [text_block(content)]

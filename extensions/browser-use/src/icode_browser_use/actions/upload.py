@@ -9,7 +9,7 @@ from typing import Any
 from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed
 from ..types import ToolBlock, text_block
 from ._shared import call_value, resolve_target, send_watching_dialog
-from .actionability import evidence_line, mark_dispatched, new_action_id, prepare_action, record_action
+from .actionability import amark_dispatched, aprepare_action, arecord_action, evidence_line, new_action_id
 
 NAME = "browser_upload"
 
@@ -55,7 +55,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     if not isinstance(value, dict) or not value.get("ok"):
         raise BadRequest("目标不是可用的 file input")
     action_id = new_action_id()
-    prepare_action(session, action_id, "browser_upload", f"prepared upload to {entry.token}")
+    await aprepare_action(session, action_id, "browser_upload", f"prepared upload to {entry.token}")
     client = session.require_client()
     dialog_seq = getattr(session, "dialog_seq", 0)
     try:
@@ -77,9 +77,9 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             "status=uncertain retryable=false；请 snapshot 核对文件字段后决定是否重试\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(session, action_id, "browser_upload", "uncertain", text)
+        await arecord_action(session, action_id, "browser_upload", "uncertain", text)
         return [text_block(text)]
-    mark_dispatched(session, action_id, "browser_upload", f"dispatched upload to {entry.token}")
+    await amark_dispatched(session, action_id, "browser_upload", f"dispatched upload to {entry.token}")
     session.mark_dirty()
     if dialog is not None:
         text = (
@@ -90,7 +90,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             "请先调用 browser_dialog（action=accept 或 dismiss），再 browser_snapshot 复核\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(session, action_id, "browser_upload", "blocked", text)
+        await arecord_action(session, action_id, "browser_upload", "blocked", text)
         return [text_block(text)]
     # The send returning is not the business result: read the field back.
     try:
@@ -103,7 +103,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             "status=uncertain retryable=false；请先 snapshot 核对页面状态，不要直接重试\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(session, action_id, "browser_upload", "uncertain", text)
+        await arecord_action(session, action_id, "browser_upload", "uncertain", text)
         return [text_block(text)]
     value = verified.get("value") if isinstance(verified, dict) else None
     count = int(value.get("count", 0)) if isinstance(value, dict) else 0
@@ -113,9 +113,9 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             "status=uncertain retryable=false；请先 snapshot 核对该字段，不要直接重试\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(session, action_id, "browser_upload", "uncertain", text)
+        await arecord_action(session, action_id, "browser_upload", "uncertain", text)
         return [text_block(text)]
     session.note_success(session.target_id)
     text = f"已上传文件到 {entry.token}：{path.name}（字段回读 {count} 个文件）\n{evidence_line(session, action_id)}"
-    record_action(session, action_id, "browser_upload", "succeeded", text)
+    await arecord_action(session, action_id, "browser_upload", "succeeded", text)
     return [text_block(text)]

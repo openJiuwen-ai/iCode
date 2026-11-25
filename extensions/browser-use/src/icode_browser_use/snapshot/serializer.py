@@ -9,7 +9,12 @@ zero-width/control characters are stripped, the raw snapshot is untouched).
 
 from __future__ import annotations
 
+import re
+
+from urllib.parse import urlsplit
+
 from ..config import MAX_STAGE_NODES, SNAPSHOT_CHAR_BUDGET
+from ..policy import sanitize_display_url
 from .fusion import FusedNode
 
 #: Code point above which a character counts as full-width (CJK + full-width punctuation).
@@ -17,6 +22,7 @@ _FULL_WIDTH_THRESHOLD = 0x2E7F
 
 _ZERO_WIDTH = frozenset({0xFEFF})
 _CONTROL_KEEP = frozenset({0x09, 0x0A})  # tab, newline
+_REF_SPOOF_RE = re.compile(r"@(e\d+#\d+)")
 
 
 def weight(text: str) -> int:
@@ -45,7 +51,13 @@ def sanitize_text(text: str) -> str:
         if 0xDC00 <= code <= 0xDFFF:  # lone low surrogate
             index += 1
             continue
-        if 0x200B <= code <= 0x200F or code in _ZERO_WIDTH:
+        if (
+            0x200B <= code <= 0x200F
+            or 0x202A <= code <= 0x202E
+            or 0x2066 <= code <= 0x2069
+            or 0xE0000 <= code <= 0xE007F
+            or code in _ZERO_WIDTH
+        ):
             index += 1
             continue
         if (code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F) and code not in _CONTROL_KEEP:
@@ -62,6 +74,18 @@ def _single_line(text: str) -> str:
     if not cleaned:
         return ""
     return " ".join(cleaned.split())
+
+
+def escape_label(text: str, *, limit: int = 120) -> str:
+    """Sanitize a page-supplied label for quoted model output: neutralize ``@eN#M`` and escape ``\"``."""
+    flat = _single_line(text)
+    if not flat:
+        return ""
+    flat = _REF_SPOOF_RE.sub(r"＠\1", flat)
+    flat = flat.replace('"', '\\"')
+    if limit > 0 and len(flat) > limit:
+        return flat[: limit - 1] + "…"
+    return flat
 
 
 def is_structural(node: FusedNode) -> bool:
@@ -107,6 +131,21 @@ def _rank(nodes: list[FusedNode]) -> list[FusedNode]:
     return sorted(nodes, key=lambda node: (not node.in_viewport, not node.interactive, node.bbox[1]))
 
 
+def _header_url(url: str) -> str:
+    """Strip credentials and query params, keep short plain anchor fragments, and cap length."""
+    base = sanitize_display_url(url) or url
+    try:
+        frag = urlsplit(url).fragment
+    except ValueError:
+        frag = ""
+    if frag and "=" not in frag and len(frag) < 16 and base and not base.endswith(":"):
+        base = f"{base}#{frag}"
+    cleaned = _single_line(base)
+    if len(cleaned) > 200:
+        return cleaned[:199] + "…"
+    return cleaned
+
+
 def render(
     nodes: list[FusedNode],
     *,
@@ -124,7 +163,11 @@ def render(
     suffix = f", version {version}" if version else ""
     if focus:
         suffix += f", subtree {focus}"
-    header = f"[{_single_line(url)}] {_single_line(title)}  (epoch {page_epoch}{suffix})"
+    header_url = _header_url(url)
+    header_title = _single_line(title)
+    if len(header_title) > 120:
+        header_title = header_title[:119] + "…"
+    header = f"[{header_url}] {header_title}  (epoch {page_epoch}{suffix})"
     lines = [header]
     used = weight(header)
     total = sum(count for _, count in entries)
@@ -138,11 +181,8 @@ def render(
         take = min(count, capacity)
         token = f"@e{node.ref}#{page_epoch}" if node.ref is not None else "-"
         role = _single_line(node.role)
-        name = _single_line(node.name)
-        if not name and node.text_hint:
-            name = _single_line(node.text_hint[:120])
-        if len(name) > 120:
-            name = name[:119] + "…"
+        raw_name = node.name if _single_line(node.name) else (node.text_hint or "")
+        name = escape_label(raw_name, limit=120)
         star = "*" if node.scrollable else ""
         mark = "[iframe] " if node.cdp_session_id else ""
         extra = ""
@@ -158,8 +198,8 @@ def render(
                 tags.append("no-layout")
             if tags:
                 extra += f" [{' '.join(tags)}]"
-            if node.placeholder and node.placeholder not in name:
-                extra += f' placeholder="{_single_line(node.placeholder[:80])}"'
+            if node.placeholder and node.placeholder not in raw_name:
+                extra += f' placeholder="{escape_label(node.placeholder, limit=80)}"'
         line = f'  {token} {mark}{role} "{name}"{extra}{star}' + (f" ×{take}" if take > 1 else "")
         if used + weight(line) + 1 > budget:
             if budget - used <= 40:

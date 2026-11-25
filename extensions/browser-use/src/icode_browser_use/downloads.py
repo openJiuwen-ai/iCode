@@ -19,6 +19,9 @@ from pathlib import Path
 #: Longest file name (not path) kept; Chrome's own limit is larger but this
 #: leaves room for a ``-12`` suffix.
 NAME_LIMIT = 120
+#: Longest UTF-8 byte length kept so multi-byte names (CJK/emoji) never exceed
+#: ext4/APFS's 255-byte component cap after adding a ``-1000`` suffix.
+NAME_BYTE_LIMIT = 200
 
 _RESERVED = {
     "CON",
@@ -74,9 +77,14 @@ def sanitize_filename(raw: str, *, fallback: str = "download") -> str:
         name = f"{stem}.{suffix}"
     else:
         name = stem
-    if len(name) > NAME_LIMIT:
-        keep = max(1, NAME_LIMIT - len(suffix) - 1) if suffix else NAME_LIMIT
-        name = f"{stem[:keep]}.{suffix}" if suffix else stem[:keep]
+    if len(name) > NAME_LIMIT or len(name.encode("utf-8")) > NAME_BYTE_LIMIT:
+        suffix_part = f".{suffix}" if suffix else ""
+        max_chars = max(1, NAME_LIMIT - len(suffix_part))
+        max_bytes = max(1, NAME_BYTE_LIMIT - len(suffix_part.encode("utf-8")))
+        trimmed = stem[:max_chars]
+        while trimmed and len(trimmed.encode("utf-8")) > max_bytes:
+            trimmed = trimmed[:-1]
+        name = f"{trimmed}{suffix_part}" if trimmed else (f"{fallback}{suffix_part}" if suffix_part else fallback)
         name = name.rstrip(" .") or fallback
     return name
 

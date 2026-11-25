@@ -18,8 +18,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from .._proc import atomic_write_private
 from ..errors import BrowserError, CDPTimeout, ConnectionClosed, Unavailable
-from .install import _harden_file
+from .host import compute_server_hmac, write_bridge_pointer
 from .protocol import MAX_TCP_MESSAGE_BYTES, ProtocolError, encode_message, read_async_frame
 
 EventHandler = Callable[[dict[str, Any], str | None], Awaitable[None] | None]
@@ -264,7 +265,7 @@ class BridgeServer:
                 raise Unavailable("bridge server has no listening socket")
             self.port = int(sockets[0].getsockname()[1])
             self.bridge_file.parent.mkdir(parents=True, exist_ok=True)
-            self._write_discovery()
+            await asyncio.to_thread(self._write_discovery)
         except BaseException:
             if self._server is not None:
                 self._server.close()
@@ -284,8 +285,7 @@ class BridgeServer:
 
     def _mark_handshake(self) -> None:
         with contextlib.suppress(OSError):
-            self.handshake_file.write_text("1\n", encoding="utf-8")
-            _harden_file(self.handshake_file)
+            atomic_write_private(self.handshake_file, "1\n", strict=False)
 
     def _write_discovery(self) -> None:
         payload = {
@@ -295,17 +295,9 @@ class BridgeServer:
             "generation": self.generation,
             "handshake": self.seen_handshake,
         }
-        temporary = self.bridge_file.with_name(f".{self.bridge_file.name}.{self.generation}.{secrets.token_hex(4)}.tmp")
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload))
-        except BaseException:
-            with contextlib.suppress(OSError):
-                temporary.unlink()
-            raise
-        os.replace(temporary, self.bridge_file)
-        _harden_file(self.bridge_file)
+        atomic_write_private(self.bridge_file, json.dumps(payload), strict=False)
+        if os.environ.get("ICODE_BROWSER_STATE_DIR") or os.environ.get("ICODE_BROWSER_BRIDGE_FILE"):
+            write_bridge_pointer(self.bridge_file)
 
     def wait_timeout(self, configured: float) -> float:
         """How long to wait for the extension before failing the tool call.
@@ -353,25 +345,37 @@ class BridgeServer:
         if self._closed:
             return
         self._closed = True
-        # Free the coordination lock before any awaited cleanup: a hung client close
-        # must not wedge this process's state directory.
-        self._release_instance_lock()
         try:
+            # 1. Fail any pending waiter so wait_for_client unblocks immediately.
+            if not self._client_future.done():
+                self._client_future.set_exception(ConnectionClosed("bridge server closed"))
+                # Mark retrieved so closing without an active waiter never warns.
+                with contextlib.suppress(BaseException):
+                    self._client_future.exception()
+            # 2. Stop accepting new connections without blocking on open peers yet.
+            server = self._server
+            self._server = None
+            if server is not None:
+                server.close()
+            # 3. Close any live client BEFORE awaiting server.wait_closed() so Python 3.12+
+            #    does not block for the full 2s timeout waiting on the client socket.
+            client_error: BaseException | None = None
             if self._client is not None:
                 try:
-                    await self._client.aclose()
+                    with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
+                        await asyncio.wait_for(self._client.aclose(), timeout=2.0)
+                except BaseException as exc:
+                    client_error = exc
                 finally:
                     self._client = None
+            if server is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(server.wait_closed(), timeout=2.0)
+            if client_error is not None:
+                raise client_error
         finally:
-            try:
-                if self._server is not None:
-                    self._server.close()
-                    with contextlib.suppress(Exception):
-                        await self._server.wait_closed()
-                    self._server = None
-            finally:
-                self._unlink_own_discovery()
-                self._release_instance_lock()
+            self._unlink_own_discovery()
+            self._release_instance_lock()
 
     def _release_instance_lock(self) -> None:
         lock = self._instance_lock
@@ -390,7 +394,7 @@ class BridgeServer:
                 self.bridge_file.unlink()
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        if getattr(self, "_pending_accepts", 0) >= 16:
+        if self._closed or getattr(self, "_pending_accepts", 0) >= 16:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
@@ -401,7 +405,23 @@ class BridgeServer:
                 frame = await asyncio.wait_for(read_async_frame(reader, limit=65536), 5.0)
             except (asyncio.TimeoutError, ProtocolError, OSError):
                 frame = None
-            token = frame.get("token") if isinstance(frame, dict) else None
+            if not isinstance(frame, dict) or self._closed:
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                return
+            raw_nonce = frame.get("nonce")
+            token = frame.get("token")
+            if isinstance(raw_nonce, str) and raw_nonce and token is None:
+                # Strict 2-step mutual auth: server proves possession of token via HMAC
+                # BEFORE the host reveals the token on frame 2.
+                try:
+                    writer.write(encode_message({"hmac": compute_server_hmac(self.token, raw_nonce)}))
+                    await writer.drain()
+                    auth_frame = await asyncio.wait_for(read_async_frame(reader, limit=65536), 5.0)
+                except (asyncio.TimeoutError, ProtocolError, OSError):
+                    auth_frame = None
+                token = auth_frame.get("token") if isinstance(auth_frame, dict) else None
             if not isinstance(token, str) or not secrets.compare_digest(token, self.token):
                 writer.close()
                 with contextlib.suppress(Exception):
@@ -409,7 +429,29 @@ class BridgeServer:
                 return
         finally:
             self._pending_accepts -= 1
-        if self._client is not None and not self._client.closed:
+        if self._closed or (self._client is not None and not self._client.closed):
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
+        if not self.seen_handshake:
+            # The extension reached this state folder: persist before exposing the client
+            # so a caller observing wait_for_client() immediately sees handshake=True
+            # and a subsequent restart cannot race with a late discovery rewrite.
+            if self._closed:
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                return
+            self.seen_handshake = True
+            await asyncio.to_thread(self._mark_handshake)
+            if not self._closed:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(self._write_discovery)
+                if self._closed:
+                    # aclose() ran (and unlinked) while the write was in flight.
+                    await asyncio.to_thread(self._unlink_own_discovery)
+        if self._closed or (self._client is not None and not self._client.closed):
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
@@ -419,9 +461,3 @@ class BridgeServer:
         client = BridgeClient(reader, writer, on_close=self._on_client_closed, lease_id=self.generation)
         self._client = client
         self._client_future.set_result(client)
-        if not self.seen_handshake:
-            # The extension reached this state folder: later starts may wait through its alarm.
-            self.seen_handshake = True
-            self._mark_handshake()
-            with contextlib.suppress(OSError):
-                self._write_discovery()

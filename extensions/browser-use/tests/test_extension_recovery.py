@@ -186,7 +186,7 @@ def test_status_reports_ready_login_wait_and_redacted_origin(tmp_path, monkeypat
         text = await ext.browser_status(context, browser_id)
         assert "state=ready" in text
         assert "login_pending=yes" in text
-        assert "origin=https://example.com:443" in text
+        assert "origin=https://example.com" in text
         assert "page_epoch=11" in text
         assert "SENTINEL" not in text
         assert "sign in" in text

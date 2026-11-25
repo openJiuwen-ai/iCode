@@ -12,18 +12,27 @@ from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed, Sta
 from ..journal import RESULT
 from ..prompts import CLICK_HARD_RULE
 from ..types import ToolBlock, text_block
-from ._shared import call_value, eval_value, resolve_target, scroll_into_view_and_offset, send_watching_dialog
+from ._shared import (
+    call_value,
+    clear_pending_input_releases,
+    eval_value,
+    flush_pending_input_releases,
+    note_pending_input_release,
+    resolve_target,
+    scroll_into_view_and_offset,
+    send_watching_dialog,
+)
 from .actionability import (
     HIT_TEST_FN,
     WriteOutcome,
+    amark_dispatched,
+    aprepare_action,
+    arecord_action,
     cdp_hit_test,
     classify_effect,
     evidence_line,
-    mark_dispatched,
     new_action_id,
     page_state,
-    prepare_action,
-    record_action,
     target_changed,
     target_disabled,
     target_facts,
@@ -53,7 +62,10 @@ PARAMS: dict[str, Any] = {
 }
 
 _BUTTON_MASK = {"left": 1, "middle": 4, "right": 2}
-_DOM_CLICK_FN = "function(){ this.click(); return true; }"
+_DOM_CLICK_FN = (
+    "function(){ if (typeof this.click !== 'function') throw new TypeError('target has no click()'); "
+    "this.click(); return true; }"
+)
 _DOM_CLICK_TAGS = {"button", "a", "input"}
 #: How far from the centre towards each corner the alternate hit points sit (0 = centre, 1 = corner).
 _CORNER_INSET = 0.7
@@ -90,6 +102,10 @@ def _target_disabled(facts: dict[str, Any]) -> bool:
 
 
 def _is_submit_like(facts: dict[str, Any]) -> bool:
+    if "submitLike" in facts:
+        if bool(facts.get("submitLike")):
+            return True
+        return bool(_SUBMIT_WORDS.search(str(facts.get("name") or "")))
     tag = str(facts.get("tag") or "").lower()
     kind = str(facts.get("type") or "").lower()
     if tag == "input" and kind in {"submit", "image"}:
@@ -413,6 +429,8 @@ async def _locate_hit(
     entry: Any,
     cdp_session_id: str | None,
     offset: tuple[float, float],
+    *,
+    hit_point: Any = None,
 ) -> tuple[float, float, str, dict[str, Any] | None]:
     """Find a point on the target that hit-tests to it: centre, then corners.
 
@@ -424,7 +442,8 @@ async def _locate_hit(
     none reached the target) / ``unverified`` (some hit test did not answer,
     so no point is known to reach the target and occlusion is not established).
     """
-    x, y = await _hit_point(session, object_id, entry, cdp_session_id, offset)
+    resolve_point = hit_point or _hit_point
+    x, y = await resolve_point(session, object_id, entry, cdp_session_id, offset)
     if cdp_session_id:
         offset = session.oopif_offset(cdp_session_id)
     hit = await _safe_hit_test(session, object_id, x, y, cdp_session_id, offset, entry=entry)
@@ -436,7 +455,7 @@ async def _locate_hit(
     unanswered = False
     for attempt in range(2):
         if attempt:
-            x, y = await _hit_point(session, object_id, entry, cdp_session_id, offset)
+            x, y = await resolve_point(session, object_id, entry, cdp_session_id, offset)
             if cdp_session_id:
                 offset = session.oopif_offset(cdp_session_id)
             hit = await _safe_hit_test(session, object_id, x, y, cdp_session_id, offset, entry=entry)
@@ -474,6 +493,8 @@ def _dom_click_allowed(session: Any, entry: Any, facts: dict[str, Any], submit_l
     """
     tag = str(facts.get("tag") or "").lower()
     role = str(facts.get("role") or "").lower()
+    if facts.get("clickable") is False:
+        return f"目标是 {tag or 'unknown'}（role={role or '-'}），不支持原生 click()，无法执行 dispatch=dom"
     if tag not in _DOM_CLICK_TAGS and role != "button":
         return f"目标是 {tag or 'unknown'}（role={role or '-'}），dispatch=dom 只允许 button/a/input 或 role=button"
     rows = session.journal.rows_for("browser_click", session.page_epoch)
@@ -537,14 +558,17 @@ async def _hit_test(
 
 async def _dispatch_click(session: Any, x: float, y: float, button: str, count: int) -> None:
     """Emit the mouseMoved / mousePressed / mouseReleased triple at (x, y)."""
+    await flush_pending_input_releases(session)
     client = session.require_client()
     common = {"x": x, "y": y, "button": button, "clickCount": count, "pointerType": "mouse"}
+    release_params = {**common, "clickCount": 0, "type": "mouseReleased", "buttons": 0}
     await client.send(
         "Input.dispatchMouseEvent",
         {**common, "type": "mouseMoved", "buttons": 0},
         session_id=session.session_id,
         timeout=session.cfg.cdp_timeout,
     )
+    note_pending_input_release(session, "Input.dispatchMouseEvent", release_params, session.session_id)
     await client.send(
         "Input.dispatchMouseEvent",
         {**common, "type": "mousePressed", "buttons": _BUTTON_MASK[button]},
@@ -557,6 +581,7 @@ async def _dispatch_click(session: Any, x: float, y: float, button: str, count: 
         session_id=session.session_id,
         timeout=session.cfg.cdp_timeout,
     )
+    clear_pending_input_releases(session)
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
@@ -584,7 +609,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             "不要对同一 ref 重试\ndispatch=not_sent\nstatus=blocked retryable=false\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(
+        await arecord_action(
             session,
             action_id,
             "browser_click",
@@ -605,7 +630,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 f"未点击 {entry.token}：{_DOM_REFUSED}：{refusal}\n"
                 f"dispatch=not_sent\nstatus=blocked retryable=false\n{evidence_line(session, action_id)}"
             )
-            record_action(
+            await arecord_action(
                 session,
                 action_id,
                 "browser_click",
@@ -626,7 +651,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 "dispatch=not_sent\nstatus=uncertain retryable=false\n请重新 snapshot 后再试\n"
                 f"{evidence_line(session, action_id)}"
             )
-            record_action(
+            await arecord_action(
                 session,
                 action_id,
                 "browser_click",
@@ -646,7 +671,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 "可对同一 ref 用 dispatch=dom 重试一次\n"
                 f"{evidence_line(session, action_id)}"
             )
-            record_action(
+            await arecord_action(
                 session,
                 action_id,
                 "browser_click",
@@ -666,7 +691,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         before = {}
         baseline_ok = False
     label = f"button={button}, click_count={count}" + (", dispatch=dom" if dispatch == "dom" else "")
-    prepare_action(
+    await aprepare_action(
         session,
         action_id,
         "browser_click",
@@ -698,7 +723,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             f"reason=dispatch_failed:{type(exc).__name__}；不要重复点击\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(
+        await arecord_action(
             session,
             action_id,
             "browser_click",
@@ -713,7 +738,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             status="uncertain", dispatched=True, blocks=[text_block(text)], effect="unknown", action_id=action_id
         )
     if dialog is not None:
-        mark_dispatched(
+        await amark_dispatched(
             session,
             action_id,
             "browser_click",
@@ -722,7 +747,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             dispatch=dispatch,
         )
         text = _dialog_blocked(session, entry, label, dialog, action_id)
-        record_action(
+        await arecord_action(
             session,
             action_id,
             "browser_click",
@@ -736,7 +761,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         return WriteOutcome(
             status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
         )
-    mark_dispatched(
+    await amark_dispatched(
         session,
         action_id,
         "browser_click",
@@ -747,7 +772,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     effect, _ = await _settled_effect(session, cdp_session_id, before, dialog_seq, pages_before=pages_before)
     if effect == "dialog":
         text = _dialog_blocked(session, entry, label, session.dialog_since(dialog_seq), action_id)
-        record_action(
+        await arecord_action(
             session,
             action_id,
             "browser_click",
@@ -791,7 +816,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 dialog = session.dialog_since(dialog_seq)
                 if dialog is not None:
                     text = _dialog_blocked(session, entry, label, dialog, action_id)
-                    record_action(
+                    await arecord_action(
                         session,
                         action_id,
                         "browser_click",
@@ -841,7 +866,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     dialog = session.dialog_since(dialog_seq)
     if dialog is not None:
         text = _dialog_blocked(session, entry, label, dialog, action_id)
-        record_action(
+        await arecord_action(
             session,
             action_id,
             "browser_click",
@@ -893,7 +918,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 "可对同一 ref 用 dispatch=dom 重试一次"
             )
     text = "\n".join(lines)
-    record_action(
+    await arecord_action(
         session,
         action_id,
         "browser_click",

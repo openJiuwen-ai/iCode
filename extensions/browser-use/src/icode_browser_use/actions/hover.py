@@ -7,11 +7,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ..errors import BrowserError, ConnectionClosed
 from ..types import ToolBlock, text_block
-from ._shared import resolve_target
-from .actionability import evidence_line, hit_test, new_action_id, record_action
-from .click import _hit_point
+from ._shared import flush_pending_input_releases, resolve_target
+from .actionability import arecord_action, evidence_line, new_action_id
+from .click import _hit_point, _locate_hit
 
 NAME = "browser_hover"
 
@@ -37,26 +36,11 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     cdp_session_id = entry.cdp_session_id
     offset = session.oopif_offset(cdp_session_id)
 
-    x, y = await _hit_point(session, object_id, entry, cdp_session_id, offset)
-    if cdp_session_id:
-        offset = session.oopif_offset(cdp_session_id)
-    try:
-        hit = await hit_test(
-            session,
-            object_id,
-            x - offset[0] if cdp_session_id else x,
-            y - offset[1] if cdp_session_id else y,
-            cdp_session_id,
-            entry=entry,
-        )
-    except ConnectionClosed:
-        raise
-    except BrowserError:
-        hit = None
-    if hit is None or (isinstance(hit, dict) and hit.get("inside") is False):
+    x, y, where, hit = await _locate_hit(session, object_id, entry, cdp_session_id, offset, hit_point=_hit_point)
+    if where not in ("centre", "corner"):
         reason = (
-            f"目标中心被其他元素遮挡（命中 {hit.get('tag') or 'unknown'}）"
-            if isinstance(hit, dict)
+            f"目标中心与四角均被其他元素遮挡（命中 {hit.get('tag') or 'unknown'}）"
+            if where == "occluded" and isinstance(hit, dict)
             else "命中检测失败，无法确认目标未被遮挡"
         )
         text = (
@@ -64,8 +48,9 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             "请先关闭遮挡层或重新 snapshot\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(session, action_id, "browser_hover", "uncertain", text)
+        await arecord_action(session, action_id, "browser_hover", "uncertain", text)
         return [text_block(text)]
+    await flush_pending_input_releases(session)
     client = session.require_client()
     await client.send(
         "Input.dispatchMouseEvent",
@@ -82,5 +67,5 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         "（本工具不会点击）\n"
         f"{evidence_line(session, action_id)}"
     )
-    record_action(session, action_id, "browser_hover", "succeeded", text)
+    await arecord_action(session, action_id, "browser_hover", "succeeded", text)
     return [text_block(text)]

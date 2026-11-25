@@ -34,9 +34,10 @@ def test_short_content_and_offset_past_the_end() -> None:
 
 
 def test_run_applies_the_offset_to_the_page_text(monkeypatch) -> None:
-    async def fake_page(_session, fmt):
+    async def fake_page(_session, fmt, *, offset=0, max_chars=None):
         assert fmt == "text"
-        return "a" * 250 + "b" * 250
+        content = "a" * 250 + "b" * 250
+        return extract.page_of(content, offset, max_chars) if max_chars is not None else content
 
     monkeypatch.setattr(extract, "_extract_page", fake_page)
     session = SimpleNamespace(target_id="t", note_success=lambda _target: None)

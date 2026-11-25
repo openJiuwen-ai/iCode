@@ -312,9 +312,10 @@ def test_close_cancellation_still_finishes_teardown_and_drops_the_record(tmp_pat
         assert "b1" in ext._browsers
         assert not session.closed
         session.release.set()
-        for _ in range(10):
-            await asyncio.sleep(0)
-            if session.closed and "b1" not in ext._browsers:
+        # The record drop runs off the loop (Windows icacls), so poll briefly for it.
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if session.closed and "b1" not in ext._browsers and registry.load(manifest)[0] == []:
                 break
         assert session.closed
         assert "b1" not in ext._browsers
@@ -365,10 +366,12 @@ def test_concurrent_calls_to_same_sub_agent_are_isolated_by_invocation_id(
     assert ext._owner_key(first) != ext._owner_key(second)
 
     mine = ext._open(first)
-    # Concurrent call 2 must not see call 1's browser or be blocked by its guard.
+    # Concurrent call 2 must not see call 1's browser handle, while strict guard protects the whole session.
     assert "open=0" in asyncio.run(ext.browser_list(second))
     call_for_second = ToolCall(name="shell", kind="shell", call_id="c2", arguments={}, context=second)
-    asyncio.run(ext.browser_guard(call_for_second))
+    with pytest.raises(ToolError) as guard_exc:
+        asyncio.run(ext.browser_guard(call_for_second))
+    assert guard_exc.value.code == "browser_guard"
     call_for_first = ToolCall(name="shell", kind="shell", call_id="c1", arguments={}, context=first)
     with pytest.raises(ToolError) as guard_err:
         asyncio.run(ext.browser_guard(call_for_first))
@@ -1230,7 +1233,7 @@ def test_browser_close_reports_blocked_origins_for_browser_blocked(tmp_path, mon
     assert info.value.code == "browser_blocked"
 
     summary = asyncio.run(ext.browser_close(ctx(tmp_path), browser.id))
-    assert "blocked_origins: https://denied.example:443" in summary
+    assert "blocked_origins: https://denied.example" in summary
 
 
 def test_browser_close_records_redirect_target_origin_not_source_origin(tmp_path, monkeypatch) -> None:
@@ -1252,7 +1255,7 @@ def test_browser_close_records_redirect_target_origin_not_source_origin(tmp_path
     assert info.value.code == "browser_blocked"
 
     summary = asyncio.run(ext.browser_close(ctx(tmp_path), browser.id))
-    assert "blocked_origins: https://blocked-b.example:443" in summary
+    assert "blocked_origins: https://blocked-b.example" in summary
     assert "allowed.example" not in summary.split("blocked_origins:", 1)[1].splitlines()[0]
 
 
@@ -1274,9 +1277,9 @@ def test_record_origin_strips_credentials_from_visited_and_blocked_origins(tmp_p
     summary = asyncio.run(ext.browser_close(ctx(tmp_path), browser.id))
     assert "alice" not in summary and "topsecret" not in summary
     assert "bob" not in summary and "hunter2" not in summary
-    assert "visited_origins: https://allowed.example:443" in summary
-    assert "blocked_origins: https://denied.example:443" in summary
-    assert ext._origin("https://alice:topsecret@allowed.example/path?t=1") == "https://allowed.example:443"
+    assert "visited_origins: https://allowed.example" in summary
+    assert "blocked_origins: https://denied.example" in summary
+    assert ext._origin("https://alice:topsecret@allowed.example/path?t=1") == "https://allowed.example"
 
 
 def test_navigate_redirect_blocked_reports_target_origin_from_policy() -> None:
@@ -1312,9 +1315,9 @@ def test_navigate_redirect_blocked_reports_target_origin_from_policy() -> None:
 
     with pytest.raises(Blocked) as info:
         asyncio.run(navigate.run(session, {"url": "https://allowed.example/redir"}))
-    assert info.value.blocked_origin == "https://blocked-b.example:443"
+    assert info.value.blocked_origin == "https://blocked-b.example"
     assert "user" not in info.value.message and "pw" not in info.value.message
-    assert "https://blocked-b.example:443" in info.value.message
+    assert "https://blocked-b.example" in info.value.message
 
 
 def test_concurrent_close_and_open_does_not_delete_new_slot_dir(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1636,9 +1639,7 @@ def test_closing_unstarted_handle_skips_cleanup_and_never_deletes_later_slot_dir
     assert sentinel.is_file()
 
 
-def test_concurrent_close_of_same_handle_shares_single_cleanup_task(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_concurrent_close_of_same_handle_shares_single_cleanup_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     import threading
 
     state_root = tmp_path / "state"
@@ -1703,9 +1704,7 @@ def test_concurrent_close_of_same_handle_shares_single_cleanup_task(
     assert sentinel.read_text(encoding="utf-8") == "fresh"
 
 
-def test_save_state_isolates_archives_across_slots_and_sessions(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_save_state_isolates_archives_across_slots_and_sessions(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from icode_browser_use.actions import save_state
 
     state_root = tmp_path / "state"

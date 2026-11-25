@@ -164,6 +164,7 @@ def test_capture_survives_an_ax_failure_but_not_a_dom_failure() -> None:
     with pytest.raises(CDPTimeout):
         asyncio.run(capture_sources(session))
 
+
 def test_gather_in_order_leaves_nothing_running_and_keeps_serial_error_priority() -> None:
     finished: list[str] = []
 

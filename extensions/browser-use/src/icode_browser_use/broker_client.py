@@ -11,7 +11,7 @@ import subprocess
 from types import SimpleNamespace
 from typing import Any
 
-from ._proc import windows_hidden_kwargs
+from ._proc import pid_alive, rotate_log_if_needed, windows_hidden_kwargs
 from .bridge.protocol import MAX_TCP_MESSAGE_BYTES, encode_message, read_async_frame
 from .config import BrowserConfig
 from .distribution import broker_command
@@ -97,7 +97,7 @@ class BrokerClient:
         self._writer: asyncio.StreamWriter | None = None
         self._request_id = 0
         self._lock = asyncio.Lock()
-        self._child: subprocess.Popen[bytes] | None = None
+        self._child: subprocess.Popen[Any] | None = None
 
     @property
     def connected(self) -> bool:
@@ -282,6 +282,15 @@ class BrokerClient:
                     ("evaluate", self.cfg.evaluate_enabled),
                 )
             )
+            or any(
+                key in payload and payload.get(key) != expected
+                for key, expected in (
+                    ("save_state", self.cfg.save_state_enabled),
+                    ("chrome_devtools", self.cfg.chrome_devtools),
+                    ("cdp_url", self.cfg.cdp_url or ""),
+                    ("upload_roots", [str(p) for p in self.cfg.upload_roots]),
+                )
+            )
         ):
             raise Unavailable(
                 "browser broker config differs from this client; "
@@ -322,21 +331,7 @@ class BrokerClient:
             pid = int(payload.get("pid", 0))
         except (TypeError, ValueError):
             return False
-        if pid <= 0:
-            return False
-        if os.name == "nt":
-            import ctypes
-
-            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-            if not handle:
-                return False
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return True
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+        return pid_alive(pid)
 
     def _spawn(self) -> None:
         command = broker_command(module_name=__name__)
@@ -348,12 +343,20 @@ class BrokerClient:
             )
         self.file.parent.mkdir(parents=True, exist_ok=True)
         log_path = self.file.parent / "broker.log"
+        rotate_log_if_needed(log_path)
         env = {
             **os.environ,
             "ICODE_BROWSER_STATE_DIR": str(self.cfg.state_dir),
             "ICODE_BROWSER_BROKER": "0",
             "ICODE_BROWSER_ALLOWED_DOMAINS": ",".join(self.cfg.allowed_domains),
             "ICODE_BROWSER_ALLOWED_ORIGINS": ",".join(self.cfg.allowed_origins),
+            "ICODE_BROWSER_HEADLESS": "1" if self.cfg.headless else "0",
+            "ICODE_BROWSER_BRIDGE": "1" if self.cfg.bridge else "0",
+            "ICODE_BROWSER_CHROME_DEVTOOLS": "1" if self.cfg.chrome_devtools else "0",
+            "ICODE_BROWSER_EVALUATE": "allow" if self.cfg.evaluate_enabled else "",
+            "ICODE_BROWSER_SAVE_STATE": "allow" if self.cfg.save_state_enabled else "",
+            "ICODE_BROWSER_CDP_URL": self.cfg.cdp_url or "",
+            "ICODE_BROWSER_UPLOAD_ROOTS": os.pathsep.join(str(p) for p in self.cfg.upload_roots),
         }
         log = log_path.open("ab")
         try:

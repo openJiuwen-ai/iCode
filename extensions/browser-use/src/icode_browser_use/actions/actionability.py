@@ -75,9 +75,15 @@ TARGET_FACTS_FN = (
     "   rootTextHash=h>>>0;"
     " }"
     " const rootChildCount=inShadow&&root.querySelectorAll?root.querySelectorAll('*').length:0;"
+    " const rawType=(this.getAttribute('type')||'').toLowerCase();"
+    " const effectiveType=(rawType || (tag==='button' ? 'submit' : '') || (this.type||'').toLowerCase());"
+    " const inForm=!!this.form;"
+    " const submitLike=(tag==='input' && (effectiveType==='submit' || effectiveType==='image'))"
+    "   || (tag==='button' && inForm && (effectiveType==='submit' || !rawType));"
     " return {connected:true, tag, role:this.getAttribute('role')||'', name,"
-    "   type:this.type||this.getAttribute('type')||'',"
-    "   inForm:!!this.form,"
+    "   type:rawType || (tag==='button' ? '' : effectiveType),"
+    "   inForm, submitLike,"
+    "   clickable:typeof this['click']==='function',"
     "   inShadow, rootChildCount, rootTextHash,"
     "   readOnly:this.readOnly===true,"
     "   checked:this.checked===true,"
@@ -98,17 +104,41 @@ HIT_TEST_FN = (
     " const isClipper=(el,target)=>!!el && !!(el.contains && el.contains(target))"
     "   && (el.scrollHeight>el.clientHeight || el.scrollWidth>el.clientWidth);"
     " const slotMatches=(el,target)=>{"
-    "   let s=el && el.assignedSlot;"
-    "   while(s){ if(s===target||(target.contains&&target.contains(s))) return true; s=s.assignedSlot; }"
+    "   for(let cur=el; cur; cur=cur.assignedSlot||cur.parentNode||cur.host){"
+    "     if(cur===target) return true;"
+    "   }"
     "   return false;"
     " };"
-    " const hosts=[];"
-    " let curRoot=this.getRootNode?this.getRootNode():document;"
-    " while(curRoot && curRoot!==document && curRoot.host){"
-    "   hosts.push({root:curRoot, host:curRoot.host});"
-    "   curRoot=curRoot.host.getRootNode?curRoot.host.getRootNode():document;"
+    " let lx=x, ly=y;"
+    " const doc=this.ownerDocument||document;"
+    " let win=doc.defaultView;"
+    " const frameChain=[];"
+    " while(win && win.frameElement){"
+    "   const fe=win.frameElement;"
+    "   const pw=win.parent;"
+    "   if(!pw || !pw.document) break;"
+    "   frameChain.push({fe, parentDoc:pw.document, parentWin:pw});"
+    "   win=pw;"
     " }"
-    " const top=document.elementFromPoint(x,y);"
+    " for(let i=frameChain.length-1; i>=0; i--){"
+    "   const {fe, parentDoc, parentWin}=frameChain[i];"
+    "   const pHit=parentDoc.elementFromPoint(lx, ly);"
+    "   if(!pHit || (pHit!==fe && !(fe.contains && fe.contains(pHit)))){"
+    "     return {inside:false, clipper:false, shadowRetargeted:false, tag:(pHit&&pHit.tagName)||'', id:(pHit&&pHit.id)||''};"
+    "   }"
+    "   const fr=fe.getBoundingClientRect();"
+    "   const cs=parentWin.getComputedStyle ? parentWin.getComputedStyle(fe) : null;"
+    "   const ox=fr.left + (cs ? (parseFloat(cs.borderLeftWidth)||0)+(parseFloat(cs.paddingLeft)||0) : (fe.clientLeft||0));"
+    "   const oy=fr.top + (cs ? (parseFloat(cs.borderTopWidth)||0)+(parseFloat(cs.paddingTop)||0) : (fe.clientTop||0));"
+    "   lx -= ox; ly -= oy;"
+    " }"
+    " const hosts=[];"
+    " let curRoot=this.getRootNode?this.getRootNode():doc;"
+    " while(curRoot && curRoot!==doc && curRoot.host){"
+    "   hosts.push({root:curRoot, host:curRoot.host});"
+    "   curRoot=curRoot.host.getRootNode?curRoot.host.getRootNode():doc;"
+    " }"
+    " const top=doc.elementFromPoint(lx,ly);"
     " if(!hosts.length){"
     "   const inside=!!top && (top===this || (this.contains && this.contains(top)) || slotMatches(top,this));"
     "   const clipper=!!top && !inside && isClipper(top,this);"
@@ -116,7 +146,7 @@ HIT_TEST_FN = (
     " }"
     " const outerHost=hosts[hosts.length-1].host;"
     " if(!top){ return {inside:false, clipper:false, shadowRetargeted:false, tag:'', id:''}; }"
-    " const outerOk=(top===outerHost || (outerHost.contains && outerHost.contains(top)));"
+    " const outerOk=(top===outerHost || (outerHost.contains && outerHost.contains(top)) || slotMatches(top,outerHost));"
     " if(!outerOk){"
     "   return {inside:false, clipper:isClipper(top,outerHost), shadowRetargeted:false,"
     "     tag:(top&&top.tagName)||'', id:(top&&top.id)||''};"
@@ -124,7 +154,7 @@ HIT_TEST_FN = (
     " for(let i=hosts.length-1; i>=0; i--){"
     "   const {root, host}=hosts[i];"
     "   const expected=i>0 ? hosts[i-1].host : this;"
-    "   const inner=typeof root.elementFromPoint==='function' ? root.elementFromPoint(x,y) : null;"
+    "   const inner=typeof root.elementFromPoint==='function' ? root.elementFromPoint(lx,ly) : null;"
     "   if(!inner){"
     "     return {inside:false, clipper:false, shadowRetargeted:true, tag:(host&&host.tagName)||'', id:(host&&host.id)||''};"
     "   }"
@@ -165,6 +195,10 @@ _VISIBLE_WALK_JS = (
     "  }"
     "  if(n.nodeType!==1) return;"
     "  const tag=(n.tagName||'').toUpperCase();"
+    "  if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT'||tag==='TEMPLATE') return;"
+    "  if(n!==rootEl && typeof getComputedStyle==='function'){"
+    "   try{ const st=getComputedStyle(n); if(st.display==='none'||st.visibility==='hidden') return; }catch(_){}"
+    "  }"
     "  if(tag==='BR'){ push('\\n'); return; }"
     "  const isBlock=n!==rootEl && _BLOCKS.has(tag);"
     "  if(isBlock) nl();"
@@ -258,7 +292,7 @@ FIELD_STATE_FN = (
     " while (active && active.shadowRoot && active.shadowRoot.activeElement) { active=active.shadowRoot.activeElement; }"
     " const ws=(typeof getComputedStyle==='function' ? String(getComputedStyle(this).whiteSpace||'') : '').toLowerCase();"
     " const preserveWhitespace=ws==='pre'||ws==='pre-wrap'||ws==='break-spaces';"
-    " return {tag, editable:this.isContentEditable===true,"
+    " return {connected:!!this.isConnected, tag, editable:this.isContentEditable===true,"
     "   focused:active===this || (!!active && !!(this.contains && this.contains(active))),"
     "   text:text===null?'':String(text),"
     "   rawText, preserveWhitespace};"
@@ -569,6 +603,36 @@ def _write(
     session.journal.record(**kwargs)
 
 
+async def _awrite(
+    session: Any,
+    action_id: str,
+    tool: str,
+    phase: str,
+    status: str,
+    evidence: str,
+    *,
+    target_ref: str = "",
+    dispatch: str = "",
+    reason: str = "",
+    effect: str = "",
+) -> None:
+    kwargs: dict[str, Any] = {
+        "action_id": action_id,
+        "tool": tool,
+        "phase": phase,
+        "status": status,
+        "evidence": evidence,
+        "document_epoch": int(getattr(session, "page_epoch", 0)),
+    }
+    if target_ref or dispatch or reason or effect:
+        kwargs.update(target_ref=target_ref, dispatch=dispatch, reason=reason, effect=effect)
+    arecord = getattr(session.journal, "arecord", None)
+    if callable(arecord):
+        await arecord(**kwargs)
+    else:
+        session.journal.record(**kwargs)
+
+
 def prepare_action(
     session: Any,
     action_id: str,
@@ -650,6 +714,85 @@ def record_action(
 
 def lookup_action(session: Any, action_id: str) -> dict[str, Any] | None:
     return session.journal.lookup(action_id)
+
+
+async def aprepare_action(
+    session: Any,
+    action_id: str,
+    tool: str,
+    evidence: str,
+    *,
+    target_ref: str = "",
+    dispatch: str = "",
+    reason: str = "",
+    effect: str = "",
+) -> None:
+    """Async off-loop ``prepared`` journal write."""
+    await _awrite(
+        session,
+        action_id,
+        tool,
+        PREPARED,
+        "prepared",
+        evidence,
+        target_ref=target_ref,
+        dispatch=dispatch,
+        reason=reason,
+        effect=effect,
+    )
+
+
+async def amark_dispatched(
+    session: Any,
+    action_id: str,
+    tool: str,
+    evidence: str,
+    *,
+    target_ref: str = "",
+    dispatch: str = "",
+    reason: str = "",
+    effect: str = "",
+) -> None:
+    """Async off-loop ``dispatched`` journal write."""
+    await _awrite(
+        session,
+        action_id,
+        tool,
+        DISPATCHED,
+        "dispatched",
+        evidence,
+        target_ref=target_ref,
+        dispatch=dispatch,
+        reason=reason,
+        effect=effect,
+    )
+
+
+async def arecord_action(
+    session: Any,
+    action_id: str,
+    tool: str,
+    status: str,
+    evidence: str,
+    *,
+    target_ref: str = "",
+    dispatch: str = "",
+    reason: str = "",
+    effect: str = "",
+) -> None:
+    """Async off-loop verified ``result`` journal write."""
+    await _awrite(
+        session,
+        action_id,
+        tool,
+        RESULT,
+        status,
+        evidence,
+        target_ref=target_ref,
+        dispatch=dispatch,
+        reason=reason,
+        effect=effect,
+    )
 
 
 def target_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
@@ -814,7 +957,7 @@ async def poll_submit_outcome(
     after_field = before_field
     after_page = before_page
     before_href = before_page.get("href")
-    for _ in range(budget):
+    for poll_idx in range(budget):
         await sleep(poll_interval)
         dialog_seen = session.dialog_since(dialog_seq)
         if dialog_seen is not None:
@@ -828,9 +971,20 @@ async def poll_submit_outcome(
             except StaleRef:
                 replaced = True
                 field_done = True
-            except (CDPTimeout, BrowserError):
+            except BrowserError as exc:
+                if _DETACHED_RE.search(str(exc)):
+                    replaced = True
+                    field_done = True
+                else:
+                    after_field = {}
+                    field_done = poll_idx > 0
+            except CDPTimeout:
                 after_field = {}
-                field_done = True
+                field_done = poll_idx > 0
+            else:
+                if after_field.get("connected") is False:
+                    replaced = True
+                    field_done = True
         try:
             after_page = await read_page()
         except ConnectionClosed:
@@ -841,10 +995,14 @@ async def poll_submit_outcome(
                 after_page = {"href": snap_url}
                 break
             after_page = {}
-            if field_done or not normalize_text(after_field.get("text")):
+            if field_done or (after_field and not normalize_text(after_field.get("text"))):
                 break
             continue
-        if isinstance(before_href, str) and isinstance(after_page.get("href"), str) and before_href != after_page["href"]:
+        if (
+            isinstance(before_href, str)
+            and isinstance(after_page.get("href"), str)
+            and before_href != after_page["href"]
+        ):
             break
         if not replaced and "text" in after_field and not normalize_text(after_field.get("text")):
             break

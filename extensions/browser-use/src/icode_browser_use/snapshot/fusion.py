@@ -12,6 +12,7 @@ controls).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,8 +78,14 @@ _IDX_POINTER_EVENTS = COMPUTED_STYLES.index("pointer-events")
 _INTERACTIVE_ROLES = frozenset(
     {"button", "link", "textbox", "checkbox", "radio", "combobox", "slider", "switch", "tab", "menuitem"}
 )
-_SCROLL_OVERFLOW = frozenset({"auto", "scroll"})
+_SCROLL_OVERFLOW = frozenset({"auto", "scroll", "overlay"})
 _CLICKABLE_TAGS = frozenset({"button", "input", "select", "textarea"})
+_WS_RE = re.compile(r"\s+")
+
+
+def _fp_name(value: str) -> str:
+    """Normalise a node name to match ``_LIVE_CHECK_FN`` (collapsed whitespace, <= 120 chars)."""
+    return _WS_RE.sub(" ", value or "").strip()[:120]
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,8 @@ class FrameInfo:
     scroll_y: float = 0.0
     offset: tuple[float, float] = (0.0, 0.0)
     dpr: float = 1.0
+    viewport_clip: tuple[float, float, float, float] | None = None
+    """Optional visible rectangle ``(left, top, right, bottom)`` in main-viewport CSS coords."""
 
 
 @dataclass
@@ -131,10 +140,11 @@ class FusedNode:
     readonly: bool = False
     placeholder: str = ""
     has_layout: bool = False
+    input_type: str = ""
 
     def fingerprint(self) -> dict[str, str]:
         """Coarse identity used to detect a stale reference within an epoch."""
-        fingerprint = {"role": self.role, "name": self.name, "tag": self.tag, "nth": str(self.nth)}
+        fingerprint = {"role": self.role, "name": _fp_name(self.name), "tag": self.tag, "nth": str(self.nth)}
         if self.name_from_href:
             fingerprint["name_source"] = "href"
         elif self.name_from_ax:
@@ -186,17 +196,21 @@ def _style(row: Any, index: int, strings: list[Any]) -> str:
     return _resolve(strings, value)
 
 
-def _client_rect_count(client_rects: Any, layout_index: int | None) -> int | None:
-    """Number of client rects for a layout entry, tolerant of both CDP shapes."""
-    if not isinstance(client_rects, list) or layout_index is None or layout_index >= len(client_rects):
+def _rect_at(rects: Any, layout_index: int | None) -> tuple[float, float, float, float] | None:
+    """Return ``(x, y, width, height)`` for *layout_index* from ``scrollRects``/``clientRects``."""
+    if not isinstance(rects, list) or layout_index is None or layout_index < 0 or layout_index >= len(rects):
         return None
-    entry = client_rects[layout_index]
-    if not isinstance(entry, list) or not entry:
-        return 0 if isinstance(entry, list) else None
-    first = entry[0]
-    if isinstance(first, list):
-        return len(entry)  # nested: one rectangle per client rect (inline elements)
-    return 1  # flat: a single rectangle for this node
+    entry = rects[layout_index]
+    if not isinstance(entry, list) or len(entry) < 4:
+        return None
+    if isinstance(entry[0], list):
+        if len(entry[0]) < 4:
+            return None
+        entry = entry[0]
+    try:
+        return (float(entry[0]), float(entry[1]), float(entry[2]), float(entry[3]))
+    except (TypeError, ValueError):
+        return None
 
 
 def _clickable_node_indices(nodes_section: dict[str, Any], layout_section: dict[str, Any]) -> set[int]:
@@ -355,6 +369,8 @@ def _is_contenteditable(attrs: dict[str, str]) -> bool:
 
 
 def _tag_interactive(tag: str, attrs: dict[str, str]) -> bool:
+    if tag == "input" and attrs.get("type", "").strip().lower() == "hidden":
+        return False
     if tag in _CLICKABLE_TAGS:
         return True
     if _is_contenteditable(attrs):
@@ -412,6 +428,8 @@ def _is_interactive(
     strings: list[Any],
 ) -> bool:
     """Interaction when any of the three sources is positive (design 4.1)."""
+    if tag == "input" and attrs.get("type", "").strip().lower() == "hidden":
+        return False
     if focusable or clickable:
         return True
     if role.strip().lower() in _INTERACTIVE_ROLES:
@@ -488,6 +506,7 @@ def _fuse_document(
     style_rows = layout_section.get("styles") or []
     texts = layout_section.get("text") or []
     client_rects = layout_section.get("clientRects")
+    scroll_rects = layout_section.get("scrollRects")
 
     clickable = _clickable_node_indices(nodes_section, layout_section)
     pseudo = _pseudo_node_indices(nodes_section)
@@ -542,23 +561,45 @@ def _fuse_document(
             opacity = 1.0
 
         visible = has_bounds and display != "none" and visibility != "hidden" and opacity > 0.0
-        in_viewport = (
-            visible
-            and viewport_w > 0
-            and viewport_h > 0
-            and css_x < viewport_w
-            and css_x + width > 0
-            and css_y < viewport_h
-            and css_y + height > 0
-        )
+        clip = frame.viewport_clip
+        if clip is not None:
+            clip_l, clip_t, clip_r, clip_b = clip
+            in_viewport = (
+                visible
+                and clip_r > clip_l
+                and clip_b > clip_t
+                and css_x < clip_r
+                and css_x + width > clip_l
+                and css_y < clip_b
+                and css_y + height > clip_t
+            )
+        else:
+            in_viewport = (
+                visible
+                and viewport_w > 0
+                and viewport_h > 0
+                and css_x < viewport_w
+                and css_x + width > 0
+                and css_y < viewport_h
+                and css_y + height > 0
+            )
 
         overflow = _style(style_row, _IDX_OVERFLOW, strings).strip().lower()
         overflow_x = _style(style_row, _IDX_OVERFLOW_X, strings).strip().lower() or overflow
         overflow_y = _style(style_row, _IDX_OVERFLOW_Y, strings).strip().lower() or overflow
-        rect_count = _client_rect_count(client_rects, layout_position)
-        bigger_than_viewport = width > viewport_w or height > viewport_h
-        scrollable = (overflow_x in _SCROLL_OVERFLOW or overflow_y in _SCROLL_OVERFLOW) and (
-            (rect_count is not None and rect_count > 1) or bigger_than_viewport
+        sr = _rect_at(scroll_rects, layout_position)
+        cr = _rect_at(client_rects, layout_position)
+        bigger_than_viewport = (viewport_w > 0 and width > viewport_w) or (viewport_h > 0 and height > viewport_h)
+        has_x_scroll = overflow_x in _SCROLL_OVERFLOW and (
+            (sr is not None and cr is not None and sr[2] > cr[2] + 1.0) or (viewport_w > 0 and width > viewport_w)
+        )
+        has_y_scroll = overflow_y in _SCROLL_OVERFLOW and (
+            (sr is not None and cr is not None and sr[3] > cr[3] + 1.0) or (viewport_h > 0 and height > viewport_h)
+        )
+        scrollable = (
+            has_x_scroll
+            or has_y_scroll
+            or ((overflow_x in _SCROLL_OVERFLOW or overflow_y in _SCROLL_OVERFLOW) and bigger_than_viewport)
         )
 
         ax_node = ax_index.get(backend_id) or {}
@@ -641,9 +682,73 @@ def _fuse_document(
                 readonly=readonly,
                 placeholder=placeholder,
                 has_layout=has_bounds,
+                input_type=attrs.get("type", "").strip().lower() if tag == "input" else "",
             )
         )
     return out
+
+
+def _child_document_frames(
+    documents: list[Any],
+    strings: list[Any],
+    root_frame: FrameInfo,
+) -> dict[int, FrameInfo]:
+    """Resolve same-process child document offsets & visible clip rects via ``contentDocumentIndex``."""
+    frames: dict[int, FrameInfo] = {0: root_frame}
+    root_clip = root_frame.viewport_clip or (0.0, 0.0, root_frame.viewport[0], root_frame.viewport[1])
+    clips: dict[int, tuple[float, float, float, float]] = {0: root_clip}
+    dpr = root_frame.dpr or 1.0
+    for doc_index, document in enumerate(documents):
+        if not isinstance(document, dict):
+            continue
+        parent_frame = frames.get(doc_index, root_frame)
+        parent_clip = clips.get(doc_index, root_clip)
+        nodes_section = document.get("nodes") or {}
+        layout_section = document.get("layout") or {}
+        cdi = nodes_section.get("contentDocumentIndex")
+        if not isinstance(cdi, dict):
+            continue
+        indices = cdi.get("index") or []
+        values = cdi.get("value") or []
+        node_index = layout_section.get("nodeIndex") or []
+        layout_of = {int(np): lp for lp, np in enumerate(node_index)}
+        bounds = layout_section.get("bounds") or []
+        client_rects = layout_section.get("clientRects")
+        for node_pos, child_doc_idx in zip(indices, values, strict=False):
+            if not isinstance(child_doc_idx, int) or child_doc_idx <= doc_index or child_doc_idx >= len(documents):
+                continue
+            lp = layout_of.get(int(node_pos))
+            bound_rect = _rect_at(bounds, lp)
+            if bound_rect is None:
+                continue
+            client_rect = _rect_at(client_rects, lp)
+            # DOMSnapshot ``clientRects`` stores ``[clientLeft, clientTop, clientWidth, clientHeight]``
+            # relative to the element's border-box ``bounds``, NOT document coordinates.
+            border_x = client_rect[0] if client_rect is not None else 0.0
+            border_y = client_rect[1] if client_rect is not None else 0.0
+            ox = (bound_rect[0] + border_x) / dpr - parent_frame.scroll_x + parent_frame.offset[0]
+            oy = (bound_rect[1] + border_y) / dpr - parent_frame.scroll_y + parent_frame.offset[1]
+            cw = (client_rect[2] if client_rect is not None and client_rect[2] > 0 else bound_rect[2]) / dpr
+            ch = (client_rect[3] if client_rect is not None and client_rect[3] > 0 else bound_rect[3]) / dpr
+            child_doc = documents[child_doc_idx] if isinstance(documents[child_doc_idx], dict) else {}
+            child_clip = (
+                max(parent_clip[0], ox),
+                max(parent_clip[1], oy),
+                min(parent_clip[2], ox + cw),
+                min(parent_clip[3], oy + ch),
+            )
+            clips[child_doc_idx] = child_clip
+            child_frame_id = _resolve(strings, child_doc.get("frameId")) or parent_frame.frame_id
+            frames[child_doc_idx] = FrameInfo(
+                frame_id=child_frame_id,
+                viewport=(cw, ch),
+                scroll_x=float(child_doc.get("scrollOffsetX") or 0.0),
+                scroll_y=float(child_doc.get("scrollOffsetY") or 0.0),
+                offset=(ox, oy),
+                dpr=dpr,
+                viewport_clip=child_clip,
+            )
+    return frames
 
 
 def fuse(
@@ -666,25 +771,24 @@ def fuse(
     strings = snapshot.get("strings") or []
     documents = snapshot.get("documents") or []
     ax_index = _build_ax_index(ax)
+    doc_frames = _child_document_frames(documents, strings, frame)
     result: list[FusedNode] = []
     for doc_index, document in enumerate(documents):
         if not isinstance(document, dict):
             continue
         nodes_section = document.get("nodes") or {}
         layout_section = document.get("layout") or {}
-        doc_frame = frame
-        if doc_index > 0:
+        doc_frame = doc_frames.get(doc_index)
+        if doc_frame is None:
             doc_frame_id = _resolve(strings, document.get("frameId")) or frame.frame_id
             doc_frame = FrameInfo(
                 frame_id=doc_frame_id,
-                viewport=(
-                    float(document.get("contentWidth") or frame.viewport[0]),
-                    float(document.get("contentHeight") or frame.viewport[1]),
-                ),
+                viewport=frame.viewport,
                 scroll_x=float(document.get("scrollOffsetX") or 0.0),
                 scroll_y=float(document.get("scrollOffsetY") or 0.0),
                 offset=frame.offset,
                 dpr=frame.dpr,
+                viewport_clip=frame.viewport_clip,
             )
         result.extend(
             _fuse_document(

@@ -145,7 +145,12 @@ def canonical_origin(url: str) -> str:
     if effective_port < 1 or effective_port > 65535:
         return ""
     if ":" in host:
-        host = f"[{host}]"
+        try:
+            host = f"[{ipaddress.ip_address(host).compressed}]"
+        except ValueError:
+            return ""
+    if effective_port == _DEFAULT_PORTS[scheme]:
+        return f"{scheme}://{host}"
     return f"{scheme}://{host}:{effective_port}"
 
 
@@ -165,6 +170,9 @@ def sanitize_display_url(url: str) -> str:
     if not parts.scheme:
         return ""
     if not parts.netloc:
+        if parts.scheme.lower() == "about" and parts.path and len(parts.path) <= 32:
+            if all(ch.isalnum() or ch in "-_" for ch in parts.path):
+                return f"about:{parts.path}"
         return f"{parts.scheme}:"
     host = parts.netloc.rpartition("@")[2]
     path = parts.path.partition(";")[0]
@@ -301,17 +309,26 @@ class NetworkPolicy:
         self._resolver = resolver or _default_resolver
         self._attached = False
         self._client: CDPConnection | None = None
+        self._armed_sessions: set[str] = set()
+        self._arm_lock = asyncio.Lock()
 
     # -------------------------------------------------------------- handlers
 
-    def attach(self, client: CDPConnection) -> None:
-        """Register the three event handlers; idempotent."""
+    def attach(self, client: CDPConnection, *, register_attach_handler: bool = True) -> None:
+        """Register the event handlers; idempotent.
+
+        When *register_attach_handler* is False, the caller (``BrowserSession``)
+        routes ``Target.attachedToTarget`` synchronously through
+        :meth:`handle_attached_to_target` after resolving ownership/duplicates so
+        the session and policy never race on the same attach event.
+        """
         if self._attached:
             return
         self._attached = True
         self._client = client
         client.on("Fetch.requestPaused", self._on_request_paused)
-        client.on("Target.attachedToTarget", self._on_attached_to_target)
+        if register_attach_handler:
+            client.on("Target.attachedToTarget", self._on_attached_to_target)
         client.on("Target.detachedFromTarget", self._on_detached_from_target)
 
     async def _reply(self, method: str, params: dict[str, Any], session_id: str | None) -> None:
@@ -460,11 +477,21 @@ class NetworkPolicy:
                 return False
         return True
 
+    async def handle_attached_to_target(self, params: dict[str, Any], session_id: str | None) -> None:
+        """Serialised entry point for ``Target.attachedToTarget`` (skips already-armed sessions)."""
+        async with self._arm_lock:
+            await self._on_attached_to_target_unlocked(params, session_id)
+
     async def _on_attached_to_target(self, params: dict[str, Any], session_id: str | None) -> None:
+        await self.handle_attached_to_target(params, session_id)
+
+    async def _on_attached_to_target_unlocked(self, params: dict[str, Any], session_id: str | None) -> None:
         info = params.get("targetInfo") or {}
         target_type = str(info.get("type", ""))
         child_session = str(params.get("sessionId", ""))
         if not child_session:
+            return
+        if child_session in self._armed_sessions:
             return
         if str(info.get("url", "")).startswith("chrome-extension://"):
             # Another extension's frame/worker: never intercept or pause it.
@@ -472,6 +499,7 @@ class NetworkPolicy:
             await self._reply("Target.detachFromTarget", {"sessionId": child_session}, None)
             return
         if target_type in {"page", "iframe"}:
+            self._armed_sessions.add(child_session)
             await self._arm_child(child_session, page=target_type == "page", target_id=str(info.get("targetId", "")))
         elif target_type in {"service_worker", "shared_worker"}:
             # chrome.debugger worker targets reject Fetch.enable; detach them
@@ -481,6 +509,9 @@ class NetworkPolicy:
             await self._reply("Target.detachFromTarget", {"sessionId": child_session}, None)
 
     async def _on_detached_from_target(self, params: dict[str, Any], session_id: str | None) -> None:
+        child_session = str(params.get("sessionId", ""))
+        if child_session:
+            self._armed_sessions.discard(child_session)
         return None
 
     # ------------------------------------------------------------- bootstrap
@@ -509,6 +540,7 @@ class NetworkPolicy:
         cancel it. Without it downloads stay denied; scoped (Attach/Bridge) mode
         never changes browser-wide download settings.
         """
+        self._armed_sessions.add(session_id)
         await client.send("Fetch.enable", _FETCH_ENABLE_PARAMS, session_id=session_id, timeout=CDP_TIMEOUT)
         await client.send("Network.enable", None, session_id=session_id, timeout=CDP_TIMEOUT)
         await client.send(
@@ -551,6 +583,7 @@ async def install_network_policy(
     discover_pages: bool = False,
     download_dir: str | None = None,
     owns_session: Callable[[str, str], bool] | None = None,
+    route_attach_events: bool = False,
 ) -> NetworkPolicy:
     """Build, attach and bootstrap a :class:`NetworkPolicy` for *client*.
 
@@ -562,7 +595,7 @@ async def install_network_policy(
         allowed_origins=allowed_origins,
         owns_session=owns_session,
     )
-    policy.attach(client)
+    policy.attach(client, register_attach_handler=not route_attach_events)
     await policy.bootstrap(
         client,
         session_id=session_id,

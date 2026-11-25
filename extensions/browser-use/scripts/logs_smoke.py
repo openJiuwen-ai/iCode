@@ -104,6 +104,8 @@ async def run(args: argparse.Namespace) -> None:
             )
             text = await logs_until(context, browser_id, "blocked.invalid")
             text = await logs_until(context, browser_id, "late boom")
+            # The 404 response is the slowest of the three; never race it.
+            text = await logs_until(context, browser_id, "no-such-api")
             report("logs", text=text)
             require('console.info "console.log: hello 42"' in text, f"console.log missing: {text}")
             require("console.error: save failed token=***" in text, f"console.error not redacted: {text}")
@@ -124,7 +126,10 @@ async def run(args: argparse.Namespace) -> None:
         finally:
             if browser_id:
                 report("close", text=await ext.browser_close(context, browser_id))
-        report("acceptance_passed", checks=["console levels", "redaction", "uncaught", "404", "blocked", "since", "errors_only"])
+        report(
+            "acceptance_passed",
+            checks=["console levels", "redaction", "uncaught", "404", "blocked", "since", "errors_only"],
+        )
 
 
 def main() -> None:

@@ -35,8 +35,8 @@ import asyncio
 import importlib
 import json
 import os
-import shutil
 import socket
+import sys
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -328,11 +328,18 @@ def probe_bridge(*, env: Any = None) -> tuple[dict[str, Any], list[dict[str, str
                 "warning",
             )
         ]
+    extra_advice = ""
+    if (BrowserEnv(env).get("STATE_DIR") or "").strip():
+        extra_advice = (
+            " (note: ICODE_BROWSER_STATE_DIR is set, which Chrome's native host does not inherit "
+            "unless bridge-pointer.txt points to this state dir)"
+        )
     return result, [
         _problem(
             "bridge_not_connected",
             f"the browser extension did not reach the bridge within {cfg.bridge_wait:.0f}s: {result['error']}",
-            "install or reload the extension in chrome://extensions so it can start the native host, then retry",
+            "install or reload the extension in chrome://extensions so it can start the native host, "
+            f"then retry{extra_advice}",
         )
     ]
 
@@ -500,7 +507,9 @@ def _browser(cfg: BrowserConfig | None, backend: str) -> tuple[dict[str, Any], l
 
 
 def _executable_exists(executable: str) -> bool:
-    return Path(executable).expanduser().is_file() or shutil.which(executable) is not None
+    from ._proc import which_trusted
+
+    return Path(executable).expanduser().is_file() or which_trusted(executable) is not None
 
 
 def _state(cfg: BrowserConfig | None, source: BrowserEnv) -> tuple[dict[str, Any], list[dict[str, str]]]:
@@ -528,6 +537,21 @@ def _state(cfg: BrowserConfig | None, source: BrowserEnv) -> tuple[dict[str, Any
     ]
 
 
+def _find_host_executable() -> str | None:
+    """Locate ``icode-browser-use-host`` on PATH or beside ``sys.executable`` (uv tool envs)."""
+    from ._proc import which_trusted
+
+    found = which_trusted("icode-browser-use-host")
+    if found:
+        return found
+    name = "icode-browser-use-host.exe" if sys.platform == "win32" else "icode-browser-use-host"
+    try:
+        sibling = Path(sys.executable).resolve().parent / name
+    except OSError:
+        return None
+    return str(sibling) if sibling.is_file() else None
+
+
 def _bridge(backend: str, connect: bool, source: BrowserEnv) -> tuple[dict[str, Any], list[dict[str, str]]]:
     problems: list[dict[str, str]] = []
     extension_dir = default_extension_install_dir()
@@ -542,7 +566,7 @@ def _bridge(backend: str, connect: bool, source: BrowserEnv) -> tuple[dict[str, 
         "manifest": str(manifest_file),
         "manifest_installed": manifest_file.is_file(),
         "host": None,
-        "host_executable": shutil.which("icode-browser-use-host"),
+        "host_executable": _find_host_executable(),
         "registered": [],
         "registered_matches": False,
         "file": str(discovery_file),
@@ -717,15 +741,28 @@ def _broker(
                     severity,
                 )
             )
+    external_broker_live = payload is not None and pid_alive(_pid(payload))
     if (backend == "broker" or section["autostart"]) and command is None:
-        problems.append(
-            _problem(
-                "broker_unsupported",
-                "this install cannot start the Broker: it is loaded as a folder package or the runtime's "
-                "Python is not exposed as sys.executable",
-                "start icode-browser-use-broker from a Python where the wheel is installed, or use Owned/Attach",
+        # When an externally-started Broker is already live and autostart is off,
+        # the client can connect to it without spawning, so report a warning only.
+        if external_broker_live and not section["autostart"]:
+            problems.append(
+                _problem(
+                    "broker_unsupported",
+                    "this install cannot autostart the Broker, but an external Broker is already running",
+                    "keep starting icode-browser-use-broker externally when needed",
+                    "warning",
+                )
             )
-        )
+        else:
+            problems.append(
+                _problem(
+                    "broker_unsupported",
+                    "this install cannot start the Broker: it is loaded as a folder package or the runtime's "
+                    "Python is not exposed as sys.executable",
+                    "start icode-browser-use-broker from a Python where the wheel is installed, or use Owned/Attach",
+                )
+            )
     return section, problems
 
 
@@ -742,6 +779,16 @@ def _broker_config_matches(payload: dict[str, Any], cfg: BrowserConfig | None) -
                 ("bridge", cfg.bridge),
                 ("evaluate", cfg.evaluate_enabled),
             )
+        )
+        and all(
+            payload.get(key) == expected
+            for key, expected in (
+                ("save_state", cfg.save_state_enabled),
+                ("chrome_devtools", cfg.chrome_devtools),
+                ("cdp_url", cfg.cdp_url or ""),
+                ("upload_roots", [str(p) for p in cfg.upload_roots]),
+            )
+            if key in payload
         )
     )
 

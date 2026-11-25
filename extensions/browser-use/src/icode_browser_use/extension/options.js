@@ -7,8 +7,10 @@ import {
   readDefaultPolicy,
   readHistory,
   readPermissions,
+  readUserAllowsPublicWeb,
   setDefaultPolicy,
   setPermission,
+  setUserAllowsPublicWeb,
 } from "./permissions.js";
 
 const LABELS = { allow: "Allowed", ask: "Ask", block: "Blocked" };
@@ -18,6 +20,7 @@ const status = document.getElementById("status");
 const historyList = document.getElementById("history");
 const historyEmpty = document.getElementById("history-empty");
 const defaultPolicy = document.getElementById("default-policy");
+const allowPublicWeb = document.getElementById("allow-public-web");
 const originInput = document.getElementById("origin");
 const importInput = document.getElementById("import");
 
@@ -32,12 +35,14 @@ function typedOrigin() {
 }
 
 async function render() {
-  const [permissions, history, defaultState] = await Promise.all([
+  const [permissions, history, defaultState, publicWebEnabled] = await Promise.all([
     readPermissions(),
     readHistory(),
     readDefaultPolicy(),
+    readUserAllowsPublicWeb(),
   ]);
   defaultPolicy.value = defaultState;
+  if (allowPublicWeb) allowPublicWeb.checked = publicWebEnabled;
 
   const origins = Object.keys(permissions).sort();
   rows.replaceChildren();
@@ -113,6 +118,13 @@ defaultPolicy.addEventListener("change", async () => {
   await setDefaultPolicy(defaultPolicy.value);
   setStatus(`Default policy: ${defaultPolicy.value}`);
 });
+
+if (allowPublicWeb) {
+  allowPublicWeb.addEventListener("change", async () => {
+    await setUserAllowsPublicWeb(allowPublicWeb.checked);
+    setStatus(`Public-web mode: ${allowPublicWeb.checked ? "enabled" : "disabled"}`);
+  });
+}
 
 document.getElementById("export").addEventListener("click", async () => {
   const payload = await exportPermissions();

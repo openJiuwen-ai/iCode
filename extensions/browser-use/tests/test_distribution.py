@@ -67,10 +67,13 @@ def test_conflict_needs_both_sources(tmp_path, monkeypatch):
 
 
 def test_broker_command_requires_a_python_interpreter_and_module_name():
-    command = distribution.broker_command(module_name="icode_browser_use.broker_client", executable="/usr/bin/python3.14")
+    command = distribution.broker_command(
+        module_name="icode_browser_use.broker_client", executable="/usr/bin/python3.14"
+    )
     assert command == ["/usr/bin/python3.14", "-m", "icode_browser_use.broker"]
     assert (
-        distribution.broker_command(module_name="icode_browser_use.broker_client", executable="C:/tools/icode.exe") is None
+        distribution.broker_command(module_name="icode_browser_use.broker_client", executable="C:/tools/icode.exe")
+        is None
     )
     assert distribution.broker_command(module_name="_chrys_extension_browser.icode_browser_use.x") is None
 

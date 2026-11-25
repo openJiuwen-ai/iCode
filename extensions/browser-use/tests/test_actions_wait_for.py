@@ -454,7 +454,10 @@ def test_page_stable_waits_for_the_default_quiet_window(deterministic_clock) -> 
     assert "page quiet_ms=1600 mutations=" in text, "the success names the quiet window it saw"
     assert "status=succeeded" in text
     expressions = [params["expression"] for name, params, _ in session.client.calls if name == "Runtime.evaluate"]
-    assert expressions == [wait_for._STABLE_PAGE_EXPR] * 2 + [wait_for._STABLE_PAGE_CLEANUP_EXPR]
+    assert len(expressions) == 3
+    assert expressions[0] == expressions[1]
+    assert "window.__chrys_stable" in expressions[0]
+    assert "delete window.__chrys_stable" in expressions[2]
 
 
 def test_page_stable_rejects_a_timeout_shorter_than_the_quiet_window() -> None:
@@ -474,7 +477,10 @@ def test_target_stable_uses_the_node_observer(deterministic_clock) -> None:
     probe_functions = [
         params["functionDeclaration"] for name, params, _ in session.client.calls if name == "Runtime.callFunctionOn"
     ]
-    assert probe_functions == [wait_for._STABLE_NODE_FN] * 2 + [wait_for._STABLE_NODE_CLEANUP_FN]
+    assert len(probe_functions) == 3
+    assert probe_functions[0] == probe_functions[1]
+    assert "__chrys_stable" in probe_functions[0]
+    assert "map.delete(this)" in probe_functions[2]
 
 
 def test_stable_timeout_reports_the_last_quiet_window(deterministic_clock) -> None:

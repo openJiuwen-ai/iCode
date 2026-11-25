@@ -16,17 +16,21 @@ from dataclasses import dataclass
 from ..config import AMBIGUITY_GAP, MIN_TOP_SCORE
 from ..errors import TargetAmbiguous, TargetNotFound
 from .fusion import FusedNode
+from .serializer import escape_label
 
 _EXACT_NAME_POINTS = 40
+_EXACT_HINT_FALLBACK_POINTS = 30
 _ROLE_OR_TAG_POINTS = 20
 _CONTAINS_POINTS = 15
 _VIEWPORT_POINTS = 10
 _UNIQUE_POINTS = 10
+_INTERACTIVE_POINTS = 5
 _HINT_POINTS = 5
 _SIMILARITY_POINTS = 15
 _HIDDEN_POINTS = -20
 _COLLAPSED_POINTS = -15
 _MAX_CANDIDATES = 3
+_LABEL_ROLES = frozenset({"labeltext", "label"})
 
 #: Minimum fuzzy-similarity ratio for a name to count as a spec match at all.
 _SIMILARITY_MIN_RATIO = 0.5
@@ -65,18 +69,28 @@ def _href_name_match(name: str, target: str) -> int:
     return 0
 
 
+def _use_hint_as_name(node: FusedNode, name: str, hint: str) -> bool:
+    """Only fall back to ``text_hint`` for unnamed interactive controls, never caption ``<label>`` nodes."""
+    if name or not hint or not node.interactive:
+        return False
+    return _norm(node.role) not in _LABEL_ROLES and _norm(node.tag) != "label"
+
+
 def score(node: FusedNode, spec: str, *, seen_names: dict[str, int]) -> int:
     """Score *node* against *spec* (design section 6.1, additive terms)."""
     name = _norm(node.name)
+    hint = _norm(node.text_hint)
+    hint_fallback = _use_hint_as_name(node, name, hint)
+    effective_name = hint if hint_fallback else name
     target = _norm(spec)
     total = 0
 
-    if target and name and node.name_from_href:
+    if target and effective_name and node.name_from_href and name:
         total += _href_name_match(name, target)
-    elif target and name:
-        if name == target:
-            total += _EXACT_NAME_POINTS
-        elif target in name or name in target:
+    elif target and effective_name:
+        if effective_name == target:
+            total += _EXACT_HINT_FALLBACK_POINTS if hint_fallback else _EXACT_NAME_POINTS
+        elif target in effective_name or effective_name in target:
             total += _CONTAINS_POINTS
 
     if target and target in {_norm(node.role), _norm(node.tag)}:
@@ -85,15 +99,17 @@ def score(node: FusedNode, spec: str, *, seen_names: dict[str, int]) -> int:
     if node.in_viewport and node.visible:
         total += _VIEWPORT_POINTS
 
+    if node.interactive:
+        total += _INTERACTIVE_POINTS
+
     if name and seen_names.get(name, 0) == 1:
         total += _UNIQUE_POINTS
 
-    hint = _norm(node.text_hint)
-    if target and hint and hint != name and (target == hint or target in hint or hint in target):
+    if target and hint and not hint_fallback and hint != name and (target == hint or target in hint or hint in target):
         total += _HINT_POINTS
 
-    if target and name and not node.name_from_href:
-        ratio = difflib.SequenceMatcher(None, target, name).ratio()
+    if target and effective_name and not (node.name_from_href and name):
+        ratio = difflib.SequenceMatcher(None, target, effective_name).ratio()
         total += max(0, min(_SIMILARITY_POINTS, round(ratio * _SIMILARITY_POINTS)))
 
     if not node.visible or node.disabled:
@@ -160,12 +176,16 @@ def top3_to_text(candidates: list[Candidate]) -> str:
     lines: list[str] = []
     for candidate in candidates[:_MAX_CANDIDATES]:
         node = candidate.node
-        lines.append(f'  {_ref_token(node)} {node.role} "{node.name}" (score {candidate.score})')
+        label = escape_label(node.name or node.text_hint, limit=120)
+        lines.append(f'  {_ref_token(node)} {node.role} "{label}" (score {candidate.score})')
     return "\n".join(lines)
 
 
 def _summary(candidates: list[Candidate]) -> str:
-    parts = [f'{_ref_token(c.node)} {c.node.role} "{c.node.name}"' for c in candidates[:_MAX_CANDIDATES]]
+    parts = [
+        f'{_ref_token(c.node)} {c.node.role} "{escape_label(c.node.name or c.node.text_hint, limit=120)}"'
+        for c in candidates[:_MAX_CANDIDATES]
+    ]
     return "; ".join(parts)
 
 

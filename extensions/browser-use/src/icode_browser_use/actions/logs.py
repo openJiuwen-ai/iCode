@@ -34,7 +34,7 @@ PARAMS: dict[str, Any] = {
 
 def _line(entry: Any) -> str:
     text = json.dumps(scrub(entry.text), ensure_ascii=False)
-    url = f" {entry.url}" if entry.url else ""  # already origin+path (or just the scheme)
+    url = f" {scrub(entry.url)}" if entry.url else ""
     return f"#{entry.seq} {entry.kind}.{entry.level}{url} {text}"
 
 

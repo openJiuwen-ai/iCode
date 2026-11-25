@@ -49,7 +49,7 @@ from . import cli, registry
 from .actions import build_tool_defs
 from .broker_client import BrokerCallUnknown, BrokerSession
 from .config import BrowserConfig, BrowserEnv, ConfigError
-from .errors import BrowserError, ConnectionClosed, Unavailable
+from .errors import Blocked, BrowserError, ConnectionClosed, Unavailable
 from .locking import acquire_instance_lock, probe_instance_lock
 from .policy import canonical_origin
 from .logging import set_log_sink
@@ -92,6 +92,7 @@ _WRITE_TOOL_NAMES: Final[frozenset[str]] = frozenset(
         "browser_upload",
         "browser_select_option",
         "browser_dialog",
+        "browser_evaluate",
     }
 )
 
@@ -400,12 +401,19 @@ def _save_record(path: Path | None, record: registry.ManifestRecord) -> None:
         return
     try:
         records, problem = registry.load(path)
-        if problem == "unreadable":
-            logger.warning("browser manifest unreadable; skipping write to avoid wiping records")
+        if problem in {"unreadable", "unexpected shape"}:
+            logger.warning("browser manifest %s; skipping write to avoid wiping records", problem)
             return
         registry.save(path, registry.supersede(records, record))
     except OSError as exc:
         logger.warning("browser manifest write failed: %s", exc)
+
+
+async def _asave_record(path: Path | None, record: registry.ManifestRecord) -> None:
+    """Off-loop manifest persistence so Windows ``icacls`` never stalls the event loop."""
+    if path is None:
+        return
+    await asyncio.to_thread(_save_record, path, record)
 
 
 def _browser_origin(browser: _Browser) -> str:
@@ -413,15 +421,15 @@ def _browser_origin(browser: _Browser) -> str:
     return registry.redacted_origin(browser.url or browser.session.snapshot.url)
 
 
-def _persist(browser: _Browser) -> None:
-    """Refresh the redacted origin, writing only when it changed."""
+async def _apersist(browser: _Browser) -> None:
+    """Async off-loop origin persistence."""
     if browser.manifest is None or browser.record is None:
         return
     origin = _browser_origin(browser)
     if browser.record.origin == origin:
         return
     browser.record = dataclasses.replace(browser.record, origin=origin, updated_at=time.time())
-    _save_record(browser.manifest, browser.record)
+    await _asave_record(browser.manifest, browser.record)
 
 
 def _recoverable(ctx: ToolContext) -> list[registry.ManifestRecord]:
@@ -442,6 +450,9 @@ def _recoverable(ctx: ToolContext) -> list[registry.ManifestRecord]:
     ]
 
 
+_DEFER_MANIFEST_PERSIST = False
+
+
 def _open(ctx: ToolContext) -> _Browser:
     """Allocate a browser in the first free profile slot for this agent build.
 
@@ -459,10 +470,10 @@ def _open(ctx: ToolContext) -> _Browser:
             f"This agent already has {_MAX_BROWSERS} browsers open; reuse a browser_id or call browser_close.",
             code="browser_limit",
         )
-    return _allocate(ctx, base, slot)
+    return _allocate(ctx, base, slot, persist=not _DEFER_MANIFEST_PERSIST)
 
 
-def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int) -> _Browser:
+def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int, *, persist: bool = True) -> _Browser:
     """Create the handle and core session for *slot*; nothing launches yet."""
     browser_id = "b" + secrets.token_hex(4)
     generation = secrets.token_hex(4)
@@ -476,7 +487,9 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int) -> _Browser:
     archive_dir = base.state_archive_dir / "agents" / _owner_key(ctx) / f"slot-{slot}"
     config = (
         base
-        if base.bridge or base.broker
+        if base.broker
+        else dataclasses.replace(base, state_archive_root=archive_dir)
+        if base.bridge
         else dataclasses.replace(base, state_dir=state_dir, state_archive_root=archive_dir)
     )
     if config.backend == "owned" and config.download_dir is not None:
@@ -531,7 +544,8 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int) -> _Browser:
         ephemeral_state_dir=state_dir if backend == "owned" and _is_ephemeral_invocation(ctx) else None,
     )
     _browsers[browser_id] = browser
-    _save_record(manifest, record)
+    if persist:
+        _save_record(manifest, record)
     return browser
 
 
@@ -567,10 +581,28 @@ async def _call(browser: _Browser, name: str, arguments: dict[str, object]) -> l
         # The next call restarts Chrome from the same profile; without this the
         # session stays "ready" on a dead connection forever.
         browser.session.mark_disconnected()
+        blocked_origin = getattr(browser.session, "consume_site_blocked_origin", lambda: "")()
+        if blocked_origin:
+            _record_origin(browser.blocked_origins, blocked_origin)
+            err = Blocked(
+                f"site_permission_required: {blocked_origin} "
+                "(open the iCode Browser Bridge extension and allow this site)",
+                blocked_origin=blocked_origin,
+            )
+            raise ToolError(err.render(), code=err.code) from err
         raise ToolError(exc.render(), code=exc.code) from exc
     except BrokerCallUnknown as exc:
         return [{"type": "text", "text": str(exc)}]
     except BrowserError as exc:
+        blocked_origin = getattr(browser.session, "consume_site_blocked_origin", lambda: "")()
+        if blocked_origin and "site_permission_required" not in str(exc) and "site_blocked" not in str(exc):
+            _record_origin(browser.blocked_origins, blocked_origin)
+            err = Blocked(
+                f"site_permission_required: {blocked_origin} "
+                "(open the iCode Browser Bridge extension and allow this site)",
+                blocked_origin=blocked_origin,
+            )
+            raise ToolError(err.render(), code=err.code) from err
         raise ToolError(exc.render(), code=exc.code) from exc
 
 
@@ -629,18 +661,30 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
                 _record_origin(browser.blocked_origins, target_url)
         raise
     finally:
+        for origin in getattr(browser.session, "drain_blocked_origins", lambda: ())():
+            _record_origin(browser.blocked_origins, origin)
+        # A block that arrived during this call is attributed (above) or already
+        # drained; it must not relabel a later, unrelated failure.
+        getattr(browser.session, "consume_site_blocked_origin", lambda: "")()
         snapshot = browser.session.snapshot
         browser.url = snapshot.url or browser.url
         browser.title = snapshot.title or browser.title
         _record_origin(browser.visited_origins, browser.url)
-        _persist(browser)
+        await _apersist(browser)
     return _text(blocks)
 
 
 @_tool(requires_approval=True)
 async def browser_open(ctx: ToolContext) -> str:
     """Allocate a browser handle and return its browser_id; launch/connect is deferred until a page tool needs it."""
-    browser = _open(ctx)
+    global _DEFER_MANIFEST_PERSIST
+    _DEFER_MANIFEST_PERSIST = True
+    try:
+        browser = _open(ctx)
+    finally:
+        _DEFER_MANIFEST_PERSIST = False
+    if browser.record is not None:
+        await _asave_record(browser.manifest, browser.record)
     return f"browser_id: {browser.id}"
 
 
@@ -840,7 +884,9 @@ async def browser_resume(
                 code="browser_resume_blocked",
             ) from exc
         probe.release()
-    browser = _allocate(ctx, base, slot)
+    browser = _allocate(ctx, base, slot, persist=False)
+    if browser.record is not None:
+        await _asave_record(browser.manifest, browser.record)
     if backend == "broker":
         note = (
             "reacquired the Broker session for this slot; the Broker may still hold the original page. "
@@ -885,7 +931,14 @@ async def browser_navigate(
                 "pass browser_id to reuse it, or call browser_open to allocate a separate handle.",
                 code="browser_id_required",
             )
-        browser = _open(ctx)
+        global _DEFER_MANIFEST_PERSIST
+        _DEFER_MANIFEST_PERSIST = True
+        try:
+            browser = _open(ctx)
+        finally:
+            _DEFER_MANIFEST_PERSIST = False
+        if browser.record is not None:
+            await _asave_record(browser.manifest, browser.record)
         allocated = True
     try:
         text = await _run(browser, "browser_navigate", {"url": url})
@@ -1394,22 +1447,25 @@ async def _close_and_forget(browser: _Browser) -> None:
     This runs as its own task so a cancelled turn cannot stop the bookkeeping
     halfway: the record disappears with the browser, not with the caller.
     """
-    await browser.session.aclose()
     cleanup_target: Path | None = None
     reserved_slot: tuple[str | None, str, str | None, int] | None = None
-    if browser.ephemeral_state_dir is not None and bool(getattr(browser.session, "owns_state_dir", False)):
-        cleanup_target, slot_free = _stage_ephemeral_dir(browser.ephemeral_state_dir)
-        if not slot_free:
-            reserved_slot = _slot_key(browser)
-            _reclaiming_slots.add(reserved_slot)
-    _browsers.pop(browser.id, None)
-    _drop_record(browser)
-    if cleanup_target is not None:
-        try:
-            await asyncio.to_thread(_cleanup_ephemeral_dir, cleanup_target)
-        finally:
-            if reserved_slot is not None:
-                _reclaiming_slots.discard(reserved_slot)
+    try:
+        await browser.session.aclose()
+    finally:
+        if browser.ephemeral_state_dir is not None and bool(getattr(browser.session, "owns_state_dir", False)):
+            cleanup_target, slot_free = _stage_ephemeral_dir(browser.ephemeral_state_dir)
+            if not slot_free:
+                reserved_slot = _slot_key(browser)
+                _reclaiming_slots.add(reserved_slot)
+        _browsers.pop(browser.id, None)
+        # Off the loop: on Windows the rewrite runs icacls.
+        await asyncio.to_thread(_drop_record, browser)
+        if cleanup_target is not None:
+            try:
+                await asyncio.to_thread(_cleanup_ephemeral_dir, cleanup_target)
+            finally:
+                if reserved_slot is not None:
+                    _reclaiming_slots.discard(reserved_slot)
 
 
 def _drop_record(browser: _Browser) -> None:
@@ -1417,7 +1473,10 @@ def _drop_record(browser: _Browser) -> None:
     if browser.record is None or not browser.record.resume_id or browser.manifest is None:
         return
     try:
-        records, _problem = registry.load(browser.manifest)
+        records, problem = registry.load(browser.manifest)
+        if problem in {"unreadable", "unexpected shape"}:
+            logger.warning("browser manifest skipped drop (%s): %s", problem, browser.manifest)
+            return
         registry.save(browser.manifest, registry.drop(records, browser.record.resume_id))
     except OSError as exc:
         logger.warning("browser manifest update failed: %s", exc)
@@ -1452,9 +1511,7 @@ async def browser_close(
     unclosed = getattr(browser.session, "unclosed_targets", ())
     header = f"browser_id {browser.id} closed"
     if unclosed:
-        header += (
-            f"\nwarning: cleanup incomplete — could not reconnect to close detached tab(s): {', '.join(unclosed)}"
-        )
+        header += f"\nwarning: cleanup incomplete — could not reconnect to close detached tab(s): {', '.join(unclosed)}"
     return f"{header}\n{_format_session_facts(browser)}"
 
 
@@ -1577,13 +1634,23 @@ async def browser_context(ctx: TurnContext) -> str | None:
 
 @extension.before_tool
 async def browser_guard(call: ToolCall) -> None:
-    """In strict mode, refuse shell and file writes while this agent has a browser open."""
+    """In strict mode, refuse shell, file writes, and skill scripts while this session has a browser open."""
     if (BrowserEnv().get("GUARD") or "").strip().lower() != "strict":
         return
-    if call.kind not in {"shell", "filesystem.write"}:
+    is_blocked_tool = call.kind in {"shell", "filesystem.write"} or (
+        call.kind == "skill" and call.name == "run_skill_script"
+    )
+    if not is_blocked_tool:
         return
-    if _mine(call.context):
+    session_id = call.context.session_id
+    if session_id is not None:
+        has_open = any(
+            browser.owner_session == session_id for browser in _browsers.values() if browser.close_task is None
+        )
+    else:
+        has_open = bool(_mine(call.context))
+    if has_open:
         raise ToolError(
-            "A browser is open; shell and file writes are blocked while ICODE_BROWSER_GUARD=strict.",
+            "A browser is open; shell, file writes, and skill scripts are blocked while ICODE_BROWSER_GUARD=strict.",
             code="browser_guard",
         )

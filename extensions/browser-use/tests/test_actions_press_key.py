@@ -137,8 +137,11 @@ def test_parse_key_combinations() -> None:
     assert press_key.parse_key("Ctrl+Shift+A") == ("A", "KeyA", 65, None, 10)
     assert press_key.parse_key("Meta+Enter") == ("Enter", "Enter", 13, None, 4)
     assert press_key.parse_key("/") == ("/", "Slash", 191, "/", 0)
-    assert press_key.parse_key("Shift+-") == ("-", "Minus", 189, "-", 8)
-    assert press_key.parse_key("+") == ("+", "+", None, "+", 0)
+    assert press_key.parse_key("Shift+-") == ("_", "Minus", 189, "_", 8)
+    assert press_key.parse_key("+") == ("+", "Equal", 187, "+", 0)
+    assert press_key.parse_key("Shift+1") == ("!", "Digit1", 49, "!", 8)
+    assert press_key.parse_key("!") == ("!", "Digit1", 49, "!", 0)
+    assert press_key.parse_key("Ctrl++") == ("+", "Equal", 187, None, 2)
 
 
 @pytest.mark.parametrize("spec", ["", "   ", "Hyper+A", "Ctrl+", "NotAKey", "é"])
@@ -338,7 +341,7 @@ def test_a_dialog_opened_by_the_key_blocks_the_result(monkeypatch) -> None:
 
     session = FakeSession()
     info = DialogInfo(seq=1, kind="confirm", message="Submit?")
-    session.dialog_since = lambda _seq: info
+    session.dialog_since = lambda _seq: info if session.client.keys() else None
     monkeypatch.setattr(press_key, "new_action_id", lambda: "fixed")
     install(monkeypatch, session, pages=[page()], facts=[FACTS, FACTS])
     blocks = asyncio.run(press_key.run(session, {"key": "Enter", "target": "@e1#3"}))

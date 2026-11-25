@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..snapshot.serializer import sanitize_text
+from ..snapshot.serializer import escape_label, sanitize_text
 from ..types import ToolBlock, text_block
 from ._shared import snapshot_needs_refresh
 
@@ -109,19 +109,22 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     )
     lines = [f'browser_find: {len(matches)} match(es) for "{query}"']
     for node in matches[:limit]:
-        name = sanitize_text(str(getattr(node, "name", "") or getattr(node, "text_hint", "") or "")).replace("\n", " ")
+        raw_name = str(getattr(node, "name", "") or getattr(node, "text_hint", "") or "")
+        name = escape_label(raw_name, limit=120)
         role_text = sanitize_text(str(getattr(node, "role", "") or "-"))
         tag_text = sanitize_text(str(getattr(node, "tag", "") or "-"))
-        line = f"- {_token(node)} role={role_text} name={name[:120] or '-'} tag={tag_text}"
-        href = sanitize_text(str(getattr(node, "href", "") or "")).replace("\n", " ")
+        line = f"- {_token(node)} role={role_text} name={name or '-'} tag={tag_text}"
+        raw_href = str(getattr(node, "href", "") or "")
+        href = escape_label(raw_href, limit=120)
         if href and href != name:
-            line += f" href={href[:120]}"
+            line += f" href={href}"
         flags = _actionability_flags(node)
         if flags:
             line += flags
-        placeholder = sanitize_text(str(getattr(node, "placeholder", "") or "")).replace("\n", " ")
+        raw_placeholder = str(getattr(node, "placeholder", "") or "")
+        placeholder = escape_label(raw_placeholder, limit=80)
         if placeholder and placeholder not in name:
-            line += f' placeholder="{placeholder[:80]}"'
+            line += f' placeholder="{placeholder}"'
         lines.append(line)
     if len(matches) > limit:
         lines.append(f"(truncated: {len(matches) - limit} more; increase limit)")

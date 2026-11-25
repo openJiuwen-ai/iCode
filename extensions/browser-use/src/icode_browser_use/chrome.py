@@ -61,7 +61,7 @@ async def remember_native_login(on_wait: Callable[[], None] | None = None, *, ke
     _save_preference(state_dir / CHROME_DEVTOOLS_PREFERENCE, state_dir / CHROME_LOGIN_PREFERENCE)
 
 
-def main(argv: list[str] | None = None, *, prog: str = "icode browser") -> int:
+def main(argv: list[str] | None = None, *, prog: str = "icode-browser-use") -> int:
     parser = argparse.ArgumentParser(prog=prog, description="Manage Chrome login reuse for Browser Use.")
     commands = parser.add_subparsers(dest="action")
     connect = commands.add_parser("connect", help="Set up Chrome login reuse for new browsers")
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None, *, prog: str = "icode browser") -> int:
 
             target = update_extension()
             print(f"Chrome Bridge {__version__} copied to {target}.")
-            print("Reload iCode Browser Bridge at chrome://extensions, then run icode browser connect --bridge.")
+            print(f"Reload iCode Browser Bridge at chrome://extensions, then run {prog} connect --bridge.")
             return 0
         if action == "disconnect":
             preference.unlink(missing_ok=True)
@@ -104,8 +104,11 @@ def main(argv: list[str] | None = None, *, prog: str = "icode browser") -> int:
 
         from .bridge.install import registered_manifest
 
+        has_registered_bridge = any(
+            (reg := registered_manifest(name)) is not None and reg.is_file() for name in ("chrome", "chromium", "edge")
+        )
         use_native = args.chrome or (
-            not (args.bridge or cfg.bridge) and (cfg.chrome_devtools or registered_manifest("chrome") is None)
+            not (args.bridge or cfg.bridge) and (cfg.chrome_devtools or not has_registered_bridge)
         )
         if use_native:
             asyncio.run(
@@ -130,10 +133,14 @@ def main(argv: list[str] | None = None, *, prog: str = "icode browser") -> int:
         version = result.get("extension_version") or "unknown"
         print(f"Running Chrome Bridge extension version: {version}")
         if "page_log_gated" not in result.get("capabilities", ()):
-            print("Browser logs require an updated Bridge. Run icode browser update-bridge and reload the extension.")
+            print(f"Browser logs require an updated Bridge. Run {prog} update-bridge and reload the extension.")
         _save_preference(preference, devtools)
     except (ConfigError, OSError, RuntimeError) as error:
         print(f"Could not configure Browser Use: {error}", file=sys.stderr)
         return 1
     print("Chrome Bridge connected. New browser handles will reuse that Chrome profile.")
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(prog="icode-browser-use"))

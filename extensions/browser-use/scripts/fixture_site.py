@@ -472,6 +472,161 @@ setTimeout(() => {
 </body></html>"""
 
 
+_IFRAME_OFFSET_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>fixture-iframe-offset</title></head>
+<body>
+<h1>fixture-iframe-offset</h1>
+<iframe id="offset-frame" src="/iframe-offset-child"
+        style="position:absolute;left:250px;top:300px;width:260px;height:140px;border:2px solid #444;"></iframe>
+</body></html>"""
+
+
+_IFRAME_OFFSET_CHILD_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>fixture-iframe-offset-child</title></head>
+<body>
+<button id="offset-btn" type="button" style="padding:8px 16px;">Offset Frame Click</button>
+<div id="offset-count">iframe-clicks:0</div>
+<script>
+let n = 0;
+document.getElementById('offset-btn').addEventListener('click', () => {
+  n += 1;
+  document.getElementById('offset-count').textContent = 'iframe-clicks:' + n;
+});
+</script>
+</body></html>"""
+
+
+_IFRAME_BELOW_FOLD_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>fixture-iframe-below-fold</title></head>
+<body style="margin:0;padding:0;">
+<div style="height:950px;background:#eee;"><h1>fixture-iframe-below-fold</h1></div>
+<iframe id="below-frame" src="/iframe-offset-child"
+        style="display:block;margin-left:20px;width:300px;height:180px;border:4px solid #444;"></iframe>
+<div style="height:600px;"></div>
+</body></html>"""
+
+
+_SMALL_SCROLLER_PAGE = (
+    '<!doctype html><html><head><meta charset="utf-8"><title>fixture-small-scroller</title></head>'
+    "<body><h1>fixture-small-scroller</h1>"
+    '<div id="small-list" aria-label="Small Scrollable List" '
+    'style="width:300px;height:200px;overflow:auto;border:1px solid #333;">'
+    + "".join(f'<div class="row" style="height:24px;">Row {i}</div>' for i in range(1, 201))
+    + "</div>"
+    '<div id="non-scroller" style="width:300px;height:40px;border:1px solid #999;">'
+    '<span id="static-item">Static Non-Scrollable Item</span></div>'
+    "</body></html>"
+)
+
+
+_LONG_LABEL_TEXT = (
+    "Perform the comprehensive multi-step verification action for the quarterly financial audit report "
+    "with extended descriptive context exceeding one hundred and twenty characters"
+)
+
+
+_LONG_LABEL_IFRAME_PAGE = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>fixture-long-label-iframe</title></head>
+<body>
+<h1>fixture-long-label-iframe</h1>
+<iframe id="long-label-frame" style="width:420px;height:160px;border:1px solid #555;"
+  srcdoc='<!doctype html><html><body>
+    <button id="long-btn" type="button" aria-label="{_LONG_LABEL_TEXT}" style="padding:8px 14px;">Long Label Action</button>
+    <div id="long-state">clicked:0</div>
+    <script>
+      let c = 0;
+      document.getElementById("long-btn").addEventListener("click", () => {{
+        c += 1;
+        document.getElementById("long-state").textContent = "clicked:" + c;
+      }});
+    </script>
+  </body></html>'></iframe>
+</body></html>"""
+
+
+_BUTTON_NO_FORM_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>fixture-button-no-form</title></head>
+<body>
+<h1>fixture-button-no-form</h1>
+<button id="menu-btn" style="padding:8px 16px;">Menu</button>
+<div id="menu-state">menu:closed</div>
+<script>
+document.getElementById('menu-btn').addEventListener('click', () => {
+  document.getElementById('menu-state').textContent = 'menu:open';
+});
+</script>
+</body></html>"""
+
+
+_LOGIN_HIDDEN_INPUTS_PAGE = (
+    '<!doctype html><html><head><meta charset="utf-8"><title>fixture-login-hidden</title></head>'
+    '<body><h1>Sign in</h1><form method="post" action="/submit">'
+    + "".join(f'<input type="hidden" name="csrf_{i}" value="tok_{i}">' for i in range(11))
+    + '<input type="text" name="username" placeholder="Username">'
+    + '<input type="password" name="password" placeholder="Password">'
+    + '<button type="submit">Sign In</button>'
+    + "</form></body></html>"
+)
+
+
+_SLOT_NESTED_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>fixture-slot-nested</title></head>
+<body>
+<h1>fixture-slot-nested</h1>
+<my-slot-host id="slot-host"><div class="wrap"><span id="slot-label">SlottedSubmit</span></div></my-slot-host>
+<div id="slot-state">slot-clicks:0</div>
+<script>
+const host = document.getElementById('slot-host');
+const sr = host.attachShadow({mode: 'open'});
+sr.innerHTML = '<button id="slot-btn" type="button" style="padding:10px 18px;"><slot></slot></button>';
+let count = 0;
+sr.getElementById('slot-btn').addEventListener('click', () => {
+  count += 1;
+  document.getElementById('slot-state').textContent = 'slot-clicks:' + count;
+});
+</script>
+</body></html>"""
+
+
+_P_EDITOR_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>fixture-p-editor</title></head>
+<body>
+<h1>fixture-p-editor</h1>
+<div id="p-editor" contenteditable="true" role="textbox" aria-label="Paragraph Editor"
+     style="width:320px;min-height:90px;border:1px solid #555;padding:8px;"><p>first</p><p>second</p></div>
+</body></html>"""
+
+
+_DIALOG_ON_MOUSEDOWN_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>fixture-dialog-on-mousedown</title></head>
+<body>
+<h1>fixture-dialog-on-mousedown</h1>
+<button id="md-alert-btn" type="button" style="padding:10px 16px;">Trigger Mousedown Alert</button>
+<button id="after-btn" type="button" style="padding:10px 16px;margin-left:12px;">After Dialog Button</button>
+<div id="md-state">mousedown:0 mouseup:0 after:0</div>
+<script>
+let md = 0, mu = 0, af = 0;
+function render() {
+  document.getElementById('md-state').textContent = `mousedown:${md} mouseup:${mu} after:${af}`;
+}
+const btn = document.getElementById('md-alert-btn');
+btn.addEventListener('mousedown', () => {
+  md += 1;
+  render();
+  window.alert('mousedown dialog');
+});
+btn.addEventListener('mouseup', () => {
+  mu += 1;
+  render();
+});
+document.getElementById('after-btn').addEventListener('click', () => {
+  af += 1;
+  render();
+});
+</script>
+</body></html>"""
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "chrys-fixture"
 
@@ -559,6 +714,35 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, _ASYNC_TOGGLE_PAGE.encode())
         elif path == "/dynamic-comments":
             self._send(200, _DYNAMIC_COMMENTS_PAGE.encode())
+        elif path == "/iframe-offset":
+            self._send(200, _IFRAME_OFFSET_PAGE.encode())
+        elif path == "/iframe-offset-child":
+            self._send(200, _IFRAME_OFFSET_CHILD_PAGE.encode())
+        elif path == "/iframe-below-fold":
+            self._send(200, _IFRAME_BELOW_FOLD_PAGE.encode())
+        elif path == "/small-scroller":
+            self._send(200, _SMALL_SCROLLER_PAGE.encode())
+        elif path == "/huge-node":
+            raw_mb = _query_value(query, "mb") or "34"
+            mb = min(max(int(raw_mb) if raw_mb.isdigit() else 34, 1), 40)
+            payload = (
+                b'<!doctype html><html><head><meta charset="utf-8"><title>fixture-huge-node</title></head>'
+                b'<body><h1>fixture-huge-node</h1><button id="huge-ok" type="button">Huge Ready</button>'
+                b'<script type="text/plain" id="huge-blob">' + (b"A" * (mb * 1024 * 1024)) + b"</script></body></html>"
+            )
+            self._send(200, payload)
+        elif path == "/long-label-iframe":
+            self._send(200, _LONG_LABEL_IFRAME_PAGE.encode())
+        elif path == "/button-no-form":
+            self._send(200, _BUTTON_NO_FORM_PAGE.encode())
+        elif path == "/login-hidden-inputs":
+            self._send(200, _LOGIN_HIDDEN_INPUTS_PAGE.encode())
+        elif path == "/slot-nested":
+            self._send(200, _SLOT_NESTED_PAGE.encode())
+        elif path == "/p-editor":
+            self._send(200, _P_EDITOR_PAGE.encode())
+        elif path == "/dialog-on-mousedown":
+            self._send(200, _DIALOG_ON_MOUSEDOWN_PAGE.encode())
         elif path == "/dialogs":
             self._send(200, _DIALOGS_PAGE.encode())
         elif path == "/dialog-result":

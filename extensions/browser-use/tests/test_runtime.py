@@ -163,7 +163,9 @@ def test_reading_logs_never_starts_the_browser_or_spends_budget(monkeypatch: pyt
 
 def test_closing_a_tab_never_starts_the_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     session = FakeSession()
-    tool = ToolDef(name="browser_tab_close", description="", params={"tab_id": {"type": "string", "required": True}}, schema={})
+    tool = ToolDef(
+        name="browser_tab_close", description="", params={"tab_id": {"type": "string", "required": True}}, schema={}
+    )
 
     async def dispatch(_session, name, arguments):
         _session.calls.append(("dispatch", name, arguments))

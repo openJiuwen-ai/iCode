@@ -4,6 +4,8 @@ const CHUNK_BYTES = 500_000;
 const THRESHOLD = 600_000;
 const MAX_CHUNKS = 128;
 const MAX_TOTAL = 64 << 20;
+const MAX_PENDING_CHUNKS = 8;
+const MAX_BUFFERED_CHARS = Math.floor((MAX_TOTAL * 4) / 3) + 4096;
 
 function randomId() {
   if (crypto.randomUUID) return crypto.randomUUID();
@@ -44,10 +46,19 @@ export function encodeBridgeMessages(payload) {
 export class BridgeChunkReceiver {
   constructor() {
     this._parts = new Map();
+    this._bufferedChars = 0;
   }
 
   clear() {
     this._parts.clear();
+    this._bufferedChars = 0;
+  }
+
+  _drop(id) {
+    const entry = this._parts.get(id);
+    if (!entry) return;
+    this._parts.delete(id);
+    this._bufferedChars = Math.max(0, this._bufferedChars - entry.chars);
   }
 
   add(message) {
@@ -70,17 +81,30 @@ export class BridgeChunkReceiver {
     }
     let entry = this._parts.get(id);
     if (!entry) {
-      entry = { parts: new Array(total).fill(null), total };
+      if (this._parts.size >= MAX_PENDING_CHUNKS) {
+        throw new Error("too many concurrent incomplete bridge chunk messages");
+      }
+      entry = { parts: new Array(total).fill(null), total, chars: 0 };
       this._parts.set(id, entry);
     }
     if (entry.total !== total) {
-      this._parts.delete(id);
+      this._drop(id);
       throw new Error("bridge chunk total changed");
     }
+    if (entry.parts[index] !== null) {
+      this._drop(id);
+      throw new Error("duplicate bridge chunk index");
+    }
+    if (this._bufferedChars + message.data.length > MAX_BUFFERED_CHARS) {
+      this._drop(id);
+      throw new Error("buffered bridge chunks exceed size cap");
+    }
     entry.parts[index] = message.data;
+    entry.chars += message.data.length;
+    this._bufferedChars += message.data.length;
     if (entry.parts.some((part) => part === null)) return null;
 
-    this._parts.delete(id);
+    this._drop(id);
     const decoded = entry.parts.map((part) => base64ToBytes(part));
     const length = decoded.reduce((sum, bytes) => sum + bytes.length, 0);
     if (length > MAX_TOTAL) throw new Error("bridge message is too large");

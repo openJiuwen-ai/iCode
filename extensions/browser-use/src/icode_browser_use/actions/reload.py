@@ -8,6 +8,7 @@ from typing import Any
 
 from ..types import ToolBlock
 from .back import follow_navigation
+from .navigate import _precheck_url
 
 NAME = "browser_reload"
 
@@ -24,6 +25,10 @@ PARAMS: dict[str, Any] = {
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
+    current_url = str(getattr(getattr(session, "snapshot", None), "url", "") or "").strip()
+    lowered = current_url.lower()
+    if current_url and lowered not in {"about:blank", "about:srcdoc"} and not lowered.startswith("chrome-error://"):
+        _precheck_url(session, current_url)
     return await follow_navigation(
         session, "Page.reload", {"ignoreCache": arguments["ignore_cache"]}, cross_document=True
     )

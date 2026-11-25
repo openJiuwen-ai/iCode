@@ -18,6 +18,7 @@ fakes) even before those perception/policy modules are wired in.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import time
 from typing import Any
@@ -77,15 +78,19 @@ async def send_watching_dialog(session: Any, seq: int, send: Any) -> tuple[Any, 
     ``Input.*`` and ``Runtime.callFunctionOn`` responses are held until the page's
     script resumes, so a click that opens ``alert()`` would otherwise block its own
     tool call for the whole dialog timeout and hide the dialog from
-    ``browser_dialog``. When that happens the in-flight command is detached (its
-    outcome is only logged) and the dialog is returned: the action has been
-    dispatched, its effect is unproven.
+    ``browser_dialog``. When that happens the in-flight task is cancelled so
+    multi-step coroutines (e.g. mousePressed -> mouseReleased, keyDown -> keyUp)
+    never fire trailing events outside ``action_lock`` once the dialog closes.
     """
+    existing = session.dialog_since(seq)
+    if existing is not None:
+        return None, existing
     task = asyncio.ensure_future(send())
     try:
         while True:
             info = session.dialog_since(seq)
             if info is not None:
+                task.cancel()
                 task.add_done_callback(_consume_detached_send)
                 return None, info
             if task.done():
@@ -94,6 +99,39 @@ async def send_watching_dialog(session: Any, seq: int, send: Any) -> tuple[Any, 
     except asyncio.CancelledError:
         task.cancel()
         raise
+
+
+def note_pending_input_release(session: Any, method: str, params: dict[str, Any], session_id: str | None) -> None:
+    """Record a release event (mouseReleased/keyUp) to flush if an action is cut off by a dialog."""
+    pending = getattr(session, "_pending_input_releases", None)
+    if isinstance(pending, list):
+        pending.append((method, dict(params), session_id))
+
+
+def clear_pending_input_releases(session: Any) -> None:
+    """Clear recorded pending release events after the normal release completes."""
+    pending = getattr(session, "_pending_input_releases", None)
+    if isinstance(pending, list):
+        pending.clear()
+
+
+async def flush_pending_input_releases(session: Any) -> None:
+    """Best-effort release of any stuck mouse button or key left pressed by a dialog cancel."""
+    pending = getattr(session, "_pending_input_releases", None)
+    if not isinstance(pending, list) or not pending:
+        return
+    items = list(pending)
+    pending.clear()
+    client = getattr(session, "_client", None)
+    if client is None and callable(getattr(session, "require_client", None)):
+        with contextlib.suppress(Exception):
+            client = session.require_client()
+    if client is None or getattr(client, "closed", False):
+        return
+    timeout = min(2.0, float(getattr(getattr(session, "cfg", None), "cdp_timeout", 2.0)))
+    for method, params, session_id in items:
+        with contextlib.suppress(Exception):
+            await client.send(method, params, session_id=session_id or session.session_id, timeout=timeout)
 
 
 def url_origin(url: str) -> str:
@@ -169,6 +207,41 @@ async def resolve_target(session: Any, spec: str) -> Any:
     return session.resolve_target(spec)
 
 
+def _raise_if_js_exception(response: dict[str, Any]) -> None:
+    """Turn a CDP ``exceptionDetails`` payload into :class:`BrowserError`."""
+    exc = response.get("exceptionDetails")
+    if exc is None:
+        return
+    from ..snapshot.serializer import sanitize_text
+
+    exception_obj = exc.get("exception") if isinstance(exc, dict) else None
+    raw = (
+        (exception_obj.get("description") if isinstance(exception_obj, dict) else None)
+        or (exc.get("text") if isinstance(exc, dict) else None)
+        or "script exception"
+    )
+    raise BrowserError(f"页面脚本异常：{sanitize_text(str(raw))[:300]}")
+
+
+async def release_object_group(session: Any, group: str, *, cdp_session_id: str | None = None) -> None:
+    """Best-effort ``Runtime.releaseObjectGroup`` to free remote object handles."""
+    if not group:
+        return
+    client = getattr(session, "_client", None)
+    if client is None and callable(getattr(session, "require_client", None)):
+        with contextlib.suppress(Exception):
+            client = session.require_client()
+    if client is None or getattr(client, "closed", False):
+        return
+    with contextlib.suppress(Exception):
+        await client.send(
+            "Runtime.releaseObjectGroup",
+            {"objectGroup": group},
+            session_id=cdp_session_id or session.session_id,
+            timeout=min(2.0, float(getattr(getattr(session, "cfg", None), "cdp_timeout", 2.0))),
+        )
+
+
 async def eval_value(session: Any, expression: str, *, cdp_session_id: str | None = None) -> Any:
     """Run a read-only ``Runtime.evaluate`` returning a JSON value."""
     client = session.require_client()
@@ -178,6 +251,7 @@ async def eval_value(session: Any, expression: str, *, cdp_session_id: str | Non
         session_id=cdp_session_id or session.session_id,
         timeout=session.cfg.evaluate_timeout,
     )
+    _raise_if_js_exception(response)
     return response.get("result", {}).get("value")
 
 
@@ -204,6 +278,7 @@ async def call_value(
         session_id=cdp_session_id or session.session_id,
         timeout=session.cfg.evaluate_timeout,
     )
+    _raise_if_js_exception(response)
     return response.get("result") or {}
 
 
@@ -244,8 +319,37 @@ async def capture_sources(
         ),
         return_exceptions=True,
     )
+    if cdp_session_id is None:
+        with contextlib.suppress(AttributeError, TypeError):
+            session._snapshot_degraded_reason = ""
     if isinstance(snapshot_result, BaseException):
-        raise snapshot_result
+        if isinstance(snapshot_result, BrowserError) and "32 MiB" in str(snapshot_result):
+            log(f"DOMSnapshot exceeded 32 MiB for {session_id}; retrying minimal capture")
+            try:
+                snapshot_result = await client.send(
+                    "DOMSnapshot.captureSnapshot",
+                    {
+                        "computedStyles": ["display", "visibility", "opacity"],
+                        "includePaintOrder": False,
+                        "includeDOMRects": False,
+                    },
+                    session_id=session_id,
+                    timeout=session.cfg.cdp_timeout,
+                )
+            except BrowserError as retry_exc:
+                if "32 MiB" in str(retry_exc):
+                    log(f"minimal DOMSnapshot still exceeded 32 MiB for {session_id}; degrading to empty snapshot")
+                    snapshot_result = {"documents": [], "strings": []}
+                    if cdp_session_id is None:
+                        with contextlib.suppress(AttributeError, TypeError):
+                            session._snapshot_degraded_reason = (
+                                "页面过大（DOM 快照超过 32 MiB 上限），已降级为空快照；"
+                                "请改用 browser_extract 分段读取或指定 target 缩小范围"
+                            )
+                else:
+                    raise
+        else:
+            raise snapshot_result
     ax: dict[str, Any] | None
     if isinstance(ax_result, BrowserError):  # the AX tree is an enhancement, not a hard need
         log(f"AX tree unavailable for {session_id}, fusing DOMSnapshot alone: {ax_result!r}")
@@ -478,14 +582,37 @@ async def _capture_oopif_tree(
         if owner_node is None or owner_node.bbox[2] <= 0 or owner_node.bbox[3] <= 0:
             return []
         snapshot, ax = await capture_sources(session, cdp_session_id=child_session)
+        # Prefer live content-box origin (consistent with resolve_oopif_offset); fall back to owner bbox.
+        content_origin = await _frame_owner_viewport_origin(session, child_session, parent_session)
+        if content_origin is not None:
+            parent_off = offsets.get(parent_session, (0.0, 0.0)) if parent_session else (0.0, 0.0)
+            child_offset = (parent_off[0] + content_origin[0], parent_off[1] + content_origin[1])
+        else:
+            child_offset = (owner_node.bbox[0], owner_node.bbox[1])
+        owner_clip = (
+            owner_node.bbox[0],
+            owner_node.bbox[1],
+            owner_node.bbox[0] + owner_node.bbox[2],
+            owner_node.bbox[1] + owner_node.bbox[3],
+        )
+        parent_clip = frame.viewport_clip
+        if parent_clip is not None:
+            clip = (
+                max(parent_clip[0], owner_clip[0]),
+                max(parent_clip[1], owner_clip[1]),
+                min(parent_clip[2], owner_clip[2]),
+                min(parent_clip[3], owner_clip[3]),
+            )
+        else:
+            clip = owner_clip
         child_nodes = fuse(
             snapshot,
             ax,
-            frame=replace(frame, offset=(owner_node.bbox[0], owner_node.bbox[1])),
+            frame=replace(frame, offset=child_offset, viewport_clip=clip),
             target_id=session.target_id,
             cdp_session_id=child_session,
         )
-        offsets[child_session] = (owner_node.bbox[0], owner_node.bbox[1])
+        offsets[child_session] = child_offset
         budget[0] -= 1
         result = [node for node in child_nodes if node.visible]
         for grandchild in session.oopif_children(child_session):
@@ -501,6 +628,8 @@ async def _capture_oopif_tree(
                 )
             )
         return result
+    except ConnectionClosed:
+        raise
     except Exception as exc:  # one iframe must not break the page snapshot
         log(f"OOPIF {child_session} snapshot skipped: {exc!r}")
         return []

@@ -21,6 +21,8 @@ PROTOCOL_VERSION = 1
 CHUNK_PAYLOAD_BYTES = 500_000
 CHUNK_THRESHOLD = 600_000
 _MAX_CHUNKS = 128
+_MAX_PENDING_CHUNKS = 8
+_MAX_BUFFERED_BASE64_BYTES = (MAX_TCP_MESSAGE_BYTES * 4) // 3 + 4096
 
 
 class ProtocolError(RuntimeError):
@@ -136,6 +138,13 @@ class ChunkAssembler:
     def __init__(self) -> None:
         self._parts: dict[str, list[str | None]] = {}
         self._total: dict[str, int] = {}
+        self._buffered_chars = 0
+
+    def _drop(self, chunk_id: str) -> None:
+        parts = self._parts.pop(chunk_id, None)
+        self._total.pop(chunk_id, None)
+        if parts:
+            self._buffered_chars = max(0, self._buffered_chars - sum(len(p) for p in parts if p is not None))
 
     def add(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         meta = payload.get("__bridge_chunk")
@@ -159,12 +168,23 @@ class ChunkAssembler:
             raise ProtocolError("invalid bridge chunk")
         expected = self._total.get(chunk_id)
         if expected is not None and expected != total:
+            self._drop(chunk_id)
             raise ProtocolError("bridge chunk total changed")
+        if chunk_id not in self._parts and len(self._parts) >= _MAX_PENDING_CHUNKS:
+            raise ProtocolError("too many concurrent incomplete bridge chunk messages")
+        if self._buffered_chars + len(data) > _MAX_BUFFERED_BASE64_BYTES:
+            self._drop(chunk_id)
+            raise ProtocolError("buffered bridge chunks exceed size cap")
         self._total[chunk_id] = total
         parts = self._parts.setdefault(chunk_id, [None] * total)
+        if parts[index] is not None:
+            self._drop(chunk_id)
+            raise ProtocolError("duplicate bridge chunk index")
         parts[index] = data
+        self._buffered_chars += len(data)
         if any(part is None for part in parts):
             return None
+        self._drop(chunk_id)
         try:
             chunks = [base64.b64decode(part, validate=True) for part in parts if part is not None]
         except (ValueError, TypeError) as exc:
@@ -172,6 +192,4 @@ class ChunkAssembler:
         body = b"".join(chunks)
         if len(body) > MAX_TCP_MESSAGE_BYTES:
             raise ProtocolError("reassembled bridge message is too large")
-        self._parts.pop(chunk_id, None)
-        self._total.pop(chunk_id, None)
         return _decode_object(body)

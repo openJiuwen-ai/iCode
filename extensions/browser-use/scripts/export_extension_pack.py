@@ -36,6 +36,7 @@ _IGNORED = shutil.ignore_patterns(
     "*.pyc",
     "*.test.js",
     "*.test.mjs",
+    "package.json",
     ".pytest_cache",
     ".ruff_cache",
     ".mypy_cache",
@@ -235,7 +236,16 @@ def _check_assets(core: Path) -> None:
         str(options.get("page") or manifest.get("options_page") or ""),
         str(background.get("service_worker") or ""),
     }
-    required = {"extension/background.js", "extension/chunks.js", "extension/permissions.js"}
+    required = {
+        "extension/background.js",
+        "extension/chunks.js",
+        "extension/permissions.js",
+        "extension/popup.js",
+        "extension/options.js",
+        "extension/onboarding.html",
+        "extension/onboarding.js",
+        "extension/onboarding.css",
+    }
     required |= {f"extension/{name}" for name in referenced if name}
     for name in sorted(required):
         if not (core / name).is_file():

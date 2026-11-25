@@ -7,7 +7,25 @@
 // carries `sessionId`, and sendCommand({tabId, sessionId}) routes to that child
 // (OOPIF). Nested OOPIFs need setAutoAttach again on the child session.
 
-import { assertPermission, needsPermission, permissionError, permissionFor, setBridgePublicWeb } from "./permissions.js";
+import {
+  BRIDGE_METHODS,
+  METHOD_FETCH_CONTINUE,
+  METHOD_FETCH_ENABLE,
+  METHOD_NETWORK_COOKIES,
+  METHOD_PLUMBING,
+  METHOD_PROBE_SCRIPT,
+  METHOD_SITE,
+  MUTATION_PROBE_SHA256,
+  assertPermission,
+  isSafeBlankUrl,
+  methodPolicy,
+  needsPermission,
+  originOf,
+  permissionError,
+  permissionFor,
+  setBridgePublicWeb,
+  stripQueryAndFragment,
+} from "./permissions.js";
 import { BridgeChunkReceiver, encodeBridgeMessages } from "./chunks.js";
 
 const HOST = "com.chrys.browser";
@@ -16,11 +34,19 @@ const OWNED_TABS_KEY = "chrysOwnedTabsV1";
 const BROWSER_SESSION_KEY = "chrysBrowserSessionV1";
 const BRIDGE_STATE_KEY = "chrysBridgeStateV1";
 const OWN_ORIGIN = `chrome-extension://${chrome.runtime.id}/`;
+const MIN_RECONNECT_MS = 1000;
+const MAX_RECONNECT_MS = 30000;
+
 let port = null;
 let groupId = null;
 let connecting = false;
+let reconnectDelayMs = MIN_RECONNECT_MS;
+let reconnectTimer = null;
 let ownedWrite = Promise.resolve();
+let policyWrite = Promise.resolve();
+let dnrWrite = Promise.resolve();
 const ownedTabs = new Set();
+const closingTabs = new Set();
 const sessions = new Map(); // child sessionId -> { tabId, targetId, url }
 let bridgeReady = false;
 let bridgeLeaseId = null;
@@ -41,17 +67,173 @@ function postBridge(payload, targetPort = port) {
   }
 }
 
+function enqueuePolicyWrite(operation) {
+  const next = policyWrite.then(operation, operation);
+  policyWrite = next.catch(() => {});
+  return next;
+}
+
+function enqueueDnrSync() {
+  const next = dnrWrite.then(syncDnrRules, syncDnrRules);
+  dnrWrite = next.catch(() => {});
+  return next;
+}
+
+async function syncDnrRules() {
+  if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateSessionRules) return;
+  try {
+    const existing = chrome.declarativeNetRequest.getSessionRules
+      ? await chrome.declarativeNetRequest.getSessionRules()
+      : [];
+    const removeRuleIds = existing.map((rule) => rule.id);
+    const tabIds = Array.from(ownedTabs);
+    // Without a connected plugin the tabs are released to the user: no rules.
+    if (tabIds.length === 0 || !port) {
+      if (removeRuleIds.length > 0) {
+        await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds });
+      }
+      return;
+    }
+    const data = await chrome.storage.local.get({
+      sitePermissions: {},
+      defaultPermission: "ask",
+      userAllowsPublicWeb: false,
+      bridgePublicWeb: false,
+      bridgeAllowedDomains: [],
+      bridgeAllowedOrigins: [],
+    });
+    const permissions = data.sitePermissions || {};
+    const domains = Array.isArray(data.bridgeAllowedDomains) ? data.bridgeAllowedDomains : [];
+    const origins = Array.isArray(data.bridgeAllowedOrigins) ? data.bridgeAllowedOrigins : [];
+    const hasNarrowing = domains.length > 0 || origins.length > 0;
+    const publicFallbackAllow =
+      !hasNarrowing && ((data.bridgePublicWeb === true && data.userAllowsPublicWeb === true) || data.defaultPermission === "allow");
+
+    const addRules = [];
+    let nextId = 1;
+    const resourceTypes = ["main_frame", "sub_frame"];
+    // "|https://a.com/" anchors the whole origin; without the trailing "/" the
+    // filter is a prefix and would also match https://a.com.evil.net/.
+    const originFilter = (origin) => `|${origin}/`;
+
+    // Layer 1 pre-request navigation boundary on owned tabs only:
+    // Priority 1: block main_frame navigations by default (fail-closed before cookies leave).
+    if (!publicFallbackAllow) {
+      addRules.push({
+        id: nextId++,
+        priority: 1,
+        action: { type: "block" },
+        condition: { urlFilter: "|http", tabIds, resourceTypes },
+      });
+    }
+    // Priority 10: allow explicitly permitted origins (when compatible with plugin narrowing).
+    for (const [origin, state] of Object.entries(permissions)) {
+      if (state === "allow" && originOf(origin) === origin) {
+        const effective = await permissionFor(origin);
+        if (effective === "allow") {
+          addRules.push({
+            id: nextId++,
+            priority: 10,
+            action: { type: "allow" },
+            condition: { urlFilter: originFilter(origin), tabIds, resourceTypes },
+          });
+        }
+      }
+    }
+    // With plugin narrowing, permissionFor() allows listed origins/domains when the
+    // default policy or the user's public-web opt-in allows them: mirror that here
+    // so layer 1 is never stricter than layer 2.
+    const narrowedFallbackAllow =
+      hasNarrowing && (data.defaultPermission === "allow" || (data.bridgePublicWeb === true && data.userAllowsPublicWeb === true));
+    if (narrowedFallbackAllow) {
+      for (const origin of origins) {
+        const clean = originOf(String(origin || ""));
+        if (!clean) continue;
+        addRules.push({
+          id: nextId++,
+          priority: 10,
+          action: { type: "allow" },
+          condition: { urlFilter: originFilter(clean), tabIds, resourceTypes },
+        });
+      }
+      const requestDomains = domains.map((domain) => String(domain || "").replace(/^\./, "")).filter(Boolean);
+      if (requestDomains.length) {
+        addRules.push({
+          id: nextId++,
+          priority: 10,
+          action: { type: "allow" },
+          condition: { requestDomains, tabIds, resourceTypes },
+        });
+      }
+    }
+    // Priority 20: explicit block/ask overrides always block before sending cookies.
+    for (const [origin, state] of Object.entries(permissions)) {
+      if ((state === "block" || state === "ask") && originOf(origin) === origin) {
+        addRules.push({
+          id: nextId++,
+          priority: 20,
+          action: { type: "block" },
+          condition: { urlFilter: originFilter(origin), tabIds, resourceTypes },
+        });
+      }
+    }
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds, addRules });
+  } catch {
+    // Best effort: webNavigation.onCommitted and assertPermission still enforce the boundary.
+  }
+}
+
+async function releaseOwnedTabs() {
+  for (const tabId of Array.from(ownedTabs)) {
+    closingTabs.add(tabId);
+    try {
+      await chrome.debugger.sendCommand({ tabId }, "Fetch.disable");
+    } catch {
+      // Best effort; tab may not be attached or Fetch may not be enabled.
+    }
+    try {
+      if (chrome.debugger && chrome.debugger.detach) {
+        await chrome.debugger.detach({ tabId });
+      }
+    } catch {
+      // Best effort; tab may already be detached or closed.
+    }
+    forgetSessions(tabId);
+    closingTabs.delete(tabId);
+  }
+  await enqueueDnrSync();
+}
+
+function scheduleReconnect() {
+  if (port || connecting || reconnectTimer !== null) return;
+  if (reconnectDelayMs > MAX_RECONNECT_MS) {
+    // Hand off to the 30s service-worker alarm so Chrome does not churn processes.
+    return;
+  }
+  const delay = reconnectDelayMs;
+  reconnectDelayMs = delay >= MAX_RECONNECT_MS ? MAX_RECONNECT_MS + 1 : Math.min(delay * 2, MAX_RECONNECT_MS);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
+}
+
 function handlePortDisconnect(targetPort) {
   if (port !== targetPort) return;
   port = null;
   bridgeReady = false;
   incomingChunks.clear();
-  clearBridgePolicy();
-  setTimeout(connect, 1000);
+  void enqueuePolicyWrite(() => clearBridgePolicy());
+  void releaseOwnedTabs();
+  scheduleReconnect();
 }
 
 function connect() {
   if (port || connecting) return;
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   connecting = true;
   void restoreOwnedTabs().finally(() => {
     let nextPort;
@@ -59,7 +241,7 @@ function connect() {
       nextPort = chrome.runtime.connectNative(HOST);
     } catch {
       connecting = false;
-      setTimeout(connect, 1000);
+      scheduleReconnect();
       return;
     }
     port = nextPort;
@@ -81,6 +263,7 @@ function connect() {
       if (message === null) return;
       if (message && message.method === "Bridge.ready") {
         bridgeReady = true;
+        reconnectDelayMs = MIN_RECONNECT_MS;
         return;
       }
       handle(message, nextPort).catch((error) => {
@@ -90,6 +273,8 @@ function connect() {
       });
     });
     nextPort.onDisconnect.addListener(() => {
+      // Read lastError to avoid unchecked runtime.lastError warnings in Chrome.
+      void chrome.runtime.lastError;
       handlePortDisconnect(nextPort);
     });
     connecting = false;
@@ -113,18 +298,20 @@ async function writeOwnedRecords(records) {
   }
 }
 
-function clearBridgePolicy() {
+async function clearBridgePolicy() {
   bridgeLeaseId = null;
   setBridgePublicWeb(false);
   try {
-    chrome.storage.local.remove("bridgeAllowedDomains");
-    chrome.storage.local.remove("bridgeAllowedOrigins");
+    await chrome.storage.local.remove("bridgeAllowedDomains");
+    await chrome.storage.local.remove("bridgeAllowedOrigins");
+    await chrome.storage.local.remove("bridgePublicWeb");
     if (chrome.storage.session && chrome.storage.session.remove) {
-      chrome.storage.session.remove(BRIDGE_STATE_KEY);
+      await chrome.storage.session.remove(BRIDGE_STATE_KEY);
     }
   } catch {
     // Best effort; the next Bridge.configure replaces it anyway.
   }
+  await enqueueDnrSync();
 }
 
 async function persistBridgeState(leaseId, publicWeb) {
@@ -192,6 +379,7 @@ async function rememberOwned(tabId) {
       // The tab may already be gone; memory ownership still fails closed on get.
     }
   });
+  await enqueueDnrSync();
 }
 
 async function forgetOwned(tabId) {
@@ -201,6 +389,7 @@ async function forgetOwned(tabId) {
     if (records === null) return;
     await writeOwnedRecords(records.filter((record) => record.tabId !== tabId));
   });
+  await enqueueDnrSync();
 }
 
 async function restoreOwnedTabs() {
@@ -252,7 +441,10 @@ function requireOwned(tabId) {
 
 async function assertTabPermission(tabId) {
   const tab = await chrome.tabs.get(tabId);
-  await assertPermission(tab.url || "");
+  await assertPermission((tab && tab.url) || "");
+  if (tab && tab.pendingUrl) {
+    await assertPermission(tab.pendingUrl);
+  }
 }
 
 async function assertSessionPermission(target) {
@@ -285,9 +477,81 @@ function forgetSessions(tabId) {
   }
 }
 
+async function sha256Hex(text) {
+  const bytes = new TextEncoder().encode(String(text || ""));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function validateFetchEnable(params) {
+  const patterns = Array.isArray(params && params.patterns) ? params.patterns : [];
+  for (const pattern of patterns) {
+    const stage = pattern && pattern.requestStage;
+    if (stage !== undefined && stage !== "Request") {
+      throw new Error(`Fetch.enable requestStage=${stage} is not allowed in bridge mode`);
+    }
+  }
+  return params || {};
+}
+
+function stripFetchContinueRequest(params) {
+  const requestId = params && params.requestId;
+  if (!requestId) {
+    throw new Error("Fetch.continueRequest requires requestId");
+  }
+  return { requestId };
+}
+
+function cookieMatchesHost(cookieDomain, host) {
+  const raw = String(cookieDomain || "").trim().toLowerCase();
+  const cleanHost = String(host || "").trim().toLowerCase();
+  if (!raw || !cleanHost) return false;
+  if (raw.startsWith(".")) {
+    const base = raw.slice(1);
+    return cleanHost === base || cleanHost.endsWith(`.${base}`);
+  }
+  return cleanHost === raw;
+}
+
+async function runCheckedGetCookies(target, params) {
+  const urls = Array.isArray(params && params.urls) ? params.urls : [];
+  if (urls.length === 0) {
+    throw new Error("Network.getCookies requires non-empty urls in bridge mode");
+  }
+  const allowedHosts = [];
+  for (const rawUrl of urls) {
+    const urlStr = String(rawUrl || "");
+    if (!originOf(urlStr)) {
+      throw new Error(`Network.getCookies url is not an allowed http(s) origin: ${stripQueryAndFragment(urlStr)}`);
+    }
+    await assertPermission(urlStr);
+    allowedHosts.push(new URL(urlStr).hostname.toLowerCase());
+  }
+  const raw = (await chrome.debugger.sendCommand(target, "Network.getCookies", { urls })) || {};
+  const cookies = Array.isArray(raw.cookies) ? raw.cookies : [];
+  return {
+    ...raw,
+    cookies: cookies.filter((cookie) =>
+      allowedHosts.some((host) => cookieMatchesHost(cookie && cookie.domain, host))
+    ),
+  };
+}
+
+async function runCheckedProbeScript(target, params) {
+  const source = params && typeof params.source === "string" ? params.source : "";
+  const hash = await sha256Hex(source);
+  if (hash !== MUTATION_PROBE_SHA256) {
+    throw new Error("Page.addScriptToEvaluateOnNewDocument is restricted to the built-in mutation probe");
+  }
+  return (await chrome.debugger.sendCommand(target, "Page.addScriptToEvaluateOnNewDocument", { source })) || {};
+}
+
 async function handle(message, sourcePort = port) {
   if (!message || typeof message.method !== "string") return;
   const { id, method, params, sessionId } = message;
+  if (method !== "Bridge.configure") {
+    await policyWrite;
+  }
   await restoreBridgeState();
   if (bridgeLeaseId && method !== "Bridge.hello" && method !== "Bridge.configure") {
     if (!message.leaseId) {
@@ -322,9 +586,14 @@ async function handle(message, sourcePort = port) {
     const tabId = Number(params && params.targetId);
     const owned = ownedTabs.has(tabId);
     if (owned) {
-      await forgetOwned(tabId);
-      forgetSessions(tabId);
-      await chrome.tabs.remove(tabId);
+      closingTabs.add(tabId);
+      try {
+        await forgetOwned(tabId);
+        forgetSessions(tabId);
+        await chrome.tabs.remove(tabId);
+      } finally {
+        closingTabs.delete(tabId);
+      }
     }
     // Same shape as CDP: a tab this bridge does not own is not closed, and says so.
     result = { success: owned };
@@ -363,22 +632,32 @@ async function handle(message, sourcePort = port) {
     const origins = Array.isArray(params && params.allowedOrigins)
       ? params.allowedOrigins.map((origin) => String(origin || "").trim().toLowerCase()).filter(Boolean)
       : [];
-    bridgeLeaseId = message.leaseId;
     const publicWeb = params?.publicWeb === true && !domains.length && !origins.length;
-    await chrome.storage.local.set({ bridgeAllowedDomains: domains, bridgeAllowedOrigins: origins });
-    if (port === sourcePort && bridgeLeaseId === message.leaseId) {
-      setBridgePublicWeb(publicWeb);
-      await persistBridgeState(bridgeLeaseId, publicWeb);
-    }
+    await enqueuePolicyWrite(async () => {
+      if (port !== sourcePort) return;
+      bridgeLeaseId = message.leaseId;
+      await chrome.storage.local.set({
+        bridgeAllowedDomains: domains,
+        bridgeAllowedOrigins: origins,
+        bridgePublicWeb: publicWeb,
+      });
+      if (port === sourcePort && bridgeLeaseId === message.leaseId) {
+        setBridgePublicWeb(publicWeb);
+        await persistBridgeState(bridgeLeaseId, publicWeb);
+      }
+      await enqueueDnrSync();
+    });
     result = { domains: domains.length, origins: origins.length, capabilities: ["ping", "page_log_gated", "tab_state"] };
   } else if (method === "Bridge.tabState") {
     const tabId = Number((params && params.targetId) || sessionId);
     requireOwned(tabId);
     const tab = await chrome.tabs.get(tabId);
+    const rawUrl = (tab && tab.url) || "";
+    const allowed = isSafeBlankUrl(rawUrl) || (await permissionFor(rawUrl)) === "allow";
     result = {
       active: Boolean(tab && tab.active),
-      url: (tab && tab.url) || "",
-      title: (tab && tab.title) || "",
+      url: allowed ? rawUrl : originOf(rawUrl),
+      title: allowed ? (tab && tab.title) || "" : "",
       windowId: tab ? tab.windowId : null,
     };
   } else if (method === "Target.activateTarget") {
@@ -388,30 +667,41 @@ async function handle(message, sourcePort = port) {
     result = { activated: true };
   } else if (method === "Bridge.ping") {
     result = { pong: true };
-  } else if (
-    method.startsWith("Browser.") ||
-    method === "Target.getTargets" ||
-    method === "Target.setDiscoverTargets" ||
-    method === "Target.getTargetInfo" ||
-    method === "Target.createBrowserContext" ||
-    method === "Target.disposeBrowserContext"
-  ) {
-    throw new Error(`${method} is not allowed in bridge mode`);
   } else {
+    // Strict CDP allowlist: every command not listed in BRIDGE_METHODS
+    // (including Browser.*, Storage.*, Target.getTargets, Network.getAllCookies, etc.)
+    // is rejected outright, even on about:blank.
+    const policy = methodPolicy(method);
+    if (!policy) {
+      throw new Error(`${method} is not allowed in bridge mode`);
+    }
     const target = debuggeeFor(sessionId);
-    if (needsPermission(method)) await assertSessionPermission(target);
-    result = (await chrome.debugger.sendCommand(target, method, params || {})) || {};
+    if (policy === METHOD_FETCH_ENABLE) {
+      const checked = validateFetchEnable(params);
+      result = (await chrome.debugger.sendCommand(target, method, checked)) || {};
+    } else if (policy === METHOD_FETCH_CONTINUE) {
+      const stripped = stripFetchContinueRequest(params);
+      result = (await chrome.debugger.sendCommand(target, method, stripped)) || {};
+    } else if (policy === METHOD_NETWORK_COOKIES) {
+      await assertSessionPermission(target);
+      result = await runCheckedGetCookies(target, params);
+    } else if (policy === METHOD_PROBE_SCRIPT) {
+      result = await runCheckedProbeScript(target, params);
+    } else if (policy === METHOD_PLUMBING) {
+      result = (await chrome.debugger.sendCommand(target, method, params || {})) || {};
+    } else if (policy === METHOD_SITE) {
+      if (needsPermission(method)) await assertSessionPermission(target);
+      result = (await chrome.debugger.sendCommand(target, method, params || {})) || {};
+    } else {
+      throw new Error(`${method} is not allowed in bridge mode`);
+    }
   }
   if (id !== undefined) {
     postBridge({ id, result }, sourcePort);
   }
 }
 
-// Events that carry page content, headers, cookies, WebSocket frames, or logs
-// must never stream for an origin the user has not allowed. A main-document
-// response also feeds the navigation status: a copy reduced to those fields
-// goes out at once for every page, and the full response follows through the
-// same gate as the other log events.
+// Strict event allowlist: only events Python subscribes to are forwarded.
 const PAGE_LOG_EVENTS = new Set([
   "Runtime.consoleAPICalled",
   "Runtime.exceptionThrown",
@@ -420,12 +710,23 @@ const PAGE_LOG_EVENTS = new Set([
   "Network.loadingFailed",
 ]);
 
+const PASS_THROUGH_EVENTS = new Set([
+  "Page.frameStoppedLoading",
+  "Page.lifecycleEvent",
+  "Page.javascriptDialogClosed",
+  "DOM.documentUpdated",
+  "Target.detachedFromTarget",
+]);
+
+const REDACTED_URL_EVENTS = new Set([
+  "Page.frameNavigated",
+  "Page.navigatedWithinDocument",
+  "Page.javascriptDialogOpening",
+  "Target.targetInfoChanged",
+]);
+
 function isGatedPageEvent(method) {
-  return (
-    PAGE_LOG_EVENTS.has(method) ||
-    method.startsWith("Network.") ||
-    method.startsWith("Log.")
-  );
+  return PAGE_LOG_EVENTS.has(method);
 }
 
 async function eventSourceUrl(source) {
@@ -452,11 +753,93 @@ function forwardPageLogEvent(source, method, params, parentTabId) {
     .catch(() => {});
 }
 
+function forwardFetchRequestPaused(source, params, parentTabId) {
+  const sessionId = source.sessionId || String(parentTabId);
+  const reqUrl = (params && params.request && params.request.url) || "";
+  permissionFor(reqUrl)
+    .then((state) => {
+      if (!port) {
+        if (params && params.requestId) {
+          chrome.debugger
+            .sendCommand(source, "Fetch.failRequest", {
+              requestId: params.requestId,
+              errorReason: "BlockedByClient",
+            })
+            .catch(() => {});
+        }
+        return;
+      }
+      if (state === "allow") {
+        postBridge({ method: "Fetch.requestPaused", params, sessionId });
+        return;
+      }
+      // Redact headers, cookies, postData, and query string for unapproved origins.
+      postBridge({
+        method: "Fetch.requestPaused",
+        params: {
+          requestId: params.requestId,
+          request: { url: stripQueryAndFragment(reqUrl) },
+          resourceType: params.resourceType,
+          frameId: params.frameId,
+        },
+        sessionId,
+      });
+    })
+    .catch(() => {});
+}
+
+function forwardWithRedaction(source, method, params, parentTabId) {
+  const sessionId = source.sessionId || String(parentTabId);
+  const candidateUrl =
+    (method === "Page.frameNavigated" && params.frame && params.frame.url) ||
+    (method === "Page.navigatedWithinDocument" && params.url) ||
+    (method === "Page.javascriptDialogOpening" && params.url) ||
+    (method === "Target.targetInfoChanged" && params.targetInfo && params.targetInfo.url) ||
+    "";
+  const check = candidateUrl
+    ? permissionFor(candidateUrl)
+    : eventSourceUrl(source).then((u) => (u ? permissionFor(u) : "ask"));
+  check
+    .then((state) => {
+      if (!port) return;
+      if (state === "allow") {
+        postBridge({ method, params, sessionId });
+        return;
+      }
+      if (method === "Page.frameNavigated") {
+        const frame = { ...(params.frame || {}) };
+        frame.url = originOf(frame.url || "");
+        frame.name = "";
+        postBridge({ method, params: { ...params, frame }, sessionId });
+      } else if (method === "Page.navigatedWithinDocument") {
+        postBridge({ method, params: { ...params, url: originOf(params.url || "") }, sessionId });
+      } else if (method === "Page.javascriptDialogOpening") {
+        postBridge({
+          method,
+          params: {
+            ...params,
+            url: originOf(params.url || ""),
+            message: "",
+            defaultPrompt: "",
+          },
+          sessionId,
+        });
+      } else if (method === "Target.targetInfoChanged") {
+        const targetInfo = { ...(params.targetInfo || {}) };
+        targetInfo.url = originOf(targetInfo.url || "");
+        targetInfo.title = "";
+        postBridge({ method, params: { ...params, targetInfo }, sessionId });
+      }
+    })
+    .catch(() => {});
+}
+
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (source.tabId === undefined) return;
   const parentTabId = source.tabId;
+  const safeParams = params || {};
   if (method === "Target.targetInfoChanged") {
-    const info = params && params.targetInfo;
+    const info = safeParams.targetInfo;
     if (info && info.targetId && info.url) {
       // In CDP flat sessions, Target.targetInfoChanged arrives on the parent
       // session, so match by targetId across tracked child sessions.
@@ -468,8 +851,8 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     }
   }
   if (method === "Target.attachedToTarget") {
-    const info = (params && params.targetInfo) || {};
-    const child = params && params.sessionId;
+    const info = safeParams.targetInfo || {};
+    const child = safeParams.sessionId;
     if (!child) return;
     if (isForeignExtension(info.url)) {
       // Never pause or inspect another extension's frame. Release it if the
@@ -489,36 +872,116 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         .catch(() => {});
       return;
     }
-    postBridge({ method, params: params || {}, sessionId: source.sessionId || null });
+    postBridge({ method, params: safeParams, sessionId: source.sessionId || null });
     return;
   }
   if (method === "Target.detachedFromTarget") {
-    sessions.delete(params && params.sessionId);
+    sessions.delete(safeParams.sessionId);
+  }
+  if (method === "Fetch.requestPaused") {
+    if (!port) {
+      if (safeParams.requestId) {
+        chrome.debugger
+          .sendCommand(source, "Fetch.failRequest", {
+            requestId: safeParams.requestId,
+            errorReason: "BlockedByClient",
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+    forwardFetchRequestPaused(source, safeParams, parentTabId);
+    return;
   }
   if (!port) return;
   if (isGatedPageEvent(method)) {
-    forwardPageLogEvent(source, method, params || {}, parentTabId);
+    forwardPageLogEvent(source, method, safeParams, parentTabId);
     return;
   }
-  postBridge({
-    method,
-    params: params || {},
-    sessionId: source.sessionId || String(parentTabId),
-  });
+  if (REDACTED_URL_EVENTS.has(method)) {
+    forwardWithRedaction(source, method, safeParams, parentTabId);
+    return;
+  }
+  if (PASS_THROUGH_EVENTS.has(method)) {
+    postBridge({
+      method,
+      params: safeParams,
+      sessionId: source.sessionId || String(parentTabId),
+    });
+  }
+  // Unlisted events (Network.responseReceivedExtraInfo, Log.entryAdded, etc.) are dropped.
 });
 
-chrome.debugger.onDetach.addListener((source) => {
+chrome.debugger.onDetach.addListener((source, reason) => {
   if (source.tabId !== undefined) {
-    // A user detach pauses debugger access; it does not prove the tab is not ours.
     forgetSessions(source.tabId);
+    if (closingTabs.has(source.tabId) || reason === "target_closed") {
+      return;
+    }
+    postBridge({
+      method: "Inspector.detached",
+      params: { reason: reason || "detached" },
+      sessionId: String(source.tabId),
+    });
   }
 });
+
+if (chrome.webNavigation && chrome.webNavigation.onCommitted) {
+  chrome.webNavigation.onCommitted.addListener(async ({ tabId, frameId, url }) => {
+    // No plugin connected: the tab is the user's again, never hijack it.
+    if (!port || !ownedTabs.has(tabId) || isSafeBlankUrl(url)) return;
+    const state = await permissionFor(url);
+    if (state === "allow") return;
+    if (frameId !== 0) {
+      // Subframe (e.g. ad/YouTube/SSO iframe): never detach or drop the main tab.
+      // Subframe network/child sessions stay isolated by Fetch & assertSessionPermission.
+      return;
+    }
+    try {
+      if (chrome.debugger && chrome.debugger.detach) {
+        await chrome.debugger.detach({ tabId });
+      }
+    } catch {
+      // Tab may already be detached.
+    }
+    forgetSessions(tabId);
+    if (chrome.tabs && chrome.tabs.update) {
+      try {
+        await chrome.tabs.update(tabId, { url: "about:blank" });
+      } catch {
+        // Tab may already be closing.
+      }
+    }
+    postBridge({
+      method: "Bridge.siteBlocked",
+      params: { tabId: String(tabId), origin: originOf(url) || stripQueryAndFragment(url) },
+    });
+  });
+}
+
+if (chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") return;
+    if (changes.sitePermissions || changes.defaultPermission || changes.userAllowsPublicWeb) {
+      void enqueueDnrSync();
+    }
+  });
+}
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void forgetOwned(tabId);
   forgetSessions(tabId);
 });
 
+chrome.runtime.onStartup.addListener(async () => {
+  // A browser restart (including after a crash) ends every plugin lease; a
+  // persisted public-web flag from the previous run must not survive it.
+  try {
+    await chrome.storage.local.remove("bridgePublicWeb");
+  } catch {
+    // Best effort; permissionFor still requires the user's public-web opt-in.
+  }
+});
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 chrome.runtime.onInstalled.addListener((details) => {

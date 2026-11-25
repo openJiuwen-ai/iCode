@@ -17,7 +17,10 @@ from icode_browser_use.session import BrowserSession
 def _history_session(current: int, count: int = 3) -> SimpleNamespace:
     client = SimpleNamespace(
         send=AsyncMock(
-            return_value={"currentIndex": current, "entries": [{"id": 100 + index, "url": f"https://example.com/{index}"} for index in range(count)]}
+            return_value={
+                "currentIndex": current,
+                "entries": [{"id": 100 + index, "url": f"https://example.com/{index}"} for index in range(count)],
+            }
         )
     )
     return SimpleNamespace(
@@ -41,7 +44,13 @@ def test_history_steps_to_the_neighbouring_entry(monkeypatch, module, current, e
     monkeypatch.setattr(back, "follow_navigation", fake_follow)
     blocks = asyncio.run(module.run(_history_session(current), {}))
     assert blocks[0]["text"] == "snapshot"
-    assert calls == [("Page.navigateToHistoryEntry", {"entryId": expected}, {"expected_url": f"https://example.com/{expected - 100}"})]
+    assert calls == [
+        (
+            "Page.navigateToHistoryEntry",
+            {"entryId": expected},
+            {"expected_url": f"https://example.com/{expected - 100}"},
+        )
+    ]
 
 
 @pytest.mark.parametrize(("module", "current", "notice"), [(back, 0, "历史起点"), (forward, 2, "历史末尾")])

@@ -8,7 +8,7 @@ from typing import Any
 
 from ..errors import BadRequest
 from ..types import ToolBlock, text_block
-from .actionability import evidence_line, mark_dispatched, new_action_id, prepare_action, record_action
+from .actionability import amark_dispatched, aprepare_action, arecord_action, evidence_line, new_action_id
 
 NAME = "browser_download_cancel"
 
@@ -35,13 +35,13 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 evidence_line(session, action_id),
             ]
         )
-        record_action(session, action_id, NAME, "blocked", text)
+        await arecord_action(session, action_id, NAME, "blocked", text)
         return [text_block(text)]
 
     info = next((item for item in session.list_downloads() if item.guid == guid), None)
     if info is None:
         text = "\n".join([f"未知下载：{guid}（请先 browser_downloads）", "status=blocked retryable=false"])
-        record_action(session, action_id, NAME, "blocked", text)
+        await arecord_action(session, action_id, NAME, "blocked", text)
         return [text_block(text)]
     if info.state != "in_progress":
         text = "\n".join(
@@ -51,15 +51,15 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 evidence_line(session, action_id),
             ]
         )
-        record_action(session, action_id, NAME, "blocked", text)
+        await arecord_action(session, action_id, NAME, "blocked", text)
         return [text_block(text)]
 
-    prepare_action(session, action_id, NAME, f"prepared cancel of download {guid}")
+    await aprepare_action(session, action_id, NAME, f"prepared cancel of download {guid}")
     try:
         info = await session.cancel_download(guid)
     except BadRequest as exc:
         text = "\n".join([exc.message, "status=uncertain retryable=false", evidence_line(session, action_id)])
-        record_action(session, action_id, NAME, "uncertain", text)
+        await arecord_action(session, action_id, NAME, "uncertain", text)
         return [text_block(text)]
     if info.state != "canceled":
         text = "\n".join(
@@ -69,9 +69,9 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 evidence_line(session, action_id),
             ]
         )
-        record_action(session, action_id, NAME, "blocked", text)
+        await arecord_action(session, action_id, NAME, "blocked", text)
         return [text_block(text)]
-    mark_dispatched(session, action_id, NAME, f"dispatched cancel of download {guid}")
+    await amark_dispatched(session, action_id, NAME, f"dispatched cancel of download {guid}")
     text = "\n".join(
         [
             f"已取消下载 {info.name}",
@@ -81,5 +81,5 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             evidence_line(session, action_id),
         ]
     )
-    record_action(session, action_id, NAME, "succeeded", text)
+    await arecord_action(session, action_id, NAME, "succeeded", text)
     return [text_block(text)]

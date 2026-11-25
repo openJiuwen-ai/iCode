@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..cdp.websocket import FrameTooLarge
 from ..config import MAX_IMAGE_BYTES
 from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed, Unavailable
 from ..types import ToolBlock, image_block
@@ -32,6 +33,8 @@ PARAMS: dict[str, Any] = {
 }
 
 _TARGET_PAD_PX = 8.0
+_FULL_PAGE_MAX_HEIGHT = 16384
+_FULL_PAGE_MAX_PIXELS = 25_000_000
 _NO_LAYOUT_RE = re.compile(
     r"does not have a layout object|could not compute (?:content quads|box model)", re.IGNORECASE
 )
@@ -68,11 +71,17 @@ def _padded_clip(
         return None
     left = max(0.0, x - pad)
     top = max(0.0, y - pad)
+    right = x + width + pad
+    bottom = y + height + pad
+    clip_w = right - left
+    clip_h = bottom - top
+    if clip_w <= 0 or clip_h <= 0:
+        return None
     return {
         "x": left,
         "y": top,
-        "width": width + (x - left) + pad,
-        "height": height + (y - top) + pad,
+        "width": clip_w,
+        "height": clip_h,
         "scale": 1,
     }
 
@@ -167,8 +176,12 @@ async def _target_clip(session: Any, entry: Any, object_id: str) -> tuple[dict[s
         raise
     clip = _clip_from_model(model_response.get("model") or {})
     if clip and (offset[0] or offset[1]):
-        clip["x"] += offset[0]
-        clip["y"] += offset[1]
+        clip = _padded_clip(
+            clip["x"] + offset[0] + _TARGET_PAD_PX,
+            clip["y"] + offset[1] + _TARGET_PAD_PX,
+            max(0.0, clip["width"] - 2 * _TARGET_PAD_PX),
+            max(0.0, clip["height"] - 2 * _TARGET_PAD_PX),
+        )
     # DOM.getBoxModel returns viewport-relative coordinates, so keep captureBeyondViewport=False.
     return clip, False
 
@@ -197,6 +210,33 @@ async def _capture(session: Any, params: dict[str, Any], fmt: str) -> tuple[str,
     return data, ("image/png" if fmt == "png" else "image/jpeg")
 
 
+async def _precheck_full_page_size(session: Any) -> None:
+    """Reject enormous full-page dimensions before Chromium allocates a huge bitmap/frame."""
+    client = session.require_client()
+    try:
+        metrics = await client.send(
+            "Page.getLayoutMetrics",
+            session_id=session.session_id,
+            timeout=min(5.0, float(getattr(session.cfg, "cdp_timeout", 20.0))),
+        )
+    except ConnectionClosed:
+        raise
+    except BrowserError:
+        return
+    if not isinstance(metrics, dict):
+        return
+    size = metrics.get("cssContentSize") or metrics.get("contentSize")
+    if not isinstance(size, dict):
+        return
+    width = float(size.get("width") or 0)
+    height = float(size.get("height") or 0)
+    if height > _FULL_PAGE_MAX_HEIGHT or (width > 0 and height > 0 and width * height > _FULL_PAGE_MAX_PIXELS):
+        raise Unavailable(
+            f"整页尺寸过大（{int(width)}×{int(height)} px），full_page 截图易超限或超时；"
+            "请关闭 full_page 或指定 target 裁剪截图"
+        )
+
+
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     full_page = arguments["full_page"]
     target = (arguments.get("target") or "").strip()
@@ -209,12 +249,22 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         if clip:
             params["clip"] = clip
             params["captureBeyondViewport"] = bool(beyond)
+    elif full_page:
+        await _precheck_full_page_size(session)
 
-    data, mime_type = await _capture(session, params, "png")
-    if _decoded_size(data) > MAX_IMAGE_BYTES:
+    try:
+        data, mime_type = await _capture(session, params, "png")
+        oversized = _decoded_size(data) > MAX_IMAGE_BYTES
+    except FrameTooLarge:
+        data, mime_type = "", "image/png"
+        oversized = True
+    if oversized:
         params["format"] = "jpeg"
         params["quality"] = 80
-        data, mime_type = await _capture(session, params, "jpeg")
+        try:
+            data, mime_type = await _capture(session, params, "jpeg")
+        except FrameTooLarge as exc:
+            raise Unavailable("截图超出 2.5MB 上限，请用 target 裁剪、缩小视口或关闭 full_page") from exc
         if _decoded_size(data) > MAX_IMAGE_BYTES:
             raise Unavailable("截图超出 2.5MB 上限，请用 target 裁剪、缩小视口或关闭 full_page")
 

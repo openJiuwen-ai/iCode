@@ -12,7 +12,9 @@
     "nativeMessaging",
     "alarms",
     "storage",
-    "clipboardWrite"
+    "clipboardWrite",
+    "webNavigation",
+    "declarativeNetRequest"
   ],
   "action": {
     "default_popup": "popup.html"

@@ -257,13 +257,15 @@ def test_bridge_hardens_the_discovery_file(tmp_path: Path, monkeypatch) -> None:
     called: list[Path] = []
 
     async def scenario() -> None:
-        monkeypatch.setattr("icode_browser_use.bridge.server._harden_file", called.append)
+        monkeypatch.setattr("icode_browser_use._proc.harden_private", lambda p, **_kw: (called.append(p), True)[1])
         server = BridgeServer(tmp_path / "bridge.json")
         await server.start()
         await server.aclose()
 
     asyncio.run(scenario())
-    assert called == [tmp_path / "bridge.json"]
+    assert len(called) == 1
+    assert called[0].parent == tmp_path
+    assert called[0].name.startswith(".bridge.json.")
 
 
 def test_bridge_roundtrip_and_events(tmp_path: Path) -> None:

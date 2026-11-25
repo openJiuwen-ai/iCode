@@ -29,7 +29,7 @@ from typing import Any, Protocol
 from ..config import CDP_TIMEOUT, MAX_TIMEOUTS_BEFORE_RECYCLE, WS_PING_INTERVAL
 from ..errors import BrowserError, CDPTimeout, ConnectionClosed
 from ..logging import log
-from .websocket import WSClient
+from .websocket import FrameTooLarge, WSClient
 
 #: ``(params, session_id)`` - the second argument is the event's ``sessionId``
 #: (``None`` for browser-level events).
@@ -59,6 +59,23 @@ class CDPConnection(Protocol):
     async def aclose(self) -> None: ...
 
 
+#: Stateful CDP events that must be processed in arrival order (never concurrently).
+_ORDERED_EVENT_METHODS = frozenset(
+    {
+        "Target.attachedToTarget",
+        "Target.detachedFromTarget",
+        "Browser.downloadWillBegin",
+        "Browser.downloadProgress",
+        "Page.frameNavigated",
+        "Page.navigatedWithinDocument",
+        "Page.javascriptDialogOpening",
+        "Page.javascriptDialogClosed",
+        "Inspector.detached",
+        "Bridge.siteBlocked",
+    }
+)
+
+
 class CDPClient:
     """Concrete :class:`CDPConnection` speaking JSON-RPC over a :class:`WSClient`."""
 
@@ -68,6 +85,8 @@ class CDPClient:
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._handlers: dict[str, list[EventHandler]] = {}
         self._event_tasks: set[asyncio.Task[None]] = set()
+        self._ordered_queue: asyncio.Queue[tuple[EventHandler, dict[str, Any], str | None]] = asyncio.Queue()
+        self._event_worker_task: asyncio.Task[None] | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
         self._close_lock = asyncio.Lock()
@@ -87,6 +106,7 @@ class CDPClient:
     def _start(self) -> None:
         self._reader_task = asyncio.create_task(self._reader(), name="cdp-reader")
         self._keepalive_task = asyncio.create_task(self._keepalive(), name="cdp-keepalive")
+        self._event_worker_task = asyncio.create_task(self._event_worker(), name="cdp-events")
 
     async def aclose(self) -> None:
         """Cancel the workers and close the socket; idempotent."""
@@ -103,11 +123,21 @@ class CDPClient:
             self._closed = True
         await self._fail_all(reason or ConnectionClosed("CDP 连接已关闭"))
         current = asyncio.current_task()
-        for task in (self._reader_task, self._keepalive_task):
+        tasks_to_stop: list[asyncio.Task[None]] = []
+        for task in (self._reader_task, self._keepalive_task, self._event_worker_task):
             if task is not None and task is not current:
                 task.cancel()
+                tasks_to_stop.append(task)
+        for task in list(self._event_tasks):
+            if task is not current:
+                task.cancel()
+                tasks_to_stop.append(task)
+        self._event_tasks.clear()
         with contextlib.suppress(Exception):
             await self._ws.aclose()
+        if tasks_to_stop:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.gather(*tasks_to_stop, return_exceptions=True), timeout=2.0)
 
     async def _fail_all(self, exc: ConnectionClosed) -> None:
         pending = list(self._pending.values())
@@ -140,6 +170,10 @@ class CDPClient:
             payload["sessionId"] = session_id
         try:
             await self._ws.send(json.dumps(payload, ensure_ascii=False))
+        except ConnectionClosed as exc:
+            self._pending.pop(msg_id, None)
+            await self._shutdown(exc)
+            raise
         except BrowserError:
             self._pending.pop(msg_id, None)
             raise
@@ -150,7 +184,9 @@ class CDPClient:
             raise
         except Exception as exc:  # translate transport failure
             self._pending.pop(msg_id, None)
-            raise ConnectionClosed(f"CDP 发送失败：{exc}") from exc
+            err = ConnectionClosed(f"CDP 发送失败：{exc}")
+            await self._shutdown(err)
+            raise err from exc
 
         try:
             result = await asyncio.wait_for(future, timeout)
@@ -202,10 +238,26 @@ class CDPClient:
             params = {}
         session_id = message.get("sessionId")
         session_id = session_id if isinstance(session_id, str) else None
+        if method in _ORDERED_EVENT_METHODS:
+            if self._event_worker_task is None and not self._closed:
+                self._event_worker_task = asyncio.create_task(self._event_worker(), name="cdp-events")
+            for handler in list(handlers):
+                self._ordered_queue.put_nowait((handler, params, session_id))
+            return
         for handler in list(handlers):
             task = asyncio.create_task(self._run_handler(handler, params, session_id))
             self._event_tasks.add(task)
             task.add_done_callback(self._event_tasks.discard)
+
+    async def _event_worker(self) -> None:
+        try:
+            while not self._closed:
+                handler, params, session_id = await self._ordered_queue.get()
+                if self._closed:
+                    return
+                await self._run_handler(handler, params, session_id)
+        except asyncio.CancelledError:
+            raise
 
     async def _run_handler(self, handler: EventHandler, params: dict[str, Any], session_id: str | None) -> None:
         try:
@@ -222,6 +274,13 @@ class CDPClient:
                     raw = await self._ws.recv()
                 except asyncio.CancelledError:
                     raise
+                except FrameTooLarge as exc:
+                    log(f"CDP 单帧响应超过上限（id={exc.request_id}, size={exc.size}），保持连接存活")
+                    if exc.request_id is not None:
+                        future = self._pending.pop(exc.request_id, None)
+                        if future is not None and not future.done():
+                            future.set_exception(exc)
+                    continue
                 except Exception as exc:  # any read error is a disconnect
                     log(f"CDP 读取循环异常：{exc!r}")
                     raw = None

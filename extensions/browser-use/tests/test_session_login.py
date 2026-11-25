@@ -170,12 +170,15 @@ def test_timeout_explains_exit_without_authorizing_writes():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize(("action", "allowed"), [
-    ("browser_logs", True),
-    ("browser_forward", True),
-    ("browser_tab_close", False),
-    ("browser_reload", False),
-])
+@pytest.mark.parametrize(
+    ("action", "allowed"),
+    [
+        ("browser_logs", True),
+        ("browser_forward", True),
+        ("browser_tab_close", False),
+        ("browser_reload", False),
+    ],
+)
 def test_new_tools_respect_the_login_wait(action, allowed):
     async def run():
         s = session()
@@ -191,12 +194,15 @@ def test_new_tools_respect_the_login_wait(action, allowed):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize(("action", "allowed"), [
-    ("browser_logs", True),
-    ("browser_forward", False),
-    ("browser_reload", False),
-    ("browser_tab_close", False),
-])
+@pytest.mark.parametrize(
+    ("action", "allowed"),
+    [
+        ("browser_logs", True),
+        ("browser_forward", False),
+        ("browser_reload", False),
+        ("browser_tab_close", False),
+    ],
+)
 def test_new_tools_respect_an_open_dialog(action, allowed):
     from icode_browser_use.dialog import DialogInfo
     from icode_browser_use.errors import DialogPending

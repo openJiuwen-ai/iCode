@@ -5,23 +5,33 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed
 from ..types import ToolBlock, text_block
-from ._shared import call_value, dialog_since, eval_value, resolve_target, send_watching_dialog
+from ._shared import (
+    call_value,
+    clear_pending_input_releases,
+    dialog_since,
+    eval_value,
+    flush_pending_input_releases,
+    note_pending_input_release,
+    resolve_target,
+    send_watching_dialog,
+)
 from .actionability import (
     WriteOutcome,
+    amark_dispatched,
+    aprepare_action,
+    arecord_action,
     evidence_line,
     field_state,
     focus_target,
-    mark_dispatched,
     new_action_id,
     normalize_text,
     page_state,
     poll_submit_outcome,
-    prepare_action,
-    record_action,
     select_all_target,
     submit_verdict,
     target_focused,
@@ -57,7 +67,11 @@ _CLEAR_FN = (
     " const textLike=tag==='textarea' || (tag==='input' &&"
     "   ['text','search','email','url','tel','password','number',''].includes(type));"
     " if (textLike) {"
-    "  this.value=''; this.dispatchEvent(new Event('input',{bubbles:true}));"
+    "  const proto=(tag==='textarea' && typeof HTMLTextAreaElement!=='undefined')"
+    "    ? HTMLTextAreaElement.prototype : (typeof HTMLInputElement!=='undefined' ? HTMLInputElement.prototype : null);"
+    "  const desc=proto ? Object.getOwnPropertyDescriptor(proto,'value') : null;"
+    "  if (desc && typeof desc.set==='function') desc.set.call(this,''); else this.value='';"
+    "  this.dispatchEvent(new Event('input',{bubbles:true}));"
     " }"
     " return true;"
     "}"
@@ -76,7 +90,7 @@ def _normalize_native_value(value: Any) -> str:
 
 
 def _normalize_lines(value: Any, *, preserve_whitespace: bool = False) -> list[str]:
-    """Split into lines, preserving horizontal whitespace when *preserve_whitespace* is True."""
+    """Split into lines, trimming only leading/trailing empty lines."""
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n") if preserve_whitespace else [_normalize_text(line) for line in text.split("\n")]
     while lines and not lines[0]:
@@ -84,6 +98,38 @@ def _normalize_lines(value: Any, *, preserve_whitespace: bool = False) -> list[s
     while lines and not lines[-1]:
         lines.pop()
     return lines
+
+
+def _paragraph_lines_match(
+    rendered: Any,
+    expected_lines: list[str],
+    *,
+    raw_value: str | None,
+    preserve_whitespace: bool,
+) -> bool:
+    """Match ``<p>`` block editors where Chrome's ``innerText`` doubles single paragraph breaks.
+
+    Rejects extra blank lines when the user requested explicit blank lines or when
+    ``innerText`` contains triple newlines (``\\n\\n\\n``), and still requires the
+    ``_visWalk`` text (when present) to match ``expected_lines`` strictly.
+    """
+    if preserve_whitespace:
+        return False
+    rendered_lines = _normalize_lines(rendered, preserve_whitespace=False)
+    if rendered_lines == expected_lines:
+        return raw_value is None or _normalize_lines(raw_value, preserve_whitespace=False) == expected_lines
+    # Only allow ``<p>`` double-newline gaps when expected itself has no empty lines,
+    # rendered has no triple newlines, and non-empty lines match 1-to-1.
+    if not expected_lines or not all(expected_lines):
+        return False
+    rendered_norm = str(rendered or "").replace("\r\n", "\n").replace("\r", "\n")
+    if "\n\n\n" in rendered_norm:
+        return False
+    if [line for line in rendered_lines if line] != expected_lines:
+        return False
+    if raw_value is not None:
+        return _normalize_lines(raw_value, preserve_whitespace=False) == expected_lines
+    return True
 
 
 def _splice_utf16(text: str, start: int, end: int, insert: str) -> str | None:
@@ -173,6 +219,8 @@ def _values_match(
     if clear:
         if preserve_whitespace or "\n" in expected or "\r" in expected:
             expected_lines = _normalize_lines(expected, preserve_whitespace=preserve_whitespace)
+            if not preserve_whitespace:
+                return _paragraph_lines_match(value, expected_lines, raw_value=raw_value, preserve_whitespace=False)
             if _normalize_lines(value, preserve_whitespace=preserve_whitespace) != expected_lines:
                 return False
             if raw_value is not None:
@@ -192,6 +240,8 @@ def _values_match(
                 # so extra blank lines, newlines flattened to spaces, or stripped indentation
                 # in whitespace-preserving editors never look like a match.
                 expected_lines = _normalize_lines(expected_full, preserve_whitespace=preserve_whitespace)
+                if not preserve_whitespace:
+                    return _paragraph_lines_match(value, expected_lines, raw_value=raw_value, preserve_whitespace=False)
                 if _normalize_lines(value, preserve_whitespace=preserve_whitespace) != expected_lines:
                     return False
                 return _normalize_lines(raw_value, preserve_whitespace=preserve_whitespace) == expected_lines
@@ -199,9 +249,10 @@ def _values_match(
             reconstructed_before = _normalize_text(selection_prefix + selection_text + selection_suffix)
             if reconstructed_before == before_norm:
                 if preserve_whitespace or "\n" in expected or "\r" in expected:
-                    return _normalize_lines(value, preserve_whitespace=preserve_whitespace) == _normalize_lines(
-                        expected_full, preserve_whitespace=preserve_whitespace
-                    )
+                    expected_lines = _normalize_lines(expected_full, preserve_whitespace=preserve_whitespace)
+                    if not preserve_whitespace:
+                        return _paragraph_lines_match(value, expected_lines, raw_value=None, preserve_whitespace=False)
+                    return _normalize_lines(value, preserve_whitespace=preserve_whitespace) == expected_lines
                 return actual == expected_norm
             return False
         if selection_text:
@@ -235,6 +286,15 @@ async def _press_key(
     text: str | None = None,
     cdp_session_id: str | None = None,
 ) -> None:
+    await flush_pending_input_releases(session)
+    release_params = {
+        "type": "keyUp",
+        "key": key,
+        "code": code,
+        "windowsVirtualKeyCode": virtual_key,
+        "nativeVirtualKeyCode": virtual_key,
+    }
+    note_pending_input_release(session, "Input.dispatchKeyEvent", release_params, cdp_session_id or session.session_id)
     await _dispatch_key(
         session,
         "keyDown",
@@ -255,6 +315,7 @@ async def _press_key(
         windowsVirtualKeyCode=virtual_key,
         nativeVirtualKeyCode=virtual_key,
     )
+    clear_pending_input_releases(session)
 
 
 class _FocusLost(Exception):
@@ -280,8 +341,13 @@ async def _select_and_delete(session: Any, object_id: str, cdp_session_id: str |
 
 
 async def _type_characters(session: Any, object_id: str, text: str, cdp_session_id: str | None) -> None:
-    """Type raw key events; re-verify focus before each character so focus shifts never write to another field."""
+    """Type raw key events; re-verify focus before each character with an overall deadline."""
+    await flush_pending_input_releases(session)
+    budget = min(max(10.0, float(getattr(session.cfg, "cdp_timeout", 20.0))), 30.0)
+    deadline = time.monotonic() + budget
     for char in text:
+        if time.monotonic() >= deadline:
+            raise CDPTimeout("Input.dispatchKeyEvent", budget)
         await _ensure_focused(session, object_id, cdp_session_id)
         await _dispatch_key(session, "keyDown", cdp_session_id=cdp_session_id, key=char)
         await _dispatch_key(session, "char", cdp_session_id=cdp_session_id, key=char, text=char, unmodifiedText=char)
@@ -344,16 +410,18 @@ async def _clear(session: Any, object_id: str, cdp_session_id: str | None) -> No
         raise BadRequest("无法清空目标字段（清空后仍有内容）；未继续输入")
 
 
-def _uncertain_fill(session: Any, entry: Any, reason: str, action_id: str, *, dispatched: bool = True) -> WriteOutcome:
+async def _uncertain_fill(
+    session: Any, entry: Any, reason: str, action_id: str, *, dispatched: bool = True
+) -> WriteOutcome:
     text = (
         f"已填入 {entry.token}\nstatus=uncertain retryable=false\nreason={reason}；不要重复输入\n"
         f"{evidence_line(session, action_id)}"
     )
-    record_action(session, action_id, "browser_fill", "uncertain", text)
+    await arecord_action(session, action_id, "browser_fill", "uncertain", text)
     return WriteOutcome(status="uncertain", dispatched=dispatched, blocks=[text_block(text)], action_id=action_id)
 
 
-def _blocked_dialog_fill(session: Any, entry: Any, info: Any, action_id: str) -> WriteOutcome:
+async def _blocked_dialog_fill(session: Any, entry: Any, info: Any, action_id: str) -> WriteOutcome:
     result = "\n".join(
         [
             f"已填入 {entry.token}",
@@ -364,7 +432,7 @@ def _blocked_dialog_fill(session: Any, entry: Any, info: Any, action_id: str) ->
             evidence_line(session, action_id),
         ]
     )
-    record_action(session, action_id, "browser_fill", "blocked", result)
+    await arecord_action(session, action_id, "browser_fill", "blocked", result)
     return WriteOutcome(
         status="blocked", dispatched=True, blocks=[text_block(result)], effect="dialog", action_id=action_id
     )
@@ -411,7 +479,11 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         if isinstance(raw_prefix, str) and isinstance(raw_suffix, str):
             before_selection_prefix = raw_prefix
             before_selection_suffix = raw_suffix
+    client = session.require_client()
+    await aprepare_action(session, action_id, "browser_fill", f"prepared fill of {entry.token}")
+    dialog_seq = session.dialog_seq
     if clear:
+        session.mark_dirty()
         try:
             await _clear(session, object_id, cdp_session_id)
         except ConnectionClosed:
@@ -421,11 +493,10 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         except BadRequest:
             raise
         except (CDPTimeout, BrowserError) as exc:
-            return _uncertain_fill(session, entry, f"clear_failed:{type(exc).__name__}", action_id, dispatched=False)
+            return await _uncertain_fill(
+                session, entry, f"clear_failed:{type(exc).__name__}", action_id, dispatched=False
+            )
 
-    client = session.require_client()
-    prepare_action(session, action_id, "browser_fill", f"prepared fill of {entry.token}")
-    dialog_seq = session.dialog_seq
     try:
         _, dialog = await send_watching_dialog(
             session,
@@ -438,23 +509,28 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             ),
         )
     except ConnectionClosed:
+        session.mark_dirty()
         raise
     except (CDPTimeout, BrowserError) as exc:
-        return _uncertain_fill(session, entry, f"input_send_failed:{type(exc).__name__}", action_id)
+        session.mark_dirty()
+        return await _uncertain_fill(session, entry, f"input_send_failed:{type(exc).__name__}", action_id)
+    session.mark_dirty()
     if dialog is not None:
-        mark_dispatched(session, action_id, "browser_fill", f"fill of {entry.token} is in flight; a dialog opened")
-        return _blocked_dialog_fill(session, entry, dialog, action_id)
-    mark_dispatched(session, action_id, "browser_fill", f"dispatched fill of {entry.token}")
+        await amark_dispatched(
+            session, action_id, "browser_fill", f"fill of {entry.token} is in flight; a dialog opened"
+        )
+        return await _blocked_dialog_fill(session, entry, dialog, action_id)
+    await amark_dispatched(session, action_id, "browser_fill", f"dispatched fill of {entry.token}")
     await _sleep(0)
     dialog = await dialog_since(session, dialog_seq)
     if dialog is not None:
-        return _blocked_dialog_fill(session, entry, dialog, action_id)
+        return await _blocked_dialog_fill(session, entry, dialog, action_id)
     try:
         state = await _read_state(session, object_id, cdp_session_id)
     except ConnectionClosed:
         raise
     except (CDPTimeout, BrowserError) as exc:
-        return _uncertain_fill(session, entry, f"readback_failed:{type(exc).__name__}", action_id)
+        return await _uncertain_fill(session, entry, f"readback_failed:{type(exc).__name__}", action_id)
 
     used_fallback = False
     mismatch = False
@@ -473,6 +549,8 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     )
     try:
         if not matched:
+            if state.get("focused") is False:
+                raise _FocusLost("target lost focus after insert")
             unchanged_append = (
                 not clear
                 and before_text is not None
@@ -483,8 +561,6 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 )
             )
             if keypress_fallback:
-                if state.get("focused") is False:
-                    raise _FocusLost("target lost focus before keypress fallback")
                 if clear:
                     used_fallback = True
                     if _normalize_text(state.get("text")):
@@ -500,9 +576,7 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                     state = await _read_state(session, object_id, cdp_session_id)
                 else:
                     mismatch = True
-            elif not _normalize_text(state.get("text")) or unchanged_append:
-                if state.get("focused") is False:
-                    raise _FocusLost("target lost focus before fallback typing")
+            elif (clear and not _normalize_text(state.get("text"))) or unchanged_append:
                 used_fallback = True
                 await _type_characters(session, object_id, text, cdp_session_id)
                 await _sleep(0)
@@ -512,9 +586,9 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     except ConnectionClosed:
         raise
     except _FocusLost:
-        return _uncertain_fill(session, entry, "focus_lost", action_id)
+        return await _uncertain_fill(session, entry, "focus_lost", action_id)
     except (CDPTimeout, BrowserError) as exc:
-        return _uncertain_fill(session, entry, f"input_fallback_failed:{type(exc).__name__}", action_id)
+        return await _uncertain_fill(session, entry, f"input_fallback_failed:{type(exc).__name__}", action_id)
 
     if used_fallback and not _values_match(
         state.get("text"),
@@ -546,45 +620,51 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         except (CDPTimeout, BrowserError) as exc:
             submit_line = f"提交状态未知（页面回读失败：{type(exc).__name__}），不要按 Enter"
         else:
-            try:
-                _, dialog_seen = await send_watching_dialog(
-                    session,
-                    dialog_seq,
-                    lambda: _press_key(session, "Enter", "Enter", 13, text="\r", cdp_session_id=cdp_session_id),
+            if (dialog_seen := session.dialog_since(dialog_seq)) is not None:
+                submit_line = (
+                    f"未提交：{dialog_seen.fields()}；请先调用 browser_dialog，再 browser_snapshot 复核，不要按 Enter"
                 )
-            except ConnectionClosed:
-                raise
-            except (CDPTimeout, BrowserError) as exc:
-                submit_line = f"提交可能已发出（Enter 发送失败：{type(exc).__name__}），不要重复按 Enter"
             else:
-                if dialog_seen is not None:
-                    submit_line = (
-                        f"提交结果未确认：{dialog_seen.fields()}；"
-                        "请先调用 browser_dialog，再 browser_snapshot 复核，不要重复按 Enter"
-                    )
-                else:
-                    after_field, after_page, replaced, dialog_seen = await poll_submit_outcome(
+                submit_dialog_seq = session.dialog_seq
+                try:
+                    _, dialog_seen = await send_watching_dialog(
                         session,
-                        object_id,
-                        cdp_session_id,
-                        before_field,
-                        before_page,
-                        dialog_seq,
-                        budget=_SUBMIT_BUDGET,
-                        poll_interval=_SUBMIT_POLL,
-                        sleep=_sleep,
-                        read_field=lambda: _read_state(session, object_id, cdp_session_id),
-                        read_page=lambda: _page_state(session, cdp_session_id),
+                        submit_dialog_seq,
+                        lambda: _press_key(session, "Enter", "Enter", 13, text="\r", cdp_session_id=cdp_session_id),
                     )
+                except ConnectionClosed:
+                    raise
+                except (CDPTimeout, BrowserError) as exc:
+                    submit_line = f"提交可能已发出（Enter 发送失败：{type(exc).__name__}），不要重复按 Enter"
+                else:
                     if dialog_seen is not None:
                         submit_line = (
                             f"提交结果未确认：{dialog_seen.fields()}；"
                             "请先调用 browser_dialog，再 browser_snapshot 复核，不要重复按 Enter"
                         )
                     else:
-                        submit_line, submitted = _submit_verdict(
-                            before_field, after_field, before_page, after_page, replaced=replaced
+                        after_field, after_page, replaced, dialog_seen = await poll_submit_outcome(
+                            session,
+                            object_id,
+                            cdp_session_id,
+                            before_field,
+                            before_page,
+                            submit_dialog_seq,
+                            budget=_SUBMIT_BUDGET,
+                            poll_interval=_SUBMIT_POLL,
+                            sleep=_sleep,
+                            read_field=lambda: _read_state(session, object_id, cdp_session_id),
+                            read_page=lambda: _page_state(session, cdp_session_id),
                         )
+                        if dialog_seen is not None:
+                            submit_line = (
+                                f"提交结果未确认：{dialog_seen.fields()}；"
+                                "请先调用 browser_dialog，再 browser_snapshot 复核，不要重复按 Enter"
+                            )
+                        else:
+                            submit_line, submitted = _submit_verdict(
+                                before_field, after_field, before_page, after_page, replaced=replaced
+                            )
 
     session.mark_dirty()
     if not mismatch and (not submit or submitted):
@@ -617,5 +697,5 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         lines[-1] = "status=uncertain retryable=false"
         lines.append(f"{dialog.fields()}；对话框出现后输入结果未确认，请先 browser_dialog 再复核")
     text = "\n".join(lines)
-    record_action(session, action_id, "browser_fill", status, text)
+    await arecord_action(session, action_id, "browser_fill", status, text)
     return WriteOutcome(status=status, dispatched=True, blocks=[text_block(text)], action_id=action_id)

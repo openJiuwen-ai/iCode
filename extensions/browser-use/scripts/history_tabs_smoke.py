@@ -168,7 +168,16 @@ async def run(args: argparse.Namespace) -> None:
                 report("close", text=await ext.browser_close(context, browser_id))
         report(
             "acceptance_passed",
-            checks=["back/forward", "forward edge notice", "hash back/forward", "reload new epoch", "beforeunload reported", "close current", "close background", "last tab refused"],
+            checks=[
+                "back/forward",
+                "forward edge notice",
+                "hash back/forward",
+                "reload new epoch",
+                "beforeunload reported",
+                "close current",
+                "close background",
+                "last tab refused",
+            ],
         )
 
 

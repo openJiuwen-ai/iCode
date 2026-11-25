@@ -8,18 +8,10 @@ unmasked text frames in, ping/pong keepalive and the close handshake. No
 extensions (permessage-deflate) are negotiated, so a "message" is simply a
 frame plus the continuation frames that share its opcode stream.
 
-Beyond the frozen :class:`WSClient` surface (``connect`` / ``send`` / ``recv``
-/ ``aclose``) this module exposes three extras that :mod:`cdp.client` relies on:
-
-* :meth:`WSClient.ping` - send a masked Ping control frame (the keepalive
-  seam; ``send`` only emits text frames).
-* :attr:`WSClient.pong_event` - an :class:`asyncio.Event` that is ``set()``
-  every time a Pong *or any data frame* arrives. The keepalive clears it,
-  pings, then treats a still-clear flag after a full interval as a half-open
-  socket. Reading ``pong_event.is_set()`` is the extra "did we hear anything
-  recently?" channel; it never blocks and is safe to clear.
-* :func:`_parse_ws_url`, :func:`_encode_frame` and :func:`_decode_frame` -
-  pure helpers (no I/O) that make the parsing and framing unit-testable.
+Oversized frames (>32 MiB) are drained cleanly without dropping the connection
+and surfaced as a non-fatal :class:`FrameTooLarge` carrying the JSON-RPC ``id``
+when recoverable from the first 256 bytes, so the caller can fail only that
+request and keep the browser session alive.
 """
 
 from __future__ import annotations
@@ -28,10 +20,11 @@ import asyncio
 import base64
 import hashlib
 import os
+import re
 import struct
 from urllib.parse import urlsplit
 
-from ..errors import ConnectionClosed, Unavailable
+from ..errors import BrowserError, ConnectionClosed, Unavailable
 
 # RFC6455 opcodes.
 OP_CONTINUATION = 0x0
@@ -44,10 +37,43 @@ OP_PONG = 0xA
 #: The RFC6455 handshake GUID used to derive ``Sec-WebSocket-Accept``.
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-#: Hard ceiling on a single frame and on a reassembled message (design 3.3:
-#: continuation is reassembled up to 32 MiB). ``config.py`` has no entry for
-#: this transport-level bound, so it lives here as the single named constant.
+#: Hard ceiling on a single frame and on a reassembled message (32 MiB).
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+
+_ID_HEAD_RE = re.compile(rb'^\s*\{\s*"id"\s*:\s*(\d+)')
+_DRAIN_CHUNK = 65536
+
+
+class FrameTooLarge(BrowserError):
+    """Non-fatal signal that a single WebSocket message exceeded :data:`MAX_MESSAGE_BYTES`.
+
+    The underlying stream has already been drained to the end of the message, so
+    the WebSocket connection remains synchronized and reusable.
+    """
+
+    def __init__(self, *, request_id: int | None, size: int) -> None:
+        self.request_id = request_id
+        self.size = size
+        super().__init__(f"CDP 响应超过 32 MiB 上限（{size} 字节）")
+
+
+def _xor_mask(payload: bytes, mask_key: bytes) -> bytes:
+    """Fast stdlib XOR masking using big-integer arithmetic (zero third-party deps)."""
+    n = len(payload)
+    if n == 0:
+        return b""
+    repeated = (mask_key * ((n + 3) // 4))[:n]
+    return (int.from_bytes(payload, "big") ^ int.from_bytes(repeated, "big")).to_bytes(n, "big")
+
+
+def _extract_request_id(head: bytes) -> int | None:
+    match = _ID_HEAD_RE.match(head)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def _parse_ws_url(url: str) -> tuple[str, int, str]:
@@ -90,7 +116,7 @@ def _handshake_request(host: str, port: int, path: str, key: str) -> bytes:
 
 def _expected_accept(key: str) -> str:
     """The ``Sec-WebSocket-Accept`` value the server must echo for *key*."""
-    digest = hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()
+    digest = hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()  # noqa: S324 - mandated by RFC 6455
     return base64.b64encode(digest).decode("ascii")
 
 
@@ -115,8 +141,7 @@ def _encode_frame(opcode: int, payload: bytes, *, fin: bool = True, mask: bool =
     if not mask:
         return bytes(header) + payload
     mask_key = os.urandom(4)
-    masked = bytes(byte ^ mask_key[i & 3] for i, byte in enumerate(payload))
-    return bytes(header) + mask_key + masked
+    return bytes(header) + mask_key + _xor_mask(payload, mask_key)
 
 
 def _decode_frame(buf: bytes) -> tuple[bool, int, bytes, int] | None:
@@ -124,16 +149,20 @@ def _decode_frame(buf: bytes) -> tuple[bool, int, bytes, int] | None:
 
     Returns ``(fin, opcode, payload, consumed)`` or ``None`` when *buf* does not
     yet hold a whole frame. Raises :class:`Unavailable` when the advertised
-    length exceeds :data:`MAX_MESSAGE_BYTES`.
+    length exceeds :data:`MAX_MESSAGE_BYTES` or RFC 6455 framing rules fail.
     """
     if len(buf) < 2:
         return None
     first = buf[0]
     second = buf[1]
+    if first & 0x70:
+        raise Unavailable("WebSocket 帧设置了未协商的 RSV 位")
     fin = bool(first & 0x80)
     opcode = first & 0x0F
     masked = bool(second & 0x80)
     length = second & 0x7F
+    if opcode >= 0x8 and (not fin or length > 125):
+        raise Unavailable("WebSocket 控制帧非法（分片或长度超过 125）")
     offset = 2
     if length == 126:
         if len(buf) < offset + 2:
@@ -155,10 +184,8 @@ def _decode_frame(buf: bytes) -> tuple[bool, int, bytes, int] | None:
         offset += 4
     if len(buf) < offset + length:
         return None
-    if masked:
-        payload = bytes(buf[offset + i] ^ mask_key[i & 3] for i in range(length))
-    else:
-        payload = bytes(buf[offset : offset + length])
+    raw = bytes(buf[offset : offset + length])
+    payload = _xor_mask(raw, mask_key) if masked else raw
     return fin, opcode, payload, offset + length
 
 
@@ -166,9 +193,14 @@ async def _abort(writer: asyncio.StreamWriter) -> None:
     """Close a partially-established connection, swallowing teardown errors."""
     try:
         writer.close()
-        await writer.wait_closed()
-    except Exception:  # best-effort cleanup on the error path
-        pass
+        await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
+    except Exception:
+        transport = getattr(writer, "transport", None)
+        if transport is not None:
+            try:
+                transport.abort()
+            except Exception:
+                pass
 
 
 async def _read_http_response(reader: asyncio.StreamReader) -> tuple[int, dict[str, str]]:
@@ -199,12 +231,7 @@ async def _read_http_response(reader: asyncio.StreamReader) -> tuple[int, dict[s
 
 
 class WSClient:
-    """A connected, RFC6455-framed WebSocket to a CDP endpoint.
-
-    Instances own the ``(reader, writer)`` pair returned by
-    :func:`asyncio.open_connection`. :attr:`pong_event` is the extra keepalive
-    observation channel described in the module docstring.
-    """
+    """A connected, RFC6455-framed WebSocket to a CDP endpoint."""
 
     def __init__(
         self,
@@ -263,11 +290,7 @@ class WSClient:
             pass
 
     async def _close_writer(self) -> None:
-        try:
-            self._writer.close()
-            await self._writer.wait_closed()
-        except Exception:  # idempotent teardown
-            pass
+        await _abort(self._writer)
 
     async def send(self, text: str) -> None:
         """Send one masked text frame and flush it (with a timeout)."""
@@ -290,39 +313,58 @@ class WSClient:
             self._writer.write(frame)
             await asyncio.wait_for(self._writer.drain(), self._open_timeout)
 
-    async def _read_frame(self) -> tuple[bool, int, bytes]:
-        """Read exactly one frame from the stream."""
+    async def _drain_bytes(self, count: int) -> None:
+        remaining = count
+        while remaining > 0:
+            chunk = await self._reader.readexactly(min(remaining, _DRAIN_CHUNK))
+            remaining -= len(chunk)
+
+    async def _read_frame(self) -> tuple[bool, int, bytes, bool, int | None, int]:
+        """Read one frame. Returns ``(fin, opcode, payload, oversized, req_id, raw_len)``."""
         reader = self._reader
         first = await reader.readexactly(2)
+        if first[0] & 0x70:
+            raise Unavailable("WebSocket 帧设置了未协商的 RSV 位")
         fin = bool(first[0] & 0x80)
         opcode = first[0] & 0x0F
         masked = bool(first[1] & 0x80)
+        if masked:
+            raise Unavailable("WebSocket 服务端帧非法设置了掩码位")
         length = first[1] & 0x7F
+        if opcode >= 0x8 and (not fin or length > 125):
+            raise Unavailable("WebSocket 控制帧非法（分片或长度超过 125）")
         if length == 126:
             length = struct.unpack("!H", await reader.readexactly(2))[0]
         elif length == 127:
             length = struct.unpack("!Q", await reader.readexactly(8))[0]
-        if length > MAX_MESSAGE_BYTES:
-            raise Unavailable("WebSocket 帧长度超过上限")
         mask_key = await reader.readexactly(4) if masked else b""
+        if length > MAX_MESSAGE_BYTES:
+            head_len = min(256, length)
+            head = await reader.readexactly(head_len)
+            if masked:
+                head = _xor_mask(head, mask_key)
+            req_id = _extract_request_id(head)
+            await self._drain_bytes(length - head_len)
+            return fin, opcode, b"", True, req_id, length
         payload = await reader.readexactly(length)
         if masked:
-            payload = bytes(byte ^ mask_key[i & 3] for i, byte in enumerate(payload))
-        return fin, opcode, payload
+            payload = _xor_mask(payload, mask_key)
+        return fin, opcode, payload, False, None, length
 
     async def recv(self) -> str | None:
         """Return the next text message, answering control frames as needed.
 
-        Pings are answered with a pong and skipped; a close frame is echoed and
-        yields ``None``; a peer EOF (the browser closing first) also yields
-        ``None``. Continuation frames are reassembled up to
-        :data:`MAX_MESSAGE_BYTES`.
+        Oversized messages (>32 MiB) are drained to the final continuation frame
+        and raise non-fatal :class:`FrameTooLarge` so the connection stays open.
         """
         message = bytearray()
         message_opcode: int | None = None
+        oversized = False
+        oversized_req_id: int | None = None
+        oversized_bytes = 0
         while True:
             try:
-                fin, opcode, payload = await self._read_frame()
+                fin, opcode, payload, frame_oversized, frame_req_id, raw_len = await self._read_frame()
             except (asyncio.IncompleteReadError, ConnectionError, OSError):
                 return None
             if opcode == OP_PING:
@@ -347,10 +389,24 @@ class WSClient:
             else:
                 raise Unavailable(f"不支持的 WebSocket opcode：{opcode}")
 
-            if len(message) + len(payload) > MAX_MESSAGE_BYTES:
-                raise Unavailable("WebSocket 消息超过 32 MiB 上限")
-            message.extend(payload)
             self.pong_event.set()
+            if oversized or frame_oversized or len(message) + len(payload) > MAX_MESSAGE_BYTES:
+                if not oversized:
+                    oversized = True
+                    oversized_bytes = len(message) + raw_len
+                    if frame_req_id is not None and not message:
+                        oversized_req_id = frame_req_id
+                    else:
+                        head = bytes(message[:256]) if message else payload[:256]
+                        oversized_req_id = _extract_request_id(head)
+                    message.clear()
+                else:
+                    oversized_bytes += raw_len
+                if fin:
+                    raise FrameTooLarge(request_id=oversized_req_id, size=oversized_bytes)
+                continue
+
+            message.extend(payload)
             if fin:
                 try:
                     return message.decode("utf-8")

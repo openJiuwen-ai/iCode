@@ -226,6 +226,25 @@ def test_dense_page_has_fold_hidden_and_scroller_targets() -> None:
         assert b'aria-label="Panel"' in body and b'aria-label="Nested"' in body, "a named panel with a nested control"
 
 
+def test_counterexample_regression_routes() -> None:
+    with SITE["serve"]() as (origin, _state):
+        for route, marker in (
+            ("/iframe-offset", b"fixture-iframe-offset"),
+            ("/iframe-offset-child", b"Offset Frame Click"),
+            ("/small-scroller", b"Small Scrollable List"),
+            ("/huge-node?mb=1", b"fixture-huge-node"),
+            ("/long-label-iframe", b"quarterly financial audit"),
+            ("/button-no-form", b"Menu"),
+            ("/login-hidden-inputs", b'type="hidden"'),
+            ("/slot-nested", b"SlottedSubmit"),
+            ("/p-editor", b"Paragraph Editor"),
+            ("/dialog-on-mousedown", b"Trigger Mousedown Alert"),
+        ):
+            status, body = fetch(origin + route)
+            assert status == 200, route
+            assert marker in body, route
+
+
 def test_unknown_path_is_404() -> None:
     with SITE["serve"]() as (origin, _state):
         assert fetch(origin + "/missing")[0] == 404

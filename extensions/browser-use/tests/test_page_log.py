@@ -324,7 +324,7 @@ def test_an_old_bridge_extension_gets_no_page_log_and_is_told_why():
     assert "Network.responseReceived" in methods  # the navigation status still works
     session._target_id = "t"
     text = asyncio.run(logs.run(session, {"kind": "all", "errors_only": False, "since": 0, "limit": 30}))[0]["text"]
-    assert "icode browser update-bridge" in text
+    assert "icode-browser-use update-bridge" in text
 
 
 def test_a_gating_extension_and_direct_cdp_collect_page_logs():

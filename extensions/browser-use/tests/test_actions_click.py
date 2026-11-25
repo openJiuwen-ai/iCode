@@ -484,8 +484,8 @@ def test_a_dialog_opened_by_the_click_blocks_the_result(monkeypatch) -> None:
 
     session = FakeSession()
     info = DialogInfo(seq=1, kind="alert", message="fixture alert")
-    session.dialog_since = lambda _seq: info
     dispatched: list[bool] = []
+    session.dialog_since = lambda _seq: info if dispatched else None
 
     async def fake_call_value(*_args, **_kwargs):
         return {"type": "object", "value": _facts("更多")}

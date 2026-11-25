@@ -13,7 +13,6 @@ import ipaddress
 import math
 import os
 import re
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,6 +63,9 @@ VALID_TOOLSETS: Final = frozenset({"full", "compact"})
 _DOMAIN_RE = re.compile(r"^\.?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
 
 
+from .logging import log
+
+
 class ConfigError(RuntimeError):
     """The environment cannot produce a usable configuration (fail-closed)."""
 
@@ -76,6 +78,9 @@ def is_valid_domain(entry: str) -> bool:
     if ":" in candidate or "/" in candidate:
         return False
     if candidate.replace(".", "").isdigit():
+        return False
+    bare = candidate.lstrip(".")
+    if bare == "localhost" or bare.endswith(".localhost"):
         return False
     return bool(_DOMAIN_RE.match(candidate))
 
@@ -126,7 +131,12 @@ def normalise_origin(entry: str) -> str | None:
     if effective_port < 1 or effective_port > 65535:
         return None
     if ":" in host:
-        host = f"[{host}]"
+        try:
+            host = f"[{ipaddress.ip_address(host).compressed}]"
+        except ValueError:
+            return None
+    if effective_port == _DEFAULT_PORTS[scheme]:
+        return f"{scheme}://{host}"
     return f"{scheme}://{host}:{effective_port}"
 
 
@@ -177,7 +187,7 @@ class BrowserEnv:
         return (self.get(name) or "").strip().lower() == "allow"
 
     def state_dir(self) -> Path:
-        override = self.get("STATE_DIR")
+        override = (self.get("STATE_DIR") or "").strip()
         return Path(override).expanduser() if override else Path.home() / ".cache" / DEFAULT_STATE_DIRNAME
 
 
@@ -248,7 +258,7 @@ class BrowserConfig:
     download_max_bytes: int = DOWNLOAD_MAX_MB * 1024 * 1024
     """Largest download kept; a transfer that reaches it is canceled."""
     toolset: str = "full"
-    """Exposed tool surface: ``full`` (all tools) or ``compact`` (12 core tools)."""
+    """Exposed tool surface: ``full`` (all tools) or ``compact`` (13 core tools)."""
 
     @property
     def backend(self) -> str:
@@ -297,20 +307,16 @@ class BrowserConfig:
                 "at least one valid entry when configured."
             )
         if rejected:
-            print(
-                f"icode-browser-use: ignoring {len(rejected)} invalid allowlist entries in ICODE_BROWSER_ALLOWED_DOMAINS",
-                file=sys.stderr,
-            )
+            log(f"ignoring {len(rejected)} invalid allowlist entries in ICODE_BROWSER_ALLOWED_DOMAINS")
         if rejected_origins:
-            print(
-                f"icode-browser-use: ignoring {len(rejected_origins)} invalid origin entries in "
-                "ICODE_BROWSER_ALLOWED_ORIGINS; "
-                "only http(s) loopback origins such as http://localhost:3000 are supported",
-                file=sys.stderr,
+            log(
+                f"ignoring {len(rejected_origins)} invalid origin entries in ICODE_BROWSER_ALLOWED_ORIGINS; "
+                "only http(s) loopback origins such as http://localhost:3000 are supported"
             )
         executable = (source.get("EXECUTABLE") or "").strip() or None
         cdp_url = (source.get("CDP_URL") or "").strip() or None
-        bridge_file = (source.get("BRIDGE_FILE") or "").strip() or None
+        raw_bridge_file = (source.get("BRIDGE_FILE") or "").strip()
+        bridge_file = str(Path(raw_bridge_file).expanduser()) if raw_bridge_file else None
         try:
             bridge_wait = float(source.get("BRIDGE_WAIT") or 35.0)
         except ValueError as exc:
@@ -366,10 +372,15 @@ class BrowserConfig:
             if bridge_setting is not None
             else not (cdp_url or broker) and (state_dir / CHROME_LOGIN_PREFERENCE).is_file()
         )
+        chrome_devtools_setting = source.get("CHROME_DEVTOOLS")
         chrome_devtools = (
-            bridge_setting is None
-            and not (cdp_url or broker or bridge)
-            and (state_dir / CHROME_DEVTOOLS_PREFERENCE).is_file()
+            _as_bool(chrome_devtools_setting)
+            if chrome_devtools_setting is not None
+            else (
+                bridge_setting is None
+                and not (cdp_url or broker or bridge)
+                and (state_dir / CHROME_DEVTOOLS_PREFERENCE).is_file()
+            )
         )
         download_dir: Path | None = None
         if source.enabled("DOWNLOADS"):

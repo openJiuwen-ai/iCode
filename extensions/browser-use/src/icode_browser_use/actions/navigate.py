@@ -15,6 +15,7 @@ from ._shared import (
     eval_value,
     login_hint,
     render_snapshot,
+    send_watching_dialog,
     stats_line,
 )
 
@@ -65,7 +66,8 @@ def _precheck_url(session: Any, url: str) -> str:
     host = parts.hostname or ""
     if not host:
         raise BadRequest("URL 必须包含有效的主机名")
-    domains, origins = session.cfg.allowed_domains, session.cfg.allowed_origins
+    domains = getattr(session.cfg, "allowed_domains", ())
+    origins = getattr(session.cfg, "allowed_origins", ())
     if not url_host_allowed(text, domains, origins):
         reason = "目标不在域名白名单内" if domains or origins else "目标不属于公网地址"
         raise Blocked(f"{reason}：{host}", blocked_origin=canonical_origin(text))
@@ -84,17 +86,39 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
 
     client = session.require_client()
     nav_seq = session.nav_seq
+    dialog_seq = getattr(session, "dialog_seq", 0)
     policy = getattr(session, "_policy", None)
     blocked_before = policy.blocked if policy is not None else 0
     if policy is not None:
         policy.last_blocked_document_origin = ""
         policy.last_blocked_origin = ""
-    response = await client.send(
-        "Page.navigate",
-        {"url": url},
-        session_id=session.session_id,
-        timeout=session.cfg.nav_load_timeout,
-    )
+
+    async def _send_nav() -> dict[str, Any]:
+        return await client.send(
+            "Page.navigate",
+            {"url": url},
+            session_id=session.session_id,
+            timeout=session.cfg.nav_load_timeout,
+        )
+
+    if callable(getattr(session, "dialog_since", None)):
+        response, dialog = await send_watching_dialog(session, dialog_seq, _send_nav)
+        if dialog is not None:
+            return [
+                text_block(
+                    "\n".join(
+                        [
+                            "已发送 Page.navigate，页面弹出对话框，导航尚未完成",
+                            dialog.fields(),
+                            "status=blocked retryable=false",
+                            "请先调用 browser_dialog（accept 离开当前页 / dismiss 留在此页），再 browser_snapshot 复核",
+                        ]
+                    )
+                )
+            ]
+    else:
+        response = await _send_nav()
+    response = response or {}
     error_text = str(response.get("errorText") or "")
     if error_text:
         if "blocked" in error_text.lower():

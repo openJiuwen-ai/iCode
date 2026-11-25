@@ -83,6 +83,10 @@ def _node_delta_state(node: Any) -> tuple[Any, ...]:
     no_layout = not getattr(node, "has_layout", True) and (bbox[2] <= 0 or bbox[3] <= 0)
     return (
         node.fingerprint(),
+        bool(getattr(node, "visible", False)),
+        bool(getattr(node, "in_viewport", False)),
+        bool(getattr(node, "interactive", False)),
+        str(getattr(node, "href", "") or ""),
         bool(getattr(node, "editable", False)),
         bool(getattr(node, "readonly", False)),
         bool(getattr(node, "disabled", False)),
@@ -136,7 +140,14 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         view = [replace(node, in_viewport=True) for node in view]
 
     url = session.snapshot.url
-    if since and since == old_version and old_epoch == session.page_epoch:
+    sig = (scope, bool(interactive_only), target)
+    prev_sig = getattr(session, "_last_snapshot_sig", None)
+    try:
+        session._last_snapshot_sig = sig
+    except (AttributeError, TypeError):
+        pass
+    same_sig = prev_sig is None or prev_sig == sig
+    if since and since == old_version and old_epoch == session.page_epoch and same_sig:
         old_nodes = [
             node
             for node in session.snapshot.previous_nodes
@@ -174,6 +185,9 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     else:
         text = render_snapshot(session, view, url=url, title=title, focus=focus)
     text = f"{text}\n{stats_line(session, view)}"
+    degraded = getattr(session, "_snapshot_degraded_reason", "")
+    if degraded:
+        text = f"{text}\n警告：{degraded}"
     if frame_note:
         text = f"{text}\n{frame_note}"
     hint = login_hint(url)

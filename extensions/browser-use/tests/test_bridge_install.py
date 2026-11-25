@@ -41,12 +41,15 @@ def test_extension_id_from_manifest(tmp_path: Path) -> None:
     assert extension_id_from_manifest(extension) == EXPECTED_ID
 
 
+VALID_ID = "abcdefghijklmnopabcdefghijklmnop"
+
+
 def test_manifest_shape_and_origin() -> None:
-    manifest = native_host_manifest(Path(r"C:\tools\icode-browser-use-host.exe"), "abcdefghijklmnop")
+    manifest = native_host_manifest(Path(r"C:\tools\icode-browser-use-host.exe"), VALID_ID)
     assert manifest["name"] == HOST_NAME
     assert manifest["type"] == "stdio"
-    assert manifest["path"] == r"C:\tools\icode-browser-use-host.exe"
-    assert manifest["allowed_origins"] == ["chrome-extension://abcdefghijklmnop/"]
+    assert manifest["path"] == str(Path(r"C:\tools\icode-browser-use-host.exe").resolve())
+    assert manifest["allowed_origins"] == [f"chrome-extension://{VALID_ID}/"]
 
 
 def test_manifest_rejects_a_bad_extension_id() -> None:
@@ -54,11 +57,15 @@ def test_manifest_rejects_a_bad_extension_id() -> None:
         native_host_manifest(Path("host"), "")
     with pytest.raises(ValueError):
         native_host_manifest(Path("host"), "a/b")
+    with pytest.raises(ValueError):
+        native_host_manifest(Path("host"), "*")
+    with pytest.raises(ValueError):
+        native_host_manifest(Path("host"), "abcdefghijklmnop")
 
 
 def test_write_manifest_roundtrips(tmp_path: Path) -> None:
     path = tmp_path / "NativeMessagingHosts" / "com.chrys.browser.json"
-    manifest = native_host_manifest(tmp_path / "host.exe", "abcdefghijklmnop")
+    manifest = native_host_manifest(tmp_path / "host.exe", VALID_ID)
     write_native_host_manifest(path, manifest)
     assert json.loads(path.read_text(encoding="utf-8")) == manifest
 
@@ -79,6 +86,7 @@ def test_install_extension_copies_files(tmp_path: Path) -> None:
 def test_install_extension_removes_stale_files(tmp_path: Path) -> None:
     target = tmp_path / "extension"
     target.mkdir()
+    (target / "manifest.json").write_text("{}", encoding="utf-8")
     (target / "stale.js").write_text("old", encoding="utf-8")
     install_extension(packaged_extension_dir(), target)
     assert not (target / "stale.js").exists()
@@ -99,11 +107,12 @@ def test_update_preserves_the_extension_id_and_replaces_files(tmp_path: Path, mo
 def test_install_extension_reports_a_locked_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = tmp_path / "extension"
     target.mkdir()
+    (target / "manifest.json").write_text("{}", encoding="utf-8")
 
-    def locked(_path):
+    def locked(self, _dst):
         raise OSError("file in use")
 
-    monkeypatch.setattr(bridge_install.shutil, "rmtree", locked)
+    monkeypatch.setattr(Path, "rename", locked)
     with pytest.raises(RuntimeError, match="close the browser"):
         install_extension(packaged_extension_dir(), target)
 
@@ -112,13 +121,13 @@ def test_install_registers_every_browser_and_writes_manifest(tmp_path: Path) -> 
     calls: list[tuple[str, Path]] = []
     path = install_native_host(
         tmp_path / "host.exe",
-        "abcdefghijklmnop",
+        VALID_ID,
         manifest_path=tmp_path / "com.chrys.browser.json",
         browsers=("chrome", "chromium", "edge"),
         registry_writer=lambda browser, manifest: calls.append((browser, manifest)),
     )
     assert calls == [("chrome", path), ("chromium", path), ("edge", path)]
-    assert json.loads(path.read_text(encoding="utf-8"))["allowed_origins"] == ["chrome-extension://abcdefghijklmnop/"]
+    assert json.loads(path.read_text(encoding="utf-8"))["allowed_origins"] == [f"chrome-extension://{VALID_ID}/"]
 
 
 def test_uninstall_removes_manifest_and_registrations(tmp_path: Path) -> None:
@@ -141,7 +150,7 @@ def test_uninstall_keeps_shared_manifest_until_last_browser_is_removed(tmp_path:
 
     install_native_host(
         tmp_path / "host.exe",
-        "abcdefghijklmnop",
+        VALID_ID,
         manifest_path=path,
         browsers=("chrome", "edge"),
         registry_writer=lambda browser, manifest: registry.__setitem__(browser, manifest),
@@ -177,7 +186,7 @@ def test_macos_edge_discovery_matches_between_owned_and_bridge(monkeypatch: pyte
     edge_path = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
     monkeypatch.setattr(launcher.sys, "platform", "darwin")
     monkeypatch.setattr(launcher.os.path, "isfile", lambda candidate: str(candidate) == edge_path)
-    monkeypatch.setattr(launcher.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(launcher, "_which_trusted", lambda _name: None)
 
     assert launcher.discover_chrome() == str(Path(edge_path))
     assert bridge_install.default_browser_executable() == Path(edge_path)

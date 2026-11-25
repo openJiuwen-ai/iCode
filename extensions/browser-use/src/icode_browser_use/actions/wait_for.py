@@ -24,6 +24,7 @@ import asyncio
 from dataclasses import dataclass
 import json
 import re
+import secrets
 import time
 from typing import Any
 
@@ -37,7 +38,7 @@ from ..errors import (
 )
 from ..snapshot.serializer import sanitize_text
 from ..types import ToolBlock, text_block
-from ._shared import capture_and_register
+from ._shared import capture_and_register, release_object_group, snapshot_needs_refresh
 from ._shared import capture_and_register as _shared_capture
 from .actionability import WriteOutcome
 from .extract import _DEEP_TEXT_JS
@@ -218,64 +219,86 @@ _OBSERVE_SHADOWS_JS = (
     "};"
 )
 
-_STABLE_PAGE_EXPR = (
-    f"(()=>{{{_OBSERVE_SHADOWS_JS}"
-    " const root=document.documentElement;"
-    " let m=window.__chrys_stable;"
-    " if(!m){"
-    "  const seen=new WeakSet();"
-    "  const obs=new MutationObserver((records)=>{"
-    "   let hit=false;"
-    "   for(const r of records){"
-    "    if(!inScope(r.target,root)) continue;"
-    "    hit=true;"
-    "    for(const node of (r.addedNodes||[])) observeTree(obs,seen,node,false);"
-    "   }"
-    "   if(hit){ m.n++; m.at=performance.now(); }"
-    "  });"
-    "  m={n:0, at:performance.now(), obs, seen}; window.__chrys_stable=m;"
-    "  observeTree(m.obs, m.seen, root, true);"
-    " }else if(observeTree(m.obs, m.seen, root, true)){"
-    "  m.n++; m.at=performance.now();"
-    " }"
-    " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
-    "})()"
-)
+
+def _stable_page_expr(run_id: str) -> str:
+    rid = json.dumps(run_id)
+    return (
+        f"(()=>{{{_OBSERVE_SHADOWS_JS}"
+        " const root=document.documentElement;"
+        f" const rid={rid};"
+        " let m=window.__chrys_stable;"
+        " if(m && m.rid!==rid){"
+        "  if(m.obs){ try{ m.obs.disconnect(); }catch(_){} }"
+        "  m=null;"
+        " }"
+        " if(!m){"
+        "  const seen=new WeakSet();"
+        "  const obs=new MutationObserver((records)=>{"
+        "   let hit=false;"
+        "   for(const r of records){"
+        "    if(!inScope(r.target,root)) continue;"
+        "    hit=true;"
+        "    for(const node of (r.addedNodes||[])) observeTree(obs,seen,node,false);"
+        "   }"
+        "   if(hit){ m.n++; m.at=performance.now(); }"
+        "  });"
+        "  m={rid, n:0, at:performance.now(), obs, seen}; window.__chrys_stable=m;"
+        "  observeTree(m.obs, m.seen, root, true);"
+        " }else if(observeTree(m.obs, m.seen, root, true)){"
+        "  m.n++; m.at=performance.now();"
+        " }"
+        " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
+        "})()"
+    )
+
+
+_STABLE_PAGE_EXPR = _stable_page_expr("default")
 
 _STABLE_PAGE_CLEANUP_EXPR = (
     "(()=>{ const m=window.__chrys_stable; if(m && m.obs){ try{ m.obs.disconnect(); }catch(_){} }"
     " delete window.__chrys_stable; return true; })()"
 )
 
-_STABLE_NODE_FN = (
-    f"function(){{{_OBSERVE_SHADOWS_JS}"
-    " if(!this || !this.isConnected) return {present:false};"
-    " const root=this;"
-    " let map=window.__chrys_stable_by_node;"
-    " if(!map){map=new WeakMap(); window.__chrys_stable_by_node=map;}"
-    " let m=map.get(root);"
-    " if(!m){"
-    "  const seen=new WeakSet();"
-    "  const obs=new MutationObserver((records)=>{"
-    "   let hit=false;"
-    "   for(const r of records){"
-    "    if(!inScope(r.target,root)) continue;"
-    "    hit=true;"
-    "    for(const node of (r.addedNodes||[])) observeTree(obs,seen,node,false);"
-    "   }"
-    "   if(hit){ m.n++; m.at=performance.now(); }"
-    "  });"
-    "  m={n:0, at:performance.now(), obs, seen}; map.set(root, m);"
-    "  observeTree(m.obs, m.seen, root, true);"
-    "  if(this.shadowRoot) observeTree(m.obs, m.seen, this.shadowRoot, true);"
-    " }else{"
-    "  const added=observeTree(m.obs, m.seen, root, true)"
-    "   || (this.shadowRoot ? observeTree(m.obs, m.seen, this.shadowRoot, true) : false);"
-    "  if(added){ m.n++; m.at=performance.now(); }"
-    " }"
-    " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
-    "}"
-)
+
+def _stable_node_fn(run_id: str) -> str:
+    rid = json.dumps(run_id)
+    return (
+        f"function(){{{_OBSERVE_SHADOWS_JS}"
+        " if(!this || !this.isConnected) return {present:false};"
+        " const root=this;"
+        f" const rid={rid};"
+        " let map=window.__chrys_stable_by_node;"
+        " if(!map){map=new WeakMap(); window.__chrys_stable_by_node=map;}"
+        " let m=map.get(root);"
+        " if(m && m.rid!==rid){"
+        "  if(m.obs){ try{ m.obs.disconnect(); }catch(_){} }"
+        "  m=null;"
+        " }"
+        " if(!m){"
+        "  const seen=new WeakSet();"
+        "  const obs=new MutationObserver((records)=>{"
+        "   let hit=false;"
+        "   for(const r of records){"
+        "    if(!inScope(r.target,root)) continue;"
+        "    hit=true;"
+        "    for(const node of (r.addedNodes||[])) observeTree(obs,seen,node,false);"
+        "   }"
+        "   if(hit){ m.n++; m.at=performance.now(); }"
+        "  });"
+        "  m={rid, n:0, at:performance.now(), obs, seen}; map.set(root, m);"
+        "  observeTree(m.obs, m.seen, root, true);"
+        "  if(this.shadowRoot) observeTree(m.obs, m.seen, this.shadowRoot, true);"
+        " }else{"
+        "  const added=observeTree(m.obs, m.seen, root, true)"
+        "   || (this.shadowRoot ? observeTree(m.obs, m.seen, this.shadowRoot, true) : false);"
+        "  if(added){ m.n++; m.at=performance.now(); }"
+        " }"
+        " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
+        "}"
+    )
+
+
+_STABLE_NODE_FN = _stable_node_fn("default")
 
 _STABLE_NODE_CLEANUP_FN = (
     "function(){"
@@ -381,7 +404,7 @@ async def _probe_node(session: Any, object_id: str, cdp_session_id: str | None, 
     return await _call_node(session, object_id, cdp_session_id, _NODE_PROBE_FN, deadline)
 
 
-async def _resolve_node(session: Any, entry: Any, deadline: float) -> str | None:
+async def _resolve_node(session: Any, entry: Any, deadline: float, *, object_group: str = "") -> str | None:
     """Resolve the target node; ``None`` means it is gone (detached or replaced).
 
     A node-only resolution keeps the coarse text-name comparison of
@@ -389,10 +412,13 @@ async def _resolve_node(session: Any, entry: Any, deadline: float) -> str | None
     changes is still the same element) and is bounded by the remaining budget.
     """
     client = session.require_client()
+    params: dict[str, Any] = {"backendNodeId": entry.backend_node_id}
+    if object_group:
+        params["objectGroup"] = object_group
     try:
         resolved = await client.send(
             "DOM.resolveNode",
-            {"backendNodeId": entry.backend_node_id},
+            params,
             session_id=entry.cdp_session_id or session.session_id,
             timeout=_probe_timeout(session, deadline),
         )
@@ -451,6 +477,7 @@ async def _lookup(
     refresh_allowed: bool,
     editable_only: bool = False,
     force_refresh: bool = False,
+    object_group: str = "",
 ) -> tuple[Any, str, bool]:
     """Resolve a free-text target; entry ``None`` means it is not in the page.
 
@@ -474,7 +501,7 @@ async def _lookup(
         except BrowserError:
             entry = None
         if entry is not None:
-            object_id = await _resolve_node(session, entry, deadline)
+            object_id = await _resolve_node(session, entry, deadline, object_group=object_group)
             if object_id or attempt or refreshed or not refresh_allowed or not can_refresh:
                 return entry, object_id or "", refreshed
             # Entry from snapshot is detached (re-rendered): refresh once before returning.
@@ -656,6 +683,9 @@ async def _collect_return_payload(
 async def read_text_baseline(session: Any, target: str = "", *, timeout_s: float = 1.5) -> str | None:
     """Capture a read-only text baseline before a write action for ``expect_condition='text_changed'``."""
     deadline = time.monotonic() + max(0.05, min(1.5, timeout_s))
+    group = f"chrys-wait-base-{secrets.token_hex(6)}"
+    resolved_cdp_session: str | None = None
+    resolved_any = False
     try:
         if not target:
             _, digest, _ = _parse_text_result(await _evaluate(session, _PAGE_TEXT_EXPR, deadline))
@@ -663,9 +693,11 @@ async def read_text_baseline(session: Any, target: str = "", *, timeout_s: float
         entry = session.resolve_target(target)
         if entry is None:
             return None
-        object_id = await _resolve_node(session, entry, deadline)
+        object_id = await _resolve_node(session, entry, deadline, object_group=group)
         if not object_id:
             return None
+        resolved_any = True
+        resolved_cdp_session = entry.cdp_session_id
         probe = await _probe_node(session, object_id, entry.cdp_session_id, deadline)
         if not probe.get("present"):
             return None
@@ -675,6 +707,9 @@ async def read_text_baseline(session: Any, target: str = "", *, timeout_s: float
         raise
     except Exception:
         return None
+    finally:
+        if resolved_any:
+            await release_object_group(session, group, cdp_session_id=resolved_cdp_session)
 
 
 def _validate_wait_args(condition: str, target: str, value: str, timeout_ms: int) -> tuple[int, str, int]:
@@ -790,7 +825,12 @@ async def _run_with_baseline_outcome(
     observed_text: str | None = None
     count_epoch: int | None = None
     refresh_failed = False
-    force_refresh = False
+    force_refresh = (not ref_spec) and bool(target) and snapshot_needs_refresh(session)
+    run_id = secrets.token_hex(6)
+    object_group = f"chrys-wait-{run_id}"
+    resolved_sessions: set[str | None] = set()
+    stable_page_expr = _stable_page_expr(run_id) if condition == "stable" else _STABLE_PAGE_EXPR
+    stable_node_fn = _stable_node_fn(run_id) if condition == "stable" else _STABLE_NODE_FN
     try:
         while True:
             ok = False
@@ -844,7 +884,7 @@ async def _run_with_baseline_outcome(
                     if ok:
                         detail = _changed_text(body)
                 elif condition == "stable" and not target:
-                    probe = await _evaluate(session, _STABLE_PAGE_EXPR, deadline)
+                    probe = await _evaluate(session, stable_page_expr, deadline)
                     probe = probe if isinstance(probe, dict) else {}
                     quiet = float(probe.get("quiet_ms") or 0.0)
                     ok = quiet >= quiet_ms
@@ -882,14 +922,19 @@ async def _run_with_baseline_outcome(
                             refresh_allowed=refresh_allowed,
                             editable_only=(condition == "editable"),
                             force_refresh=force_refresh,
+                            object_group=object_group,
                         )
+                        if object_id:
+                            resolved_sessions.add(entry.cdp_session_id if entry else None)
                         if refreshed:
                             refresh_at = time.monotonic()
                             force_refresh = False
                     else:
                         refreshed = False
                         if not object_id:
-                            object_id = await _resolve_node(session, entry, deadline) or ""
+                            object_id = await _resolve_node(session, entry, deadline, object_group=object_group) or ""
+                            if object_id:
+                                resolved_sessions.add(entry.cdp_session_id if entry else None)
                     if entry is None:
                         last = f"target={target} not_found"
                         if condition == "hidden" and refreshed and _snapshot_matches_epoch(session):
@@ -913,7 +958,7 @@ async def _run_with_baseline_outcome(
                             entry, object_id = None, ""
                     else:
                         if condition == "stable":
-                            function = _STABLE_NODE_FN
+                            function = stable_node_fn
                         elif condition == "text":
                             function = _node_probe_fn(value)
                         else:
@@ -1000,6 +1045,8 @@ async def _run_with_baseline_outcome(
                 ok = False
 
             if ok:
+                grace = min(1.5, max(0.05, timeout_ms / 1000.0))
+                payload_deadline = max(deadline, time.monotonic() + grace)
                 payload = await _collect_return_payload(
                     session,
                     return_mode=return_mode,
@@ -1009,7 +1056,7 @@ async def _run_with_baseline_outcome(
                     entry=entry,
                     object_id=object_id,
                     observed_text=observed_text,
-                    deadline=deadline,
+                    deadline=payload_deadline,
                 )
                 if payload:
                     detail = f"{detail}\n{payload}" if detail else payload
@@ -1036,7 +1083,7 @@ async def _run_with_baseline_outcome(
                         entry=entry,
                         object_id=object_id,
                         observed_text=observed_text,
-                        deadline=deadline,
+                        deadline=time.monotonic() + 1.5,
                     )
                     if partial:
                         lines.append(partial.replace("\ncontent:\n", "\npartial_text:\n", 1))
@@ -1071,3 +1118,9 @@ async def _run_with_baseline_outcome(
                     )
             except Exception:
                 pass
+        for cdp_sid in resolved_sessions:
+            await release_object_group(
+                session,
+                object_group,
+                cdp_session_id=cdp_sid,
+            )

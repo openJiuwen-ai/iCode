@@ -21,8 +21,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from ._proc import atomic_write_private
 from .actions import build_tool_defs
-from .bridge.install import _harden_file
 from .bridge.protocol import MAX_TCP_MESSAGE_BYTES, ProtocolError, encode_message, read_async_frame
 from .config import BrowserConfig, BrowserEnv, ConfigError
 from .errors import BrowserError, Unavailable
@@ -122,6 +122,8 @@ class BrokerServer:
         try:
             self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
             sockets = self._server.sockets or ()
+            if not sockets:
+                raise Unavailable("broker server has no listening socket")
             self.port = int(sockets[0].getsockname()[1])
             payload = {
                 "port": self.port,
@@ -134,18 +136,12 @@ class BrokerServer:
                 "headless": self.cfg.headless,
                 "bridge": self.cfg.bridge,
                 "evaluate": self.cfg.evaluate_enabled,
+                "save_state": self.cfg.save_state_enabled,
+                "chrome_devtools": self.cfg.chrome_devtools,
+                "cdp_url": self.cfg.cdp_url or "",
+                "upload_roots": [str(p) for p in self.cfg.upload_roots],
             }
-            temporary = self.file.with_name(f".{self.file.name}.{self.generation}.{secrets.token_hex(4)}.tmp")
-            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    handle.write(json.dumps(payload))
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    temporary.unlink()
-                raise
-            os.replace(temporary, self.file)
-            _harden_file(self.file)
+            await asyncio.to_thread(atomic_write_private, self.file, json.dumps(payload), strict=False)
             self._sweep_task = asyncio.get_running_loop().create_task(self._sweep())
         except BaseException:
             self._release_lock()
@@ -216,11 +212,18 @@ class BrokerServer:
                 {dispatch_task, eof_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if eof_task in done and not dispatch_task.done():
-                dispatch_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await dispatch_task
-                return None
+            if eof_task in done:
+                is_eof = False
+                with contextlib.suppress(Exception):
+                    is_eof = bool(eof_task.result())
+                if not dispatch_task.done():
+                    dispatch_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await dispatch_task
+                if is_eof:
+                    return None
+                # Non-EOF byte was consumed from the TCP stream; continuing would desync framing.
+                raise ProtocolError("unexpected pipelined data during broker read call")
             return dispatch_task.result()
         finally:
             if not eof_task.done():
@@ -477,7 +480,10 @@ class BrokerServer:
                         self.cfg,
                         state_dir=_session_state_dir(self.cfg.state_dir, session_id),
                     )
-                session = self._session_factory(session_cfg)
+                if self._session_factory is BrowserSession:
+                    session = BrowserSession(session_cfg, journal_owner=owner, journal_session=session_id)
+                else:
+                    session = self._session_factory(session_cfg)
                 self.sessions[session_id] = session
                 self.owners[session_id] = owner
             if isinstance(session, BrowserSession):
@@ -562,13 +568,16 @@ class BrokerServer:
             self._lock = None
 
 
-def _run_config() -> BrowserConfig:
+def _run_config(state_dir: Path | None = None) -> BrowserConfig:
     """Broker-wide configuration; downloads stay off (it has no session folder)."""
-    return replace(BrowserConfig.from_env(), download_dir=None)
+    cfg = BrowserConfig.from_env()
+    if state_dir is not None:
+        return replace(cfg, state_dir=state_dir.expanduser(), download_dir=None)
+    return replace(cfg, download_dir=None)
 
 
-async def _run() -> None:
-    cfg = _run_config()
+async def _run(state_dir: Path | None = None) -> None:
+    cfg = _run_config(state_dir)
     server = BrokerServer(cfg)
     await server.start()
     try:
@@ -644,12 +653,13 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
         if args.purge_profiles:
             _purge_profiles(state_dir)
         return 0
+    override_state_dir = Path(args.state_dir).expanduser() if args.state_dir else None
     try:
-        BrowserConfig.from_env()
+        _run_config(override_state_dir)
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from None
-    asyncio.run(_run())
+    asyncio.run(_run(override_state_dir))
     return 0
 
 

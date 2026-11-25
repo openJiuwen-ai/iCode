@@ -25,13 +25,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from icode_browser_use.bridge.install import default_extension_install_dir
 from icode_browser_use.bridge.protocol import PROTOCOL_VERSION
 from icode_browser_use.bridge.server import BridgeServer
 
 from smoke_common import chrome_executable
 
 CHROME = chrome_executable()
-EXTENSION = Path(os.environ["LOCALAPPDATA"]) / "icode-browser-use" / "extension"
+EXTENSION = default_extension_install_dir()
 LOAD_EXTENSION_REMOVED_IN = 137
 
 
@@ -40,6 +41,7 @@ def chrome_major(executable: Path) -> int | None:
     try:
         result = subprocess.run(
             [str(executable), "--version"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -92,6 +94,7 @@ async def _run(profile: Path, *, load_extension: bool) -> None:
         chrome = subprocess.Popen(
             command,
             env=env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

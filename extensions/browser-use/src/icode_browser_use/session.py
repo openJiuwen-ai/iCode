@@ -18,7 +18,7 @@ import re
 import secrets
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,7 +50,7 @@ from .journal import Journal
 from .locking import InstanceLock, acquire_instance_lock
 from .logging import log
 from .page_log import PageLog
-from .snapshot.fusion import FrameInfo, FusedNode
+from .snapshot.fusion import FrameInfo, FusedNode, _fp_name
 from .snapshot.scoring import rank, resolve_ambiguity
 from .transport import AttachedTransport, OwnedTransport, Transport
 
@@ -271,6 +271,11 @@ class BrowserSession:
         self._browser_identity: str = ""
         #: Detached Attach-mode targets that could not be closed when ``aclose()`` ran.
         self._unclosed_targets: list[str] = []
+        #: Target IDs currently being closed by this session (suppresses self-triggered detach).
+        self._closing_targets: set[str] = set()
+        #: Origins reported via Bridge.siteBlocked for session-facts & typed error surfacing.
+        self._site_blocked_origins: list[str] = []
+        self._last_site_blocked_origin: str = ""
 
         self._page_epoch: int = secrets.randbits(32)
         self._ref_map: dict[int, RefEntry] = {}
@@ -294,6 +299,8 @@ class BrowserSession:
         self._dialog_task: asyncio.Task[None] | None = None
         #: Superseded dialogs whose own javascriptDialogClosed event is still due.
         self._dialog_orphans = 0
+        #: Input release events (mouseReleased/keyUp) deferred after a mid-action dialog cancel.
+        self._pending_input_releases: list[tuple[str, dict[str, Any], str | None]] = []
 
         #: Controlled downloads exist only when this handle owns the browser (and
         #: the config opted in): the folder is session-scoped, so Attach/Bridge
@@ -320,6 +327,8 @@ class BrowserSession:
         self._action_lock = asyncio.Lock()
         self._start_lock = asyncio.Lock()
         self._page_lock = asyncio.Lock()
+        self._attach_lock = asyncio.Lock()
+        self._conn_gen = 0
         self._closed = False
         self._last_active = time.monotonic()
         self._idle_task: asyncio.Task[None] | None = None
@@ -420,7 +429,7 @@ class BrowserSession:
         info.state = "canceled"
         await self._cancel_transfer(guid)
         if info.state == "canceled":
-            self._discard_download_files(info)
+            await self._discard_download_files_retry(info)
         return info
 
     @property
@@ -637,19 +646,23 @@ class BrowserSession:
                 raise TargetNotFound(f"未知标签页：{target_id}（可用：{available}；请先 browser_tabs）")
             if len(self._pages) == 1:
                 raise BadRequest("这是此句柄唯一的标签页，不能单独关闭；结束会话请用 browser_close")
+            self._closing_targets.add(target_id)
             try:
-                result = await self.require_client().send(
-                    "Target.closeTarget", {"targetId": target_id}, timeout=self.cfg.cdp_timeout
-                )
-            except CDPTimeout as exc:
-                # A browser-level hang, not the current page's: recycling the current
-                # page (what a CDPTimeout leads to) cannot help, so report it plainly.
-                raise Unavailable(
-                    f"关闭标签页 {target_id} 超时；它仍被跟踪，可稍后重试 browser_tab_close 或用 browser_tabs 复核"
-                ) from exc
-            if result.get("success") is False:
-                raise Unavailable(f"浏览器拒绝关闭标签页 {target_id}；请 browser_tabs 复核")
-            await self._drop_page(target_id)
+                try:
+                    result = await self.require_client().send(
+                        "Target.closeTarget", {"targetId": target_id}, timeout=self.cfg.cdp_timeout
+                    )
+                except CDPTimeout as exc:
+                    # A browser-level hang, not the current page's: recycling the current
+                    # page (what a CDPTimeout leads to) cannot help, so report it plainly.
+                    raise Unavailable(
+                        f"关闭标签页 {target_id} 超时；它仍被跟踪，可稍后重试 browser_tab_close 或用 browser_tabs 复核"
+                    ) from exc
+                if result.get("success") is False:
+                    raise Unavailable(f"浏览器拒绝关闭标签页 {target_id}；请 browser_tabs 复核")
+                await self._drop_page(target_id)
+            finally:
+                self._closing_targets.discard(target_id)
 
     def require_client(self) -> CDPConnection:
         """Return the live CDP connection or raise :class:`Unavailable`."""
@@ -714,8 +727,21 @@ class BrowserSession:
             return ""
         if not isinstance(info, dict):
             return ""
+        ua = str(info.get("userAgent") or "").lower()
+        if ua:
+            self._is_macos = "mac os x" in ua or "macintosh" in ua
         parts = [str(info.get(key) or "") for key in ("product", "revision", "userAgent")]
         return "|".join(parts) if any(parts) else ""
+
+    @property
+    def is_macos(self) -> bool:
+        """Whether the connected browser runs on macOS (for CDP editing commands)."""
+        cached = getattr(self, "_is_macos", None)
+        if isinstance(cached, bool):
+            return cached
+        import sys
+
+        return sys.platform == "darwin"
 
     async def _find_reattach_target(self, targets: TargetManager) -> str:
         """Return a surviving detached Attach-mode target on the same browser, or ``""``."""
@@ -809,6 +835,7 @@ class BrowserSession:
                     discover_pages=self._transport.owns_browser,
                     download_dir=str(self._download_dir) if self._download_dir is not None else None,
                     owns_session=self._owns_session,
+                    route_attach_events=True,
                 )
             else:
                 # A recycled page keeps the policy object (and its one set of event
@@ -1101,6 +1128,7 @@ class BrowserSession:
             self._detached_target_ids.clear()
         # The next browser may reuse tab ids (Bridge ids are Chrome tab numbers).
         self._page_log.clear()
+        self._conn_gen += 1
         self._client = None
         self._child = None
         self._targets = None
@@ -1113,11 +1141,15 @@ class BrowserSession:
         self._oopifs.clear()
         self._duplicate_sessions.clear()
         self._foreign_targets.clear()
+        self._frame_loader.clear()
+        self._load_done.clear()
+        self._document_status.clear()
         self._opening_page = False
         self._cancel_dialog_task()
         self._dialog = None
         self._last_dialog = None
         self._dialog_orphans = 0
+        self._pending_input_releases.clear()
         self._login_pending_since = None
         for info in self._downloads.values():
             if info.state == "in_progress":
@@ -1126,29 +1158,36 @@ class BrowserSession:
                 self._discard_download_files(info)
         self._bump_epoch()
         self._reset_budgets()
-        if detached_to_close:
-            self._unclosed_targets = await self._close_detached_targets(detached_to_close)
-        elif self._closed:
-            self._unclosed_targets = []
-        if self._closed:
-            self._browser_identity = ""
-        if not client_dead and client is not None and not self._transport.owns_browser and self._transport.browser_commands:
-            for extra_id in owned_targets:
-                if extra_id != target_id:
-                    with contextlib.suppress(Exception):
-                        await client.send("Target.closeTarget", {"targetId": extra_id}, timeout=5.0)
-        # The transport decides whether that means "close the browser" (owned) or
-        # "close our tab and disconnect" (attached); it never raises.
-        if client_dead and client is not None and not self._transport.owns_browser:
-            with contextlib.suppress(Exception):
-                await client.aclose()
-            await self._transport.stop(None, child, target_id=None)
-        else:
-            await self._transport.stop(client, child, target_id=target_id)
-        # The state-dir lock guards the profile while we own the browser; a
-        # teardown (restart, failure, close) always releases it.
-        self._release_lock()
-        self._close_journal()
+        try:
+            if detached_to_close:
+                self._unclosed_targets = await self._close_detached_targets(detached_to_close)
+            elif self._closed:
+                self._unclosed_targets = []
+            if self._closed:
+                self._browser_identity = ""
+            if (
+                not client_dead
+                and client is not None
+                and not self._transport.owns_browser
+                and self._transport.browser_commands
+            ):
+                for extra_id in owned_targets:
+                    if extra_id != target_id:
+                        with contextlib.suppress(Exception):
+                            await client.send("Target.closeTarget", {"targetId": extra_id}, timeout=5.0)
+            # The transport decides whether that means "close the browser" (owned) or
+            # "close our tab and disconnect" (attached); it never raises.
+            if client_dead and client is not None and not self._transport.owns_browser:
+                with contextlib.suppress(Exception):
+                    await client.aclose()
+                await self._transport.stop(None, child, target_id=None)
+            else:
+                await self._transport.stop(client, child, target_id=target_id)
+        finally:
+            # The state-dir lock guards the profile while we own the browser; a
+            # teardown (restart, failure, close) always releases it.
+            self._release_lock()
+            self._close_journal()
 
     def _close_journal(self) -> None:
         """Release the journal file handle; the next action reopens it lazily."""
@@ -1179,7 +1218,7 @@ class BrowserSession:
     # ----------------------------------------------------------------- lock
 
     @contextlib.asynccontextmanager
-    async def action_lock(self, name: str) -> AsyncIterator[None]:
+    async def action_lock(self, name: str) -> AsyncGenerator[None, None]:
         """Serialise actions, refuse work during a login wait or an open JS dialog."""
         self._refuse_while_dialog(name)
         if self.login_pending and name not in LOGIN_PENDING_ALLOWED:
@@ -1250,7 +1289,7 @@ class BrowserSession:
                     try:
                         await self._on_idle()
                     except Exception as exc:  # noqa: BLE001
-                        log("session.idle_callback_failed", error=str(exc))
+                        log(f"session.idle_callback_failed: {exc!r}")
                 return
         finally:
             # A loop shutdown cancels this task; never leave a stale handle that a
@@ -1440,8 +1479,8 @@ class BrowserSession:
         actual_tag = str(value.get("tag", "")).lower()
         if expected_tag and actual_tag and expected_tag != actual_tag:
             raise StaleRef("引用已失效（元素已被替换），请重新 snapshot")
-        expected_name = (entry.fingerprint.get("name") or "").strip()
-        actual_name = str(value.get("name", "")).strip()
+        expected_name = _fp_name(entry.fingerprint.get("name") or "")
+        actual_name = _fp_name(str(value.get("name", "")))
         name_source = entry.fingerprint.get("name_source")
         # A <select>'s accessible name (its label or selected option) is never its
         # textContent (all option labels), and a name taken from href is a path, not
@@ -1470,14 +1509,14 @@ class BrowserSession:
             raise
         except BrowserError:
             return False
-        expected_name = " ".join(expected.split())
+        expected_name = _fp_name(expected)
         return any(
             not node.get("ignored")
             and node.get("backendDOMNodeId") == entry.backend_node_id
             and _matches_live_ref_name(
                 entry.fingerprint.get("role", ""),
                 expected_name,
-                " ".join(str((node.get("name") or {}).get("value") or "").split()),
+                _fp_name(str((node.get("name") or {}).get("value") or "")),
             )
             for node in tree.get("nodes") or []
         )
@@ -1585,6 +1624,8 @@ class BrowserSession:
         targets = self._targets
         previous = self._target_id
         async with self._page_lock:
+            if previous:
+                self._closing_targets.add(previous)
             try:
                 if targets is not None and previous:
                     with contextlib.suppress(Exception):
@@ -1596,6 +1637,9 @@ class BrowserSession:
             except Exception:
                 self._state = "failed"
                 raise
+            finally:
+                if previous:
+                    self._closing_targets.discard(previous)
         self._bump_epoch()
         self._state = "ready"
 
@@ -1632,24 +1676,39 @@ class BrowserSession:
 
     def _register_handlers(self) -> None:
         client = self.require_client()
-        client.on("Page.frameNavigated", self._on_frame_navigated)
-        client.on("Page.navigatedWithinDocument", self._on_navigated_within_document)
-        client.on("Page.lifecycleEvent", self._on_lifecycle_event)
-        client.on("Page.frameStoppedLoading", self._on_frame_stopped_loading)
-        client.on("Page.javascriptDialogOpening", self._on_dialog)
-        client.on("Page.javascriptDialogClosed", self._on_dialog_closed)
-        client.on("Browser.downloadWillBegin", self._on_download_will_begin)
-        client.on("Browser.downloadProgress", self._on_download_progress)
-        client.on("Network.responseReceived", self._on_response)
-        client.on("Target.attachedToTarget", self._on_attached_to_target)
-        client.on("Target.detachedFromTarget", self._on_detached_from_target)
-        client.on("DOM.documentUpdated", self._on_document_updated)
+        self._conn_gen += 1
+        conn_gen = self._conn_gen
+
+        def _guarded(
+            handler: Callable[[dict[str, Any], str | None], Awaitable[None]],
+        ) -> Callable[..., Awaitable[None]]:
+            async def _wrapper(params: dict[str, Any], session_id: str | None) -> None:
+                if self._conn_gen != conn_gen:
+                    return
+                await handler(params, session_id)
+
+            return _wrapper
+
+        client.on("Page.frameNavigated", _guarded(self._on_frame_navigated))
+        client.on("Page.navigatedWithinDocument", _guarded(self._on_navigated_within_document))
+        client.on("Page.lifecycleEvent", _guarded(self._on_lifecycle_event))
+        client.on("Page.frameStoppedLoading", _guarded(self._on_frame_stopped_loading))
+        client.on("Page.javascriptDialogOpening", _guarded(self._on_dialog))
+        client.on("Page.javascriptDialogClosed", _guarded(self._on_dialog_closed))
+        client.on("Browser.downloadWillBegin", _guarded(self._on_download_will_begin))
+        client.on("Browser.downloadProgress", _guarded(self._on_download_progress))
+        client.on("Network.responseReceived", _guarded(self._on_response))
+        client.on("Target.attachedToTarget", _guarded(self._on_attached_to_target))
+        client.on("Target.detachedFromTarget", _guarded(self._on_detached_from_target))
+        client.on("DOM.documentUpdated", _guarded(self._on_document_updated))
+        client.on("Inspector.detached", _guarded(self._on_inspector_detached))
+        client.on("Bridge.siteBlocked", _guarded(self._on_bridge_site_blocked))
         capabilities = getattr(client, "capabilities", None)
         if capabilities is not None and "page_log_gated" not in capabilities:
             # An older Bridge extension forwards every page's console and network
             # events, including sites the user did not allow: collect none of them.
             self._page_log.disabled_reason = (
-                "当前 Bridge 未按站点授权过滤日志。运行 icode browser update-bridge，"
+                "当前 Bridge 未按站点授权过滤日志。运行 icode-browser-use update-bridge，"
                 "在 chrome://extensions 重载扩展后重连"
             )
             return
@@ -1683,6 +1742,62 @@ class BrowserSession:
             return
         self._bump_epoch()
 
+    def consume_site_blocked_origin(self) -> str:
+        """Return and clear the most recent Bridge.siteBlocked origin, if any."""
+        origin = self._last_site_blocked_origin
+        self._last_site_blocked_origin = ""
+        return origin
+
+    def drain_blocked_origins(self) -> tuple[str, ...]:
+        """Return and clear all Bridge.siteBlocked origins recorded since the last drain."""
+        if not self._site_blocked_origins:
+            return ()
+        items = tuple(self._site_blocked_origins)
+        self._site_blocked_origins.clear()
+        return items
+
+    async def _on_inspector_detached(self, params: dict[str, Any], session_id: str | None) -> None:
+        """Handle Bridge debugger detach (e.g. user clicked Cancel in Chrome's banner).
+
+        In CDP (Owned/Attach) mode, ``Target.detachedFromTarget`` owns tab detach
+        and ``close_page``/OAuth self-close emit ``Inspector.detached`` before the
+        opener tab is activated; disconnecting the browser-level socket there would
+        tear down the whole session on a normal tab close.
+        In Bridge mode, ignore self-initiated closes (``reason == "target_closed"``
+        or a target currently in ``_closing_targets``) so ``recycle_page`` and
+        ``close_page`` do not trip a false disconnect.
+        """
+        if self._transport.browser_commands:
+            return
+        reason = str(params.get("reason") or "").lower()
+        if reason == "target_closed":
+            return
+        target_id = self._page_target_for_session(session_id) if session_id else self._target_id
+        if target_id and target_id in self._closing_targets:
+            return
+        if session_id is not None and session_id != self._session_id:
+            if target_id and target_id != self._target_id:
+                await self._drop_page(target_id)
+            return
+        self.mark_disconnected()
+
+    async def _on_bridge_site_blocked(self, params: dict[str, Any], session_id: str | None) -> None:
+        """Handle a Bridge webNavigation block: record blocked origin and invalidate page."""
+        origin = str(params.get("origin") or "")
+        if origin:
+            self._last_site_blocked_origin = origin
+            if origin not in self._site_blocked_origins:
+                self._site_blocked_origins.append(origin)
+            if self._policy is not None:
+                self._policy.last_blocked_document_origin = origin
+                self._policy.last_blocked_origin = origin
+                self._policy.blocked += 1
+        self._bump_epoch()
+        self.mark_dirty()
+        tab_id = str(params.get("tabId") or session_id or "")
+        if tab_id and tab_id == self._target_id:
+            self.mark_disconnected()
+
     async def _on_frame_navigated(self, params: dict[str, Any], session_id: str | None) -> None:
         frame = params.get("frame", {})
         if session_id != self._session_id:
@@ -1693,14 +1808,12 @@ class BrowserSession:
             return
         loader_id = str(frame.get("loaderId", ""))
         frame_id = str(frame.get("id", ""))
-        if loader_id and frame_id:
-            self._frame_loader[frame_id] = loader_id
         if frame.get("parentId") is not None:
             self._bump_epoch()  # child-frame navigation also invalidates fused refs
             self._note_navigation("", self._snapshot.url, child=True)
             return
         self._main_frame_id = frame_id
-        self._frame_loader[frame_id] = loader_id
+        self._frame_loader = {frame_id: loader_id} if (frame_id and loader_id) else {}
         self._snapshot.url = str(frame.get("url", ""))
         page = self._page_by_session(session_id)
         if page is not None:
@@ -1752,7 +1865,8 @@ class BrowserSession:
             # Never touch the current page's dialog record: both pages are live.
             page = self._page_by_session(session_id)
             log(f"dismissing a background-page dialog on {page.target_id if page else session_id}: {kind} {message!r}")
-            await self._send_dialog_close(session_id, accept=False)
+            with contextlib.suppress(ConnectionClosed):
+                await self._send_dialog_close(session_id, accept=False)
             return
         if self._dialog is not None:
             # The old dialog's own Page.javascriptDialogClosed may still arrive;
@@ -1835,6 +1949,8 @@ class BrowserSession:
             sent = await self._send_dialog_close(session_id, accept=False)
             if not sent:
                 info.reason += "; the dialog was already gone"
+        except ConnectionClosed:
+            info.reason += "; the dialog was already gone"
         finally:
             # Whatever happened above, the record must not outlive its timer.
             self._finish_dialog("dismissed", info.reason, seq=seq)
@@ -1854,9 +1970,7 @@ class BrowserSession:
                 session_id=session_id or self._session_id,
                 timeout=min(self.cfg.cdp_timeout, 10.0),
             )
-        except ConnectionClosed:
-            return False
-        except BrowserError as exc:  # "No dialog is showing" after the page closed it
+        except BrowserError as exc:  # "No dialog is showing" or closed transport
             log(f"dialog close failed: {exc!r}")
             return False
         return True
@@ -1877,6 +1991,9 @@ class BrowserSession:
             raise BadRequest(f"text 只用于 prompt 对话框（当前为 {info.kind}）")
         if accept and info.kind == "prompt" and not text.strip():
             raise BadRequest("prompt 对话框需要 text 才能 accept：页面收到的是这个参数（不会替你提交空答案）")
+        # Cancel the auto-dismiss timer BEFORE awaiting the close command so it
+        # cannot race and dismiss the dialog while handle_dialog is in flight.
+        self._cancel_dialog_task()
         # Stamp the reason before sending: Page.javascriptDialogClosed races the
         # command response and cannot say who closed the dialog.
         info.reason = "handled by browser_dialog"
@@ -1925,8 +2042,9 @@ class BrowserSession:
             info.state = "failed"
             info.reason = f"too many concurrent downloads (limit {_MAX_ACTIVE_DOWNLOADS})"
             self._remember_download(info)
-            await self._cancel_transfer(guid)
-            self._discard_download_files(info)
+            with contextlib.suppress(ConnectionClosed):
+                await self._cancel_transfer(guid)
+            await self._discard_download_files_retry(info)
             return
         try:
             info.path = reserve_path(self._download_dir, name)
@@ -1934,8 +2052,9 @@ class BrowserSession:
             info.state = "failed"
             info.reason = f"could not reserve a file: {exc}"
             self._remember_download(info)
-            await self._cancel_transfer(guid)
-            self._discard_download_files(info)
+            with contextlib.suppress(ConnectionClosed):
+                await self._cancel_transfer(guid)
+            await self._discard_download_files_retry(info)
             return
         info.name = info.path.name
         self._remember_download(info)
@@ -1965,9 +2084,10 @@ class BrowserSession:
                 # Claim the record before awaiting: a completed event must not rename it.
                 info.reason = f"size_limit: {observed} > {limit} bytes"
                 info.state = "canceled"
-                await self._cancel_transfer(info.guid)
+                with contextlib.suppress(ConnectionClosed):
+                    await self._cancel_transfer(info.guid)
                 if info.state == "canceled":
-                    self._discard_download_files(info)
+                    await self._discard_download_files_retry(info)
             return
         if state == "completed":
             self._complete_download(info, params)
@@ -1977,7 +2097,7 @@ class BrowserSession:
             info.reason = info.reason or (
                 "canceled by the page or the user" if state == "canceled" else "download failed"
             )
-            self._discard_download_files(info)
+            await self._discard_download_files_retry(info)
 
     def _complete_download(self, info: DownloadInfo, params: dict[str, Any]) -> None:
         limit = self.cfg.download_max_bytes
@@ -2031,13 +2151,17 @@ class BrowserSession:
     async def _cancel_transfer(self, guid: str) -> None:
         client = self._client
         if client is None:
-            return
-        with contextlib.suppress(BrowserError):
+            raise ConnectionClosed("CDP 连接已关闭")
+        try:
             await client.send(
                 "Browser.cancelDownload",
                 {"guid": guid},
                 timeout=min(self.cfg.cdp_timeout, 10.0),
             )
+        except ConnectionClosed:
+            raise
+        except BrowserError:
+            return
 
     def _discard_download_files(self, info: DownloadInfo) -> None:
         directory = self._download_dir
@@ -2048,6 +2172,32 @@ class BrowserSession:
         remove_quiet(info.path)
         info.path = None
         info.partial_path = None
+
+    async def _discard_download_files_retry(self, info: DownloadInfo) -> None:
+        """Delete canceled/failed download artifacts, retrying briefly on Windows file locks."""
+        directory = self._download_dir
+        targets: list[Path] = []
+        if directory is not None:
+            targets.extend([directory / info.guid, directory / f"{info.guid}.crdownload"])
+        if info.partial_path is not None:
+            targets.append(info.partial_path)
+        if info.path is not None:
+            targets.append(info.path)
+        info.path = None
+        info.partial_path = None
+        for attempt in range(4):
+            remaining: list[Path] = []
+            for path in targets:
+                try:
+                    if path.exists():
+                        path.unlink()
+                except OSError:
+                    if path.exists():
+                        remaining.append(path)
+            if not remaining or attempt == 3:
+                return
+            targets = remaining
+            await asyncio.sleep(0.1 * (attempt + 1))
 
     def _remember_download(self, info: DownloadInfo) -> None:
         self._downloads[info.guid] = info
@@ -2079,7 +2229,16 @@ class BrowserSession:
         if len(self._document_status) > _MAX_REMEMBERED_LOADS:
             del self._document_status[next(iter(self._document_status))]
 
+    async def _route_to_policy(self, params: dict[str, Any], session_id: str | None) -> None:
+        policy = self._policy
+        if policy is not None and hasattr(policy, "handle_attached_to_target"):
+            await policy.handle_attached_to_target(params, session_id)
+
     async def _on_attached_to_target(self, params: dict[str, Any], session_id: str | None) -> None:
+        async with self._attach_lock:
+            await self._on_attached_to_target_serial(params, session_id)
+
+    async def _on_attached_to_target_serial(self, params: dict[str, Any], session_id: str | None) -> None:
         info = params.get("targetInfo", {})
         child_session = str(params.get("sessionId") or "")
         target_id = str(info.get("targetId", ""))
@@ -2088,17 +2247,24 @@ class BrowserSession:
             parent = session_id if session_id in self._oopifs else None
             owner = self._page_target_for_session(session_id) or ""
             self.register_oopif(child_session, target_id, parent_session_id=parent, page_target_id=owner)
+            await self._route_to_policy(params, session_id)
+            return
+        if target_type in {"service_worker", "shared_worker"} and child_session:
+            await self._route_to_policy(params, session_id)
             return
         if target_type != "page" or not child_session or not target_id:
+            if child_session and str(info.get("url", "")).startswith("chrome-extension://"):
+                await self._route_to_policy(params, session_id)
             return
         if target_id == self._target_id:
             # Our current tab (startup or a re-attached session).
             page = self._pages.get(target_id)
             if page is None:
                 if child_session == self._session_id or not params.get("waitingForDebugger"):
-                    return  # the manual attach this handle is setting up
+                    return  # the manual attach this handle is setting up (armed by bootstrap)
                 # A browser-level auto-attach session for the tab being opened:
                 # it is not recorded, and keeping it would be a second Fetch owner.
+                self._duplicate_sessions[child_session] = target_id
                 with contextlib.suppress(Exception):
                     await self.require_client().send(
                         "Target.detachFromTarget",
@@ -2110,11 +2276,11 @@ class BrowserSession:
                 return
             if not page.session_id:
                 page.session_id = child_session
+                await self._route_to_policy(params, session_id)
                 return
             # Browser-level auto-attach also opens a second session for a tab we
             # already drive manually; keep one owner and let the extra session go
-            # (detaching a paused target resumes it). OOPIFs still attach under the
-            # duplicate session, so remember who owns it for frame fusion.
+            # without asking policy to Fetch.enable it (eliminates -32001 races).
             self._duplicate_sessions[child_session] = target_id
             with contextlib.suppress(Exception):
                 await self.require_client().send(
@@ -2124,17 +2290,31 @@ class BrowserSession:
                 )
             return
         if self._opening_page:
-            # ``_open_page`` is creating its own tab; it records it when attach returns.
+            # ``_open_page`` is creating its own tab; it records and arms it when attach returns.
             return
         known = self._pages.get(target_id)
         if known is not None:
+            if known.session_id and known.session_id != child_session:
+                self._duplicate_sessions[child_session] = target_id
+                with contextlib.suppress(Exception):
+                    await self.require_client().send(
+                        "Target.detachFromTarget",
+                        {"sessionId": child_session},
+                        timeout=5.0,
+                    )
+                return
             known.session_id = child_session
+            await self._route_to_policy(params, session_id)
             return
         opener_id = str(info.get("openerId") or "") or None
         if opener_id is not None and opener_id in self._pages and len(self._pages) < _MAX_PAGES:
+            # Adopt BEFORE policy arms so ``_owns_session`` is True: if arming
+            # fails, policy closes the popup fail-closed instead of detaching it.
             await self._adopt_page(target_id, child_session, opener_id, info)
+            await self._route_to_policy(params, session_id)
             return
         if target_id in self._foreign_targets:
+            await self._route_to_policy(params, session_id)
             return
         # A user/extension page, a no-opener flow, or one popup too many: never
         # drive or close it. In Owned mode the policy still guards its requests
@@ -2142,6 +2322,7 @@ class BrowserSession:
         # it should not appear at all, so detaching keeps the user's connection clean.
         self._foreign_targets.add(target_id)
         if self._transport.owns_browser:
+            await self._route_to_policy(params, session_id)
             return
         with contextlib.suppress(Exception):
             await self.require_client().send(

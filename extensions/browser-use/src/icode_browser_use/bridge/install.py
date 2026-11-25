@@ -22,14 +22,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 from .. import __version__
-from .._proc import windows_hidden_kwargs
+from .._proc import atomic_write_private, harden_private, pid_alive as _pid_alive, which_trusted
 from .protocol import PROTOCOL_VERSION
 
 HOST_NAME = "com.chrys.browser"
+_EXTENSION_ID_RE = re.compile(r"^[a-p]{32}$")
 
 _REGISTRY_KEYS = {
     "chrome": rf"Software\Google\Chrome\NativeMessagingHosts\{HOST_NAME}",
@@ -80,18 +82,42 @@ def default_extension_install_dir() -> Path:
 
 
 def install_extension(source: Path | None = None, target: Path | None = None) -> Path:
-    """Replace *target* with a fresh copy of the unpacked extension."""
-    source = source or packaged_extension_dir()
-    target = target or default_extension_install_dir()
+    """Atomically replace *target* with a fresh copy of the unpacked extension."""
+    from ..distribution import _is_link_or_junction
+
+    raw_target = target or default_extension_install_dir()
+    if _is_link_or_junction(raw_target):
+        raise ValueError(
+            f"refusing to replace symlink/junction {raw_target}; remove the link manually before installing"
+        )
+    source = (source or packaged_extension_dir()).resolve()
+    target = raw_target.resolve()
+    if source == target:
+        raise ValueError(f"source and target must be different directories: {source}")
     if not (source / "manifest.json").is_file():
         raise ValueError(f"{source} has no manifest.json")
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
+    if target.exists() and not (target / "manifest.json").is_file():
+        raise ValueError(f"refusing to replace {target}: it does not contain a Chrome extension manifest.json")
+    with tempfile.TemporaryDirectory(dir=target.parent, ignore_cleanup_errors=True) as scratch:
+        staged = Path(scratch) / "incoming"
+        shutil.copytree(source, staged)
+        previous: Path | None = None
+        if target.exists():
+            previous = target.with_name(f"{target.name}-backup-{Path(scratch).name}")
+            try:
+                target.rename(previous)
+            except OSError as exc:
+                raise RuntimeError(f"cannot replace {target}; close the browser and retry") from exc
         try:
-            shutil.rmtree(target)
+            os.replace(staged, target)
         except OSError as exc:
+            if previous is not None and previous.exists():
+                with contextlib.suppress(OSError):
+                    previous.rename(target)
             raise RuntimeError(f"cannot replace {target}; close the browser and retry") from exc
-    shutil.copytree(source, target)
+        if previous is not None and previous.exists():
+            shutil.rmtree(previous, ignore_errors=True)
     return target
 
 
@@ -124,42 +150,24 @@ def update_extension() -> Path:
 
 def native_host_manifest(host_path: Path, extension_id: str) -> dict[str, object]:
     """Build the manifest for *host_path*, allowing only *extension_id*."""
-    if not extension_id or "/" in extension_id or "\\" in extension_id:
-        raise ValueError("extension_id must be the bare Chrome extension id")
+    if not isinstance(extension_id, str) or not _EXTENSION_ID_RE.fullmatch(extension_id):
+        raise ValueError("extension_id must be a 32-character a-p Chrome extension id")
     return {
         "name": HOST_NAME,
         "description": "iCode browser bridge",
-        "path": str(host_path),
+        "path": str(host_path.resolve()),
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{extension_id}/"],
     }
 
 
 def write_native_host_manifest(path: Path, manifest: dict[str, object]) -> None:
-    """Write the manifest owner-only; the OS registration still has to point at it."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    _harden_file(path)
+    """Write the manifest atomically owner-only; the OS registration still has to point at it."""
+    atomic_write_private(path, json.dumps(manifest, ensure_ascii=False, indent=2), strict=False)
 
 
 def _harden_file(path: Path) -> None:
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
-    if sys.platform != "win32":
-        return
-    user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
-    if not user:
-        return
-    with contextlib.suppress(Exception):
-        subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
-            **windows_hidden_kwargs(),
-        )
+    harden_private(path, is_dir=False, strict=False)
 
 
 def install_native_host(
@@ -303,18 +311,19 @@ def load_extension_via_cdp(
     extension_dir: Path,
     *,
     ws_url: str | None = None,
-    client_factory: Callable[[str], object] | None = None,
+    client_factory: Callable[[str], Awaitable[Any]] | None = None,
 ) -> str:
     """Load an unpacked extension through Chrome's DevTools browser socket."""
     url = ws_url or chrome_devtools_ws()
 
     async def run() -> str:
+        client: Any
         if client_factory is None:
             from ..cdp.client import CDPClient
 
             client = await CDPClient.connect(url)
         else:
-            client = await client_factory(url)  # type: ignore[misc]
+            client = await client_factory(url)
         try:
             result = await client.send(
                 "Extensions.loadUnpacked",
@@ -329,12 +338,12 @@ def load_extension_via_cdp(
 
 
 def _launch(command: list[str]) -> None:
+    """Launch an interactive browser/explorer window (never pass SW_HIDE)."""
     subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        **windows_hidden_kwargs(),
     )
 
 
@@ -371,24 +380,6 @@ def default_browser_executable() -> Path | None:
     from ..cdp.launcher import find_browser_executable
 
     return find_browser_executable(purpose="bridge", log_result=False)
-
-
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if sys.platform == "win32":
-        import ctypes
-
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return False
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return True
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
 
 
 def registered_manifest(browser: str) -> Path | None:
@@ -564,14 +555,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
     browsers = tuple(args.browser or ("chrome", "chromium", "edge"))
     if args.command == "install":
-        host = Path(args.host_path) if args.host_path else Path(shutil.which("icode-browser-use-host") or "")
-        if not host.is_file():
+        raw_host = args.host_path or which_trusted("icode-browser-use-host") or ""
+        host = Path(raw_host).expanduser().resolve() if raw_host else Path("")
+        if not raw_host or not host.is_file():
             raise SystemExit("icode-browser-use-host was not found; pass --host-path")
-        source = Path(args.extension_dir) if args.extension_dir else packaged_extension_dir()
-        target = Path(args.extension_copy) if args.extension_copy else default_extension_install_dir()
+        source = Path(args.extension_dir).expanduser().resolve() if args.extension_dir else packaged_extension_dir()
+        target = (
+            Path(args.extension_copy).expanduser().resolve() if args.extension_copy else default_extension_install_dir()
+        )
         extension_dir = install_extension(source, target)
         extension_id = extension_id_from_manifest(extension_dir)
-        manifest_path = Path(args.manifest_path) if args.manifest_path else None
+        manifest_path = Path(args.manifest_path).expanduser().resolve() if args.manifest_path else None
         path = install_native_host(host, extension_id, manifest_path=manifest_path, browsers=browsers)
         print(f"extension: {extension_dir}")
         print(f"installed: {path}")

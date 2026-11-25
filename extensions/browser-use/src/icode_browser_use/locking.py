@@ -17,31 +17,35 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import ctypes
 import json
 import os
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from ._proc import pid_alive as _proc_pid_alive
 from .config import LOCK_WAIT
 from .errors import Unavailable
 
+fcntl: Any
 try:  # pragma: no cover - exercised by the platform-specific branches
-    import fcntl
-except ImportError:  # pragma: no cover - Windows
-    fcntl = None  # type: ignore[assignment]
+    import fcntl as _fcntl
 
+    fcntl = cast(Any, _fcntl)
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+
+msvcrt: Any
 try:  # pragma: no cover
-    import msvcrt
+    import msvcrt as _msvcrt
+
+    msvcrt = cast(Any, _msvcrt)
 except ImportError:  # pragma: no cover - POSIX
-    msvcrt = None  # type: ignore[assignment]
+    msvcrt = None
 
 OWNER_META_FILE = "instance.owner.json"
-_WIN_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-_WIN_STILL_ACTIVE = 259
 
 
 @dataclass(frozen=True)
@@ -123,34 +127,7 @@ def _remove_own_owner_meta(owner_path: Path | None, pid: int) -> None:
 
 def _pid_alive(pid: int) -> bool | None:
     """Best-effort liveness check for a local PID (never signals or kills it)."""
-    if pid <= 0:
-        return False
-    if sys.platform == "win32":  # pragma: no cover - Windows
-        win_dll = getattr(ctypes, "WinDLL", None)
-        if win_dll is None:
-            return None
-        kernel32 = win_dll("kernel32", use_last_error=True)
-        handle = kernel32.OpenProcess(_WIN_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
-        if not handle:
-            err = ctypes.get_last_error()
-            # ERROR_ACCESS_DENIED (5) means the process exists under another privilege level.
-            return True if err == 5 else False
-        try:
-            code = ctypes.c_ulong(0)
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return None
-            return code.value == _WIN_STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
-    try:  # pragma: no cover - POSIX
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return None
+    return _proc_pid_alive(pid)
 
 
 def _read_owner_meta(state_dir: Path) -> dict[str, Any]:

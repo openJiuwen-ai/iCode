@@ -28,7 +28,6 @@ import ctypes
 import hashlib
 import json
 import os
-import shutil
 import struct
 import subprocess
 import sys
@@ -36,9 +35,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Final, Literal
+from typing import Any, BinaryIO, Final, Literal, cast
 
-from .._proc import windows_hidden_kwargs
+from .._proc import pid_alive, rotate_log_if_needed, which_trusted as _which_trusted, windows_hidden_kwargs
 from ..config import CHROME_READY_TIMEOUT, BrowserConfig
 from ..errors import Unavailable
 from ..logging import log
@@ -119,6 +118,15 @@ def _request_graceful_close_sync(pid: int, browser_ws: str) -> bool:
     return sent
 
 
+def _wait_popen_bounded(popen: subprocess.Popen[Any], timeout: float) -> bool:
+    """Wait for *popen* up to *timeout* seconds; return True if exited (never leaks worker thread)."""
+    try:
+        popen.wait(timeout=max(0.0, timeout))
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
 @dataclass
 class ChildProcess:
     """Ownership wrapper around the browser ``Popen`` (comparable by pid).
@@ -134,23 +142,46 @@ class ChildProcess:
     _terminated: bool = field(default=False, compare=False, repr=False)
     _pid_file: Path | None = field(default=None, compare=False, repr=False)
     _browser_ws: str = field(default="", compare=False, repr=False)
+    _watchdog_fd: int | None = field(default=None, compare=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
 
     @property
     def alive(self) -> bool:
         """True while the child has not exited."""
         return self._popen.poll() is None
 
+    def _claim_termination(self) -> bool:
+        with self._lock:
+            if self._terminated:
+                return False
+            self._terminated = True
+            return True
+
+    def _take_job(self) -> int | None:
+        with self._lock:
+            job = self._job
+            return job
+
+    def _close_watchdog(self) -> None:
+        with self._lock:
+            fd = self._watchdog_fd
+            self._watchdog_fd = None
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
     async def wait_for_exit(self, *, timeout: float = _GRACEFUL_CLOSE_TIMEOUT) -> bool:
         """Wait up to *timeout* seconds for the browser to exit cleanly after ``Browser.close``."""
-        if self._terminated:
-            return True
+        with self._lock:
+            if self._terminated:
+                return True
         popen = self._popen
         if popen.poll() is None and timeout > 0:
-            with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
-                await asyncio.wait_for(asyncio.to_thread(popen.wait), timeout)
+            await asyncio.to_thread(_wait_popen_bounded, popen, timeout)
         if popen.poll() is not None:
-            self._terminated = True
+            self._claim_termination()
             _unregister_live_child(self)
+            self._close_watchdog()
             self._close_job()
             if self._pid_file is not None:
                 _remove(self._pid_file)
@@ -164,9 +195,8 @@ class ChildProcess:
         graceful_wait: float = 0.0,
     ) -> None:
         """Synchronously close (gracefully if requested, else force-kill) the process tree; idempotent."""
-        if self._terminated:
+        if not self._claim_termination():
             return
-        self._terminated = True
         _unregister_live_child(self)
         popen = self._popen
         try:
@@ -176,7 +206,7 @@ class ChildProcess:
                         popen.wait(timeout=graceful_wait)
             if popen.poll() is None:
                 if sys.platform == "win32":
-                    _terminate_windows(self.pid, self._job)
+                    _terminate_windows(self.pid, self._take_job())
                 else:
                     _posix_kill_group(self.pid)
                 try:
@@ -184,44 +214,45 @@ class ChildProcess:
                 except subprocess.TimeoutExpired:
                     with contextlib.suppress(Exception):
                         popen.kill()
-            self._close_job()
         except Exception as exc:  # teardown must never propagate
             log(f"终止 Chrome 进程树失败（pid={self.pid}）：{exc!r}")
         finally:
+            self._close_watchdog()
+            self._close_job()
             if self._pid_file is not None:
                 _remove(self._pid_file)
 
     async def terminate_tree(self, *, timeout: float = _KILL_TIMEOUT) -> None:
         """Kill the child's whole process tree; idempotent and never raises."""
-        if self._terminated:
+        if not self._claim_termination():
             return
-        self._terminated = True
         _unregister_live_child(self)
         popen = self._popen
         try:
             if popen.poll() is not None:
-                self._close_job()
                 return
             if sys.platform == "win32":
-                _terminate_windows(self.pid, self._job)
+                _terminate_windows(self.pid, self._take_job())
             else:
                 _posix_kill_group(self.pid)
-            try:
-                await asyncio.wait_for(asyncio.to_thread(popen.wait), timeout)
-            except (asyncio.TimeoutError, TimeoutError):
+            exited = await asyncio.to_thread(_wait_popen_bounded, popen, timeout)
+            if not exited:
                 with contextlib.suppress(Exception):
                     popen.kill()
-            self._close_job()
         except Exception as exc:  # teardown must never propagate
             log(f"终止 Chrome 进程树失败（pid={self.pid}）：{exc!r}")
         finally:
+            self._close_watchdog()
+            self._close_job()
             if self._pid_file is not None:
                 _remove(self._pid_file)
 
     def _close_job(self) -> None:
-        if self._job is not None:
-            _win_close_handle(self._job)
+        with self._lock:
+            job = self._job
             self._job = None
+        if job is not None:
+            _win_close_handle(job)
 
 
 @dataclass(frozen=True)
@@ -336,7 +367,7 @@ def find_browser_executable(
     purpose: Literal["automation", "bridge", "chrome_devtools"] = "automation",
     log_result: bool = True,
 ) -> Path | None:
-    """Find a browser executable for *purpose*: fixed paths -> trusted HKLM registry -> ``which``.
+    """Find a browser executable for *purpose*: fixed paths -> trusted HKLM registry -> trusted ``which``.
 
     ``chrome_devtools`` searches Chrome/Chromium only (for Chrome 144+ native DevTools
     remote debugging); ``automation`` and ``bridge`` include Edge across all platforms so
@@ -351,7 +382,7 @@ def find_browser_executable(
     if registered:
         return Path(_report(registered) if log_result else registered)
     for name in which_names:
-        found = shutil.which(name)
+        found = _which_trusted(name)
         if found:
             return Path(_report(found) if log_result else found)
     return None
@@ -416,7 +447,7 @@ _WIN_KERNEL32_SPECS: Final[tuple[tuple[str, list[Any], Any], ...]] = (
 
 def _kernel32() -> Any:
     """Bind required Win32 kernel32 APIs with explicit pointer-width signatures."""
-    dll = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    dll = cast(Any, ctypes).WinDLL("kernel32", use_last_error=True)
     for fn_name, argtypes, restype in _WIN_KERNEL32_SPECS:
         fn = getattr(dll, fn_name)
         fn.argtypes = argtypes
@@ -452,12 +483,15 @@ def _win_assign_to_job(job: int, pid: int) -> bool:
         dll.CloseHandle(proc_handle)
 
 
-def _win_resume_main_thread(pid: int) -> None:
-    """Locate the first thread owned by *pid* via Toolhelp32 and resume it."""
+_WIN_RESUME_FAILED: Final = 0xFFFFFFFF
+
+
+def _win_resume_main_thread(pid: int) -> bool:
+    """Locate the first thread owned by *pid* via Toolhelp32 and resume it; return whether it resumed."""
     dll = _kernel32()
     snap_handle = dll.CreateToolhelp32Snapshot(0x00000004, 0)
     if not snap_handle or int(snap_handle) in (_WIN_INVALID_HANDLE, -1):
-        return
+        return False
     try:
         raw_entry = ctypes.create_string_buffer(_WIN_THREAD_ENTRY_BYTES)
         struct.pack_into("<I", raw_entry, 0, _WIN_THREAD_ENTRY_BYTES)
@@ -466,15 +500,17 @@ def _win_resume_main_thread(pid: int) -> None:
             tid, owner_pid = struct.unpack_from("<II", raw_entry, 8)
             if owner_pid == pid:
                 thread_handle = dll.OpenThread(0x0002, False, tid)
-                if thread_handle:
-                    try:
-                        dll.ResumeThread(thread_handle)
-                    finally:
-                        dll.CloseHandle(thread_handle)
-                return
+                if not thread_handle:
+                    return False
+                try:
+                    previous_count = dll.ResumeThread(thread_handle)
+                    return int(previous_count) != _WIN_RESUME_FAILED
+                finally:
+                    dll.CloseHandle(thread_handle)
             has_entry = bool(dll.Thread32Next(snap_handle, raw_entry))
     finally:
         dll.CloseHandle(snap_handle)
+    return False
 
 
 def _win_close_handle(handle: int) -> None:
@@ -483,11 +519,25 @@ def _win_close_handle(handle: int) -> None:
 
 
 def _terminate_windows(pid: int, job: int | None) -> None:
-    """Kill the tree: prefer the Job object, else terminate the process."""
+    """Kill the tree: prefer the Job object, else ``taskkill /F /T`` with ``TerminateProcess`` fallback."""
     kernel32 = _kernel32()
     if job is not None:
         kernel32.TerminateJobObject(job, 1)
         return
+    try:
+        result = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(int(pid))],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+            **windows_hidden_kwargs(),
+        )
+        if result.returncode == 0:
+            return
+    except (OSError, subprocess.SubprocessError):
+        pass
     process_terminate = 0x0001
     handle = kernel32.OpenProcess(process_terminate, False, pid)
     if handle:
@@ -498,35 +548,81 @@ def _terminate_windows(pid: int, job: int | None) -> None:
 
 
 def _win_process_exists(pid: int) -> bool:
-    kernel32 = _kernel32()
-    process_query_limited_information = 0x1000
-    still_active = 259
-    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-    if not handle:
-        return False
-    try:
-        exit_code = ctypes.c_uint32()
-        if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-            return exit_code.value == still_active
-        return False
-    finally:
-        kernel32.CloseHandle(handle)
+    return pid_alive(pid)
 
 
 # ------------------------------------------------------------------- spawn
 
+_LINUX_PRCTL: Any | None = None
+_LINUX_PRCTL_PROBED = False
 
-def _preexec_pdeathsig() -> None:  # pragma: no cover - runs in the forked child
+
+def _get_linux_prctl() -> Any | None:
+    """Resolve ``libc.prctl`` in the parent BEFORE fork() to avoid post-fork loader deadlocks."""
+    global _LINUX_PRCTL, _LINUX_PRCTL_PROBED
+    if _LINUX_PRCTL_PROBED:
+        return _LINUX_PRCTL
+    _LINUX_PRCTL_PROBED = True
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        _LINUX_PRCTL = libc.prctl
+    except Exception:
+        _LINUX_PRCTL = None
+    return _LINUX_PRCTL
+
+
+def _preexec_pdeathsig(parent_pid: int | None = None) -> None:  # pragma: no cover - runs in the forked child
     """POSIX pre-exec hook: die with the parent, closing the fork/race window."""
     if not sys.platform.startswith("linux"):
         return
+    prctl = _LINUX_PRCTL
+    if prctl is None:
+        try:
+            prctl = ctypes.CDLL(None, use_errno=True).prctl
+        except Exception:
+            return
     try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        libc.prctl(_PR_SET_PDEATHSIG, _SIGKILL, 0, 0, 0)
+        prctl(_PR_SET_PDEATHSIG, _SIGKILL, 0, 0, 0)
     except Exception:  # best effort; the process group is the fallback
         return
-    if os.getppid() == 1:
+    expected_ppid = parent_pid if parent_pid is not None else 1
+    if parent_pid is not None and os.getppid() != expected_ppid:
         os._exit(1)
+    elif parent_pid is None and os.getppid() == 1:
+        os._exit(1)
+
+
+def _start_macos_watchdog(child_pid: int) -> int | None:  # pragma: no cover - macOS only
+    """Spawn a tiny watchdog that kills *child_pid*'s process group on parent EOF."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        read_fd, write_fd = os.pipe()
+        script = (
+            "import os, signal, sys\n"
+            "try:\n"
+            "    os.read(int(sys.argv[1]), 1)\n"
+            "except OSError:\n"
+            "    pass\n"
+            "try:\n"
+            "    os.killpg(int(sys.argv[2]), signal.SIGKILL)\n"
+            "except OSError:\n"
+            "    pass\n"
+        )
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(read_fd), str(int(child_pid))],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            pass_fds=(read_fd,),
+            start_new_session=True,
+        )
+        os.close(read_fd)
+        return write_fd
+    except Exception:
+        return None
 
 
 def _spawn_windows(argv: list[str], log_file: BinaryIO) -> ChildProcess:
@@ -538,18 +634,37 @@ def _spawn_windows(argv: list[str], log_file: BinaryIO) -> ChildProcess:
         close_fds=True,
         creationflags=_CREATE_SUSPENDED,
     )
-    job = _win_create_kill_job()
-    if job is not None and not _win_assign_to_job(job, popen.pid):
-        log("无法将 Chrome 挂入 Job 对象，改用进程级终止兜底")
-        _win_close_handle(job)
-        job = None
-    _win_resume_main_thread(popen.pid)
-    return ChildProcess(pid=popen.pid, start_time=time.time(), _popen=popen, _job=job)
+    job: int | None = None
+    try:
+        job = _win_create_kill_job()
+        if job is not None and not _win_assign_to_job(job, popen.pid):
+            log("无法将 Chrome 挂入 Job 对象，改用进程级终止兜底")
+            _win_close_handle(job)
+            job = None
+        if not _win_resume_main_thread(popen.pid):
+            raise Unavailable(f"无法恢复挂起的浏览器主线程（pid={popen.pid}）")
+        return ChildProcess(pid=popen.pid, start_time=time.time(), _popen=popen, _job=job)
+    except BaseException:
+        with contextlib.suppress(Exception):
+            _terminate_windows(popen.pid, job)
+        with contextlib.suppress(Exception):
+            popen.kill()
+        if job is not None:
+            with contextlib.suppress(Exception):
+                _win_close_handle(job)
+        raise
 
 
 def _spawn_posix(argv: list[str], log_file: BinaryIO) -> ChildProcess:
-    # Avoid preexec_fn (calling ctypes/CDLL after fork() in a multi-threaded
-    # process can deadlock); start_new_session=True isolates the process group.
+    preexec = None
+    if sys.platform.startswith("linux"):
+        _get_linux_prctl()
+        parent_pid = os.getpid()
+
+        def _child_setup() -> None:
+            _preexec_pdeathsig(parent_pid)
+
+        preexec = _child_setup
     popen = subprocess.Popen(
         argv,
         stdin=subprocess.DEVNULL,
@@ -557,13 +672,16 @@ def _spawn_posix(argv: list[str], log_file: BinaryIO) -> ChildProcess:
         stderr=log_file,
         close_fds=True,
         start_new_session=True,
+        preexec_fn=preexec,
     )
-    return ChildProcess(pid=popen.pid, start_time=time.time(), _popen=popen, _job=None)
+    watchdog_fd = _start_macos_watchdog(popen.pid) if sys.platform == "darwin" else None
+    return ChildProcess(pid=popen.pid, start_time=time.time(), _popen=popen, _job=None, _watchdog_fd=watchdog_fd)
 
 
 def _spawn(argv: list[str], *, log_path: Path) -> ChildProcess:
     """Start the browser: ``stdin=DEVNULL``, stdout/stderr into a file (no pipe)."""
     log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    rotate_log_if_needed(log_path)
     with open(log_path, "ab", buffering=0) as log_file:
         child = _spawn_windows(argv, log_file) if sys.platform == "win32" else _spawn_posix(argv, log_file)
     _register_live_child(child)
@@ -571,8 +689,9 @@ def _spawn(argv: list[str], *, log_path: Path) -> ChildProcess:
 
 
 def _posix_kill_group(pid: int) -> None:
+    posix_os = cast(Any, os)
     try:
-        os.killpg(os.getpgid(pid), _SIGKILL)
+        posix_os.killpg(posix_os.getpgid(pid), _SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         with contextlib.suppress(OSError):
             os.kill(pid, _SIGKILL)
@@ -686,23 +805,11 @@ def _parse_pid_line(text: str) -> tuple[int, float] | None:
 
 
 def _process_exists(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if sys.platform == "win32":
-        return _win_process_exists(pid)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    return pid_alive(pid)
 
 
-def _process_cmdline(pid: int) -> str | None:
-    """Best-effort command line of *pid*; ``None`` when it cannot be read."""
+def _process_cmdline(pid: int) -> str | list[str] | None:
+    """Best-effort command line (or exact argv list on Linux) of *pid*; ``None`` when unreadable."""
     if sys.platform == "win32":
         return _win_cmdline(pid)
     if sys.platform == "darwin":
@@ -710,12 +817,14 @@ def _process_cmdline(pid: int) -> str | None:
     return _proc_cmdline(pid)
 
 
-def _proc_cmdline(pid: int) -> str | None:
+def _proc_cmdline(pid: int) -> list[str] | None:
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
         return None
-    return raw.replace(b"\x00", b" ").decode("utf-8", "replace")
+    if not raw:
+        return None
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\x00") if part]
 
 
 def _ps_cmdline(pid: int) -> str | None:
@@ -816,19 +925,42 @@ def _remove(path: Path) -> None:
         path.unlink()
 
 
-def _cmdline_matches_profile(cmdline: str, profile: Path) -> bool:
+def _cmdline_matches_profile(cmdline: str | list[str], profile: Path) -> bool:
     """Require an exact ``--user-data-dir=<profile>`` argument match (handles spaces; never prefix-matches)."""
+    target = f"--user-data-dir={profile}"
+    if isinstance(cmdline, list):
+        return any(arg == target for arg in cmdline)
     import shlex
 
-    target = f"--user-data-dir={profile}"
-    try:
-        tokens = shlex.split(cmdline, posix=(os.name != "nt"))
-    except ValueError:
-        tokens = cmdline.split()
-    for token in tokens:
-        if token.strip("\"'") == target:
+    text = str(cmdline or "")
+    # 1. Exact quoted form bounded by whitespace or string boundaries.
+    for quote in ('"', "'"):
+        quoted = f"{quote}{target}{quote}"
+        idx = text.find(quoted)
+        while idx != -1:
+            before_ok = idx == 0 or text[idx - 1].isspace()
+            end = idx + len(quoted)
+            after_ok = end == len(text) or text[end].isspace()
+            if before_ok and after_ok:
+                return True
+            idx = text.find(quoted, idx + 1)
+    # 2. Unquoted form (e.g. macOS `ps -o command=`): must start at a token boundary
+    #    and end at end-of-string or immediately before the next Chrome `--flag` (or ` about:blank`).
+    idx = text.find(target)
+    while idx != -1:
+        before_ok = idx == 0 or text[idx - 1].isspace()
+        end = idx + len(target)
+        rest = text[end:]
+        after_ok = rest == "" or rest.startswith(" --") or rest.startswith(" about:")
+        if before_ok and after_ok:
             return True
-    return f'"{target}"' in cmdline or f"'{target}'" in cmdline
+        idx = text.find(target, idx + 1)
+    # 3. Standard shell token split fallback for simple paths without spaces.
+    try:
+        tokens = shlex.split(text, posix=(os.name != "nt"))
+    except ValueError:
+        tokens = text.split()
+    return any(token.strip("\"'") == target for token in tokens)
 
 
 async def reclaim_orphans(state_dir: Path) -> None:
@@ -873,6 +1005,7 @@ async def _reclaim_orphans(state_dir: Path) -> None:
             _terminate_windows(pid, None)
         else:
             _posix_kill_group(pid)
+        await _wait_until_gone(pid, timeout=2.0)
     _remove(profile / "DevToolsActivePort")
     _remove(pid_file)
 

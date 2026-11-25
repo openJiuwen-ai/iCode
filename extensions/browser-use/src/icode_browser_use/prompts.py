@@ -55,7 +55,7 @@ BROWSER_PLAYBOOK = (
     "browser_evaluate, when present, is a last resort for things no other tool can do."
 )
 
-#: Ultra-compact byte-stable playbook paired with ``ICODE_BROWSER_TOOLSET=compact`` (12 core tools).
+#: Ultra-compact byte-stable playbook paired with ``ICODE_BROWSER_TOOLSET=compact`` (13 core tools).
 COMPACT_BROWSER_PLAYBOOK = (
     "Browser playbook (compact): "
     "start with browser_navigate(url=...) directly (allocates browser_id + snapshot in one step); "

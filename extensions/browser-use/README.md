@@ -136,7 +136,7 @@ To isolate raw DOM snapshots, screenshots, and untrusted web content from your m
 icode-browser-use subagent --install
 ```
 
-This writes `<config_dir>/agents/Browser.yaml` with `extensions: [browser]` and `tools.builtins: [filesystem.read]` (no `shell`, no `filesystem.write`), and prints the `sub_agents.agents` snippet to add to your parent agent profile (e.g., `Code.yaml`).
+This writes `<config_dir>/agents/Browser.yaml` with `extensions: [browser]` and `tools.builtins: []` (no `shell`, no `filesystem.read`, no `filesystem.write`), and prints the `sub_agents.agents` snippet to add to your parent agent profile (e.g., `Code.yaml`).
 
 On `browser_close`, the plugin runtime appends a `[BROWSER_SESSION_FACTS]` block summarizing observed `visited_origins` (query/tokens stripped), `blocked_origins`, `write_actions`, and saved `screenshots` paths so the parent agent can cross-check the sub-agent's narrative against runtime facts.
 
@@ -251,13 +251,13 @@ Limits worth knowing before relying on it:
 
 ## Use your everyday Chrome login
 
-Keep your signed-in Chrome 144 or later open and run `python -m icode_browser_use.chrome connect --chrome`
+Keep your signed-in Chrome 144 or later open and run `icode-browser-use connect --chrome`
 in a terminal. If Chrome's settings page opens, turn on **Allow remote debugging**. The plugin saves
 the choice. Select **Allow** when Chrome asks for permission to connect during a browser task.
 [Chrome connection instructions](https://developer.chrome.com/docs/devtools/agents/get-started/configuration/#connect-to-an-existing-browser-session)
 
-`python -m icode_browser_use.chrome status` shows which backend new handles will use.
-`python -m icode_browser_use.chrome disconnect` clears the saved choice. To revoke Chrome's debugging
+`icode-browser-use status` shows which backend new handles will use.
+`icode-browser-use disconnect` clears the saved choice. To revoke Chrome's debugging
 permission, turn it off at `chrome://inspect/#remote-debugging`.
 
 ## Which login state the agent gets
@@ -304,17 +304,17 @@ The profile you attach to is the login state the agent gets.
 
 ## Extension bridge
 
-`python -m icode_browser_use.chrome connect --bridge` verifies the native host and saves the choice for new
-browser handles. `python -m icode_browser_use.chrome status` shows the backend for new handles and
-`python -m icode_browser_use.chrome disconnect` clears the saved preference. An explicit
+`icode-browser-use connect --bridge` verifies the native host and saves the choice for new
+browser handles. `icode-browser-use status` shows the backend for new handles and
+`icode-browser-use disconnect` clears the saved preference. An explicit
 `ICODE_BROWSER_BRIDGE` environment setting takes precedence. With the Bridge, a loopback server in the
 plugin waits for Chrome's native-messaging host, which pumps frames to the MV3
 extension; the extension drives a tab it owns through `chrome.debugger`. This
 reuses the running browser's login state without copying a profile or closing
 the browser.
 
-To update an existing unpacked Bridge at the default path, run `python -m icode_browser_use.chrome update-bridge`,
-reload **iCode Browser Bridge** at `chrome://extensions`, and run `python -m icode_browser_use.chrome connect --bridge`.
+To update an existing unpacked Bridge at the default path, run `icode-browser-use update-bridge`,
+reload **iCode Browser Bridge** at `chrome://extensions`, and run `icode-browser-use connect --bridge`.
 The connect command reports the version Chrome is running. Bridge 0.3.3 supports site-filtered browser logs and owned-tab visibility/activation (`tab_state`: `Bridge.tabState` and `Target.activateTarget`).
 
 Setup:
@@ -329,7 +329,7 @@ icode-browser-use-bridge install --open
 
 # 2. in chrome://extensions: Developer mode -> Load unpacked -> the printed folder
 # 3. verify and save the connection
-python -m icode_browser_use.chrome connect --bridge
+icode-browser-use connect --bridge
 ```
 
 `--extension-dir` overrides the source (development), `--extension-copy`
@@ -359,11 +359,7 @@ the page's Fetch session in Chromium; `chrome.debugger` worker targets reject
 `Fetch.enable`, so service/shared workers are detached. Use attach mode for
 service-worker-specific coverage.
 
-An active public-web session permits public sites through the Bridge, while any
-explicit site block in the popup still applies. With an allowlist, the Bridge
-receives the allowed domains and origins for that session. Update and reload a
-previously installed Chrome extension to enable public-web mode. If a site shows
-`site_permission_required`, check its permission in the extension popup.
+An active public-web session permits public sites through the Bridge **only after the user opts in** by enabling **Allow public websites** (`userAllowsPublicWeb`) in the extension options page; private/loopback/LAN hosts stay excluded, and any explicit per-site `ask`/`block` override in the popup still takes precedence. With an allowlist, the plugin's `allowedDomains`/`allowedOrigins` only narrow the user's grants (never auto-allowing unapproved sites). Update and reload a previously installed Chrome extension to enable these controls. If a site shows `site_permission_required`, check its permission in the extension popup or options page.
 
 Every tool action (`DOM*`, `Input*`, `Runtime.evaluate/callFunctionOn`,
 `Accessibility*`, `DOMSnapshot*`, `Page.capture*`) re-checks the tab origin, and
@@ -685,6 +681,9 @@ file.
 | `ICODE_BROWSER_CDP_URL` | unset | Attach to an existing Chromium CDP endpoint (`http://127.0.0.1:9222` or a `ws://` URL) instead of launching our own browser |
 | `ICODE_BROWSER_BRIDGE` | off | `1` connects through the Chrome extension bridge (requires the extension and native host) |
 | `ICODE_BROWSER_BRIDGE_FILE` | `state_dir/bridge.json` | Rendezvous file the plugin writes for the native host (port + token) |
+| `ICODE_BROWSER_BRIDGE_WAIT` | `35` | Seconds to wait for the extension's native host to connect (covers the 30 s MV3 alarm) |
+| `ICODE_BROWSER_PREWARM` | `0` | `1` starts the browser/bridge at plugin startup instead of waiting for the first tool call |
+| `ICODE_BROWSER_TOOLSET` | `full` | Exposed tool surface: `full` (29 standard tools) or `compact` (13 core tools) |
 | `ICODE_BROWSER_HEADLESS` | `0` | `1` runs without a window (owned mode only) |
 | `ICODE_BROWSER_STATE_DIR` | `~/.cache/icode-browser-use` | Chrome profile, logs, per-browser state |
 | `ICODE_BROWSER_EVALUATE` | off | `allow` registers `browser_evaluate` (high-risk, approval) |

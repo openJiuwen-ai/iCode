@@ -32,6 +32,7 @@ import importlib.metadata
 import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -112,6 +113,28 @@ def broker_command(*, module_name: str | None = None, executable: str | None = N
     return [python, "-m", "icode_browser_use.broker"]
 
 
+def _is_link_or_junction(path: Path) -> bool:
+    """True when *path* is a symlink or Windows NTFS junction (must never be resolved & deleted)."""
+    if path.is_symlink():
+        return True
+    is_junction = getattr(os.path, "isjunction", None)
+    if callable(is_junction):
+        try:
+            if is_junction(path):
+                return True
+        except OSError:
+            pass
+    if sys.platform == "win32":
+        try:
+            st = os.lstat(path)
+            reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+            if getattr(st, "st_file_attributes", 0) & reparse:
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def install_pack(source: Path, *, config_dir: Path | None = None, replace: bool = False) -> Path:
     """Copy a folder package to ``<config_dir>/extensions/browser``; return the target.
 
@@ -134,21 +157,46 @@ def install_pack(source: Path, *, config_dir: Path | None = None, replace: bool 
             f"{others[0]} already provides extension id {EXTENSION_ID!r} as a single file; the host would load neither "
             "copy. Remove it first (icode-browser-use uninstall)"
         )
-    target = extensions_dir(config_dir) / EXTENSION_ID
+    target_raw = extensions_dir(config_dir) / EXTENSION_ID
+    if _is_link_or_junction(target_raw):
+        raise ValueError(
+            f"refusing to replace symlink/junction {target_raw}; remove the link manually before installing"
+        )
+    target = target_raw.resolve()
+    if source == target:
+        raise ValueError(f"source and target must be different directories: {source}")
     if target.exists() and not replace:
         raise ValueError(f"{target} already exists; pass --replace to overwrite it")
+    if target.exists() and not (target / "__init__.py").is_file():
+        raise ValueError(f"refusing to replace {target}: it does not look like an installed extension folder")
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{EXTENSION_ID}.{os.getpid()}.tmp")
+    backup = target.with_name(f".{EXTENSION_ID}.{os.getpid()}.bak")
     if temporary.exists():
         shutil.rmtree(temporary)
+    if backup.exists():
+        shutil.rmtree(backup)
     shutil.copytree(source, temporary, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    moved_backup = False
     try:
         if target.exists():
-            shutil.rmtree(target)
-        os.replace(temporary, target)
+            target.rename(backup)
+            moved_backup = True
+        try:
+            os.replace(temporary, target)
+        except OSError:
+            if moved_backup and backup.exists():
+                try:
+                    backup.rename(target)
+                    moved_backup = False
+                except OSError:
+                    pass
+            raise
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
+        if moved_backup and backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
     return target
 
 

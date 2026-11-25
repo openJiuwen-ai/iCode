@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from icode_browser_use.bridge.install import default_extension_install_dir
 from icode_browser_use.bridge.protocol import PROTOCOL_VERSION
 from icode_browser_use.bridge.server import BridgeServer
 from icode_browser_use.errors import CDPTimeout
@@ -25,7 +26,7 @@ from icode_browser_use.errors import CDPTimeout
 from smoke_common import chrome_executable
 
 CHROME = chrome_executable()
-EXTENSION = Path(os.environ["LOCALAPPDATA"]) / "icode-browser-use" / "extension"
+EXTENSION = default_extension_install_dir()
 
 
 class FrameProxy:
@@ -138,6 +139,7 @@ async def _run() -> None:
                 "--no-sandbox",
             ],
             env=env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

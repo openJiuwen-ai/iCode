@@ -63,18 +63,28 @@ def test_saved_chrome_login_defaults_to_bridge_and_respects_overrides(tmp_path):
 
 
 def test_invalid_allowlist_diagnostic_does_not_leak_credentials(capsys):
+    from icode_browser_use import logging as plugin_log
+
     sentinel = "ALLOWLIST_CREDENTIAL_SENTINEL"
-    cfg = BrowserConfig.from_env(
-        {
-            "ICODE_BROWSER_ALLOWED_DOMAINS": f"example.com,https://user:{sentinel}@private.invalid,bad/{sentinel}",
-        }
-    )
+    messages: list[str] = []
+    previous_sink = plugin_log._LOG_SINK
+    plugin_log.set_log_sink(messages.append)
+    try:
+        cfg = BrowserConfig.from_env(
+            {
+                "ICODE_BROWSER_ALLOWED_DOMAINS": f"example.com,https://user:{sentinel}@private.invalid,bad/{sentinel}",
+            }
+        )
+    finally:
+        plugin_log.set_log_sink(previous_sink)
     assert cfg.allowed_domains == ("example.com",)
     captured = capsys.readouterr()
     assert sentinel not in captured.err
     assert sentinel not in captured.out
-    assert "2 invalid allowlist entries" in captured.err
-    assert "ICODE_BROWSER_ALLOWED_DOMAINS" in captured.err
+    combined = "\n".join(messages)
+    assert sentinel not in combined
+    assert "2 invalid allowlist entries" in combined
+    assert "ICODE_BROWSER_ALLOWED_DOMAINS" in combined
 
 
 @pytest.mark.parametrize("primary", [None, ""])

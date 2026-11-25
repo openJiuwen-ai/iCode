@@ -1037,16 +1037,31 @@ def test_fill_email_and_number_select_all_replacement_succeeds_and_submits(monke
         ]
         original_send = session.client.send
 
-        async def replace_send(method, params=None, session_id=None, timeout=None):
+        async def replace_send(
+            method,
+            params=None,
+            session_id=None,
+            timeout=None,
+            _session=session,
+            _original_send=original_send,
+        ):
             if method == "Input.insertText":
-                session.client.calls.append((method, params or {}, session_id))
-                session.state["text"] = str((params or {}).get("text", ""))
+                _session.client.calls.append((method, params or {}, session_id))
+                _session.state["text"] = str((params or {}).get("text", ""))
                 return {"result": {"value": None}}
-            return await original_send(method, params, session_id, timeout)
+            return await _original_send(method, params, session_id, timeout)
 
         session.client.send = replace_send
 
-        async def fake_call_value(_session, _object_id, function, **_kwargs):
+        async def fake_call_value(
+            _session,
+            _object_id,
+            function,
+            _input_type=input_type,
+            _old_val=old_val,
+            _target_session=session,
+            **_kwargs,
+        ):
             if "this.focus" in function:
                 return {
                     "type": "object",
@@ -1054,19 +1069,19 @@ def test_fill_email_and_number_select_all_replacement_succeeds_and_submits(monke
                         "focused": True,
                         "editable": False,
                         "tag": "input",
-                        "type": input_type,
+                        "type": _input_type,
                         "readOnly": False,
                         "disabled": False,
-                        "text": old_val,
+                        "text": _old_val,
                         "selectionStart": None,
                         "selectionEnd": None,
-                        "selectionText": old_val,
+                        "selectionText": _old_val,
                     },
                 }
-            return {"type": "object", "value": dict(session.state)}
+            return {"type": "object", "value": dict(_target_session.state)}
 
-        async def fake_eval_value(*_args, **_kwargs):
-            return pages.pop(0) if len(pages) > 1 else pages[0]
+        async def fake_eval_value(*_args, _pages=pages, **_kwargs):
+            return _pages.pop(0) if len(_pages) > 1 else _pages[0]
 
         monkeypatch.setattr(fill, "call_value", fake_call_value)
         monkeypatch.setattr(fill, "eval_value", fake_eval_value)
@@ -1372,6 +1387,7 @@ def test_fill_rich_text_rejects_newline_collapsed_to_space_and_skips_enter(monke
     assert all(
         not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter") for call in session.client.calls
     )
+
 
 def test_fill_rich_text_rejects_extra_blank_line_and_stripped_indentation() -> None:
     """_values_match must reject extra blank lines in innerText and stripped indentation in pre-wrap editors."""

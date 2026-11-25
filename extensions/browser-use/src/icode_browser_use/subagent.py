@@ -45,10 +45,6 @@ instructions: |
 extensions:
   - browser
 
-tools:
-  builtins:
-    - filesystem.read
-
 approval:
   default: auto
 """
@@ -56,7 +52,7 @@ approval:
 PARENT_SUBAGENT_SNIPPET = """\
 # Add under `sub_agents.agents` in your parent agent profile (e.g. Code.yaml),
 # and set ICODE_BROWSER_TOOLSET=compact in the environment to cut browser tool
-# schema tokens by >55% while keeping all 12 core actions available:
+# schema tokens by >55% while keeping all 13 core actions available:
 sub_agents:
   agents:
     - profile: Browser

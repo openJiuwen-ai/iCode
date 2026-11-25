@@ -27,11 +27,13 @@ def test_parse_origins_normalises_scheme_host_and_effective_port() -> None:
     assert accepted == (
         "http://localhost:3000",
         "http://127.0.0.1:5173",
-        "https://localhost:443",
+        "https://localhost",
         "http://[::1]:8080",
     )
     assert rejected == []
-    assert parse_origins("http://localhost") == (("http://localhost:80",), [])
+    assert parse_origins("http://localhost") == (("http://localhost",), [])
+    assert parse_origins("http://localhost:80") == (("http://localhost",), [])
+    assert parse_origins("https://localhost:443") == (("https://localhost",), [])
 
 
 @pytest.mark.parametrize(
@@ -63,7 +65,9 @@ def test_parse_origins_accepts_localhost_subdomains_and_deduplicates() -> None:
 
 
 def test_canonical_origin_keeps_effective_port_and_drops_path() -> None:
-    assert canonical_origin("https://example.com/a/b?c=1#d") == "https://example.com:443"
+    assert canonical_origin("https://example.com/a/b?c=1#d") == "https://example.com"
+    assert canonical_origin("https://example.com:443/a") == "https://example.com"
+    assert canonical_origin("http://example.com:80/a") == "http://example.com"
     assert canonical_origin("http://localhost:3000/app?x=1") == "http://localhost:3000"
     assert canonical_origin("http://[::1]:8080/") == "http://[::1]:8080"
     assert canonical_origin("chrome-error://chromewebdata/") == ""

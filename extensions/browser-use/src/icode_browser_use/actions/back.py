@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
+from ..errors import Blocked
 from ..types import ToolBlock, text_block
 from ._shared import (
     capture_and_register,
@@ -16,6 +18,7 @@ from ._shared import (
     send_watching_dialog,
     stats_line,
 )
+from .navigate import _precheck_url
 
 NAME = "browser_back"
 
@@ -54,6 +57,8 @@ async def follow_navigation(
     client = session.require_client()
     nav_seq = session.nav_seq
     dialog_seq = session.dialog_seq
+    policy = getattr(session, "_policy", None)
+    blocked_before = policy.blocked if policy is not None else 0
     # One budget for commit + load, so the action stays within the host's read timeout.
     deadline = time.monotonic() + session.cfg.nav_load_timeout
 
@@ -88,8 +93,19 @@ async def follow_navigation(
             advice = "请调用 browser_dialog 处理后再 browser_snapshot（旧 ref 已失效）"
         else:
             state = f"已发送 {method}，页面弹出对话框，导航尚未发生"
-            advice = "请调用 browser_dialog：accept 离开当前页并继续导航，dismiss 留在当前页；之后 browser_snapshot 复核"
+            advice = (
+                "请调用 browser_dialog：accept 离开当前页并继续导航，dismiss 留在当前页；之后 browser_snapshot 复核"
+            )
         return [text_block("\n".join([state, dialog.fields(), "status=blocked retryable=false", advice]))]
+
+    if (
+        urlsplit(session.snapshot.url or "").scheme == "chrome-error"
+        and policy is not None
+        and policy.blocked > blocked_before
+    ):
+        blocked_origin = policy.last_blocked_document_origin or policy.last_blocked_origin or ""
+        detail = f"导航被安全策略拦截 ({blocked_origin})" if blocked_origin else "导航被安全策略拦截"
+        raise Blocked(detail, blocked_origin=blocked_origin)
 
     title = await _page_title(session)
     # The navigation event already bumped the epoch; do not bump again.
@@ -123,11 +139,14 @@ async def step_history(session: Any, delta: int, edge_notice: str) -> list[ToolB
     if index < 0 or index >= len(entries):
         return [text_block(edge_notice)]
     entry = entries[index]
+    entry_url = str(entry.get("url") or "")
+    if entry_url and entry_url.strip().lower() not in {"about:blank", "about:srcdoc"}:
+        _precheck_url(session, entry_url)
     return await follow_navigation(
         session,
         "Page.navigateToHistoryEntry",
         {"entryId": entry.get("id")},
-        expected_url=str(entry.get("url") or "") or None,
+        expected_url=entry_url or None,
     )
 
 

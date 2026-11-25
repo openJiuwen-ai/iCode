@@ -20,6 +20,8 @@ def test_manifest_grants_only_the_bridge_apis() -> None:
         "alarms",
         "storage",
         "clipboardWrite",
+        "webNavigation",
+        "declarativeNetRequest",
     }
     assert manifest["action"]["default_popup"] == "popup.html"
     assert "host_permissions" not in manifest
@@ -34,9 +36,12 @@ def test_background_uses_real_tabs_and_refuses_browser_close() -> None:
         "chrome.debugger.attach",
         "chrome.tabs.group",
         "chrome.debugger.onEvent",
-        'method.startsWith("Browser.")',
+        "methodPolicy",
         "is not allowed in bridge mode",
-        "Target.getTargets",
+        "webNavigation",
+        "Bridge.siteBlocked",
+        "Inspector.detached",
+        "releaseOwnedTabs",
         "isGatedPageEvent",
         "handlePortDisconnect",
         "requireOwned",

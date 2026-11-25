@@ -29,13 +29,12 @@ Recovery rules this module supports:
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ._proc import atomic_write_private
 from .policy import canonical_origin
 
 SCHEMA_VERSION = 1
@@ -205,22 +204,9 @@ def load(path: Path) -> tuple[list[ManifestRecord], str | None]:
 
 
 def save(path: Path, records: list[ManifestRecord]) -> None:
-    """Replace the manifest atomically; a reader sees the old file or the new one."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Replace the manifest atomically with owner-only permissions."""
     payload = json.dumps({"schema": SCHEMA_VERSION, "records": [r.to_dict() for r in records]}, ensure_ascii=True)
-    handle, temporary = tempfile.mkstemp(prefix=f".{MANIFEST_NAME}.", dir=path.parent)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
+    atomic_write_private(path, payload, strict=False)
 
 
 def upsert(records: list[ManifestRecord], record: ManifestRecord) -> list[ManifestRecord]:

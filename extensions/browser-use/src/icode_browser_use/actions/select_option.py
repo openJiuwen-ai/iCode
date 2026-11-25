@@ -11,11 +11,11 @@ from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed
 from ..types import ToolBlock, text_block
 from ._shared import call_value, dialog_since, resolve_target, send_watching_dialog, truncate_chars
 from .actionability import (
+    amark_dispatched,
+    aprepare_action,
+    arecord_action,
     evidence_line,
-    mark_dispatched,
     new_action_id,
-    prepare_action,
-    record_action,
     target_disabled,
     target_facts,
 )
@@ -197,12 +197,12 @@ def _available(state: dict[str, Any]) -> str:
     return ", ".join(labels) + more
 
 
-def _blocked(session: Any, action_id: str, text: str) -> list[ToolBlock]:
-    record_action(session, action_id, NAME, "blocked", text)
+async def _blocked(session: Any, action_id: str, text: str) -> list[ToolBlock]:
+    await arecord_action(session, action_id, NAME, "blocked", text)
     return [text_block(text)]
 
 
-def _blocked_dialog(session: Any, action_id: str, head: str, info: Any) -> list[ToolBlock]:
+async def _blocked_dialog(session: Any, action_id: str, head: str, info: Any) -> list[ToolBlock]:
     text = "\n".join(
         [
             head,
@@ -213,7 +213,7 @@ def _blocked_dialog(session: Any, action_id: str, head: str, info: Any) -> list[
             evidence_line(session, action_id),
         ]
     )
-    return _blocked(session, action_id, text)
+    return await _blocked(session, action_id, text)
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
@@ -238,13 +238,13 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             "自定义下拉请用 browser_click + browser_snapshot\n"
             f"status=blocked retryable=false\n{evidence_line(session, action_id)}"
         )
-        return _blocked(session, action_id, text)
+        return await _blocked(session, action_id, text)
     if state.get("disabled") or target_disabled(facts):
         text = (
             f"未选择 {entry.token}：目标处于 disabled 状态；status=blocked retryable=false\n"
             f"{evidence_line(session, action_id)}"
         )
-        return _blocked(session, action_id, text)
+        return await _blocked(session, action_id, text)
 
     target_indices, resolved, missing, unavailable = _resolve_option_targets(state, values)
     if missing or unavailable:
@@ -257,16 +257,16 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             f"未选择 {entry.token}：{'；'.join(reasons)}；可用选项：{_available(state)}\n"
             f"status=blocked retryable=false\n{evidence_line(session, action_id)}"
         )
-        return _blocked(session, action_id, text)
+        return await _blocked(session, action_id, text)
     if not state.get("multiple") and len(target_indices) > 1:
         text = (
             f"未选择 {entry.token}：这是单选 <select>，一次只能选一个值（请求了 {values}）；"
             "请重新调用并只给一个值\n"
             f"status=blocked retryable=false\n{evidence_line(session, action_id)}"
         )
-        return _blocked(session, action_id, text)
+        return await _blocked(session, action_id, text)
 
-    prepare_action(session, action_id, NAME, f"prepared select {resolved} on {entry.token}")
+    await aprepare_action(session, action_id, NAME, f"prepared select {resolved} on {entry.token}")
     dialog_seq = session.dialog_seq
     try:
         response, dialog = await send_watching_dialog(
@@ -283,17 +283,21 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     except ConnectionClosed:
         raise
     except (CDPTimeout, BrowserError) as exc:
+        session.mark_dirty()
         text = (
             f"已发送选择 {resolved} 到 {entry.token}\nstatus=uncertain retryable=false\n"
             f"reason=dispatch_failed:{type(exc).__name__}；不要重复选择\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(session, action_id, NAME, "uncertain", text)
+        await arecord_action(session, action_id, NAME, "uncertain", text)
         return [text_block(text)]
+    session.mark_dirty()
     if dialog is not None:
-        mark_dispatched(session, action_id, NAME, f"select {resolved} on {entry.token} is in flight; a dialog opened")
-        return _blocked_dialog(session, action_id, f"已发送选择 {resolved} 到 {entry.token}", dialog)
-    mark_dispatched(session, action_id, NAME, f"dispatched select {resolved} on {entry.token}")
+        await amark_dispatched(
+            session, action_id, NAME, f"select {resolved} on {entry.token} is in flight; a dialog opened"
+        )
+        return await _blocked_dialog(session, action_id, f"已发送选择 {resolved} 到 {entry.token}", dialog)
+    await amark_dispatched(session, action_id, NAME, f"dispatched select {resolved} on {entry.token}")
 
     dialog = await dialog_since(session, dialog_seq)
     after: dict[str, Any] = {}
@@ -319,7 +323,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 break
     dialog = session.dialog_since(dialog_seq)
     if dialog is not None:
-        return _blocked_dialog(session, action_id, f"已发送选择 {resolved} 到 {entry.token}", dialog)
+        return await _blocked_dialog(session, action_id, f"已发送选择 {resolved} 到 {entry.token}", dialog)
     applied = response.get("value") if isinstance(response, dict) else None
     reported = [str(value) for value in applied.get("selected", [])] if isinstance(applied, dict) else []
     session.mark_dirty()
@@ -346,5 +350,5 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         session.note_success(session.target_id)
     lines.append(evidence_line(session, action_id))
     text = "\n".join(lines)
-    record_action(session, action_id, NAME, status, text)
+    await arecord_action(session, action_id, NAME, status, text)
     return [text_block(text)]

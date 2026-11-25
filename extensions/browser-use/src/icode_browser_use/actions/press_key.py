@@ -9,17 +9,25 @@ from typing import Any
 
 from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed, StaleRef
 from ..types import ToolBlock, text_block
-from ._shared import call_value, eval_value, resolve_target, send_watching_dialog
+from ._shared import (
+    call_value,
+    clear_pending_input_releases,
+    eval_value,
+    flush_pending_input_releases,
+    note_pending_input_release,
+    resolve_target,
+    send_watching_dialog,
+)
 from .actionability import (
+    amark_dispatched,
+    aprepare_action,
+    arecord_action,
     evidence_line,
     field_state,
     focus_target,
     is_text_field,
-    mark_dispatched,
     new_action_id,
     poll_submit_outcome,
-    prepare_action,
-    record_action,
     submit_verdict,
     target_changed,
     target_disabled,
@@ -100,22 +108,85 @@ _PUNCTUATION: dict[str, tuple[str, int]] = {
     "`": ("Backquote", 192),
 }
 
+#: Shifted US-layout symbols -> (unshifted key, physical code, virtual key code).
+_SHIFTED_SYMBOLS: dict[str, tuple[str, str, int]] = {
+    "!": ("1", "Digit1", 49),
+    "@": ("2", "Digit2", 50),
+    "#": ("3", "Digit3", 51),
+    "$": ("4", "Digit4", 52),
+    "%": ("5", "Digit5", 53),
+    "^": ("6", "Digit6", 54),
+    "&": ("7", "Digit7", 55),
+    "*": ("8", "Digit8", 56),
+    "(": ("9", "Digit9", 57),
+    ")": ("0", "Digit0", 48),
+    "_": ("-", "Minus", 189),
+    "+": ("=", "Equal", 187),
+    "{": ("[", "BracketLeft", 219),
+    "}": ("]", "BracketRight", 221),
+    "|": ("\\", "Backslash", 220),
+    ":": (";", "Semicolon", 186),
+    '"': ("'", "Quote", 222),
+    "<": (",", "Comma", 188),
+    ">": (".", "Period", 190),
+    "?": ("/", "Slash", 191),
+    "~": ("`", "Backquote", 192),
+}
+_UNSHIFTED_TO_SHIFTED: dict[str, str] = {unshifted: sym for sym, (unshifted, _, _) in _SHIFTED_SYMBOLS.items()}
+
+#: macOS Chromium editing commands required for keyboard navigation/editing (Playwright mapping).
+_MAC_COMMANDS: dict[tuple[int, str], list[str]] = {
+    (0, "Backspace"): ["deleteBackward"],
+    (0, "Delete"): ["deleteForward"],
+    (0, "ArrowLeft"): ["moveLeft"],
+    (0, "ArrowRight"): ["moveRight"],
+    (0, "ArrowUp"): ["moveUp"],
+    (0, "ArrowDown"): ["moveDown"],
+    (0, "Home"): ["moveToBeginningOfLine"],
+    (0, "End"): ["moveToEndOfLine"],
+    (8, "ArrowLeft"): ["moveLeftAndModifySelection"],
+    (8, "ArrowRight"): ["moveRightAndModifySelection"],
+    (8, "ArrowUp"): ["moveUpAndModifySelection"],
+    (8, "ArrowDown"): ["moveDownAndModifySelection"],
+    (4, "a"): ["selectAll"],
+    (4, "c"): ["copy"],
+    (4, "v"): ["paste"],
+    (4, "x"): ["cut"],
+    (4, "z"): ["undo"],
+    (12, "z"): ["redo"],
+    (4, "ArrowLeft"): ["moveToBeginningOfLine"],
+    (4, "ArrowRight"): ["moveToEndOfLine"],
+    (4, "ArrowUp"): ["moveToBeginningOfDocument"],
+    (4, "ArrowDown"): ["moveToEndOfDocument"],
+    (4, "Backspace"): ["deleteToBeginningOfLine"],
+}
+
 _POLL_SECONDS = 0.075
 _POLLS = 3
 _sleep = asyncio.sleep
 
 
+def _split_key_spec(text: str) -> list[str]:
+    """Split a key spec on ``+`` while supporting ``+`` itself and ``Ctrl++``."""
+    if text == "+":
+        return ["+"]
+    if text.endswith("++"):
+        head = [part.strip() for part in text[:-2].split("+")]
+        return [*head, "+"]
+    return [part.strip() for part in text.split("+")]
+
+
 def parse_key(spec: str) -> tuple[str, str, int | None, str | None, int]:
-    """Parse ``Ctrl+A`` / ``Shift+Tab`` / ``Enter`` into CDP key event fields.
+    """Parse ``Ctrl+A`` / ``Shift+Tab`` / ``Enter`` / ``Shift+1`` / ``!`` / ``Ctrl++`` into CDP key event fields.
 
     Returns ``(key, code, virtual_key, text, modifiers)``; *text* is the
-    character a no-modifier key inserts, or ``None`` for keys that insert
-    nothing.
+    character a no-modifier (or Shift-only) key inserts, or ``None`` for keys
+    that insert nothing.
     """
     text = (spec or "").strip()
     if not text:
         raise BadRequest("key 不能为空")
-    parts = ["+"] if text == "+" else [part.strip() for part in text.split("+")]
+    parts = _split_key_spec(text)
     if any(not part for part in parts):
         raise BadRequest(f"按键格式非法：{text}（用 Ctrl+A、Shift+Tab、Enter 这样的写法）")
     *prefix, base = parts
@@ -145,8 +216,18 @@ def parse_key(spec: str) -> tuple[str, str, int | None, str | None, int]:
         elif base.isdigit():
             code = f"Digit{base}"
             virtual_key = ord(base)
+            if mask & 8 and base in _UNSHIFTED_TO_SHIFTED:
+                key = _UNSHIFTED_TO_SHIFTED[base]
+                inserted = key
         elif base in _PUNCTUATION:
             code, virtual_key = _PUNCTUATION[base]
+            if mask & 8 and base in _UNSHIFTED_TO_SHIFTED:
+                key = _UNSHIFTED_TO_SHIFTED[base]
+                inserted = key
+        elif base in _SHIFTED_SYMBOLS:
+            _, code, virtual_key = _SHIFTED_SYMBOLS[base]
+            key = base
+            inserted = base
     else:
         raise BadRequest(
             f"不支持的按键：{base}（可用 Enter、Tab、Escape、Backspace、Delete、Space、方向键、"
@@ -172,6 +253,7 @@ async def _send_key(
     through ``char`` (so the text is inserted exactly once), Enter carries
     ``text="\\r"`` on keyDown, and combinations only set ``modifiers``.
     """
+    await flush_pending_input_releases(session)
     client = session.require_client()
     common: dict[str, Any] = {
         "key": key,
@@ -185,8 +267,14 @@ async def _send_key(
     if inserted and not plain_character:
         down["text"] = inserted
         down["unmodifiedText"] = inserted
+    if getattr(session, "is_macos", False):
+        commands = _MAC_COMMANDS.get((mask, key)) or _MAC_COMMANDS.get((mask, key.lower()))
+        if commands:
+            down["commands"] = list(commands)
     down = {key: value for key, value in down.items() if value is not None}
+    up_event = {key: value for key, value in {"type": "keyUp", **common}.items() if value is not None}
     session_id = cdp_session_id or session.session_id
+    note_pending_input_release(session, "Input.dispatchKeyEvent", up_event, session_id)
     await client.send("Input.dispatchKeyEvent", down, session_id=session_id, timeout=session.cfg.cdp_timeout)
     if plain_character:
         char_event = {
@@ -197,10 +285,11 @@ async def _send_key(
         await client.send("Input.dispatchKeyEvent", char_event, session_id=session_id, timeout=session.cfg.cdp_timeout)
     await client.send(
         "Input.dispatchKeyEvent",
-        {key: value for key, value in {"type": "keyUp", **common}.items() if value is not None},
+        up_event,
         session_id=session_id,
         timeout=session.cfg.cdp_timeout,
     )
+    clear_pending_input_releases(session)
 
 
 _PAGE_STATE_EXPR = (
@@ -274,7 +363,7 @@ def _classify(
     return "none"
 
 
-def _blocked_dialog_result(session: Any, key: str, label: str, info: Any, action_id: str) -> ToolBlock:
+async def _blocked_dialog_result(session: Any, key: str, label: str, info: Any, action_id: str) -> ToolBlock:
     """The key was sent, then a dialog opened: the effect is unproven, not a success."""
     text = "\n".join(
         [
@@ -286,7 +375,7 @@ def _blocked_dialog_result(session: Any, key: str, label: str, info: Any, action
             evidence_line(session, action_id),
         ]
     )
-    record_action(session, action_id, NAME, "blocked", text)
+    await arecord_action(session, action_id, NAME, "blocked", text)
     return text_block(text)
 
 
@@ -316,7 +405,7 @@ async def _settle_submit(
         read_page=lambda: _page_state(session, cdp_session_id),
     )
     if dialog is not None:
-        return _blocked_dialog_result(session, key_spec, label, dialog, action_id)
+        return await _blocked_dialog_result(session, key_spec, label, dialog, action_id)
     verdict, submitted = submit_verdict(before_field, after_field, before_page, after_page, replaced=replaced)
     session.mark_dirty()
     if submitted:
@@ -335,7 +424,7 @@ async def _settle_submit(
         verdict,
     ]
     text = "\n".join(lines)
-    record_action(session, action_id, NAME, status, text)
+    await arecord_action(session, action_id, NAME, status, text)
     return text_block(text)
 
 
@@ -357,25 +446,13 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 f"未按键 {entry.token}：目标处于 disabled 状态"
                 f"；status=blocked retryable=false\n{evidence_line(session, action_id)}"
             )
-            record_action(session, action_id, NAME, "blocked", text)
+            await arecord_action(session, action_id, NAME, "blocked", text)
             return [text_block(text)]
 
     action_id = new_action_id()
-    facts_before: dict[str, Any] = {}
-    baseline_ok = True
-    try:
-        before = await _page_state(session, cdp_session_id)
-        if object_id:
-            facts_before = await _target_facts(session, object_id, cdp_session_id)
-    except ConnectionClosed:
-        raise
-    except (StaleRef, BrowserError):
-        before = {}
-        baseline_ok = False
-
-    label = entry.token if entry is not None else f"当前焦点（{before.get('active') or '无'}）"
+    label = entry.token if entry is not None else "当前焦点"
     # Focusing can fire onfocus handlers, so the action is journalled before it too.
-    prepare_action(session, action_id, NAME, f"prepared key {arguments['key']} on {label}")
+    await aprepare_action(session, action_id, NAME, f"prepared key {arguments['key']} on {label}")
     submit_field = False
     before_field: dict[str, Any] = {}
     if target:
@@ -394,8 +471,22 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
                 f"status=blocked retryable=false\n"
                 f"{evidence_line(session, action_id)}"
             )
-            record_action(session, action_id, NAME, "blocked", text)
+            await arecord_action(session, action_id, NAME, "blocked", text)
             return [text_block(text)]
+    facts_before: dict[str, Any] = {}
+    baseline_ok = True
+    try:
+        before = await _page_state(session, cdp_session_id)
+        if object_id:
+            facts_before = await _target_facts(session, object_id, cdp_session_id)
+    except ConnectionClosed:
+        raise
+    except (StaleRef, BrowserError):
+        before = {}
+        baseline_ok = False
+    if entry is None:
+        label = f"当前焦点（{before.get('active') or '无'}）"
+    if target:
         # A plain Enter in a single-line text field is a submit attempt: judge it like
         # browser_fill(submit=true). A textarea Enter is a newline and takes the generic path.
         submit_field = (
@@ -418,20 +509,25 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             session, dialog_seq, lambda: _send_key(session, key, code, virtual_key, inserted, mask, cdp_session_id)
         )
     except ConnectionClosed:
+        session.mark_dirty()
         raise
     except (CDPTimeout, BrowserError) as exc:
+        session.mark_dirty()
         text = (
             f"已发送按键 {arguments['key']} 到 {label}\n"
             f"effect=unknown\nstatus=uncertain retryable=false\n"
             f"reason=dispatch_failed:{type(exc).__name__}；不要重复发送\n"
             f"{evidence_line(session, action_id)}"
         )
-        record_action(session, action_id, NAME, "uncertain", text)
+        await arecord_action(session, action_id, NAME, "uncertain", text)
         return [text_block(text)]
+    session.mark_dirty()
     if dialog is not None:
-        mark_dispatched(session, action_id, NAME, f"key {arguments['key']} on {label} is in flight; a dialog opened")
-        return [_blocked_dialog_result(session, arguments["key"], label, dialog, action_id)]
-    mark_dispatched(session, action_id, NAME, f"dispatched key {arguments['key']} on {label}")
+        await amark_dispatched(
+            session, action_id, NAME, f"key {arguments['key']} on {label} is in flight; a dialog opened"
+        )
+        return [await _blocked_dialog_result(session, arguments["key"], label, dialog, action_id)]
+    await amark_dispatched(session, action_id, NAME, f"dispatched key {arguments['key']} on {label}")
     if submit_field:
         block = await _settle_submit(
             session, arguments["key"], label, object_id, cdp_session_id, before_field, before, dialog_seq, action_id
@@ -458,7 +554,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             break
     dialog = session.dialog_since(dialog_seq)
     if dialog is not None:
-        return [_blocked_dialog_result(session, arguments["key"], label, dialog, action_id)]
+        return [await _blocked_dialog_result(session, arguments["key"], label, dialog, action_id)]
     effect = (
         _classify(before, after, facts_before, facts_after, target_given=bool(target)) if baseline_ok else "unknown"
     )
@@ -495,5 +591,5 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     elif effect == "none":
         lines.append("页面未变化；按键可能未被目标处理，或副作用不在页面 DOM 上，请 browser_snapshot 复核")
     text = "\n".join(lines)
-    record_action(session, action_id, NAME, status, text)
+    await arecord_action(session, action_id, NAME, status, text)
     return [text_block(text)]
