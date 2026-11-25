@@ -118,12 +118,12 @@ async def run(args: argparse.Namespace) -> None:
             scenario_stats.append(stat)
             report("scenario", **stat)
 
-            # --- 2. closed_shadow_form (reuse single open browser + click expect) ---
+            # --- 2. closed_shadow_form (reuse open browser via explicit browser_id + click expect) ---
             t0 = time.monotonic()
             steps = 0
-            nav2 = await ext.browser_navigate(ctx, f"{origin}/closed-shadow-form")
+            nav2 = await ext.browser_navigate(ctx, f"{origin}/closed-shadow-form", browser_id)
             steps += 1
-            require(nav2.startswith(f"browser_id: {browser_id}\n"), "expected single open browser reuse")
+            require(nav2.startswith(f"browser_id: {browser_id}\n"), "expected explicit browser_id reuse")
 
             found_note = await ext.browser_find(ctx, browser_id, "Ticket Note")
             steps += 1
