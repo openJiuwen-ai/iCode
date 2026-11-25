@@ -296,8 +296,8 @@ class AgentEngine:
         return self._turns.execution_busy()
 
     @property
-    def side_questions_busy(self) -> bool:
-        return self._side_questions.busy
+    def side_questions_block_takeover(self) -> bool:
+        return self._side_questions.blocks_takeover
 
     def execution(self) -> ExecutionSnapshot:
         """What the execution lease is running right now: nothing, a turn, or a workflow run."""

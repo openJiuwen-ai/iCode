@@ -1108,7 +1108,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             and not engine.session.shutting_down
             and engine.session.pending_conversation_save is None
             and not engine.permits.agent_loading
-            and not engine.side_questions_busy
+            and not engine.side_questions_block_takeover
             and not engine.execution_busy()
             and engine.turns.turn_state.lease.workflow_start_refusal() is None
             and not (tasks and tasks.running)

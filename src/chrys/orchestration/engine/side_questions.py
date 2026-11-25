@@ -91,6 +91,7 @@ class SideQuestions:
         self._store = state_store
         self._lease = lease
         self._memory_session = ""
+        self._unsaved_answer_session_id: str | None = None
         self._memory_entries: tuple[SideQuestionEntry, ...] = ()
         self._active: _Question | None = None
         self._run_tasks: set[asyncio.Task[None]] = set()
@@ -99,9 +100,11 @@ class SideQuestions:
         self._writes_cancelled = threading.Event()
 
     @property
-    def busy(self) -> bool:
-        """Include answers already shown whose save is still queued."""
-        return bool(self._run_tasks or self._commit_tasks)
+    def blocks_takeover(self) -> bool:
+        """An answer can outlive its failed save as the only copy in this window."""
+        return bool(self._run_tasks or self._commit_tasks) or (
+            self._unsaved_answer_session_id is not None and self._unsaved_answer_session_id == self._session.session_id
+        )
 
     async def subscribe(self) -> None:
         await self._bus.subscribe(SideQuestionRequested, self.request)
@@ -288,6 +291,7 @@ class SideQuestions:
         except Exception:
             logger.warning("Failed to save side question history", exc_info=True)
             if not active.writes_cancelled.is_set():
+                self._unsaved_answer_session_id = active.emitter.origin.session_id
                 await active.emitter.publish(InvocationSideQuestionFailed(origin=active.emitter.origin, kind="save"))
 
     async def read_history(self, event: SideQuestionHistoryRequested) -> None:
@@ -353,6 +357,7 @@ class SideQuestions:
         self._writes_cancelled.set()
         self._writes_cancelled = threading.Event()
         self._memory_session, self._memory_entries = "", ()
+        self._unsaved_answer_session_id = None
         await self._stop(tuple(self._run_tasks | self._commit_tasks))
 
     async def _stop(self, tasks: tuple[asyncio.Task[None], ...]) -> None:

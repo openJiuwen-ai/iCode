@@ -747,6 +747,11 @@ async def test_save_failure_warns_and_keeps_answer_available_in_current_session(
         session.bar.submit_input()
         await wait_for(lambda: panel.display and shown_answer(panel) == side.answer, pilot=session.pilot)
         assert shown_question(panel) == "Keep this answer"
+        assert session.engine.side_questions_block_takeover
+        if rebuild == "none":
+            await session.bus.publish(ev.SessionNew())
+            assert session.session_id() != original
+            assert not session.engine.side_questions_block_takeover
 
 
 @pytest.mark.parametrize("card_action", ["close", "navigate"])
@@ -1012,7 +1017,7 @@ async def test_session_transition_preserves_pending_side_save(
             commit = next(iter(session.engine._side_questions._commit_tasks))
             await asyncio.gather(*tuple(session.engine._side_questions._run_tasks))
             assert not panel.running
-            assert session.engine.side_questions_busy
+            assert session.engine.side_questions_block_takeover
             assert not session.app._takeover_idle()
             event = (
                 ev.SetModelProfile(profile_id=FAST_MODEL)
@@ -1037,6 +1042,9 @@ async def test_session_transition_preserves_pending_side_save(
                 directory = session.engine.session.session_dir
                 assert directory is not None
                 assert [entry.answer for entry in load_side_questions(directory, session.session_id())] == [side.answer]
+            assert session.engine.side_questions_block_takeover is save_fails
+            if save_fails:
+                assert not session.app._takeover_idle()
             session.main._btw.close_question()
             session.chat.load_text("/btw")
             session.bar.submit_input()
