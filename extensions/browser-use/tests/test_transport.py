@@ -186,3 +186,33 @@ def test_bridge_transport_closes_client_and_server_on_handshake_failure() -> Non
         asyncio.run(transport.start())
     assert client.closed == 1
     assert server.closed == 1
+
+
+def test_owned_transport_stop_waits_for_graceful_exit_before_force_kill() -> None:
+    """P1 #2 (follow-up): OwnedTransport.stop must give Browser.close a flush window before terminate_tree."""
+    events: list[str] = []
+
+    class OrderClient(FakeClient):
+        async def send(self, method: str, params=None, session_id=None, timeout=None):
+            events.append(f"send:{method}")
+            return await super().send(method, params, session_id=session_id, timeout=timeout)
+
+        async def aclose(self) -> None:
+            events.append("client:aclose")
+            await super().aclose()
+
+    class GracefulChild(FakeChild):
+        async def wait_for_exit(self, *, timeout: float = 3.0) -> bool:
+            events.append("child:wait_for_exit")
+            return True
+
+        async def terminate_tree(self) -> None:
+            events.append("child:terminate_tree")
+            await super().terminate_tree()
+
+    client = OrderClient()
+    child = GracefulChild()
+    transport = OwnedTransport(config(), lambda _ws: client, lambda _cfg, _dir: None)  # type: ignore[arg-type]
+
+    asyncio.run(transport.stop(client, child, target_id="t1"))
+    assert events == ["send:Browser.close", "client:aclose", "child:wait_for_exit", "child:terminate_tree"]

@@ -45,7 +45,7 @@ def test_config_toolset_default_compact_and_invalid():
         BrowserConfig.from_env({"ICODE_BROWSER_TOOLSET": "minimal"})
 
 
-def test_compact_toolset_registers_only_twelve_core_tools(monkeypatch, tmp_path):
+def test_compact_toolset_registers_only_thirteen_core_tools(monkeypatch, tmp_path):
     monkeypatch.delenv("ICODE_BROWSER_EVALUATE", raising=False)
     monkeypatch.delenv("ICODE_BROWSER_SAVE_STATE", raising=False)
     monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
@@ -54,7 +54,8 @@ def test_compact_toolset_registers_only_twelve_core_tools(monkeypatch, tmp_path)
         reloaded = importlib.reload(ext)
         tool_names = {tool.name for tool in reloaded.extension.tools}
         assert tool_names == reloaded.COMPACT_TOOL_NAMES
-        assert len(tool_names) == 12
+        assert len(tool_names) == 13
+        assert "browser_list" in tool_names
         assert "browser_tabs" not in tool_names
         assert "browser_back" not in tool_names
         assert "browser_action_status" not in tool_names
@@ -84,8 +85,12 @@ async def test_compact_context_uses_compact_playbook(monkeypatch, tmp_path):
         await reloaded.browser_open(ctx)
         rendered = await reloaded.browser_context(tctx)
         assert rendered is not None
+        assert "browser_list" in rendered
         assert COMPACT_BROWSER_PLAYBOOK in rendered
         assert "BROWSER_SESSION_FACTS" in rendered
+        listed = await reloaded.browser_list(ctx)
+        assert "open=1" in listed
+        assert "browser_id=" in listed
     finally:
         ext._browsers.clear()
         monkeypatch.delenv("ICODE_BROWSER_TOOLSET", raising=False)

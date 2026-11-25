@@ -47,6 +47,9 @@ from ..logging import log
 _POLL_INTERVAL: Final = 0.05
 #: Grace given to a browser to die on its own before the tree is force-killed.
 _KILL_TIMEOUT: Final = 5.0
+#: Bounded flush window for a graceful ``Browser.close`` / ``SIGTERM`` exit so
+#: Chrome/Edge can flush persistent cookies and profile state to disk before force-kill.
+_GRACEFUL_CLOSE_TIMEOUT: Final = 3.0
 #: Timeout for the tiny ``/json/version`` HTTP probe.
 _HTTP_TIMEOUT: Final = 5.0
 
@@ -91,13 +94,29 @@ def _unregister_live_child(child: ChildProcess) -> None:
 
 
 def _cleanup_live_children() -> None:
-    """Terminate any Owned browser processes still alive when the host process exits."""
+    """Gracefully close (then force-kill if needed) any Owned browsers still alive on host exit."""
     with _LIVE_CHILDREN_LOCK:
         children = list(_LIVE_CHILDREN.values())
         _LIVE_CHILDREN.clear()
     for child in children:
         with contextlib.suppress(Exception):
-            child.terminate_tree_sync(timeout=1.5)
+            child.terminate_tree_sync(timeout=1.5, graceful_wait=_GRACEFUL_CLOSE_TIMEOUT)
+
+
+def _request_graceful_close_sync(pid: int, browser_ws: str) -> bool:
+    """Ask a running browser to flush its profile and exit politely; return True if a signal/command was sent."""
+    sent = False
+    if browser_ws:
+        with contextlib.suppress(Exception):
+            asyncio.run(asyncio.wait_for(_send_browser_close(browser_ws), timeout=1.5))
+            sent = True
+    if not sent and sys.platform != "win32":
+        import signal
+
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            sent = True
+    return sent
 
 
 @dataclass
@@ -114,20 +133,47 @@ class ChildProcess:
     _job: int | None = field(default=None, compare=False, repr=False)
     _terminated: bool = field(default=False, compare=False, repr=False)
     _pid_file: Path | None = field(default=None, compare=False, repr=False)
+    _browser_ws: str = field(default="", compare=False, repr=False)
 
     @property
     def alive(self) -> bool:
         """True while the child has not exited."""
         return self._popen.poll() is None
 
-    def terminate_tree_sync(self, *, timeout: float = _KILL_TIMEOUT) -> None:
-        """Synchronously kill the child's whole process tree (safe for ``atexit``); idempotent and never raises."""
+    async def wait_for_exit(self, *, timeout: float = _GRACEFUL_CLOSE_TIMEOUT) -> bool:
+        """Wait up to *timeout* seconds for the browser to exit cleanly after ``Browser.close``."""
+        if self._terminated:
+            return True
+        popen = self._popen
+        if popen.poll() is None and timeout > 0:
+            with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
+                await asyncio.wait_for(asyncio.to_thread(popen.wait), timeout)
+        if popen.poll() is not None:
+            self._terminated = True
+            _unregister_live_child(self)
+            self._close_job()
+            if self._pid_file is not None:
+                _remove(self._pid_file)
+            return True
+        return False
+
+    def terminate_tree_sync(
+        self,
+        *,
+        timeout: float = _KILL_TIMEOUT,
+        graceful_wait: float = 0.0,
+    ) -> None:
+        """Synchronously close (gracefully if requested, else force-kill) the process tree; idempotent."""
         if self._terminated:
             return
         self._terminated = True
         _unregister_live_child(self)
         popen = self._popen
         try:
+            if popen.poll() is None and graceful_wait > 0 and self._browser_ws:
+                if _request_graceful_close_sync(self.pid, self._browser_ws):
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        popen.wait(timeout=graceful_wait)
             if popen.poll() is None:
                 if sys.platform == "win32":
                     _terminate_windows(self.pid, self._job)
@@ -866,6 +912,7 @@ async def launch_chrome(
         _write_pid_file(pid_file, child)
         port = await _await_devtools_port(port_file, child, ready_timeout)
         browser_ws = await _browser_ws_endpoint(port)
+        child._browser_ws = browser_ws
     except BaseException:
         await child.terminate_tree()
         raise

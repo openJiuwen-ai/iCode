@@ -83,12 +83,19 @@ class OwnedTransport:
         return client, result.child
 
     async def stop(self, client: Any | None, child: Any | None, *, target_id: str | None) -> None:
+        graceful_sent = False
         if client is not None:
             with contextlib.suppress(Exception):
                 await client.send("Browser.close", timeout=2.0)
+                graceful_sent = True
             with contextlib.suppress(Exception):
                 await client.aclose()
         if child is not None:
+            if graceful_sent:
+                wait_for_exit = getattr(child, "wait_for_exit", None)
+                if callable(wait_for_exit):
+                    with contextlib.suppress(Exception):
+                        await wait_for_exit()
             with contextlib.suppress(Exception):
                 await child.terminate_tree()
 

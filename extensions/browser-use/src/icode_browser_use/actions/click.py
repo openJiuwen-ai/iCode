@@ -153,7 +153,7 @@ async def _settled_effect(
     if pages_before is not None and effect != "navigation" and _new_tab_since(session, pages_before):
         return "new_tab", after
     for _ in range(_CLICK_POLLS):
-        if effect != "none":
+        if effect not in ("none", "focus"):
             break
         await _sleep(_CLICK_POLL)
         try:

@@ -744,3 +744,92 @@ def test_fill_submit_navigation_succeeds_even_when_old_input_is_destroyed(monkey
     assert "已提交（页面已跳转）" in text
     assert "status=succeeded" in text
     assert session.successes == 1
+
+
+def test_fill_clear_false_with_keypress_fallback_preserves_existing_text_when_insert_succeeds(monkeypatch) -> None:
+    """P1 #1 (follow-up): clear=false + keypress_fallback=true must not wipe existing text when insertText succeeds."""
+    session = FakeSession()
+    session.state = {"tag": "input", "editable": False, "focused": True, "text": "draft "}
+    original_send = session.client.send
+
+    async def appending_send(method, params=None, session_id=None, timeout=None):
+        if method == "Input.insertText":
+            session.client.calls.append((method, params or {}, session_id))
+            session.state["text"] = session.state["text"] + str((params or {}).get("text", ""))
+            return {"result": {"value": None}}
+        return await original_send(method, params, session_id, timeout)
+
+    session.client.send = appending_send
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "input",
+                    "type": "text",
+                    "readOnly": False,
+                    "disabled": False,
+                    "text": "draft ",
+                    "selectionStart": 6,
+                    "selectionEnd": 6,
+                },
+            }
+        return {"type": "object", "value": dict(session.state)}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "notes", "text": "replacement", "clear": False, "submit": False, "keypress_fallback": True},
+        )
+    )
+    text = blocks[0]["text"]
+    assert "status=succeeded" in text
+    assert session.state["text"] == "draft replacement"
+    assert all(call[0] != "Input.dispatchKeyEvent" for call in session.client.calls)
+
+
+def test_fill_clear_false_append_on_full_maxlength_field_reports_mismatch_not_success(monkeypatch) -> None:
+    """P1 #1 (follow-up): appending 'abc' to a full maxlength=3 input containing 'abc' must not falsely report succeeded."""
+    session = FakeSession()
+    session.state = {"tag": "input", "editable": False, "focused": True, "text": "abc"}
+    session.client.update_on_insert = False
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "input",
+                    "type": "text",
+                    "readOnly": False,
+                    "disabled": False,
+                    "text": "abc",
+                    "selectionStart": 3,
+                    "selectionEnd": 3,
+                },
+            }
+        return {"type": "object", "value": dict(session.state)}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "code", "text": "abc", "clear": False, "submit": False, "keypress_fallback": True},
+        )
+    )
+    text = blocks[0]["text"]
+    assert "status=uncertain" in text
+    assert "读回与输入不一致" in text
+    assert session.state["text"] == "abc"
+    # Backspace must never have been sent when clear=False.
+    assert all(
+        not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Backspace") for call in session.client.calls
+    )

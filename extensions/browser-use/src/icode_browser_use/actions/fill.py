@@ -70,14 +70,33 @@ _normalize_text = normalize_text
 _submit_verdict = submit_verdict
 
 
-def _values_match(value: Any, expected: str, *, clear: bool = True) -> bool:
+def _values_match(
+    value: Any,
+    expected: str,
+    *,
+    clear: bool = True,
+    before_value: str | None = None,
+    selection: tuple[int, int] | None = None,
+) -> bool:
     actual = _normalize_text(value)
     wanted = _normalize_text(expected)
     if not wanted:
         return actual == "" if clear else True
     if not actual:
         return False
-    return actual == wanted if clear else wanted in actual
+    if clear:
+        return actual == wanted
+    if before_value is not None:
+        if selection is not None:
+            start, end = selection
+            if 0 <= start <= end <= len(before_value):
+                combined = before_value[:start] + expected + before_value[end:]
+                return actual == _normalize_text(combined)
+        before_norm = _normalize_text(before_value)
+        if actual == before_norm:
+            return False
+        return wanted in actual and len(actual) >= len(before_norm) + len(wanted)
+    return wanted in actual
 
 
 async def _dispatch_key(session: Any, event_type: str, *, cdp_session_id: str | None = None, **fields: Any) -> None:
@@ -162,7 +181,7 @@ async def _page_state(session: Any, cdp_session_id: str | None) -> dict[str, Any
     return await page_state(session, cdp_session_id, evaluate=eval_value)
 
 
-async def _focus(session: Any, object_id: str, cdp_session_id: str | None) -> None:
+async def _focus(session: Any, object_id: str, cdp_session_id: str | None) -> dict[str, Any]:
     result = await focus_target(session, object_id, cdp_session_id, call=call_value)
     if not result.get("focused"):
         details: list[str] = []
@@ -188,6 +207,7 @@ async def _focus(session: Any, object_id: str, cdp_session_id: str | None) -> No
         raise BadRequest("目标不是可编辑文本字段（tag/type）；未执行清空/输入")
     if result.get("readOnly") or result.get("disabled"):
         raise BadRequest("目标字段为只读或 disabled；未执行清空/输入")
+    return result
 
 
 async def _clear(session: Any, object_id: str, cdp_session_id: str | None) -> None:
@@ -253,7 +273,17 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     object_id = await session.resolve_object_id(entry)
     cdp_session_id = entry.cdp_session_id
 
-    await _focus(session, object_id, cdp_session_id)
+    focus_info = await _focus(session, object_id, cdp_session_id)
+    before_text: str | None = None
+    before_selection: tuple[int, int] | None = None
+    if not clear:
+        raw_before = focus_info.get("text")
+        if isinstance(raw_before, str):
+            before_text = raw_before
+        sel_start = focus_info.get("selectionStart")
+        sel_end = focus_info.get("selectionEnd")
+        if isinstance(sel_start, int) and isinstance(sel_end, int):
+            before_selection = (sel_start, sel_end)
     if clear:
         try:
             await _clear(session, object_id, cdp_session_id)
@@ -301,18 +331,39 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
 
     used_fallback = False
     mismatch = False
+    matched = _values_match(
+        state.get("text"),
+        text,
+        clear=clear,
+        before_value=before_text,
+        selection=before_selection,
+    )
     try:
-        if keypress_fallback:
-            if state.get("focused") is False:
-                raise _FocusLost("target lost focus before keypress fallback")
-            used_fallback = True
-            if _normalize_text(state.get("text")):
-                await _select_and_delete(session, object_id, cdp_session_id)
-            await _type_characters(session, object_id, text, cdp_session_id)
-            await _sleep(0)
-            state = await _read_state(session, object_id, cdp_session_id)
-        elif not _values_match(state.get("text"), text, clear=clear):
-            if not _normalize_text(state.get("text")):
+        if not matched:
+            unchanged_append = (
+                not clear
+                and before_text is not None
+                and _normalize_text(state.get("text")) == _normalize_text(before_text)
+            )
+            if keypress_fallback:
+                if state.get("focused") is False:
+                    raise _FocusLost("target lost focus before keypress fallback")
+                if clear:
+                    used_fallback = True
+                    if _normalize_text(state.get("text")):
+                        await _select_and_delete(session, object_id, cdp_session_id)
+                    await _type_characters(session, object_id, text, cdp_session_id)
+                    await _sleep(0)
+                    state = await _read_state(session, object_id, cdp_session_id)
+                elif unchanged_append or before_text is None:
+                    # Never select-and-delete when clear=False: preserve existing text.
+                    used_fallback = True
+                    await _type_characters(session, object_id, text, cdp_session_id)
+                    await _sleep(0)
+                    state = await _read_state(session, object_id, cdp_session_id)
+                else:
+                    mismatch = True
+            elif not _normalize_text(state.get("text")) or unchanged_append:
                 if state.get("focused") is False:
                     raise _FocusLost("target lost focus before fallback typing")
                 used_fallback = True
@@ -328,7 +379,13 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     except (CDPTimeout, BrowserError) as exc:
         return _uncertain_fill(session, entry, f"input_fallback_failed:{type(exc).__name__}", action_id)
 
-    if used_fallback and not _values_match(state.get("text"), text, clear=clear):
+    if used_fallback and not _values_match(
+        state.get("text"),
+        text,
+        clear=clear,
+        before_value=before_text,
+        selection=before_selection,
+    ):
         mismatch = True
 
     submit_line = ""

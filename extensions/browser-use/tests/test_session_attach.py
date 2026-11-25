@@ -192,3 +192,76 @@ def test_attached_reconnect_reuses_original_tab_without_leaking_a_second_tab(tmp
         assert ("Target.closeTarget", {"targetId": "target-1"}, None) in clients[1].calls
 
     asyncio.run(scenario())
+
+
+def test_attached_direct_close_after_disconnect_cleans_up_original_tab(tmp_path: Path) -> None:
+    """Edge case #4: calling aclose() directly after disconnect reconnects to close the original tab."""
+    live_targets = [{"targetId": "target-1", "type": "page", "url": "https://example.com"}]
+    clients: list[FakeClient] = []
+
+    class CleanupFakeClient(FakeClient):
+        async def send(self, method: str, params=None, session_id=None, timeout=None):
+            self.calls.append((method, params, session_id))
+            if method == "Browser.getVersion":
+                return {"product": "Edge/135", "revision": "rev-1", "userAgent": "Edge/135"}
+            if method == "Target.getTargets":
+                return {"targetInfos": list(live_targets)}
+            if method == "Target.createTarget":
+                return {"targetId": "target-1"}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-1"}
+            if method == "Page.getFrameTree":
+                return {"frameTree": {"frame": {"id": "frame-1", "url": "https://example.com"}}}
+            if method == "Page.addScriptToEvaluateOnNewDocument":
+                return {"identifier": "probe-1"}
+            return {}
+
+    async def client_factory(_ws: str) -> FakeClient:
+        client = CleanupFakeClient()
+        clients.append(client)
+        return client
+
+    config = BrowserConfig(
+        allowed_domains=("example.com",),
+        state_dir=tmp_path / "state",
+        cdp_url="ws://existing",
+    )
+    session = BrowserSession(config, client_factory=client_factory)
+
+    async def scenario() -> None:
+        await session.ensure_started()
+        assert session.target_id == "target-1"
+        session.mark_disconnected()
+        await session.aclose()
+        assert len(clients) == 2
+        assert ("Target.closeTarget", {"targetId": "target-1"}, None) in clients[1].calls
+        assert session.unclosed_targets == ()
+
+    asyncio.run(scenario())
+
+
+def test_attached_direct_close_reports_unclosed_targets_when_browser_unreachable(tmp_path: Path) -> None:
+    """Edge case #4: if browser is unreachable on direct close after disconnect, unclosed_targets is recorded."""
+    calls = 0
+
+    async def client_factory(_ws: str) -> FakeClient:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return FakeClient()
+        raise OSError("connection refused")
+
+    config = BrowserConfig(
+        allowed_domains=("example.com",),
+        state_dir=tmp_path / "state",
+        cdp_url="ws://existing",
+    )
+    session = BrowserSession(config, client_factory=client_factory)
+
+    async def scenario() -> None:
+        await session.ensure_started()
+        session.mark_disconnected()
+        await session.aclose()
+        assert session.unclosed_targets == ("target-1",)
+
+    asyncio.run(scenario())

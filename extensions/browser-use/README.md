@@ -128,7 +128,7 @@ icode-browser-use install / uninstall   # standalone folder package
 
 ## Compact toolset & isolated `Browser` sub-agent
 
-By default the extension exposes all 29 standard tools (`ICODE_BROWSER_TOOLSET=full`). For long sessions or dedicated browser sub-agents, set `ICODE_BROWSER_TOOLSET=compact` to expose only the 12 core tools (`browser_open`, `browser_navigate`, `browser_snapshot`, `browser_find`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_wait_for`, `browser_extract`, `browser_screenshot`, `browser_dialog`, `browser_close`) together with a byte-stable compact playbook — cutting tool-schema token overhead by >55% without losing core web automation workflows.
+By default the extension exposes all 29 standard tools (`ICODE_BROWSER_TOOLSET=full`). For long sessions or dedicated browser sub-agents, set `ICODE_BROWSER_TOOLSET=compact` to expose only the 13 core tools (`browser_open`, `browser_list`, `browser_navigate`, `browser_snapshot`, `browser_find`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_wait_for`, `browser_extract`, `browser_screenshot`, `browser_dialog`, `browser_close`) together with a byte-stable compact playbook — cutting tool-schema token overhead by >50% while keeping core web automation workflows and read-only handle recovery after history compaction.
 
 To isolate raw DOM snapshots, screenshots, and untrusted web content from your main coding agent (preventing context pollution and prompt-injection escalation to `shell` or file writes), install the least-privilege `Browser` sub-agent profile:
 

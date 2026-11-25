@@ -59,10 +59,12 @@ extension = Extension()
 #: Stable plugin CLI entry point (ready for host ``icode plugin browser-use`` forwarding).
 cli_main = cli.main
 
-#: 12 high-cohesion core tools exposed when ``ICODE_BROWSER_TOOLSET=compact`` is set.
+#: 13 high-cohesion core tools exposed when ``ICODE_BROWSER_TOOLSET=compact`` is set.
+#: ``browser_list`` is included so handles remain recoverable after history compaction.
 COMPACT_TOOL_NAMES: Final[frozenset[str]] = frozenset(
     {
         "browser_open",
+        "browser_list",
         "browser_navigate",
         "browser_snapshot",
         "browser_find",
@@ -459,11 +461,7 @@ def _get(ctx: ToolContext, browser_id: str) -> _Browser:
     _prune_closed()
     browser = _browsers.get(browser_id)
     if browser is None:
-        hint = (
-            "call browser_navigate(url=...) or browser_open to allocate a new browser handle."
-            if _active_toolset() == "compact"
-            else "call browser_list to see this session's browsers, or browser_open to allocate a new browser handle."
-        )
+        hint = "call browser_list to see this session's browsers, or browser_open to allocate a new browser handle."
         raise ToolError(
             f"Unknown browser_id {browser_id!r}; {hint}",
             code="unknown_browser",
@@ -799,8 +797,8 @@ async def browser_navigate(
         mine = _mine(ctx)
         if mine:
             raise ToolError(
-                "A browser is already open for this session/agent; pass browser_id to reuse it, "
-                "or call browser_open to allocate a separate handle.",
+                "A browser is already open for this session/agent; call browser_list to see open browser_id(s), "
+                "pass browser_id to reuse it, or call browser_open to allocate a separate handle.",
                 code="browser_id_required",
             )
         browser = _open(ctx)
@@ -1317,7 +1315,13 @@ async def browser_close(
         raise
     except Exception as exc:
         raise ToolError(f"browser close failed: {exc}", code="browser_close_failed") from exc
-    return f"browser_id {browser.id} closed\n{_format_session_facts(browser)}"
+    unclosed = getattr(browser.session, "unclosed_targets", ())
+    header = f"browser_id {browser.id} closed"
+    if unclosed:
+        header += (
+            f"\nwarning: cleanup incomplete — could not reconnect to close detached tab(s): {', '.join(unclosed)}"
+        )
+    return f"{header}\n{_format_session_facts(browser)}"
 
 
 @_tool(requires_approval=True)
@@ -1425,7 +1429,8 @@ async def browser_context(ctx: TurnContext) -> str | None:
     if mine:
         playbook = COMPACT_BROWSER_PLAYBOOK if _active_toolset() == "compact" else BROWSER_PLAYBOOK
         return (
-            f"Open browsers: {len(mine)}. Use the browser_id returned by browser_open for browser_* tools. " + playbook
+            f"Open browsers: {len(mine)}. Call browser_list to see open browser_id(s), "
+            "and pass browser_id to browser_* tools. " + playbook
         )
     recorded = _recoverable(ctx)
     if recorded and _active_toolset() == "full":

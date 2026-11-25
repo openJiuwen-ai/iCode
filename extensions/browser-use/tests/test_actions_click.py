@@ -208,7 +208,7 @@ def test_plain_button_no_effect_does_not_fall_back(monkeypatch) -> None:
 
     async def fake_eval_value(*_args, **_kwargs):
         assert pages
-        return pages.pop(0)
+        return pages.pop(0) if len(pages) > 1 else pages[0]
 
     async def fake_hit_point(*_args, **_kwargs):
         return 10.0, 10.0
@@ -296,7 +296,7 @@ def test_focus_only_effect_warns_about_submit(monkeypatch) -> None:
 
     async def fake_eval_value(*_args, **_kwargs):
         assert pages
-        return pages.pop(0)
+        return pages.pop(0) if len(pages) > 1 else pages[0]
 
     async def fake_hit_point(*_args, **_kwargs):
         return 10.0, 10.0
@@ -1321,5 +1321,46 @@ def test_click_opening_new_tab_reports_new_tab_and_tab_id(monkeypatch) -> None:
     text = blocks[0]["text"]
     assert "effect=new_tab" in text
     assert "tab_id=t-child-2" in text
+    assert "status=succeeded" in text
+    assert session.successes == 1
+
+
+def test_click_keeps_settle_window_on_focus_change_to_catch_async_new_tab(monkeypatch) -> None:
+    """Edge case #5: when click immediately changes focus and opens a new tab 100ms later, still detect new_tab."""
+    session = FakeSession()
+    pages = [SimpleNamespace(target_id="t")]
+    session.pages = lambda: list(pages)
+    poll_count = 0
+
+    async def fake_call_value(*_args, **_kwargs):
+        return {"type": "object", "value": _facts("Async Popup", tag="button")}
+
+    async def fake_eval_value(*_args, **_kwargs):
+        nonlocal poll_count
+        poll_count += 1
+        if poll_count == 1:
+            return _page()
+        after = _page()
+        after["active"] = "button"
+        if poll_count >= 3 and len(pages) == 1:
+            pages.append(SimpleNamespace(target_id="t-async-2"))
+        return after
+
+    async def fake_hit_point(*_args, **_kwargs):
+        return 10.0, 10.0
+
+    async def fake_dispatch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(click, "call_value", fake_call_value)
+    monkeypatch.setattr(click, "eval_value", fake_eval_value)
+    monkeypatch.setattr(click, "_hit_point", fake_hit_point)
+    monkeypatch.setattr(click, "_dispatch_click", fake_dispatch)
+    monkeypatch.setattr(click, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(click.run(session, {"target": "Async Popup", "button": "left", "click_count": 1}))
+    text = blocks[0]["text"]
+    assert "effect=new_tab" in text
+    assert "tab_id=t-async-2" in text
     assert "status=succeeded" in text
     assert session.successes == 1
