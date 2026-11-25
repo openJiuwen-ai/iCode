@@ -18,9 +18,10 @@ Recovery rules this module supports:
 - Writes go to a temporary file in the same directory and are swapped in with
   ``os.replace``, so a crash never leaves a half-written manifest.
 - Records are matched to their owner by session id, agent name and the
-  ``owner_key`` (which includes ``ToolContext.agent_id`` when provided by the
-  host); a forked session copies the file but not the identity, so its records
-  stay unclaimable history.
+  ``owner_key`` (which includes caller/invocation metadata from
+  ``ToolContext.invocation_type``, ``caller_name`` and ``invocation_id`` for
+  non-turn invocations); a forked session copies the file but not the identity,
+  so its records stay unclaimable history.
 - An unreadable or unexpected manifest never breaks a browser call: callers get
   no records plus a reason to report.
 """

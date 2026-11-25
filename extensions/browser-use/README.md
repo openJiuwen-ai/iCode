@@ -633,13 +633,17 @@ detail matters.
 
 At most two browsers may be open per owner scope; an idle browser closes itself
 after `idle_close_seconds` (600 s by default) and restarts from the same profile
-on the next call. On current iCode hosts (`ToolContext` carries `session_id` and
-`agent_name` without a per-build `agent_id`), ownership is scoped to
-`(session_id, agent_name)`: different sessions or profile names are isolated,
-while concurrent sub-agents sharing the same profile name in one session share
-that owner scope and should use `max_concurrency: 1` (or distinct profile names)
-and pass explicit `browser_id` values. If a host provides `ToolContext.agent_id`,
-the plugin includes it automatically to isolate same-profile builds.
+on the next call. Ownership is scoped to `(session_id, agent_name)` for
+main-agent turns (so the main agent reuses its open browser across turns), and
+automatically includes `(invocation_type, caller_name, invocation_id)` for
+sub-agent calls, workflow node activations and side questions: distinct
+sub-agent tools, concurrent calls to the same sub-agent, and separate workflow
+activations each get their own isolated handles, slots, profiles and journals,
+while workflow retries keep the same `invocation_id` and retain access. On older
+hosts that do not provide caller/invocation metadata, concurrent builds sharing
+the same session and profile name share that owner scope and should use
+`max_concurrency: 1` (or distinct profile names) and pass explicit `browser_id`
+values.
 
 ## Recovery after a restart
 
@@ -665,7 +669,7 @@ file.
   only**: the page is new, so the previous DOM and history are gone. Broker
   mode may return the existing page — check it with `browser_snapshot`. Nothing
   is navigated and no action is replayed.
-- Recovery is scoped to one session and agent owner key (`(session_id, agent_name)`, plus `agent_id` when supplied by the host). A forked session copies the
+- Recovery is scoped to one session and owner key (`(session_id, agent_name)` for main-agent turns, plus `(invocation_type, caller_name, invocation_id)` for sub-agents, workflow nodes and side questions). A forked session copies the
   manifest but carries a different session id, so it only sees an `unclaimable`
   count and must call `browser_open`. Another agent never sees your handles or
   origins.

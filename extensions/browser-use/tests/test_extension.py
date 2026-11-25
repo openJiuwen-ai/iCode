@@ -54,6 +54,9 @@ def ctx(
     agent: str = "A",
     session: str = "s1",
     with_session_dir: bool = False,
+    caller_name: str | None = None,
+    invocation_type: str | None = None,
+    invocation_id: str | None = None,
 ) -> ToolContext:
     return ToolContext.for_testing(
         tmp_path,
@@ -61,26 +64,20 @@ def ctx(
         session_data_dir=(tmp_path / "session") if with_session_dir else None,
         agent_name=agent,
         session_id=session,
+        caller_name=caller_name,
+        invocation_type=invocation_type,  # type: ignore[arg-type]
+        invocation_id=invocation_id,
     )
 
 
-def build_ctx(
-    tmp_path,
-    *,
-    agent: str = "A",
-    session: str = "s1",
-    agent_id: str | None = None,
-):
-    """A context as the host builds it; installed hosts before 0.36 have no ``agent_id``."""
+def legacy_ctx(tmp_path, *, agent: str = "A", session: str = "s1"):
+    """A context as older hosts (before PR #348) built it: no caller/invocation fields."""
     base = ctx(tmp_path, agent=agent, session=session)
-    if agent_id is None:
-        return base
     return SimpleNamespace(
         cwd=base.cwd,
         workspace_dirs=base.workspace_dirs,
         agent_name=base.agent_name,
         session_id=base.session_id,
-        agent_id=agent_id,
         data_dir=base.data_dir,
         session_data_dir=base.session_data_dir,
     )
@@ -325,15 +322,19 @@ def test_close_cancellation_still_finishes_teardown_and_drops_the_record(tmp_pat
     asyncio.run(scenario())
 
 
-def test_builds_sharing_session_and_profile_do_not_share_browsers(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sub_agents_sharing_session_and_profile_do_not_share_browsers(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("ICODE_BROWSER_ALLOWED_DOMAINS", "example.com")
-    first = build_ctx(tmp_path, agent_id="sub:one")
-    second = build_ctx(tmp_path, agent_id="sub:two")
+    first = ctx(tmp_path, agent="Browser", caller_name="BrowserOne", invocation_type="sub_agent", invocation_id="sub-1")
+    second = ctx(
+        tmp_path, agent="Browser", caller_name="BrowserTwo", invocation_type="sub_agent", invocation_id="sub-2"
+    )
     assert ext._owner_key(first) != ext._owner_key(second)
 
     mine = ext._open(first)
     theirs = ext._open(second)
-    # Each build gets its own slots, profiles and journals despite identical fields.
+    # Each sub-agent gets its own slots, profiles and journals despite sharing a profile name.
     assert mine.slot == theirs.slot == 0
 
     with pytest.raises(ToolError) as info:
@@ -352,13 +353,75 @@ def test_builds_sharing_session_and_profile_do_not_share_browsers(tmp_path, monk
     assert info.value.code == "browser_resume_denied"
 
 
-def test_the_main_agent_keeps_its_existing_owner_key(tmp_path) -> None:
-    # The main agent has no agent_id, so its profile/journal key must not move.
-    context = ctx(tmp_path)
-    legacy_key = hashlib.sha256(f"{context.session_id}\x00{context.agent_name}".encode()).hexdigest()[:16]
-    assert ext._owner_key(context) == legacy_key
-    assert ext._owner_key(build_ctx(tmp_path, agent_id=None)) == legacy_key
-    assert ext._owner_key(context) != ext._owner_key(build_ctx(tmp_path, agent_id="sub:one"))
+def test_concurrent_calls_to_same_sub_agent_are_isolated_by_invocation_id(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ICODE_BROWSER_ALLOWED_DOMAINS", "example.com")
+    monkeypatch.setenv("ICODE_BROWSER_GUARD", "strict")
+    first = ctx(tmp_path, agent="Browser", caller_name="Explore", invocation_type="sub_agent", invocation_id="sub-1")
+    second = ctx(tmp_path, agent="Browser", caller_name="Explore", invocation_type="sub_agent", invocation_id="sub-2")
+    assert ext._owner_key(first) != ext._owner_key(second)
+
+    mine = ext._open(first)
+    # Concurrent call 2 must not see call 1's browser or be blocked by its guard.
+    assert "open=0" in asyncio.run(ext.browser_list(second))
+    call_for_second = ToolCall(name="shell", kind="shell", call_id="c2", arguments={}, context=second)
+    asyncio.run(ext.browser_guard(call_for_second))
+    call_for_first = ToolCall(name="shell", kind="shell", call_id="c1", arguments={}, context=first)
+    with pytest.raises(ToolError) as guard_err:
+        asyncio.run(ext.browser_guard(call_for_first))
+    assert guard_err.value.code == "browser_guard"
+    with pytest.raises(ToolError) as err:
+        asyncio.run(ext.browser_snapshot(second, mine.id))
+    assert err.value.code == "browser_owner_mismatch"
+
+
+def test_workflow_node_isolates_activations_but_preserves_owner_across_retries(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ICODE_BROWSER_ALLOWED_DOMAINS", "example.com")
+    attempt1 = ctx(
+        tmp_path, agent="Worker", caller_name="fetch_docs", invocation_type="workflow_node", invocation_id="wf-act-1"
+    )
+    retry = ctx(
+        tmp_path, agent="Worker", caller_name="fetch_docs", invocation_type="workflow_node", invocation_id="wf-act-1"
+    )
+    next_activation = ctx(
+        tmp_path, agent="Worker", caller_name="fetch_docs", invocation_type="workflow_node", invocation_id="wf-act-2"
+    )
+    assert ext._owner_key(attempt1) == ext._owner_key(retry)
+    assert ext._owner_key(attempt1) != ext._owner_key(next_activation)
+
+    opened = ext._open(attempt1)
+    assert opened.id in asyncio.run(ext.browser_list(retry))
+    assert opened.id not in asyncio.run(ext.browser_list(next_activation))
+    with pytest.raises(ToolError) as err:
+        asyncio.run(ext.browser_snapshot(next_activation, opened.id))
+    assert err.value.code == "browser_owner_mismatch"
+
+
+def test_side_question_and_distinct_caller_name_are_isolated(tmp_path) -> None:
+    main_turn = ctx(tmp_path, agent="Code", caller_name="Code", invocation_type="turn", invocation_id="turn-1")
+    side = ctx(tmp_path, agent="Code", caller_name="Code", invocation_type="side_question", invocation_id="sq-1")
+    outside_sub = ctx(tmp_path, agent="Code", caller_name="Explore", invocation_type=None, invocation_id=None)
+    assert ext._owner_key(main_turn) != ext._owner_key(side)
+    assert ext._owner_key(main_turn) != ext._owner_key(outside_sub)
+    assert ext._owner_key(side) != ext._owner_key(outside_sub)
+
+
+def test_the_main_agent_keeps_its_existing_owner_key_across_turns(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Main-agent turns keep the legacy profile/journal key and reuse handles across turns.
+    monkeypatch.setenv("ICODE_BROWSER_ALLOWED_DOMAINS", "example.com")
+    turn1 = ctx(tmp_path, agent="Code", caller_name="Code", invocation_type="turn", invocation_id="turn-1")
+    turn2 = ctx(tmp_path, agent="Code", caller_name="Code", invocation_type="turn", invocation_id="turn-2")
+    legacy_key = hashlib.sha256(f"{turn1.session_id}\x00{turn1.agent_name}".encode()).hexdigest()[:16]
+    assert ext._owner_key(turn1) == legacy_key
+    assert ext._owner_key(turn2) == legacy_key
+    assert ext._owner_key(legacy_ctx(tmp_path, agent="Code")) == legacy_key
+    assert ext._owner_key(ctx(tmp_path, agent="Code")) == legacy_key
+
+    opened = ext._open(turn1)
+    assert opened.id in asyncio.run(ext.browser_list(turn2))
 
 
 def test_same_owner_concurrent_open_allocates_distinct_slots(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

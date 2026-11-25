@@ -5,11 +5,15 @@
 One extension id (``browser``) owns a registry of ``browser_id -> BrowserSession``.
 Every id gets its own state directory (one slot under the owner's profile folder),
 so it also gets its own Chrome profile and instance lock. Ownership is keyed by
-``(ToolContext.session_id, ToolContext.agent_name)`` (plus ``ToolContext.agent_id``
-when a host provides one): agents with different sessions or profile names never
-share a page, while concurrent builds sharing the same session and profile name on
-hosts without ``ToolContext.agent_id`` share that owner scope and must pass
-explicit ``browser_id`` values (or use distinct profiles / ``max_concurrency: 1``).
+``(ToolContext.session_id, ToolContext.agent_name)`` plus caller/invocation
+metadata (``ToolContext.invocation_type``, ``ToolContext.caller_name``,
+``ToolContext.invocation_id``): main-agent chat turns keep one stable owner key
+across turns, while sub-agent calls, workflow node activations and side
+questions are isolated from each other (workflow retries keep the same
+``invocation_id`` and retain access). On older hosts without those fields,
+concurrent builds sharing the same session and profile name share that owner
+scope and must pass explicit ``browser_id`` values (or use distinct profiles /
+``max_concurrency: 1``).
 The adapter never imports iCode beyond ``chrys.extensions``; the core itself does
 not import iCode at all.
 
@@ -136,7 +140,7 @@ class _Browser:
     session: BrowserSession | BrokerSession
     owner_session: str | None
     owner_agent: str
-    owner_build: str | None = None
+    owner_scope: str | None = None
     slot: int = 0
     url: str = ""
     title: str = ""
@@ -161,31 +165,53 @@ def _log_sink(line: str) -> None:
 set_log_sink(_log_sink)
 
 
-def _agent_id(ctx: ToolContext) -> str | None:
-    """The host's per-build id, when it distinguishes builds that share a session and profile."""
-    return getattr(ctx, "agent_id", None)
+def _owner_scope(ctx: ToolContext) -> str | None:
+    """Per-caller / per-invocation isolation key beyond ``(session_id, agent_name)``.
+
+    - Main-agent chat turns (``invocation_type == "turn"`` with ``caller_name``
+      matching ``agent_name``) return ``None`` so the main agent keeps one
+      stable profile/journal key and reuses open browsers across turns.
+    - Non-turn invocations (``sub_agent``, ``workflow_node``, ``side_question``)
+      scope by ``(invocation_type, caller_name, invocation_id)`` so distinct
+      sub-agent tools, concurrent calls to the same sub-agent, and separate
+      workflow node activations never share handles, slots, profiles or
+      journals, while workflow retries (same ``invocation_id``) keep access.
+    - Outside an invocation (``invocation_type is None``), a distinct
+      ``caller_name`` (different from ``agent_name``) still isolates builds
+      sharing a profile.
+    """
+    invocation_type = getattr(ctx, "invocation_type", None)
+    caller_name = getattr(ctx, "caller_name", None)
+    invocation_id = getattr(ctx, "invocation_id", None)
+    if invocation_type is not None and invocation_type != "turn":
+        caller = caller_name or ctx.agent_name
+        if invocation_id:
+            return f"{invocation_type}:{caller}:{invocation_id}"
+        return f"{invocation_type}:{caller}"
+    if caller_name and caller_name != ctx.agent_name:
+        return f"caller:{caller_name}"
+    return None
 
 
 def _owner_matches(browser: _Browser, ctx: ToolContext) -> bool:
-    """Match the explicit browser handle to its owning session, agent profile and build."""
+    """Match the explicit browser handle to its owning session, agent profile and scope."""
     return (
         browser.owner_session == ctx.session_id
         and browser.owner_agent == ctx.agent_name
-        and browser.owner_build == _agent_id(ctx)
+        and browser.owner_scope == _owner_scope(ctx)
     )
 
 
 def _owner_key(ctx: ToolContext) -> str:
-    """A stable, filesystem-safe key for one agent build's profile and journal.
+    """A stable, filesystem-safe key for one owner scope's profile and journal.
 
-    The host's ``agent_id`` keeps a sub-agent tool or a workflow activation apart
-    from another build that shares its session and profile name; the main agent
-    has none, so its key is unchanged.
+    Main-agent turns have ``_owner_scope(ctx) is None`` so their legacy key
+    ``sha256(f"{session_id or '-'}\\x00{agent_name}")[:16]`` stays unchanged.
     """
     identity = f"{ctx.session_id or '-'}\x00{ctx.agent_name}"
-    agent_id = _agent_id(ctx)
-    if agent_id:
-        identity += f"\x00{agent_id}"
+    scope = _owner_scope(ctx)
+    if scope:
+        identity += f"\x00{scope}"
     return hashlib.sha256(identity.encode()).hexdigest()[:16]
 
 
@@ -446,7 +472,7 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int) -> _Browser:
         session,
         ctx.session_id,
         ctx.agent_name,
-        owner_build=_agent_id(ctx),
+        owner_scope=_owner_scope(ctx),
         slot=slot,
         backend=backend,
         record=record,
