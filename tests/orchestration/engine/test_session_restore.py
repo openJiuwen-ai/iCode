@@ -746,7 +746,6 @@ async def test_new_session_uses_profile_after_transition_permit(monkeypatch: pyt
 
 
 async def test_new_session_keeps_the_approval_mode_chosen_this_launch(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Choosing bypass saves ``auto`` so the next launch is safe; within this launch the choice stands.
     profile = _profile()
     engine = assemble_agent_engine(EventBus(), settings=Settings(default_approval_mode="auto"))
     engine.session.agent_profile = profile

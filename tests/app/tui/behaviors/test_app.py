@@ -18,8 +18,9 @@ from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.i18n import LocaleSwitchStatus
 from chrys.app.tui.notifications import NotificationService
-from chrys.foundation.config.settings import DEFAULT_THEME, Settings
-from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
+from chrys.foundation.config.process_env import freeze_process_env
+from chrys.foundation.config.settings import DEFAULT_THEME, Settings, persist_approval_mode
+from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, load_settings
 from chrys.foundation.config.spec import Source
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import SettingsReload, Warning
@@ -64,6 +65,145 @@ def test_chrys_app_resolves_the_startup_profile_name(
     )
 
     assert app._profile_name == expected_profile
+
+
+@pytest.mark.parametrize("mode", list(ApprovalMode))
+async def test_startup_warns_only_in_bypass_mode(tmp_path: Path, mode: ApprovalMode) -> None:
+    from chrys.orchestration.engine.assembly import assemble_agent_engine
+
+    assert persist_approval_mode(mode.value) is None
+    freeze_process_env()
+    loaded = load_settings()
+    bus = EventBus()
+    engine = assemble_agent_engine(bus, loaded_settings=loaded)
+    app = make_chrys_app(tmp_path, settings=engine.settings, engine=engine, event_bus=bus)
+    async with app.run_test(notifications=True) as pilot:
+        await pilot.pause()
+        warnings = [notice.message for notice in app._notifications if notice.severity == "warning"]
+        assert warnings == (
+            ["Approval mode is bypass. Tool calls will run without asking for approval."]
+            if mode is ApprovalMode.BYPASS
+            else []
+        )
+
+
+async def _approval_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ChrysApp:
+    from chrys.orchestration.engine.assembly import assemble_agent_engine
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+
+    freeze_process_env()
+    bus = EventBus()
+    engine = assemble_agent_engine(bus, loaded_settings=load_settings())
+    await engine.prepare()
+    registry = AgentProfileRegistry()
+    monkeypatch.setattr(registry, "load_all", lambda: None)
+    return ChrysApp(
+        bus,
+        engine,
+        settings_handle=engine.settings_handle,
+        state_store=JsonFileStateStore(tmp_path),
+        agent_registry=registry,
+        gc_freeze_enabled=False,
+    )
+
+
+@pytest.mark.parametrize("scenario", ["saved", "permission-denied", "env-pinned", "invalid-env"])
+async def test_approval_default_in_settings_follows_the_last_successful_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    from textual.widgets import Select
+
+    from chrys.app.tui.screens.settings import SettingsDialog
+
+    env_pinned = scenario in {"env-pinned", "invalid-env"}
+    if env_pinned:
+        monkeypatch.setenv("CHRYS_DEFAULT_APPROVAL_MODE", "invalid" if scenario == "invalid-env" else "auto")
+    app = await _approval_app(tmp_path, monkeypatch)
+
+    def deny_write(*_args, **_kwargs):
+        raise PermissionError("settings write denied")
+
+    async with app.run_test(notifications=True) as pilot:
+        main = app._main_screen
+        assert main is not None
+        if not env_pinned:
+            # F10 can save a new default without changing the active mode or its settings overlay.
+            main._settings_coordinator().schedule_persist({"approval.default_mode": "auto"})
+            assert await main._settings_persistence().flush()
+            assert load_settings().settings.default_approval_mode == "auto"
+        if scenario == "permission-denied":
+            monkeypatch.setattr("chrys.app.tui.screens.main.settings_persistence.persist", deny_write)
+
+        await main._config_actions.set_approval_mode("bypass")
+        main._config_actions.open_settings("safety")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SettingsDialog)
+        row = next(row for row in app.screen.rows() if row.spec.key == "approval.default_mode")
+        assert main.header_approval_mode is ApprovalMode.BYPASS
+        expected = {"saved": "bypass", "permission-denied": "auto", "env-pinned": "auto", "invalid-env": "manual"}[
+            scenario
+        ]
+        selected = row.query_one(Select)
+        assert selected.value == expected
+        assert selected.disabled is env_pinned
+        next_launch = load_settings(manual_reload=True)
+        assert next_launch.settings.default_approval_mode == expected
+        assert next_launch.file_values["default_approval_mode"] == (
+            "auto" if scenario == "permission-denied" else "bypass"
+        )
+
+
+@pytest.mark.parametrize("edit_again", [False, True], ids=["panel-then-command", "panel-command-panel"])
+async def test_approval_writes_follow_the_order_the_user_chose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edit_again: bool
+) -> None:
+    from threading import Event
+
+    from textual.widgets import Select
+
+    from chrys.app.tui.screens.main import settings_persistence
+    from chrys.app.tui.screens.settings import SettingsDialog
+    from chrys.foundation.config.yaml_store import LOCK_TIMEOUT_SECONDS
+    from tests.support.waiting import DEFAULT_WAIT_TIMEOUT
+
+    assert persist_approval_mode("bypass") is None
+    app = await _approval_app(tmp_path, monkeypatch)
+    persist = settings_persistence.persist
+    committed = asyncio.Event()
+    release = Event()
+    loop = asyncio.get_running_loop()
+
+    def hold_receipt(values, *, remove, lock_timeout=LOCK_TIMEOUT_SECONDS):
+        result = persist(values, remove=remove, lock_timeout=lock_timeout)
+        loop.call_soon_threadsafe(committed.set)
+        assert release.wait(DEFAULT_WAIT_TIMEOUT)
+        return result
+
+    monkeypatch.setattr(settings_persistence, "persist", hold_receipt)
+    async with app.run_test() as pilot:
+        main = app._main_screen
+        assert main is not None
+        main._settings_coordinator().schedule_persist({"approval.default_mode": "auto"})
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(main._settings_persistence().flush())
+            try:
+                await asyncio.wait_for(committed.wait(), DEFAULT_WAIT_TIMEOUT)
+                tasks.create_task(main._config_actions.set_approval_mode("manual"), eager_start=True)
+                assert app._engine.approval_mode is ApprovalMode.MANUAL
+                assert main.header_approval_mode is ApprovalMode.MANUAL
+                if edit_again:
+                    main._settings_coordinator().schedule_persist({"approval.default_mode": "auto"})
+            finally:
+                release.set()
+        assert await main._settings_persistence().flush()
+        main._config_actions.open_settings("safety")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsDialog)
+        row = next(row for row in app.screen.rows() if row.spec.key == "approval.default_mode")
+        expected = "auto" if edit_again else "manual"
+        assert main.header_approval_mode is ApprovalMode.MANUAL
+        assert row.query_one(Select).value == load_settings().settings.default_approval_mode == expected
 
 
 @pytest.mark.parametrize(

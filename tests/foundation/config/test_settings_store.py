@@ -358,10 +358,10 @@ def test_persist_rejects_a_value_of_the_wrong_type_with_the_kind_it_expected(con
     assert result.rejected["session.title.auto"].reason is CoerceReason.EXPECTED_BOOL
 
 
-def test_persist_downgrades_bypass_to_auto(config_dir: Path) -> None:
+def test_persist_keeps_bypass(config_dir: Path) -> None:
     result = persist({"approval.default_mode": "bypass"})
     assert result.ok
-    assert result.written == {"approval.default_mode": "auto"}
+    assert result.written == {"approval.default_mode": "bypass"}
 
 
 def test_persist_refuses_unknown_and_runtime_only_keys(config_dir: Path) -> None:

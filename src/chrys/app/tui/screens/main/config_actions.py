@@ -45,6 +45,10 @@ _NO_MAIN_AGENTS = msg(
     "tui.config.agent.no_main_profiles",
     fallback="No main agent profiles available — add one to continue.",
 )
+_UNKNOWN_APPROVAL_MODE = msg(
+    "tui.config.approval.unknown_mode",
+    fallback="Unknown approval mode. Choose manual, auto, or bypass.",
+)
 _CONFIGURATION_UPDATED = msg("tui.config.updated", fallback="Configuration updated")
 
 if TYPE_CHECKING:
@@ -76,7 +80,7 @@ class RuntimeConfigCallbacks:
 def resolve_approval_mode(arg: str, current: ApprovalMode) -> ApprovalMode:
     """Resolve a named mode, or cycle from the currently displayed mode."""
     arg = arg.strip().lower()
-    if arg in ("manual", "auto", "bypass"):
+    if arg:
         return ApprovalMode(arg)
     return {
         ApprovalMode.MANUAL: ApprovalMode.AUTO,
@@ -487,12 +491,10 @@ class RuntimeConfigController:
 
         The engine applies the mode to chat and workflow execution for the whole launch.
         """
-        target = resolve_approval_mode(arg, self._state.runtime.approval_mode)
-        await self._services.bus.publish(SetApprovalMode(mode=target.value))
-        # The engine persists this as the global default and rewrites bypass to
-        # auto on the way to disk (a per-launch mode is never saved); the panel
-        # projects the saved value, so tell it what was written.
-        self._callbacks.settings_coordinator().note_external_write(
-            "approval.default_mode",
-            ApprovalMode.AUTO.value if target is ApprovalMode.BYPASS else target.value,
-        )
+
+        try:
+            target = resolve_approval_mode(arg, self._state.runtime.approval_mode)
+        except ValueError:
+            self._view.notify(_UNKNOWN_APPROVAL_MODE.bind(), title=_SETTINGS_TITLE.bind(), severity="warning")
+            return
+        await self._services.bus.publish(SetApprovalMode(mode=target.value, persist="frontend"))

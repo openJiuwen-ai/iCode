@@ -6069,6 +6069,12 @@ msgstr "智能体运行时无法切换智能体"
 msgid "tui.config.agent.switched"
 msgstr "已切换到 {label}"
 
+#. English: Unknown approval mode. Choose manual, auto, or bypass.
+#. chrys-meta={"fingerprint":"844a5d2ff3ce633001be07f061daa8bb7d581aeccb7961248f57a78b05d5dfd6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/config_actions.py
+msgid "tui.config.approval.unknown_mode"
+msgstr "未知审批模式。请选择 manual、auto 或 bypass。"
+
 #. English: Cannot open model config while agent is loading
 #. chrys-meta={"fingerprint":"2823e1f0f032aa6b9060a13a0d4fbb84c3ea8c554ec47a810d34f36ca9faf77a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/config_actions.py
@@ -11943,13 +11949,12 @@ msgstr "每天启动时最多查询一次最新版本，并显示在欢迎页上
 msgid "tui.settings.hint.approval.auto_review"
 msgstr "只在自动模式下生效，默认直接审查。直接审查对操作作整体判断；逐项风险检查按固定清单检查风险，发现风险时请你确认。"
 
-#. English: Approval mode at the next launch; /approval changes both the
-#. current session and this default. /approval bypass applies to the current
-#. launch only and saves auto.
-#. chrys-meta={"fingerprint":"3ef1c3ca6c4970c15e2fd564c9f4d92a04e52329f560cedba67db55c92ba2d87","multiline":false,"placeholders":[]}
+#. English: Approval mode for the next launch. Use /approval to change both the
+#. current mode and this default.
+#. chrys-meta={"fingerprint":"794626fdf8eca0973472d72f1ee7b7fd9535d7a46d5457d97bd613c127990a7f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.default_mode"
-msgstr "下次启动时的审批模式；/approval 会同时更改当前会话和此默认值。/approval bypass 仅作用于本次启动，并保存为 auto。"
+msgstr "下次启动时使用的审批模式。使用 /approval 可同时更改当前模式和此默认值。"
 
 #. English: In auto mode, calls the approval judge approves run without a
 #. dialog; the dialog opens only when a call is flagged or cannot be evaluated.
@@ -13020,6 +13025,13 @@ msgstr "消息"
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
 msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令"
+
+#. English: Approval mode is bypass. Tool calls will run without asking for
+#. approval.
+#. chrys-meta={"fingerprint":"3baad6a4b258a12db0dc21ca9cc4887adddb70b9827239a5f03763d9e258ac37","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.startup.approval.bypass"
+msgstr "当前审批模式为 bypass，工具调用将跳过审批。"
 
 #. English: Session {session_id} is open in another window or process.
 #. chrys-meta={"fingerprint":"daee48a4ab9abc7fe13f522d94575980593b174a8bd046657c75737ba30de091","multiline":false,"placeholders":["session_id"]}

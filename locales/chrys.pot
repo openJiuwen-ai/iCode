@@ -6019,6 +6019,12 @@ msgstr ""
 msgid "tui.config.agent.switched"
 msgstr ""
 
+#. English: Unknown approval mode. Choose manual, auto, or bypass.
+#. chrys-meta={"fingerprint":"844a5d2ff3ce633001be07f061daa8bb7d581aeccb7961248f57a78b05d5dfd6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/config_actions.py
+msgid "tui.config.approval.unknown_mode"
+msgstr ""
+
 #. English: Cannot open model config while agent is loading
 #. chrys-meta={"fingerprint":"2823e1f0f032aa6b9060a13a0d4fbb84c3ea8c554ec47a810d34f36ca9faf77a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/config_actions.py
@@ -11728,10 +11734,9 @@ msgstr ""
 msgid "tui.settings.hint.approval.auto_review"
 msgstr ""
 
-#. English: Approval mode at the next launch; /approval changes both the
-#. current session and this default. /approval bypass applies to the current
-#. launch only and saves auto.
-#. chrys-meta={"fingerprint":"3ef1c3ca6c4970c15e2fd564c9f4d92a04e52329f560cedba67db55c92ba2d87","multiline":false,"placeholders":[]}
+#. English: Approval mode for the next launch. Use /approval to change both the
+#. current mode and this default.
+#. chrys-meta={"fingerprint":"794626fdf8eca0973472d72f1ee7b7fd9535d7a46d5457d97bd613c127990a7f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.default_mode"
 msgstr ""
@@ -12810,6 +12815,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"997389a23bb77d18bc898490f75dd781e2f91effe2bdd38f95566f833ac9ef9e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
+msgstr ""
+
+#. English: Approval mode is bypass. Tool calls will run without asking for
+#. approval.
+#. chrys-meta={"fingerprint":"3baad6a4b258a12db0dc21ca9cc4887adddb70b9827239a5f03763d9e258ac37","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.startup.approval.bypass"
 msgstr ""
 
 #. English: Session {session_id} is open in another window or process.

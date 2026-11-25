@@ -852,8 +852,7 @@ ACP has a native config mechanism (`config_options` on `session/new`,
 - **Defaults vs. live state.** Keys like `default_agent` / `default_approval_mode`
   are defaults for the next TUI launch, not live controls: an ACP server's new
   sessions start with the `--agent` and `--approval` it was launched with.
-  `default_approval_mode=bypass` is downgraded to `auto` by the settings store's
-  own `persist` so a later launch never starts in unattended approval.
+  A TUI launched in `bypass` mode shows a warning.
 - **Type.** ACP config options are `select` / `boolean` only;
   `rollback_snapshots_keep` is an integer and several keys are free identifiers.
   Values are judged by the same coercer that will read them back, *before* the

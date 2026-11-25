@@ -80,7 +80,7 @@ llm:
 | `workdir.hooks_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.chrys/hooks` 中的 Hooks，必须在用户设置中启用，不影响用户级 Hooks |
 | `workdir.skills_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.agents/skills` 中的 Skills，必须在用户设置中启用；智能体自身的“从工作文件夹加载 Skills”选项也需保持开启 |
 
-手动在 YAML 或环境变量中将默认审批模式设为 `bypass`，下次按此默认值启动时就会跳过审批。在 TUI 中通过 `/approval` 切换到 `bypass` 时，iCode 会将默认模式保存为 `auto`；TUI 设置窗口不提供 `bypass`。
+使用 `/approval bypass` 可切换到绕过模式并将其保存为默认值。如果设置了 `CHRYS_DEFAULT_APPROVAL_MODE`，启动时优先使用该环境变量的值，设置面板会将其显示为只读。每次 TUI 以绕过模式启动时，都会提醒你工具调用将跳过审批。
 
 这三项是用户级开关，分别控制各会话主工作目录中的设置、Hooks 和 Skills 是否加载，默认均关闭。工作目录中有未开启的项时，iCode 会弹出提示，说明需要开启哪个设置。Hooks 是 iCode 在特定事件时运行的外部命令，编写与配置见[配置和编写 Hooks](../guides/extensions/hooks.md)；Skills 见[安装和使用 Skills](../guides/extensions/skills.md)。
 

@@ -79,7 +79,7 @@ async def test_workflow_shares_the_launch_approval_badge_and_its_errors_stay_sco
         async with capture_event_sequence(bus, events.SetApprovalMode) as changes:
             await main._config_actions.start_approval_mode_change("bypass").wait()
             assert len(changes) == 1
-            assert (changes[0].mode, changes[0].session_id, changes[0].persist) == ("bypass", None, True)
+            assert (changes[0].mode, changes[0].session_id, changes[0].persist) == ("bypass", None, "frontend")
             # The echo updates the shared badge without sending another mode request.
             await bus.publish(events.ApprovalModeUpdated(mode="bypass", session_id="chat"))
             assert len(changes) == 1
@@ -143,7 +143,7 @@ async def test_the_badge_keeps_the_launch_mode_while_workflow_drafts_carry_only_
             await pilot.press("enter")
             await wait_for(lambda: app.screen is main and len(changes) == 1, pilot=pilot)
             # The choice goes to the chat session, which carries it for the launch, saved default included.
-            assert (changes[0].mode, changes[0].session_id, changes[0].persist) == (mode.value, None, True)
+            assert (changes[0].mode, changes[0].session_id, changes[0].persist) == (mode.value, None, "frontend")
         await bus.publish(events.ApprovalModeUpdated(mode=mode.value, session_id="chat"))
         assert main.header_approval_mode is mode
         if not selected:

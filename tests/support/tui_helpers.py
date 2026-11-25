@@ -353,6 +353,9 @@ def make_backend_handler(
             screen, "_handle_approval_response", request_id, approved, reason, modified_args, remember_choice
         )
 
+    async def save_approval_default(_mode: str) -> None:
+        pass
+
     def post_gc_message(message: object) -> None:
         messages = getattr(screen, "_gc_messages", None)
         if isinstance(messages, list):
@@ -398,6 +401,8 @@ def make_backend_handler(
             refresh_notification_settings=lambda: _call_screen_hook(screen, "_refresh_notification_settings"),
             refresh_trajectory_verify_commands=lambda: _call_screen_hook(screen, "_refresh_trajectory_verify_commands"),
             settings_reloaded=lambda: None,
+            approval_default_saved=lambda _mode: None,
+            save_approval_default=save_approval_default,
         ),
         live_diff=live_diff,
     )

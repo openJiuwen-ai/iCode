@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from chrys.foundation.config.coercion import Coercer, CoerceStatus
+from chrys.foundation.config.process_env import freeze_process_env
 from chrys.foundation.config.settings import (
     DEFAULT_AGENT_PROFILE,
     DEFAULT_APPROVAL_MODE,
@@ -862,19 +863,13 @@ def test_persist_locale_logs_disk_failure_without_the_value(
 # ── persist_approval_mode ──────────────────────────────────────────────
 
 
-def test_persist_writes_manual_and_auto(fake_config_dir: Path) -> None:
-    persist_approval_mode("manual")
-    assert _read_setting(fake_config_dir, "approval.default_mode") == "manual"
-
-    persist_approval_mode("auto")
-    assert _read_setting(fake_config_dir, "approval.default_mode") == "auto"
+def test_persist_remembers_the_last_approval_mode(fake_config_dir: Path) -> None:
+    freeze_process_env()
+    for mode in ("bypass", "auto", "bypass", "manual"):
+        assert persist_approval_mode(mode) is None
+        assert _read_setting(fake_config_dir, "approval.default_mode") == mode
+        assert load_settings().settings.default_approval_mode == mode
     assert "CHRYS_DEFAULT_APPROVAL_MODE" not in os.environ
-
-
-def test_persist_downgrades_bypass_to_auto(fake_config_dir: Path) -> None:
-    """BYPASS must never survive to next startup — written as AUTO."""
-    persist_approval_mode("bypass")
-    assert _read_setting(fake_config_dir, "approval.default_mode") == "auto"
 
 
 def test_persist_ignores_invalid_mode(fake_config_dir: Path, caplog: pytest.LogCaptureFixture) -> None:

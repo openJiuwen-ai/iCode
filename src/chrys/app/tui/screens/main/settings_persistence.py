@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from chrys.foundation.config.settings_store import PersistResult, persist
+from chrys.foundation.util.once_close import finish_close
 
 SETTINGS_SAVE_DELAY_SECONDS = 0.25
 SETTINGS_FLUSH_LOCK_TIMEOUT_SECONDS = 0.1
@@ -51,6 +52,7 @@ class SettingsPersistenceQueue:
         self._pending_removals: dict[str, None] = {}
         self.failures = 0
         self._flush_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
         self.save_generation = 0
         self.save_task: asyncio.Task[None] | None = None
         self.save_persisting = False
@@ -85,7 +87,10 @@ class SettingsPersistenceQueue:
         failures = self.failures
         async with self._flush_lock:
             await self._flush_pending(notify_on_failure=notify_on_failure)
-        return failures == self.failures
+            # An immediate write may already own the batch while the debounce
+            # task is idle. A reload must wait for that write and its receipt.
+            async with self._write_lock:
+                return failures == self.failures
 
     async def _flush_pending(self, *, notify_on_failure: bool) -> None:
         """Force any pending debounced write to complete immediately.
@@ -115,15 +120,37 @@ class SettingsPersistenceQueue:
         if patch is None:
             return
         self.flush_requested = False
-        values, removals = patch
-        await self.persist_patch(
-            values,
-            removals,
+        await self._write_in_order(
+            patch,
             lock_timeout=self._flush_lock_timeout_seconds,
             notify_on_failure=notify_on_failure,
         )
 
-    async def persist_patch(
+    async def persist_immediately(self, values: Mapping[str, Any]) -> None:
+        """Write a confirmed choice after older edits, in its own transaction."""
+        self.save_generation += 1
+        await self._write_in_order(self._take_pending(), immediate_values=values)
+
+    async def _write_in_order(
+        self,
+        patch: tuple[dict[str, Any], tuple[str, ...]] | None,
+        *,
+        immediate_values: Mapping[str, Any] | None = None,
+        lock_timeout: float | None = None,
+        notify_on_failure: bool = True,
+    ) -> None:
+        async def commit() -> None:
+            async with self._write_lock:
+                if patch is not None:
+                    await self._persist_patch(*patch, lock_timeout=lock_timeout, notify_on_failure=notify_on_failure)
+                if immediate_values is not None:
+                    await self._persist_patch(immediate_values, ())
+
+        # Reserve the lock in edit order. Once a patch leaves the pending map,
+        # its write and receipt must finish even if its UI worker is cancelled.
+        await finish_close(asyncio.create_task(commit(), eager_start=True))
+
+    async def _persist_patch(
         self,
         values: Mapping[str, Any],
         removals: Iterable[str],
@@ -175,10 +202,9 @@ class SettingsPersistenceQueue:
             if patch is None:
                 return
 
-            values, removals = patch
             self.save_persisting = True
             try:
-                await self.persist_patch(values, removals)
+                await self._write_in_order(patch)
             finally:
                 self.save_persisting = False
             if not self._pending_values and not self._pending_removals:

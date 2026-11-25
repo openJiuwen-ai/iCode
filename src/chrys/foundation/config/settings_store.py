@@ -241,6 +241,19 @@ class LoadedSettings:
             sealed_keys=self.sealed_keys - overlaid,
         )
 
+    def sealing_warning(self, key: str) -> SettingsWarning | None:
+        """The rejection that forced this setting to its built-in default."""
+        if key in self.sealed_keys:
+            return next(
+                (warning for warning in reversed(self.warnings) if warning.key == key and warning.rejected), None
+            )
+        return None
+
+    def controlling_source_for(self, key: str) -> SettingOrigin:
+        """The layer a file edit must supersede, including the source of an invalid value."""
+        warning = self.sealing_warning(key)
+        return warning.origin if warning is not None else self.source_for(key)
+
     def source_for(self, key: str) -> SettingOrigin:
         """Where *key*'s effective value came from, including which file.
 
@@ -478,13 +491,19 @@ class SettingsHandle:
         return dict(self._confirmed)
 
     def persist_approval_default(self, mode: str, *, persist: Callable[[str], Exception | None]) -> str:
-        """Persist a global choice and mirror its safe launch default in the runtime overlay."""
+        """Persist a global choice and mirror it in the runtime overlay."""
         failure = persist(mode)
         if failure is not None:
             raise failure
-        default = "auto" if mode == "bypass" else mode
-        self.override(default_approval_mode=default)
-        return default
+        self.note_approval_default_written(mode)
+        return mode
+
+    def note_approval_default_written(self, mode: str) -> None:
+        """Reflect a successful file write until a manual reload reads a newer default."""
+        if self.base.controlling_source_for("approval.default_mode").layer is Source.ENV:
+            return
+        self.override(default_approval_mode=mode)
+        self._confirmed["default_approval_mode"] = self._runtime_versions["default_approval_mode"]
 
     def _overtaken_by(self, loaded: LoadedSettings) -> dict[str, int]:
         """The confirmed choices *loaded* moved past: a hand edit or removal, and not a value it refused.
@@ -1168,8 +1187,6 @@ def _pinned(entry: SettingSpec, value: Any) -> Coerced:
     return coerced
 
 
-_APPROVAL_MODE_KEY: Final = "approval.default_mode"
-
 _KIND_REASONS: Final = {
     Kind.BOOL: CoerceReason.EXPECTED_BOOL,
     Kind.INT: CoerceReason.EXPECTED_INT,
@@ -1220,10 +1237,6 @@ def persist(
     An unknown key or a runtime-only (``persist=False``) key raises instead of
     rejecting: both are our-code bugs no user input can produce, exactly like
     a bad pin.
-
-    ``approval.default_mode`` is the one key with a store-time rule of its
-    own: ``bypass`` is a per-launch decision, so persisting it downgrades to
-    ``auto`` rather than arming every future session.
     """
     specs = specs_by_field(Settings)
     by_key = {entry.key: entry for entry in specs.values()}
@@ -1257,9 +1270,6 @@ def persist(
             rejected[key] = coerced
             continue
         written[key] = coerced.value
-
-    if written.get(_APPROVAL_MODE_KEY) == "bypass":
-        written[_APPROVAL_MODE_KEY] = "auto"
 
     if rejected:
         return PersistResult(written={}, rejected=rejected)

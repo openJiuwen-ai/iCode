@@ -8,7 +8,7 @@ import contextlib
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -251,6 +251,8 @@ class BackendEventCallbacks:
     refresh_notification_settings: Callable[[], None]
     refresh_trajectory_verify_commands: Callable[[], None]
     settings_reloaded: Callable[[], None]
+    approval_default_saved: Callable[[str], None]
+    save_approval_default: Callable[[str], Awaitable[None]]
     follow_manual_reload: Callable[[], None] = lambda: None
     accept_approval_update: Callable[[ApprovalModeUpdated], bool] = lambda _event: True
     route_session_error: Callable[[Error], bool] = lambda _event: False
@@ -1746,13 +1748,19 @@ class BackendEventHandler:
 
     async def on_approval_mode_updated(self, event: ApprovalModeUpdated) -> None:
         """Sync the header badge + local cache from the backend's mode."""
-        if not self._callbacks.accept_approval_update(event):
-            return
-        s = self
+        if event.saved_as_default:
+            self._callbacks.approval_default_saved(event.mode)
         try:
             mode = ApprovalMode(event.mode)
         except ValueError:
             return
+        if self._callbacks.accept_approval_update(event):
+            self._show_approval_mode(mode)
+        if event.save_in_frontend:
+            await self._callbacks.save_approval_default(mode.value)
+
+    def _show_approval_mode(self, mode: ApprovalMode) -> None:
+        s = self
         changed = s.approval_mode != mode
         s.approval_mode = mode
         self._ui().set_header_approval_mode(mode)
