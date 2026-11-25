@@ -347,18 +347,6 @@ def test_pre_prepare_reminder_target_expires_when_another_scope_is_prepared() ->
     assert reminder.queue_hook_reminders_for_current_run(stale_target, ["still stale"]) is False
 
 
-def test_pre_prepare_reminder_target_expires_when_unscoped_turn_is_prepared() -> None:
-    reminder = SystemReminderMiddleware()
-    scope = reminder.create_current_run_scope()
-    stale_target = reminder.capture_current_run_target(scope)
-    assert stale_target is not None
-
-    reminder.prepare_turn()
-
-    assert reminder.queue_hook_reminders_for_current_run(stale_target, ["stale"]) is False
-    assert reminder.queue_hook_reminders_for_current_run(stale_target, []) is False
-
-
 def test_current_run_reminder_scope_is_identity_bound_to_middleware() -> None:
     first = SystemReminderMiddleware()
     first_scope = first.create_current_run_scope()

@@ -777,13 +777,13 @@ def test_executor_retry_snapshot_restores_service_session_id() -> None:
     assert restored_anchor_snapshots == [anchors_snapshot]
 
 
-def test_executor_retry_snapshot_restores_existing_pre_output_floor() -> None:
+def test_retry_rollback_restores_pre_compression_history_and_pre_output_floor() -> None:
     executor = object.__new__(TurnBindings)
     session = AgentSession(session_id="local", service_session_id="resp_original")
     session.state["chrys_history"] = {
-        "messages": [Message("user", ["before retry"])],
+        "messages": [Message("user", ["first"]), Message("assistant", ["second"])],
         "compressed_msgs": [],
-        PRE_OUTPUT_HISTORY_LEN_STATE_KEY: 1,
+        PRE_OUTPUT_HISTORY_LEN_STATE_KEY: 2,
     }
     executor._session = session
     executor.tool_events = ToolEventMiddleware(EventBus(), origin=InvocationOrigin("turn", "", "turn-test", None))
@@ -803,11 +803,18 @@ def test_executor_retry_snapshot_restores_existing_pre_output_floor() -> None:
         history_state=lambda: session.state.get("chrys_history", {}),
     )
     snapshot = rollback.snapshot()
-    session.state["chrys_history"][PRE_OUTPUT_HISTORY_LEN_STATE_KEY] = 99
+    history = session.state["chrys_history"]
+    marker = CompressibleHistoryProvider.insert_marker(history, 1)
+    CompressibleHistoryProvider.compress(history, marker, "compressed summary")
+    assert len(history["messages"]) == len(history["compressed_msgs"]) == 1
+    history[PRE_OUTPUT_HISTORY_LEN_STATE_KEY] = 99
 
     rollback.restore(snapshot)
 
-    assert session.state["chrys_history"][PRE_OUTPUT_HISTORY_LEN_STATE_KEY] == 1
+    restored = session.state["chrys_history"]
+    assert [message.text for message in restored["messages"]] == ["first", "second"]
+    assert restored["compressed_msgs"] == []
+    assert restored[PRE_OUTPUT_HISTORY_LEN_STATE_KEY] == 2
     assert restored_approval_snapshots == [approval_snapshot]
 
 

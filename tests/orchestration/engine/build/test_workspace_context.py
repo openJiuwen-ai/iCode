@@ -38,8 +38,8 @@ from tests.support.workspace_registry import make_workdirs
 from tests.support.workspace_registry import workspace_store as workspace_store
 
 
-async def _build(probe, workspace, project):
-    plan = plan_workspace(project or workspace)
+async def _build(probe, workspace):
+    plan = plan_workspace(workspace)
     return await builder.build_agent(
         profile=probe.profile,
         settings=Settings(model_profile="mock-model", workspace_change_notice=False),
@@ -57,21 +57,15 @@ async def _build(probe, workspace, project):
     )
 
 
-@pytest.mark.parametrize("with_extra", [False, True])
-async def test_real_main_and_child_share_access_roots_but_only_main_gets_workspace_index(
-    tmp_path, monkeypatch, with_extra
-):
-    outside, extra, primary, related = (tmp_path / name for name in ("outside", "extra", "primary", "related"))
-    for path in (outside, extra, primary, related):
+async def test_real_main_and_child_share_access_roots_but_only_main_gets_workspace_index(tmp_path, monkeypatch):
+    primary, related = tmp_path / "primary", tmp_path / "related"
+    for path in (primary, related):
         path.mkdir()
         (path / ".git").mkdir()
     (related / "AGENTS.md").write_text("Related instructions must be read explicitly.", encoding="utf-8")
     registry = WorkspaceRegistry(tmp_path / "workspaces.json")
     selected = registry.create("Selected", str(primary), (str(related), str(tmp_path / "missing")))
     project = registry.snapshot().workspace(selected.id)
-    # The second extra is also a workspace folder and retains its explicit label.
-    extras = [WorkingDir(str(extra), label="ext"), WorkingDir(str(primary), label="Explicit")]
-    workspace = Workspace(str(outside), extras if with_extra else [])
     probe = InitializationBuild(tmp_path, 1, [])
     probe.install(monkeypatch)
     install_file_extension(
@@ -95,7 +89,7 @@ async def test_real_main_and_child_share_access_roots_but_only_main_gets_workspa
     capture_async_results(
         monkeypatch, children, "create_approval", lambda result, *args: child_approvals.append(result)
     )
-    result = await _build(probe, workspace, project)
+    result = await _build(probe, project)
     try:
         expected = [str(path.resolve()) for path in (primary, related)]
         missing = tmp_path / "missing"
@@ -126,8 +120,6 @@ async def test_real_main_and_child_share_access_roots_but_only_main_gets_workspa
             f"    Instructions for this folder: {related / 'AGENTS.md'}",
             "    Read them before working in this folder; they apply only inside it.",
         ]
-        assert f"    - {extra}" not in reminder
-        assert f"    - {primary} [Explicit]" not in reminder
         assert f"    - {related}" not in reminder
         assert " [Selected]" not in reminder
         assert sum(line == f"  - {primary} (primary)" for line in lines) == 1
@@ -192,7 +184,7 @@ async def test_registered_reference_paths_reach_model_and_file_tools(tmp_path, m
     capture_async_results(
         monkeypatch, packs, "assemble_tools", lambda result, *_: tools.update((t.name, t) for t in result.tools)
     )
-    result = await _build(probe, Workspace(str(primary)), registry.snapshot().workspace(selected.id))
+    result = await _build(probe, registry.snapshot().workspace(selected.id))
     try:
         listed = await tools["list_workspace_dirs"].invoke(arguments={}, skip_parsing=True)
         reminder = RuntimeEnvSource(result.runtime, shell_tool_enabled=False, workspace_section=True).snapshot()
@@ -264,7 +256,7 @@ async def test_reference_path_names_the_directory_the_file_tools_read(tmp_path, 
     capture_async_results(
         monkeypatch, packs, "assemble_tools", lambda result, *_: tools.update((t.name, t) for t in result.tools)
     )
-    result = await _build(probe, Workspace(str(primary)), registry.snapshot().workspace(selected.id))
+    result = await _build(probe, registry.snapshot().workspace(selected.id))
     try:
         listed = await tools["list_workspace_dirs"].invoke(arguments={}, skip_parsing=True)
         (listed_root,) = [line.removesuffix(" ok").strip() for line in listed.splitlines()[1:] if line.endswith(" ok")]
