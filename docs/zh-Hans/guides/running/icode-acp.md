@@ -2,7 +2,7 @@
 
 支持智能体客户端协议（Agent Client Protocol，ACP）的编辑器或开发工具，可以连接 iCode，在客户端中使用 iCode 智能体。ACP 客户端提供交互界面，iCode 通过标准输入输出（stdio）与客户端通信，负责运行智能体、执行工具并保存会话。
 
-开始前，请先安装 iCode，并至少配置一个模型。有关准备步骤，参阅[开始使用 iCode](../../start/getting-started.md)和[配置模型](../configuration/models.md)。
+连接前请先安装 iCode，并在首次发送消息前至少配置一个模型。有关准备步骤，参阅[开始使用 iCode](../../start/getting-started.md)和[配置模型](../configuration/models.md)。
 
 ## 连接 iCode
 
@@ -20,6 +20,8 @@ icode acp
 ```
 
 如果客户端只提供一个启动命令字段，则填写完整命令 `icode acp`。
+
+如果客户端提供**获取模型**按钮，可以填写供应商连接信息，在保存模型配置或创建会话前查询模型 ID。对于允许匿名访问的服务，API 密钥可以留空。也可以手动填写模型 ID。
 
 保存配置后，按以下步骤验证连接：
 

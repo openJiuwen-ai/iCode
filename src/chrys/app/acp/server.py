@@ -137,6 +137,7 @@ ACP_EXTENSION_METHODS: tuple[str, ...] = (
     "profiles/models/read",
     "profiles/models/write",
     "profiles/models/delete",
+    "providers/models/list",
     "mcp/test",
     "mcp/list",
     "skills/list",
@@ -1179,6 +1180,14 @@ class ChrysAcpServer:
                 return self._manager.delete_model_profile(profile_id)
             except Exception as exc:
                 raise _request_error(exc) from exc
+        if method == "providers/models/list":
+            from chrys.app.acp.model_discovery import list_provider_models
+
+            return await list_provider_models(
+                _dict_param(params, "connection"),
+                _optional_string_param(params, "profileId"),
+                self._manager.get_model_profile,
+            )
         if method == "mcp/test":
             config = _dict_param(params, "server")
             try:
