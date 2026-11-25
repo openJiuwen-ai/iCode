@@ -36,6 +36,7 @@ import hashlib
 import logging
 import os
 import secrets
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -147,6 +148,7 @@ class _Browser:
     backend: str = ""
     record: registry.ManifestRecord | None = None
     manifest: Path | None = None
+    ephemeral_state_dir: Path | None = None
     visited_origins: list[str] = field(default_factory=list)
     blocked_origins: list[str] = field(default_factory=list)
     screenshots: list[str] = field(default_factory=list)
@@ -186,11 +188,18 @@ def _owner_scope(ctx: ToolContext) -> str | None:
     if invocation_type is not None and invocation_type != "turn":
         caller = caller_name or ctx.agent_name
         if invocation_id:
-            return f"{invocation_type}:{caller}:{invocation_id}"
-        return f"{invocation_type}:{caller}"
+            return f"{invocation_type}\x00{caller}\x00{invocation_id}"
+        return f"{invocation_type}\x00{caller}"
     if caller_name and caller_name != ctx.agent_name:
-        return f"caller:{caller_name}"
+        return f"caller\x00{caller_name}"
     return None
+
+
+def _is_ephemeral_invocation(ctx: ToolContext) -> bool:
+    """Whether *ctx* belongs to a one-shot invocation whose Owned profile dir cannot be reused after close."""
+    invocation_type = getattr(ctx, "invocation_type", None)
+    invocation_id = getattr(ctx, "invocation_id", None)
+    return invocation_type is not None and invocation_type != "turn" and bool(invocation_id)
 
 
 def _owner_matches(browser: _Browser, ctx: ToolContext) -> bool:
@@ -477,6 +486,7 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int) -> _Browser:
         backend=backend,
         record=record,
         manifest=manifest,
+        ephemeral_state_dir=state_dir if backend == "owned" and _is_ephemeral_invocation(ctx) else None,
     )
     _browsers[browser_id] = browser
     _save_record(manifest, record)
@@ -1299,6 +1309,13 @@ async def browser_screenshot(
     )
 
 
+def _cleanup_ephemeral_dir(state_dir: Path) -> None:
+    """Remove an ephemeral Owned slot directory and its parent owner folder if empty."""
+    shutil.rmtree(state_dir, ignore_errors=True)
+    with contextlib.suppress(OSError):
+        state_dir.parent.rmdir()
+
+
 async def _close_and_forget(browser: _Browser) -> None:
     """Close the core session, then drop the handle and its recorded identity.
 
@@ -1308,6 +1325,8 @@ async def _close_and_forget(browser: _Browser) -> None:
     await browser.session.aclose()
     _browsers.pop(browser.id, None)
     _drop_record(browser)
+    if browser.ephemeral_state_dir is not None:
+        await asyncio.to_thread(_cleanup_ephemeral_dir, browser.ephemeral_state_dir)
 
 
 def _drop_record(browser: _Browser) -> None:

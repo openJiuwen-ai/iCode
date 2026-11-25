@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from chrys.extensions import ToolCall, ToolContext, ToolError, TurnContext
+from chrys.extensions import InvocationType, ToolCall, ToolContext, ToolError, TurnContext
 
 from icode_browser_use import registry
 import icode_browser_use.extension as ext
@@ -55,7 +55,7 @@ def ctx(
     session: str = "s1",
     with_session_dir: bool = False,
     caller_name: str | None = None,
-    invocation_type: str | None = None,
+    invocation_type: InvocationType | None = None,
     invocation_id: str | None = None,
 ) -> ToolContext:
     return ToolContext.for_testing(
@@ -65,7 +65,7 @@ def ctx(
         agent_name=agent,
         session_id=session,
         caller_name=caller_name,
-        invocation_type=invocation_type,  # type: ignore[arg-type]
+        invocation_type=invocation_type,
         invocation_id=invocation_id,
     )
 
@@ -422,6 +422,50 @@ def test_the_main_agent_keeps_its_existing_owner_key_across_turns(tmp_path, monk
 
     opened = ext._open(turn1)
     assert opened.id in asyncio.run(ext.browser_list(turn2))
+
+
+def test_owner_scope_does_not_collide_on_colons(tmp_path) -> None:
+    first = ctx(tmp_path, agent="Browser", caller_name="a:b", invocation_type="sub_agent", invocation_id="c")
+    second = ctx(tmp_path, agent="Browser", caller_name="a", invocation_type="sub_agent", invocation_id="b:c")
+    assert ext._owner_key(first) != ext._owner_key(second)
+
+
+def test_ephemeral_sub_agent_close_reclaims_owned_state_dir_while_main_agent_keeps_it(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(state_root))
+    monkeypatch.setenv("ICODE_BROWSER_ALLOWED_DOMAINS", "example.com")
+
+    sub_ctx = ctx(
+        tmp_path, agent="Browser", caller_name="Explore", invocation_type="sub_agent", invocation_id="sub-ephemeral-1"
+    )
+    sub_browser = ext._open(sub_ctx)
+    sub_dir = state_root / "agents" / ext._owner_key(sub_ctx) / f"slot-{sub_browser.slot}"
+    (sub_dir / "chrome").mkdir(parents=True, exist_ok=True)
+    (sub_dir / "chrome" / "Preferences").write_text("{}", encoding="utf-8")
+    asyncio.run(ext.browser_close(sub_ctx, sub_browser.id))
+    assert not sub_dir.exists()
+    assert not sub_dir.parent.exists()
+
+    main_ctx = ctx(tmp_path, agent="Code", caller_name="Code", invocation_type="turn", invocation_id="turn-1")
+    main_browser = ext._open(main_ctx)
+    main_dir = state_root / "agents" / ext._owner_key(main_ctx) / f"slot-{main_browser.slot}"
+    (main_dir / "chrome").mkdir(parents=True, exist_ok=True)
+    (main_dir / "chrome" / "Preferences").write_text("{}", encoding="utf-8")
+    asyncio.run(ext.browser_close(main_ctx, main_browser.id))
+    assert (main_dir / "chrome" / "Preferences").is_file()
+
+    # Non-owned backends (attach) must never delete shared state_root.
+    monkeypatch.setenv("ICODE_BROWSER_CDP_URL", "ws://existing")
+    attach_sentinel = state_root / "shared-keep.txt"
+    attach_sentinel.write_text("keep", encoding="utf-8")
+    attach_ctx = ctx(
+        tmp_path, agent="Browser", caller_name="Explore", invocation_type="sub_agent", invocation_id="sub-attach-1"
+    )
+    attach_browser = ext._open(attach_ctx)
+    asyncio.run(ext.browser_close(attach_ctx, attach_browser.id))
+    assert attach_sentinel.is_file()
 
 
 def test_same_owner_concurrent_open_allocates_distinct_slots(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
