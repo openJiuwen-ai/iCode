@@ -170,14 +170,38 @@ def _parse_text_result(raw: Any) -> tuple[str, str, bool | None]:
 
 _OBSERVE_OPTIONS = "{subtree:true, childList:true, characterData:true, attributes:true}"
 
+_OBSERVE_SHADOWS_JS = (
+    "const observeTree=(obs,seen,root)=>{"
+    " const stack=[root];"
+    " while(stack.length){"
+    "  const cur=stack.pop();"
+    "  if(!cur) continue;"
+    "  if(!seen.has(cur)){"
+    "   seen.add(cur);"
+    f"   try{{ obs.observe(cur, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
+    "  }"
+    "  if(cur.shadowRoot && !seen.has(cur.shadowRoot)) stack.push(cur.shadowRoot);"
+    "  if(cur.querySelectorAll){"
+    "   for(const el of cur.querySelectorAll('*')){"
+    "    if(el.shadowRoot && !seen.has(el.shadowRoot)) stack.push(el.shadowRoot);"
+    "   }"
+    "  }"
+    " }"
+    "};"
+)
+
 _STABLE_PAGE_EXPR = (
-    "(()=>{"
+    f"(()=>{{{_OBSERVE_SHADOWS_JS}"
     " let m=window.__chrys_stable;"
     " if(!m){"
-    "  const obs=new MutationObserver(()=>{m.n++; m.at=performance.now();});"
-    "  m={n:0, at:performance.now(), obs}; window.__chrys_stable=m;"
-    f"  obs.observe(document.documentElement, {_OBSERVE_OPTIONS});"
+    "  const seen=new WeakSet();"
+    "  const obs=new MutationObserver((records)=>{"
+    "   m.n++; m.at=performance.now();"
+    "   for(const r of records){ for(const node of (r.addedNodes||[])) observeTree(obs,seen,node); }"
+    "  });"
+    "  m={n:0, at:performance.now(), obs, seen}; window.__chrys_stable=m;"
     " }"
+    " observeTree(m.obs, m.seen, document.documentElement);"
     " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
     "})()"
 )
@@ -188,17 +212,21 @@ _STABLE_PAGE_CLEANUP_EXPR = (
 )
 
 _STABLE_NODE_FN = (
-    "function(){"
+    f"function(){{{_OBSERVE_SHADOWS_JS}"
     " if(!this || !this.isConnected) return {present:false};"
     " let map=window.__chrys_stable_by_node;"
     " if(!map){map=new WeakMap(); window.__chrys_stable_by_node=map;}"
     " let m=map.get(this);"
     " if(!m){"
-    "  const obs=new MutationObserver(()=>{m.n++; m.at=performance.now();});"
-    "  m={n:0, at:performance.now(), obs}; map.set(this, m);"
-    f"  obs.observe(this, {_OBSERVE_OPTIONS});"
-    f"  if(this.shadowRoot){{ obs.observe(this.shadowRoot, {_OBSERVE_OPTIONS}); }}"
+    "  const seen=new WeakSet();"
+    "  const obs=new MutationObserver((records)=>{"
+    "   m.n++; m.at=performance.now();"
+    "   for(const r of records){ for(const node of (r.addedNodes||[])) observeTree(obs,seen,node); }"
+    "  });"
+    "  m={n:0, at:performance.now(), obs, seen}; map.set(this, m);"
     " }"
+    " observeTree(m.obs, m.seen, this);"
+    " if(this.shadowRoot) observeTree(m.obs, m.seen, this.shadowRoot);"
     " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
     "}"
 )
@@ -804,15 +832,18 @@ async def _run_with_baseline_outcome(
                         if refreshed:
                             refresh_at = time.monotonic()
                     else:
+                        refreshed = False
                         if not object_id:
                             object_id = await _resolve_node(session, entry, deadline) or ""
                     if entry is None:
                         last = f"target={target} not_found"
-                        if condition == "hidden" and _snapshot_matches_epoch(session):
+                        if condition == "hidden" and refreshed and _snapshot_matches_epoch(session):
                             ok, basis = True, "not_found"
                             detail = "目标不在当前快照（不存在按已隐藏处理）；若是笔误请核对目标名"
-                        elif condition == "hidden":
+                        elif condition == "hidden" and not _snapshot_matches_epoch(session):
                             last += "（快照来自旧文档，正在刷新）"
+                        elif condition == "hidden":
+                            last += "（预算不足以刷新最新快照，无法确认目标已隐藏）"
                     elif not object_id:
                         last = f"target={target} gone"
                         if condition == "hidden":

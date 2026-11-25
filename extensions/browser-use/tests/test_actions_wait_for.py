@@ -673,3 +673,28 @@ def test_text_condition_uses_full_text_hit_beyond_preview_limit(deterministic_cl
     node_text = run(node_session, {"condition": "text", "target": "@e1#5", "value": "finished", "timeout_ms": 500})
     assert "status=succeeded" in node_text
     assert "basis=text_match" in node_text
+
+
+def test_hidden_times_out_when_budget_is_too_short_to_refresh_snapshot(monkeypatch, deterministic_clock) -> None:
+    deterministic_clock.step = 0.05
+    orig_monotonic = deterministic_clock.monotonic
+
+    def ticking_monotonic() -> float:
+        # Advance 1 ms on each read so remaining budget falls below _REFRESH_FLOOR_SECONDS (0.1s), matching real wall time.
+        deterministic_clock.now += 0.001
+        return orig_monotonic()
+
+    monkeypatch.setattr(deterministic_clock, "monotonic", ticking_monotonic)
+    session = FakeSession()
+    session.targets = [TargetNotFound("absent")] * 10
+    monkeypatch.setattr(wait_for, "capture_and_register", capture)
+    text = run(session, {"condition": "hidden", "target": "Stop generating", "value": "", "timeout_ms": 100})
+    assert "status=timeout" in text
+    assert "basis=not_found" not in text
+    assert session.captures == 0
+
+
+def test_stable_scripts_observe_open_shadow_roots() -> None:
+    assert "shadowRoot" in wait_for._STABLE_PAGE_EXPR
+    assert "observeTree" in wait_for._STABLE_PAGE_EXPR
+    assert "observeTree" in wait_for._STABLE_NODE_FN

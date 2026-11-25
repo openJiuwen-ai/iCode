@@ -51,9 +51,26 @@ def test_call_value_routes_to_the_child_session() -> None:
 
 def test_oopif_offset_roundtrip() -> None:
     session = BrowserSession(BrowserConfig(allowed_domains=("example.com",)))
+    session.register_oopif("child", "target-child")
     session.set_oopif_offset("child", (10.0, 20.0))
     assert session.oopif_offset("child") == (10.0, 20.0)
     assert session.oopif_offset("missing") == (0.0, 0.0)
+
+
+def test_late_oopif_cache_updates_do_not_reregister_detached_session() -> None:
+    session = BrowserSession(BrowserConfig(allowed_domains=("example.com",)))
+    session.register_oopif("child-1", "target-if-1")
+    session._forget_oopif("child-1")
+    assert session.oopif_sessions == []
+
+    session.mark_oopif_enabled("child-1")
+    session.set_oopif_frame_id("child-1", "frame-1")
+    session.set_oopif_offset("child-1", (12.0, 34.0))
+
+    assert session.oopif_sessions == []
+    assert session.is_oopif_enabled("child-1") is False
+    assert session.oopif_frame_id("child-1") == ""
+    assert session.oopif_offset("child-1") == (0.0, 0.0)
 
 
 def test_ensure_oopif_domains_caches_per_session_and_invalidates_on_detach_or_disconnect() -> None:

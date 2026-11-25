@@ -447,10 +447,8 @@ class BrowserSession:
     def set_oopif_offset(self, cdp_session_id: str, offset: tuple[float, float]) -> None:
         """Remember an OOPIF's iframe-origin in the parent viewport."""
         state = self._oopifs.get(cdp_session_id)
-        if state is None:
-            state = _OopifState(target_id="")
-            self._oopifs[cdp_session_id] = state
-        state.offset = offset
+        if state is not None:
+            state.offset = offset
 
     def oopif_offset(self, cdp_session_id: str | None) -> tuple[float, float]:
         """The parent-viewport offset of an OOPIF, or ``(0, 0)`` for the main frame."""
@@ -469,8 +467,6 @@ class BrowserSession:
         state = self._oopifs.get(cdp_session_id)
         if state is not None:
             state.enabled = True
-        elif not self._oopifs:
-            self._oopifs[cdp_session_id] = _OopifState(target_id="", enabled=True)
 
     def oopif_frame_id(self, cdp_session_id: str) -> str:
         """Cached root frameId for an attached OOPIF session, or empty when unknown."""
@@ -484,8 +480,6 @@ class BrowserSession:
         state = self._oopifs.get(cdp_session_id)
         if state is not None:
             state.frame_id = frame_id
-        elif not self._oopifs:
-            self._oopifs[cdp_session_id] = _OopifState(target_id="", frame_id=frame_id)
 
     # ------------------------------------------------------------------ pages
 
