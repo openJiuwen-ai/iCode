@@ -77,6 +77,22 @@ async def _page_title(session: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _node_delta_state(node: Any) -> tuple[Any, ...]:
+    """Displayed node state for ``since`` deltas without changing ref fingerprints."""
+    bbox = getattr(node, "bbox", (0, 0, 0, 0))
+    no_layout = not getattr(node, "has_layout", True) and (bbox[2] <= 0 or bbox[3] <= 0)
+    return (
+        node.fingerprint(),
+        bool(getattr(node, "editable", False)),
+        bool(getattr(node, "readonly", False)),
+        bool(getattr(node, "disabled", False)),
+        no_layout,
+        str(getattr(node, "placeholder", "") or ""),
+        bool(getattr(node, "scrollable", False)),
+        str(getattr(node, "text_hint", "") or "")[:120] if not getattr(node, "name", "") else "",
+    )
+
+
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     scope = arguments["scope"]
     interactive_only = arguments["interactive_only"]
@@ -136,7 +152,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             node
             for node in current_visible
             if (node.frame_id, node.backend_node_id) not in old_by_id
-            or node.fingerprint() != old_by_id[(node.frame_id, node.backend_node_id)].fingerprint()
+            or _node_delta_state(node) != _node_delta_state(old_by_id[(node.frame_id, node.backend_node_id)])
         ]
         removed = len(set(old_by_id) - set(current_by_id))
         if not changed_nodes and not removed:

@@ -1076,3 +1076,46 @@ def test_playbook_is_byte_stable_and_contains_w13_rules(tmp_path) -> None:
         "UIAutomation",
     ):
         assert phrase in BROWSER_PLAYBOOK
+
+
+def test_navigate_one_step_keeps_allocated_handle_on_login_required(tmp_path, monkeypatch) -> None:
+    from icode_browser_use.errors import LoginRequired
+
+    browser = add_browser(browser_id="b-login", slot=0)
+    ext._browsers.clear()
+
+    def fake_open(_context: ToolContext) -> ext._Browser:
+        ext._browsers[browser.id] = browser
+        return browser
+
+    async def fake_call(_browser, _name, _arguments):
+        raise ToolError(LoginRequired("需要登录").render(), code=LoginRequired.code)
+
+    monkeypatch.setattr(ext, "_open", fake_open)
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    with pytest.raises(ToolError) as info:
+        asyncio.run(ext.browser_navigate(ctx(tmp_path), "https://example.com/login"))
+
+    assert info.value.code == "browser_login_required"
+    assert f"browser_id: {browser.id}" in info.value.message
+    assert browser.id in ext._browsers
+    assert not browser.session.closed
+
+
+def test_browser_close_reports_blocked_origins_for_browser_blocked(tmp_path, monkeypatch) -> None:
+    from icode_browser_use.errors import Blocked
+
+    browser = add_browser(browser_id="b-blocked", slot=0)
+
+    async def fake_call(_browser, _name, _arguments):
+        raise ToolError(Blocked("目标不在 allowlist 中").render(), code=Blocked.code)
+
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    with pytest.raises(ToolError) as info:
+        asyncio.run(ext.browser_navigate(ctx(tmp_path), "https://denied.example/secret", browser.id))
+    assert info.value.code == "browser_blocked"
+
+    summary = asyncio.run(ext.browser_close(ctx(tmp_path), browser.id))
+    assert "blocked_origins: https://denied.example" in summary

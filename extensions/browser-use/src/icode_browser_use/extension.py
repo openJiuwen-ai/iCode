@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from chrys.extensions import Extension, ToolCall, ToolContext, ToolError, TurnContext
 
@@ -527,11 +527,12 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
         blocks = await _call(browser, name, arguments)
     except ToolError as exc:
         if (
-            exc.code == "browser_policy_denied"
+            exc.code in {"browser_blocked", "browser_policy_denied"}
             or "site_blocked" in exc.message
             or "site_permission_required" in exc.message
         ):
-            target_url = str(arguments.get("url") or browser.url or "")
+            raw_url = str(arguments.get("url") or "")
+            target_url = urljoin(browser.url, raw_url) if raw_url and browser.url else (raw_url or browser.url or "")
             _record_origin(browser.blocked_origins, target_url)
         raise
     finally:
@@ -794,6 +795,15 @@ async def browser_navigate(
             allocated = True
     try:
         text = await _run(browser, "browser_navigate", {"url": url})
+    except ToolError as exc:
+        if exc.code == "browser_login_required":
+            if not browser_id.strip():
+                raise ToolError(f"browser_id: {browser.id}\n{exc.message}", code=exc.code) from exc
+            raise
+        if allocated:
+            with contextlib.suppress(Exception):
+                await _close_and_forget(browser)
+        raise
     except BaseException:
         if allocated:
             with contextlib.suppress(Exception):

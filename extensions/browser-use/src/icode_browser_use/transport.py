@@ -73,7 +73,13 @@ class OwnedTransport:
 
     async def start(self) -> tuple[Any, Any | None]:
         result = await self._launcher_factory(self._cfg, self._cfg.state_dir)
-        client = await self._client_factory(result.browser_ws)
+        try:
+            client = await self._client_factory(result.browser_ws)
+        except BaseException:
+            if result.child is not None:
+                with contextlib.suppress(Exception):
+                    await result.child.terminate_tree()
+            raise
         return client, result.child
 
     async def stop(self, client: Any | None, child: Any | None, *, target_id: str | None) -> None:

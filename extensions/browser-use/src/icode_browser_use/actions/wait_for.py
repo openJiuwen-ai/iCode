@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import json
 import re
 import time
 from typing import Any
@@ -95,29 +96,77 @@ _LONG_WAIT_MS = 60000
 _CHANGED_TEXT_CHARS = 300
 _sleep = asyncio.sleep
 
-_NODE_PROBE_FN = (
-    f"function(){{{_DEEP_TEXT_JS}"
-    " if(!this || !this.isConnected) return {present:false, visible:false, editable:false, text:''};"
-    " const rect=this.getBoundingClientRect();"
-    " const style=getComputedStyle(this);"
-    " const visible=rect.width>0 && rect.height>0 && style.visibility!=='hidden'"
-    "   && style.visibility!=='collapse' && style.display!=='none' && style.opacity!=='0';"
-    " const tag=(this.tagName||'').toLowerCase();"
-    " const type=(this.type||'').toLowerCase();"
-    " const disabled=this.disabled===true || (typeof this.matches==='function' && this.matches(':disabled'))"
-    "   || this.getAttribute('aria-disabled')==='true';"
-    " const readOnly=this.readOnly===true || this.getAttribute('aria-readonly')==='true';"
-    " const textLike=this.isContentEditable===true || tag==='textarea'"
-    "   || (tag==='input' && ['','text','search','email','url','tel','password','number'].includes(type));"
-    " const editable=!disabled && !readOnly && textLike;"
-    " return {present:true, visible, editable, disabled, readOnly, tag,"
-    "   text:String(deepText(this)||'').slice(0,20000)};"
-    "}"
+_TEXT_DIGEST_JS = (
+    "const textDigest=(s)=>{"
+    " let h1=0x811c9dc5,h2=0x01000193;"
+    " for(let i=0;i<s.length;i++){"
+    "  const c=s.charCodeAt(i);"
+    "  h1=Math.imul(h1^c,0x01000193);"
+    "  h2=Math.imul(h2^(c+(i&255)),0x85ebca6b);"
+    " }"
+    " return s.length+':'+(h1>>>0).toString(16)+':'+(h2>>>0).toString(16);"
+    "};"
 )
 
-_PAGE_TEXT_EXPR = (
-    f"(()=>{{{_DEEP_TEXT_JS} const body=document.body; return body?String(deepText(body)||'').slice(0,20000):'';}})()"
-)
+
+def _node_probe_fn(needle: str = "") -> str:
+    needle_js = json.dumps(needle) if needle else "''"
+    return (
+        f"function(){{{_DEEP_TEXT_JS}{_TEXT_DIGEST_JS}"
+        " if(!this || !this.isConnected) return {present:false, visible:false, editable:false, text:'', text_digest:''};"
+        " const rect=this.getBoundingClientRect();"
+        " const style=getComputedStyle(this);"
+        " const visible=rect.width>0 && rect.height>0 && style.visibility!=='hidden'"
+        "   && style.visibility!=='collapse' && style.display!=='none' && style.opacity!=='0';"
+        " const tag=(this.tagName||'').toLowerCase();"
+        " const type=(this.type||'').toLowerCase();"
+        " const disabled=this.disabled===true || (typeof this.matches==='function' && this.matches(':disabled'))"
+        "   || this.getAttribute('aria-disabled')==='true';"
+        " const readOnly=this.readOnly===true || this.getAttribute('aria-readonly')==='true';"
+        " const textLike=this.isContentEditable===true || tag==='textarea'"
+        "   || (tag==='input' && ['','text','search','email','url','tel','password','number'].includes(type));"
+        " const editable=!disabled && !readOnly && textLike;"
+        " const raw=String(deepText(this)||'');"
+        f" const needle={needle_js};"
+        " const out={present:true, visible, editable, disabled, readOnly, tag,"
+        "   text:raw.slice(0,20000), text_digest:textDigest(raw)};"
+        " if(needle){ out.text_hit=raw.includes(needle); }"
+        " return out;"
+        "}"
+    )
+
+
+_NODE_PROBE_FN = _node_probe_fn()
+
+
+def _page_text_expr(needle: str = "") -> str:
+    needle_js = json.dumps(needle) if needle else "''"
+    return (
+        f"(()=>{{{_DEEP_TEXT_JS}{_TEXT_DIGEST_JS}"
+        " const body=document.body;"
+        " const raw=body?String(deepText(body)||''):'';"
+        f" const needle={needle_js};"
+        " const out={text:raw.slice(0,20000), text_digest:textDigest(raw)};"
+        " if(needle){ out.text_hit=raw.includes(needle); }"
+        " return out;"
+        "})()"
+    )
+
+
+_PAGE_TEXT_EXPR = _page_text_expr()
+
+
+def _parse_text_result(raw: Any) -> tuple[str, str, bool | None]:
+    """Extract ``(preview_text, full_text_digest, full_text_hit)`` from JS probe output or legacy string fakes."""
+    if isinstance(raw, dict):
+        text = str(raw.get("text", ""))
+        digest = str(raw.get("text_digest") or "") or text
+        raw_hit = raw.get("text_hit")
+        hit = bool(raw_hit) if isinstance(raw_hit, bool) else None
+        return text, digest, hit
+    text = str(raw or "")
+    return text, text, None
+
 
 _OBSERVE_OPTIONS = "{subtree:true, childList:true, characterData:true, attributes:true}"
 
@@ -514,9 +563,8 @@ async def _collect_return_payload(
                     )
                     text_val = str(probe.get("text", ""))
                 else:
-                    text_val = str(
-                        await asyncio.wait_for(_evaluate(session, _PAGE_TEXT_EXPR, deadline), timeout=remaining) or ""
-                    )
+                    raw_page = await asyncio.wait_for(_evaluate(session, _PAGE_TEXT_EXPR, deadline), timeout=remaining)
+                    text_val, _, _ = _parse_text_result(raw_page)
             except ConnectionClosed:
                 raise
             except Exception:
@@ -530,7 +578,8 @@ async def read_text_baseline(session: Any, target: str = "", *, timeout_s: float
     deadline = time.monotonic() + max(0.05, min(1.5, timeout_s))
     try:
         if not target:
-            return str(await _evaluate(session, _PAGE_TEXT_EXPR, deadline) or "")
+            _, digest, _ = _parse_text_result(await _evaluate(session, _PAGE_TEXT_EXPR, deadline))
+            return digest
         entry = session.resolve_target(target)
         if entry is None:
             return None
@@ -538,7 +587,10 @@ async def read_text_baseline(session: Any, target: str = "", *, timeout_s: float
         if not object_id:
             return None
         probe = await _probe_node(session, object_id, entry.cdp_session_id, deadline)
-        return str(probe.get("text", "")) if probe.get("present") else None
+        if not probe.get("present"):
+            return None
+        _, digest, _ = _parse_text_result(probe)
+        return digest
     except ConnectionClosed:
         raise
     except Exception:
@@ -687,9 +739,10 @@ async def _run_with_baseline_outcome(
                     basis = "url_match"
                     last = f"url={href[:300]}"
                 elif condition == "text" and not target:
-                    body = str(await _evaluate(session, _PAGE_TEXT_EXPR, deadline) or "")
+                    raw = await _evaluate(session, _page_text_expr(value), deadline)
+                    body, _, hit = _parse_text_result(raw)
                     observed_text = body
-                    ok = value in body
+                    ok = hit if hit is not None else (value in body)
                     basis = "text_match"
                     last = f"page_text_hit={ok}"
                     if not ok:
@@ -717,11 +770,12 @@ async def _run_with_baseline_outcome(
                             basis = "shadow_text_match"
                             last = "page_text_hit=True (shadow_snapshot)"
                 elif condition == "text_changed" and not target:
-                    body = str(await _evaluate(session, _PAGE_TEXT_EXPR, deadline) or "")
+                    raw = await _evaluate(session, _PAGE_TEXT_EXPR, deadline)
+                    body, digest, _ = _parse_text_result(raw)
                     observed_text = body
                     if baseline is None:
-                        baseline = body
-                    ok = body != baseline
+                        baseline = digest
+                    ok = digest != baseline
                     basis = "text_changed"
                     last = f"page_text_changed={ok}"
                     if ok:
@@ -787,7 +841,12 @@ async def _run_with_baseline_outcome(
                             # A free-text target re-rendered since the snapshot: look again.
                             entry, object_id = None, ""
                     else:
-                        function = _STABLE_NODE_FN if condition == "stable" else _NODE_PROBE_FN
+                        if condition == "stable":
+                            function = _STABLE_NODE_FN
+                        elif condition == "text":
+                            function = _node_probe_fn(value)
+                        else:
+                            function = _NODE_PROBE_FN
                         try:
                             probe = await _call_node(
                                 session, object_id, entry.cdp_session_id if entry else None, function, deadline
@@ -816,11 +875,11 @@ async def _run_with_baseline_outcome(
                             if ok:
                                 detail = f"{last} completion=inferred_stable"
                         elif condition == "text_changed":
-                            text = str(probe.get("text", ""))
+                            text, digest, _ = _parse_text_result(probe)
                             observed_text = text
                             if baseline is None:
-                                baseline = text
-                            ok = text != baseline
+                                baseline = digest
+                            ok = digest != baseline
                             basis = "text_changed"
                             last = f"target={target} text_changed={ok}"
                             if ok:
@@ -852,7 +911,8 @@ async def _run_with_baseline_outcome(
                             elif condition == "hidden":
                                 ok, basis = (not visible), "invisible"
                             else:
-                                ok = value in str(probe.get("text", ""))
+                                text, _, hit = _parse_text_result(probe)
+                                ok = hit if hit is not None else (value in text)
                                 basis = "text_match"
                                 last += f" text_hit={ok}"
             except ConnectionClosed:

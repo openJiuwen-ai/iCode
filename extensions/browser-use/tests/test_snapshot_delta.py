@@ -199,3 +199,62 @@ def test_scope_full_does_not_mark_cached_nodes_in_viewport(monkeypatch) -> None:
     assert "Below" in blocks[0]["text"]
     # Later free-text ranking reads the cached nodes: their viewport facts must be real.
     assert all(not node.in_viewport for node in session.snapshot.nodes)
+
+
+def test_snapshot_delta_detects_disabled_state_change_and_keeps_ref(monkeypatch) -> None:
+    disabled_btn = FusedNode(
+        backend_node_id=10,
+        frame_id="frame",
+        target_id="target",
+        role="button",
+        name="Submit",
+        tag="button",
+        nth=0,
+        bbox=(0, 0, 80, 30),
+        in_viewport=True,
+        visible=True,
+        interactive=True,
+        disabled=True,
+    )
+    enabled_btn = FusedNode(
+        backend_node_id=10,
+        frame_id="frame",
+        target_id="target",
+        role="button",
+        name="Submit",
+        tag="button",
+        nth=0,
+        bbox=(0, 0, 80, 30),
+        in_viewport=True,
+        visible=True,
+        interactive=True,
+        disabled=False,
+    )
+    session = _session([disabled_btn])
+    original_ref = session.snapshot.nodes[0].ref
+    original_token = f"@e{original_ref}#{session.page_epoch}"
+
+    async def fake_capture(_session, **_kwargs):
+        _session.register_snapshot([enabled_btn], url="https://example.com", title="Example")
+        return list(_session.snapshot.nodes), None
+
+    async def fake_count(_session):
+        return 1
+
+    async def fake_title(_session):
+        return "Example"
+
+    monkeypatch.setattr(snapshot, "capture_and_register", fake_capture)
+    monkeypatch.setattr(snapshot, "_read_mutation_count", fake_count)
+    monkeypatch.setattr(snapshot, "_page_title", fake_title)
+    monkeypatch.setattr(snapshot, "detect_login", lambda *_args: None)
+
+    blocks = asyncio.run(
+        snapshot.run(session, {"scope": "viewport", "interactive_only": False, "target": original_token, "since": 1})
+    )
+    text = blocks[0]["text"]
+    assert "delta: +1 -0 since version 1" in text
+    assert original_token in text
+    assert "[disabled]" not in text
+    assert session.snapshot.nodes[0].ref == original_ref
+    assert session.resolve_target(original_token).backend_node_id == 10

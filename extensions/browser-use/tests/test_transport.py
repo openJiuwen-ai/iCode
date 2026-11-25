@@ -121,3 +121,68 @@ def test_attached_transport_requires_a_cdp_url() -> None:
     transport = AttachedTransport(config(), client_factory)
     with pytest.raises(Unavailable):
         asyncio.run(transport.start())
+
+
+def test_owned_transport_terminates_child_when_handshake_is_cancelled() -> None:
+    child = FakeChild()
+
+    async def client_factory(_ws: str) -> FakeClient:
+        raise asyncio.CancelledError
+
+    async def launcher_factory(_cfg, _state_dir):
+        return LaunchResult(endpoint="http://127.0.0.1:1", browser_ws="ws://owned", child=child)
+
+    transport = OwnedTransport(config(), client_factory, launcher_factory)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(transport.start())
+    assert child.terminated == 1
+
+
+def test_owned_transport_terminates_child_when_handshake_fails() -> None:
+    child = FakeChild()
+
+    async def client_factory(_ws: str) -> FakeClient:
+        raise RuntimeError("handshake failed")
+
+    async def launcher_factory(_cfg, _state_dir):
+        return LaunchResult(endpoint="http://127.0.0.1:1", browser_ws="ws://owned", child=child)
+
+    transport = OwnedTransport(config(), client_factory, launcher_factory)
+    with pytest.raises(RuntimeError, match="handshake failed"):
+        asyncio.run(transport.start())
+    assert child.terminated == 1
+
+
+def test_bridge_transport_closes_client_and_server_on_handshake_failure() -> None:
+    from icode_browser_use.bridge.transport import BridgeTransport
+
+    class FailingHelloClient(FakeClient):
+        async def send(self, method: str, params=None, session_id=None, timeout=None):
+            await super().send(method, params, session_id=session_id, timeout=timeout)
+            raise asyncio.CancelledError
+
+    client = FailingHelloClient()
+
+    class FakeServer:
+        def __init__(self) -> None:
+            self.started = 0
+            self.closed = 0
+
+        async def start(self) -> None:
+            self.started += 1
+
+        def wait_timeout(self, value: float) -> float:
+            return value
+
+        async def wait_for_client(self, *, timeout: float) -> FailingHelloClient:
+            return client
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+    server = FakeServer()
+    transport = BridgeTransport(config(), server_factory=lambda _cfg: server)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(transport.start())
+    assert client.closed == 1
+    assert server.closed == 1

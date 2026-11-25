@@ -616,3 +616,60 @@ def test_text_wait_falls_back_to_snapshot_for_closed_shadow_dom(monkeypatch, det
     text = run(session, {"condition": "text", "target": "", "value": "没有更多评论", "timeout_ms": 1000})
     assert "status=succeeded" in text
     assert "basis=shadow_text_match" in text
+
+
+def test_text_changed_uses_full_text_digest_beyond_preview_limit(deterministic_clock) -> None:
+    same_preview = "x" * 50
+    page_session = FakeSession(
+        client=FakeClient(
+            values=[
+                {"text": same_preview, "text_digest": "22000:aaa:bbb"},
+                {"text": same_preview, "text_digest": "22008:ccc:ddd"},
+            ]
+        )
+    )
+    page_text = run(page_session, {"condition": "text_changed", "target": "", "value": "", "timeout_ms": 500})
+    assert "status=succeeded" in page_text
+    assert "basis=text_changed" in page_text
+
+    baseline_session = FakeSession(client=FakeClient(values=[{"text": same_preview, "text_digest": "22000:aaa:bbb"}]))
+    assert asyncio.run(wait_for.read_text_baseline(baseline_session)) == "22000:aaa:bbb"
+
+    node_session = FakeSession(
+        client=FakeClient(
+            probes=[
+                {"present": True, "visible": True, "text": same_preview, "text_digest": "22000:111:222"},
+                {"present": True, "visible": True, "text": same_preview, "text_digest": "22008:333:444"},
+            ]
+        )
+    )
+    node_text = run(node_session, {"condition": "text_changed", "target": "@e1#5", "value": "", "timeout_ms": 500})
+    assert "status=succeeded" in node_text
+    assert "basis=text_changed" in node_text
+
+
+def test_text_condition_uses_full_text_hit_beyond_preview_limit(deterministic_clock) -> None:
+    same_preview = "x" * 50
+    page_session = FakeSession(
+        client=FakeClient(
+            values=[
+                {"text": same_preview, "text_digest": "22000:aaa:bbb", "text_hit": False},
+                {"text": same_preview, "text_digest": "22008:ccc:ddd", "text_hit": True},
+            ]
+        )
+    )
+    page_text = run(page_session, {"condition": "text", "target": "", "value": "finished", "timeout_ms": 500})
+    assert "status=succeeded" in page_text
+    assert "basis=text_match" in page_text
+
+    node_session = FakeSession(
+        client=FakeClient(
+            probes=[
+                {"present": True, "visible": True, "text": same_preview, "text_digest": "22000:111", "text_hit": False},
+                {"present": True, "visible": True, "text": same_preview, "text_digest": "22008:222", "text_hit": True},
+            ]
+        )
+    )
+    node_text = run(node_session, {"condition": "text", "target": "@e1#5", "value": "finished", "timeout_ms": 500})
+    assert "status=succeeded" in node_text
+    assert "basis=text_match" in node_text
