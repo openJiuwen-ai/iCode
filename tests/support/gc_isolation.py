@@ -19,8 +19,11 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def earlier_tests_heap_frozen() -> Iterator[None]:
+def earlier_tests_heap_frozen(*, collect_first: bool = False) -> Iterator[None]:
     """Freeze every object alive at entry until the block exits."""
+    if collect_first:
+        # Reclaim discarded widget trees before freezing survivors across a TUI session.
+        gc.collect()
     gc.freeze()
     try:
         yield

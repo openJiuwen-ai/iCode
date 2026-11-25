@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from chrys.app.tui.app import ChrysApp
@@ -12,9 +13,9 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.waiting import ENGINE_TURN_TIMEOUT
 
 if TYPE_CHECKING:
-    import asyncio
     from pathlib import Path
 
 
@@ -63,6 +64,14 @@ class EmptyAgentRegistry:
 
     def resolve_selector(self, _selector: str) -> None:
         return None
+
+
+async def await_engine_startup(app: ChrysApp) -> None:
+    """Join the startup task scheduled by on_mount, including session restore and startup hooks."""
+    task = app._startup_task
+    assert task is not None, "expected on_mount to schedule engine startup"
+    async with asyncio.timeout(ENGINE_TURN_TIMEOUT):
+        await task
 
 
 def make_chrys_app(
