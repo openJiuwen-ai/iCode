@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 import secrets
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,7 +38,15 @@ def credential_path(owner_path: Path, session_id: str, generation: str) -> Path:
     owner = os.fsencode(os.path.normcase(owner_path.parent.resolve() / owner_path.name))
     identity = b"\0".join((owner, session_id_key(session_id).encode(), generation.encode()))
     name = hashlib.sha256(identity).hexdigest()
-    return Path(tempfile.gettempdir()).resolve() / f"icode-tui-{name}.key"
+    # A project shell may override TMPDIR, TMP or TEMP independently of the
+    # other TUI. Both processes need the same machine-local rendezvous path.
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA")
+        base = Path(local) if local and Path(local).is_absolute() else Path.home() / "AppData" / "Local"
+        directory = base / "Temp"
+    else:
+        directory = Path("/tmp")
+    return directory.resolve() / f"icode-tui-{name}.key"
 
 
 @dataclass(frozen=True, slots=True)

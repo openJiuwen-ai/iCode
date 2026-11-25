@@ -294,6 +294,8 @@ async def test_takeover_restores_chat_from_other_process(
         )
         home = tmp_path / "owner-home"
         home.mkdir()
+        owner_temp = tmp_path / "owner-temp"
+        owner_temp.mkdir()
         repo = Path(__file__).resolve().parents[5]
         child = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -307,6 +309,9 @@ async def test_takeover_restores_chat_from_other_process(
                 "HOME": str(home),
                 "USERPROFILE": str(home),
                 "APPDATA": str(home),
+                "TMPDIR": str(owner_temp),
+                "TMP": str(owner_temp),
+                "TEMP": str(owner_temp),
                 "PYTHONPATH": str(repo),
             },
             stderr=asyncio.subprocess.PIPE,
