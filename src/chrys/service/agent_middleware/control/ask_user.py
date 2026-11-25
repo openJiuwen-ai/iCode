@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from chrys.foundation.config.settings import DEFAULT_ASK_USER_TIMEOUT_SECONDS
 from chrys.foundation.events.types import AskUserResponse, AskUserTimedOut, QuestionToUser
 from chrys.foundation.models.ask_user import (
-    ASK_USER_RESPONSE_DIGEST_KEY,
+    ASK_USER_EVIDENCE_KEY,
     MAX_ASK_USER_DESCRIPTION_CHARS,
     MAX_ASK_USER_HEADER_CHARS,
     MAX_ASK_USER_LABEL_CHARS,
@@ -20,7 +21,6 @@ from chrys.foundation.models.ask_user import (
     MAX_ASK_USER_QUESTIONS,
     AskUserAnswer,
     AskUserQuestion,
-    ask_user_response_digest,
     format_ask_user_result,
     parse_ask_user_answers,
     parse_ask_user_questions,
@@ -204,9 +204,11 @@ class AskUserMiddleware(FunctionMiddleware):
                     answers = _answers_from_response(response, question_count=len(questions))
                     result = format_ask_user_result(questions, answers)
                     context.result = result
-                    context.metadata.setdefault(TOOL_RESULT_METADATA_KEY, {})[ASK_USER_RESPONSE_DIGEST_KEY] = (
-                        ask_user_response_digest(result)
-                    )
+                    if any(answer.answered for answer in answers):
+                        context.metadata.setdefault(TOOL_RESULT_METADATA_KEY, {})[ASK_USER_EVIDENCE_KEY] = {
+                            "questions": [asdict(question) for question in questions],
+                            "result": result,
+                        }
                 if wait is not None:
                     await wait.finished()
             except TimeoutError:

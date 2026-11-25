@@ -9,6 +9,7 @@ import contextlib
 import json
 import sys
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import create_autospec
@@ -999,8 +1000,19 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(
         assert '{"user": "please echo"}' in context
         assert '{"assistant": "About to call echo."}' in context
         assert "<system-reminder>" not in context
-        assert '{"echo": {"message": "hi"}}' not in context
-        assert pending == '{"echo": {"message": "hi"}}\n</pending_action>'
+        assert "echo" not in {key for line in context.splitlines()[1:-1] for key in json.loads(line)}
+        pending_json, closing_tag = pending.splitlines()
+        assert closing_tag == "</pending_action>"
+        action = json.loads(pending_json)
+        runtime = action.pop("runtime")
+        assert action == {"echo": {"message": "hi"}}
+        assert set(runtime) == {"tool_kind", "workspace_roots", "Current time (local)", "Current time (UTC)"}
+        assert runtime["tool_kind"] == ""
+        assert runtime["workspace_roots"] == [str(tmp_path.resolve())]
+        local_time = datetime.fromisoformat(runtime["Current time (local)"])
+        utc_time = datetime.fromisoformat(runtime["Current time (UTC)"])
+        assert local_time.tzinfo is not None
+        assert utc_time.tzinfo == UTC and local_time == utc_time
         requests = [event for event in ctx.events if isinstance(event, ApprovalRequest)]
         assert len(requests) == 1 and requests[0].call_id != "call-1"
         raw = await ctx.get_session_messages()

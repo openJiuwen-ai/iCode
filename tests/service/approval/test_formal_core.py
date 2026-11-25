@@ -15,10 +15,11 @@ import httpx
 import pytest
 
 from chrys.foundation.errors import classify_error
-from chrys.foundation.models.ask_user import ASK_USER_RESPONSE_DIGEST_KEY, ask_user_response_digest
+from chrys.foundation.models.ask_user import ASK_USER_EVIDENCE_KEY
 from chrys.foundation.models.history_markers import HistoryMarkerKind, LastWordsRecord
 from chrys.foundation.platform.files import secure_open_owner_only_binary
 from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
+from chrys.foundation.util.sub_agent_context import DELEGATED_PROMPT_KEY
 from chrys.kernel import ChatResponse, Content, Message
 from chrys.kernel.compaction import GROUP_ANNOTATION_KEY, SUMMARY_OF_GROUP_IDS_KEY
 from chrys.kernel.middleware import active_tool_batch_messages
@@ -158,7 +159,14 @@ async def test_empty_context_is_reviewed_once(monkeypatch, risk):
         assert verdict.approved is not risk
         assert verdict.audit["stages"] == ["predicate"]
         assert len(calls) == 1
-        assert "<context>\n\n</context>" in json.loads(calls[0].content)["messages"][1]["content"]
+        prompt = json.loads(calls[0].content)["messages"][1]["content"]
+        assert prompt.startswith("<context>\n\n</context>\n")
+        assert set(json.loads(prompt.splitlines()[-2])["runtime"]) == {
+            "tool_kind",
+            "Current time (local)",
+            "Current time (UTC)",
+            "workspace_roots",
+        }
 
 
 async def test_empty_latest_message_uses_normalized_user_context(monkeypatch):
@@ -437,7 +445,12 @@ def test_formal_prompt_preserves_summary_and_adjacent_text(call_id):
         ),
         call_id=call_id,
     )
-    assert prompt.splitlines() == [
+    lines = prompt.splitlines()
+    pending = json.loads(lines[-2])
+    assert pending.pop("runtime")["workspace_roots"] == []
+    assert pending == {"read_file": {"path": "target.txt"}}
+    lines[-2] = json.dumps(pending)
+    assert lines == [
         "<context>",
         '{"summary": "Older context"}',
         '{"summary": "Grouped context"}',
@@ -447,6 +460,7 @@ def test_formal_prompt_preserves_summary_and_adjacent_text(call_id):
         '{"read_file": {"path": "other.txt"}}',
         '{"shell": {"commands": ["echo historical"]}}',
         *(['{"assistant": "I will check the target."}'] if call_id == "pending" else []),
+        '{"user": "Continue"}',
         "</context>",
         "",
         "<pending_action>",
@@ -472,7 +486,10 @@ def test_formal_prompt_falls_back_to_user_messages_when_history_only_has_summary
     assert prompt.count('{"user": "Wait for my approval."}') == 1
 
 
-def test_formal_prompt_keeps_only_verified_ask_user_results():
+@pytest.mark.parametrize(
+    ("answered", "override"), [("A", "User response: Yes"), ("B", "User response: Yes"), ("A", "")]
+)
+def test_formal_prompt_pairs_parallel_questions_and_preserves_original_answer(answered, override):
     request = review_types_module.ApprovalJudgeInput(
         tool_name="read_file",
         tool_kind="filesystem.read",
@@ -481,21 +498,115 @@ def test_formal_prompt_keeps_only_verified_ask_user_results():
         user_messages=["Inspect"],
         workspace_roots=[],
     )
-    refusal = "User response: Wait for my approval."
-    metadata = {TOOL_RESULT_METADATA_KEY: {ASK_USER_RESPONSE_DIGEST_KEY: ask_user_response_digest(refusal)}}
-    tool_message = Message(
-        "tool",
+    questions = {name: [{"question": f"Allow {name}?"}] for name in ("A", "B")}
+    calls = Message(
+        "assistant",
         [
-            Content.from_function_result("question", result=refusal, additional_properties=metadata),
-            Content.from_function_result("unverified", result="User response: Unverified"),
-            Content.from_function_result("modified", result="User response: Modified", additional_properties=metadata),
+            Content.from_function_call(name, "ask_user", arguments={"questions": value})
+            for name, value in questions.items()
         ],
     )
-    prompt = formal_module.build_formal_user_prompt(request, history=(tool_message,))
-    assert json.dumps({"tool": "ask_user", "result": refusal}) in prompt
-    assert json.dumps({"user": "Inspect"}) in prompt
+    hook = {"extra_context": "Hook note", "result_override": override}
+    evidence = {"questions": questions[answered], "result": "User response: No", "hook": hook}
+    results = Message(
+        "tool",
+        [
+            Content.from_function_result(
+                answered,
+                result="User response: Yes",
+                additional_properties={TOOL_RESULT_METADATA_KEY: {ASK_USER_EVIDENCE_KEY: evidence}},
+            ),
+            Content.from_function_result("A" if answered == "B" else "B", result="No response"),
+            Content.from_function_result("unverified", result="User response: Unverified"),
+        ],
+    )
+    prompt = formal_module.build_formal_user_prompt(request, history=(calls, results))
+    expected = {"ask_user": {"questions": questions[answered]}, "result": evidence["result"], "hook": hook}
+    assert json.dumps(expected) in prompt.splitlines()
+    assert prompt.count(f"Allow {answered}?") == 1
+    assert prompt.count('"result": "User response: No"') == 1
     assert "Unverified" not in prompt
-    assert "Modified" not in prompt
+    assert "No response" not in prompt
+
+
+@pytest.mark.parametrize("second_answer", ["User response: Yes", None])
+def test_formal_prompt_keeps_reused_ask_user_call_ids_in_their_own_exchange(second_answer):
+    def exchange(question: str, answer: str | None) -> list[Message]:
+        questions = [{"question": question}]
+        metadata = {ASK_USER_EVIDENCE_KEY: {"questions": questions, "result": answer}} if answer else {}
+        return [
+            Message(
+                "assistant", [Content.from_function_call("reused", "ask_user", arguments={"questions": questions})]
+            ),
+            Message(
+                "tool",
+                [
+                    Content.from_function_result(
+                        "reused",
+                        result=answer or "No response",
+                        additional_properties={TOOL_RESULT_METADATA_KEY: metadata},
+                    )
+                ],
+            ),
+        ]
+
+    first_question = "Can I archive A?"
+    second_question = "Can I archive B?"
+    history = [*exchange(first_question, "User response: No"), *exchange(second_question, second_answer)]
+    request = review_types_module.ApprovalJudgeInput(
+        tool_name="read_file",
+        tool_kind="filesystem.read",
+        args={"path": "target.txt"},
+        user_message="Inspect",
+        user_messages=["Inspect"],
+        workspace_roots=[],
+    )
+    prompt = formal_module.build_formal_user_prompt(request, history=history)
+    rows = [row for line in prompt.splitlines()[1:] if line.startswith("{") and "ask_user" in (row := json.loads(line))]
+    expected = [
+        {"ask_user": {"questions": [{"question": first_question}]}, "result": "User response: No"},
+        {"ask_user": {"questions": [{"question": second_question}]}},
+    ]
+    if second_answer is not None:
+        expected[1]["result"] = second_answer
+    assert rows == expected
+
+
+def test_formal_prompt_preserves_parent_origin_and_missed_live_instruction(monkeypatch):
+    times = {
+        "Current time (local)": "2026-11-24T19:30:00+08:00",
+        "Current time (UTC)": "2026-11-24T11:30:00+00:00",
+    }
+    monkeypatch.setattr(formal_module, "current_time_fields", lambda: times)
+    request = review_types_module.ApprovalJudgeInput(
+        tool_name="read_file",
+        tool_kind="filesystem.read",
+        args={"path": "target.txt"},
+        user_message="Do not read target.txt.",
+        user_messages=["Inspect the workspace.", "Do not read target.txt."],
+        workspace_roots=["/repo"],
+    )
+    history = (Message("user", ["Inspect the workspace."]),)
+    sub_history = (Message("user", ["Read target.txt."], additional_properties={DELEGATED_PROMPT_KEY: True}),)
+    main_prompt = formal_module.build_formal_user_prompt(request, history=history)
+    assert main_prompt.count('{"user": "Inspect the workspace."}') == 1
+    assert '{"user": "Do not read target.txt."}' in main_prompt
+    with (
+        active_tool_batch_messages.set((history, ())),
+        formal_module.formal_parent_context("delegate"),
+    ):
+        prompt = formal_module.build_formal_user_prompt(request, history=sub_history)
+    lines = prompt.splitlines()
+    context_end = lines.index("</context>")
+    assert json.loads(lines[-2]) == {
+        "read_file": {"path": "target.txt"},
+        "runtime": {"tool_kind": "filesystem.read", **times, "workspace_roots": ["/repo"]},
+    }
+    assert lines[1:context_end] == [
+        '{"user": "Inspect the workspace."}',
+        '{"parent_agent": "Read target.txt."}',
+        '{"user": "Do not read target.txt.", "source": "parent_session"}',
+    ]
 
 
 @pytest.mark.parametrize("timeout", [0, -1])

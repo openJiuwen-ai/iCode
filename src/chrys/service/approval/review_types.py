@@ -46,14 +46,18 @@ class FormalEvaluationCancelled(asyncio.CancelledError):
         self.verdict = verdict
 
 
+def current_time_fields() -> dict[str, str]:
+    """Return the local and UTC forms of the same instant."""
+    now_utc = datetime.now(UTC)
+    return {
+        "Current time (local)": now_utc.astimezone().isoformat(timespec="seconds"),
+        "Current time (UTC)": now_utc.isoformat(timespec="seconds"),
+    }
+
+
 def current_time_context() -> str:
     """Return current local and UTC times for the judge prompt."""
-    now_utc = datetime.now(UTC)
-    now_local = now_utc.astimezone()
-    return (
-        f"Current time (local): {now_local.isoformat(timespec='seconds')}\n"
-        f"Current time (UTC): {now_utc.isoformat(timespec='seconds')}"
-    )
+    return "\n".join(f"{label}: {value}" for label, value in current_time_fields().items())
 
 
 def normalize_user_messages(user_message: str, user_messages: list[str] | None) -> list[str]:

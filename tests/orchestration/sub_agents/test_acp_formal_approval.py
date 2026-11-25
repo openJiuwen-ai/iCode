@@ -154,7 +154,13 @@ async def test_empty_formal_context_is_reviewed(monkeypatch, kind, messages, tri
                 assert review.approved is approved
                 assert len(calls) == 1
                 prompts = [json.loads(call.content)["messages"][1]["content"] for call in calls]
-                assert "<context>\n\n</context>" in prompts[0]
+                assert prompts[0].startswith("<context>\n\n</context>\n")
+                assert set(json.loads(prompts[0].splitlines()[-2])["runtime"]) == {
+                    "tool_kind",
+                    "Current time (local)",
+                    "Current time (UTC)",
+                    "workspace_roots",
+                }
                 reviews = [
                     item["update"]
                     for item in translator.translated_updates

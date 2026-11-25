@@ -12,11 +12,10 @@ from pydantic import ValidationError
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AskUserResponse, AskUserTimedOut, QuestionToUser
 from chrys.foundation.models.ask_user import (
-    ASK_USER_RESPONSE_DIGEST_KEY,
+    ASK_USER_EVIDENCE_KEY,
     AskUserAnswer,
     AskUserOption,
     AskUserQuestion,
-    ask_user_response_digest,
 )
 from chrys.foundation.tool_kinds import KIND_ASK_USER, set_tool_kind
 from chrys.foundation.tool_result_metadata import (
@@ -28,14 +27,29 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_RESULT_METADATA_KEY,
 )
 from chrys.kernel import ChatResponse, Content, Message
-from chrys.kernel.middleware import ChatMiddlewareLayer, FunctionInvocationContext
+from chrys.kernel.middleware import ChatMiddlewareLayer, FunctionInvocationContext, FunctionMiddleware
 from chrys.kernel.tools import FunctionTool
 from chrys.service.agent_middleware import AskUserMiddleware
+from chrys.service.agent_middleware.events.hook_dispatch import finish_result_hooks
+from chrys.service.agent_middleware.events.result_persistence import write_result_carriage
+from chrys.service.hooks.schema import HookDecision
 from chrys.service.tools.builtins.ask_user import AskUserQuestionParam, ask_user
 from chrys.service.tools.result_metadata import tool_result_metadata
 from tests.support.cpu_guard import cpu_bounded
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 from tests.support.waiting import wait_for
+
+
+class _AskUserResultHook(FunctionMiddleware):
+    async def process(self, context, call_next):
+        await call_next()
+        write_result_carriage(context, metadata={TOOL_FAILED_METADATA_KEY: False})
+        finish_result_hooks(
+            context,
+            context.result,
+            None,
+            HookDecision(extra_context=["Hook note"], result_override="Hook replacement"),
+        )
 
 
 class _ScriptedAskUserClient:
@@ -340,7 +354,7 @@ async def test_ask_user_loop_validation_passes_coerced_options_to_middleware(
     response = await client.get_response(
         [Message(role="user", contents=["go"])],
         options={"tools": [ask_user]},
-        middleware=[AskUserMiddleware(bus)],
+        middleware=[_AskUserResultHook(), AskUserMiddleware(bus)],
     )
 
     assert response.text == "done"
@@ -351,10 +365,12 @@ async def test_ask_user_loop_validation_passes_coerced_options_to_middleware(
     result = next(
         content for message in wire.messages[1] for content in message.contents if content.type == "function_result"
     )
-    assert result.result == "User response: One"
-    assert result.additional_properties[TOOL_RESULT_METADATA_KEY][ASK_USER_RESPONSE_DIGEST_KEY] == (
-        ask_user_response_digest("User response: One")
-    )
+    assert result.result == "Hook replacement\n\nHook note"
+    evidence = result.additional_properties[TOOL_RESULT_METADATA_KEY][ASK_USER_EVIDENCE_KEY]
+    assert evidence["result"] == "User response: One"
+    assert evidence["hook"] == {"extra_context": "Hook note", "result_override": "Hook replacement"}
+    assert evidence["questions"][0]["question"] == "Pick?"
+    assert [option["label"] for option in evidence["questions"][0]["options"]] == expected_options
 
 
 async def _first_result_text(first_arguments: dict[str, object]) -> tuple[str, dict[str, object]]:

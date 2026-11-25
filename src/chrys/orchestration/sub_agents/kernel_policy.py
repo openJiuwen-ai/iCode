@@ -30,6 +30,7 @@ from chrys.foundation.trajectory.context import TrajectoryContext
 from chrys.foundation.trajectory.event_types import RetryMode, RetryReason
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
+from chrys.foundation.util.sub_agent_context import DELEGATED_PROMPT_KEY
 from chrys.kernel import (
     TOOL_RESULT_CONTENT_TYPES,
     AgentResponse,
@@ -626,7 +627,7 @@ class KernelSubAgentPolicy:
         otherwise mint an anonymous user message that no context revision
         can identify.
         """
-        message = Message("user", [self._prompt])
+        message = Message("user", [self._prompt], additional_properties={DELEGATED_PROMPT_KEY: True})
         ensure_analytics_item_id(message.additional_properties, item_id=self._seed_item_id)
         return [message]
 

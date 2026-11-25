@@ -18,8 +18,13 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 
 from chrys.extensions import ToolResult
 from chrys.foundation.io.result_content import extract_result_attachments, extract_result_text
+from chrys.foundation.models.ask_user import ASK_USER_EVIDENCE_KEY
 from chrys.foundation.tool_invocation_order import read_tool_invocation_order
-from chrys.foundation.tool_result_metadata import COMMITTED_ERROR_TEXT_KEY, HOOK_RESULT_APPLIED_KEY
+from chrys.foundation.tool_result_metadata import (
+    COMMITTED_ERROR_TEXT_KEY,
+    HOOK_RESULT_APPLIED_KEY,
+    TOOL_RESULT_METADATA_KEY,
+)
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_MODIFIED_ARGS_KEY,
     _APPROVAL_REJECTED_KEY,
@@ -360,7 +365,15 @@ def finish_result_hooks(
     context: FunctionInvocationContext, card_text: str, raised_text: str | None, decision: HookDecision
 ) -> tuple[str, str]:
     """Commit the result and return the card text and the model-visible text."""
-    extra = [*before_tool_context(context), *decision.extra_context]
+    extra = [text for text in (*before_tool_context(context), *decision.extra_context) if text]
+    evidence = context.metadata.get(TOOL_RESULT_METADATA_KEY, {}).get(ASK_USER_EVIDENCE_KEY)
+    if isinstance(evidence, dict) and (extra or decision.result_override is not None):
+        hook = {}
+        if extra:
+            hook["extra_context"] = "\n\n".join(extra)
+        if decision.result_override is not None:
+            hook["result_override"] = decision.result_override
+        evidence["hook"] = hook
     context.result, card_text = apply_result_hooks(
         context.result, card_text, result_override=decision.result_override, extra_context=extra
     )

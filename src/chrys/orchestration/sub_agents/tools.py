@@ -94,6 +94,7 @@ from chrys.service.agent_middleware import (
     SubAgentStatsMiddleware,
 )
 from chrys.service.agent_middleware.control.hook_commit import HookCommitMiddleware
+from chrys.service.approval.formal import formal_parent_context
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.approval.turn_context import TurnContextHolder
 from chrys.service.context.compaction.last_words_state import DropRoundBreakerState
@@ -2105,9 +2106,10 @@ class SubAgentTools:
                 self._controllers[invocation_id] = controller
                 try:
                     with (
+                        formal_parent_context(parent_provider_call_id),
                         trajectory_scope(sub_agent_trace.child_context)
                         if sub_agent_trace is not None
-                        else contextlib.nullcontext()
+                        else contextlib.nullcontext(),
                     ):
                         result = await controller.run()
                 finally:
