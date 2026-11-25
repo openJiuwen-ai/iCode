@@ -349,6 +349,7 @@ async def test_pre_prepare_target_goes_stale_when_another_turn_prepares() -> Non
     assert stale.phase == "pre_prepare"
 
     mw.prepare_turn()
+    assert mw.queue_hook_reminders_for_current_run(stale, []) is False
     assert mw.queue_hook_reminders_for_current_run(stale, ["late hook"]) is False
 
     # Positive control: captured after that prepare, a target queues for its own run.

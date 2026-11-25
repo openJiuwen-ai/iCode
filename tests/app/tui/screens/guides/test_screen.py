@@ -147,26 +147,6 @@ async def test_default_topic_is_highlighted_when_it_is_not_the_first_row(guide_d
 
 
 @pytest.mark.asyncio
-async def test_dialog_switches_topic_with_keyboard(guide_docs: Path) -> None:
-    dialog = _zh_dialog(guide_docs)
-    app = _DialogHost()
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        await app.push_screen(dialog)
-        await _wait_for_default_document(dialog, pilot)
-        await wait_for(
-            lambda: _cursor_on_active_topic(dialog),
-            pilot=pilot,
-            description="tree cursor on the default topic",
-        )
-
-        await pilot.press("down")
-        await pilot.press("enter")
-        await _wait_for_document(dialog, pilot, "开始使用", "second topic document to render")
-        assert dialog._active_topic is not None and dialog._active_topic.id == "getting_started"
-
-
-@pytest.mark.asyncio
 async def test_space_cycles_language_and_missing_language_shows_no_content(guide_docs: Path) -> None:
     dialog = _zh_dialog(guide_docs)
     app = _DialogHost()
@@ -198,6 +178,7 @@ async def test_space_cycles_language_and_missing_language_shows_no_content(guide
 
 @pytest.mark.asyncio
 async def test_space_cycle_preserves_tree_selection(guide_docs: Path) -> None:
+    """Select a topic with the keyboard and keep it across a language change."""
     dialog = _zh_dialog(guide_docs)
     app = _DialogHost()
 

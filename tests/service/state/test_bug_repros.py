@@ -8,7 +8,7 @@ import json
 import os
 import time
 from pathlib import Path
-from unittest.mock import create_autospec
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -404,57 +404,23 @@ async def test_session_restore_active_lock_conflict_fails_fast(tmp_path: Path) -
     await bus.subscribe(Error, collect_error)
     engine = assemble_agent_engine(bus, settings=Settings(), state_store=store)
     try:
-        with earlier_tests_heap_frozen():
-            start = time.monotonic()
-            await engine.on_session_restore(SessionRestore(session_id="busy"))
-            elapsed = time.monotonic() - start
+        assert not store.active_owner_path("busy").exists()
+        with (
+            patch.object(store, "load_session", wraps=store.load_session) as load_session,
+            patch.object(store, "load_chat_for_restore", wraps=store.load_chat_for_restore) as load_chat,
+        ):
+            with earlier_tests_heap_frozen():
+                start = time.monotonic()
+                await engine.on_session_restore(SessionRestore(session_id="busy"))
+                elapsed = time.monotonic() - start
+            load_session.assert_not_called()
+            load_chat.assert_not_called()
     finally:
         held.release()
         await engine.shutdown()
 
     assert [e.code for e in errors] == ["session_in_use"]
     assert elapsed < 1.0
-    assert engine.session.session_id is None
-
-
-@pytest.mark.asyncio
-async def test_session_restore_checks_active_lock_before_loading(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, engine_services
-) -> None:
-    """Restore must not load or heal a session owned by another live process."""
-    store = JsonFileStateStore(tmp_path)
-    await store.save_session(
-        "busy",
-        {
-            "messages": [Message("user", ["hello"])],
-            "compressed_msgs": [],
-        },
-        agent_profile="test",
-    )
-
-    held = FileLock(store.active_lock_path("busy"), timeout=1.0)
-    held.acquire()
-
-    bus = EventBus()
-    errors: list[Error] = []
-
-    async def collect_error(event: Error) -> None:
-        errors.append(event)
-
-    async def fail_load_session(session_id: str) -> object:
-        raise AssertionError(f"load_session should not run for active session {session_id}")
-
-    await bus.subscribe(Error, collect_error)
-    engine = assemble_agent_engine(bus, settings=Settings(), state_store=store)
-    monkeypatch.setattr(engine_services(engine).persistence, "load_session", fail_load_session)
-
-    try:
-        await engine.on_session_restore(SessionRestore(session_id="busy"))
-    finally:
-        held.release()
-        await engine.shutdown()
-
-    assert [e.code for e in errors] == ["session_in_use"]
     assert engine.session.session_id is None
 
 

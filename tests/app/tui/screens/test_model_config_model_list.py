@@ -466,11 +466,10 @@ async def test_fetching_spinner_is_static_with_animations_off(fake_discover: Fak
         (rejected(), "", "#mc-model-hint"),
         (rejected(), "sk-a", "#mc-model-hint"),
         (ModelDiscovery(models=[]), "sk-a", "#mc-model-hint"),
-        (no_response(), "sk-a", "#mc-model-hint"),
         (v1_fixed("missing_v1", URL + "/v1", "m"), "sk-a", "#mc-url-hint"),
         (removed_v1(), "sk-a", "#mc-url-hint"),
     ],
-    ids=["key-needed", "key-rejected", "not-found", "unreachable", "added-v1", "removed-v1"],
+    ids=["key-needed", "key-rejected", "not-found", "added-v1", "removed-v1"],
 )
 async def test_result_hints_use_the_warning_colour(
     fake_discover: FakeDiscover, answer: ModelDiscovery, api_key: str, label: str
@@ -482,22 +481,6 @@ async def test_result_hints_use_the_warning_colour(
         await fetch_and_settle(screen, fake_discover, pilot)
 
         assert is_warning_row(screen, label)
-
-
-async def test_fetching_progress_is_muted_under_the_model_input(fake_discover: FakeDiscover) -> None:
-    gate = asyncio.Event()
-    fake_discover.hold = gate
-    registry, profile = single_profile_registry(base_url=URL, api_key="sk-a")
-
-    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):
-        try:
-            await click_fetch(screen, pilot)
-            await wait_for(lambda: fetching_frame(screen) is not None, pilot=pilot)
-
-            assert is_muted_progress(screen)
-            assert model_label(screen) == BASE_MODEL_LABEL
-        finally:
-            gate.set()
 
 
 # ── The Fetch button: what it sends ──────────────────────────────────

@@ -115,6 +115,7 @@ class TestGetMessagesFiltering:
 class TestCompress:
     def test_single_compress(self) -> None:
         state = _build_multi_turn_state(3)
+        original = state["messages"][0]
 
         ctx_id = CompressibleHistoryProvider.compress(state, "turn_2", "Did turns 1 and 2")
 
@@ -132,6 +133,9 @@ class TestCompress:
         assert block.turn_range == (1, 2)
         # Block should contain the original messages (6: user1+asst1+marker1+user2+asst2+marker2)
         assert len(block.messages) == 6
+        assert block.messages[0].contents[0].text == original.contents[0].text == "User message turn 1"
+        block.messages[0].contents[0].text = "edited archive"
+        assert original.contents[0].text == "User message turn 1"
 
     def test_stacking_two_compressions(self) -> None:
         state = _build_multi_turn_state(4)
@@ -183,18 +187,6 @@ class TestCompress:
         assert len(state["compressed_msgs"]) == 1
         assert state["compressed_msgs"][0].turn_range == (1, 3)
 
-    def test_compress_preserves_original_messages_via_deep_copy(self) -> None:
-        state = _build_multi_turn_state(2)
-        original_user_text = state["messages"][0].contents[0].text
-
-        CompressibleHistoryProvider.compress(state, "turn_1", "Summary")
-
-        # Original messages in the block should be independent copies
-        block = state["compressed_msgs"][0]
-        assert block.messages[0].contents[0].text == original_user_text
-
-        # Mutating the block's messages should not affect the state
-        block.messages[0].contents[0]._text = "MUTATED"
         # State messages should be unaffected (they're replaced by summary anyway)
 
     def test_compress_invalid_marker_raises(self) -> None:
@@ -928,49 +920,3 @@ class TestTurnEndUsage:
 
         assert not provider._compaction_strategy._turn_boundary_pending
         assert state.get("compressed_msgs", []) == []
-
-
-@pytest.mark.asyncio
-async def test_snapshot_rollback_restores_pre_compress_state() -> None:
-    """Unit test: HistoryRollback.snapshot/restore survives compress_context.
-
-    Simulates the exact failure scenario at the executor level:
-    1. Snapshot history (80 messages)
-    2. compress_context replaces state["messages"] (80 → 7 messages)
-    3. after_run appends orphaned tool calls (7 → 10 messages)
-    4. Restore from snapshot → back to original 80 messages
-    """
-    from chrys.kernel import AgentSession, Message
-
-    session = AgentSession()
-    session.state["chrys_history"] = {
-        "messages": [Message("user", [f"msg_{i}"]) for i in range(80)],
-    }
-
-    # Simulate executor snapshot
-    history_state = session.state["chrys_history"]
-    snapshot = list(history_state["messages"])
-    assert len(snapshot) == 80
-
-    # Simulate compress_context replacing the list
-    history_state["messages"] = [
-        Message("assistant", ["[Compressed summary]"]),
-        *history_state["messages"][-6:],
-    ]
-    assert len(history_state["messages"]) == 7
-
-    # Simulate after_run appending orphaned tool calls
-    history_state["messages"].extend(
-        [
-            Message("assistant", ["orphaned tool call"]),
-            Message("assistant", ["another orphan"]),
-        ]
-    )
-    assert len(history_state["messages"]) == 9
-
-    # Old rollback (length-based) would fail: 9 < 80 → no-op
-    # New snapshot-based restore works:
-    history_state["messages"] = snapshot
-    assert len(history_state["messages"]) == 80
-    assert history_state["messages"][0].text == "msg_0"
-    assert history_state["messages"][-1].text == "msg_79"

@@ -196,7 +196,7 @@ async def test_child_build_keeps_registered_workspace_approval_roots(runtime, tm
 
     monkeypatch.setattr(children, "create_approval", inspect_approval)
     workspace = Workspace(str(cwd), [WorkingDir(str(link))], id="team", name="Team")
-    result = await _build(probe, workspace, None)
+    result = await _build(probe, workspace)
     try:
         roots = result.bindings.approval._workspace_roots
         assert _is_workspace_git_path(str(first / "new.txt"), roots)
