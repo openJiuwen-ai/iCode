@@ -1109,7 +1109,8 @@ def test_browser_close_reports_blocked_origins_for_browser_blocked(tmp_path, mon
     browser = add_browser(browser_id="b-blocked", slot=0)
 
     async def fake_call(_browser, _name, _arguments):
-        raise ToolError(Blocked("目标不在 allowlist 中").render(), code=Blocked.code)
+        exc = Blocked("目标不在 allowlist 中", blocked_origin="https://denied.example:443")
+        raise ToolError(exc.render(), code=exc.code) from exc
 
     monkeypatch.setattr(ext, "_call", fake_call)
 
@@ -1118,4 +1119,88 @@ def test_browser_close_reports_blocked_origins_for_browser_blocked(tmp_path, mon
     assert info.value.code == "browser_blocked"
 
     summary = asyncio.run(ext.browser_close(ctx(tmp_path), browser.id))
-    assert "blocked_origins: https://denied.example" in summary
+    assert "blocked_origins: https://denied.example:443" in summary
+
+
+def test_browser_close_records_redirect_target_origin_not_source_origin(tmp_path, monkeypatch) -> None:
+    from icode_browser_use.errors import Blocked
+
+    browser = add_browser(browser_id="b-redir", slot=0)
+    browser.url = "https://allowed.example/start"
+
+    async def fake_call(_browser, _name, _arguments):
+        exc = Blocked(
+            "net::ERR_BLOCKED_BY_CLIENT (https://blocked-b.example:443)", blocked_origin="https://blocked-b.example:443"
+        )
+        raise ToolError(exc.render(), code=exc.code) from exc
+
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    with pytest.raises(ToolError) as info:
+        asyncio.run(ext.browser_navigate(ctx(tmp_path), "https://allowed.example/redir", browser.id))
+    assert info.value.code == "browser_blocked"
+
+    summary = asyncio.run(ext.browser_close(ctx(tmp_path), browser.id))
+    assert "blocked_origins: https://blocked-b.example:443" in summary
+    assert "allowed.example" not in summary.split("blocked_origins:", 1)[1].splitlines()[0]
+
+
+def test_record_origin_strips_credentials_from_visited_and_blocked_origins(tmp_path, monkeypatch) -> None:
+    from icode_browser_use.errors import Blocked
+
+    browser = add_browser(browser_id="b-creds", slot=0)
+    browser.session.snapshot = SimpleNamespace(url="https://alice:topsecret@allowed.example/app?k=1", title="App")
+
+    async def fake_call(_browser, _name, _arguments):
+        exc = Blocked("目标不在域名白名单内")
+        raise ToolError(exc.render(), code=exc.code) from exc
+
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    with pytest.raises(ToolError):
+        asyncio.run(ext.browser_navigate(ctx(tmp_path), "https://bob:hunter2@denied.example/secret", browser.id))
+
+    summary = asyncio.run(ext.browser_close(ctx(tmp_path), browser.id))
+    assert "alice" not in summary and "topsecret" not in summary
+    assert "bob" not in summary and "hunter2" not in summary
+    assert "visited_origins: https://allowed.example:443" in summary
+    assert "blocked_origins: https://denied.example:443" in summary
+    assert ext._origin("https://alice:topsecret@allowed.example/path?t=1") == "https://allowed.example:443"
+
+
+def test_navigate_redirect_blocked_reports_target_origin_from_policy() -> None:
+    from icode_browser_use.actions import navigate
+    from icode_browser_use.config import BrowserConfig
+    from icode_browser_use.errors import Blocked
+    from icode_browser_use.policy import NetworkPolicy
+
+    policy = NetworkPolicy(("allowed.example",))
+
+    class FakeClient:
+        async def send(self, method: str, params=None, session_id=None, timeout=None):
+            if method == "Page.navigate":
+                await policy._on_request_paused(
+                    {
+                        "requestId": "req-1",
+                        "resourceType": "Document",
+                        "request": {"url": "https://user:pw@blocked-b.example/target"},
+                    },
+                    session_id,
+                )
+                return {"errorText": "net::ERR_BLOCKED_BY_CLIENT"}
+            return {}
+
+    session = SimpleNamespace(
+        cfg=BrowserConfig(allowed_domains=("allowed.example",)),
+        snapshot=SimpleNamespace(url="https://allowed.example/"),
+        session_id="s1",
+        nav_seq=0,
+        _policy=policy,
+        require_client=lambda: FakeClient(),
+    )
+
+    with pytest.raises(Blocked) as info:
+        asyncio.run(navigate.run(session, {"url": "https://allowed.example/redir"}))
+    assert info.value.blocked_origin == "https://blocked-b.example:443"
+    assert "user" not in info.value.message and "pw" not in info.value.message
+    assert "https://blocked-b.example:443" in info.value.message

@@ -265,6 +265,8 @@ class NetworkPolicy:
         ]
         self.blocked = 0
         self.allowed = 0
+        self.last_blocked_origin = ""
+        self.last_blocked_document_origin = ""
         self.detached_workers = 0
         self.arm_failures = 0
         """Child frames whose interception could not be installed (left paused, fail-closed)."""
@@ -338,6 +340,11 @@ class NetworkPolicy:
             await self._reply("Fetch.continueRequest", {"requestId": request_id}, session_id)
         else:
             self.blocked += 1
+            origin = canonical_origin(url)
+            if origin:
+                self.last_blocked_origin = origin
+                if params.get("resourceType") == "Document":
+                    self.last_blocked_document_origin = origin
             await self._reply(
                 "Fetch.failRequest",
                 {"requestId": request_id, "errorReason": "BlockedByClient"},

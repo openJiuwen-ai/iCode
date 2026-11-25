@@ -140,7 +140,7 @@ class BrokerClient:
                 self.last_title = str(response.get("title", "") or "")
                 return blocks
             message = str(response.get("error") or "broker call failed")
-            error = BrowserError(message)
+            error = BrowserError(message, blocked_origin=str(response.get("blocked_origin") or ""))
             error.code = str(response.get("code") or "browser_unavailable")
             if error.code == "browser_unavailable" and "lease is not active" in message:
                 self.lease_id = ""

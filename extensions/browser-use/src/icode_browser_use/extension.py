@@ -43,6 +43,7 @@ from .broker_client import BrokerCallUnknown, BrokerSession
 from .config import BrowserConfig, BrowserEnv, ConfigError
 from .errors import BrowserError, ConnectionClosed, Unavailable
 from .locking import acquire_instance_lock, probe_instance_lock
+from .policy import canonical_origin
 from .logging import set_log_sink
 from .prompts import BROWSER_PLAYBOOK, COMPACT_BROWSER_PLAYBOOK
 from .runtime import BrowserRuntime, call_tool
@@ -298,12 +299,20 @@ def _prune_screenshots(directory: Path, keep: int, current: Path) -> None:
 
 
 def _origin(url: str) -> str:
-    """Scheme and host only: context must not leak query tokens into a sibling's prompt."""
+    """Scheme and host only: context must not leak credentials or query tokens into prompts."""
     if not url:
         return "(not navigated yet)"
+    origin = canonical_origin(url)
+    if origin:
+        return origin
     parts = urlsplit(url)
-    if parts.scheme and parts.netloc:
-        return f"{parts.scheme}://{parts.netloc}"
+    if parts.scheme and parts.hostname:
+        host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        return f"{parts.scheme}://{host}:{port}" if port is not None else f"{parts.scheme}://{host}"
     return url[:80]
 
 
@@ -494,13 +503,12 @@ def _text(blocks: list[dict[str, object]]) -> str:
 
 
 def _record_origin(bucket: list[str], url: str) -> None:
-    """Append a normalized ``scheme://host[:port]`` origin uniquely (never query/path/tokens)."""
+    """Append a normalized ``scheme://host:port`` origin uniquely (never credentials/query/path/tokens)."""
     if not url:
         return
-    parts = urlsplit(url)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
+    origin = canonical_origin(url)
+    if not origin:
         return
-    origin = f"{parts.scheme}://{parts.netloc}".lower()
     if origin not in bucket and len(bucket) < 32:
         bucket.append(origin)
 
@@ -531,9 +539,16 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
             or "site_blocked" in exc.message
             or "site_permission_required" in exc.message
         ):
-            raw_url = str(arguments.get("url") or "")
-            target_url = urljoin(browser.url, raw_url) if raw_url and browser.url else (raw_url or browser.url or "")
-            _record_origin(browser.blocked_origins, target_url)
+            cause = exc.__cause__
+            blocked_origin = cause.blocked_origin if isinstance(cause, BrowserError) else ""
+            if blocked_origin:
+                _record_origin(browser.blocked_origins, blocked_origin)
+            else:
+                raw_url = str(arguments.get("url") or "")
+                target_url = (
+                    urljoin(browser.url, raw_url) if raw_url and browser.url else (raw_url or browser.url or "")
+                )
+                _record_origin(browser.blocked_origins, target_url)
         raise
     finally:
         snapshot = browser.session.snapshot

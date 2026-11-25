@@ -45,7 +45,7 @@ def _split_url(url: str) -> SplitResult:
 
 def _precheck_url(session: Any, url: str) -> str:
     """Resolve and check the final URL before Chrome is asked to navigate."""
-    from ..policy import scheme_allowed, url_host_allowed
+    from ..policy import canonical_origin, scheme_allowed, url_host_allowed
 
     text = (url or "").strip()
     if not text:
@@ -68,7 +68,7 @@ def _precheck_url(session: Any, url: str) -> str:
     domains, origins = session.cfg.allowed_domains, session.cfg.allowed_origins
     if not url_host_allowed(text, domains, origins):
         reason = "目标不在域名白名单内" if domains or origins else "目标不属于公网地址"
-        raise Blocked(f"{reason}：{host}")
+        raise Blocked(f"{reason}：{host}", blocked_origin=canonical_origin(text))
     return text
 
 
@@ -78,10 +78,17 @@ async def _page_title(session: Any) -> str:
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
+    from ..policy import canonical_origin
+
     url = _precheck_url(session, arguments["url"])
 
     client = session.require_client()
     nav_seq = session.nav_seq
+    policy = getattr(session, "_policy", None)
+    blocked_before = policy.blocked if policy is not None else 0
+    if policy is not None:
+        policy.last_blocked_document_origin = ""
+        policy.last_blocked_origin = ""
     response = await client.send(
         "Page.navigate",
         {"url": url},
@@ -91,7 +98,13 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     error_text = str(response.get("errorText") or "")
     if error_text:
         if "blocked" in error_text.lower():
-            raise Blocked(error_text)
+            blocked_origin = ""
+            if policy is not None and policy.blocked > blocked_before:
+                blocked_origin = policy.last_blocked_document_origin or policy.last_blocked_origin
+            if not blocked_origin:
+                blocked_origin = canonical_origin(url)
+            detail = f"{error_text} ({blocked_origin})" if blocked_origin else error_text
+            raise Blocked(detail, blocked_origin=blocked_origin)
         raise Unavailable(error_text)
 
     loader_id = str(response.get("loaderId") or "")

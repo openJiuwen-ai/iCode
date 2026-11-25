@@ -334,7 +334,10 @@ class BrokerServer:
                 }
             raise Unavailable(f"unknown broker operation: {op}")
         except BrowserError as exc:
-            return {"id": request_id, "ok": False, "error": exc.message, "code": exc.code}
+            payload: dict[str, Any] = {"id": request_id, "ok": False, "error": exc.message, "code": exc.code}
+            if exc.blocked_origin:
+                payload["blocked_origin"] = exc.blocked_origin
+            return payload
         except Exception as exc:  # noqa: BLE001 - broker boundary
             return {"id": request_id, "ok": False, "error": f"broker_error: {exc}"}
 
