@@ -408,3 +408,35 @@ def test_select_option_js_checks_optgroup_and_fieldset_disabled() -> None:
     assert "matches(':disabled')" in select_option._SELECT_STATE_FN
     assert "optgroup" in select_option._APPLY_FN
     assert "selectedIndex" in select_option._APPLY_FN
+
+
+def test_select_option_rejects_succeeded_when_change_handler_replaces_option_value_at_same_index(monkeypatch) -> None:
+    session = FakeSession()
+    before = {
+        "ok": True,
+        "tag": "select",
+        "multiple": False,
+        "disabled": False,
+        "options": [
+            {"index": 0, "value": "a", "label": "A", "disabled": False, "selected": True},
+            {"index": 1, "value": "b", "label": "B", "disabled": False, "selected": False},
+        ],
+    }
+    # The page's change handler replaced index 1's option value 'b' with 'c'.
+    after = {
+        "ok": True,
+        "tag": "select",
+        "multiple": False,
+        "disabled": False,
+        "options": [
+            {"index": 0, "value": "a", "label": "A", "disabled": False, "selected": False},
+            {"index": 1, "value": "c", "label": "C", "disabled": False, "selected": True},
+        ],
+    }
+    install(monkeypatch, session, states=[before, after])
+    blocks = asyncio.run(select_option.run(session, {"target": "@e2#4", "values": ["b"]}))
+    text = blocks[0]["text"]
+    assert "selected=['c']" in text
+    assert "status=uncertain" in text
+    assert "status=succeeded" not in text
+    assert session.successes == 0

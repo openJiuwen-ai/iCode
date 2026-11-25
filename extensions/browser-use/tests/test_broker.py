@@ -598,3 +598,82 @@ def test_broker_all_eviction_paths_call_aclose(tmp_path) -> None:
             await broker.aclose()
 
     asyncio.run(scenario())
+
+
+def test_broker_close_after_host_restart_reusing_slot_closes_remote_session(tmp_path, monkeypatch) -> None:
+    """Host 1 opens & navigates via Broker then exits; Host 2 calls browser_open (reusing slot 0) then browser_close."""
+    import importlib
+
+    from chrys.extensions import ToolContext
+
+    import icode_browser_use.extension as ext
+    from icode_browser_use import registry
+
+    for key in tuple(os.environ):
+        if key.startswith("ICODE_BROWSER_"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("ICODE_BROWSER_ALLOWED_DOMAINS", "example.com")
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ICODE_BROWSER_BROKER", "1")
+
+    class TrackedBrowserSession:
+        def __init__(self) -> None:
+            self.state = "ready"
+            self.closed = 0
+            self.snapshot = SimpleNamespace(url="https://example.com/", title="Example")
+
+        async def aclose(self) -> None:
+            self.closed += 1
+            self.state = "closed"
+
+    created: list[TrackedBrowserSession] = []
+
+    async def tool_caller(_session, _tool, _arguments):
+        return [{"type": "text", "text": "ok"}]
+
+    context = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="A",
+        session_id="s-restart",
+    )
+
+    async def scenario() -> None:
+        broker = BrokerServer(
+            _cfg(tmp_path / "state"),
+            session_factory=lambda _cfg: created.append(TrackedBrowserSession()) or created[-1],
+            tool_caller=tool_caller,
+        )
+        await broker.start()
+        try:
+            # Host process 1: open handle, use it (creates Broker session for slot 0), then exit without browser_close.
+            host1 = importlib.reload(ext)
+            host1._browsers.clear()
+            opened1 = await host1.browser_open(context)
+            bid1 = opened1.removeprefix("browser_id: ").strip()
+            await host1.browser_navigate(context, "https://example.com/", bid1)
+            assert len(created) == 1
+            assert len(broker.sessions) == 1
+            # Simulate host 1 exiting: release client socket without closing the Broker session.
+            await host1._browsers[bid1].session.client.aclose()
+            host1._browsers.clear()
+            assert len(broker.sessions) == 1
+            assert created[0].closed == 0
+
+            # Host process 2: same identity calls browser_open (reuses slot 0) then immediately browser_close.
+            host2 = importlib.reload(ext)
+            host2._browsers.clear()
+            opened2 = await host2.browser_open(context)
+            bid2 = opened2.removeprefix("browser_id: ").strip()
+            closed_text = await host2.browser_close(context, bid2)
+            assert f"browser_id {bid2} closed" in closed_text
+            assert broker.sessions == {}
+            assert created[0].closed == 1
+            records, _ = registry.load(registry.manifest_path(context))
+            assert records == []
+        finally:
+            await broker.aclose()
+            ext._browsers.clear()
+
+    asyncio.run(scenario())

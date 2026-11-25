@@ -125,7 +125,9 @@ def _readback_matches(state: dict[str, Any], resolved_values: list[str], target_
     if any(option.get("disabled") for option in selected_opts):
         return False
     if all(isinstance(option.get("index"), int) for option in selected_opts):
-        return {int(option["index"]) for option in selected_opts} == set(target_indices)
+        actual_pairs = {(int(option["index"]), str(option.get("value"))) for option in selected_opts}
+        expected_pairs = set(zip(target_indices, resolved_values, strict=True))
+        return actual_pairs == expected_pairs
     return {str(option.get("value")) for option in selected_opts} == set(resolved_values)
 
 
