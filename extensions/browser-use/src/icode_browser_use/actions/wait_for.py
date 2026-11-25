@@ -171,19 +171,43 @@ def _parse_text_result(raw: Any) -> tuple[str, str, bool | None]:
 _OBSERVE_OPTIONS = "{subtree:true, childList:true, characterData:true, attributes:true}"
 
 _OBSERVE_SHADOWS_JS = (
-    "const observeTree=(obs,seen,root)=>{"
+    "const inScope=(node,root)=>{"
+    " let cur=node;"
+    " while(cur){"
+    "  if(cur===root) return true;"
+    "  if(cur.parentNode){ cur=cur.parentNode; continue; }"
+    "  if(cur.host){ cur=cur.host; continue; }"
+    "  return false;"
+    " }"
+    " return false;"
+    "};"
+    "const observeTree=(obs,seen,root,observeRoot)=>{"
+    " const visited=new Set();"
     " const stack=[root];"
+    " if(observeRoot && root && !seen.has(root)){"
+    "  seen.add(root);"
+    f"  try{{ obs.observe(root, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
+    " }"
     " while(stack.length){"
     "  const cur=stack.pop();"
-    "  if(!cur) continue;"
-    "  if(!seen.has(cur)){"
-    "   seen.add(cur);"
-    f"   try{{ obs.observe(cur, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
+    "  if(!cur || visited.has(cur)) continue;"
+    "  visited.add(cur);"
+    "  if(cur.shadowRoot){"
+    "   if(!seen.has(cur.shadowRoot)){"
+    "    seen.add(cur.shadowRoot);"
+    f"    try{{ obs.observe(cur.shadowRoot, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
+    "   }"
+    "   stack.push(cur.shadowRoot);"
     "  }"
-    "  if(cur.shadowRoot && !seen.has(cur.shadowRoot)) stack.push(cur.shadowRoot);"
     "  if(cur.querySelectorAll){"
     "   for(const el of cur.querySelectorAll('*')){"
-    "    if(el.shadowRoot && !seen.has(el.shadowRoot)) stack.push(el.shadowRoot);"
+    "    if(el.shadowRoot){"
+    "     if(!seen.has(el.shadowRoot)){"
+    "      seen.add(el.shadowRoot);"
+    f"      try{{ obs.observe(el.shadowRoot, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
+    "     }"
+    "     stack.push(el.shadowRoot);"
+    "    }"
     "   }"
     "  }"
     " }"
@@ -192,16 +216,22 @@ _OBSERVE_SHADOWS_JS = (
 
 _STABLE_PAGE_EXPR = (
     f"(()=>{{{_OBSERVE_SHADOWS_JS}"
+    " const root=document.documentElement;"
     " let m=window.__chrys_stable;"
     " if(!m){"
     "  const seen=new WeakSet();"
     "  const obs=new MutationObserver((records)=>{"
-    "   m.n++; m.at=performance.now();"
-    "   for(const r of records){ for(const node of (r.addedNodes||[])) observeTree(obs,seen,node); }"
+    "   let hit=false;"
+    "   for(const r of records){"
+    "    if(!inScope(r.target,root)) continue;"
+    "    hit=true;"
+    "    for(const node of (r.addedNodes||[])) observeTree(obs,seen,node,false);"
+    "   }"
+    "   if(hit){ m.n++; m.at=performance.now(); }"
     "  });"
     "  m={n:0, at:performance.now(), obs, seen}; window.__chrys_stable=m;"
     " }"
-    " observeTree(m.obs, m.seen, document.documentElement);"
+    " observeTree(m.obs, m.seen, root, true);"
     " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
     "})()"
 )
@@ -214,19 +244,25 @@ _STABLE_PAGE_CLEANUP_EXPR = (
 _STABLE_NODE_FN = (
     f"function(){{{_OBSERVE_SHADOWS_JS}"
     " if(!this || !this.isConnected) return {present:false};"
+    " const root=this;"
     " let map=window.__chrys_stable_by_node;"
     " if(!map){map=new WeakMap(); window.__chrys_stable_by_node=map;}"
-    " let m=map.get(this);"
+    " let m=map.get(root);"
     " if(!m){"
     "  const seen=new WeakSet();"
     "  const obs=new MutationObserver((records)=>{"
-    "   m.n++; m.at=performance.now();"
-    "   for(const r of records){ for(const node of (r.addedNodes||[])) observeTree(obs,seen,node); }"
+    "   let hit=false;"
+    "   for(const r of records){"
+    "    if(!inScope(r.target,root)) continue;"
+    "    hit=true;"
+    "    for(const node of (r.addedNodes||[])) observeTree(obs,seen,node,false);"
+    "   }"
+    "   if(hit){ m.n++; m.at=performance.now(); }"
     "  });"
-    "  m={n:0, at:performance.now(), obs, seen}; map.set(this, m);"
+    "  m={n:0, at:performance.now(), obs, seen}; map.set(root, m);"
     " }"
-    " observeTree(m.obs, m.seen, this);"
-    " if(this.shadowRoot) observeTree(m.obs, m.seen, this.shadowRoot);"
+    " observeTree(m.obs, m.seen, root, true);"
+    " if(this.shadowRoot) observeTree(m.obs, m.seen, this.shadowRoot, true);"
     " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
     "}"
 )
@@ -846,12 +882,14 @@ async def _run_with_baseline_outcome(
                             last += "（预算不足以刷新最新快照，无法确认目标已隐藏）"
                     elif not object_id:
                         last = f"target={target} gone"
-                        if condition == "hidden":
+                        if condition == "hidden" and ref_spec:
                             ok, basis = True, "gone"
                         elif ref_spec:
                             raise StaleRef("引用已失效（元素已被替换），请重新 snapshot")
                         else:
-                            # A free-text target re-rendered since the snapshot: look again.
+                            # A free-text target re-rendered since the snapshot: re-check current page.
+                            if condition == "hidden":
+                                last += "（原节点已失效，正在重新查找同名元素）"
                             entry, object_id = None, ""
                     else:
                         if condition == "stable":
@@ -874,11 +912,14 @@ async def _run_with_baseline_outcome(
                             probe = {}
                         if not probe.get("present"):
                             last = f"target={target} gone"
-                            if condition == "hidden":
+                            if condition == "hidden" and ref_spec:
                                 ok, basis = True, "gone"
                             elif ref_spec:
                                 raise StaleRef("引用已失效（元素已被替换），请重新 snapshot")
                             else:
+                                if condition == "hidden":
+                                    last += "（原节点已失效，正在重新查找同名元素）"
+                                    refresh_at = time.monotonic() - _REFRESH_MIN_SECONDS
                                 entry, object_id = None, ""
                         elif condition == "stable":
                             quiet = float(probe.get("quiet_ms") or 0.0)

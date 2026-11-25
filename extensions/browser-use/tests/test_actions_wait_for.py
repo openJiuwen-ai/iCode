@@ -697,4 +697,30 @@ def test_hidden_times_out_when_budget_is_too_short_to_refresh_snapshot(monkeypat
 def test_stable_scripts_observe_open_shadow_roots() -> None:
     assert "shadowRoot" in wait_for._STABLE_PAGE_EXPR
     assert "observeTree" in wait_for._STABLE_PAGE_EXPR
+    assert "inScope" in wait_for._STABLE_PAGE_EXPR
     assert "observeTree" in wait_for._STABLE_NODE_FN
+
+
+def test_hidden_free_text_rechecks_page_when_previous_node_is_replaced(monkeypatch, deterministic_clock) -> None:
+    deterministic_clock.step = 0.2
+
+    class ReplacingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__(probes=[{"present": True, "visible": True, "text": "Stop generating"}])
+            self.resolve_calls = 0
+
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            if method == "DOM.resolveNode":
+                self.resolve_calls += 1
+                if self.resolve_calls == 1:
+                    raise BrowserError("CDP 错误 -32000: Could not find node")
+                return {"object": {"objectId": "new-obj"}}
+            return await super().send(method, params, session_id=session_id, timeout=timeout)
+
+    session = FakeSession(client=ReplacingClient())
+    monkeypatch.setattr(wait_for, "capture_and_register", capture)
+    # Free-text hidden must NOT succeed with basis=gone when the old node died and a replacement is visible.
+    text = run(session, {"condition": "hidden", "target": "Stop generating", "value": "", "timeout_ms": 500})
+    assert "status=timeout" in text
+    assert "basis=gone" not in text
+    assert session.captures >= 1
