@@ -79,8 +79,8 @@ _DEEP_TEXT_JS = (
     " };"
     " walk(root);"
     " return parts.join('').replace(/ +\\n/g,'\\n').replace(/\\n +/g,'\\n')"
-    "   .replace(/ *\\t */g,'\\t').replace(/\\t+\\n/g,'\\n').replace(/\\n\\t+/g,'\\n')"
-    "   .replace(/ {2,}/g,' ').replace(/\\n{3,}/g,'\\n\\n').trim();"
+    "   .replace(/ *\\t */g,'\\t').replace(/ {2,}/g,' ').replace(/\\n{3,}/g,'\\n\\n')"
+    "   .replace(/^[ \\n]+|[ \\n]+$/g,'');"
     "};"
 )
 
