@@ -3095,6 +3095,15 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._set_workflow_mode(True)
         self._workflow.browser.enter_selection()
 
+    def idle_for_takeover(self) -> bool:
+        # run_worker registers synchronously, before the worker claims a submit or restore.
+        return (
+            self._can_switch_app_mode()
+            and not self._workflow.workflow_mode
+            and not self._btw.panel.running
+            and not any(worker.node is self and not worker.is_finished for worker in self.workers)
+        )
+
     def _can_switch_app_mode(self) -> bool:
         """Keep one presentation mode from submission through execution cleanup."""
         return not self._state.shell.active and self._app_mode_busy_notice() is None
@@ -3155,6 +3164,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return True
         if event.session_id and event.session_id == self._startup_restore_target:
             self._startup_restore_error = event
+            return True
+        if self._sessions.capture_takeover_conflict(event):
             return True
         if not event.session_id or event.session_id != self._workflow.session_id:
             return False

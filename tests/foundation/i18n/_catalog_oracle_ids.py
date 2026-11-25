@@ -666,6 +666,8 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.main.confirm.interrupt_message",
     "tui.main.session_in_use.message",
     "tui.main.session_in_use.ok",
+    "tui.main.session_in_use.take",
+    "tui.main.session_in_use.take_message",
     "tui.main.session_in_use.title",
     "tui.man.agents.body",
     "tui.man.aliases_none",

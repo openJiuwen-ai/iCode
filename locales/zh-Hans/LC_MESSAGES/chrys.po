@@ -8291,13 +8291,29 @@ msgstr ""
 
 #. English: OK
 #. chrys-meta={"fingerprint":"6df638960a5ede1f4a19b118e821e01478abe5fc851a4370ac9574784032e9f0","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/event_handlers.py
+#: src/chrys/app/tui/screens/dialogs/confirm.py
 msgid "tui.main.session_in_use.ok"
 msgstr "确定"
 
+#. English: Take Over
+#. chrys-meta={"fingerprint":"8b246e18245b6aa84d357caaa4bd1639728f09dcc2ced3b5fb1e7ee418c0b8ab","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_in_use.py
+msgid "tui.main.session_in_use.take"
+msgstr "接管"
+
+#. English: {message}  Take Over closes the other instance and opens this
+#. conversation here.
+#. chrys-meta={"fingerprint":"3b7e6cbde6da23de23bda32ec62ddbe637ae69573d62e0c79bb98655fe284d14","multiline":true,"placeholders":["message"]}
+#: src/chrys/app/tui/screens/dialogs/session_in_use.py
+msgid "tui.main.session_in_use.take_message"
+msgstr ""
+"{message}\n"
+"\n"
+"接管将关闭占用此会话的实例，并在当前窗口继续对话。"
+
 #. English: Session In Use
 #. chrys-meta={"fingerprint":"237cc6d792bf33e263a0532716afba37c9c73f30f36cc6936a08e358195d896e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/event_handlers.py
+#: src/chrys/app/tui/screens/dialogs/confirm.py
 msgid "tui.main.session_in_use.title"
 msgstr "会话正在使用中"
 

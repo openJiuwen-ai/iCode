@@ -1924,10 +1924,12 @@ class SessionLifecycle:
                         event.session_id, timeout=SESSION_RESTORE_ACTIVE_LOCK_TIMEOUT_SECONDS
                     )
                 except TimeoutError:
+                    message, generation = self._session.guard.conflict_details(event.session_id)
                     await reject_restore(
                         Error(
                             code="session_in_use",
-                            message=self._session.guard.conflict_message(event.session_id),
+                            message=message,
+                            session_owner_generation=generation,
                             session_id=event.session_id,
                         ),
                     )

@@ -192,13 +192,11 @@ _SESSION_CLEAR_FAILED_CODE = "session_clear_failed"
 logger = logging.getLogger(__name__)
 
 _FINISH_SESSION_READY = msg("tui.agent_load.finish.session_ready", fallback="Session ready: {profile}")
-_SESSION_IN_USE_TITLE = msg("tui.main.session_in_use.title", fallback="Session In Use")
 _SESSION_IN_USE_MESSAGE = msg(
     "tui.main.session_in_use.message",
     fallback="Session Already Open\n\n{message}",
     multiline=True,
 )
-_SESSION_IN_USE_OK = msg("tui.main.session_in_use.ok", fallback="OK")
 _HOSTED_WEB_TOOLS_OK = msg("tui.main.hosted_web_tools.ok", fallback="OK")
 _IMAGE_NOT_ATTACHED = msg("tui.vision_unsupported.title.not_attached", fallback="Image Not Attached")
 
@@ -2153,12 +2151,12 @@ class BackendEventHandler:
             if s.agent_loading:
                 self.cancel_agent_load()
             s.set_agent_running(False)
-            from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+            from chrys.app.tui.screens.dialogs.confirm import SESSION_IN_USE_OK, SESSION_IN_USE_TITLE, ConfirmDialog
 
             dialog = ConfirmDialog(
-                title=_SESSION_IN_USE_TITLE.bind(),
+                title=SESSION_IN_USE_TITLE.bind(),
                 message=_SESSION_IN_USE_MESSAGE.bind(message=DisplayBlock(display_full)),
-                confirm_label=_SESSION_IN_USE_OK.bind(),
+                confirm_label=SESSION_IN_USE_OK.bind(),
                 cancel_label=None,
                 confirm_variant="warning",
                 locale_controller=self._locale_controller,

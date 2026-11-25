@@ -147,6 +147,7 @@ class _RestoreAttempt:
     source: tuple[int, str]
     loading: bool = False
     explicit_session_id: str | None = None
+    request: SessionRestore | None = None
 
 
 async def _decline_missing_working_dir(_missing: str, _workspace_restore: bool) -> str | None:
@@ -754,10 +755,16 @@ class SessionHandler:
             opened_cwd=opened_cwd,
             apply_saved_model=self._services.apply_saved_model_on_restore,
         )
-        if workspace_id is not None:
+        return await self._publish_chat_restore(request, attempt)
+
+    async def _publish_chat_restore(self, request: SessionRestore, attempt: _RestoreAttempt) -> RestoreRequest:
+        if request.session_id is None:
+            raise ValueError("A chat restore requires a session ID.")
+        attempt.request = request
+        if request.workspace_id is not None:
             await self.bus.publish(request, raise_handler_errors=True)
             return RestoreRequest.REQUESTED
-        return await self._publish_restore_with_cwd_check(request, session_id, attempt)
+        return await self._publish_restore_with_cwd_check(request, request.session_id, attempt)
 
     def _workspace_action_owner(self) -> WorkspaceActionOwner:
         # The attempt may open its own loading dialog while checking the same workspace choice.
@@ -826,6 +833,56 @@ class SessionHandler:
                 snapshot=request.workspace_snapshot or RegistrySnapshot(),
             )
         return RestoreRequest.REQUESTED
+
+    def capture_takeover_conflict(self, event: Error) -> bool:
+        attempt = self._state.session.load_owner
+        store = self.state_store
+        if (
+            event.code != "session_in_use"
+            or not event.session_owner_generation
+            or not event.session_id
+            or not isinstance(attempt, _RestoreAttempt)
+            or attempt.request is None
+            or event.session_id != attempt.request.session_id
+            or store is None
+        ):
+            return False
+        from chrys.app.tui.screens.dialogs import SessionInUseDialog
+
+        request = attempt.request
+        session_id = event.session_id
+        self._cancel_restore_load(attempt)
+        source = self._workspace_action_owner()
+        dialog = SessionInUseDialog(
+            event.message,
+            store.sessions_root,
+            session_id,
+            event.session_owner_generation,
+            locale_controller=self._locale_controller,
+        )
+
+        async def retry() -> None:
+            if not self._can_restore(attempt) or self._workspace_action_owner() != source:
+                return
+            if not await self._begin_chat_restore_load(session_id, attempt):
+                return
+            try:
+                if self._can_restore(attempt) and self._workspace_action_owner() == source:
+                    await dialog.take_over()
+                if self._can_restore(attempt) and self._workspace_action_owner() == source:
+                    await self._publish_chat_restore(request, attempt)
+                else:
+                    self._cancel_restore_load(attempt)
+            except Exception, asyncio.CancelledError:
+                self._cancel_restore_load(attempt)
+                raise
+
+        def settle(confirmed: bool | None) -> None:
+            if confirmed or dialog.owner_changed:
+                self._callbacks.start_worker(retry)
+
+        self.push_screen(dialog, callback=settle)
+        return True
 
     def capture_missing_explicit_session(self, event: Error) -> bool:
         """A resolved chat may disappear before the engine opens its checkpoint."""
