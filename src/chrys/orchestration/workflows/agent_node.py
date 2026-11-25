@@ -43,7 +43,7 @@ from chrys.foundation.events.types import (
     InvocationStarted,
 )
 from chrys.foundation.hosted_tools import HostedToolStatus
-from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.invocations import InvocationOrigin, current_invocation_origin
 from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG, TrajectoryContext, workflow_node_actor
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
@@ -372,7 +372,9 @@ class WorkflowAgentShell:
             # kept work follows renders as first sent. Before the deadline starts, each under its own timeout: a
             # deadline that cancelled them would cancel the run, not time the node out. The pass task inherits the
             # turn they fill.
-            for warning in await self._parts.reminder.refresh_extension_context(prompt, keep=True):
+            with current_invocation_origin.set(self.origin):
+                warnings = await self._parts.reminder.refresh_extension_context(prompt, keep=True)
+            for warning in warnings:
                 await self._resources.bus.publish(warning)
             if self._abort_cause is not None:
                 return AgentAttemptResult("cancelled")

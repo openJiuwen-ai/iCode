@@ -34,6 +34,8 @@ from chrys.foundation.models import session_env as session_env
 from chrys.orchestration.startup import RuntimeBootstrap
 from tests.support.platform_fakes import platform_with_config_dir
 from tests.support.symlinks import junction_or_skip, symlink_or_skip
+from tests.support.toasts import shown_toasts
+from tests.support.tui_app_harness import await_engine_startup
 from tests.support.tui_helpers import main_screen_parts
 from tests.support.workspace_registry import default_workspace_registry as default_workspace_registry
 from tests.support.workspace_registry import move_profile_to_legacy_path, retarget_workdir_alias, save_chat_session
@@ -1353,7 +1355,7 @@ def test_missing_tui_workspace_primary_exits_before_bootstrap_in_the_ui_locale(
 
 
 @pytest.fixture
-def workspace_argv(monkeypatch, tmp_path):
+def workspace_argv(monkeypatch, tmp_path, frozen_earlier_heap):
     monkeypatch.setenv("CHRYS_MODEL_PROFILE", "")
     from chrys.app.tui import app as tui_app
     from chrys.service.llm.mock import MockChatClient
@@ -1394,16 +1396,6 @@ def workspace_argv(monkeypatch, tmp_path):
         tui_app.main(app_cls=HeadlessTui)
 
     return JsonFileStateStore(), launch, messages
-
-
-async def _await_workspace_startup(app, pilot):
-    from tests.support.waiting import wait_for
-
-    await wait_for(
-        lambda: app._startup_task is not None and app._startup_task.done(),
-        pilot=pilot,
-        description="workspace startup finished",
-    )
 
 
 @pytest.mark.parametrize("entry", ["present", "retarget", "choose-replacement", "cancel"])
@@ -1459,7 +1451,7 @@ def test_tui_argv_restore_ignores_workdir_until_replacement_is_chosen(
                 await click_when_settled(pilot, "#confirm-yes")
             else:
                 await _choose_folder(pilot, dialog, tmp_path, replacement)
-        await _await_workspace_startup(app, pilot)
+        await await_engine_startup(app)
         assert registry.snapshot().workspace_id_for_session(TARGET_SESSION) == (
             None if entry == "choose-replacement" else workspace.id
         )
@@ -1537,9 +1529,9 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
 
     async def examine(app, pilot):
         if failing:
-            from tests.support.waiting import wait_for
+            from tests.support.waiting import MAIN_SCREEN_BUILD_TIMEOUT, wait_for
 
-            await wait_for(lambda: bool(messages), pilot=pilot, description="startup error")
+            await wait_for(lambda: bool(messages), timeout=MAIN_SCREEN_BUILD_TIMEOUT, description="startup error")
             return
         if outcome == "missing":
             from chrys.app.tui.screens.dialogs.confirm import StartupSessionChoiceDialog
@@ -1549,7 +1541,7 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
             dialog = await _top_screen(pilot, StartupSessionChoiceDialog)
             assert "was not found" in str(dialog.query_one("#confirm-message", Static).content)
             await click_when_settled(pilot, "#confirm-yes")
-        await _await_workspace_startup(app, pilot)
+        await await_engine_startup(app)
         engine = app._engine
         assert Path.cwd().samefile(primary)
         assert engine.workspace.primary_cwd == str(primary)
@@ -1564,7 +1556,7 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
 
             # The move notice is posted after startup settles; wait for it rather than racing it.
             await wait_for(
-                lambda: any("Previous" in str(n.message) and "Team" in str(n.message) for n in app._notifications),
+                lambda: any("Previous" in str(n.message) and "Team" in str(n.message) for n in shown_toasts(app)),
                 pilot=pilot,
                 description="workspace move notice",
             )

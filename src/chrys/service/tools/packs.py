@@ -131,6 +131,8 @@ class ToolBuild:
     """Where ``todo_write`` announces a changed list."""
     web: WebTools | None = None
     """Set by :func:`assemble_tools` before any pack is created; callers leave it None."""
+    caller_name: str | None = None
+    """The sub-agent tool name or workflow node ID. The main agent uses its profile name."""
 
 
 @dataclass(frozen=True, slots=True)

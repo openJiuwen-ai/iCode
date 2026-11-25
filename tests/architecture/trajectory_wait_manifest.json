@@ -1480,7 +1480,7 @@
     },
     "chrys.orchestration.engine.run.runner": {
       "TurnRunner._ask_extension_contexts": [
-        ["awaitable", "await reminder.refresh_extension_context(prompt, keep=keep)", "unresolved"],
+        ["awaitable", "await loaded.reminder_middleware.refresh_extension_context(prompt, keep=keep)", "unresolved"],
         ["awaitable", "await self._bus.publish(warning)", "unresolved"]
       ],
       "TurnRunner._compute_workspace_notice": [

@@ -15,6 +15,7 @@ from textual.app import App
 from chrys.app.tui import app as chrys_app
 from chrys.app.tui.support import gc_freeze
 from chrys.app.tui.theme import TUI_VARIABLE_DEFAULTS, with_tui_css_variables
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.toasts import record_shown_toasts
 
 
@@ -105,10 +106,8 @@ def frozen_earlier_heap() -> Iterator[None]:
 
     Use only for tests that do not exercise the GC freeze or scroll GC pause themselves.
     """
-    gc.collect()
-    gc.freeze()
-    yield
-    gc.unfreeze()
+    with earlier_tests_heap_frozen(collect_first=True):
+        yield
 
 
 @pytest.fixture

@@ -643,6 +643,7 @@ class SubAgentTools:
             tool_build = tool_packs.ToolBuild(
                 tools=profile.tools,
                 agent_name=profile.name,
+                caller_name=tool_name,
                 runtime=runtime,
                 settings=settings,
                 session_id=self._session_id,
@@ -1822,7 +1823,8 @@ class SubAgentTools:
                 )
                 sub_agent_hook_started = True
                 # After the start event, so the parent's card shows the child while its contexts answer.
-                context_warnings = await invocation_reminder.refresh_extension_context(prompt)
+                with current_invocation_origin.set(origin):
+                    context_warnings = await invocation_reminder.refresh_extension_context(prompt)
                 if self._bus is not None:
                     for warning in context_warnings:
                         await self._bus.publish(warning)
