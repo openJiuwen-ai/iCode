@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 from rich.cells import cell_len
+from rich.text import Text
 
 from chrys.app.tui.support.path_shortcuts import PATH_DISPLAY_MAX, format_recent_path_label
 
@@ -117,3 +118,57 @@ def test_every_label_wraps_the_path_it_names() -> None:
         label = format_recent_path_label(path)
         tail = label.split("…")[-1].lstrip("/\\")
         assert path.rstrip("/\\").endswith(tail), f"{label!r} does not tail {path!r}"
+
+
+def test_same_named_dirs_are_told_apart_by_their_parent() -> None:
+    first = format_recent_path_label("/tmp/work/branch-a/shared-project-01")
+    second = format_recent_path_label("/tmp/work/branch-b/shared-project-01")
+    assert first == "…/branch-a/shared-project-01"
+    assert second == "…/branch-b/shared-project-01"
+    assert first != second
+    assert cell_len(first) <= PATH_DISPLAY_MAX and cell_len(second) <= PATH_DISPLAY_MAX
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        ("release-notes-and-assets-2026❤️", "…ase-notes-and-assets-2026❤️"),
+        ("2026-release-notes-and-design-assets❤️☀️✈️", "…tes-and-design-assets❤️☀️✈️"),
+    ],
+)
+def test_an_emoji_variant_label_never_exceeds_the_cell_budget(name: str, shown: str) -> None:
+    label = format_recent_path_label("/tmp/" + name)
+    assert label == shown
+    assert cell_len(label) <= PATH_DISPLAY_MAX
+
+
+def test_a_posix_trailing_backslash_is_part_of_the_directory_name() -> None:
+    assert format_recent_path_label("/home/user/demo\\") == "/home/user/demo\\"
+    assert format_recent_path_label("/home/user/demo") != format_recent_path_label("/home/user/demo\\")
+
+
+def test_a_tab_in_a_directory_name_does_not_push_the_label_past_its_budget() -> None:
+    """``cell_len`` scores a tab as zero cells while the renderer expands it, so it must be neutralized."""
+    path = "/tmp/abc\t12345678901234567890"
+    label = format_recent_path_label(path)
+
+    assert not any(ch < " " or ch == "\x7f" for ch in label), f"{label!r} still holds a control character"
+    assert cell_len(label) <= PATH_DISPLAY_MAX
+    assert Text(label).cell_len <= PATH_DISPLAY_MAX
+
+
+def test_a_line_break_in_a_directory_name_keeps_the_label_on_one_line() -> None:
+    label = format_recent_path_label("/tmp/a\nb")
+
+    assert "\n" not in label
+    assert not any(ch < " " or ch == "\x7f" for ch in label), f"{label!r} still holds a control character"
+    assert cell_len(label) <= PATH_DISPLAY_MAX
+
+
+def test_a_posix_colon_in_the_second_position_is_not_a_drive_letter() -> None:
+    assert format_recent_path_label("/:cache/demo\\") == "/:cache/demo\\"
+    assert format_recent_path_label("/:cache/demo") != format_recent_path_label("/:cache/demo\\")
+
+
+def test_a_drive_letter_still_drops_a_trailing_separator() -> None:
+    assert format_recent_path_label("C:/x/") == "C:/x"
