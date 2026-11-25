@@ -897,7 +897,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             new_session=self._create_new_session,
             clear_session=self._clear_current_session,
             quit_app=self.action_quit,
-            resume_session=self._resume_last_session,
+            resume_session=self._resume_session,
             fork_session=self._fork_current_session,
             ask_side_question=self.action_btw,
             browse_session_list=self.action_sessions,
@@ -2352,10 +2352,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         await self._sessions.create_new_session()
 
     @work(thread=False)
-    async def _resume_last_session(self) -> None:
+    async def _resume_session(self, selector: str) -> None:
         if self._state.run.agent_loading:
             return
-        await self._sessions.resume_last_session()
+        await self._sessions.resume_session(selector)
 
     @work(thread=False)
     async def _fork_current_session(self) -> None:
@@ -2873,7 +2873,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._navigation.quit()
 
     def action_sessions(self) -> None:
-        """Open the sessions modal (Ctrl+N)."""
+        """Open the sessions modal (F1)."""
         self._navigation.sessions()
 
     def _clear_current_session(self) -> None:
@@ -3151,7 +3151,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return event.session_id is None or event.session_id == self.chat_session_id
 
     def _route_session_error(self, event: Error) -> bool:
-        if self._sessions.capture_restore_missing_cwd(event):
+        if self._sessions.capture_missing_explicit_session(event) or self._sessions.capture_restore_missing_cwd(event):
             return True
         if event.session_id and event.session_id == self._startup_restore_target:
             self._startup_restore_error = event

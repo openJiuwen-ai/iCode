@@ -29,6 +29,7 @@ from chrys.app.tui.screens.main.ports import (
 from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider, enabled_hook_count
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, WorkspaceActionOwner
 from chrys.app.tui.screens.sessions import WorkflowSessionPick
+from chrys.app.tui.session_lookup import RESUME_TITLE, SESSION_NOT_FOUND, lookup_session
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
@@ -95,7 +96,6 @@ _FINISH_PROFILE_SWITCHED = msg(
     "tui.agent_load.finish.profile_switched",
     fallback="Profile switched: {from_label} -> {to_label}",
 )
-_RESUME_TITLE = msg("tui.session.title.resume", fallback="Resume")
 _FORK_TITLE = msg("tui.session.title.fork", fallback="Fork")
 CLEAR_SESSION_TITLE = msg("tui.main.confirm.clear_title", fallback="Clear Session")
 _CLEAR_FAILED = msg(
@@ -146,6 +146,7 @@ class RestoreRequest(Enum):
 class _RestoreAttempt:
     source: tuple[int, str]
     loading: bool = False
+    explicit_session_id: str | None = None
 
 
 async def _decline_missing_working_dir(_missing: str, _workspace_restore: bool) -> str | None:
@@ -507,8 +508,8 @@ class SessionHandler:
             if source == self._session_action_owner():
                 self._state.session.failed_new_session_id = None
 
-    async def resume_last_session(self) -> None:
-        """Resume the most recent chat session.
+    async def resume_session(self, selector: str = "") -> None:
+        """Open a saved session by ID, or resume the latest chat when no ID is given.
 
         The restore modal opens before the lookup so a slow first-time index
         backfill still shows progress.
@@ -523,7 +524,11 @@ class SessionHandler:
             self._cancel_restore_load(attempt)
             return
         try:
-            selection = await store.load_latest_session_id(chat_only=True)
+            selection = (
+                await lookup_session(store, selector)
+                if selector
+                else await store.load_latest_session_id(chat_only=True)
+            )
         except asyncio.CancelledError:
             self._cancel_restore_load(attempt)
             raise
@@ -534,13 +539,21 @@ class SessionHandler:
         if not self._can_restore(attempt):
             self._cancel_restore_load(attempt)
             return
-        if selection is None:
+        if selection is None or isinstance(selection, MessageRef):
             self._cancel_restore_load(attempt)
-            self.notify(_NO_SAVED_SESSIONS.bind(), title=_RESUME_TITLE.bind(), severity="warning", timeout=3)
+            self.notify(selection or _NO_SAVED_SESSIONS.bind(), title=RESUME_TITLE.bind(), severity="warning")
             return
         # The resolved id fills in the subtitle on the lookup dialog.
         try:
-            await self._restore_chat_session(selection, attempt)
+            if isinstance(selection, str):
+                await self._restore_chat_session(selection, attempt)
+            elif selection.kind == "workflow":
+                self._cancel_restore_load(attempt)
+                self._callbacks.reset_rollback_request()
+                await self._view.restore_workflow_session(selection.session_id, open_from_chat=True)
+            else:
+                attempt.explicit_session_id = selection.session_id
+                await self._restore_chat_session(selection.session_id, attempt, saved_cwd=selection.primary_cwd)
         except Exception, asyncio.CancelledError:
             self._cancel_restore_load(attempt)
             raise
@@ -818,6 +831,20 @@ class SessionHandler:
                 snapshot=request.workspace_snapshot or RegistrySnapshot(),
             )
         return RestoreRequest.REQUESTED
+
+    def capture_missing_explicit_session(self, event: Error) -> bool:
+        """A resolved chat may disappear before the engine opens its checkpoint."""
+        owner = self._state.session.load_owner
+        if (
+            event.code != "session_not_found"
+            or not isinstance(owner, _RestoreAttempt)
+            or not event.session_id
+            or event.session_id != owner.explicit_session_id
+        ):
+            return False
+        self._cancel_restore_load(owner)
+        self.notify(SESSION_NOT_FOUND.bind(session_id=event.session_id), title=RESUME_TITLE.bind(), severity="warning")
+        return True
 
     def capture_restore_missing_cwd(self, event: Error) -> bool:
         request = self._restore_awaiting_cwd

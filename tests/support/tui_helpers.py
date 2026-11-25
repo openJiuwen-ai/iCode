@@ -1140,7 +1140,7 @@ class SuggestionScreen:
     def action_pick_theme(self) -> None:
         return
 
-    def _resume_last_session(self) -> None:
+    def _resume_session(self, selector: str) -> None:
         return
 
     def _fork_current_session(self) -> None:
@@ -1239,7 +1239,7 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         new_session=screen._create_new_session,
         clear_session=screen._clear_current_session,
         quit_app=screen.action_quit,
-        resume_session=screen._resume_last_session,
+        resume_session=screen._resume_session,
         fork_session=screen._fork_current_session,
         ask_side_question=lambda _question: None,
         workflow_selection=lambda: None,

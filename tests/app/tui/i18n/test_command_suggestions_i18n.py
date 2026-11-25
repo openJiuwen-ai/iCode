@@ -164,7 +164,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
         "  /fork         - Fork the current session\n"
         "  /btw          - Ask a side question without changing the main task\n"
         "  /rename       - Set or clear a custom session title\n"
-        "  /sessions     - Browse saved sessions\n"
+        "  /sessions     - Browse saved sessions or open one by ID\n"
         "  /theme        - Set color theme\n"
         "  /language     - Set display language\n"
         "  /chdir        - Change working directory\n"
