@@ -13,8 +13,9 @@ from rich.console import Console
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
 
-_UNUSABLE_TABLE_WIDTH = 79
-"""Smallest usable ``Console.width``; on legacy Windows this is ``COLUMNS=80`` minus one."""
+_UNUSABLE_TABLE_WIDTH = 61
+"""Smallest width that still keeps every listing column; on legacy Windows
+this is COLUMNS=62 minus one. Narrower terminals fall back to the full width."""
 
 _FALLBACK_TABLE_WIDTH = 120
 """Wide enough for all current columns, including a 35-character profile ID."""
@@ -26,12 +27,14 @@ def stdout_console() -> Console:
     ``rich`` reads its width from ``COLUMNS``; a degenerate value either makes
     the table render as the empty string or leaves too little room for every
     column, so the listing exits zero while silently hiding data. Below the
-    usable width we substitute a width that fits all current columns. The
-    assignment is unconditional: it also freezes a normal width at construction
-    time, so Rich cannot re-probe the terminal just before printing.
+    usable width we substitute a width that fits all current columns. The width
+    is read once at construction and then frozen by the unconditional assignment,
+    so Rich cannot re-probe the terminal between the two reads and print at a
+    different width from the one that was checked.
     """
     console = Console(file=sys.stdout, highlight=False)
-    console.width = _FALLBACK_TABLE_WIDTH if console.width < _UNUSABLE_TABLE_WIDTH else console.width
+    width = console.width
+    console.width = _FALLBACK_TABLE_WIDTH if width < _UNUSABLE_TABLE_WIDTH else width
     return console
 
 

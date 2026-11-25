@@ -15,7 +15,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from rich.cells import cell_len
+from rich.console import Console
 
+from chrys.app.cli.display import stdout_console
 from chrys.app.cli.profiles import _AgentRow, _ModelRow, _print_agents, _print_models
 from chrys.app.cli.workflow import _print_workflows, _WorkflowRow
 
@@ -83,6 +86,36 @@ EMPTY_MESSAGES = {
 }
 
 
+class _WidthReadProbe:
+    """A ``Console.width`` property that reports 80 first and 1 on a second read.
+
+    Once the width has been assigned, reads fall back to Rich's real getter so
+    the test can verify the stored value without polluting the read count.
+    """
+
+    def __init__(self, original: property) -> None:
+        """Wrap *original*, remembering its accessors and counting no reads yet."""
+        original_get = original.fget
+        original_set = original.fset
+        assert original_get is not None and original_set is not None
+        self._get = original_get
+        self._set = original_set
+        self.reads: int = 0
+        self._assigned: bool = False
+
+    def get(self, console: Console) -> int:
+        """Return 80 on the first read, 1 on a later read, or the stored width."""
+        self.reads += 1
+        if self._assigned:
+            return int(self._get(console))
+        return 80 if self.reads == 1 else 1
+
+    def set(self, console: Console, width: int) -> None:
+        """Store *width* through Rich's setter and switch reads to the real getter."""
+        self._assigned = True
+        self._set(console, width)
+
+
 @pytest.mark.parametrize("listing", list(LISTINGS))
 @pytest.mark.parametrize("columns", DEGENERATE_WIDTHS)
 def test_a_listing_never_goes_silent_at_a_degenerate_width(
@@ -131,3 +164,38 @@ def test_an_empty_listing_still_prints_to_stdout_at_a_degenerate_width(
     captured = capsys.readouterr()
     assert captured.err == "", f"{listing} wrote to stderr at COLUMNS=0: {captured.err!r}"
     assert EMPTY_MESSAGES[listing] in captured.out
+
+
+def test_a_normal_narrow_terminal_keeps_its_native_layout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """COLUMNS=78 must render at the terminal width, not the fallback width."""
+    printer, rows = LISTINGS["agents"]
+    monkeypatch.setenv("COLUMNS", "78")
+
+    printer(rows)
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.strip()
+    for value in CONTROL_FIELDS["agents"]:
+        assert value in captured.out, f"agent field {value!r} missing at COLUMNS=78:\n{captured.out}"
+
+    line_widths = [cell_len(line) for line in captured.out.splitlines()]
+    assert line_widths, "the agent table produced no lines"
+    assert max(line_widths) <= 78, f"a line overflows COLUMNS=78: {line_widths}"
+    # The fallback width would pad every line to 120; a native table stays
+    # within the terminal budget (77 on legacy Windows, 78 elsewhere).
+    assert any(61 <= width <= 78 for width in line_widths), f"not rendered at native width: {line_widths}"
+
+
+def test_stdout_console_reads_width_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The width used for the floor check is the width set on the console."""
+    probe = _WidthReadProbe(Console.width)
+    monkeypatch.setattr(Console, "width", property(probe.get, probe.set))
+
+    console = stdout_console()
+    reads_during_call = probe.reads
+
+    assert console.width == 80, "the console kept a width other than the one checked"
+    assert reads_during_call == 1, "Console.width was read more than once"
