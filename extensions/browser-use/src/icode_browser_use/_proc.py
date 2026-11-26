@@ -18,6 +18,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -178,7 +179,7 @@ def atomic_write_private(
             hardened = harden_private(temporary, is_dir=False, strict=strict)
         if reject_symlink and path.is_symlink():
             raise OSError(f"refusing to replace symlink: {path}")
-        os.replace(temporary, path)
+        _replace(temporary, path)
         return hardened
     except BaseException:
         if fd >= 0:
@@ -187,6 +188,23 @@ def atomic_write_private(
         with contextlib.suppress(OSError):
             temporary.unlink()
         raise
+
+
+def _replace(source: Path, target: Path) -> None:
+    """``os.replace`` that rides out a concurrent reader on Windows.
+
+    Windows refuses to replace a file another handle has open (``WinError 5``),
+    which happens whenever a reader loads the file at that moment; readers are
+    brief, so retry for a short, bounded time instead of losing the write.
+    """
+    for attempt in range(20):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == 19:
+                raise
+            time.sleep(0.025)
 
 
 def rotate_log_if_needed(path: Path, *, max_bytes: int = 5 * 1024 * 1024) -> None:

@@ -241,6 +241,28 @@ def _try_acquire(fd: int) -> bool:
     return True
 
 
+def try_acquire_instance_lock(state_dir: Path) -> InstanceLock | None:
+    """Take the state-dir lock only if nobody holds it right now; never waits.
+
+    Proves current ownership before a destructive step: a handle that once held
+    the lock (and released it when idle) must not act on a folder that another
+    instance has since taken over.
+    """
+    path = state_dir / "instance.lock"
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+    try:
+        if _try_acquire(fd):
+            return InstanceLock(path=path, _fd=fd, owner_path=_write_owner(path, fd), pid=os.getpid())
+    except BaseException:
+        os.close(fd)
+        raise
+    os.close(fd)
+    return None
+
+
 async def acquire_instance_lock(state_dir: Path, *, wait: float = LOCK_WAIT) -> InstanceLock:
     """Acquire the state-dir lock, waiting up to *wait* seconds.
 

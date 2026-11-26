@@ -1754,3 +1754,133 @@ def test_save_state_isolates_archives_across_slots_and_sessions(tmp_path, monkey
         assert path.is_file()
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["localStorage"]["https://example.com"]["marker"] == marker
+
+
+def test_close_never_deletes_a_state_dir_another_instance_has_taken_over(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A handle that held the slot lock once (then released it when idle) must not
+    remove the folder after another instance acquired the same lock."""
+    from icode_browser_use.locking import acquire_instance_lock
+
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    sub_ctx = ctx(
+        tmp_path,
+        session="s-own",
+        agent="Worker",
+        caller_name="worker_tool",
+        invocation_type="sub_agent",
+        invocation_id="inv-own",
+    )
+
+    async def scenario() -> Path:
+        a_id = (await ext.browser_open(sub_ctx)).removeprefix("browser_id: ").strip()
+        a = ext._browsers[a_id]
+        a.session._owns_state_dir = True  # A started once, then released the lock on idle
+        state_dir = a.session.cfg.state_dir
+        b_lock = await acquire_instance_lock(state_dir, wait=0)  # B takes the slot over
+        try:
+            live = state_dir / "Default" / "Preferences"
+            live.parent.mkdir(parents=True)
+            live.write_text("in use by B", encoding="utf-8")
+            await ext.browser_close(sub_ctx, a_id)
+            return live
+        finally:
+            b_lock.release()
+
+    live = asyncio.run(scenario())
+    assert live.read_text(encoding="utf-8") == "in use by B"
+
+
+def test_close_cleans_a_state_dir_nobody_holds(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    sub_ctx = ctx(
+        tmp_path,
+        session="s-free",
+        agent="Worker",
+        caller_name="worker_tool",
+        invocation_type="sub_agent",
+        invocation_id="inv-free",
+    )
+
+    async def scenario() -> Path:
+        a_id = (await ext.browser_open(sub_ctx)).removeprefix("browser_id: ").strip()
+        a = ext._browsers[a_id]
+        a.session._owns_state_dir = True
+        state_dir = a.session.cfg.state_dir
+        (state_dir / "Default").mkdir(parents=True)
+        await ext.browser_close(sub_ctx, a_id)
+        return state_dir
+
+    state_dir = asyncio.run(scenario())
+    assert not state_dir.exists()
+    if state_dir.parent.exists():
+        assert not list(state_dir.parent.glob(".reclaim-*"))
+
+
+def test_concurrent_browser_opens_keep_every_record(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two worker threads must not both read the old manifest and overwrite each other."""
+    import contextlib
+    import threading
+
+    real_load = registry.load
+    both_read = threading.Barrier(2)
+
+    def overlapping_load(path):
+        result = real_load(path)
+        # Unserialized, both writers now hold the same stale list; serialized, the
+        # second never gets here while the first waits, so the barrier just times out.
+        with contextlib.suppress(threading.BrokenBarrierError):
+            both_read.wait(timeout=0.3)
+        return result
+
+    monkeypatch.setattr(registry, "load", overlapping_load)
+    context = ctx(tmp_path)
+
+    async def scenario() -> set[str]:
+        opened = await asyncio.gather(ext.browser_open(context), ext.browser_open(context))
+        return {text.removeprefix("browser_id: ").strip() for text in opened}
+
+    ids = asyncio.run(scenario())
+    assert len(ids) == 2
+    records, _problem = real_load(ext._manifest_path(context))
+    assert {record.browser_id for record in records} == ids
+
+
+def test_failed_implicit_navigate_keeps_the_previous_generation_record(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = ctx(tmp_path)
+    manifest = ext._manifest_path(context)
+    previous = registry.new_record(
+        browser_id="b-old",
+        resume_id="s0-old",
+        session_id=context.session_id,
+        agent_name=context.agent_name,
+        owner_key=ext._owner_key(context),
+        backend="owned",
+        generation="old",
+        slot=0,
+    )
+    registry.save(manifest, [previous])
+
+    async def slot_locked(_browser, _name, _arguments):
+        raise ToolError("browser_unavailable: reason=state_dir_locked", code="browser_unavailable")
+
+    monkeypatch.setattr(ext, "_run", slot_locked)
+    with pytest.raises(ToolError):
+        asyncio.run(ext.browser_navigate(context, "https://example.com/"))
+    assert [record.resume_id for record in registry.load(manifest)[0]] == ["s0-old"]
+
+
+def test_successful_implicit_navigate_commits_its_record(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = ctx(tmp_path)
+    manifest = ext._manifest_path(context)
+
+    async def navigated(_browser, _name, _arguments):
+        return "ok"
+
+    monkeypatch.setattr(ext, "_run", navigated)
+    text = asyncio.run(ext.browser_navigate(context, "https://example.com/"))
+    browser_id = text.splitlines()[0].removeprefix("browser_id: ").strip()
+    assert [record.browser_id for record in registry.load(manifest)[0]] == [browser_id]

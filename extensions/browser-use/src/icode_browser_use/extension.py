@@ -37,6 +37,7 @@ import logging
 import os
 import secrets
 import shutil
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,7 +51,7 @@ from .actions import build_tool_defs
 from .broker_client import BrokerCallUnknown, BrokerSession
 from .config import BrowserConfig, BrowserEnv, ConfigError
 from .errors import Blocked, BrowserError, ConnectionClosed, Unavailable
-from .locking import acquire_instance_lock, probe_instance_lock
+from .locking import InstanceLock, acquire_instance_lock, probe_instance_lock, try_acquire_instance_lock
 from .policy import canonical_origin
 from .logging import set_log_sink
 from .prompts import BROWSER_PLAYBOOK, COMPACT_BROWSER_PLAYBOOK
@@ -150,6 +151,9 @@ class _Browser:
     record: registry.ManifestRecord | None = None
     manifest: Path | None = None
     ephemeral_state_dir: Path | None = None
+    #: True while an implicit browser_navigate has not started successfully yet:
+    #: its record is not written, so a failed start keeps the previous generation's.
+    record_pending: bool = False
     close_task: asyncio.Task[None] | None = None
     visited_origins: list[str] = field(default_factory=list)
     blocked_origins: list[str] = field(default_factory=list)
@@ -400,13 +404,26 @@ def _save_record(path: Path | None, record: registry.ManifestRecord) -> None:
     if path is None:
         return
     try:
-        records, problem = registry.load(path)
-        if problem in {"unreadable", "unexpected shape"}:
-            logger.warning("browser manifest %s; skipping write to avoid wiping records", problem)
-            return
-        registry.save(path, registry.supersede(records, record))
+        with _manifest_lock(path):
+            records, problem = registry.load(path)
+            if problem in {"unreadable", "unexpected shape"}:
+                logger.warning("browser manifest %s; skipping write to avoid wiping records", problem)
+                return
+            registry.save(path, registry.supersede(records, record))
     except OSError as exc:
         logger.warning("browser manifest write failed: %s", exc)
+
+
+_MANIFEST_LOCKS: dict[str, threading.Lock] = {}
+_MANIFEST_LOCKS_GUARD = threading.Lock()
+
+
+def _manifest_lock(path: Path) -> threading.Lock:
+    """One lock per manifest file: its load-modify-save runs in worker threads, and an
+    atomic replace alone lets the later writer silently discard the earlier change."""
+    key = os.path.normcase(os.path.abspath(path))
+    with _MANIFEST_LOCKS_GUARD:
+        return _MANIFEST_LOCKS.setdefault(key, threading.Lock())
 
 
 async def _asave_record(path: Path | None, record: registry.ManifestRecord) -> None:
@@ -423,7 +440,7 @@ def _browser_origin(browser: _Browser) -> str:
 
 async def _apersist(browser: _Browser) -> None:
     """Async off-loop origin persistence."""
-    if browser.manifest is None or browser.record is None:
+    if browser.manifest is None or browser.record is None or browser.record_pending:
         return
     origin = _browser_origin(browser)
     if browser.record.origin == origin:
@@ -937,13 +954,15 @@ async def browser_navigate(
             browser = _open(ctx)
         finally:
             _DEFER_MANIFEST_PERSIST = False
-        if browser.record is not None:
-            await _asave_record(browser.manifest, browser.record)
+        # Commit the record only once the browser has started: writing it now would
+        # supersede this slot's previous generation even if the start then fails.
+        browser.record_pending = browser.record is not None
         allocated = True
     try:
         text = await _run(browser, "browser_navigate", {"url": url})
     except ToolError as exc:
         if exc.code == "browser_login_required":
+            await _commit_pending_record(browser)
             if not browser_id.strip():
                 raise ToolError(f"browser_id: {browser.id}\n{exc.message}", code=exc.code) from exc
             raise
@@ -956,7 +975,18 @@ async def browser_navigate(
             with contextlib.suppress(Exception):
                 await _ensure_close_task(browser)
         raise
+    await _commit_pending_record(browser)
     return f"browser_id: {browser.id}\n{text}"
+
+
+async def _commit_pending_record(browser: _Browser) -> None:
+    """Write an implicit navigate's record once its browser is up (see ``record_pending``)."""
+    if not browser.record_pending:
+        return
+    browser.record_pending = False
+    if browser.record is not None:
+        browser.record = dataclasses.replace(browser.record, origin=_browser_origin(browser), updated_at=time.time())
+        await _asave_record(browser.manifest, browser.record)
 
 
 @_tool(requires_approval=False)
@@ -1404,27 +1434,47 @@ async def browser_screenshot(
     )
 
 
-def _stage_ephemeral_dir(state_dir: Path) -> tuple[Path | None, bool]:
-    """Atomically move *state_dir* aside before releasing its slot.
+def _stage_ephemeral_dir(state_dir: Path) -> tuple[Path | None, bool, InstanceLock | None]:
+    """Move *state_dir* aside before releasing its slot, but only while owning it.
 
-    Returns ``(cleanup_target, slot_can_be_reused)``. If the directory does not
-    exist, returns ``(None, True)`` so no background delete is ever scheduled
-    against a path a later handle might create. If the rename succeeds, the
-    original ``slot-N`` path is clear and can safely be reused while background
-    deletion removes the renamed directory. If the rename fails (e.g. transient
-    Windows lock), the caller must keep the slot reserved until recursive
-    deletion finishes.
+    Returns ``(cleanup_target, slot_can_be_reused, held_lock)``. Ownership is
+    proven by taking the folder's instance lock now, not by having held it once:
+    a handle whose lock was released on idle must never delete a folder another
+    instance has taken over since, so a busy lock means "leave it alone".
+
+    A successful rename clears ``slot-N`` at once and the renamed folder is
+    deleted in the background. If renaming is impossible (e.g. a transient
+    Windows lock), the folder is deleted in place while *held_lock* is kept, and
+    the caller keeps the slot reserved and releases the lock afterwards.
     """
     if not state_dir.exists():
-        return None, True
+        return None, True, None
+    lock = try_acquire_instance_lock(state_dir)
+    if lock is None:
+        logger.warning("ephemeral state dir %s is held by another instance; leaving it in place", state_dir)
+        return None, True, None
     staged = state_dir.parent / f".reclaim-{state_dir.name}-{secrets.token_hex(4)}"
-    try:
-        state_dir.rename(staged)
-        return staged, True
-    except FileNotFoundError:
-        return None, True
-    except OSError:
-        return state_dir, False
+    attempts = 2 if os.name == "nt" else 1
+    for attempt in range(attempts):
+        if attempt:
+            # Windows cannot rename a folder that has an open file (our lock) in
+            # it: release, rename at once, and re-prove ownership if that fails.
+            lock.release()
+        try:
+            state_dir.rename(staged)
+        except FileNotFoundError:
+            lock.release()
+            return None, True, None
+        except OSError:
+            continue
+        lock.release()
+        return staged, True, None
+    if attempts > 1:
+        lock = try_acquire_instance_lock(state_dir)
+        if lock is None:
+            logger.warning("ephemeral state dir %s is held by another instance; leaving it in place", state_dir)
+            return None, True, None
+    return state_dir, False, lock
 
 
 def _cleanup_ephemeral_dir(state_dir: Path) -> None:
@@ -1448,36 +1498,43 @@ async def _close_and_forget(browser: _Browser) -> None:
     halfway: the record disappears with the browser, not with the caller.
     """
     cleanup_target: Path | None = None
+    cleanup_lock: InstanceLock | None = None
     reserved_slot: tuple[str | None, str, str | None, int] | None = None
     try:
         await browser.session.aclose()
     finally:
         if browser.ephemeral_state_dir is not None and bool(getattr(browser.session, "owns_state_dir", False)):
-            cleanup_target, slot_free = _stage_ephemeral_dir(browser.ephemeral_state_dir)
+            cleanup_target, slot_free, cleanup_lock = _stage_ephemeral_dir(browser.ephemeral_state_dir)
             if not slot_free:
                 reserved_slot = _slot_key(browser)
                 _reclaiming_slots.add(reserved_slot)
         _browsers.pop(browser.id, None)
-        # Off the loop: on Windows the rewrite runs icacls.
-        await asyncio.to_thread(_drop_record, browser)
-        if cleanup_target is not None:
-            try:
+        try:
+            # Off the loop: on Windows the rewrite runs icacls.
+            await asyncio.to_thread(_drop_record, browser)
+            if cleanup_target is not None:
                 await asyncio.to_thread(_cleanup_ephemeral_dir, cleanup_target)
-            finally:
-                if reserved_slot is not None:
-                    _reclaiming_slots.discard(reserved_slot)
+        finally:
+            if cleanup_lock is not None:
+                cleanup_lock.release()
+            if reserved_slot is not None:
+                _reclaiming_slots.discard(reserved_slot)
 
 
 def _drop_record(browser: _Browser) -> None:
     """Remove the durable record that would otherwise offer a resume for a closed browser."""
     if browser.record is None or not browser.record.resume_id or browser.manifest is None:
         return
+    if browser.record_pending:
+        # Never written: dropping would only race with the previous generation's record.
+        return
     try:
-        records, problem = registry.load(browser.manifest)
-        if problem in {"unreadable", "unexpected shape"}:
-            logger.warning("browser manifest skipped drop (%s): %s", problem, browser.manifest)
-            return
-        registry.save(browser.manifest, registry.drop(records, browser.record.resume_id))
+        with _manifest_lock(browser.manifest):
+            records, problem = registry.load(browser.manifest)
+            if problem in {"unreadable", "unexpected shape"}:
+                logger.warning("browser manifest skipped drop (%s): %s", problem, browser.manifest)
+                return
+            registry.save(browser.manifest, registry.drop(records, browser.record.resume_id))
     except OSError as exc:
         logger.warning("browser manifest update failed: %s", exc)
 

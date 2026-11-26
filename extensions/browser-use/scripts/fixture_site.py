@@ -519,6 +519,39 @@ _SMALL_SCROLLER_PAGE = (
 )
 
 
+#: Paging by characters must count an emoji (a UTF-16 surrogate pair) as one
+#: character and never split it: the boundary emoji sits at index 199..200.
+_EMOJI_TEXT_PAGE = (
+    '<!doctype html><html><head><meta charset="utf-8"><title>fixture-emoji-text</title></head><body>'
+    '<p id="short" aria-label="Short Paragraph">Hello \U0001f600</p>'
+    '<p id="boundary" aria-label="Boundary Paragraph">' + "a" * 199 + "\U0001f600" + "tail-after-emoji</p>"
+    "</body></html>"
+)
+
+
+#: A tall same-origin iframe inside a tall page: scrolling a target inside the
+#: iframe must move the iframe's own window, never the outer page.
+_SCROLL_IFRAME_PAGE = (
+    '<!doctype html><html><head><meta charset="utf-8"><title>fixture-scroll-iframe</title></head>'
+    '<body style="margin:0;height:3000px;"><h1>fixture-scroll-iframe</h1>'
+    '<iframe id="tall-frame" style="width:400px;height:300px;border:0;" srcdoc="'
+    "&lt;body style='margin:0;height:3000px;'&gt;&lt;button id='inner'&gt;Inner Frame Button&lt;/button&gt;&lt;/body&gt;"
+    '"></iframe></body></html>'
+)
+
+
+#: target + to_text: the reported position must be read after to_text has
+#: scrolled the panel to its last row, not after the first step.
+_SCROLL_TO_TEXT_PAGE = (
+    '<!doctype html><html><head><meta charset="utf-8"><title>fixture-scroll-to-text</title></head>'
+    "<body><h1>fixture-scroll-to-text</h1>"
+    '<div id="panel" aria-label="Scroll Panel" style="width:300px;height:100px;overflow:auto;border:1px solid #333;">'
+    + "".join(f'<div style="height:20px;">Panel Row {i}</div>' for i in range(1, 51))
+    + '<div style="height:20px;">Bottom Marker Row</div></div>'
+    "</body></html>"
+)
+
+
 _LONG_LABEL_TEXT = (
     "Perform the comprehensive multi-step verification action for the quarterly financial audit report "
     "with extended descriptive context exceeding one hundred and twenty characters"
@@ -722,6 +755,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, _IFRAME_BELOW_FOLD_PAGE.encode())
         elif path == "/small-scroller":
             self._send(200, _SMALL_SCROLLER_PAGE.encode())
+        elif path == "/emoji-text":
+            self._send(200, _EMOJI_TEXT_PAGE.encode())
+        elif path == "/scroll-iframe":
+            self._send(200, _SCROLL_IFRAME_PAGE.encode())
+        elif path == "/scroll-to-text":
+            self._send(200, _SCROLL_TO_TEXT_PAGE.encode())
         elif path == "/huge-node":
             raw_mb = _query_value(query, "mb") or "34"
             mb = min(max(int(raw_mb) if raw_mb.isdigit() else 34, 1), 40)

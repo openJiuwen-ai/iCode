@@ -239,6 +239,9 @@ def test_counterexample_regression_routes() -> None:
             ("/slot-nested", b"SlottedSubmit"),
             ("/p-editor", b"Paragraph Editor"),
             ("/dialog-on-mousedown", b"Trigger Mousedown Alert"),
+            ("/emoji-text", "Hello \U0001f600".encode()),
+            ("/scroll-iframe", b"Inner Frame Button"),
+            ("/scroll-to-text", b"Bottom Marker Row"),
         ):
             status, body = fetch(origin + route)
             assert status == 200, route

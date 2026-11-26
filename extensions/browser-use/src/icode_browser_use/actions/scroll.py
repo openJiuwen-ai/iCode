@@ -40,23 +40,38 @@ _WINDOW_POS_EXPR = (
 )
 
 _SCROLL_ELEMENT_FN = (
+    # amount=0 only reports the position of the container the same walk selects.
     "function(dx, dy, amount){"
+    " const doc = this.ownerDocument || document;"
+    " const win = doc.defaultView || window;"
     " const can = (e) => {"
-    "   const s = getComputedStyle(e);"
+    "   const s = win.getComputedStyle(e);"
     "   return (dy !== 0 && /(auto|scroll|overlay)/.test(s.overflowY) && e.scrollHeight > e.clientHeight + 1) ||"
     "          (dx !== 0 && /(auto|scroll|overlay)/.test(s.overflowX) && e.scrollWidth > e.clientWidth + 1);"
     " };"
     " let el = this;"
-    " while (el && el !== document.body && el !== document.documentElement && !can(el)) {"
+    " while (el && el !== doc.body && el !== doc.documentElement && !can(el)) {"
     "   el = el.parentElement || (el.getRootNode && el.getRootNode().host) || null;"
     " }"
-    " if (!el || el === document.body || el === document.documentElement) {"
-    "   return {container: 'window', moved: false};"
+    " if (!el || el === doc.body || el === doc.documentElement) {"
+    # No scrollable ancestor: scroll the window of the target's own document
+    # (an iframe's window for a target inside a same-process iframe).
+    "   const root = doc.scrollingElement || doc.documentElement;"
+    "   const wx = win.scrollX, wy = win.scrollY;"
+    "   if (amount > 0) {"
+    f"     win.scrollBy({{left: dx * win.innerWidth * {_STEP_RATIO} * amount,"
+    f"                   top: dy * win.innerHeight * {_STEP_RATIO} * amount, behavior: 'instant'}});"
+    "   }"
+    "   return {container: 'window', moved: win.scrollX !== wx || win.scrollY !== wy,"
+    "           x: win.scrollX, y: win.scrollY, innerHeight: win.innerHeight,"
+    "           scrollHeight: root ? root.scrollHeight : 0};"
     " }"
     " const bx = el.scrollLeft, by = el.scrollTop;"
-    f" el.scrollBy({{left: dx * el.clientWidth * {_STEP_RATIO} * amount,"
-    f"              top: dy * el.clientHeight * {_STEP_RATIO} * amount,"
-    "              behavior: 'instant'});"
+    " if (amount > 0) {"
+    f"   el.scrollBy({{left: dx * el.clientWidth * {_STEP_RATIO} * amount,"
+    f"                top: dy * el.clientHeight * {_STEP_RATIO} * amount,"
+    "                behavior: 'instant'});"
+    " }"
     " const x = el.scrollLeft, y = el.scrollTop;"
     " const atEnd = dy > 0 ? (y + el.clientHeight >= el.scrollHeight - 1)"
     "   : dy < 0 ? (y <= 1)"
@@ -102,11 +117,6 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
 
     dir_x, dir_y = _DIRECTIONS[direction]
     target_entry = await resolve_target(session, target_spec) if target_spec else None
-    cdp_session_id = target_entry.cdp_session_id if target_entry is not None else None
-    frame = await session.read_frame_metrics(cdp_session_id=cdp_session_id)
-    viewport_w, viewport_h = frame.viewport
-    step_x = dir_x * amount * viewport_w * _STEP_RATIO
-    step_y = dir_y * amount * viewport_h * _STEP_RATIO
 
     client = session.require_client()
     scrolled_element = False
@@ -115,35 +125,24 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     notes: list[str] = []
 
     if target_entry is not None:
+        cdp_session_id = target_entry.cdp_session_id
         object_id = await session.resolve_object_id(target_entry)
-        res = await call_value(
-            session,
-            object_id,
-            _SCROLL_ELEMENT_FN,
-            cdp_session_id=cdp_session_id,
-            arguments=[{"value": dir_x}, {"value": dir_y}, {"value": amount}],
-        )
-        val = res.get("value") if isinstance(res, dict) else None
-        if isinstance(val, dict) and val.get("container") == "element":
-            scrolled_element = True
+
+        async def _scroll_target(step_amount: int) -> Any:
+            res = await call_value(
+                session,
+                object_id,
+                _SCROLL_ELEMENT_FN,
+                cdp_session_id=cdp_session_id,
+                arguments=[{"value": dir_x}, {"value": dir_y}, {"value": step_amount}],
+            )
+            return res.get("value") if isinstance(res, dict) else None
+
+        val = await _scroll_target(amount)
+        if isinstance(val, dict) and val.get("container") in {"element", "window"}:
+            scrolled_element = val.get("container") == "element"
             moved = bool(val.get("moved"))
             position = val
-        elif isinstance(val, dict) and val.get("container") == "window":
-            # Target had no scrollable ancestor; fall back to scrolling window and report truthfully.
-            before = await _window_position(session)
-            expression = f"window.scrollBy({{left: {step_x}, top: {step_y}, behavior: 'instant'}})"
-            await client.send(
-                "Runtime.evaluate",
-                {"expression": expression, "returnByValue": True},
-                session_id=session.session_id,
-                timeout=session.cfg.evaluate_timeout,
-            )
-            position = await _window_position(session)
-            moved = (
-                position.get("x") != before.get("x") or position.get("y") != before.get("y")
-                if before and position
-                else False
-            )
         else:
             # Compatibility fallback for minimal unit-test fakes returning non-dict
             scrolled_element = True
@@ -160,7 +159,16 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             )
             session.mark_dirty()
             notes.append(f"并已定位文本目标：{to_text}")
+            # Report where the container ended up after every positioning step.
+            final = await _scroll_target(0)
+            if isinstance(final, dict) and final.get("container") in {"element", "window"}:
+                moved = moved or final.get("x") != position.get("x") or final.get("y") != position.get("y")
+                position = final
     else:
+        frame = await session.read_frame_metrics(cdp_session_id=None)
+        viewport_w, viewport_h = frame.viewport
+        step_x = dir_x * amount * viewport_w * _STEP_RATIO
+        step_y = dir_y * amount * viewport_h * _STEP_RATIO
         before = await _window_position(session)
         expression = f"window.scrollBy({{left: {step_x}, top: {step_y}, behavior: 'instant'}})"
         await client.send(

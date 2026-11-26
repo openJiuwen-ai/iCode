@@ -191,18 +191,26 @@ def page_of(content: str, offset: int, max_chars: int) -> str:
     return window
 
 
+#: Slice by Unicode code points, never UTF-16 units: an emoji (surrogate pair)
+#: is one character, is never split across pages, and offsets match Python's.
+_CP_SLICE_JS = (
+    " function cpSlice(s, off, maxChars){"
+    "   let i = 0, cp = 0;"
+    "   const step = () => { const c = s.charCodeAt(i);"
+    "     i += (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length"
+    "       && (s.charCodeAt(i + 1) & 0xFC00) === 0xDC00) ? 2 : 1; };"
+    "   while (i < s.length && cp < off) { step(); cp++; }"
+    "   const start = i; let n = 0;"
+    "   while (i < s.length && n < maxChars) { step(); n++; }"
+    "   const chunk = s.slice(start, i); let total = cp + n;"
+    "   while (i < s.length) { step(); total++; }"
+    "   return {len: total, chunk};"
+    " }"
+)
 _TEXT_SLICE_FN = (
-    f"function(off, maxChars){{{_DEEP_TEXT_JS}"
-    " const s = deepText(this);"
-    " return {len: s.length, chunk: s.slice(off, off + maxChars)};"
-    "}"
+    f"function(off, maxChars){{{_DEEP_TEXT_JS}{_CP_SLICE_JS} return cpSlice(deepText(this), off, maxChars);}}"
 )
-_HTML_SLICE_FN = (
-    "function(off, maxChars){"
-    " const s = this.outerHTML || '';"
-    " return {len: s.length, chunk: s.slice(off, off + maxChars)};"
-    "}"
-)
+_HTML_SLICE_FN = f"function(off, maxChars){{{_CP_SLICE_JS} return cpSlice(this.outerHTML || '', off, maxChars);}}"
 
 
 def _format_slice(total_len: int, chunk: str, offset: int, max_chars: int) -> str:
@@ -278,16 +286,16 @@ async def _extract_page(
     if max_chars is not None:
         if fmt == "text":
             expr = (
-                f"(()=>{{{_DEEP_TEXT_JS}"
+                f"(()=>{{{_DEEP_TEXT_JS}{_CP_SLICE_JS}"
                 " const s = document.body ? deepText(document.body) : '';"
-                f" return {{len: s.length, chunk: s.slice({offset}, {offset + max_chars})}};"
+                f" return cpSlice(s, {offset}, {max_chars});"
                 "})()"
             )
         else:
             expr = (
-                "(()=>{"
+                f"(()=>{{{_CP_SLICE_JS}"
                 " const s = document.documentElement ? document.documentElement.outerHTML : '';"
-                f" return {{len: s.length, chunk: s.slice({offset}, {offset + max_chars})}};"
+                f" return cpSlice(s, {offset}, {max_chars});"
                 "})()"
             )
         value = await eval_value(session, expr)

@@ -270,3 +270,91 @@ def test_real_chrome_below_fold_iframe_viewport_after_scroll(monkeypatch: pytest
             assert btn_after.in_viewport is True, "button inside scrolled-in iframe MUST be in_viewport after scroll"
 
     asyncio.run(scenario())
+
+
+def test_real_chrome_extract_pages_count_emoji_as_one_character(monkeypatch: pytest.MonkeyPatch) -> None:
+    import icode_browser_use.extension as ext
+
+    async def scenario() -> None:
+        async with _chrome_session(monkeypatch) as (origin, _state, ctx, bid):
+            await ext.browser_navigate(ctx, f"{origin}/emoji-text", bid)
+            short = _REF_RE.search(await ext.browser_find(ctx, bid, "Short Paragraph"))
+            assert short is not None
+            whole = await ext.browser_extract(ctx, bid, query=short.group(0), max_chars=200)
+            assert whole == "Hello \U0001f600", whole  # fits in one page: no "next offset" hint
+            # 199×'a' then the emoji straddling the 200-character page edge.
+            found = _REF_RE.search(await ext.browser_find(ctx, bid, "Boundary Paragraph"))
+            assert found is not None
+            first = await ext.browser_extract(ctx, bid, query=found.group(0), max_chars=200)
+            assert first.startswith("a" * 199 + "\U0001f600"), first[190:]
+            match = re.search(r"next offset=(\d+)", first)
+            assert match is not None and match.group(1) == "200", first[190:]
+            second = await ext.browser_extract(ctx, bid, query=found.group(0), max_chars=200, offset=200)
+            assert second == "tail-after-emoji", second
+            for text in (first, second):
+                text.encode("utf-8")  # never a lone surrogate
+            page = await ext.browser_extract(ctx, bid, max_chars=200)
+            page.encode("utf-8")
+            page_next = re.search(r"next offset=(\d+)", page)
+            assert page_next is not None
+            rest = await ext.browser_extract(ctx, bid, max_chars=200, offset=int(page_next.group(1)))
+            rest.encode("utf-8")
+            assert "tail-after-emoji" in page + rest
+
+    asyncio.run(scenario())
+
+
+def test_real_chrome_scroll_moves_the_targets_own_frame_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    import icode_browser_use.extension as ext
+
+    async def scenario() -> None:
+        async with _chrome_session(monkeypatch) as (origin, _state, ctx, bid):
+            await ext.browser_navigate(ctx, f"{origin}/scroll-iframe", bid)
+            found = _REF_RE.search(await ext.browser_find(ctx, bid, "Inner Frame Button"))
+            assert found is not None
+            scrolled = await ext.browser_scroll(ctx, bid, direction="down", amount=1, target=found.group(0))
+            sess = ext._browsers[bid].session
+            client = sess.require_client()
+            outer = await client.send(
+                "Runtime.evaluate",
+                {
+                    "expression": "[window.scrollY, document.getElementById('tall-frame').contentWindow.scrollY]",
+                    "returnByValue": True,
+                },
+                session_id=sess.session_id,
+                timeout=5,
+            )
+            outer_y, frame_y = outer["result"]["value"]
+            assert outer_y == 0, f"outer page must not move: {scrolled}"
+            assert frame_y > 0, f"the iframe's own window must move: {scrolled}"
+            assert f"y={frame_y}" in scrolled, scrolled
+
+    asyncio.run(scenario())
+
+
+def test_real_chrome_scroll_reports_position_after_to_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    import icode_browser_use.extension as ext
+
+    async def scenario() -> None:
+        async with _chrome_session(monkeypatch) as (origin, _state, ctx, bid):
+            await ext.browser_navigate(ctx, f"{origin}/scroll-to-text", bid)
+            found = _REF_RE.search(await ext.browser_find(ctx, bid, "Scroll Panel"))
+            assert found is not None
+            bottom = _REF_RE.search(await ext.browser_find(ctx, bid, "Bottom Marker Row"))
+            assert bottom is not None
+            scrolled = await ext.browser_scroll(
+                ctx, bid, direction="down", amount=1, target=found.group(0), to_text=bottom.group(0)
+            )
+            sess = ext._browsers[bid].session
+            final = await sess.require_client().send(
+                "Runtime.evaluate",
+                {"expression": "document.getElementById('panel').scrollTop", "returnByValue": True},
+                session_id=sess.session_id,
+                timeout=5,
+            )
+            final_y = final["result"]["value"]
+            assert final_y > 200, final_y
+            assert f"y={final_y}" in scrolled, scrolled
+            assert "到底=是" in scrolled, scrolled
+
+    asyncio.run(scenario())
