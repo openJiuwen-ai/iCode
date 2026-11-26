@@ -14,7 +14,7 @@ import re
 from urllib.parse import urlsplit
 
 from ..config import MAX_STAGE_NODES, SNAPSHOT_CHAR_BUDGET
-from ..policy import sanitize_display_url
+from ..policy import sanitize_display_title, sanitize_display_url
 from .fusion import FusedNode
 
 #: Code point above which a character counts as full-width (CJK + full-width punctuation).
@@ -99,6 +99,11 @@ def is_structural(node: FusedNode) -> bool:
     )
 
 
+def is_hidden(node: FusedNode) -> bool:
+    """CSS-hidden (``display:none``/``visibility:hidden``/``opacity:0``) or head metadata omitted from stage text."""
+    return bool(getattr(node, "css_hidden", False))
+
+
 def _fold(stage: list[FusedNode]) -> list[tuple[FusedNode, int]]:
     """Collapse consecutive same-parent, same-role, same-name text siblings into one line.
 
@@ -158,13 +163,13 @@ def render(
     focus: str = "",
 ) -> str:
     """Render the stage: a header line followed by the budgeted node lines."""
-    visible = [node for node in nodes if not is_structural(node)]
+    visible = [node for node in nodes if not is_structural(node) and not is_hidden(node)]
     entries = _fold(_rank(visible))
     suffix = f", version {version}" if version else ""
     if focus:
         suffix += f", subtree {focus}"
     header_url = _header_url(url)
-    header_title = _single_line(title)
+    header_title = _single_line(sanitize_display_title(title, url))
     if len(header_title) > 120:
         header_title = header_title[:119] + "…"
     header = f"[{header_url}] {header_title}  (epoch {page_epoch}{suffix})"
@@ -186,6 +191,8 @@ def render(
         star = "*" if node.scrollable else ""
         mark = "[iframe] " if node.cdp_session_id else ""
         extra = ""
+        if node.tag in {"canvas", "svg"} and node.bbox[2] > 0 and node.bbox[3] > 0:
+            extra += f" [{round(node.bbox[2])}x{round(node.bbox[3])}]"
         if focus:
             tags: list[str] = []
             if node.editable:

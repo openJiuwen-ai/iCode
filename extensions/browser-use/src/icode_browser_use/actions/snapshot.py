@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from ..snapshot.serializer import is_structural
+from ..snapshot.serializer import is_hidden, is_structural
 from ..types import ToolBlock, text_block
 from ._shared import (
     capture_and_register,
@@ -155,8 +155,8 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         ]
         if entry is not None:
             old_nodes = _subtree(old_nodes, entry)
-        old_visible = [node for node in old_nodes if not is_structural(node)]
-        current_visible = [node for node in view if not is_structural(node)]
+        old_visible = [node for node in old_nodes if not is_structural(node) and not is_hidden(node)]
+        current_visible = [node for node in view if not is_structural(node) and not is_hidden(node)]
         old_by_id = {(node.frame_id, node.backend_node_id): node for node in old_visible}
         current_by_id = {(node.frame_id, node.backend_node_id): node for node in current_visible}
         changed_nodes = [

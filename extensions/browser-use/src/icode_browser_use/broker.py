@@ -65,6 +65,7 @@ _CANCELLABLE_READ_TOOLS = frozenset(
         "browser_tabs",
         "browser_downloads",
         "browser_logs",
+        "browser_network_body",
         "browser_action_status",
     }
 )

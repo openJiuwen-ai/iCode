@@ -1761,16 +1761,17 @@ class BrowserSession:
             ("Network.requestWillBeSent", self._page_log.request),
             ("Network.responseReceived", self._page_log.response),
             ("Network.loadingFailed", self._page_log.failed),
+            ("Network.loadingFinished", self._page_log.finished),
         ):
             client.on(method, self._log_handler(record))
 
-    def _log_handler(self, record: Callable[[str, dict[str, Any]], None]) -> Callable[..., Awaitable[None]]:
+    def _log_handler(self, record: Callable[..., None]) -> Callable[..., Awaitable[None]]:
         """Feed one page-log recorder with events from owned pages (and their OOPIFs) only."""
 
         async def handler(params: dict[str, Any], session_id: str | None) -> None:
             target_id = self._page_target_for_session(session_id) if session_id else None
             if target_id:
-                record(target_id, params)
+                record(target_id, params, session_id)
 
         return handler
 

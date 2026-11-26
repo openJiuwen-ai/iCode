@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from icode_browser_use.actions import click
-from icode_browser_use.errors import CDPTimeout, ConnectionClosed
+from icode_browser_use.errors import BadRequest, CDPTimeout, ConnectionClosed
 from icode_browser_use.journal import RESULT, Journal
 from icode_browser_use.snapshot.fusion import FusedNode
 
@@ -1607,3 +1607,99 @@ def test_dispatch_click_double_click_sends_two_press_release_pairs() -> None:
         ("mousePressed", 2, 1),
         ("mouseReleased", 2, 0),
     ]
+
+
+def test_click_offset_clicks_exact_subregion_and_validates_bounds(monkeypatch) -> None:
+    session = FakeSession()
+    dispatched: list[tuple[float, float]] = []
+
+    async def fake_call_value(_session, _oid, fn, **_kwargs):
+        if "submitLike" in fn:
+            return {"type": "object", "value": {"connected": True, "tag": "canvas", "name": "", "submitLike": False}}
+        if "elementFromPoint" in fn:
+            return {"type": "object", "value": {"inside": True, "clipper": False, "shadowRetargeted": False}}
+        return {}
+
+    async def fake_eval(*_args, **_kwargs):
+        return {"href": "https://example.com", "mutations": 0, "expanded": 0, "dialogs": 0, "active": "canvas"}
+
+    async def fake_quad(*_args, **_kwargs):
+        return [100.0, 50.0, 420.0, 50.0, 420.0, 170.0, 100.0, 170.0], (0.0, 0.0)
+
+    async def fake_dispatch(_s, x, y, _b, _c):
+        dispatched.append((x, y))
+
+    monkeypatch.setattr(click, "call_value", fake_call_value)
+    monkeypatch.setattr(click, "eval_value", fake_eval)
+    monkeypatch.setattr(click, "_visible_quad_with_offset", fake_quad)
+    monkeypatch.setattr(click, "_dispatch_click", fake_dispatch)
+    monkeypatch.setattr(click, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(
+        click.run(session, {"target": "canvas", "button": "left", "click_count": 1, "offset_x": 75.0, "offset_y": 60.0})
+    )
+    assert dispatched == [(175.0, 110.0)]
+    assert "hit_point=offset(75,60)" in blocks[0]["text"]
+
+    with pytest.raises(BadRequest, match="超出目标区域"):
+        asyncio.run(
+            click.run(
+                session, {"target": "canvas", "button": "left", "click_count": 1, "offset_x": 400.0, "offset_y": 60.0}
+            )
+        )
+    with pytest.raises(BadRequest, match="必须同时传入"):
+        asyncio.run(click.run(session, {"target": "canvas", "button": "left", "click_count": 1, "offset_x": 10.0}))
+    with pytest.raises(BadRequest, match="dispatch=dom 不支持"):
+        asyncio.run(
+            click.run(
+                session,
+                {
+                    "target": "canvas",
+                    "button": "left",
+                    "click_count": 1,
+                    "dispatch": "dom",
+                    "offset_x": 10.0,
+                    "offset_y": 10.0,
+                },
+            )
+        )
+
+
+def test_click_new_tab_skips_post_write_expect_without_waiting(monkeypatch) -> None:
+    pages = [SimpleNamespace(target_id="t", url="https://example.com/a")]
+    session = FakeSession()
+    session.pages = lambda: list(pages)  # type: ignore[attr-defined]
+
+    async def fake_call_value(_session, _oid, fn, **_kwargs):
+        if "submitLike" in fn:
+            return {"type": "object", "value": {"connected": True, "tag": "a", "name": "Open B", "submitLike": False}}
+        return {}
+
+    async def fake_eval(*_args, **_kwargs):
+        return {"href": "https://example.com/a", "mutations": 0, "expanded": 0, "dialogs": 0, "active": "a"}
+
+    async def fake_dispatch(*_args, **_kwargs):
+        pages.append(SimpleNamespace(target_id="t-b", url="https://example.com/b"))
+
+    monkeypatch.setattr(click, "call_value", fake_call_value)
+    monkeypatch.setattr(click, "eval_value", fake_eval)
+    monkeypatch.setattr(click, "_hit_point", lambda *_a, **_kw: asyncio.sleep(0, result=(10.0, 10.0)))
+    monkeypatch.setattr(click, "_dispatch_click", fake_dispatch)
+    monkeypatch.setattr(click, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(
+        click.run(
+            session,
+            {
+                "target": "Open B",
+                "button": "left",
+                "click_count": 1,
+                "expect_condition": "text",
+                "expect_value": "Shop B",
+                "expect_timeout_ms": 5000,
+            },
+        )
+    )
+    text = blocks[0]["text"]
+    assert "effect=new_tab" in text
+    assert "expect_status=skipped reason=new_tab_opened" in text

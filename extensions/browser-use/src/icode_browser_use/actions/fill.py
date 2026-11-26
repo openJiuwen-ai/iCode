@@ -44,9 +44,10 @@ NAME = "browser_fill"
 DESCRIPTION = (
     "Focus target (an @eN ref or free text) and type text using Input.insertText, "
     "which produces real input events compatible with React/controlled components. "
-    "Native date/time inputs (date, time, datetime-local, month, week) accept standard "
-    "ISO values (e.g. YYYY-MM-DD for date, HH:MM for time) via the native HTMLInputElement "
-    "value setter and input/change events. "
+    "Native date/time/range/color inputs (date, time, datetime-local, month, week, "
+    "range, color) accept standard values (e.g. YYYY-MM-DD for date, HH:MM for time, "
+    "a number for range, #rrggbb for color) via the native HTMLInputElement value "
+    "setter and input/change events. "
     "clear=true (default) empties the field first (trusted Ctrl+A / Backspace; a "
     "contenteditable is never given a JS `value` expando). submit=true sends a real "
     "Enter and then verifies the outcome; it reports submitted only when the editor "
@@ -65,7 +66,7 @@ PARAMS: dict[str, Any] = {
 }
 
 _TEXT_INPUT_TYPES = frozenset({"", "text", "search", "email", "url", "tel", "password", "number"})
-_DIRECT_VALUE_INPUT_TYPES = frozenset({"date", "time", "datetime-local", "month", "week"})
+_DIRECT_VALUE_INPUT_TYPES = frozenset({"date", "time", "datetime-local", "month", "week", "range", "color"})
 
 
 def _set_native_value_fn(value: str) -> str:
@@ -73,26 +74,36 @@ def _set_native_value_fn(value: str) -> str:
     return (
         "function(){"
         " const prev=String(this.value||'');"
+        " const inputType=String(this.type||'').toLowerCase();"
         " const proto=typeof HTMLInputElement!=='undefined' ? HTMLInputElement.prototype : null;"
         " const desc=proto ? Object.getOwnPropertyDescriptor(proto,'value') : null;"
         " const setVal=(v)=>{ if (desc && typeof desc.set==='function') desc.set.call(this,v); else this.value=v; };"
         f" const target={target_js};"
-        " let expected=target;"
+        " if (inputType==='range') {"
+        "  const num=Number(target.trim());"
+        "  if (!target.trim() || !Number.isFinite(num)) return {accepted:false, value:prev, expected:''};"
+        " }"
+        " if (inputType==='color' && !/^#[0-9a-f]{6}$/i.test(target.trim())) {"
+        "  return {accepted:false, value:prev, expected:''};"
+        " }"
+        " let expected=inputType==='color' ? target.trim().toLowerCase() : target;"
         " if (typeof document!=='undefined' && typeof document.createElement==='function') {"
         "  try {"
         "   const probe=document.createElement('input');"
         "   probe.type=this.type||'text';"
-        "   if (typeof this.hasAttribute==='function' && this.hasAttribute('step')) {"
-        "    probe.setAttribute('step', this.getAttribute('step')||'');"
+        "   for (const attr of ['min','max','step']) {"
+        "    if (typeof this.hasAttribute==='function' && this.hasAttribute(attr)) {"
+        "     probe.setAttribute(attr, this.getAttribute(attr)||'');"
+        "    }"
         "   }"
-        "   probe.value=target;"
+        "   probe.value=expected;"
         "   expected=String(probe.value||'');"
-        "  } catch (_) { expected=target; }"
+        "  } catch (_) {}"
         " }"
         " if (target !== '' && expected === '') {"
         "  return {accepted:false, value:prev, expected:''};"
         " }"
-        " setVal(target);"
+        " setVal(expected);"
         " const after=String(this.value||'');"
         " if (target !== '' && after === '') {"
         "  setVal(prev);"
@@ -124,6 +135,13 @@ def _direct_value_matches(actual: Any, expected: str, input_type: str) -> bool:
         return True
     if input_type in {"time", "datetime-local"}:
         return _strip_temporal_zero_seconds(actual_str) == _strip_temporal_zero_seconds(expected_str)
+    if input_type == "color":
+        return actual_str.strip().lower() == expected_str.strip().lower()
+    if input_type == "range":
+        try:
+            return float(actual_str) == float(expected_str)
+        except ValueError:
+            return False
     return False
 
 
@@ -132,7 +150,7 @@ _CLEAR_FN = (
     " const tag=(this.tagName||'').toLowerCase();"
     " const type=(this.type||'').toLowerCase();"
     " const textLike=tag==='textarea' || (tag==='input' &&"
-    "   ['text','search','email','url','tel','password','number','date','time','datetime-local','month','week',''].includes(type));"
+    "   ['text','search','email','url','tel','password','number','date','time','datetime-local','month','week','range','color',''].includes(type));"
     " if (textLike) {"
     "  const proto=(tag==='textarea' && typeof HTMLTextAreaElement!=='undefined')"
     "    ? HTMLTextAreaElement.prototype : (typeof HTMLInputElement!=='undefined' ? HTMLInputElement.prototype : null);"
@@ -577,8 +595,9 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         set_val = set_res.get("value") if isinstance(set_res, dict) else None
         if isinstance(set_val, dict) and set_val.get("accepted") is False:
             raise BadRequest(
-                f"无效的 {focus_type} 值：{text!r}（请使用标准 ISO 格式，如 date 为 YYYY-MM-DD、"
-                "time 为 HH:MM、datetime-local 为 YYYY-MM-DDTHH:MM、month 为 YYYY-MM、week 为 YYYY-Www）"
+                f"无效的 {focus_type} 值：{text!r}（请使用标准格式，如 date 为 YYYY-MM-DD、"
+                "time 为 HH:MM、datetime-local 为 YYYY-MM-DDTHH:MM、month 为 YYYY-MM、week 为 YYYY-Www、"
+                "range 为有限数字、color 为 #rrggbb）"
             )
         session.mark_dirty()
         await amark_dispatched(session, action_id, "browser_fill", f"dispatched fill of {entry.token}")

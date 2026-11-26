@@ -866,6 +866,8 @@ async def run_post_write_expect(
     action_text = "\n".join(str(b.get("text", "")) for b in outcome.blocks if b.get("type") == "text")
     if not outcome.can_run_expect:
         return [text_block(f"{action_text}\nexpect_status=skipped reason=write_not_confirmed")]
+    if outcome.effect == "new_tab":
+        return [text_block(f"{action_text}\nexpect_status=skipped reason=new_tab_opened")]
     expect_args = {
         "condition": condition,
         "target": str(arguments.get("expect_target") or ""),

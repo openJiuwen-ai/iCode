@@ -20,6 +20,7 @@ from .validation import validate
 _WRITE_TOOLS = frozenset(
     {
         "browser_click",
+        "browser_drag",
         "browser_fill",
         "browser_press_key",
         "browser_upload",
@@ -60,7 +61,13 @@ async def call_tool(session: Any, tool: ToolDef, arguments: Any) -> list[ToolBlo
             # Cancelling a tracked transfer or closing an owned tab never needs a
             # browser start: an idle handle has no download and no tab to act on.
             session.note_action()
-        elif tool.name not in {"browser_close", "browser_action_status", "browser_downloads", "browser_logs"}:
+        elif tool.name not in {
+            "browser_close",
+            "browser_action_status",
+            "browser_downloads",
+            "browser_logs",
+            "browser_network_body",
+        }:
             session.note_action()
             await session.ensure_started()
         before_journal = getattr(session, "_journal", None)

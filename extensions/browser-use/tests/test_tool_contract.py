@@ -15,6 +15,9 @@ from icode_browser_use.validation import validate
 # Adapter-only handles/lifecycle and screenshot persistence are deliberate, not drift.
 CORE_ONLY_PARAMS = {"browser_screenshot": {"annotate"}}
 NULLABLE_OMISSIONS = {
+    ("browser_click", "offset_x"),
+    ("browser_click", "offset_y"),
+    ("browser_network_body", "seq"),
     ("browser_scroll", "target"),
     ("browser_scroll", "to_text"),
     ("browser_extract", "query"),
@@ -167,6 +170,17 @@ def test_native_invoke_parses_and_projects_defaults(native, monkeypatch):
                     "browser_extract",
                     {"query": None, "offset": 7000},
                     {"format": "text", "max_chars": 7000, "offset": 7000},
+                ),
+                (
+                    "browser_network_body",
+                    {"seq": None, "url_contains": "/api"},
+                    {
+                        "url_contains": "/api",
+                        "include_headers": True,
+                        "include_request_body": True,
+                        "max_chars": 4000,
+                        "offset": 0,
+                    },
                 ),
                 ("browser_screenshot", {"target": None}, {"full_page": False}),
             ):

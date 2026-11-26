@@ -465,3 +465,65 @@ def test_exact_text_generic_node_outranks_fuzzy_matches() -> None:
     assert ranked[0].node.ref == 9
     assert ranked[0].exact_match is True
     assert resolve_ambiguity(ranked).node.ref == 9
+
+
+def test_fusion_marks_css_hidden_and_head_meta_nodes_and_propagates_opacity_zero() -> None:
+    doc = _Doc()
+    head = doc.element("head", bounds=(0, 0, 0, 0))
+    title = doc.element("title", head, text="Secret Title", bounds=(0, 0, 0, 0))
+    body = doc.element("body")
+    vis = doc.element("p", body, text="Normal visible text")
+    disp_none = doc.element("p", body, attrs={"style": "display:none"}, text="DISPLAY NONE INJECT", bounds=(0, 0, 0, 0))
+    vis_hidden = doc.element("p", body, text="VISIBILITY HIDDEN INJECT")
+    doc.styles[vis_hidden][COMPUTED_STYLES.index("visibility")] = "hidden"
+    op_parent = doc.element("div", body)
+    doc.styles[op_parent][COMPUTED_STYLES.index("opacity")] = "0"
+    op_child = doc.element("p", op_parent, text="INHERITED OPACITY ZERO INJECT")
+
+    nodes = fuse(doc.payload(), None, frame=FRAME, target_id="t")
+    by_id = {n.backend_node_id: n for n in nodes}
+    assert by_id[doc.backend[vis]].css_hidden is False
+    assert by_id[doc.backend[vis]].visible is True
+    assert by_id[doc.backend[title]].css_hidden is True
+    assert by_id[doc.backend[disp_none]].css_hidden is True
+    assert by_id[doc.backend[vis_hidden]].css_hidden is True
+    assert by_id[doc.backend[op_parent]].css_hidden is True
+    assert by_id[doc.backend[op_child]].css_hidden is True
+    assert by_id[doc.backend[op_child]].visible is False
+
+
+def test_scoring_resolves_same_name_label_and_slider_to_slider() -> None:
+    label = FusedNode(
+        1,
+        "f",
+        "t",
+        "LabelText",
+        "Priority Level",
+        "label",
+        0,
+        (10, 10, 80, 20),
+        ref=1,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+    )
+    slider = FusedNode(
+        2,
+        "f",
+        "t",
+        "slider",
+        "Priority Level",
+        "input",
+        0,
+        (100, 10, 120, 20),
+        ref=2,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+        focusable=True,
+    )
+    best = resolve_ambiguity(rank([label, slider], "Priority Level"))
+    assert best.node.ref == 2
+    assert best.node.role == "slider"

@@ -11,6 +11,7 @@ as ``browser_bad_request`` before an action starts.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -89,6 +90,18 @@ def _coerce(name: str, spec: dict[str, Any], value: Any) -> Any:
         if upper is not None and value > upper:
             raise BadRequest(f"参数 {name} 大于上限 {upper}")
         return value
+    if kind == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise BadRequest(f"参数 {name} 必须是数字")
+        num = float(value)
+        if not math.isfinite(num):
+            raise BadRequest(f"参数 {name} 必须是有限数字")
+        lower, upper = spec.get("min"), spec.get("max")
+        if lower is not None and num < lower:
+            raise BadRequest(f"参数 {name} 小于下限 {lower}")
+        if upper is not None and num > upper:
+            raise BadRequest(f"参数 {name} 大于上限 {upper}")
+        return num
     if kind == "array":
         if not isinstance(value, list):
             raise BadRequest(f"参数 {name} 必须是数组")

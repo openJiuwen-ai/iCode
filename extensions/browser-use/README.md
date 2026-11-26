@@ -128,7 +128,7 @@ icode-browser-use install / uninstall   # standalone folder package
 
 ## Compact toolset & isolated `Browser` sub-agent
 
-By default the extension exposes all 29 standard tools (`ICODE_BROWSER_TOOLSET=full`). For long sessions or dedicated browser sub-agents, set `ICODE_BROWSER_TOOLSET=compact` to expose only the 13 core tools (`browser_open`, `browser_list`, `browser_navigate`, `browser_snapshot`, `browser_find`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_wait_for`, `browser_extract`, `browser_screenshot`, `browser_dialog`, `browser_close`) together with a byte-stable compact playbook — cutting tool-schema token overhead by >50% while keeping core web automation workflows and read-only handle recovery after history compaction.
+By default the extension exposes all 31 standard tools (`ICODE_BROWSER_TOOLSET=full`). For long sessions or dedicated browser sub-agents, set `ICODE_BROWSER_TOOLSET=compact` to expose only the 15 core tools (`browser_open`, `browser_list`, `browser_navigate`, `browser_snapshot`, `browser_find`, `browser_click`, `browser_fill`, `browser_press_key`, `browser_select_option`, `browser_wait_for`, `browser_scroll`, `browser_extract`, `browser_screenshot`, `browser_dialog`, `browser_close`) together with a byte-stable compact playbook — halving the exposed tool count and cutting combined schema + playbook prompt overhead by ~35–40% while retaining scrolling, native `<select>`, core web automation workflows and read-only handle recovery after history compaction.
 
 To isolate raw DOM snapshots, screenshots, and untrusted web content from your main coding agent (preventing context pollution and prompt-injection escalation to `shell` or file writes), install the least-privilege `Browser` sub-agent profile:
 
@@ -136,7 +136,7 @@ To isolate raw DOM snapshots, screenshots, and untrusted web content from your m
 icode-browser-use subagent --install
 ```
 
-This writes `<config_dir>/agents/Browser.yaml` with `extensions: [browser]` and `tools.builtins: []` (no `shell`, no `filesystem.read`, no `filesystem.write`), and prints the `sub_agents.agents` snippet to add to your parent agent profile (e.g., `Code.yaml`).
+This writes `<config_dir>/agents/Browser.yaml` with `extensions: [browser]` and `tools.builtins: []` (no `shell`, no `filesystem.read`, no `filesystem.write`), and prints the `sub_agents.agents` snippet to add to your parent agent profile (e.g., `Code.yaml`). Because `filesystem.read` is disabled by default in that isolated profile, the sub-agent saves clipped screenshots via `browser_screenshot` and hands back their paths for the parent agent to inspect with `view_image`.
 
 On `browser_close`, the plugin runtime appends a `[BROWSER_SESSION_FACTS]` block summarizing observed `visited_origins` (query/tokens stripped), `blocked_origins`, `write_actions`, and saved `screenshots` paths so the parent agent can cross-check the sub-agent's narrative against runtime facts.
 
@@ -481,9 +481,10 @@ A record moves through `prepared` (written before anything is sent),
 | `browser_snapshot` | no | Compact interactive-element tree with `@eN#epoch` refs; `target=` serializes one subtree (preserving `editable` nodes with actionability flags and `placeholder`), unnamed non-interactive nodes are left out (their refs still exist), and consecutive same-name non-interactive siblings collapse to `×N` (interactive duplicates keep one line each); an element with no accessible name falls back to `aria-label`, `alt`, `title`, a child image's `alt`/`title` or (for links) the href, so icon-only links read as `link "/chat/c1"`; CSS `::before`/`::after` pseudo-elements are not listed |
 | `browser_find` | no | Find elements by text, placeholder, role (`textbox` also matches `editable` nodes), tag or href; ranks visible/in-viewport/editable candidates first and prints `[editable readonly disabled focusable in-view no-layout]`. Refreshes after a page action; use `fresh=true` for later asynchronous changes. |
 | `browser_action_status` | no | Look up recorded click/fill/upload/press_key/select_option/evaluate/hover/scroll/dialog/download_cancel evidence in one browser's journal by action_id; never retries |
-| `browser_click` | yes | Click a ref or free-text target; Shadow-DOM-aware multi-point hit test, `dispatch=not_sent|sent|unknown`, `effect=target_detached`, `verified=control_state`, `dispatch=dom` gated by the journal |
+| `browser_click` | yes | Click a ref or free-text target (optional `offset_x`/`offset_y` CSS pixel offsets for `<canvas>`/`<svg>` sub-regions); Shadow-DOM-aware multi-point hit test, `dispatch=not_sent|sent|unknown`, `effect=target_detached`, `verified=control_state`, `dispatch=dom` gated by the journal |
+| `browser_drag` | yes | Drag a source element onto a target element via trusted CDP mouse events and HTML5 `Input.dispatchDragEvent` handoff; journaled, never auto-retried, optional post-write `expect_*` |
 | `browser_hover` | no | Move the mouse over a target without clicking; snapshot to read hover-only controls. It can still trigger page side effects (hover menus, analytics) |
-| `browser_fill` | yes | Type into a field (including open/closed Shadow DOM editors) with real input events |
+| `browser_fill` | yes | Type into a field (including open/closed Shadow DOM editors) with real input events, or set native `date`/`time`/`datetime-local`/`month`/`week`/`range`/`color` inputs directly |
 | `browser_press_key` | yes | Focus an optional target, press one key or combination, judge a text-field Enter like fill |
 | `browser_select_option` | yes | Select the complete wanted set on a native `<select>` by value or label; reports the selection read back from the page |
 | `browser_wait_for` | no | Wait for `visible`/`hidden`/`editable`/`text`/`url`/`text_changed`/`stable`/`count` with a hard timeout; Shadow-DOM-aware and reports structured timeout state |
@@ -492,8 +493,9 @@ A record moves through `prepared` (written before anything is sent),
 | `browser_download_cancel` | yes | Cancel one in-progress download and remove its partial file |
 | `browser_upload` | yes | Attach one local file to a file input (workspace-rooted) |
 | `browser_scroll` | no | Scroll the window or an element's container; may trigger lazy-load and viewport analytics |
-| `browser_extract` | no | Read text (including open Shadow DOM and closed-shadow snapshot fallback), markdown or HTML from the live DOM. Use `offset` to continue from the next offset reported in a cut result. |
+| `browser_extract` | no | Read visible text (filtering `display:none`/`visibility:hidden`/`opacity:0`, walking open Shadow DOM with closed-shadow snapshot fallback), GFM markdown (with table columns preserved) or HTML from the live DOM. Omit `query` for the whole page, or pass `@eN#epoch` / `#element-id` / visible text; use `offset` to continue from the next offset reported in a cut result. |
 | `browser_logs` | no | Read the current tab's console messages and network outcomes with redaction and a `since` cursor. The Bridge applies the active site policy and requires an extension version that supports log filtering. |
+| `browser_network_body` | no | Inspect one recorded XHR/fetch or HTTP >= 400 entry's scrubbed request/response headers, POST body, and CDP `Network.getResponseBody` response body (paginated by `max_chars`/`offset`; binary bodies summarized by MIME type and size; sensitive headers and tokens redacted). |
 | `browser_back` | yes | Go back one history entry and re-snapshot |
 | `browser_forward` | yes | Go forward one history entry and re-snapshot |
 | `browser_reload` | yes | Reload the current page and re-snapshot. `ignore_cache` bypasses the cache. Reloading a POST result page may resubmit. |
@@ -683,7 +685,7 @@ file.
 | `ICODE_BROWSER_BRIDGE_FILE` | `state_dir/bridge.json` | Rendezvous file the plugin writes for the native host (port + token) |
 | `ICODE_BROWSER_BRIDGE_WAIT` | `35` | Seconds to wait for the extension's native host to connect (covers the 30 s MV3 alarm) |
 | `ICODE_BROWSER_PREWARM` | `0` | `1` starts the browser/bridge at plugin startup instead of waiting for the first tool call |
-| `ICODE_BROWSER_TOOLSET` | `full` | Exposed tool surface: `full` (29 standard tools) or `compact` (13 core tools) |
+| `ICODE_BROWSER_TOOLSET` | `full` | Exposed tool surface: `full` (30 standard tools) or `compact` (15 core tools) |
 | `ICODE_BROWSER_HEADLESS` | `0` | `1` runs without a window (owned mode only) |
 | `ICODE_BROWSER_STATE_DIR` | `~/.cache/icode-browser-use` | Chrome profile, logs, per-browser state |
 | `ICODE_BROWSER_EVALUATE` | off | `allow` registers `browser_evaluate` (high-risk, approval) |

@@ -795,6 +795,7 @@ const PAGE_LOG_EVENTS = new Set([
   "Network.requestWillBeSent",
   "Network.responseReceived",
   "Network.loadingFailed",
+  "Network.loadingFinished",
 ]);
 
 const PASS_THROUGH_EVENTS = new Set([
@@ -803,6 +804,7 @@ const PASS_THROUGH_EVENTS = new Set([
   "Page.javascriptDialogClosed",
   "DOM.documentUpdated",
   "Target.detachedFromTarget",
+  "Input.dragIntercepted",
 ]);
 
 const REDACTED_URL_EVENTS = new Set([

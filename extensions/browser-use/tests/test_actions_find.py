@@ -148,3 +148,60 @@ def test_find_surfaces_actionability_flags_and_ranks_visible_editable_first() ->
     tb = asyncio.run(find.run(session, {"query": "评论框", "role": "textbox", "limit": 20}))[0]["text"]
     assert "@e2#7" in tb
     assert "@e1#7" not in tb
+
+
+def test_find_ranks_interactive_form_control_ahead_of_same_name_label_and_shows_canvas_size() -> None:
+    label = FusedNode(
+        1,
+        "f",
+        "t",
+        "LabelText",
+        "Priority Level",
+        "label",
+        0,
+        (10, 10, 80, 20),
+        ref=1,
+        epoch=7,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+    )
+    slider = FusedNode(
+        2,
+        "f",
+        "t",
+        "slider",
+        "Priority Level",
+        "input",
+        0,
+        (100, 10, 120, 20),
+        ref=2,
+        epoch=7,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+        focusable=True,
+    )
+    canvas = FusedNode(
+        3,
+        "f",
+        "t",
+        "Canvas",
+        "",
+        "canvas",
+        0,
+        (10, 50, 320, 120),
+        ref=3,
+        epoch=7,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+    )
+    session = SimpleNamespace(page_epoch=7, snapshot=SimpleNamespace(nodes=[label, slider, canvas]))
+    text = asyncio.run(find.run(session, {"query": "Priority Level", "role": "", "limit": 20}))[0]["text"]
+    lines = text.splitlines()
+    assert "@e2#7" in lines[1] and "role=slider" in lines[1]
+    assert "@e1#7" in lines[2] and "role=LabelText" in lines[2]
+
+    canvas_text = asyncio.run(find.run(session, {"query": "canvas", "role": "", "limit": 20}))[0]["text"]
+    assert "size=320x120" in canvas_text

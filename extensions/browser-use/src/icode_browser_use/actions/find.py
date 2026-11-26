@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..snapshot.serializer import escape_label, sanitize_text
+from ..snapshot.serializer import escape_label, is_hidden, sanitize_text
 from ..types import ToolBlock, text_block
 from ._shared import snapshot_needs_refresh
 
@@ -81,7 +81,23 @@ def matching_nodes(nodes: list[Any], query: str, role: str = "") -> list[Any]:
     """Nodes whose name, text hint, placeholder, tag, role or href contains *query* (case-insensitive)."""
     needle = query.casefold()
     role = role.casefold()
-    return [node for node in nodes if needle in _searchable(node) and _role_matches(node, role)]
+    return [node for node in nodes if not is_hidden(node) and needle in _searchable(node) and _role_matches(node, role)]
+
+
+def _is_label_node(node: Any) -> bool:
+    tag = str(getattr(node, "tag", "") or "").lower()
+    role = str(getattr(node, "role", "") or "").lower()
+    return tag == "label" or role in {"labeltext", "label"}
+
+
+def _box_size_suffix(node: Any) -> str:
+    tag = str(getattr(node, "tag", "") or "").lower()
+    if tag not in {"canvas", "svg"}:
+        return ""
+    bbox = getattr(node, "bbox", None)
+    if isinstance(bbox, (tuple, list)) and len(bbox) == 4 and float(bbox[2]) > 0 and float(bbox[3]) > 0:
+        return f" size={round(float(bbox[2]))}x{round(float(bbox[3]))}"
+    return ""
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
@@ -104,7 +120,10 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         key=lambda node: (
             not getattr(node, "visible", False),
             not getattr(node, "in_viewport", False),
-            not (getattr(node, "editable", False) or getattr(node, "interactive", False)),
+            _is_label_node(node),
+            not getattr(node, "editable", False),
+            not getattr(node, "focusable", False),
+            not getattr(node, "interactive", False),
         )
     )
     lines = [f'browser_find: {len(matches)} match(es) for "{query}"']
@@ -118,6 +137,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         href = escape_label(raw_href, limit=120)
         if href and href != name:
             line += f" href={href}"
+        line += _box_size_suffix(node)
         flags = _actionability_flags(node)
         if flags:
             line += flags

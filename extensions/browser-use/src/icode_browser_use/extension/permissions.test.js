@@ -321,6 +321,10 @@ test("strict CDP method allowlist rejects profile-wide and dangerous methods", (
     assert.equal(methodPolicy(forbidden), null, forbidden);
     assert.equal(needsPermission(forbidden), true, forbidden);
   }
+  for (const siteScoped of ["Network.getResponseBody", "Input.setInterceptDrags", "Input.dispatchDragEvent"]) {
+    assert.equal(methodPolicy(siteScoped), "site", siteScoped);
+    assert.equal(needsPermission(siteScoped), true, siteScoped);
+  }
   for (const plumbing of [
     "Fetch.enable",
     "Fetch.continueRequest",

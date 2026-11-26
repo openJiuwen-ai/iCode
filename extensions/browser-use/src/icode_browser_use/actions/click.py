@@ -48,11 +48,12 @@ DESCRIPTION = (
     "scoring). The tool scrolls the element into view, re-reads its geometry and "
     "sends a trusted CDP mouse event sequence (mouseMoved -> mousePressed -> "
     "mouseReleased); when the centre is covered it tries points near the corners "
-    f"before giving up. {CLICK_HARD_RULE} dispatch=dom calls the element's own "
-    "click() instead of mouse events: allowed only for a button/link/input whose "
-    "mouse click on the same ref was already reported all-occluded or, on a "
-    "non-submit target, effect=none, so it is never a first attempt and never a "
-    "retry of a click that may have landed."
+    "before giving up. Optional offset_x and offset_y (CSS pixels from the target's "
+    f"top-left corner) click a specific sub-region (e.g. inside a <canvas> or <svg>). {CLICK_HARD_RULE} "
+    "dispatch=dom calls the element's own click() instead of mouse events: allowed "
+    "only for a button/link/input whose mouse click on the same ref was already "
+    "reported all-occluded or, on a non-submit target, effect=none, so it is never "
+    "a first attempt and never a retry of a click that may have landed."
 )
 
 PARAMS: dict[str, Any] = {
@@ -60,6 +61,8 @@ PARAMS: dict[str, Any] = {
     "button": {"enum": ["left", "middle", "right"], "default": "left"},
     "click_count": {"type": "integer", "min": 1, "max": 3, "default": 1},
     "dispatch": {"enum": ["mouse", "dom"], "default": "mouse"},
+    "offset_x": {"type": "number", "min": 0},
+    "offset_y": {"type": "number", "min": 0},
     **EXPECT_PARAMS,
 }
 
@@ -403,6 +406,64 @@ async def _visible_quad(session: Any, object_id: str, cdp_session_id: str | None
     return quad
 
 
+def _quad_origin_and_size(quad: Any) -> tuple[float, float, float, float]:
+    points = _quad_points(quad)
+    if not points:
+        raise BadRequest("无法确定元素命中坐标（空 quad）")
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    return min_x, min_y, max(0.0, max_x - min_x), max(0.0, max_y - min_y)
+
+
+async def _offset_hit_point(
+    session: Any,
+    object_id: str,
+    entry: Any,
+    cdp_session_id: str | None,
+    offset: tuple[float, float],
+    offset_x: float,
+    offset_y: float,
+) -> tuple[float, float]:
+    """Resolve ``(offset_x, offset_y)`` CSS pixels relative to the target element's top-left corner."""
+    quad, live_offset = await _visible_quad_with_offset(session, object_id, cdp_session_id)
+    if quad is not None:
+        active_offset = live_offset if cdp_session_id else offset
+        left, top, width, height = _quad_origin_and_size(quad)
+        if offset_x > width or offset_y > height:
+            raise BadRequest(f"偏移坐标 ({offset_x:g}, {offset_y:g}) 超出目标区域（{width:.0f}x{height:.0f} px）")
+        return left + offset_x + active_offset[0], top + offset_y + active_offset[1]
+    bbox = getattr(entry, "bbox", None)
+    if bbox and len(bbox) == 4:
+        left, top, width, height = (float(v) for v in bbox)
+        if offset_x > width or offset_y > height:
+            raise BadRequest(f"偏移坐标 ({offset_x:g}, {offset_y:g}) 超出目标区域（{width:.0f}x{height:.0f} px）")
+        return left + offset_x, top + offset_y
+    raise BadRequest("无法确定元素命中坐标（元素无可见盒模型）")
+
+
+async def _locate_offset_hit(
+    session: Any,
+    object_id: str,
+    entry: Any,
+    cdp_session_id: str | None,
+    offset: tuple[float, float],
+    offset_x: float,
+    offset_y: float,
+) -> tuple[float, float, str, dict[str, Any] | None]:
+    """Hit-test an explicit element-relative offset without silently moving to corners."""
+    x, y = await _offset_hit_point(session, object_id, entry, cdp_session_id, offset, offset_x, offset_y)
+    if cdp_session_id:
+        offset = session.oopif_offset(cdp_session_id)
+    hit = await _safe_hit_test(session, object_id, x, y, cdp_session_id, offset, entry=entry)
+    if hit is None:
+        return x, y, "unverified", None
+    if _confirmed(hit):
+        return x, y, "offset", hit
+    return x, y, "occluded", hit
+
+
 async def _hit_point(
     session: Any,
     object_id: str,
@@ -684,6 +745,12 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
 
     submit_like = _is_submit_like(facts)
     dispatch = arguments.get("dispatch", "mouse")
+    offset_x = arguments.get("offset_x")
+    offset_y = arguments.get("offset_y")
+    if (offset_x is None) != (offset_y is None):
+        raise BadRequest("offset_x 与 offset_y 必须同时传入")
+    if offset_x is not None and dispatch == "dom":
+        raise BadRequest("dispatch=dom 不支持 offset_x/offset_y，请使用默认 dispatch=mouse")
     if dispatch == "dom":
         refusal = _dom_click_allowed(session, entry, facts, submit_like)
         if refusal is not None:
@@ -704,6 +771,45 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             return WriteOutcome(status="blocked", dispatched=False, blocks=[text_block(text)], action_id=action_id)
         x = y = 0.0
         where = "dom"
+    elif offset_x is not None and offset_y is not None:
+        x, y, where, hit = await _locate_offset_hit(
+            session, object_id, entry, cdp_session_id, offset, float(offset_x), float(offset_y)
+        )
+        if where == "unverified":
+            text = (
+                f"未点击 {entry.token}：{_HIT_TEST_FAILED}，无法确认落点，未发送任何事件\n"
+                "dispatch=not_sent\nstatus=uncertain retryable=false\n请重新 snapshot 后再试\n"
+                f"{evidence_line(session, action_id)}"
+            )
+            await arecord_action(
+                session,
+                action_id,
+                "browser_click",
+                "uncertain",
+                text,
+                target_ref=entry.token,
+                dispatch="not_sent",
+                reason="hit_test_failed",
+            )
+            return WriteOutcome(status="uncertain", dispatched=False, blocks=[text_block(text)], action_id=action_id)
+        if where == "occluded":
+            text = (
+                f"未点击 {entry.token}：指定偏移点 ({float(offset_x):g}, {float(offset_y):g}) 被其他元素遮挡"
+                f"（命中 {(hit or {}).get('tag') or 'unknown'}），未发送任何事件\n"
+                "dispatch=not_sent\nstatus=blocked retryable=false\n"
+                f"{evidence_line(session, action_id)}"
+            )
+            await arecord_action(
+                session,
+                action_id,
+                "browser_click",
+                "blocked",
+                text,
+                target_ref=entry.token,
+                dispatch="not_sent",
+                reason="offset_occluded",
+            )
+            return WriteOutcome(status="blocked", dispatched=False, blocks=[text_block(text)], action_id=action_id)
     else:
         x, y, where, hit = await _locate_hit(session, object_id, entry, cdp_session_id, offset)
         if where == "unverified":
@@ -994,6 +1100,8 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         lines.append("verified=control_state")
     if where == "corner":
         lines.append("hit_point=corner（中心被遮挡，已改用靠近角落的点）")
+    elif where == "offset" and offset_x is not None and offset_y is not None:
+        lines.append(f"hit_point=offset({float(offset_x):g},{float(offset_y):g})")
     if effect == "target_detached":
         lines.append(
             "目标已从页面移除（常见于弹窗关闭或控件切换）；请用 browser_find(fresh=true) 核对业务结果，不要重复点击"

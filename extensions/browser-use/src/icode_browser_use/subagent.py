@@ -38,7 +38,9 @@ instructions: |
   - Never attempt to bypass login walls, 2FA, payment gates, or CAPTCHAs; stop
     and ask the user to complete those steps directly in the browser window.
   - Prefer browser_find, browser_snapshot, and browser_extract over routine
-    screenshots; use view_image only when visual layout verification is needed.
+    screenshots; this isolated profile has no filesystem.read/view_image by default,
+    so when visual inspection is needed save a clipped browser_screenshot and return
+    its path for the parent agent to inspect with view_image.
   - Include the runtime [BROWSER_SESSION_FACTS] (visited_origins, blocked_origins,
     write_actions, screenshots) in your final report without altering them.
 
@@ -51,8 +53,8 @@ approval:
 
 PARENT_SUBAGENT_SNIPPET = """\
 # Add under `sub_agents.agents` in your parent agent profile (e.g. Code.yaml),
-# and set ICODE_BROWSER_TOOLSET=compact in the environment to cut browser tool
-# schema tokens by >55% while keeping all 13 core actions available:
+# and set ICODE_BROWSER_TOOLSET=compact in the environment to halve exposed tools
+# (30 -> 15) and cut schema + playbook prompt overhead by ~35-40%:
 sub_agents:
   agents:
     - profile: Browser

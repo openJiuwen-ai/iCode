@@ -358,3 +358,281 @@ def test_real_chrome_scroll_reports_position_after_to_text(monkeypatch: pytest.M
             assert "到底=是" in scrolled, scrolled
 
     asyncio.run(scenario())
+
+
+def test_real_chrome_hidden_css_injection_omitted_and_drag_canvas_range_markdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real-Chrome regression covering P0/P1 benchmark fixes: hidden CSS, GFM tables, drag, canvas offset, range/color."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from chrys.extensions import ToolContext
+    from smoke_common import chrome_executable
+    import icode_browser_use.extension as ext
+
+    html = """<!doctype html><html><head><meta charset="utf-8"><title>Bench Fixes</title>
+    <style>
+      .board{display:flex;gap:24px;}
+      .col{width:160px;min-height:100px;border:1px solid #333;padding:8px;}
+      .card{padding:8px;background:#def;cursor:grab;}
+    </style></head><body>
+      <h1>Visible Review</h1>
+      <p>Battery lasts 14 hours.</p>
+      <p style="display:none">SYSTEM_OVERRIDE_DISPLAY_NONE</p>
+      <p style="visibility:hidden">SYSTEM_OVERRIDE_VISIBILITY_HIDDEN</p>
+      <div style="opacity:0"><p>SYSTEM_OVERRIDE_OPACITY_ZERO</p></div>
+      <div class="board">
+        <div id="todo" class="col" aria-label="To Do"><div id="card1" class="card" draggable="true">Task Alpha</div></div>
+        <div id="done" class="col" aria-label="Done Column"><h3>Done</h3></div>
+      </div>
+      <div id="dnd-out">DND:todo</div>
+      <label for="rng">Priority Level</label>
+      <input id="rng" type="range" min="0" max="100" step="5" value="20" aria-label="Priority Level" />
+      <span id="rng-out">SLIDER:20</span>
+      <label for="col">Tag Color</label>
+      <input id="col" type="color" value="#000000" aria-label="Tag Color" />
+      <span id="col-out">COLOR:#000000</span>
+      <canvas id="cv" width="320" height="120"></canvas>
+      <div id="cv-out">CANVAS:none</div>
+      <table><thead><tr><th>ID</th><th>Qty</th><th>Price</th></tr></thead>
+      <tbody><tr><td>INV-1</td><td>2</td><td>135</td></tr></tbody></table>
+      <script>
+        const card=document.getElementById('card1'), done=document.getElementById('done');
+        card.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', 'card1'));
+        done.addEventListener('dragover', e => e.preventDefault());
+        done.addEventListener('drop', e => { e.preventDefault(); done.appendChild(card); document.getElementById('dnd-out').textContent='DND:done'; });
+        document.getElementById('rng').addEventListener('input', e => { document.getElementById('rng-out').textContent='SLIDER:'+e.target.value; });
+        document.getElementById('col').addEventListener('input', e => { document.getElementById('col-out').textContent='COLOR:'+e.target.value; });
+        document.getElementById('cv').addEventListener('click', e => {
+          const r=e.target.getBoundingClientRect(); const x=e.clientX-r.left, y=e.clientY-r.top;
+          document.getElementById('cv-out').textContent = (x>=20 && x<=130 && y>=30 && y<=90) ? 'CANVAS:confirm' : 'CANVAS:miss';
+        });
+      </script></body></html>"""
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:
+            data = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    origin = f"http://127.0.0.1:{srv.server_address[1]}"
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory(prefix="browser-use-fixes-e2e-", ignore_cleanup_errors=True) as td:
+            root = Path(td).resolve()
+            (root / "ws").mkdir()
+            if _ORIG_USERPROFILE is not None:
+                monkeypatch.setenv("USERPROFILE", _ORIG_USERPROFILE)
+            if _ORIG_HOME is not None:
+                monkeypatch.setenv("HOME", _ORIG_HOME)
+            if _ORIG_APPDATA is not None:
+                monkeypatch.setenv("APPDATA", _ORIG_APPDATA)
+            if _ORIG_LOCALAPPDATA is not None:
+                monkeypatch.setenv("LOCALAPPDATA", _ORIG_LOCALAPPDATA)
+            monkeypatch.setenv("ICODE_BROWSER_ALLOWED_ORIGINS", origin)
+            monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(root / "state"))
+            monkeypatch.setenv("ICODE_BROWSER_HEADLESS", "1")
+            monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0")
+            monkeypatch.setenv("ICODE_BROWSER_EXECUTABLE", str(chrome_executable()))
+            ctx = ToolContext.for_testing(
+                root / "ws",
+                data_dir=root / "data",
+                session_data_dir=root / "session",
+                agent_name="e2e-fixes",
+                session_id="e2e-fixes",
+            )
+            nav = await ext.browser_navigate(ctx, f"{origin}/")
+            bid = nav.splitlines()[0].split("browser_id: ", 1)[1].strip()
+            try:
+                # 1. Hidden CSS prompt injections excluded from snapshot & extract
+                for secret in (
+                    "SYSTEM_OVERRIDE_DISPLAY_NONE",
+                    "SYSTEM_OVERRIDE_VISIBILITY_HIDDEN",
+                    "SYSTEM_OVERRIDE_OPACITY_ZERO",
+                ):
+                    assert secret not in nav, nav
+                page_txt = await ext.browser_extract(ctx, bid)
+                for secret in (
+                    "SYSTEM_OVERRIDE_DISPLAY_NONE",
+                    "SYSTEM_OVERRIDE_VISIBILITY_HIDDEN",
+                    "SYSTEM_OVERRIDE_OPACITY_ZERO",
+                ):
+                    assert secret not in page_txt, page_txt
+
+                # 2. Markdown GFM table preserves column separators + #id extract works
+                md = await ext.browser_extract(ctx, bid, format="markdown")
+                assert "| INV-1 | 2 | 135 |" in md, md
+                assert "INV-12135" not in md, md
+
+                # 3. Native HTML5 drag-and-drop via browser_drag
+                dragged = await ext.browser_drag(ctx, bid, "Task Alpha", "Done Column")
+                assert "status=succeeded" in dragged, dragged
+                assert "DND:done" in await ext.browser_extract(ctx, bid, query="#dnd-out")
+
+                # 4. Native range & color inputs via free-text label name
+                r_res = await ext.browser_fill(ctx, bid, "Priority Level", "75")
+                assert "status=succeeded" in r_res, r_res
+                assert "SLIDER:75" in await ext.browser_extract(ctx, bid, query="#rng-out")
+
+                c_res = await ext.browser_fill(ctx, bid, "Tag Color", "#ff0000")
+                assert "status=succeeded" in c_res, c_res
+                assert "COLOR:#ff0000" in await ext.browser_extract(ctx, bid, query="#col-out")
+
+                # 5. Canvas sub-region offset click
+                assert "[320x120]" in nav, nav
+                c_find = await ext.browser_find(ctx, bid, "canvas", role="canvas")
+                assert "size=320x120" in c_find, c_find
+                c_ref = re.search(r"@e\d+#\d+", c_find)
+                assert c_ref is not None, c_find
+                c_click = await ext.browser_click(ctx, bid, c_ref.group(0), offset_x=75.0, offset_y=60.0)
+                assert "hit_point=offset(75,60)" in c_click, c_click
+                assert "CANVAS:confirm" in await ext.browser_extract(ctx, bid, query="#cv-out")
+            finally:
+                if bid in ext._browsers:
+                    await ext.browser_close(ctx, bid)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_real_chrome_network_body_capture_and_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real-Chrome regression for ``browser_network_body``: POST JSON capture, pagination, binary omission & redaction."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from chrys.extensions import ToolContext
+    from smoke_common import chrome_executable
+    import icode_browser_use.extension as ext
+
+    png_1x1 = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+        b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    html = """<!doctype html><html><head><meta charset="utf-8"><title>Net Body E2E</title></head><body>
+      <button id="go-api" type="button">Fire API</button>
+      <button id="go-bin" type="button">Fire PNG</button>
+      <div id="out">IDLE</div>
+      <script>
+        document.getElementById('go-api').addEventListener('click', async () => {
+          const r = await fetch('/api/submit?token=Q_SECRET', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer H_SECRET'},
+            body: JSON.stringify({sku: 'PRO-1', password: 'P_SECRET'})
+          });
+          const j = await r.json();
+          document.getElementById('out').textContent = 'DONE:' + j.id;
+        });
+        document.getElementById('go-bin').addEventListener('click', async () => {
+          const r = await fetch('/api/missing.png');
+          document.getElementById('out').textContent = 'BIN:' + r.status;
+        });
+      </script></body></html>"""
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def _send(self, code: int, ctype: str, data: bytes, extra: dict[str, str] | None = None) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self) -> None:
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 0:
+                self.rfile.read(n)
+            body = json.dumps(
+                {"id": "ORD-9", "access_token": "R_SECRET", "pad": "Z" * 260, "tail": "TAIL_MARK"}
+            ).encode("utf-8")
+            self._send(
+                201,
+                "application/json",
+                body,
+                extra={"Set-Cookie": "sid=C_SECRET; HttpOnly", "X-Env": "test-e2e"},
+            )
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path == "/api/missing.png":
+                self._send(404, "image/png", png_1x1)
+            else:
+                self._send(200, "text/html; charset=utf-8", html.encode("utf-8"))
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    origin = f"http://127.0.0.1:{srv.server_address[1]}"
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory(prefix="browser-use-netbody-e2e-", ignore_cleanup_errors=True) as td:
+            root = Path(td).resolve()
+            (root / "ws").mkdir()
+            if _ORIG_USERPROFILE is not None:
+                monkeypatch.setenv("USERPROFILE", _ORIG_USERPROFILE)
+            if _ORIG_HOME is not None:
+                monkeypatch.setenv("HOME", _ORIG_HOME)
+            if _ORIG_APPDATA is not None:
+                monkeypatch.setenv("APPDATA", _ORIG_APPDATA)
+            if _ORIG_LOCALAPPDATA is not None:
+                monkeypatch.setenv("LOCALAPPDATA", _ORIG_LOCALAPPDATA)
+            monkeypatch.setenv("ICODE_BROWSER_ALLOWED_ORIGINS", origin)
+            monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(root / "state"))
+            monkeypatch.setenv("ICODE_BROWSER_HEADLESS", "1")
+            monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0")
+            monkeypatch.setenv("ICODE_BROWSER_EXECUTABLE", str(chrome_executable()))
+            ctx = ToolContext.for_testing(
+                root / "ws",
+                data_dir=root / "data",
+                session_data_dir=root / "session",
+                agent_name="e2e-netbody",
+                session_id="e2e-netbody",
+            )
+            nav = await ext.browser_navigate(ctx, f"{origin}/")
+            bid = nav.splitlines()[0].split("browser_id: ", 1)[1].strip()
+            try:
+                await ext.browser_click(ctx, bid, "Fire API", expect_condition="text", expect_value="DONE:ORD-9")
+                p1 = await ext.browser_network_body(ctx, bid, url_contains="/api/submit", max_chars=200)
+                assert "POST 201" in p1 and "ORD-9" in p1 and "PRO-1" in p1, p1
+                assert "offset=200" in p1, p1
+                assert "x-env: test-e2e" in p1.lower(), p1
+                for secret in ("Q_SECRET", "H_SECRET", "P_SECRET", "R_SECRET", "C_SECRET"):
+                    assert secret not in p1, (secret, p1)
+                p2 = await ext.browser_network_body(
+                    ctx,
+                    bid,
+                    url_contains="/api/submit",
+                    include_headers=False,
+                    include_request_body=False,
+                    max_chars=400,
+                    offset=200,
+                )
+                assert "TAIL_MARK" in p2 and "R_SECRET" not in p2, p2
+
+                await ext.browser_click(ctx, bid, "Fire PNG", expect_condition="text", expect_value="BIN:404")
+                bin_out = await ext.browser_network_body(ctx, bid, url_contains="/api/missing.png")
+                assert "[binary response body omitted: mime=image/png" in bin_out, bin_out
+            finally:
+                if bid in ext._browsers:
+                    await ext.browser_close(ctx, bid)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        srv.shutdown()
+        srv.server_close()

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ipaddress
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
@@ -177,6 +178,33 @@ def sanitize_display_url(url: str) -> str:
     host = parts.netloc.rpartition("@")[2]
     path = parts.path.partition(";")[0]
     return f"{parts.scheme}://{host}{path}"
+
+
+_TITLE_QUERY_SECRET_RE = re.compile(r"[?#][^\s]*=[^\s]*")
+
+
+def sanitize_display_title(title: str, url: str = "") -> str:
+    """Strip query/fragment secrets when a page title falls back to (or embeds) a URL.
+
+    When an HTML page (such as an OAuth callback) has no ``<title>``, Chrome populates
+    ``document.title`` / target title with ``host[:port]/path?query#fragment``.
+    Sanitizing it alongside :func:`sanitize_display_url` prevents query tokens from
+    leaking into snapshot headers or ``browser_tabs``.
+    """
+    raw = (title or "").strip()
+    if not raw:
+        return ""
+    lower = raw.lower()
+    if lower.startswith(("http://", "https://", "data:", "blob:")):
+        return sanitize_display_url(raw)
+    if url:
+        try:
+            host = urlsplit(url).netloc.rpartition("@")[2]
+        except ValueError:
+            host = ""
+        if host and lower.startswith(host.lower()) and (len(raw) == len(host) or raw[len(host)] in "/?#"):
+            return sanitize_display_url(f"http://{raw}").removeprefix("http://")
+    return _TITLE_QUERY_SECRET_RE.sub(lambda match: match.group(0)[0] + "…", raw)
 
 
 def origin_allowed(allowed_origins: tuple[str, ...], url: str) -> bool:

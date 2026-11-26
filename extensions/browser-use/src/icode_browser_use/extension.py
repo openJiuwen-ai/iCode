@@ -73,8 +73,9 @@ extension = Extension()
 #: Stable plugin CLI entry point (ready for host ``icode plugin browser-use`` forwarding).
 cli_main = cli.main
 
-#: 13 high-cohesion core tools exposed when ``ICODE_BROWSER_TOOLSET=compact`` is set.
-#: ``browser_list`` is included so handles remain recoverable after history compaction.
+#: 15 high-cohesion core tools exposed when ``ICODE_BROWSER_TOOLSET=compact`` is set.
+#: Includes ``browser_list`` for post-compaction handle recovery, ``browser_scroll`` for
+#: long/lazy pages, and ``browser_select_option`` for native form dropdowns.
 COMPACT_TOOL_NAMES: Final[frozenset[str]] = frozenset(
     {
         "browser_open",
@@ -85,7 +86,9 @@ COMPACT_TOOL_NAMES: Final[frozenset[str]] = frozenset(
         "browser_click",
         "browser_fill",
         "browser_press_key",
+        "browser_select_option",
         "browser_wait_for",
+        "browser_scroll",
         "browser_extract",
         "browser_screenshot",
         "browser_dialog",
@@ -96,6 +99,7 @@ COMPACT_TOOL_NAMES: Final[frozenset[str]] = frozenset(
 _WRITE_TOOL_NAMES: Final[frozenset[str]] = frozenset(
     {
         "browser_click",
+        "browser_drag",
         "browser_fill",
         "browser_press_key",
         "browser_upload",
@@ -1239,6 +1243,14 @@ async def browser_click(
         "ref was reported all-occluded (status=blocked, nothing sent) or, for a non-submit target, "
         "effect=none",
     ] = "mouse",
+    offset_x: Annotated[
+        float | None,
+        "Optional X offset in CSS pixels from target's top-left corner (must be paired with offset_y; e.g. for <canvas>/<svg>)",
+    ] = None,
+    offset_y: Annotated[
+        float | None,
+        "Optional Y offset in CSS pixels from target's top-left corner (must be paired with offset_x; e.g. for <canvas>/<svg>)",
+    ] = None,
     expect_condition: Annotated[
         Literal["", "visible", "hidden", "editable", "text", "url", "text_changed", "stable", "count"],
         "Optional bounded read-only condition to verify immediately after this single click (never retries the click). "
@@ -1263,9 +1275,11 @@ async def browser_click(
     """Click an element by ref or text; a stale ref fails and asks for a new snapshot.
 
     The mouse click targets the element's centre and, when that is covered, points near its
-    corners (result shows hit_point=corner); when every point is covered nothing is sent
-    (status=blocked), and when a hit test cannot be answered nothing is sent either
-    (status=uncertain). The result reports effect=navigation|new_tab|dom|dom_elsewhere|focus|none|unknown;
+    corners (result shows hit_point=corner); pass offset_x and offset_y (CSS pixels from the
+    target's top-left corner) to click a specific sub-region such as inside a <canvas> or <svg>.
+    When every point is covered nothing is sent (status=blocked), and when a hit test cannot be
+    answered nothing is sent either (status=uncertain). The result reports
+    effect=navigation|new_tab|dom|dom_elsewhere|focus|none|unknown;
     verified=control_state means the same control changed its accessibility state or label.
     There is never an automatic JS second click. Pass expect_condition (and optionally
     expect_return='ref'|'snapshot'|'text') to run a single read-only verification right after
@@ -1281,6 +1295,10 @@ async def browser_click(
         "click_count": click_count,
         "dispatch": dispatch,
     }
+    if offset_x is not None:
+        arguments["offset_x"] = offset_x
+    if offset_y is not None:
+        arguments["offset_y"] = offset_y
     if expect_condition:
         arguments.update(
             {
@@ -1292,6 +1310,45 @@ async def browser_click(
             }
         )
     return await _run(browser, "browser_click", arguments)
+
+
+@_tool(requires_approval=True)
+async def browser_drag(
+    ctx: ToolContext,
+    browser_id: Annotated[str, "Browser id returned by browser_open"],
+    source: Annotated[str, "Source element @eN#epoch ref or free text to drag"],
+    target: Annotated[str, "Destination element @eN#epoch ref or free text to drop onto"],
+    steps: Annotated[int, "Intermediate pointer movement steps between source and target (1-30)"] = 8,
+    expect_condition: Annotated[
+        Literal["", "visible", "hidden", "editable", "text", "url", "text_changed", "stable", "count"],
+        "Optional bounded read-only condition to verify immediately after this single drag (never retries)",
+    ] = "",
+    expect_target: Annotated[str, "Target (@eN#epoch ref or free text) for expect_condition"] = "",
+    expect_value: Annotated[str, "Value for expect_condition"] = "",
+    expect_timeout_ms: Annotated[int, "Read-only expect wait budget in ms (100-60000)"] = 5000,
+    expect_return: Annotated[
+        Literal["none", "ref", "snapshot", "text"],
+        "Optional payload to return when expect_condition succeeds",
+    ] = "none",
+) -> str:
+    """Drag source element onto target element via trusted CDP mouse and HTML5 drag events.
+
+    Supports both native HTML5 draggable="true" boards and pointer-event sortable lists/kanban cards.
+    Recorded in the action journal and never auto-retried.
+    """
+    browser = _get(ctx, browser_id)
+    arguments: dict[str, object] = {"source": source, "target": target, "steps": steps}
+    if expect_condition:
+        arguments.update(
+            {
+                "expect_condition": expect_condition,
+                "expect_target": expect_target,
+                "expect_value": expect_value,
+                "expect_timeout_ms": expect_timeout_ms,
+                "expect_return": expect_return,
+            }
+        )
+    return await _run(browser, "browser_drag", arguments)
 
 
 @_tool(requires_approval=False)
@@ -1501,7 +1558,10 @@ async def browser_scroll(
 async def browser_extract(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
-    query: Annotated[str | None, "Optional element to extract; omit for the whole page"] = None,
+    query: Annotated[
+        str | None,
+        "Optional @eN#epoch ref, #element-id, or visible text to extract; omit for the whole page (complex CSS selectors not supported)",
+    ] = None,
     format: Annotated[Literal["text", "markdown", "html"], "Output format"] = "text",
     max_chars: Annotated[int, "Maximum characters (200-7000)"] = 7000,
     offset: Annotated[int, "Start at this character; use the 'next offset' of a cut result"] = 0,
@@ -1538,6 +1598,38 @@ async def browser_logs(
         "browser_logs",
         {"kind": kind, "errors_only": errors_only, "since": since, "limit": limit},
     )
+
+
+@_tool(requires_approval=False)
+async def browser_network_body(
+    ctx: ToolContext,
+    browser_id: Annotated[str, "Browser id returned by browser_open"],
+    seq: Annotated[int | None, "Optional #seq of a network entry from browser_logs"] = None,
+    url_contains: Annotated[
+        str, "Optional case-insensitive URL substring when seq is omitted (picks newest match)"
+    ] = "",
+    include_headers: Annotated[bool, "Include scrubbed request and response headers"] = True,
+    include_request_body: Annotated[bool, "Include scrubbed request POST payload when present"] = True,
+    max_chars: Annotated[int, "Maximum response body characters (200-7000)"] = 4000,
+    offset: Annotated[int, "Start offset for paginating long response bodies"] = 0,
+) -> str:
+    """Inspect a recorded XHR/fetch or HTTP >= 400 request's headers, POST payload and response body.
+
+    Fetches the response body via CDP Network.getResponseBody on demand. Sensitive headers
+    (Authorization, Cookie, Set-Cookie, API keys) and tokens/JWTs are redacted; binary bodies
+    are summarized by MIME type and byte length.
+    """
+    browser = _get(ctx, browser_id)
+    arguments: dict[str, object] = {
+        "url_contains": url_contains,
+        "include_headers": include_headers,
+        "include_request_body": include_request_body,
+        "max_chars": max_chars,
+        "offset": offset,
+    }
+    if seq is not None:
+        arguments["seq"] = seq
+    return await _run(browser, "browser_network_body", arguments)
 
 
 @_tool(requires_approval=True)

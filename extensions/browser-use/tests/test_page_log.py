@@ -366,3 +366,19 @@ def test_tabs_downloads_and_page_log_share_url_sanitization():
         assert "S1" not in rendered and "T1" not in rendered and "frag" not in rendered
     for fn in (tab_display_url, download_display_url, _short_url):
         assert fn("data:text/html;base64,PHNjcmlwdD5zZWNyZXQ8L3NjcmlwdD4=") == "data:"
+
+
+def test_untitled_url_fallback_title_strips_query_secrets():
+    from icode_browser_use.policy import sanitize_display_title
+
+    url = "http://127.0.0.1:8080/callback?access_token=SUPERSECRET&code=OAUTH777#frag=1"
+    # Chrome sets document.title to host:port/path?query on untitled pages
+    chrome_title = "127.0.0.1:8080/callback?access_token=SUPERSECRET&code=OAUTH777"
+    cleaned = sanitize_display_title(chrome_title, url)
+    assert cleaned == "127.0.0.1:8080/callback"
+    assert "SUPERSECRET" not in cleaned and "OAUTH777" not in cleaned
+
+    assert sanitize_display_title("https://u:pw@example.com/cb?token=S1") == "https://example.com/cb"
+    assert sanitize_display_title("OAuth Callback?code=S2") == "OAuth Callback?…"
+    assert sanitize_display_title("Is it ok? yes") == "Is it ok? yes"
+    assert sanitize_display_title("Q4 采购明细表", url) == "Q4 采购明细表"

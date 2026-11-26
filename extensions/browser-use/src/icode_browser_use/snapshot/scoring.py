@@ -31,6 +31,10 @@ _HIDDEN_POINTS = -20
 _COLLAPSED_POINTS = -15
 _MAX_CANDIDATES = 3
 _LABEL_ROLES = frozenset({"labeltext", "label"})
+_FORM_CONTROL_TAGS = frozenset({"input", "textarea", "select"})
+_FORM_CONTROL_ROLES = frozenset(
+    {"textbox", "slider", "combobox", "checkbox", "radio", "switch", "spinbutton", "colorwell", "listbox"}
+)
 
 #: Minimum fuzzy-similarity ratio for a name to count as a spec match at all.
 _SIMILARITY_MIN_RATIO = 0.5
@@ -198,6 +202,38 @@ def _drop_redundant_ancestors(candidates: list[Candidate], spec: str) -> list[Ca
     return filtered
 
 
+def _drop_shadowed_labels(candidates: list[Candidate], spec: str) -> list[Candidate]:
+    """Suppress ``<label>`` caption nodes when a same-name form control is also a candidate.
+
+    ``<label for="x">Priority Level</label><input id="x" type="range" aria-label="Priority Level">``
+    exposes both a clickable ``<label>`` and the actual focusable form control with the same name.
+    Unless the caller explicitly targeted ``label``/``labeltext``, resolve to the control itself.
+    """
+    target = _norm(spec)
+    if target in _LABEL_ROLES:
+        return candidates
+    control_keys: set[tuple[str, str | None, str]] = set()
+    for candidate in candidates:
+        node = candidate.node
+        role = _norm(node.role)
+        tag = _norm(node.tag)
+        if tag in _FORM_CONTROL_TAGS or role in _FORM_CONTROL_ROLES or node.editable:
+            eff_name, _ = _effective_name(node)
+            if eff_name:
+                control_keys.add((node.frame_id, node.cdp_session_id, eff_name))
+    if not control_keys:
+        return candidates
+    filtered: list[Candidate] = []
+    for candidate in candidates:
+        node = candidate.node
+        if _norm(node.tag) == "label" or _norm(node.role) in _LABEL_ROLES:
+            eff_name, _ = _effective_name(node)
+            if (node.frame_id, node.cdp_session_id, eff_name) in control_keys:
+                continue
+        filtered.append(candidate)
+    return filtered
+
+
 def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
     """Score every spec-matching node, keep the positive ones and sort descending."""
     seen_names: dict[str, int] = {}
@@ -218,6 +254,7 @@ def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
             exact = bool(target and effective_name and effective_name == target and not (node.name_from_href and name))
             candidates.append(Candidate(node=node, score=value, exact_match=exact))
     candidates = _drop_redundant_ancestors(candidates, spec)
+    candidates = _drop_shadowed_labels(candidates, spec)
     candidates.sort(key=lambda candidate: candidate.score, reverse=True)
     return candidates
 

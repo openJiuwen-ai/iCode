@@ -80,6 +80,8 @@ _INTERACTIVE_ROLES = frozenset(
 )
 _SCROLL_OVERFLOW = frozenset({"auto", "scroll", "overlay"})
 _CLICKABLE_TAGS = frozenset({"button", "input", "select", "textarea"})
+_HEAD_META_TAGS = frozenset({"head", "title", "meta", "link", "base", "script", "style", "noscript", "template"})
+_INLINE_DISPLAY_NONE_RE = re.compile(r"(?:^|;)\s*display\s*:\s*none\b", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
 
 
@@ -143,6 +145,8 @@ class FusedNode:
     placeholder: str = ""
     has_layout: bool = False
     input_type: str = ""
+    css_hidden: bool = False
+    """True for CSS-hidden (``display:none``/``visibility:hidden``/``opacity:0``/``hidden``) or head metadata nodes."""
 
     def fingerprint(self) -> dict[str, str]:
         """Coarse identity used to detect a stale reference within an epoch."""
@@ -414,6 +418,8 @@ def _tag_interactive(tag: str, attrs: dict[str, str]) -> bool:
         return True
     if "onclick" in attrs:
         return True
+    if attrs.get("draggable", "").strip().lower() == "true":
+        return True
     tabindex = attrs.get("tabindex")
     if tabindex is not None:
         try:
@@ -550,6 +556,7 @@ def _fuse_document(
     offset_x, offset_y = frame.offset
 
     counters: dict[tuple[int, str], int] = {}
+    hidden_positions: set[int] = set()
     out: list[FusedNode] = []
     for position in range(len(node_type)):
         if int(node_type[position] or 0) != 1:
@@ -593,7 +600,27 @@ def _fuse_document(
         except ValueError:
             opacity = 1.0
 
-        visible = has_bounds and display != "none" and visibility != "hidden" and opacity > 0.0
+        parent_hidden = parent in hidden_positions
+        explicitly_hidden = (
+            display == "none"
+            or visibility == "hidden"
+            or opacity <= 0.0
+            or (not has_bounds and bool(_INLINE_DISPLAY_NONE_RE.search(attrs.get("style", ""))))
+        )
+        head_meta = tag in _HEAD_META_TAGS
+        html_hidden = "hidden" in attrs
+        if parent_hidden or explicitly_hidden or head_meta or html_hidden:
+            hidden_positions.add(position)
+
+        visible = (
+            has_bounds
+            and not parent_hidden
+            and not html_hidden
+            and not head_meta
+            and display != "none"
+            and visibility != "hidden"
+            and opacity > 0.0
+        )
         clip = frame.viewport_clip
         if clip is not None:
             clip_l, clip_t, clip_r, clip_b = clip
@@ -696,8 +723,24 @@ def _fuse_document(
             if not name:
                 name = _href_name(href)
                 name_from_href = bool(name)
-            if name:
+            if name and not text_hint:
                 text_hint = name
+
+        not_laid_out = (
+            bool(layout_of) and layout_position is None and not interactive and not editable and not scrollable
+        )
+        zero_sized_text = (
+            bool(layout_of)
+            and not has_bounds
+            and bool(name.strip() or text_hint.strip())
+            and not interactive
+            and not editable
+            and not scrollable
+        )
+        css_hidden = parent_hidden or explicitly_hidden or head_meta or html_hidden or not_laid_out or zero_sized_text
+        if css_hidden:
+            visible = False
+            in_viewport = False
 
         out.append(
             FusedNode(
@@ -728,6 +771,7 @@ def _fuse_document(
                 placeholder=placeholder,
                 has_layout=has_bounds,
                 input_type=attrs.get("type", "").strip().lower() if tag == "input" else "",
+                css_hidden=css_hidden,
             )
         )
     return out

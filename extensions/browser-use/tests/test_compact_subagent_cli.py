@@ -45,7 +45,7 @@ def test_config_toolset_default_compact_and_invalid():
         BrowserConfig.from_env({"ICODE_BROWSER_TOOLSET": "minimal"})
 
 
-def test_compact_toolset_registers_only_thirteen_core_tools(monkeypatch, tmp_path):
+def test_compact_toolset_registers_only_fifteen_core_tools(monkeypatch, tmp_path):
     monkeypatch.delenv("ICODE_BROWSER_EVALUATE", raising=False)
     monkeypatch.delenv("ICODE_BROWSER_SAVE_STATE", raising=False)
     monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
@@ -54,8 +54,10 @@ def test_compact_toolset_registers_only_thirteen_core_tools(monkeypatch, tmp_pat
         reloaded = importlib.reload(ext)
         tool_names = {tool.name for tool in reloaded.extension.tools}
         assert tool_names == reloaded.COMPACT_TOOL_NAMES
-        assert len(tool_names) == 13
+        assert len(tool_names) == 15
         assert "browser_list" in tool_names
+        assert "browser_scroll" in tool_names
+        assert "browser_select_option" in tool_names
         assert "browser_tabs" not in tool_names
         assert "browser_back" not in tool_names
         assert "browser_action_status" not in tool_names
@@ -71,7 +73,7 @@ def test_full_toolset_remains_default(monkeypatch):
     reloaded = importlib.reload(ext)
     tool_names = {tool.name for tool in reloaded.extension.tools}
     assert reloaded.COMPACT_TOOL_NAMES.issubset(tool_names)
-    assert len(tool_names) == 29
+    assert len(tool_names) == 31
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from icode_browser_use.actions import _shared, actionability, fill
 from icode_browser_use.errors import CDPTimeout, StaleRef
 from icode_browser_use.journal import Journal
@@ -1681,3 +1683,61 @@ def test_native_temporal_fill_uses_composed_input_and_browser_normalized_expecte
     rendered = blocks[0]["text"]
     assert "读回与输入不一致" not in rendered
     assert any(call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter" for call in session.client.calls)
+
+
+@pytest.mark.parametrize(
+    ("input_type", "good_val", "expected_val", "bad_val"),
+    [
+        ("range", "75", "75", "not-a-number"),
+        ("color", "#FF00AA", "#ff00aa", "red"),
+    ],
+)
+def test_fill_supports_native_range_and_color_inputs(
+    monkeypatch, input_type: str, good_val: str, expected_val: str, bad_val: str
+) -> None:
+    from icode_browser_use.errors import BadRequest
+
+    session = FakeSession()
+    session.state = {"tag": "input", "editable": False, "focused": True, "text": ""}
+    session.client.state = session.state
+
+    async def fake_call_value(_session, _oid, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "input",
+                    "type": input_type,
+                    "readOnly": False,
+                    "disabled": False,
+                    "text": session.state["text"],
+                },
+            }
+        if "HTMLInputElement.prototype" in function and "accepted" in function:
+            if f'"{good_val}"' in function:
+                session.state["text"] = expected_val
+                return {"type": "object", "value": {"accepted": True, "value": expected_val, "expected": expected_val}}
+            return {"type": "object", "value": {"accepted": False, "value": session.state["text"], "expected": ""}}
+        if "this.isContentEditable" in function:
+            return {"type": "object", "value": dict(session.state)}
+        return {}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "Control", "text": good_val, "clear": True, "submit": False, "keypress_fallback": False},
+        )
+    )
+    assert "status=succeeded" in blocks[0]["text"]
+    assert session.state["text"] == expected_val
+
+    with pytest.raises(BadRequest, match=input_type):
+        asyncio.run(
+            fill.run(
+                session,
+                {"target": "Control", "text": bad_val, "clear": True, "submit": False, "keypress_fallback": False},
+            )
+        )

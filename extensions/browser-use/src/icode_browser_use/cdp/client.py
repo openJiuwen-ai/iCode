@@ -214,6 +214,18 @@ class CDPClient:
         """Register *handler* for *method*; several handlers may share a method."""
         self._handlers.setdefault(method, []).append(handler)
 
+    def off(self, method: str, handler: EventHandler) -> None:
+        """Unregister *handler* for *method* when present."""
+        handlers = self._handlers.get(method)
+        if not handlers:
+            return
+        try:
+            handlers.remove(handler)
+        except ValueError:
+            return
+        if not handlers:
+            self._handlers.pop(method, None)
+
     # --------------------------------------------------------------- internal
 
     def _dispatch_response(self, message: dict[str, Any]) -> None:

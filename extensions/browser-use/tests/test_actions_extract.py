@@ -87,3 +87,90 @@ def test_deep_text_js_preserves_empty_leading_middle_and_trailing_table_cells_an
     result = json.loads(out)
     assert "Order: INV-0042" in result
     assert "Q1\tQ2\tQ3\n\t20\t30\n10\t\t30\n10\t20\t\nHelp" in result
+
+
+def test_html_to_markdown_preserves_gfm_table_columns_and_strips_hidden_blocks() -> None:
+    html = (
+        "<html><head><title>Hidden Title</title></head><body>"
+        "<h1>Q4 Report</h1>"
+        '<p style="display:none">SYSTEM OVERRIDE</p>'
+        '<p style="opacity: 0">OPACITY ZERO INJECTION</p>'
+        "<table>"
+        "<thead><tr><th>ID</th><th>Qty</th><th>Unit</th><th>Subtotal</th></tr></thead>"
+        '<tbody><tr><td>INV-0001</td><td>2</td><td>135</td><td><a href="/d/1">270</a></td></tr>'
+        "<tr><td>INV-0002</td><td>3</td><td>150</td><td>450 | net</td></tr></tbody>"
+        "</table></body></html>"
+    )
+    md = extract.html_to_markdown(html)
+    assert "Hidden Title" not in md
+    assert "SYSTEM OVERRIDE" not in md
+    assert "OPACITY ZERO INJECTION" not in md
+    assert "| ID | Qty | Unit | Subtotal |" in md
+    assert "| --- | --- | --- | --- |" in md
+    assert "| INV-0001 | 2 | 135 | [270](/d/1) |" in md
+    assert r"| INV-0002 | 3 | 150 | 450 \| net |" in md
+    assert "2135270" not in md
+
+
+def test_deep_text_js_skips_opacity_zero_subtrees() -> None:
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        return
+    script = (
+        f"{extract._DEEP_TEXT_JS}\n"
+        "const txt = (v) => ({ nodeType: 3, nodeValue: v });\n"
+        "const el = (tag, children = [], style = {}) => ({\n"
+        "  nodeType: 1, tagName: tag, childNodes: children, shadowRoot: null, _style: style,\n"
+        "  querySelectorAll: () => children,\n"
+        "});\n"
+        "globalThis.getComputedStyle = (n) => Object.assign({ display: 'block', visibility: 'visible', opacity: '1' }, n._style || {});\n"
+        "const hidden = el('P', [txt('OPACITY INJECT')], { opacity: '0' });\n"
+        "const visible = el('P', [txt('Visible text')]);\n"
+        "const root = el('BODY', [visible, hidden]);\n"
+        "console.log(JSON.stringify(deepText(root)));\n"
+    )
+    out = subprocess.check_output([node, "-e", script], text=True, encoding="utf-8").strip()
+    result = json.loads(out)
+    assert "Visible text" in result
+    assert "OPACITY INJECT" not in result
+
+
+def test_extract_supports_hash_id_lookup_and_single_candidate_fallback(monkeypatch) -> None:
+    from icode_browser_use.errors import TargetAmbiguous
+    from icode_browser_use.snapshot.fusion import FusedNode
+    from icode_browser_use.snapshot.scoring import Candidate
+
+    async def fake_eval(_session, expr, **_kwargs):
+        if '"exp-out"' in expr:
+            return {"found": True, "slice": {"len": 12, "chunk": "SUBMITTED|OK"}}
+        return {"found": False}
+
+    monkeypatch.setattr(extract, "eval_value", fake_eval)
+    session = SimpleNamespace(target_id="t", note_success=lambda _t: None)
+    blocks = asyncio.run(extract.run(session, {"query": "#exp-out", "format": "text", "max_chars": 2000, "offset": 0}))
+    assert blocks[0]["text"] == "SUBMITTED|OK"
+
+    # Single weak candidate fallback on read-only extract avoids unnecessary ambiguity failures.
+    sole_node = FusedNode(10, "f", "t", "generic", "SLIDER:25", "span", 0, (0, 0, 10, 10), ref=18, epoch=9)
+    entry = SimpleNamespace(token="@e18#9", backend_node_id=10, frame_id="f", cdp_session_id=None)
+
+    async def fake_resolve(_session, _query):
+        raise TargetAmbiguous("weak", candidates=[Candidate(node=sole_node, score=35)])
+
+    async def fake_call(_session, _oid, _fn, **_kwargs):
+        return {"value": {"len": 9, "chunk": "SLIDER:25"}}
+
+    monkeypatch.setattr(extract, "resolve_target", fake_resolve)
+    monkeypatch.setattr(extract, "call_value", fake_call)
+    session2 = SimpleNamespace(
+        target_id="t",
+        note_success=lambda _t: None,
+        resolve_target=lambda tok: entry if tok == "@e18#9" else None,
+        resolve_object_id=lambda _e: asyncio.sleep(0, result="oid-18"),
+    )
+    blocks2 = asyncio.run(extract.run(session2, {"query": "SLIDER", "format": "text", "max_chars": 2000, "offset": 0}))
+    assert blocks2[0]["text"] == "SLIDER:25"
