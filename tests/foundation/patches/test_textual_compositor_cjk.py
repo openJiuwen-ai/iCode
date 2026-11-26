@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 import textual._compositor as compositor_mod
+from rich.cells import get_character_cell_size
 from rich.console import Console
 from rich.control import Control
 from rich.segment import Segment
@@ -36,7 +37,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
 
     ``tests/conftest.py`` imports tab selection before this module, so the global
     registry order differs from a fresh production bootstrap.  Build the order
-    explicitly: all 19 CJK patches, then the one tab-selection patch. The
+    explicitly: all 20 CJK patches, then the one tab-selection patch. The
     joined-text fallback builds on the earlier partial-update fragment.
     """
     tab_matches = [
@@ -46,7 +47,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
         and patch.module_file == "_compositor.py"
         and patch.old_fragment == textual_tab_selection._COMPOSITOR_GET_WIDGET_AND_OFFSET_AT_OLD
     ]
-    assert len(textual_compositor_cjk._PATCHES) == 19
+    assert len(textual_compositor_cjk._PATCHES) == 20
     assert len(tab_matches) == 1
     return (*textual_compositor_cjk._PATCHES, tab_matches[0])
 
@@ -243,6 +244,7 @@ def test_render_segments_crops_at_complete_character_boundaries(
         pytest.param("点击查看", 10, 13, 40, 12, "击查看", id="cjk-mid-character"),
         pytest.param("点击查看", 10, 14, 40, 14, "查看", id="cjk-aligned"),
         pytest.param("点击查看详情", 10, 13, 18, 12, "击查看", id="cjk-both-edges"),
+        pytest.param("é日한　a", 0, 5, 20, 5, "　a", id="stable-mixed-widths"),
         pytest.param("#1中*2", 0, 4, 20, 4, "*2", id="cjk-with-ascii-keycap-bases"),
         pytest.param("✍ repaint", 0, 4, 20, 0, "✍ repaint", id="bare-writing-hand"),
         pytest.param("🕵 repaint", 0, 4, 20, 0, "🕵 repaint", id="bare-detective"),
@@ -278,6 +280,11 @@ def test_render_segments_starts_at_the_dirty_span(
 @pytest.mark.parametrize(
     ("prefix", "styled", "suffix", "terminal_width", "dirty"),
     [
+        # VS Code's Unicode 11 terminal advances one cell for these; Rich advances two.
+        ("🫠 ", "repaint", " regression", 24, (6, 14)),
+        ("🥹 ", "repaint", " regression", 24, (6, 14)),
+        # A soft hyphen changed from punctuation to a format character in Unicode 4.
+        ("soft\u00adhyphen ", "repaint", " regression", 32, (12, 22)),
         # Without VS16, Rich measures these as one cell and tmux 3.8 uses two.
         ("✍ ", "repaint", " regression", 24, (4, 14)),
         ("🕵 ", "repaint", " regression", 24, (4, 14)),
@@ -329,17 +336,37 @@ _CURSOR_MOVE = re.compile(r"\x1b\[(\d+);(\d+)H")
 _STYLE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
-def _replay(screen: list[str], output: str) -> list[str]:
+def _replay(screen: list[str], output: str, unicode_version: str = "auto") -> list[str]:
     """Write a partial update's text, at its cursor moves, over ``screen``."""
-    rows = [[cell for character in line for cell in (character, *[""] * (cell_len(character) - 1))] for line in screen]
+    rows = [
+        [
+            cell
+            for character in line
+            for cell in (character, *[""] * (get_character_cell_size(character, unicode_version) - 1))
+        ]
+        for line in screen
+    ]
     pieces = _CURSOR_MOVE.split(output)
     for row, column, text in zip(pieces[1::3], pieces[2::3], pieces[3::3], strict=True):
         y, x = int(row) - 1, int(column) - 1
         for character in _STYLE.sub("", text).rstrip("\n"):
-            width = cell_len(character)
+            width = get_character_cell_size(character, unicode_version)
             rows[y][x : x + width] = [character, *[""] * (width - 1)]
             x += width
     return ["".join(row) for row in rows]
+
+
+@pytest.mark.parametrize("emoji", ["🫠", "🥹"])
+def test_left_crop_preserves_text_on_a_unicode_11_terminal(_render_segments_implementation: str, emoji: str) -> None:
+    # Rich lays out the prefix in two cells. VS Code's default xterm.js uses one.
+    assert get_character_cell_size(emoji, "latest") == 2
+    assert get_character_cell_size(emoji, "11.0.0") == 1
+    title = f"{emoji} repaint regression"
+    update = object.__new__(ChopsUpdate)
+    update.chops = [{0: Strip([Segment(title)])}]
+    update.spans = [(0, 5, cell_len(title))]
+    output = update.render_segments(Console(force_terminal=True, color_system=None))
+    assert _replay([title], output, "11.0.0") == [title]
 
 
 _BODY = "已创建工作区“p1”。\n可以随时切换到这个工作区。\n切换后新会话将在该工作区中开始。"

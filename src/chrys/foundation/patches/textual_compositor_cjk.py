@@ -46,12 +46,12 @@ the span's left edge, moved back to the start of a double-width character the
 edge divides.  The cells it no longer writes lie outside the dirty region, so
 the terminal already shows them. Widgets outside the dirty rectangle reserve their
 usual space on those rows without rendering. Use full-frame row origins when
-cutting a strip containing joined glyphs or symbols with emoji presentation:
-terminals may assign them a different width even without a variation selector.
+cutting a strip whose widths may differ across terminals. A terminal with an
+older Unicode table can advance just one column for a newer wide character.
 
 Upgrade warning: ``_compositor.py`` is one all-or-nothing patch group containing
-these 19 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
-20 fragments aborts the entire file group. Textual is imported before
+these 20 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
+21 fragments aborts the entire file group. Textual is imported before
 ``bootstrap_runtime()`` on the TUI path, so the runtime patch stages the same CJK
 fragments in memory and installs all affected methods on the existing classes.
 It preserves imported class aliases and instances, and applies independently of
@@ -287,9 +287,7 @@ _NEW_RENDER_SEGMENTS_LEFT_EDGE = """\
                         x += position
 """
 
-# Rich's table includes ASCII keycap bases (#, *, digits). On their own
-# these stay one cell even in terminals that widen bare pictographs.
-_CROP_WIDTH_HELPER = """\
+_PREVIOUS_CROP_WIDTH_HELPER = """\
 def _has_stable_crop_widths(text: str) -> bool:
     from rich.cells import load_cell_table
 
@@ -302,12 +300,41 @@ def _has_stable_crop_widths(text: str) -> bool:
     )
 """
 
+_CROP_WIDTH_HELPER = """\
+def _has_stable_crop_widths(text: str) -> bool:
+    from unicodedata import category, ucd_3_2_0
+    from rich.cells import get_character_cell_size, load_cell_table
+
+    # The stdlib's frozen Unicode database bounds the fast path to longstanding
+    # characters. Newer glyphs may occupy one cell in an older terminal and
+    # two in Rich (or vice versa). Printable ASCII includes bare keycap bases.
+    narrow_to_wide = load_cell_table("latest").narrow_to_wide
+    for c in text:
+        if c.isascii() and c.isprintable():
+            continue
+        legacy_category = ucd_3_2_0.category(c)
+        if legacy_category.startswith(("C", "M")) or legacy_category != category(c) or c in narrow_to_wide:
+            return False
+        legacy_width = 2 if ucd_3_2_0.east_asian_width(c) in ("W", "F") else 1
+        if cell_len(c) != legacy_width or get_character_cell_size(c, "latest") != legacy_width:
+            return False
+    return True
+"""
+
 _CROP_WIDTH_HELPER_PATCH = FilePatch(
     package="textual",
     module_file="_compositor.py",
     old_fragment="class ReflowResult(NamedTuple):",
-    new_fragment=_CROP_WIDTH_HELPER + "\n\nclass ReflowResult(NamedTuple):",
+    new_fragment=_PREVIOUS_CROP_WIDTH_HELPER + "\n\nclass ReflowResult(NamedTuple):",
     description="Share the terminal width check between crop and repaint paths",
+    equivalent_fragments=(_CROP_WIDTH_HELPER,),
+)
+_TERMINAL_WIDTH_UPGRADE = FilePatch(
+    package="textual",
+    module_file="_compositor.py",
+    old_fragment=_PREVIOUS_CROP_WIDTH_HELPER,
+    new_fragment=_CROP_WIDTH_HELPER,
+    description="Avoid left crops after characters whose width depends on the terminal Unicode version",
 )
 
 
@@ -701,6 +728,7 @@ _TARGET = "_compositor.py"
 
 _PATCHES = (
     _CROP_WIDTH_HELPER_PATCH,
+    _TERMINAL_WIDTH_UPGRADE,
     FilePatch(
         package="textual",
         module_file=_TARGET,

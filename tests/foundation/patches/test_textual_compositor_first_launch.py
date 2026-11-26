@@ -23,6 +23,7 @@ from tests.support.installed_packages import copy_installed_package
         "earlier-release",
         "previous-pr",
         "initial-pr",
+        "bare-emoji-pr",
         "cached-pr",
         "cached-pr-runtime",
     ],
@@ -44,6 +45,7 @@ def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode:
     # These are the fragments present in each upgrade source.
     width_upgrades = (
         textual_compositor_cjk._CROP_WIDTH_HELPER_PATCH,
+        textual_compositor_cjk._TERMINAL_WIDTH_UPGRADE,
         textual_compositor_cjk._LEFT_WIDTH_UPGRADE,
         textual_compositor_cjk._FRAME_WIDTH_UPGRADE,
     )
@@ -55,11 +57,13 @@ def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode:
     )
     earlier_release = [patch for patch in previous_pr if patch not in sidebar_fixes]
     assert len(previous_pr) == 15 and len(earlier_release) == 11
+    bare_emoji_pr = [patch for patch in install_patches if patch != textual_compositor_cjk._TERMINAL_WIDTH_UPGRADE]
     installed = {
         "already-patched": install_patches,
         "initial-pr": earlier_release,
-        "cached-pr": install_patches,
-        "cached-pr-runtime": install_patches,
+        "bare-emoji-pr": bare_emoji_pr,
+        "cached-pr": bare_emoji_pr,
+        "cached-pr-runtime": bare_emoji_pr,
         "previous-pr": previous_pr,
         "earlier-release": earlier_release,
     }.get(patch_mode, ())
@@ -167,11 +171,12 @@ async def main():
         assert Text.from_ansi(update.render_segments(console)).plain == "好世界"
         # Exercise the updated predicate on this pre-imported compositor.
         front = app.query_one("#front", Static)
-        front.update("✍ repaint")
-        await pilot.pause()
-        full = compositor.render_full_update().render_segments(console)
-        compositor._dirty_regions.add(Region(3, 0, 2, 1))
-        assert compositor.render_partial_update().render_segments(console) == full
+        for title in ("✍ repaint", "🫠 repaint"):
+            front.update(title)
+            await pilot.pause()
+            full = compositor.render_full_update().render_segments(console)
+            compositor._dirty_regions.add(Region(3, 0, 2, 1))
+            assert compositor.render_partial_update().render_segments(console) == full
 
 asyncio.run(main())
 assert Compositor._render_chops is not original_render_chops
