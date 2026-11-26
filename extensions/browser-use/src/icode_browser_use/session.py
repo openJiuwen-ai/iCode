@@ -460,6 +460,10 @@ class BrowserSession:
         """CDP sessions of currently attached out-of-process iframes."""
         return list(self._oopifs)
 
+    def current_page_oopif_sessions(self) -> list[str]:
+        """Attached OOPIF CDP sessions belonging to the current page, in stable order."""
+        return sorted(sid for sid, state in self._oopifs.items() if state.page_target_id in {self._target_id, ""})
+
     def oopif_parent(self, cdp_session_id: str) -> str | None:
         """The parent OOPIF session, or None when the frame is a direct child of the page."""
         state = self._oopifs.get(cdp_session_id)
@@ -622,6 +626,15 @@ class BrowserSession:
                             page.active = bool(state["active"])
         return self.pages()
 
+    def _can_activate_target(self) -> bool:
+        """Whether ``Target.activateTarget`` is supported by this transport/client."""
+        if self._targets is None:
+            return False
+        if self._transport.browser_commands:
+            return True
+        caps = getattr(self._client, "capabilities", None) or ()
+        return "tab_state" in caps
+
     async def switch_page(self, target_id: str) -> PageInfo:
         """Make *target_id* the current page; refs from the old page become stale."""
         async with self._page_lock:
@@ -631,6 +644,10 @@ class BrowserSession:
                 raise TargetNotFound(f"未知标签页：{target_id}（可用：{available}；请先 browser_tabs）")
             if target_id != self._target_id:
                 await self._activate_page(page)
+            elif self._can_activate_target() and self._targets is not None:
+                with contextlib.suppress(Exception):
+                    await self._targets.activate(page.target_id)
+                await self.current_page_foreground()
             info = next((item for item in self.pages() if item.target_id == target_id), None)
             if info is None:
                 raise TargetNotFound(f"标签页在切换过程中关闭：{target_id}；请重新 browser_tabs")
@@ -941,9 +958,10 @@ class BrowserSession:
         self._snapshot.previous_nodes = []
         self._login_pending_since = None
         self._bump_epoch()
-        if self._targets is not None and self._transport.browser_commands:
+        if self._can_activate_target() and self._targets is not None:
             with contextlib.suppress(Exception):
                 await self._targets.activate(page.target_id)
+                page.active = True
 
     def _page_by_session(self, session_id: str | None) -> PageState | None:
         if not session_id:

@@ -125,7 +125,8 @@ def _node_probe_fn(needle: str = "") -> str:
         "   || this.getAttribute('aria-disabled')==='true';"
         " const readOnly=this.readOnly===true || this.getAttribute('aria-readonly')==='true';"
         " const textLike=this.isContentEditable===true || tag==='textarea'"
-        "   || (tag==='input' && ['','text','search','email','url','tel','password','number'].includes(type));"
+        "   || (tag==='input' && ['','text','search','email','url','tel','password','number',"
+        "       'date','time','datetime-local','month','week'].includes(type));"
         " const editable=!disabled && !readOnly && textLike;"
         " const raw=String(deepText(this)||'');"
         f" const needle={needle_js};"
@@ -145,7 +146,35 @@ def _page_text_expr(needle: str = "") -> str:
     return (
         f"(()=>{{{_DEEP_TEXT_JS}{_TEXT_DIGEST_JS}"
         " const body=document.body;"
-        " const raw=body?String(deepText(body)||''):'';"
+        " const mainRaw=body?String(deepText(body)||''):'';"
+        " const frameTexts=[];"
+        " const seenDocs=new Set([document]);"
+        " const walkFrames=(root)=>{"
+        "  if(!root || frameTexts.length>=16) return;"
+        "  const queue=[root];"
+        "  while(queue.length && frameTexts.length<16){"
+        "   const cur=queue.shift();"
+        "   if(!cur || !cur.querySelectorAll) continue;"
+        "   for(const el of cur.querySelectorAll('*')){"
+        "    if(frameTexts.length>=16) break;"
+        "    if(el.shadowRoot) queue.push(el.shadowRoot);"
+        "    const tag=(el.tagName||'').toUpperCase();"
+        "    if(tag==='IFRAME' || tag==='FRAME'){"
+        "     try{"
+        "      const cd=el.contentDocument;"
+        "      if(cd && !seenDocs.has(cd)){"
+        "       seenDocs.add(cd);"
+        "       const ft=cd.body ? String(deepText(cd.body)||'').trim() : '';"
+        "       if(ft) frameTexts.push(ft);"
+        "       walkFrames(cd);"
+        "      }"
+        "     }catch(_){}"
+        "    }"
+        "   }"
+        "  }"
+        " };"
+        " walkFrames(document);"
+        " const raw=frameTexts.length ? [mainRaw,...frameTexts].filter(Boolean).join('\\n') : mainRaw;"
         f" const needle={needle_js};"
         " const out={text:raw.slice(0,20000), text_digest:textDigest(raw)};"
         " if(needle){ out.text_hit=raw.includes(needle); }"
@@ -375,15 +404,58 @@ def _count_predicate(value: str) -> tuple[str, int]:
     return match.group(1) or "=", int(match.group(2))
 
 
-async def _evaluate(session: Any, expression: str, deadline: float) -> Any:
+async def _evaluate(session: Any, expression: str, deadline: float, *, cdp_session_id: str | None = None) -> Any:
     client = session.require_client()
     response = await client.send(
         "Runtime.evaluate",
         {"expression": expression, "returnByValue": True},
-        session_id=session.session_id,
+        session_id=cdp_session_id or session.session_id,
         timeout=_probe_timeout(session, deadline),
     )
     return response.get("result", {}).get("value")
+
+
+def _current_oopif_sessions(session: Any) -> list[str]:
+    fn = getattr(session, "current_page_oopif_sessions", None)
+    if callable(fn):
+        raw = fn()
+        return [str(sid) for sid in raw if isinstance(sid, str) and sid]
+    raw = getattr(session, "oopif_sessions", None)
+    if isinstance(raw, (list, tuple)):
+        return sorted({str(sid) for sid in raw if isinstance(sid, str) and sid})
+    return []
+
+
+async def _read_page_text(session: Any, deadline: float, *, needle: str = "") -> tuple[str, str, bool | None]:
+    """Read main-frame text/digest plus any attached cross-origin iframe (OOPIF) sessions."""
+    expr = _page_text_expr(needle) if needle else _PAGE_TEXT_EXPR
+    raw = await _evaluate(session, expr, deadline)
+    body, digest, hit = _parse_text_result(raw)
+    oopifs = _current_oopif_sessions(session)
+    if not oopifs:
+        return body, digest, hit
+    parts = [body] if body else []
+    digests = [digest]
+    combined_hit = hit
+    for oopif_sid in oopifs:
+        if _remaining(deadline) <= 0:
+            break
+        try:
+            child_raw = await _evaluate(session, expr, deadline, cdp_session_id=oopif_sid)
+        except ConnectionClosed:
+            raise
+        except (CDPTimeout, BrowserError):
+            continue
+        child_text, child_digest, child_hit = _parse_text_result(child_raw)
+        if child_text:
+            parts.append(child_text)
+        digests.append(f"{oopif_sid}:{child_digest}")
+        if child_hit is not None:
+            combined_hit = bool(combined_hit) or child_hit
+        elif needle and child_text and needle in child_text:
+            combined_hit = True
+    combined_text = "\n".join(parts)[:20000]
+    return combined_text, "|".join(digests), combined_hit
 
 
 async def _call_node(
@@ -670,8 +742,7 @@ async def _collect_return_payload(
                     )
                     text_val = str(probe.get("text", ""))
                 else:
-                    raw_page = await asyncio.wait_for(_evaluate(session, _PAGE_TEXT_EXPR, deadline), timeout=remaining)
-                    text_val, _, _ = _parse_text_result(raw_page)
+                    text_val, _, _ = await asyncio.wait_for(_read_page_text(session, deadline), timeout=remaining)
             except ConnectionClosed:
                 raise
             except Exception:
@@ -688,7 +759,7 @@ async def read_text_baseline(session: Any, target: str = "", *, timeout_s: float
     resolved_any = False
     try:
         if not target:
-            _, digest, _ = _parse_text_result(await _evaluate(session, _PAGE_TEXT_EXPR, deadline))
+            _, digest, _ = await _read_page_text(session, deadline)
             return digest
         entry = session.resolve_target(target)
         if entry is None:
@@ -842,8 +913,7 @@ async def _run_with_baseline_outcome(
                     basis = "url_match"
                     last = f"url={href[:300]}"
                 elif condition == "text" and not target:
-                    raw = await _evaluate(session, _page_text_expr(value), deadline)
-                    body, _, hit = _parse_text_result(raw)
+                    body, _, hit = await _read_page_text(session, deadline, needle=value)
                     observed_text = body
                     ok = hit if hit is not None else (value in body)
                     basis = "text_match"
@@ -873,8 +943,7 @@ async def _run_with_baseline_outcome(
                             basis = "shadow_text_match"
                             last = "page_text_hit=True (shadow_snapshot)"
                 elif condition == "text_changed" and not target:
-                    raw = await _evaluate(session, _PAGE_TEXT_EXPR, deadline)
-                    body, digest, _ = _parse_text_result(raw)
+                    body, digest, _ = await _read_page_text(session, deadline)
                     observed_text = body
                     if baseline is None:
                         baseline = digest

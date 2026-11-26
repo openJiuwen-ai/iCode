@@ -145,3 +145,76 @@ def test_screenshot_timeout_on_background_tab_explains_throttling() -> None:
         asyncio.run(screenshot.run(BgSession(), {"full_page": False, "target": "", "annotate": False}))
     assert "background_tab_throttled" in str(exc_info.value)
     assert "后台" in str(exc_info.value)
+
+
+def test_screenshot_bounds_timeout_for_known_background_tab() -> None:
+    from types import SimpleNamespace
+
+    from icode_browser_use.actions import screenshot
+    from icode_browser_use.errors import CDPTimeout, Unavailable
+
+    seen_timeouts: list[float] = []
+
+    class BgClient:
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            seen_timeouts.append(float(timeout))
+            raise CDPTimeout(method, float(timeout))
+
+    class BgSession:
+        session_id = "s1"
+        target_id = "t1"
+        cfg = SimpleNamespace(cdp_timeout=20.0)
+
+        def require_client(self):
+            return BgClient()
+
+        async def current_page_foreground(self):
+            return False
+
+    with pytest.raises(Unavailable) as exc_info:
+        asyncio.run(screenshot.run(BgSession(), {"full_page": False, "target": "", "annotate": False}))
+    assert "background_tab_throttled" in str(exc_info.value)
+    assert seen_timeouts == [screenshot._BG_SCREENSHOT_TIMEOUT]
+    assert seen_timeouts[0] <= 3.0
+
+
+def test_bridge_switch_page_activates_even_current_background_tab(tmp_path) -> None:
+    from icode_browser_use.cdp.targets import TargetManager
+    from icode_browser_use.config import BrowserConfig
+    from icode_browser_use.session import BrowserSession
+
+    class BridgeTransport:
+        owns_browser = False
+        browser_commands = False
+
+    class BridgeClient:
+        capabilities = ("ping", "page_log_gated", "tab_state")
+        closed = False
+
+        def __init__(self) -> None:
+            self.active_tab: str | None = None
+            self.calls: list[tuple[str, dict | None]] = []
+
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            self.calls.append((method, params))
+            if method == "Target.activateTarget":
+                self.active_tab = str((params or {}).get("targetId") or "")
+                return {"activated": True}
+            if method == "Bridge.tabState":
+                tid = str((params or {}).get("targetId") or "")
+                return {"active": tid == self.active_tab, "url": "http://127.0.0.1:18765/iframe", "title": "Iframe"}
+            return {}
+
+    session = BrowserSession(BrowserConfig(state_dir=tmp_path))
+    client = BridgeClient()
+    session._transport = BridgeTransport()  # type: ignore[assignment]
+    session._client = client  # type: ignore[assignment]
+    session._targets = TargetManager(client)  # type: ignore[arg-type]
+    session._target_id = "101"
+    session._session_id = "101"
+    session._record_page("101", "101", opener_id=None, url="http://127.0.0.1:18765/iframe", title="Iframe")
+    session._pages["101"].active = False
+
+    info = asyncio.run(session.switch_page("101"))
+    assert ("Target.activateTarget", {"targetId": "101"}) in client.calls
+    assert info.active is True

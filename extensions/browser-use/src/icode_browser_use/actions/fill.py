@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any
 
@@ -43,6 +44,9 @@ NAME = "browser_fill"
 DESCRIPTION = (
     "Focus target (an @eN ref or free text) and type text using Input.insertText, "
     "which produces real input events compatible with React/controlled components. "
+    "Native date/time inputs (date, time, datetime-local, month, week) accept standard "
+    "ISO values (e.g. YYYY-MM-DD for date, HH:MM for time) via the native HTMLInputElement "
+    "value setter and input/change events. "
     "clear=true (default) empties the field first (trusted Ctrl+A / Backspace; a "
     "contenteditable is never given a JS `value` expando). submit=true sends a real "
     "Enter and then verifies the outcome; it reports submitted only when the editor "
@@ -60,12 +64,48 @@ PARAMS: dict[str, Any] = {
     **EXPECT_PARAMS,
 }
 
+_TEXT_INPUT_TYPES = frozenset({"", "text", "search", "email", "url", "tel", "password", "number"})
+_DIRECT_VALUE_INPUT_TYPES = frozenset({"date", "time", "datetime-local", "month", "week"})
+
+
+def _set_native_value_fn(value: str) -> str:
+    target_js = json.dumps(value)
+    return (
+        "function(){"
+        " const prev=String(this.value||'');"
+        " const proto=typeof HTMLInputElement!=='undefined' ? HTMLInputElement.prototype : null;"
+        " const desc=proto ? Object.getOwnPropertyDescriptor(proto,'value') : null;"
+        " const setVal=(v)=>{ if (desc && typeof desc.set==='function') desc.set.call(this,v); else this.value=v; };"
+        f" const target={target_js};"
+        " setVal(target);"
+        " const after=String(this.value||'');"
+        " if (target !== '' && after === '') {"
+        "  setVal(prev);"
+        "  return {accepted:false, value:prev};"
+        " }"
+        " this.dispatchEvent(new Event('input',{bubbles:true}));"
+        " this.dispatchEvent(new Event('change',{bubbles:true}));"
+        " return {accepted:true, value:String(this.value||'')};"
+        "}"
+    )
+
+
+def _direct_value_matches(actual: Any, expected: str, input_type: str) -> bool:
+    actual_str = _normalize_native_value(actual)
+    expected_str = _normalize_native_value(expected)
+    if actual_str == expected_str:
+        return True
+    if input_type in {"time", "datetime-local"} and expected_str.endswith(":00") and actual_str == expected_str[:-3]:
+        return True
+    return False
+
+
 _CLEAR_FN = (
     "function(){"
     " const tag=(this.tagName||'').toLowerCase();"
     " const type=(this.type||'').toLowerCase();"
     " const textLike=tag==='textarea' || (tag==='input' &&"
-    "   ['text','search','email','url','tel','password','number',''].includes(type));"
+    "   ['text','search','email','url','tel','password','number','date','time','datetime-local','month','week',''].includes(type));"
     " if (textLike) {"
     "  const proto=(tag==='textarea' && typeof HTMLTextAreaElement!=='undefined')"
     "    ? HTMLTextAreaElement.prototype : (typeof HTMLInputElement!=='undefined' ? HTMLInputElement.prototype : null);"
@@ -383,8 +423,9 @@ async def _focus(session: Any, object_id: str, cdp_session_id: str | None) -> di
     tag = str(result.get("tag") or "").lower()
     type_ = str(result.get("type") or "").lower()
     editable = bool(result.get("editable"))
-    text_input = tag == "input" and type_ in {"text", "search", "email", "url", "tel", "password", "number"}
-    if not (editable or tag == "textarea" or text_input):
+    text_input = tag == "input" and type_ in _TEXT_INPUT_TYPES
+    direct_value_input = tag == "input" and type_ in _DIRECT_VALUE_INPUT_TYPES
+    if not (editable or tag == "textarea" or text_input or direct_value_input):
         raise BadRequest("目标不是可编辑文本字段（tag/type）；未执行清空/输入")
     if result.get("readOnly") or result.get("disabled"):
         raise BadRequest("目标字段为只读或 disabled；未执行清空/输入")
@@ -457,7 +498,10 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     cdp_session_id = entry.cdp_session_id
 
     focus_info = await _focus(session, object_id, cdp_session_id)
-    native_value = str(focus_info.get("tag") or "").lower() in {"input", "textarea"}
+    focus_tag = str(focus_info.get("tag") or "").lower()
+    focus_type = str(focus_info.get("type") or "").lower()
+    native_value = focus_tag in {"input", "textarea"}
+    direct_value_input = focus_tag == "input" and focus_type in _DIRECT_VALUE_INPUT_TYPES
     before_text: str | None = None
     before_selection: tuple[int, int] | None = None
     before_selection_text = ""
@@ -482,128 +526,168 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     client = session.require_client()
     await aprepare_action(session, action_id, "browser_fill", f"prepared fill of {entry.token}")
     dialog_seq = session.dialog_seq
-    if clear:
-        session.mark_dirty()
-        try:
-            await _clear(session, object_id, cdp_session_id)
-        except ConnectionClosed:
-            raise
-        except _FocusLost as exc:
-            raise BadRequest("目标在清空过程中失去焦点；已停止输入，未向其他字段写入") from exc
-        except BadRequest:
-            raise
-        except (CDPTimeout, BrowserError) as exc:
-            return await _uncertain_fill(
-                session, entry, f"clear_failed:{type(exc).__name__}", action_id, dispatched=False
-            )
-
-    try:
-        _, dialog = await send_watching_dialog(
-            session,
-            dialog_seq,
-            lambda: client.send(
-                "Input.insertText",
-                {"text": text},
-                session_id=cdp_session_id or session.session_id,
-                timeout=session.cfg.cdp_timeout,
-            ),
-        )
-    except ConnectionClosed:
-        session.mark_dirty()
-        raise
-    except (CDPTimeout, BrowserError) as exc:
-        session.mark_dirty()
-        return await _uncertain_fill(session, entry, f"input_send_failed:{type(exc).__name__}", action_id)
-    session.mark_dirty()
-    if dialog is not None:
-        await amark_dispatched(
-            session, action_id, "browser_fill", f"fill of {entry.token} is in flight; a dialog opened"
-        )
-        return await _blocked_dialog_fill(session, entry, dialog, action_id)
-    await amark_dispatched(session, action_id, "browser_fill", f"dispatched fill of {entry.token}")
-    await _sleep(0)
-    dialog = await dialog_since(session, dialog_seq)
-    if dialog is not None:
-        return await _blocked_dialog_fill(session, entry, dialog, action_id)
-    try:
-        state = await _read_state(session, object_id, cdp_session_id)
-    except ConnectionClosed:
-        raise
-    except (CDPTimeout, BrowserError) as exc:
-        return await _uncertain_fill(session, entry, f"readback_failed:{type(exc).__name__}", action_id)
-
     used_fallback = False
     mismatch = False
-    matched = _values_match(
-        state.get("text"),
-        text,
-        clear=clear,
-        before_value=before_text,
-        selection=before_selection,
-        selection_text=before_selection_text,
-        selection_prefix=before_selection_prefix,
-        selection_suffix=before_selection_suffix,
-        raw_value=state.get("rawText") if isinstance(state.get("rawText"), str) else None,
-        native_value=native_value,
-        preserve_whitespace=bool(state.get("preserveWhitespace")),
-    )
-    try:
-        if not matched:
-            if state.get("focused") is False:
-                raise _FocusLost("target lost focus after insert")
-            unchanged_append = (
-                not clear
-                and before_text is not None
-                and (
-                    _normalize_native_value(state.get("text")) == _normalize_native_value(before_text)
-                    if native_value
-                    else _normalize_text(state.get("text")) == _normalize_text(before_text)
-                )
+    if direct_value_input:
+        try:
+            set_res, dialog = await send_watching_dialog(
+                session,
+                dialog_seq,
+                lambda: call_value(session, object_id, _set_native_value_fn(text), cdp_session_id=cdp_session_id),
             )
-            if keypress_fallback:
-                if clear:
-                    used_fallback = True
-                    if _normalize_text(state.get("text")):
-                        await _select_and_delete(session, object_id, cdp_session_id)
-                    await _type_characters(session, object_id, text, cdp_session_id)
-                    await _sleep(0)
-                    state = await _read_state(session, object_id, cdp_session_id)
-                elif unchanged_append or before_text is None:
-                    # Never select-and-delete when clear=False: preserve existing text.
+        except ConnectionClosed:
+            session.mark_dirty()
+            raise
+        except (CDPTimeout, BrowserError) as exc:
+            session.mark_dirty()
+            return await _uncertain_fill(session, entry, f"input_send_failed:{type(exc).__name__}", action_id)
+        if dialog is not None:
+            session.mark_dirty()
+            await amark_dispatched(
+                session, action_id, "browser_fill", f"fill of {entry.token} is in flight; a dialog opened"
+            )
+            return await _blocked_dialog_fill(session, entry, dialog, action_id)
+        set_val = set_res.get("value") if isinstance(set_res, dict) else None
+        if isinstance(set_val, dict) and set_val.get("accepted") is False:
+            raise BadRequest(
+                f"无效的 {focus_type} 值：{text!r}（请使用标准 ISO 格式，如 date 为 YYYY-MM-DD、"
+                "time 为 HH:MM、datetime-local 为 YYYY-MM-DDTHH:MM、month 为 YYYY-MM、week 为 YYYY-Www）"
+            )
+        session.mark_dirty()
+        await amark_dispatched(session, action_id, "browser_fill", f"dispatched fill of {entry.token}")
+        await _sleep(0)
+        dialog = await dialog_since(session, dialog_seq)
+        if dialog is not None:
+            return await _blocked_dialog_fill(session, entry, dialog, action_id)
+        try:
+            state = await _read_state(session, object_id, cdp_session_id)
+        except ConnectionClosed:
+            raise
+        except (CDPTimeout, BrowserError) as exc:
+            return await _uncertain_fill(session, entry, f"readback_failed:{type(exc).__name__}", action_id)
+        if not _direct_value_matches(state.get("text"), text, focus_type):
+            mismatch = True
+    else:
+        if clear:
+            session.mark_dirty()
+            try:
+                await _clear(session, object_id, cdp_session_id)
+            except ConnectionClosed:
+                raise
+            except _FocusLost as exc:
+                raise BadRequest("目标在清空过程中失去焦点；已停止输入，未向其他字段写入") from exc
+            except BadRequest:
+                raise
+            except (CDPTimeout, BrowserError) as exc:
+                return await _uncertain_fill(
+                    session, entry, f"clear_failed:{type(exc).__name__}", action_id, dispatched=False
+                )
+
+        try:
+            _, dialog = await send_watching_dialog(
+                session,
+                dialog_seq,
+                lambda: client.send(
+                    "Input.insertText",
+                    {"text": text},
+                    session_id=cdp_session_id or session.session_id,
+                    timeout=session.cfg.cdp_timeout,
+                ),
+            )
+        except ConnectionClosed:
+            session.mark_dirty()
+            raise
+        except (CDPTimeout, BrowserError) as exc:
+            session.mark_dirty()
+            return await _uncertain_fill(session, entry, f"input_send_failed:{type(exc).__name__}", action_id)
+        session.mark_dirty()
+        if dialog is not None:
+            await amark_dispatched(
+                session, action_id, "browser_fill", f"fill of {entry.token} is in flight; a dialog opened"
+            )
+            return await _blocked_dialog_fill(session, entry, dialog, action_id)
+        await amark_dispatched(session, action_id, "browser_fill", f"dispatched fill of {entry.token}")
+        await _sleep(0)
+        dialog = await dialog_since(session, dialog_seq)
+        if dialog is not None:
+            return await _blocked_dialog_fill(session, entry, dialog, action_id)
+        try:
+            state = await _read_state(session, object_id, cdp_session_id)
+        except ConnectionClosed:
+            raise
+        except (CDPTimeout, BrowserError) as exc:
+            return await _uncertain_fill(session, entry, f"readback_failed:{type(exc).__name__}", action_id)
+
+        matched = _values_match(
+            state.get("text"),
+            text,
+            clear=clear,
+            before_value=before_text,
+            selection=before_selection,
+            selection_text=before_selection_text,
+            selection_prefix=before_selection_prefix,
+            selection_suffix=before_selection_suffix,
+            raw_value=state.get("rawText") if isinstance(state.get("rawText"), str) else None,
+            native_value=native_value,
+            preserve_whitespace=bool(state.get("preserveWhitespace")),
+        )
+        try:
+            if not matched:
+                if state.get("focused") is False:
+                    raise _FocusLost("target lost focus after insert")
+                unchanged_append = (
+                    not clear
+                    and before_text is not None
+                    and (
+                        _normalize_native_value(state.get("text")) == _normalize_native_value(before_text)
+                        if native_value
+                        else _normalize_text(state.get("text")) == _normalize_text(before_text)
+                    )
+                )
+                if keypress_fallback:
+                    if clear:
+                        used_fallback = True
+                        if _normalize_text(state.get("text")):
+                            await _select_and_delete(session, object_id, cdp_session_id)
+                        await _type_characters(session, object_id, text, cdp_session_id)
+                        await _sleep(0)
+                        state = await _read_state(session, object_id, cdp_session_id)
+                    elif unchanged_append or before_text is None:
+                        # Never select-and-delete when clear=False: preserve existing text.
+                        used_fallback = True
+                        await _type_characters(session, object_id, text, cdp_session_id)
+                        await _sleep(0)
+                        state = await _read_state(session, object_id, cdp_session_id)
+                    else:
+                        mismatch = True
+                elif (clear and not _normalize_text(state.get("text"))) or unchanged_append:
                     used_fallback = True
                     await _type_characters(session, object_id, text, cdp_session_id)
                     await _sleep(0)
                     state = await _read_state(session, object_id, cdp_session_id)
                 else:
                     mismatch = True
-            elif (clear and not _normalize_text(state.get("text"))) or unchanged_append:
-                used_fallback = True
-                await _type_characters(session, object_id, text, cdp_session_id)
-                await _sleep(0)
-                state = await _read_state(session, object_id, cdp_session_id)
-            else:
-                mismatch = True
-    except ConnectionClosed:
-        raise
-    except _FocusLost:
-        return await _uncertain_fill(session, entry, "focus_lost", action_id)
-    except (CDPTimeout, BrowserError) as exc:
-        return await _uncertain_fill(session, entry, f"input_fallback_failed:{type(exc).__name__}", action_id)
+        except ConnectionClosed:
+            raise
+        except _FocusLost:
+            return await _uncertain_fill(session, entry, "focus_lost", action_id)
+        except (CDPTimeout, BrowserError) as exc:
+            return await _uncertain_fill(session, entry, f"input_fallback_failed:{type(exc).__name__}", action_id)
 
-    if used_fallback and not _values_match(
-        state.get("text"),
-        text,
-        clear=clear,
-        before_value=before_text,
-        selection=before_selection,
-        selection_text=before_selection_text,
-        selection_prefix=before_selection_prefix,
-        selection_suffix=before_selection_suffix,
-        raw_value=state.get("rawText") if isinstance(state.get("rawText"), str) else None,
-        native_value=native_value,
-        preserve_whitespace=bool(state.get("preserveWhitespace")),
-    ):
-        mismatch = True
+        if used_fallback and not _values_match(
+            state.get("text"),
+            text,
+            clear=clear,
+            before_value=before_text,
+            selection=before_selection,
+            selection_text=before_selection_text,
+            selection_prefix=before_selection_prefix,
+            selection_suffix=before_selection_suffix,
+            raw_value=state.get("rawText") if isinstance(state.get("rawText"), str) else None,
+            native_value=native_value,
+            preserve_whitespace=bool(state.get("preserveWhitespace")),
+        ):
+            mismatch = True
 
     submit_line = ""
     submitted = False

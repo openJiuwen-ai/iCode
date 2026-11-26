@@ -91,6 +91,8 @@ _SUBMIT_WORDS = re.compile(
 )
 _CLICK_POLL = 0.075
 _CLICK_POLLS = 3
+_NEW_TAB_URL_POLL = 0.15
+_NEW_TAB_URL_POLLS = 12
 _CONTROL_SETTLE_SECONDS = 1.2
 _CONTROL_POLL = 0.15
 _CONTROL_MAX_POLLS = max(1, int(_CONTROL_SETTLE_SECONDS / _CONTROL_POLL))
@@ -149,8 +151,8 @@ def _http_url_or_empty(raw: Any) -> str:
     return ""
 
 
-async def _resolve_new_tab_url(session: Any, new_tab_id: str, facts: dict[str, Any]) -> str:
-    """Return the best available http(s) URL for a newly opened tab, or ``""``."""
+async def _read_tab_url_once(session: Any, new_tab_id: str) -> tuple[str, bool]:
+    """Return ``(http_url_or_empty, tab_present)`` by refreshing owned pages when supported."""
     pages: list[Any] = []
     list_pages = getattr(session, "list_pages", None)
     if callable(list_pages):
@@ -164,11 +166,35 @@ async def _resolve_new_tab_url(session: Any, new_tab_id: str, facts: dict[str, A
             pages = list(pages_fn())
     for page in pages:
         if str(getattr(page, "target_id", "") or "") == new_tab_id:
-            url = _http_url_or_empty(getattr(page, "url", ""))
-            if url:
-                return url
+            return _http_url_or_empty(getattr(page, "url", "")), True
+    return "", False
+
+
+async def _resolve_new_tab_url(session: Any, new_tab_id: str, facts: dict[str, Any]) -> str:
+    """Return the best available http(s) URL for a newly opened tab, or ``""``.
+
+    Popups opened via ``window.open('about:blank', '_blank')`` commonly assign
+    ``popup.location`` asynchronously after a timer or API call. When the tab
+    exists but is still blank and the session can refresh tab URLs, poll briefly
+    so callers (especially the compact toolset) receive the resolved URL directly.
+    """
+    url, present = await _read_tab_url_once(session, new_tab_id)
+    if url:
+        return url
+    href_url = _http_url_or_empty(facts.get("href"))
+    if href_url:
+        return href_url
+    list_pages = getattr(session, "list_pages", None)
+    if not (present and callable(list_pages)):
+        return ""
+    for _ in range(_NEW_TAB_URL_POLLS):
+        await _sleep(_NEW_TAB_URL_POLL)
+        url, present = await _read_tab_url_once(session, new_tab_id)
+        if url:
+            return url
+        if not present:
             break
-    return _http_url_or_empty(facts.get("href"))
+    return ""
 
 
 def _new_tab_since(session: Any, before_ids: set[str]) -> str | None:
@@ -914,6 +940,23 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             status="blocked", dispatched=True, blocks=[text_block(text)], effect="dialog", action_id=action_id
         )
 
+    if new_tab_id is None and effect != "navigation":
+        late_tab = _new_tab_since(session, pages_before)
+        if (
+            late_tab is None
+            and effect == "dom_elsewhere"
+            and getattr(getattr(session, "_transport", None), "browser_commands", True) is False
+            and str(facts.get("tag") or "").lower() in {"button", "a"}
+        ):
+            for _ in range(2):
+                await _sleep(_CLICK_POLL)
+                late_tab = _new_tab_since(session, pages_before)
+                if late_tab is not None:
+                    break
+        if late_tab is not None:
+            new_tab_id = late_tab
+            effect = "new_tab"
+
     if effect in ("navigation", "new_tab", "dom", "target_detached"):
         session.note_success(session.target_id)
 
@@ -941,7 +984,7 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
                 lines.append(
                     f"已在新标签页打开（tab_id={new_tab_id}）；"
                     "当前 compact 工具集不包含标签切换工具，请勿调用 browser_tab_switch"
-                    "（未能获取新标签 URL，请改用 full 工具集切换查看）"
+                    "（未能获取新标签 URL；如弹窗延迟跳转，可稍后调用 browser_list 查看新标签 URL，或改用 full 工具集切换查看）"
                 )
         else:
             lines.append(f"已在新标签页打开（tab_id={new_tab_id}{url_hint}）；可用 browser_tab_switch 切换查看")

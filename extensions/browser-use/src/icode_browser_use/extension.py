@@ -836,6 +836,23 @@ async def browser_list(ctx: ToolContext) -> str:
         if browser.record is not None and browser.record.resume_id:
             line += f" resume_id={browser.record.resume_id}"
         lines.append(line)
+        if not isinstance(browser.session, BrokerSession) and browser.session.state == "ready":
+            pages_fn = getattr(browser.session, "pages", None)
+            owned_pages = list(pages_fn()) if callable(pages_fn) else []
+            if len(owned_pages) > 1:
+                list_pages_fn = getattr(browser.session, "list_pages", None)
+                if callable(list_pages_fn):
+                    with contextlib.suppress(Exception):
+                        refreshed = await list_pages_fn()
+                        if isinstance(refreshed, list) and refreshed:
+                            owned_pages = refreshed
+                tab_parts = []
+                for info in owned_pages:
+                    mark = "*" if getattr(info, "current", False) else ""
+                    tid = str(getattr(info, "target_id", "") or "")
+                    url = str(getattr(info, "url", "") or "about:blank")
+                    tab_parts.append(f"#{getattr(info, 'index', '?')}{mark} tab_id={tid} url={url}")
+                lines.append("  tabs: " + " | ".join(tab_parts))
         if reason:
             lines.append(f"  reason: {reason}")
         lines.append(f"  next: {next_step}")

@@ -396,3 +396,45 @@ def test_expect_parameter_annotations_document_required_target_and_value() -> No
         assert "expect_target" in cond_meta and "expect_value" in cond_meta
         assert "REQUIRED" in target_meta and "visible" in target_meta and "url" in target_meta
         assert "REQUIRED" in value_meta and "text" in value_meta and "count" in value_meta
+
+
+@pytest.mark.asyncio
+async def test_browser_list_exposes_refreshed_popup_urls_in_compact_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ICODE_BROWSER_TOOLSET", "compact")
+    try:
+        reloaded = importlib.reload(ext)
+        ctx = _tool_ctx(tmp_path)
+        opened = await reloaded.browser_open(ctx)
+        browser_id = opened.split("browser_id: ", 1)[1].strip()
+        browser = reloaded._browsers[browser_id]
+
+        initial_pages = [
+            SimpleNamespace(index=1, target_id="t1", url="http://127.0.0.1:18765/popup", current=True),
+            SimpleNamespace(index=2, target_id="t2", url="about:blank", current=False),
+        ]
+        refreshed_pages = [
+            SimpleNamespace(index=1, target_id="t1", url="http://127.0.0.1:18765/popup", current=True),
+            SimpleNamespace(index=2, target_id="t2", url="http://127.0.0.1:18765/preview/secret-99", current=False),
+        ]
+
+        async def fake_list_pages():
+            return list(refreshed_pages)
+
+        browser.session = SimpleNamespace(
+            state="ready",
+            started_once=True,
+            login_pending=False,
+            snapshot=SimpleNamespace(url="http://127.0.0.1:18765/popup", title="Popup"),
+            pages=lambda: list(initial_pages),
+            list_pages=fake_list_pages,
+        )  # type: ignore[assignment]
+
+        listed = await reloaded.browser_list(ctx)
+        assert "tabs:" in listed
+        assert "tab_id=t2" in listed
+        assert "http://127.0.0.1:18765/preview/secret-99" in listed
+    finally:
+        ext._browsers.clear()
+        monkeypatch.delenv("ICODE_BROWSER_TOOLSET", raising=False)
+        importlib.reload(ext)

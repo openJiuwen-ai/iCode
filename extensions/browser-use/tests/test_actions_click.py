@@ -1455,4 +1455,72 @@ def test_click_new_tab_hint_respects_compact_toolset(monkeypatch) -> None:
     blocks3 = asyncio.run(click.run(session3, {"target": "Popup", "button": "left", "click_count": 1}))
     text3 = blocks3[0]["text"]
     assert "未能获取新标签 URL" in text3
+    assert "browser_list" in text3
     assert "browser_navigate" not in text3
+
+
+def test_click_resolves_delayed_popup_url_and_bridge_late_adoption(monkeypatch) -> None:
+    pages = [SimpleNamespace(target_id="t", url="https://example.com/popup")]
+    session = FakeSession()
+    session.cfg = SimpleNamespace(cdp_timeout=1.0, evaluate_timeout=1.0, toolset="compact")
+    session._transport = SimpleNamespace(browser_commands=False)  # type: ignore[attr-defined]
+    session.pages = lambda: list(pages)  # type: ignore[attr-defined]
+
+    list_calls = 0
+
+    async def fake_list_pages():
+        nonlocal list_calls
+        list_calls += 1
+        if list_calls >= 3:
+            pages[1].url = "https://example.com/preview/runtime-token-42"
+        return list(pages)
+
+    session.list_pages = fake_list_pages  # type: ignore[attr-defined]
+    mut_count = 0
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "submitLike" in function:
+            return {
+                "type": "object",
+                "value": {"connected": True, "tag": "button", "name": "Open preview", "submitLike": False},
+            }
+        return {}
+
+    async def fake_eval_value(*_args, **_kwargs):
+        return {
+            "href": "https://example.com/popup",
+            "mutations": mut_count,
+            "expanded": 0,
+            "dialogs": 0,
+            "active": "button",
+            "toasts": [],
+        }
+
+    async def fake_hit_point(*_args, **_kwargs):
+        return 10.0, 10.0
+
+    async def fake_dispatch(*_args, **_kwargs):
+        nonlocal mut_count
+        mut_count = 1  # opener DOM mutated synchronously before Bridge adopts the popup
+
+    sleep_ticks = 0
+
+    async def fake_sleep(_s):
+        nonlocal sleep_ticks
+        sleep_ticks += 1
+        if sleep_ticks == 1 and len(pages) == 1:
+            pages.append(SimpleNamespace(target_id="t-popup-late", url="about:blank"))
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(click, "call_value", fake_call_value)
+    monkeypatch.setattr(click, "eval_value", fake_eval_value)
+    monkeypatch.setattr(click, "_hit_point", fake_hit_point)
+    monkeypatch.setattr(click, "_dispatch_click", fake_dispatch)
+    monkeypatch.setattr(click, "_sleep", fake_sleep)
+
+    blocks = asyncio.run(click.run(session, {"target": "Open preview", "button": "left", "click_count": 1}))
+    text = blocks[0]["text"]
+    assert "effect=new_tab" in text
+    assert "tab_id=t-popup-late" in text
+    assert "url=https://example.com/preview/runtime-token-42" in text
+    assert "browser_navigate 到 https://example.com/preview/runtime-token-42" in text

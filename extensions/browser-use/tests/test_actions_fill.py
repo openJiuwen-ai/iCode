@@ -1559,3 +1559,63 @@ def test_focus_fn_ignores_default_collapsed_caret_synthesized_by_focus() -> None
     assert "hadSelectionBeforeFocus" in src
     assert src.index("hadSelectionBeforeFocus") < src.index("this.focus()")
     assert "!existing.collapsed" in src
+
+
+def test_fill_supports_native_date_and_rejects_invalid_iso_before_dispatch(monkeypatch) -> None:
+    import pytest
+    from icode_browser_use.errors import BadRequest
+
+    session = FakeSession()
+    session.state = {"tag": "input", "editable": False, "focused": True, "text": ""}
+    session.client.state = session.state
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "input",
+                    "type": "date",
+                    "readOnly": False,
+                    "disabled": False,
+                    "text": session.state["text"],
+                },
+            }
+        if "HTMLInputElement.prototype" in function and "accepted" in function:
+            if '"2027-05-19"' in function:
+                session.state["text"] = "2027-05-19"
+                return {"type": "object", "value": {"accepted": True, "value": "2027-05-19"}}
+            return {"type": "object", "value": {"accepted": False, "value": session.state["text"]}}
+        if "this.isContentEditable" in function:
+            return {"type": "object", "value": dict(session.state)}
+        return {}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "Travel date", "text": "2027-05-19", "clear": True, "submit": False, "keypress_fallback": False},
+        )
+    )
+    assert "status=succeeded" in blocks[0]["text"]
+    assert session.state["text"] == "2027-05-19"
+    assert session.journal.dispatched_count == 1
+    assert all(call[0] != "Input.insertText" for call in session.client.calls)
+
+    with pytest.raises(BadRequest, match="YYYY-MM-DD"):
+        asyncio.run(
+            fill.run(
+                session,
+                {
+                    "target": "Travel date",
+                    "text": "05/19/2027",
+                    "clear": True,
+                    "submit": False,
+                    "keypress_fallback": False,
+                },
+            )
+        )
+    assert session.journal.dispatched_count == 1

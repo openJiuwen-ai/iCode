@@ -186,22 +186,30 @@ async def _target_clip(session: Any, entry: Any, object_id: str) -> tuple[dict[s
     return clip, False
 
 
+_BG_SCREENSHOT_TIMEOUT = 2.5
+
+
 async def _capture(session: Any, params: dict[str, Any], fmt: str) -> tuple[str, str]:
     client = session.require_client()
+    probe_fn = getattr(session, "current_page_foreground", None)
+    pre_foreground = await probe_fn() if callable(probe_fn) else None
+    full_timeout = float(getattr(session.cfg, "cdp_timeout", 20.0))
+    timeout = min(_BG_SCREENSHOT_TIMEOUT, full_timeout) if pre_foreground is False else full_timeout
     try:
         response = await client.send(
             "Page.captureScreenshot",
             params,
             session_id=session.session_id,
-            timeout=session.cfg.cdp_timeout,
+            timeout=timeout,
         )
     except CDPTimeout as exc:
-        probe_fn = getattr(session, "current_page_foreground", None)
-        foreground = await probe_fn() if callable(probe_fn) else None
+        foreground = pre_foreground
+        if foreground is not False and callable(probe_fn):
+            foreground = await probe_fn()
         if foreground is False:
             raise Unavailable(
                 "截图超时（reason=background_tab_throttled）：当前标签页处于后台，Chromium 渲染节流导致无法出图；"
-                "请优先使用 browser_snapshot/browser_extract，或在需要视觉确认时切到前台标签后重试"
+                "请优先使用 browser_snapshot/browser_extract，或在需要视觉确认时先 browser_tab_switch 切到前台标签后重试"
             ) from exc
         raise
     data = str(response.get("data") or "")

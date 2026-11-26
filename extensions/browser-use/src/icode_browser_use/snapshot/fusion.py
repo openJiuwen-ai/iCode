@@ -376,7 +376,23 @@ def _build_ax_index(ax: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
 # --- fusion ------------------------------------------------------------------
 
 
-_TEXT_INPUT_TYPES = frozenset({"", "text", "search", "email", "url", "tel", "password", "number"})
+_TEXT_INPUT_TYPES = frozenset(
+    {
+        "",
+        "text",
+        "search",
+        "email",
+        "url",
+        "tel",
+        "password",
+        "number",
+        "date",
+        "time",
+        "datetime-local",
+        "month",
+        "week",
+    }
+)
 
 
 def _is_contenteditable(attrs: dict[str, str]) -> bool:

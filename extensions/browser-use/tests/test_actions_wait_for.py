@@ -755,3 +755,68 @@ def test_hidden_free_text_refreshes_and_succeeds_when_detached_node_still_resolv
     assert "status=succeeded" in text
     assert "basis=not_found" in text
     assert session.captures == 1
+
+
+def test_page_text_changed_and_text_observe_same_origin_and_oopif_iframes(deterministic_clock) -> None:
+    assert "contentDocument" in wait_for._PAGE_TEXT_EXPR
+    assert "IFRAME" in wait_for._PAGE_TEXT_EXPR
+
+    class OopifClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.oopif_reads = 0
+
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            self.calls.append((method, params, session_id))
+            if method == "Runtime.evaluate":
+                if session_id == "oopif-1":
+                    self.oopif_reads += 1
+                    txt = "No selection" if self.oopif_reads == 1 else "FRAME-204"
+                    return {
+                        "result": {
+                            "value": {
+                                "text": txt,
+                                "text_digest": f"d:{txt}",
+                                "text_hit": "FRAME-204" in txt,
+                            }
+                        }
+                    }
+                return {
+                    "result": {
+                        "value": {
+                            "text": "Embedded detail",
+                            "text_digest": "d:outer",
+                            "text_hit": False,
+                        }
+                    }
+                }
+            return await super().send(method, params, session_id=session_id, timeout=timeout)
+
+    client = OopifClient()
+    session = FakeSession(client=client)
+    session.current_page_oopif_sessions = lambda: ["oopif-1"]  # type: ignore[attr-defined]
+    baseline = asyncio.run(wait_for.read_text_baseline(session, ""))
+    assert baseline is not None and "oopif-1:d:No selection" in baseline
+
+    blocks = asyncio.run(
+        wait_for.run_with_baseline(
+            session,
+            {"condition": "text_changed", "target": "", "value": "", "timeout_ms": 500, "return_mode": "text"},
+            baseline=baseline,
+        )
+    )
+    rendered = blocks[0]["text"]
+    assert "status=succeeded" in rendered
+    assert "basis=text_changed" in rendered
+    assert "FRAME-204" in rendered
+
+    blocks_text = asyncio.run(
+        wait_for.run(
+            session,
+            {"condition": "text", "target": "", "value": "FRAME-204", "timeout_ms": 500, "return_mode": "text"},
+        )
+    )
+    rendered_text = blocks_text[0]["text"]
+    assert "status=succeeded" in rendered_text
+    assert "basis=text_match" in rendered_text
+    assert "FRAME-204" in rendered_text
