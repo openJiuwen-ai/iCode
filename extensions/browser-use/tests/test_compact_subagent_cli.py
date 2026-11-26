@@ -328,6 +328,63 @@ async def test_write_actions_uses_structured_journal_dispatched_count_over_untru
         await reloaded.browser_close(ctx, browser_id)
 
 
+@pytest.mark.asyncio
+async def test_concurrent_valid_and_rejected_writes_do_not_double_count(monkeypatch, tmp_path):
+    import asyncio
+    from icode_browser_use.journal import DISPATCHED, RESULT, Journal
+
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    reloaded = importlib.reload(ext)
+    ctx = _tool_ctx(tmp_path)
+    opened = await reloaded.browser_open(ctx)
+    browser_id = opened.split("browser_id: ", 1)[1].strip()
+    browser = reloaded._browsers[browser_id]
+    journal = Journal(None)
+    lock = asyncio.Lock()
+
+    async def fake_aclose():
+        journal.close()
+
+    browser.session = SimpleNamespace(  # type: ignore[assignment]
+        state="ready",
+        snapshot=SimpleNamespace(url="https://example.com/", title="Example"),
+        cfg=SimpleNamespace(screenshot_keep=20),
+        journal=journal,
+        aclose=fake_aclose,
+    )
+
+    async def fake_call(_browser, _name: str, arguments: dict[str, object]):
+        # Yield before acquiring the lock so all concurrent callers overlap at entry.
+        await asyncio.sleep(0)
+        async with lock:
+            if arguments.get("expect_condition") == "visible" and not arguments.get("expect_target"):
+                raise ToolError("browser_bad_request: visible 条件需要 target", code="browser_bad_request")
+            if arguments.get("target") == "disabled":
+                journal.record(action_id="a-dis", tool="browser_click", phase=RESULT, status="blocked", evidence="no")
+                return [{"type": "text", "text": "未点击\ndispatch=not_sent\nstatus=blocked"}]
+            await asyncio.sleep(0.01)
+            journal.record(action_id="a-ok", tool="browser_click", phase=DISPATCHED, status="dispatched", evidence="ok")
+            journal.record(action_id="a-ok", tool="browser_click", phase=RESULT, status="succeeded", evidence="ok")
+            return [{"type": "text", "text": "已点击\ndispatch=sent\nstatus=succeeded"}]
+
+    monkeypatch.setattr(reloaded, "_call", fake_call)
+    try:
+        results = await asyncio.gather(
+            reloaded.browser_click(ctx, browser_id, "Send"),
+            reloaded.browser_click(ctx, browser_id, "Send", expect_condition="visible"),
+            reloaded.browser_click(ctx, browser_id, "disabled"),
+            return_exceptions=True,
+        )
+        assert isinstance(results[0], str)
+        assert isinstance(results[1], ToolError) and results[1].code == "browser_bad_request"
+        assert isinstance(results[2], str)
+        assert browser.write_actions == 1
+        closed = await reloaded.browser_close(ctx, browser_id)
+        assert "write_actions: 1" in closed
+    finally:
+        reloaded._browsers.clear()
+
+
 def test_expect_parameter_annotations_document_required_target_and_value() -> None:
     import typing
 

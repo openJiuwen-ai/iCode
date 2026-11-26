@@ -227,6 +227,8 @@ class BrowserSession:
         self._journal_session = journal_session
         self._on_idle = on_idle
         self._journal: Journal | None = None
+        self._retired_dispatched_by_tool: dict[str, int] = {}
+        self._unrecorded_dispatched_writes = 0
         self._client_factory: ClientFactory = client_factory or _default_client_factory
         self._launcher_factory: LauncherFactory = launcher_factory or launch_chrome
         if cfg.bridge:
@@ -1190,7 +1192,25 @@ class BrowserSession:
         journal = self._journal
         self._journal = None
         if journal is not None:
-            journal.close()
+            try:
+                for tool, count in journal.dispatched_snapshot().items():
+                    self._retired_dispatched_by_tool[tool] = self._retired_dispatched_by_tool.get(tool, 0) + count
+            finally:
+                journal.close()
+
+    def note_unrecorded_dispatched_write(self) -> None:
+        """Count a write that failed mid-flight before reaching ``amark_dispatched``."""
+        self._unrecorded_dispatched_writes += 1
+
+    def dispatched_write_count(self, tools: frozenset[str]) -> int:
+        """Race-free lifetime count of dispatched write actions for *tools*."""
+        total = self._unrecorded_dispatched_writes + sum(
+            count for tool, count in self._retired_dispatched_by_tool.items() if tool in tools
+        )
+        journal = self._journal
+        if journal is not None:
+            total += journal.dispatched_for(tools)
+        return total
 
     def _release_lock(self) -> None:
         lock = self._instance_lock

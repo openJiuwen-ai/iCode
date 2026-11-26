@@ -13,9 +13,21 @@ import contextlib
 from typing import Any
 
 from .actions import dispatch
-from .errors import CDPTimeout, PageHung
+from .errors import PRE_DISPATCH_ERROR_CODES, BrowserError, CDPTimeout, PageHung
 from .types import ToolBlock, ToolDef
 from .validation import validate
+
+_WRITE_TOOLS = frozenset(
+    {
+        "browser_click",
+        "browser_fill",
+        "browser_press_key",
+        "browser_upload",
+        "browser_select_option",
+        "browser_dialog",
+        "browser_evaluate",
+    }
+)
 
 
 class BrowserRuntime:
@@ -51,12 +63,30 @@ async def call_tool(session: Any, tool: ToolDef, arguments: Any) -> list[ToolBlo
         elif tool.name not in {"browser_close", "browser_action_status", "browser_downloads", "browser_logs"}:
             session.note_action()
             await session.ensure_started()
+        before_journal = getattr(session, "_journal", None)
+        before_dispatched = getattr(before_journal, "dispatched_count", 0) if before_journal is not None else 0
         try:
             return await dispatch(session, tool.name, args)
         except CDPTimeout as exc:
+            if tool.name in _WRITE_TOOLS:
+                after_journal = getattr(session, "_journal", None)
+                after_dispatched = getattr(after_journal, "dispatched_count", 0) if after_journal is not None else 0
+                if after_dispatched == before_dispatched:
+                    note = getattr(session, "note_unrecorded_dispatched_write", None)
+                    if callable(note):
+                        note()
             target = exc.target_id or session.target_id
             if session.note_timeout_and_should_recycle(target):
                 with contextlib.suppress(Exception):
                     await session.recycle_page()
                 raise PageHung("页面无响应，已回收该标签页，请重新 browser_navigate") from exc
+            raise
+        except BrowserError as exc:
+            if tool.name in _WRITE_TOOLS and exc.code not in PRE_DISPATCH_ERROR_CODES:
+                after_journal = getattr(session, "_journal", None)
+                after_dispatched = getattr(after_journal, "dispatched_count", 0) if after_journal is not None else 0
+                if after_dispatched == before_dispatched:
+                    note = getattr(session, "note_unrecorded_dispatched_write", None)
+                    if callable(note):
+                        note()
             raise

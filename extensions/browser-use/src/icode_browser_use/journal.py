@@ -93,6 +93,7 @@ class Journal:
         self._lock = threading.Lock()
         self._write_count = 0
         self.dispatched_count = 0
+        self._dispatched_by_tool: dict[str, int] = {}
         self._connection = self._connect(path)
 
     def _connect(self, path: Path | None) -> sqlite3.Connection | None:
@@ -154,6 +155,7 @@ class Journal:
         with self._lock:
             if phase == DISPATCHED:
                 self.dispatched_count += 1
+                self._dispatched_by_tool[tool] = self._dispatched_by_tool.get(tool, 0) + 1
             connection = self._connection
             if connection is None:
                 return
@@ -240,6 +242,16 @@ class Journal:
                 logger.warning("browser journal read failed: %s", exc)
                 return []
         return [{"action_id": row[0], **dict(zip(_COLUMNS, row[1:], strict=True))} for row in rows]
+
+    def dispatched_for(self, tools: frozenset[str]) -> int:
+        """Return total dispatched actions recorded for any tool name in *tools*."""
+        with self._lock:
+            return sum(count for tool, count in self._dispatched_by_tool.items() if tool in tools)
+
+    def dispatched_snapshot(self) -> dict[str, int]:
+        """Return a shallow copy of per-tool dispatched counts."""
+        with self._lock:
+            return dict(self._dispatched_by_tool)
 
     def count(self) -> int:
         with self._lock:

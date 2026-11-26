@@ -246,6 +246,9 @@ async def test_q9_teardown_transport_releases_lock_and_journal_on_stop_error(tmp
             released["lock"] = True
 
     class _FakeJournal:
+        def dispatched_snapshot(self) -> dict[str, int]:
+            return {}
+
         def close(self) -> None:
             released["journal"] = True
 

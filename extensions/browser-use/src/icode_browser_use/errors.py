@@ -105,6 +105,21 @@ class LoginRequired(BrowserError):
     code = "browser_login_required"
 
 
+#: Error codes guaranteed to be raised before any write input/script is dispatched.
+PRE_DISPATCH_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        BadRequest.code,
+        StaleRef.code,
+        TargetNotFound.code,
+        TargetAmbiguous.code,
+        Blocked.code,
+        "browser_policy_denied",
+        Busy.code,
+        DialogPending.code,
+    }
+)
+
+
 class CDPTimeout(BrowserError):
     """A single CDP command exceeded its timeout (below the recycle threshold)."""
 

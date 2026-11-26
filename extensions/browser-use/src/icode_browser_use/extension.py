@@ -50,7 +50,7 @@ from . import cli, registry
 from .actions import build_tool_defs
 from .broker_client import BrokerCallUnknown, BrokerSession
 from .config import BrowserConfig, BrowserEnv, ConfigError
-from .errors import Blocked, BrowserError, ConnectionClosed, Unavailable
+from .errors import PRE_DISPATCH_ERROR_CODES, Blocked, BrowserError, ConnectionClosed, Unavailable
 from .locking import InstanceLock, acquire_instance_lock, probe_instance_lock, try_acquire_instance_lock
 from .policy import canonical_origin
 from .logging import set_log_sink
@@ -97,18 +97,29 @@ _WRITE_TOOL_NAMES: Final[frozenset[str]] = frozenset(
     }
 )
 
-_PRE_DISPATCH_ERROR_CODES: Final[frozenset[str]] = frozenset(
-    {
-        "browser_bad_request",
-        "browser_stale_ref",
-        "browser_target_not_found",
-        "browser_target_ambiguous",
-        "browser_blocked",
-        "browser_policy_denied",
-        "browser_busy",
-        "browser_dialog_open",
-    }
-)
+_PRE_DISPATCH_ERROR_CODES: Final[frozenset[str]] = PRE_DISPATCH_ERROR_CODES
+
+
+def _sync_write_actions(browser: _Browser) -> bool:
+    """Sync ``browser.write_actions`` from authoritative session/journal counters.
+
+    Returns True when an authoritative counter exists (race-free under concurrent
+    calls on the same handle), or False when the caller must fall back to
+    per-call tracking (e.g. ``BrokerSession`` or minimal test doubles).
+    """
+    session = browser.session
+    if isinstance(session, BrokerSession):
+        return False
+    count_fn = getattr(session, "dispatched_write_count", None)
+    if callable(count_fn):
+        browser.write_actions = int(count_fn(_WRITE_TOOL_NAMES))
+        return True
+    journal = getattr(session, "journal", None)
+    dispatched_for = getattr(journal, "dispatched_for", None)
+    if callable(dispatched_for):
+        browser.write_actions = int(dispatched_for(_WRITE_TOOL_NAMES))
+        return True
+    return False
 
 
 def _was_dispatched_write(name: str, text: str) -> bool:
@@ -679,6 +690,7 @@ def _record_origin(bucket: list[str], url: str) -> None:
 
 def _format_session_facts(browser: _Browser) -> str:
     """Render runtime-observed session facts on close for parent-agent cross-checking."""
+    _sync_write_actions(browser)
     visited = ", ".join(browser.visited_origins) if browser.visited_origins else "none"
     blocked = ", ".join(browser.blocked_origins) if browser.blocked_origins else "none"
     shots = ", ".join(browser.screenshots[-10:]) if browser.screenshots else "none"
@@ -694,23 +706,11 @@ def _format_session_facts(browser: _Browser) -> str:
 async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> str:
     """Run one core tool and return its text blocks joined for the model."""
     is_write = name in _WRITE_TOOL_NAMES
-    journal = (
-        getattr(browser.session, "journal", None)
-        if is_write and not isinstance(browser.session, BrokerSession)
-        else None
-    )
-    before_dispatched = getattr(journal, "dispatched_count", None)
-    if not isinstance(before_dispatched, int):
-        before_dispatched = None
     try:
         blocks = await _call(browser, name, arguments)
     except ToolError as exc:
-        if is_write:
-            after_dispatched = getattr(journal, "dispatched_count", None) if before_dispatched is not None else None
-            if (isinstance(after_dispatched, int) and after_dispatched > before_dispatched) or (
-                exc.code not in _PRE_DISPATCH_ERROR_CODES
-            ):
-                browser.write_actions += 1
+        if is_write and not _sync_write_actions(browser) and exc.code not in _PRE_DISPATCH_ERROR_CODES:
+            browser.write_actions += 1
         if (
             exc.code in {"browser_blocked", "browser_policy_denied"}
             or "site_blocked" in exc.message
@@ -729,13 +729,8 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
         raise
     else:
         rendered = _text(blocks)
-        if is_write:
-            after_dispatched = getattr(journal, "dispatched_count", None) if before_dispatched is not None else None
-            if isinstance(after_dispatched, int) and before_dispatched is not None:
-                if after_dispatched > before_dispatched:
-                    browser.write_actions += 1
-            elif _was_dispatched_write(name, rendered):
-                browser.write_actions += 1
+        if is_write and not _sync_write_actions(browser) and _was_dispatched_write(name, rendered):
+            browser.write_actions += 1
     finally:
         for origin in getattr(browser.session, "drain_blocked_origins", lambda: ())():
             _record_origin(browser.blocked_origins, origin)
