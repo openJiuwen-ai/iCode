@@ -84,7 +84,7 @@ INFO 日志的 `policy_candidate` 表示 AST 和 YAML 规则在敏感目标及�
 
 Bash 展开在原始命令文本中检查。例如，`grep -F '$DEMO_TOKEN' README.md` 搜索的是字面文本。解码参数中发现的敏感路径仍然需要审批。敏感数据检查也会分析显式传给 `eval` 或已识别 Shell 的 `-c` 参数的源码，包括常见的 `timeout`、`nice` 和 `xargs` 用法。这些命令会从结构化快捷审批 DEFER。
 
-如果 Pre-Judge 无法确定已识别的包装命令可能运行哪个子命令，诊断会记录 `reason=unresolved_carrier`。在 enforce 模式下，即使设置了 `shell: auto` 或规则集为空，调用仍然需要审批。Shadow 会记录相同的发现，审批行为保持不变。
+Pre-Judge 也会检查 Bash 命令替换、反引号替换和进程替换中已识别的包装命令。源码检查和解码参数检查的结果都会用于审批判断。如果无法确定包装命令可能运行哪个子命令，诊断会记录 `unresolved_carrier=true`。在 enforce 模式下，即使设置了 `shell: auto` 或规则集为空，调用仍然需要审批。Shadow 会记录相同的发现，审批行为保持不变。
 
 安全检查按可执行文件的基本名称分类，忽略大小写和 `.exe` 后缀。这能覆盖大小写别名，也可能让大小写敏感文件系统上的不同程序触发额外审批。YAML 规则仍按解码后的字面参数匹配，包括大小写和路径。
 

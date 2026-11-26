@@ -84,7 +84,7 @@ The INFO field `policy_candidate` shows whether the AST and YAML rules qualify b
 
 Bash expansions are checked in the original source. For example, `grep -F '$DEMO_TOKEN' README.md` searches for literal text. Sensitive paths found in decoded arguments still require approval. The sensitive-data check also inspects source explicitly passed to `eval` or to a recognized shell with `-c`, including common `timeout`, `nice` and `xargs` forms. These commands DEFER from the structured shortcut.
 
-If Pre-Judge cannot tell which command a recognized wrapper may run, diagnostics record `reason=unresolved_carrier`. In enforce mode the call still requires approval, even with `shell: auto` or an empty ruleset. Shadow logs the same finding and leaves approval behavior unchanged.
+Pre-Judge also checks recognized carriers in Bash command, backtick and process substitutions. The source and decoded argument checks both feed the approval decision. If Pre-Judge cannot tell which command a recognized wrapper may run, diagnostics record `unresolved_carrier=true`. In enforce mode the call still requires approval, even with `shell: auto` or an empty ruleset. Shadow logs the same finding and leaves approval behavior unchanged.
 
 Security checks group executable-name spellings by basename and ignore case and an `.exe` suffix. This covers case aliases and can require extra approval for distinct programs on case-sensitive filesystems. YAML rules still match the exact decoded tokens, including case and path.
 

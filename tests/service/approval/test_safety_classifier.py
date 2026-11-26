@@ -8,6 +8,7 @@ import pytest
 
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
+    prejudge_source_may_access_sensitive_data,
     shell_arg_may_access_sensitive_data,
     shell_argv_may_access_sensitive_data,
     shell_command_may_access_sensitive_data,
@@ -96,6 +97,48 @@ def test_shell_sensitive_analysis_caps_pathological_unclosed_substitutions() -> 
     """Large malformed substitution input is conservatively judged instead of rescanned quadratically."""
     command = "$(" * 5000
     assert shell_command_may_access_sensitive_data(command, shell_name="zsh") is True
+    assert prejudge_source_may_access_sensitive_data(command, shell_name="bash") is True
+
+
+@pytest.mark.parametrize("shell_name", ["bash", "git_bash"])
+@pytest.mark.parametrize(
+    ("command", "enhanced", "legacy"),
+    [
+        ('echo "$(bash -c printenv)"', True, True),
+        ('echo "$(BaSh -c printenv)"', True, False),
+        ("echo `BASH -c printenv`", True, False),
+        ("cat <(BASH -c printenv)", True, False),
+        ("echo fixture > >(BASH -c printenv)", True, False),
+        ('echo "$(XARGS -0rn1 BASH -c printenv)"', True, False),
+        ('echo "$(nice bash -c printenv)"', True, False),
+        ('echo "$(eval printenv)"', True, False),
+        ('echo "$(echo "$(XARGS -Z BASH -c x)")"', None, False),
+        ('echo "$(xargs "$FIXTURE_FLAGS" BASH -c printenv)"', None, False),
+        ('echo "$(echo "$(BASH -c printenv)")"', True, False),
+        ("""echo "$(printf '%s' ")"; XARGS -0rn1 BASH -c printenv)" """.strip(), True, False),
+        ('echo "$(BASH -c printenv</dev/null)"', True, False),
+        ('echo "$(BASH -c)"', None, False),
+        ('echo "$(eval printenv); $(XARGS -Z BASH -c x)"', True, False),
+        ("echo \"$(xargs -0 bash -c 'echo fixture')\"", False, False),
+        ('grep -F "$DEMO_TOKEN" README.md', True, True),
+        ("grep -F '$DEMO_TOKEN' README.md", False, False),
+        ("grep -F '$(XARGS -0 BASH -c printenv)' README.md", False, False),
+        (r'grep -F "\$(XARGS -0 BASH -c printenv)" README.md', False, False),
+        (r'echo "\`BASH -c printenv\`"', False, False),
+        ('grep -F "<(BASH -c printenv)" README.md', False, False),
+        ('grep -F ">(BASH -c printenv)" README.md', False, False),
+        ("echo ';' XARGS -0 BASH -c printenv", False, False),
+        (r"echo \; XARGS -0 BASH -c printenv", False, False),
+        ("echo fixture # $(XARGS -0 BASH -c printenv)", False, False),
+        (r"echo fixture\ #$(BASH -c printenv)", True, False),
+        ("grep -F bash -c printenv README.md", False, False),
+        ("echo $(echo $(echo $(echo $(echo fixture))))", None, False),
+        ("cat .env", True, True),
+    ],
+)
+def test_carrier_aware_prejudge_source_analysis(command, enhanced, legacy, shell_name):
+    assert prejudge_source_may_access_sensitive_data(command, shell_name=shell_name) is enhanced
+    assert shell_command_may_access_sensitive_data(command, shell_name=shell_name) is legacy
 
 
 @pytest.mark.parametrize(

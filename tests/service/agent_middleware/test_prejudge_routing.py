@@ -517,21 +517,21 @@ async def test_literal_dollar_argv_preserves_readonly_approval(tmp_path, monkeyp
 @pytest.mark.parametrize(
     ("command", "head", "detected"),
     [
-        ("eval 'echo' '$DEMO_TOKEN'", "eval", "decoded"),
-        ("timeout -s TERM 5 bash -c 'echo $DEMO_TOKEN'", "timeout", "decoded"),
-        ("bash --noprofile -c 'echo $DEMO_TOKEN'", "bash", "source"),
-        ("nice -n 5 /bin/bash -c 'echo $DEMO_TOKEN'", "nice", "decoded"),
-        ("xargs -n1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded"),
-        pytest.param("xargs -0 -r -n 1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="xargs-separate"),
-        pytest.param("xargs -0rn 1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="xargs-grouped"),
-        pytest.param("xargs -0rn1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="xargs-attached"),
+        ("eval 'echo' '$DEMO_TOKEN'", "eval", "source"),
+        ("timeout -s TERM 5 bash -c 'echo $DEMO_TOKEN'", "timeout", "source"),
+        ("bash --noprofile -c 'echo $DEMO_TOKEN'", "bash", "legacy"),
+        ("nice -n 5 /bin/bash -c 'echo $DEMO_TOKEN'", "nice", "source"),
+        ("xargs -n1 bash -c 'echo $DEMO_TOKEN'", "xargs", "source"),
+        pytest.param("xargs -0 -r -n 1 bash -c 'echo $DEMO_TOKEN'", "xargs", "source", id="xargs-separate"),
+        pytest.param("xargs -0rn 1 bash -c 'echo $DEMO_TOKEN'", "xargs", "source", id="xargs-grouped"),
+        pytest.param("xargs -0rn1 bash -c 'echo $DEMO_TOKEN'", "xargs", "source", id="xargs-attached"),
         pytest.param(
-            "/usr/bin/xargs -0 -n 1 /bin/bash -c 'echo $DEMO_TOKEN'", "/usr/bin/xargs", "decoded", id="absolute-xargs"
+            "/usr/bin/xargs -0 -n 1 /bin/bash -c 'echo $DEMO_TOKEN'", "/usr/bin/xargs", "source", id="absolute-xargs"
         ),
         pytest.param(
-            "/usr/bin/XaRgS -0n1 /bin/BaSh -c 'echo $DEMO_TOKEN'", "/usr/bin/XaRgS", "decoded", id="absolute-alias"
+            "/usr/bin/XaRgS -0n1 /bin/BaSh -c 'echo $DEMO_TOKEN'", "/usr/bin/XaRgS", "source", id="absolute-alias"
         ),
-        pytest.param("xargs -0n1 BASH -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="nested-shell-alias"),
+        pytest.param("xargs -0n1 BASH -c 'echo $DEMO_TOKEN'", "xargs", "source", id="nested-shell-alias"),
         pytest.param("XARGS \"$GROUP_FLAGS\" BASH -c 'echo $DEMO_TOKEN'", "XARGS", "unresolved", id="dynamic-alias"),
         pytest.param("TIMEOUT 5 XARGS '-I{}' BASH -c 'echo $DEMO_TOKEN'", "TIMEOUT", "unresolved", id="nested-alias"),
         pytest.param("xargs '--replace={}' bash -c 'echo $DEMO_TOKEN'", "xargs", "unresolved", id="xargs-unresolved"),
@@ -552,6 +552,35 @@ async def test_carrier_source_sensitivity_is_enforce_only(monkeypatch, caplog, m
     await _assert_carrier_sensitivity(monkeypatch, caplog, mode, matches, command, head, detected)
 
 
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+@pytest.mark.parametrize("matches", [False, True])
+@pytest.mark.parametrize(
+    ("command", "head", "detected"),
+    [
+        pytest.param('echo "$(bash -c printenv)"', "echo", "legacy", id="canonical"),
+        pytest.param('echo "$(BASH -c printenv)"', "echo", "source", id="case-alias"),
+        pytest.param("echo `BASH -c printenv`", "echo", "source", id="backticks"),
+        pytest.param("cat <(BASH -c printenv)", "cat", "source", id="process-input"),
+        pytest.param('echo "$(xargs -0 bash -c printenv)"', "echo", "source", id="xargs"),
+        pytest.param('echo "$(nice bash -c printenv)"', "echo", "source", id="nice"),
+        pytest.param('echo "$(eval printenv)"', "echo", "source", id="eval"),
+        pytest.param('echo "$(xargs -Z bash -c x)"', "echo", "unresolved", id="unresolved"),
+    ],
+)
+async def test_reported_substitution_enforces_approval(monkeypatch, caplog, mode, matches, command, head, detected):
+    await _assert_carrier_sensitivity(monkeypatch, caplog, mode, matches, command, head, detected)
+
+
+def test_substitution_uncertainty_preserves_decoded_sensitive_target():
+    require_grammars("tree_sitter", "tree_sitter_bash")
+    result = route("""echo "$(xargs -Z bash -c x)"; cat .e'n'v""", "bash", Policy("enforce", "fixture", ()))
+    assert result.route is Route.DEFER
+    assert result.reason_code == "sensitive_target"
+    assert result.sensitive
+    assert result.decoded_sensitive_target
+    assert result.unresolved_carrier
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="requires the native macOS system xargs filesystem")
 @pytest.mark.parametrize("case_alias", [False, True], ids=["canonical", "case-alias"])
 async def test_macos_xargs_case_alias_requires_approval(monkeypatch, caplog, case_alias):
@@ -563,7 +592,7 @@ async def test_macos_xargs_case_alias_requires_approval(monkeypatch, caplog, cas
     assert await asyncio.to_thread(canonical.samefile, alias)
     head = str(alias if case_alias else canonical)
     await _assert_carrier_sensitivity(
-        monkeypatch, caplog, "enforce", False, f"{head} -0n1 /bin/bash -c 'echo $DEMO_TOKEN'", head, "decoded"
+        monkeypatch, caplog, "enforce", False, f"{head} -0n1 /bin/bash -c 'echo $DEMO_TOKEN'", head, "source"
     )
 
 
@@ -591,7 +620,7 @@ async def _assert_carrier_sensitivity(monkeypatch, caplog, mode, matches, comman
     try:
         with caplog.at_level(logging.INFO, logger=approval_module._prejudge_logger.name):
             await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
-        if detected == "source" or (mode == "enforce" and detected != "clear"):
+        if detected == "legacy" or (mode == "enforce" and detected != "clear"):
             assert len(requests) == 1
             (decision,) = middleware.drain_decisions()
             assert decision["status"] == "user_rejected"
@@ -609,7 +638,7 @@ async def _assert_carrier_sensitivity(monkeypatch, caplog, mode, matches, comman
     finally:
         await middleware.close()
 
-    assert observed.sensitive is (mode != "off" and detected in {"decoded", "source"})
+    assert observed.sensitive is (mode != "off" and detected in {"decoded", "source", "legacy"})
     assert observed.decoded_sensitive_target is (mode != "off" and detected == "decoded")
     assert observed.unresolved_carrier is (mode != "off" and detected == "unresolved")
 

@@ -206,7 +206,7 @@ def _windows_command_references_sensitive_env(command: str) -> bool:
     return any(_env_name_may_be_sensitive(match.group(1)) for match in _WINDOWS_ENV_REFERENCE_RE.finditer(command))
 
 
-def _read_posix_parenthesized_payload(command: str, start: int) -> tuple[str, int] | None:
+def _read_posix_parenthesized_payload(command: str, start: int, *, decoded_carriers: bool) -> tuple[str, int] | None:
     """Return payload/end index for a POSIX ``$(...)`` or ``<(...)`` body."""
     depth = 1
     in_single = False
@@ -231,9 +231,10 @@ def _read_posix_parenthesized_payload(command: str, start: int) -> tuple[str, in
             in_double = not in_double
             index += 1
             continue
-        if not in_single and char == "(":
+        delimiter = not in_single and (not decoded_carriers or not in_double)
+        if delimiter and char == "(":
             depth += 1
-        elif not in_single and char == ")":
+        elif delimiter and char == ")":
             depth -= 1
             if depth == 0:
                 return command[start:index], index
@@ -241,7 +242,7 @@ def _read_posix_parenthesized_payload(command: str, start: int) -> tuple[str, in
     return None
 
 
-def _read_posix_backtick_payload(command: str, start: int) -> tuple[str, int] | None:
+def _read_posix_backtick_payload(command: str, start: int, *, decoded_carriers: bool) -> tuple[str, int] | None:
     """Return payload/end index for a POSIX backtick substitution."""
     escaped = False
     payload: list[str] = []
@@ -249,6 +250,8 @@ def _read_posix_backtick_payload(command: str, start: int) -> tuple[str, int] | 
     while index < len(command):
         char = command[index]
         if escaped:
+            if decoded_carriers and char not in "\\$`":
+                payload.append("\\")
             payload.append(char)
             escaped = False
             index += 1
@@ -264,17 +267,22 @@ def _read_posix_backtick_payload(command: str, start: int) -> tuple[str, int] | 
     return None
 
 
-def _posix_substitution_payloads(command: str) -> list[str]:
-    """Return POSIX command/process substitution payloads that will execute."""
-    payloads: list[str] = []
+def _posix_source_parts(command: str, *, decoded_carriers: bool) -> tuple[list[str], list[str | None]]:
+    """Find substitutions and, for Pre-Judge, split at unquoted command boundaries."""
+    segments: list[str] = []
+    payloads: list[str | None] = []
     in_single = False
     in_double = False
     escaped = False
+    at_word_start = True
     index = 0
+    start = 0
     while index < len(command):
         char = command[index]
         if escaped:
             escaped = False
+            if char != "\n":
+                at_word_start = False
             index += 1
             continue
         if char == "\\" and not in_single:
@@ -283,33 +291,57 @@ def _posix_substitution_payloads(command: str) -> list[str]:
             continue
         if char == "'" and not in_double:
             in_single = not in_single
+            at_word_start = False
             index += 1
             continue
         if char == '"' and not in_single:
             in_double = not in_double
+            at_word_start = False
             index += 1
             continue
         if in_single:
             index += 1
             continue
-        if command.startswith(("$(", "<("), index):
-            payload = _read_posix_parenthesized_payload(command, index + 2)
-            if payload is not None:
-                body, end = payload
-                payloads.append(body)
-                index = end + 1
+        process_start = (
+            not in_double and command.startswith(("<(", ">("), index)
+            if decoded_carriers
+            else command.startswith("<(", index)
+        )
+        parenthesized = command.startswith("$(", index) or process_start
+        if parenthesized:
+            payload = _read_posix_parenthesized_payload(command, index + 2, decoded_carriers=decoded_carriers)
+        elif char == "`":
+            payload = _read_posix_backtick_payload(command, index + 1, decoded_carriers=decoded_carriers)
+        else:
+            payload = None
+        if payload is not None:
+            body, end = payload
+            payloads.append(body)
+            at_word_start = False
+            index = end + 1
+            continue
+        if parenthesized or char == "`":
+            if decoded_carriers:
+                payloads.append(None)
+            break
+
+        if decoded_carriers and not in_double:
+            if char == "#" and at_word_start:
+                segments.append(command[start:index])
+                end = command.find("\n", index)
+                index = len(command) if end == -1 else end + 1
+                start = index
                 continue
-            return payloads
-        if char == "`":
-            payload = _read_posix_backtick_payload(command, index + 1)
-            if payload is not None:
-                body, end = payload
-                payloads.append(body)
-                index = end + 1
-                continue
-            return payloads
+            if char in ";|\r\n" or (
+                char == "&" and command[index - 1 : index] not in {"<", ">"} and command[index + 1 : index + 2] != ">"
+            ):
+                segments.append(command[start:index])
+                start = index + 1
+            at_word_start = char in " \t\r\n;|&<>"
         index += 1
-    return payloads
+    if decoded_carriers:
+        segments.append(command[start:index])
+    return segments, payloads
 
 
 def _posix_newlines_as_operators(command: str) -> str:
@@ -505,6 +537,10 @@ def normalize_executable_name(word: str) -> str:
     return word.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
 
 
+def _is_potential_carrier(head: str) -> bool:
+    return head in _CARRIER_OPTIONS or head in POSIX_SHELL_NAMES or head in {"eval", "printenv"}
+
+
 def _is_shell_builtin(segment: Sequence[str], index: int, name: str) -> bool:
     """Require the exact builtin spelling in the shell or after its command builtin."""
     return segment[index] == name and all(
@@ -528,6 +564,8 @@ def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: 
                 return None
             target = _carrier_target_index(segment, index, wrapper_name)
             if target is None:
+                return None
+            if target < len(segment) and segment[target].startswith(("$", "`")):
                 return None
             # An external wrapper executes its command operand, even if it contains '='.
             if target < len(segment) and _POSIX_ENV_ASSIGNMENT_RE.fullmatch(segment[target]):
@@ -627,10 +665,27 @@ def _posix_command_indirection_may_access_sensitive_data(
         return None if decoded_carriers else False
     if len(command) > _MAX_SHELL_INDIRECTION_ANALYSIS_CHARS:
         return True
-    payloads = _posix_shell_payloads(
-        _posix_command_segments(command), shell_name=shell_name, decoded_carriers=decoded_carriers
-    )
-    payloads.extend((shell_name, payload) for payload in _posix_substitution_payloads(command))
+    source_segments, substitutions = _posix_source_parts(command, decoded_carriers=decoded_carriers)
+    if decoded_carriers:
+        segments: list[list[str]] = []
+        for segment in source_segments:
+            lexer = shlex.shlex(segment, posix=True, punctuation_chars="<>")
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            words: list[str] = []
+            try:
+                words.extend(lexer)
+            except ValueError:
+                # Keep the known prefix so a malformed carrier is still unresolved.
+                head = next((word for word in words if not _POSIX_ENV_ASSIGNMENT_RE.fullmatch(word)), "")
+                if _is_potential_carrier(normalize_executable_name(head)):
+                    substitutions.append(None)
+            else:
+                segments.append(words)
+    else:
+        segments = _posix_command_segments(command)
+    payloads = _posix_shell_payloads(segments, shell_name=shell_name, decoded_carriers=decoded_carriers)
+    payloads.extend(None if payload is None else (shell_name, payload) for payload in substitutions)
     return _source_payloads_may_access_sensitive_data(payloads, depth=depth + 1, decoded_carriers=decoded_carriers)
 
 
@@ -661,13 +716,20 @@ def shell_command_may_access_sensitive_data(command: str, *, shell_name: str = "
     return _shell_command_may_access_sensitive_data(command, shell_name=shell_name, depth=0) is True
 
 
+def prejudge_source_may_access_sensitive_data(command: str, *, shell_name: str) -> bool | None:
+    """Inspect source with Pre-Judge's carrier rules and preserve uncertainty."""
+    return _shell_command_may_access_sensitive_data(
+        command, shell_name=shell_name, depth=0, decoded_carriers=shell_name in {"bash", "git_bash"}
+    )
+
+
 def shell_argv_may_access_sensitive_data(
     argv: tuple[str, ...], *, shell_name: str, complete: bool = True
 ) -> bool | None:
     """Inspect decoded argv, returning None when a carrier's command cannot be located."""
     head = normalize_executable_name(argv[0]) if argv and shell_name in {"bash", "git_bash"} else ""
     if not complete:
-        if head in _CARRIER_OPTIONS or head in POSIX_SHELL_NAMES or head in {"eval", "printenv"}:
+        if _is_potential_carrier(head):
             return None
         return False
     for token in argv:

@@ -22,8 +22,8 @@ from yaml.resolver import BaseResolver
 from chrys.service.approval.safety_classifier import (
     POSIX_SHELL_NAMES,
     normalize_executable_name,
+    prejudge_source_may_access_sensitive_data,
     shell_argv_may_access_sensitive_data,
-    shell_command_may_access_sensitive_data,
 )
 
 from ._analysis import Analysis as Analysis
@@ -577,9 +577,10 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
     spans: list[tuple[int, int]] = []
     all_allowed = analysis.coverage_complete
     reason = analysis.unsupported[0] if analysis.unsupported else "unmatched_unit"
-    raw_sensitive = shell_command_may_access_sensitive_data(command, shell_name=dialect)
+    raw = prejudge_source_may_access_sensitive_data(command, shell_name=dialect)
+    raw_sensitive = raw is True
     argv_sensitive = False
-    unresolved_carrier = False
+    unresolved_carrier = raw is None
     for node in analysis.executable_nodes:
         allowed = False
         for rule in policy.rules:
