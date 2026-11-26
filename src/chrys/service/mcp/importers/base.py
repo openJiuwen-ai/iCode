@@ -37,10 +37,11 @@ from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.parse import urlsplit
 
 from chrys.foundation.i18n.formatting import sanitize_terminal_block
 from chrys.foundation.platform import get_platform
-from chrys.foundation.platform.files import secure_open_regular_binary
+from chrys.foundation.platform.files import SecureFileError, secure_open_regular_binary
 from chrys.foundation.util.header_charset import header_name_charset_error, header_value_charset_error
 from chrys.service.mcp.validation import (
     MAX_MCP_EXPOSED_TOOL_NAME_LENGTH,
@@ -68,6 +69,8 @@ MAX_REQUEST_TIMEOUT_SECONDS = timedelta.max.days * 86_400
 _COMMAND_LINE_BREAK = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]")
 # A URL scheme, which every source reads in any letter case and the editor accepts only in lower case.
 _URL_SCHEME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*:")
+# Path segments the other applications' URL parsers resolve as "." or "..", while iCode's HTTP client keeps them.
+_ENCODED_DOT_SEGMENTS = frozenset(("%2e", "%2e%2e", ".%2e", "%2e."))
 _JS_SERVER_NAME_CHARACTER_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 
@@ -81,6 +84,8 @@ class WarningKind(StrEnum):
     DEFAULT_TIMEOUT = "default_timeout"
     AUTH_HEADERS = "auth_headers"
     TOOL_LOADING = "tool_loading"
+    TOOL_SCOPE = "tool_scope"
+    """Tool access rules only partially carried over, so only selected tools are imported."""
     AUTH_NOT_IMPORTED = "auth_not_imported"
     """OAuth or provider sign-in, which only the source application holds."""
     TOOLS_RESTRICTED = "tools_restricted"
@@ -112,6 +117,10 @@ class SourceErrorKind(StrEnum):
     UNREADABLE = "unreadable"
     UNPARSABLE = "unparsable"
     INVALID = "invalid"
+    TOO_LARGE = "too_large"
+    """Larger than the source application reads, so it skips the file too."""
+    DOWNLOADS_FOLDER = "downloads_folder"
+    """In a folder where the source application saves downloaded files, so its servers are not imported."""
 
 
 class FieldUse(StrEnum):
@@ -287,17 +296,27 @@ class SourceReadError(Exception):
 
 
 class SourceReadLimitError(SourceReadError):
-    """The importer could not read the whole file under its own size limit."""
+    """The importer could not read the whole file under its size limit."""
 
     def __init__(self) -> None:
         super().__init__(SourceErrorKind.UNREADABLE)
 
 
-def read_text(path: Path) -> str | None:
+class SourceReaderRefusal(SourceReadError):
+    """The importer's own checks refused what a plainer reader may still use.
+
+    A file the secure open would not pin as a regular file, text that is not UTF-8 (a JavaScript
+    reader substitutes U+FFFD), or JSON nested deeper or holding a longer number than Python parses.
+    """
+
+
+def read_text(path: Path, *, limit: int | None = None) -> str | None:
     """The text of *path*; ``None`` when it does not exist. Raises :class:`SourceReadError` when unusable.
 
     A link is followed, as the owning application follows it (dotfile managers link these files).
+    *limit* replaces :data:`MAX_SOURCE_BYTES` for an application that reads less.
     """
+    limit = MAX_SOURCE_BYTES if limit is None else limit
     try:
         target = path.resolve(strict=True)
     except FileNotFoundError, NotADirectoryError:
@@ -307,17 +326,19 @@ def read_text(path: Path) -> str | None:
     try:
         # The leaf is opened no-follow, so open the link's target, still checked to be a regular file.
         with secure_open_regular_binary(target) as handle:
-            raw = handle.read(MAX_SOURCE_BYTES + 1)
+            raw = handle.read(limit + 1)
+    except SecureFileError as exc:
+        raise SourceReaderRefusal(SourceErrorKind.UNREADABLE) from exc
     except OSError as exc:
         raise SourceReadError(SourceErrorKind.UNREADABLE) from exc
-    if len(raw) > MAX_SOURCE_BYTES:
+    if len(raw) > limit:
         raise SourceReadLimitError
     try:
         # Every source application reads its files as UTF-8 (a leading BOM skipped); a guessed encoding
         # would import other values.
         return raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise SourceReadError(SourceErrorKind.UNPARSABLE) from exc
+        raise SourceReaderRefusal(SourceErrorKind.UNPARSABLE) from exc
 
 
 def parse_json_object(text: str, *, strict: bool = False) -> dict[str, Any]:
@@ -334,7 +355,8 @@ def parse_json_object(text: str, *, strict: bool = False) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise SourceReadError(SourceErrorKind.UNPARSABLE, line=exc.lineno, column=exc.colno) from exc
     except (ValueError, RecursionError) as exc:
-        raise SourceReadError(SourceErrorKind.UNPARSABLE) from exc
+        # Python's own limits (nesting depth, digits in an integer), not invalid JSON.
+        raise SourceReaderRefusal(SourceErrorKind.UNPARSABLE) from exc
     if not isinstance(document, dict):
         raise SourceReadError(SourceErrorKind.INVALID)
     return document
@@ -344,8 +366,8 @@ def _reject_json_constant(_: str) -> None:
     raise SourceReadError(SourceErrorKind.UNPARSABLE)
 
 
-def read_json_object(path: Path, *, strict: bool = False) -> dict[str, Any] | None:
-    text = read_text(path)
+def read_json_object(path: Path, *, strict: bool = False, limit: int | None = None) -> dict[str, Any] | None:
+    text = read_text(path, limit=limit)
     return None if text is None else parse_json_object(text, strict=strict)
 
 
@@ -590,6 +612,14 @@ def lexical_cwd(text: str) -> str:
     return normalized
 
 
+def _has_encoded_dot_segment(url: str) -> bool:
+    try:
+        path = urlsplit(url).path
+    except ValueError:
+        return False  # Left to the URL check that runs first.
+    return not _ENCODED_DOT_SEGMENTS.isdisjoint(path.lower().split("/"))
+
+
 def convert(server: SourceServer) -> McpImportCandidate:
     """*server* as an importable candidate, or a refusal naming the first value iCode can't hold."""
 
@@ -698,6 +728,9 @@ def convert(server: SourceServer) -> McpImportCandidate:
                 McpHttpUrlError.HOST: ValueReason.URL_HOST,
             }[url_error]
             return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.url_path, reason, FieldUse.URL)
+        if _has_encoded_dot_segment(url):
+            # iCode would request another path than the application does.
+            return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.url_path, ValueReason.INVALID, FieldUse.URL)
         for key, value in server.headers.items():
             text = render(value)
             if text is not None:

@@ -14,8 +14,7 @@ the global one of the same name; a project entry with none of ``command``,
 ``toolExposure`` of the global server it names. Basic fields are checked
 before replacing an earlier definition; an invalid project entry reports an
 error and leaves the global server intact.
-For an OAuth configuration whose acceptance depends on Pi's callback or
-metadata URL rules, a same-named project definition is shown for manual setup.
+OAuth callback and metadata URLs are checked before applying a replacement.
 
 Values in ``env`` and ``headers`` may reference ``$NAME`` or ``${NAME}``; ``$$``
 and ``$!`` are a literal ``$`` and ``!``. A value starting with ``!`` runs a
@@ -66,6 +65,7 @@ from chrys.service.mcp.importers.base import (
     McpSourceError,
     Problem,
     SourceErrorKind,
+    SourceReaderRefusal,
     SourceReadError,
     SourceReadLimitError,
     SourceServer,
@@ -89,12 +89,13 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import PurePath
 
+    from pydantic_core import Url
+
 _NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 _VARIABLE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-# Pi accepts only http and https URLs, in any letter case.
-_HTTP_SCHEME_RE = re.compile(r"https?:", re.IGNORECASE)
 _COMMON_HTTP_HOST_RE = re.compile(r"[A-Za-z0-9._-]+|[A-Fa-f0-9:.]+")
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_URL_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _OVERRIDE_KEYS = frozenset({"enabled", "exposure", "toolExposure"})
 _OAUTH_URL_FIELDS = ("callbackUrl", "authServerMetadataUrl")
@@ -116,7 +117,7 @@ _READ_EXPOSURE = (*_READ, "exposure", "toolExposure")
 
 class _Read(Protocol):
     def __call__(self, path: Path, *, strict: bool = False) -> dict[str, Any] | None:
-        """The object in *path*, empty when missing, ``None`` on error. Propagate read-limit failures."""
+        """The object in *path*, empty when missing. Propagate importer-specific read refusals."""
         ...
 
 
@@ -158,7 +159,7 @@ class PiSource:
                 return read_json_object(path, strict=strict) or {}
             except SourceReadError as exc:
                 errors.append(exc.at(path))
-                if isinstance(exc, SourceReadLimitError):
+                if isinstance(exc, SourceReadLimitError | SourceReaderRefusal):
                     raise
                 return None
 
@@ -169,7 +170,7 @@ class PiSource:
             try:
                 if _trusted(ctx.workspace_cwd or "", agent, read, errors):
                     files.append(project)
-            except SourceReadLimitError:
+            except SourceReadLimitError, SourceReaderRefusal:
                 # Pi may trust this project and use overrides we cannot evaluate.
                 return McpImportResult(source_errors=tuple(errors))
         entries: dict[str, tuple[dict[str, Any], SourceServer]] = {}
@@ -179,7 +180,7 @@ class PiSource:
             except SourceReadError as exc:
                 errors.append(exc.at(path))
                 # Either layer may affect the other through overrides or namespace conflicts.
-                if isinstance(exc, SourceReadLimitError):
+                if isinstance(exc, SourceReadLimitError | SourceReaderRefusal):
                     return McpImportResult(source_errors=tuple(errors))
                 continue
             if document is None:
@@ -210,22 +211,6 @@ class PiSource:
                 if any(other != name and other.replace("-", "_") == name.replace("-", "_") for other in entries):
                     errors.append(error)
                     continue
-                if (
-                    position
-                    and not override
-                    and name in entries
-                    and server.transport == "http"
-                    and (oauth_field := _unverified_oauth_field(entry.get("oauth", {})))
-                    and not server.blocked_field
-                ):
-                    # Pi may keep the global entry if it rejects this replacement's OAuth URL.
-                    server = replace(
-                        server,
-                        blocked_field=f"{error.field}.oauth.{oauth_field}",
-                        blocked_problem=Problem.VALUE_NOT_REPRESENTABLE,
-                        blocked_reason=ValueReason.INVALID,
-                        blocked_use=FieldUse.VALUE,
-                    )
                 # Keep refusal candidates instead of silently choosing an earlier definition.
                 entries[name] = (entry, server)
         candidates = tuple(convert(server) for _, server in entries.values())
@@ -308,35 +293,58 @@ def _valid_oauth(value: object) -> bool:
     if not all(isinstance(value.get(key, ""), str) for key in strings) or not value.get("clientName", "pi").strip():
         return False
     registration = value.get("clientRegistration", "auto")
-    return registration in ("auto", "dcr") or (registration == "cimd" and not value.keys() & {"clientId", "clientName"})
+    if not (
+        registration in ("auto", "dcr") or (registration == "cimd" and not value.keys() & {"clientId", "clientName"})
+    ):
+        return False
+    if "callbackUrl" in value and not _valid_oauth_callback(
+        value["callbackUrl"], value.get("callbackPort"), cimd=registration == "cimd"
+    ):
+        return False
+    if "authServerMetadataUrl" in value:
+        metadata = _http_url(value["authServerMetadataUrl"])
+        return metadata is not None and (metadata.scheme == "https" or metadata.host in _LOOPBACK_HOSTS)
+    return True
 
 
-def _unverified_oauth_field(value: Mapping[str, Any]) -> str:
-    """Identify OAuth settings that require Pi's URL validation to verify a replacement."""
-    return next((key for key in _OAUTH_URL_FIELDS if key in value), "")
+def _valid_oauth_callback(url: str, port: int | float | None, *, cimd: bool) -> bool:
+    callback = _http_url(url)
+    if callback is None or callback.scheme != "http" or callback.host not in _LOOPBACK_HOSTS:
+        return False
+    if callback.query or callback.fragment or (port is not None and callback.port not in (80, port)):
+        return False
+    return not cimd or (callback.host != "[::1]" and callback.path == "/callback")
+
+
+def _http_url(url: str) -> Url | None:
+    """Validate with the WHATWG URL rules that Pi uses to choose a server."""
+    from pydantic_core import Url, ValidationError
+
+    try:
+        # Node's URL constructor replaces unpaired UTF-16 surrogates before parsing.
+        parsed = Url(_URL_SURROGATE_RE.sub("�", url))
+    except ValidationError:
+        return None
+    return parsed if parsed.scheme in ("http", "https") else None
 
 
 def _http_endpoint(url: str, *, provider_auth: bool) -> _HttpEndpoint:
-    """Check common Pi HTTP endpoints before choosing an override."""
+    """Check Pi's endpoint before selecting it and flag spellings that can change the target."""
+    parsed = _http_url(url)
+    if parsed is None or (provider_auth and parsed.scheme == "http" and parsed.host not in _LOOPBACK_HOSTS):
+        return _HttpEndpoint.INVALID
     text = url.replace("\t", "").replace("\r", "").replace("\n", "").strip()
-    scheme = _HTTP_SCHEME_RE.match(text)
-    if scheme is None:
-        return _HttpEndpoint.INVALID
-    rest = text[scheme.end() :]
-    # Pi's URL parser treats extra slashes and backslashes as separators, which can change the target.
-    authority = re.split(r"[/\\?#]", rest.lstrip("/\\"), maxsplit=1)[0]
+    target = re.split(r"[?#]", text, maxsplit=1)[0]
     try:
-        parts = urlsplit(f"https://{authority}")
-        host = parts.hostname
-        _ = parts.port
+        original = urlsplit(target)
     except ValueError:
-        return _HttpEndpoint.INVALID
-    if not host or any(char.isspace() or char in "<>^|" for char in host):
-        return _HttpEndpoint.INVALID
-    if provider_auth and scheme[0].lower() == "http:" and host not in _LOOPBACK_HOSTS:
-        return _HttpEndpoint.INVALID
-    target = re.split(r"[?#]", rest, maxsplit=1)[0]
-    if not target.startswith(f"//{authority}") or "\\" in target or not _COMMON_HTTP_HOST_RE.fullmatch(host):
+        return _HttpEndpoint.MANUAL
+    if (
+        not original.netloc
+        or "\\" in target
+        or not _COMMON_HTTP_HOST_RE.fullmatch(original.hostname or "")
+        or _URL_SURROGATE_RE.search(url)
+    ):
         return _HttpEndpoint.MANUAL
     return _HttpEndpoint.PORTABLE
 
@@ -506,13 +514,15 @@ def _tool_access(exposure: str, rules: dict[str, str], prefix: str) -> _Access:
             always.append(tool)
         else:
             unread.append(f"{prefix}.toolExposure.{tool}")
-    if unread:
-        access.warnings.append(ImportWarning(WarningKind.TOOL_LOADING, tuple(unread)))
+    warning = WarningKind.TOOL_LOADING
     if base == _HIDDEN:
         access.allowed = tuple(granted)
         access.progressive = _ON_DEMAND in granted.values()
         access.always_load = tuple(t for t, k in granted.items() if k == _FULL) if access.progressive else ()
+        warning = WarningKind.TOOL_SCOPE if granted else WarningKind.TOOLS_RESTRICTED
     else:
         access.progressive = base == _ON_DEMAND
         access.always_load = tuple(always)
+    if unread:
+        access.warnings.append(ImportWarning(warning, tuple(unread)))
     return access

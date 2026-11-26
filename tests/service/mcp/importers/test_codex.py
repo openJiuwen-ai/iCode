@@ -13,7 +13,7 @@ import pytest
 
 from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind, codex
 from chrys.service.mcp.importers import WarningKind as Kind
-from chrys.service.mcp.importers.base import MAX_REQUEST_TIMEOUT_SECONDS
+from chrys.service.mcp.importers.base import MAX_REQUEST_TIMEOUT_SECONDS, MAX_SOURCE_BYTES
 from chrys.service.mcp.importers.codex import CodexSource
 from tests.support.symlinks import symlink_or_skip
 
@@ -527,6 +527,40 @@ def test_a_broken_trusted_project_file_does_not_fall_back_to_user_servers(
     (error,) = result.source_errors
     assert (error.path, error.kind, error.field) == (str(project), kind, field)
     assert kind is not SourceErrorKind.UNPARSABLE or error.line == 1
+
+
+@pytest.mark.parametrize(
+    ("reset_after_error", "kind", "recovers"),
+    [
+        (True, SourceErrorKind.UNREADABLE, True),
+        (False, SourceErrorKind.UNREADABLE, False),
+        (True, SourceErrorKind.UNPARSABLE, False),
+    ],
+    ids=["after-size-limit", "before-size-limit", "after-syntax-error"],
+)
+def test_full_reset_only_recovers_servers_after_a_size_limit_failure(
+    tmp_path: Path, reset_after_error: bool, kind: SourceErrorKind, recovers: bool
+) -> None:
+    home, repo = tmp_path / "home", _repo(tmp_path / "repo")
+    middle = repo / "middle"
+    workspace = middle / "workspace"
+    _write(home / ".codex" / "config.toml", '[mcp_servers.old]\ncommand = "old"\n' + _trust(repo))
+    unreadable, reset = (repo, middle) if reset_after_error else (middle, repo)
+    unreadable_file = unreadable / ".codex" / "config.toml"
+    _write(unreadable_file, "#" + " " * MAX_SOURCE_BYTES if kind is SourceErrorKind.UNREADABLE else "[mcp_servers\n")
+    _write(reset / ".codex" / "config.toml", "mcp_servers = false\n")
+    workspace_file = workspace / ".codex" / "config.toml"
+    _write(workspace_file, '[mcp_servers.new]\ncommand = "run"\n')
+
+    result = _discover(home, workspace)
+
+    assert [(e.path, e.kind) for e in result.source_errors] == [(str(unreadable_file), kind)]
+    if recovers:
+        (candidate,) = result.candidates
+        assert (candidate.name, candidate.source_path) == ("new", str(workspace_file))
+        assert candidate.config is not None and candidate.config.command == "run"
+    else:
+        assert result.candidates == ()
 
 
 def test_a_malformed_server_override_does_not_offer_the_old_definition(tmp_path: Path) -> None:

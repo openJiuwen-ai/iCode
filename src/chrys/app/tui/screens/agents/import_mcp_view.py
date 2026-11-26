@@ -68,6 +68,10 @@ _TOOL_LOADING = msg(
     "tui.mcp.import.warning.tool_loading",
     fallback="Some tool loading rules were not copied. After import, check “Loading Strategy” and “Initially Visible Tools”.",
 )
+_TOOL_SCOPE = msg(
+    "tui.mcp.import.warning.tool_scope",
+    fallback="Some tool access rules could not be copied. After import, review the selected tools in “Available Tool Scope” and add any you need.",
+)
 _OPENCODE_VARIABLE_CWD = msg(
     "tui.mcp.import.warning.opencode_variable_cwd",
     fallback="This Working Directory uses an environment variable. After import, the server's working directory may differ from the folder it used in OpenCode. To keep using that folder, enter its full path in “Working Directory”. Click “Test” to check the connection; a successful test does not confirm that the folder is the one you intended.",
@@ -197,6 +201,14 @@ _FIELDS = {
     FieldUse.CWD: _FIELD_CWD,
 }
 _INVALID = msg("tui.mcp.import.error.invalid", fallback="{path} isn't a valid {agent} configuration.")
+_TOO_LARGE = msg(
+    "tui.mcp.import.error.too_large",
+    fallback="Skipped {path}: it is larger than {agent} reads, so its servers aren't offered.",
+)
+_DOWNLOADS_FOLDER = msg(
+    "tui.mcp.import.error.downloads_folder",
+    fallback="Skipped {path}: it is in a folder named connector-downloads, where {agent} saves files downloaded from connectors. To import its servers, move the file or rename the folder, then reopen import.",
+)
 _INVALID_FIELD = msg("tui.mcp.import.error.invalid_field", fallback="{path} has an invalid setting: {field}.")
 _ORIGIN = msg("tui.mcp.import.origin", fallback="Imported from {agent} ({path}).")
 # How the import names a connection type it can't use; any other is shown in capitals.
@@ -214,6 +226,7 @@ def warning_text(warning: ImportWarning, agent: str) -> MessageRef:
         Kind.AUTH_HEADERS: _AUTH_HEADERS,
         Kind.TOOLS_RESTRICTED: _TOOLS_RESTRICTED,
         Kind.TOOL_LOADING: _TOOL_LOADING,
+        Kind.TOOL_SCOPE: _TOOL_SCOPE,
         Kind.OPENCODE_VARIABLE_CWD: _OPENCODE_VARIABLE_CWD,
         Kind.VARIABLE_DEFAULTS_DROPPED: _VARIABLE_DEFAULTS_DROPPED,
     }[warning.kind]
@@ -313,6 +326,10 @@ def source_error_text(error: McpSourceError, agent: str) -> MessageRef:
             return _INVALID_FIELD.bind(path=path, field=sanitize_legacy_scalar(error.field))
         case SourceErrorKind.INVALID:
             return _INVALID.bind(path=path, agent=agent)
+        case SourceErrorKind.TOO_LARGE:
+            return _TOO_LARGE.bind(path=path, agent=agent)
+        case SourceErrorKind.DOWNLOADS_FOLDER:
+            return _DOWNLOADS_FOLDER.bind(path=path, agent=agent)
 
 
 def imported_config(

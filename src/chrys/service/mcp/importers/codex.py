@@ -14,8 +14,10 @@ checkout), so a repository can't add or change servers on its own. A later
 file's entry merges into an earlier same-named one, table by table, its other
 values replacing; so a project can turn off or narrow a user server by naming
 only the settings it changes. A server's file is the last one that sets its
-``command`` or ``url``. A trusted config file that can't be read or parsed
-leaves the effective servers unknown, so there are no import candidates.
+``command`` or ``url``. A trusted project file over the importer's size limit
+leaves the effective servers unknown until a later layer replaces the entire
+server map with a non-table value. A subsequent table then starts from empty.
+Other read and parse failures block import from the source.
 
 Values in ``env`` and ``http_headers`` are literal. ``env_http_headers`` and
 ``bearer_token_env_var`` name variables, which become iCode references; Codex
@@ -69,6 +71,7 @@ from chrys.service.mcp.importers.base import (
     Problem,
     SourceErrorKind,
     SourceReadError,
+    SourceReadLimitError,
     SourceServer,
     Value,
     ValueReason,
@@ -149,13 +152,21 @@ class CodexSource:
         except SourceReadError as exc:
             return McpImportResult((), (exc.at(user_path),))
         documents: list[tuple[Path, dict[str, Any]]] = [(user_path, user)]
+        can_recover = True
         for path in _project_files(ctx, user, user_path):
             try:
-                documents.append((path, _read_toml(path)))
+                document = _read_toml(path)
             except SourceReadError as exc:
                 errors.append(exc.at(path))
-        if errors:
-            return McpImportResult((), tuple(errors))
+                # Codex also rejects malformed TOML and failed file reads before merging layers.
+                can_recover = can_recover and isinstance(exc, SourceReadLimitError)
+                documents.clear()
+                continue
+            # After a size-limit failure, only a wholesale replacement can establish a known server map.
+            if documents or not isinstance(document.get("mcp_servers", {}), dict):
+                documents.append((path, document))
+        if not can_recover:
+            return McpImportResult(source_errors=tuple(errors))
 
         invalid_table: McpSourceError | None = None
         for path, document in documents:
@@ -180,7 +191,8 @@ class CodexSource:
                     base_path = str(path)
                 entries[name] = (merge_entries(base, entry), base_path)
         if invalid_table is not None:
-            return McpImportResult((), (invalid_table,))
+            errors.append(invalid_table)
+            return McpImportResult(source_errors=tuple(errors))
         candidates: list[McpImportCandidate] = []
         for name, (entry, path) in entries.items():
             if not isinstance(entry, dict):

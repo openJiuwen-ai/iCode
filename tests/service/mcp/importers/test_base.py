@@ -339,6 +339,35 @@ def test_convert_refuses_a_line_break_or_tab_within_a_url(url: str) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("url", "refused"),
+    [
+        ("https://x/team/%2e%2e/mcp", True),
+        ("https://x/team/%2E/mcp", True),
+        ("https://x/team/.%2E/mcp", True),
+        ("https://x/team/%2e./mcp", True),
+        ("https://x/team/report%2ejson", False),
+        ("https://x/team?next=/%2e%2e/mcp", False),
+        ("https://x/team/../mcp", False),
+    ],
+    ids=["double", "single", "mixed", "trailing-dot", "inside-segment", "query", "literal"],
+)
+def test_convert_refuses_encoded_dot_segments_in_the_url_path(url: str, refused: bool) -> None:
+    # The other applications' URL parsers resolve them; iCode's HTTP client keeps them.
+    candidate = convert(SourceServer("srv", "/cfg.json", "http", url=url, url_path="servers.srv.url"))
+
+    if refused:
+        assert (candidate.config, candidate.problem, candidate.problem_field, candidate.field_use) == (
+            None,
+            Problem.VALUE_NOT_REPRESENTABLE,
+            "servers.srv.url",
+            FieldUse.URL,
+        )
+    else:
+        assert candidate.config is not None
+        assert candidate.config.url == url
+
+
 def test_convert_keeps_tabs_and_line_breaks_and_draws_the_description_safely() -> None:
     candidate = convert(_stdio(args=("a\tb", "line\nbreak"), description="note\x1b[31m\r\nmore\tend"))
 

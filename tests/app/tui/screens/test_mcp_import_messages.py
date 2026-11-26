@@ -326,6 +326,24 @@ def test_known_warnings_keep_the_connection_timeout_and_tool_results(tmp_path) -
         assert ("turned off" if locale == "en" else "暂未启用") not in text
 
 
+@pytest.mark.parametrize(("locale", "scope"), [("en", "Available Tool Scope"), ("zh-Hans", "可用工具范围")])
+def test_pi_mixed_tool_rules_warn_about_tool_scope(tmp_path: Path, locale: str, scope: str) -> None:
+    item = discover(
+        tmp_path,
+        "pi",
+        {"command": "run", "exposure": "hidden", "toolExposure": {"read_*": "direct", "list": "deferred"}},
+    )
+    localizer = Localizer(locale)
+    saved = imported_config(item, "Pi", localizer.render)
+    assert saved is not None
+    assert saved.allowed_tools == ["list"]
+    (warning,) = item.warnings
+    text = localizer.render(warning_text(warning, "Pi"))
+    assert scope in text
+    assert text in saved.description
+    assert "mcpServers.srv.toolExposure.read_*" in saved.description
+
+
 def test_pi_url_without_http_prefix_is_refused_in_preview(tmp_path: Path) -> None:
     item = discover(tmp_path, "pi", {"url": "https:example.org/mcp"})
 
@@ -537,3 +555,14 @@ def test_problems_and_source_errors_name_the_setting_or_file() -> None:
         "Couldn't parse /a.json: syntax error at line 3, column 7. Correct it, then reopen import."
     )
     assert format_message(source_error_text(invalid, "pi")) == "/a.json has an invalid setting: mcp.x."
+    too_large = McpSourceError("/d/.mcp.json", SourceErrorKind.TOO_LARGE)
+    assert format_message(source_error_text(too_large, "Claude Code")) == (
+        "Skipped /d/.mcp.json: it is larger than Claude Code reads, so its servers aren't offered."
+    )
+    unreadable = McpSourceError("/d/.mcp.json", SourceErrorKind.UNREADABLE)
+    assert "access permissions" in format_message(source_error_text(unreadable, "Claude Code"))
+    downloads = McpSourceError("/d/.mcp.json", SourceErrorKind.DOWNLOADS_FOLDER)
+    assert format_message(source_error_text(downloads, "Claude Code")) == (
+        "Skipped /d/.mcp.json: it is in a folder named connector-downloads, where Claude Code saves files "
+        "downloaded from connectors. To import its servers, move the file or rename the folder, then reopen import."
+    )

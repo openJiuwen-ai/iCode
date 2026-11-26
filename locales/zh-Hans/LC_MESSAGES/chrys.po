@@ -9437,6 +9437,14 @@ msgstr "正在查找应用…"
 msgid "tui.mcp.import.empty_source"
 msgstr "未找到 MCP 服务器。"
 
+#. English: Skipped {path}: it is in a folder named connector-downloads, where
+#. {agent} saves files downloaded from connectors. To import its servers, move
+#. the file or rename the folder, then reopen import.
+#. chrys-meta={"fingerprint":"7c23baa46655dd64b4c23a3acf2cacc0e633c8d116f75ffa72b6ef8e5b233c7d","multiline":false,"placeholders":["agent","path"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.error.downloads_folder"
+msgstr "已跳过 {path}：它位于名为 connector-downloads 的文件夹中，{agent} 在这里保存从连接器下载的文件。如需导入其中的服务器，请移动该文件或重命名该文件夹，然后重新打开导入。"
+
 #. English: {path} isn't a valid {agent} configuration.
 #. chrys-meta={"fingerprint":"43506b2fb76ed600774e81d234831c9a9ae31cb25d1bb29886dfd130ce3090ba","multiline":false,"placeholders":["agent","path"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
@@ -9448,6 +9456,13 @@ msgstr "{path} 不是有效的 {agent} 配置。"
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.error.invalid_field"
 msgstr "{path} 中的配置项无效：{field}。"
+
+#. English: Skipped {path}: it is larger than {agent} reads, so its servers
+#. aren't offered.
+#. chrys-meta={"fingerprint":"3425447cd3134ed89c29462bf5418b1a0e0a8142b2dfdfc3e0e1c4e4151c0df9","multiline":false,"placeholders":["agent","path"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.error.too_large"
+msgstr "已跳过 {path}：该文件超过 {agent} 可读取的大小，因此不会列出其中的服务器。"
 
 #. English: Couldn't parse {path}. Correct the syntax, then reopen import.
 #. chrys-meta={"fingerprint":"1bcc8078b8f04cc88b5ebbd4207bf2fa4aca2c6fd0bdd5618fdfc5a75276b559","multiline":false,"placeholders":["path"]}
@@ -9824,6 +9839,13 @@ msgstr "导入后，连接服务器的最长等待时间可能与 {agent} 中不
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.tool_loading"
 msgstr "部分工具的加载方式未沿用。请在导入后检查“加载策略”和“初始可见工具”。"
+
+#. English: Some tool access rules could not be copied. After import, review
+#. the selected tools in “Available Tool Scope” and add any you need.
+#. chrys-meta={"fingerprint":"861781fb1ed4c3955f94b3ea9697e28cadcf0a5af42c660deee809aed42f8669","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.tool_scope"
+msgstr "部分工具访问规则无法沿用。导入后，请在“可用工具范围”中检查已选工具，并补上需要的工具名称。"
 
 #. English: The original application's tool restrictions cannot be carried over
 #. directly, so this server's tools are initially turned off after import.

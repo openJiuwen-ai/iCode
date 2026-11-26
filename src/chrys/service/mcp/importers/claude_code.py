@@ -8,7 +8,8 @@ precedence first, a same-named server replacing an earlier one:
 - ``user``: top-level ``mcpServers`` of ``~/.claude.json`` (or
   ``$CLAUDE_CONFIG_DIR/.claude.json``; a relative folder is found from the
   workspace);
-- ``project``: ``mcpServers`` of ``.mcp.json`` in the Git root, then in the workspace;
+- ``project``: ``mcpServers`` of ``.mcp.json`` in the workspace and its ancestors
+  (not the filesystem root), with closer directories taking precedence;
 - ``local``: ``projects[<project>].mcpServers`` of the same ``.claude.json``, where
   the project is the workspace's Git root (for a linked worktree, the main
   checkout every worktree shares, or the bare repository), else the workspace,
@@ -34,7 +35,34 @@ project's entry and the workspace's settings files only once the user trusts
 the project (``hasTrustDialogAccepted`` in its entry, not a folder above it):
 a repository can't approve its own servers. Approvals and rejections match a server whose
 name differs only in characters other than letters, digits, ``_`` and ``-``,
-as in Claude Code. Managed settings are not read.
+as in Claude Code. The highest-priority explicit ``enableAllProjectMcpServers``
+controls blanket approval. A legacy project ``true`` supplies a local approval
+that an explicit value in the local settings file can override.
+As ``j4o`` migrates it, it is a value of the current local settings file, set only where that
+file leaves the key unset, and the entry's approvals count only when its
+``disabledMcpjsonServers`` is absent or a list of names.
+Managed settings are not read.
+
+The local settings file (``.claude/settings.local.json``) is the project folder's: Claude Code
+2.1.211 moved it there from the workspace and still reads the workspace's one beneath it
+(``kGo``/``jDe`` merge it first), so the project folder's explicit values win and the lists of
+both count. Claude Code keeps it in the workspace when the project folder is the home folder, or
+it, its ``.git`` or its ``.claude`` is not the user's (POSIX owners), and on Windows (``Sj``,
+``_gd``); the project folder's file then only adds rejections and tool denials.
+
+Claude Code skips ``.mcp.json`` in a connector-downloads folder, where it saves files from
+claude.ai connectors (``MHt``): a folder named ``connector-downloads`` (in any case, with
+trailing dots, spaces or a ``:stream`` suffix, ignoring invisible format characters; ``a0t``), or
+one inside it, that its marker files show to be its downloads folder (``Rle``, ``Vyt``), and the
+sandbox's browser-download folders. iCode goes by the name alone and reports each such file it
+skips; settings files there still restrict but do not approve. It also skips Linux autofs map
+roots (``i3``), which iCode does not detect.
+
+A ``.mcp.json`` Claude Code fails to read or parse is reported and skipped, the other files kept
+(``_Wn``): it also skips files over 2 MiB and anything but a regular file. A regular file that
+only iCode's reader refuses (not UTF-8, which Claude Code decodes with U+FFFD, past Python's
+parsing limits, or not pinned by the secure open) could still replace any definition below it, so
+none of those is imported.
 
 An explicit MCP tool denial in the settings files above imports the affected
 server with no tools. Claude Code can deny individual tools, which iCode
@@ -53,6 +81,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import unicodedata
 from dataclasses import replace
 from pathlib import Path
@@ -67,13 +96,16 @@ from chrys.service.mcp.importers.base import (
     McpSourceError,
     Problem,
     SourceErrorKind,
+    SourceReaderRefusal,
     SourceReadError,
+    SourceReadLimitError,
     SourceServer,
     Value,
     ValueReason,
     WarningKind,
     by_name,
     convert,
+    folders_down_to,
     git_root,
     is_str_list,
     is_str_mapping,
@@ -82,7 +114,6 @@ from chrys.service.mcp.importers.base import (
     missing_fields,
     normalize_js_server_name,
     positive_number,
-    project_folders,
     read_json_object,
     split_variables,
     variables,
@@ -91,6 +122,14 @@ from chrys.service.mcp.importers.base import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
 
+# Claude Code skips a project ``.mcp.json`` larger than this (``fwe`` in ``_Wn``).
+_MCP_JSON_MAX_BYTES = 2 * 1024 * 1024
+# A folder name Claude Code takes for its connector-downloads folder, after lowercasing, long s (U+017F) read
+# as ``s`` and these invisible format characters dropped (``a0t``, ``m6o``).
+_DOWNLOADS_NAME_RE = re.compile(r"connector-downloads[. ]*(?::.*)?")
+_DOWNLOADS_INVISIBLE_RE = re.compile("[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]")
+# The sandbox folders browsers save downloads in, which Claude Code also skips.
+_BROWSER_DOWNLOADS_ROOTS = ("/mnt/user-data/browser-downloads", "/mnt/user-data/desktop-browser-downloads")
 _DOLLAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}")
 _MCP_DENY_RE = re.compile(r"mcp__[A-Za-z0-9_-]+(?:__\*)?")
 
@@ -168,9 +207,8 @@ class ClaudeCodeSource:
             return McpImportResult(source_errors=tuple(errors))
         key, project = _project_entry(config, ctx.workspace_cwd) if ctx.workspace_cwd else ("", {})
         trusted = project.get("hasTrustDialogAccepted") is True
+        downloads = _downloads_folders(ctx.workspace_cwd, key) if ctx.workspace_cwd else ()
         rejected = _mcpjson_names(project.get("disabledMcpjsonServers"))
-        # Older Claude Code kept approvals in the project's entry; it now moves them to the local
-        # settings, which count only in a trusted project.
         approved: set[str] = set()
         # ``enableAllProjectMcpServers``, kept apart from the names so no listed name can stand for it.
         approve_all = False
@@ -178,26 +216,48 @@ class ClaudeCodeSource:
         def approve(settings: Mapping[str, Any]) -> None:
             nonlocal approve_all
             approved.update(_mcpjson_names(settings.get("enabledMcpjsonServers")))
-            approve_all = approve_all or settings.get("enableAllProjectMcpServers") is True
+            blanket_approval = settings.get("enableAllProjectMcpServers")
+            if isinstance(blanket_approval, bool):
+                approve_all = blanket_approval
 
-        if trusted:
-            approve(project)
+        def repository_approves(path: Path) -> bool:
+            # A repository's own files can approve its servers only once the user trusts its folder,
+            # and Claude Code reads no settings from a downloads folder.
+            return trusted and not _is_inside(path.parent.parent, downloads)
+
         user_settings = read_policy(settings_path)
         if user_settings is None:
             return McpImportResult(source_errors=tuple(errors))
+        shared_path = Path(ctx.workspace_cwd) / ".claude" / "settings.json" if ctx.workspace_cwd else None
+        shared_settings = read_policy(shared_path) if shared_path else {}
+        if shared_settings is None:
+            return McpImportResult(source_errors=tuple(errors))
         rejected |= _mcpjson_names(user_settings.get("disabledMcpjsonServers"))
+        rejected |= _mcpjson_names(shared_settings.get("disabledMcpjsonServers"))
+        tool_denials = _mcp_tool_denials(user_settings) | _mcp_tool_denials(shared_settings)
         approve(user_settings)
-        tool_denials = _mcp_tool_denials(user_settings)
-        for path in _repo_settings_files(ctx, key):
+        if shared_path and repository_approves(shared_path):
+            approve(shared_settings)
+        # Approvals older Claude Code kept in the project's entry, which it moves into the current
+        # local settings file (``j4o``) only when the entry's rejections are a list of names.
+        migrates = _migrates_entry_approvals(project)
+        if trusted and migrates:
+            approved.update(_mcpjson_names(project.get("enabledMcpjsonServers")))
+        local_files = _local_settings_files(ctx, key)
+        current = max((i for i, (_, read) in enumerate(local_files) if read), default=None)
+        for index, (path, read_by_claude_code) in enumerate(local_files):
             settings = read_policy(path)
             if settings is None:
                 # A policy file can restrict tools on any server.
                 return McpImportResult(source_errors=tuple(errors))
             rejected |= _mcpjson_names(settings.get("disabledMcpjsonServers"))
             tool_denials.update(_mcp_tool_denials(settings))
-            # A repository's own files can approve its servers only once the user trusts its folder.
-            if trusted:
+            if read_by_claude_code and repository_approves(path):
                 approve(settings)
+                # The migration sets a legacy ``true`` only where the current file leaves the key unset.
+                legacy_all = project.get("enableAllProjectMcpServers") is True
+                if index == current and migrates and legacy_all and "enableAllProjectMcpServers" not in settings:
+                    approve_all = True
         disabled = _names(project.get("disabledMcpServers"))
 
         def off(server: SourceServer, from_mcp_json: bool) -> bool:
@@ -208,12 +268,21 @@ class ClaudeCodeSource:
 
         layers = [(list(_servers(config.get("mcpServers"), config_path)), False)]
         for path in _project_files(ctx):
+            if _is_inside(path.parent, downloads):
+                # It could replace an approved server's command by name; Claude Code reports it too.
+                if os.path.lexists(path):
+                    errors.append(McpSourceError(str(path), SourceErrorKind.DOWNLOADS_FOLDER))
+                continue
             try:
-                document = read_json_object(path)
+                document = read_json_object(path, limit=_MCP_JSON_MAX_BYTES)
+            except SourceReadLimitError:
+                # Claude Code skips it too, keeping the other files.
+                errors.append(McpSourceError(str(path), SourceErrorKind.TOO_LARGE))
+                continue
             except SourceReadError as exc:
                 errors.append(exc.at(path))
-                if exc.kind is SourceErrorKind.UNREADABLE:
-                    # This file could replace any definition from the lower-priority files.
+                if isinstance(exc, SourceReaderRefusal) and path.is_file():
+                    # Claude Code may read this file, which could replace any lower-priority definition.
                     layers.clear()
                 continue
             if document is not None:
@@ -234,21 +303,98 @@ def _user_files(ctx: ImportContext) -> tuple[Path, Path]:
 
 
 def _project_files(ctx: ImportContext) -> list[Path]:
-    return [folder / ".mcp.json" for folder in project_folders(ctx.workspace_cwd)]
+    if not ctx.workspace_cwd:
+        return []
+    return [folder / ".mcp.json" for folder in folders_down_to(ctx.workspace_cwd, None) if folder != folder.parent]
 
 
-def _repo_settings_files(ctx: ImportContext, key: str) -> list[Path]:
-    """The repository's settings files that govern MCP servers and tools.
+def _local_settings_files(ctx: ImportContext, key: str) -> list[tuple[Path, bool]]:
+    """The local settings files, lowest precedence first, each with whether Claude Code reads it.
 
-    The workspace's shared one and its local ones, which Claude Code keeps in the project's folder
-    (the main checkout for a linked worktree; in the workspace before 2.1.211).
+    The workspace's, then the project folder's (the main checkout for a linked worktree) where Claude
+    Code keeps them there; otherwise the project folder's file, read only for its restrictions, comes
+    first.
     """
     if not ctx.workspace_cwd:
         return []
-    repo = [Path(ctx.workspace_cwd) / ".claude" / "settings.json"]
-    folders = [*project_folders(ctx.workspace_cwd), *([Path(key)] if key else [])]
-    repo += [folder / ".claude" / "settings.local.json" for folder in dict.fromkeys(folders)]
-    return repo
+    workspace = Path(ctx.workspace_cwd) / ".claude" / "settings.local.json"
+    if not key or Path(key) == _real(ctx.workspace_cwd):
+        return [(workspace, True)]
+    project = Path(key) / ".claude" / "settings.local.json"
+    if _keeps_local_settings(key, ctx.home):
+        return [(workspace, True), (project, True)]
+    return [(project, False), (workspace, True)]
+
+
+def _migrates_entry_approvals(project: Mapping[str, Any]) -> bool:
+    """Whether Claude Code moves the approvals in the project's entry: its rejections, if any, are all names."""
+    rejections = project.get("disabledMcpjsonServers")
+    return rejections is None or (isinstance(rejections, list) and all(isinstance(n, str) for n in rejections))
+
+
+def _keeps_local_settings(key: str, home: Path) -> bool:
+    """Whether Claude Code keeps the local settings in the project folder *key*, not in the workspace.
+
+    Not in the home folder, not on Windows (it cannot check owners there), and only in a folder whose
+    ``.git`` and ``.claude`` entries, like the folder itself, belong to the user.
+    """
+    if Path(key) == _real(str(home)):
+        return False
+    if sys.platform == "win32":
+        return False
+    uid = os.geteuid()
+    try:
+        if os.stat(key).st_uid != uid or os.lstat(os.path.join(key, ".git")).st_uid != uid:
+            return False
+    except OSError, ValueError:
+        return False
+    try:
+        return os.lstat(os.path.join(key, ".claude")).st_uid == uid
+    except FileNotFoundError:
+        return True
+    except OSError, ValueError:
+        return False
+
+
+def _downloads_folders(*folders: str) -> tuple[Path, ...]:
+    """The real folders on the way to *folders*, as spelled and as resolved, that may hold Claude Code's downloads."""
+    found: list[Path] = []
+    for folder in folders:
+        for spelling in dict.fromkeys((Path(folder), _real(folder))):
+            found.extend(_real(str(p)) for p in (spelling, *spelling.parents) if _is_downloads_folder(p))
+    return tuple(dict.fromkeys(found))
+
+
+def _is_downloads_folder(folder: Path) -> bool:
+    """Whether *folder* may be Claude Code's downloads folder, judged by its name alone.
+
+    Claude Code skips a folder with this name only once ``Vyt`` confirms it is its downloads
+    folder: the sandbox's downloads root, a folder under its ``projects/<name>.<16 hex>/``, or one
+    holding the ``.gitignore`` or ``download-<8 hex>`` entries it writes, minus a Git-root
+    ownership exception, after expanding Windows short names; a failed check counts as downloads.
+    Those markers and exceptions are undocumented internals that can change in any release, so the
+    import does not replicate them. The two possible mistakes differ: skipping an ordinary project that
+    happens to use this name is listed in the import window and fixed by renaming or moving the
+    folder, while reading a real downloads folder would let a downloaded ``.mcp.json`` silently
+    replace an approved server's command, since approvals match by name.
+    """
+    if folder.as_posix() in _BROWSER_DOWNLOADS_ROOTS:
+        return True
+    name = folder.name
+    folded = _DOWNLOADS_INVISIBLE_RE.sub("", name.lower().replace("\u017f", "s"))
+    return len(name) >= len("connector-downloads") and _DOWNLOADS_NAME_RE.fullmatch(folded) is not None
+
+
+def _is_inside(path: Path, folders: Iterable[Path]) -> bool:
+    real = _real(str(path))
+    return any(real == folder or folder in real.parents for folder in folders)
+
+
+def _real(path: str) -> Path:
+    try:
+        return Path(os.path.realpath(path))
+    except OSError, ValueError:
+        return Path(path)
 
 
 def _project_key(workspace_cwd: str) -> str:

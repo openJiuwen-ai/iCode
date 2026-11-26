@@ -9220,6 +9220,14 @@ msgstr ""
 msgid "tui.mcp.import.empty_source"
 msgstr ""
 
+#. English: Skipped {path}: it is in a folder named connector-downloads, where
+#. {agent} saves files downloaded from connectors. To import its servers, move
+#. the file or rename the folder, then reopen import.
+#. chrys-meta={"fingerprint":"7c23baa46655dd64b4c23a3acf2cacc0e633c8d116f75ffa72b6ef8e5b233c7d","multiline":false,"placeholders":["agent","path"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.error.downloads_folder"
+msgstr ""
+
 #. English: {path} isn't a valid {agent} configuration.
 #. chrys-meta={"fingerprint":"43506b2fb76ed600774e81d234831c9a9ae31cb25d1bb29886dfd130ce3090ba","multiline":false,"placeholders":["agent","path"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
@@ -9230,6 +9238,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"e2985110d8be6020893e1f8c322955375eeb7591e1cf67b1813639439d85f215","multiline":false,"placeholders":["field","path"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.error.invalid_field"
+msgstr ""
+
+#. English: Skipped {path}: it is larger than {agent} reads, so its servers
+#. aren't offered.
+#. chrys-meta={"fingerprint":"3425447cd3134ed89c29462bf5418b1a0e0a8142b2dfdfc3e0e1c4e4151c0df9","multiline":false,"placeholders":["agent","path"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.error.too_large"
 msgstr ""
 
 #. English: Couldn't parse {path}. Correct the syntax, then reopen import.
@@ -9606,6 +9621,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"0398f9cc6b1c2f769b58dca3f47c7a23eb915f278ebd81f9eb27308f7df8a816","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.tool_loading"
+msgstr ""
+
+#. English: Some tool access rules could not be copied. After import, review
+#. the selected tools in “Available Tool Scope” and add any you need.
+#. chrys-meta={"fingerprint":"861781fb1ed4c3955f94b3ea9697e28cadcf0a5af42c660deee809aed42f8669","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.tool_scope"
 msgstr ""
 
 #. English: The original application's tool restrictions cannot be carried over

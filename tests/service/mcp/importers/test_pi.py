@@ -114,11 +114,21 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
             (ImportWarning(Kind.TOOL_LOADING, ("mcpServers.srv.toolExposure.big_*",)),),
             None,
         ),
+        (
+            {"command": "run", "exposure": "hidden", "toolExposure": {"read_*": "direct"}},
+            (ImportWarning(Kind.TOOLS_RESTRICTED, ("mcpServers.srv.toolExposure.read_*",)),),
+            [],
+        ),
+        (
+            {"command": "run", "exposure": "hidden", "toolExposure": {"read_*": "direct", "list": "deferred"}},
+            (ImportWarning(Kind.TOOL_SCOPE, ("mcpServers.srv.toolExposure.read_*",)),),
+            ["list"],
+        ),
         ({"url": "https://x", "oauth": {}}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),), None),
         ({"url": "https://x", "auth": {"provider": "github"}}, (ImportWarning(Kind.AUTH_NOT_IMPORTED),), None),
         ({"command": "run", "cwd": "/srv"}, (), None),
     ],
-    ids=["hidden-tool", "pattern", "oauth", "provider", "cwd"],
+    ids=["hidden-tool", "pattern", "hidden-with-pattern", "hidden-with-pattern-and-exact", "oauth", "provider", "cwd"],
 )
 def test_what_the_import_changes_is_reported(
     tmp_path: Path, entry: dict[str, Any], warnings: tuple[ImportWarning, ...], allowed: list[str] | None
@@ -240,6 +250,22 @@ def test_unread_project_file_cannot_fall_back_to_an_enabled_global_server(
         assert unread.candidates == ()
         assert unread.source_errors == (McpSourceError(str(path), SourceErrorKind.UNREADABLE),)
         _write(path, content)
+
+
+def test_project_file_refused_by_only_icode_cannot_fall_back_to_an_enabled_global_server(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    project = workspace / ".pi" / "mcp.json"
+    _write(_global(tmp_path), {"mcpServers": {"srv": {"url": "https://global.example/mcp"}}})
+    _write(_global(tmp_path).parent / "trust.json", {str(workspace): True})
+    project.parent.mkdir(parents=True)
+    project.write_bytes(
+        b'{"mcpServers":{"srv":{"url":"https://project.example/mcp","enabled":false,"description":"\xff"}}}'
+    )
+
+    result = _discover(tmp_path, workspace)
+
+    assert result.candidates == ()
+    assert result.source_errors == (McpSourceError(str(project), SourceErrorKind.UNPARSABLE),)
 
 
 @pytest.mark.parametrize(
@@ -508,9 +534,20 @@ def test_home_expansion_normalizes_the_agent_folder_before_reading(tmp_path: Pat
         {"url": "https://"},
         {"url": "https://host:bad"},
         {"url": "https://bad host"},
+        {"url": "https://999.999.999.999/mcp"},
+        {"url": "https://192.168.0.08/mcp"},
+        {"url": "https://0x100000000/mcp"},
+        {"url": "https://example.123/mcp"},
         {"url": "https://x", "auth": {"provider": "github"}},
         {"url": "https://x", "oauth": False},
         {"url": "https://x", "oauth": {"callbackPort": 0}},
+        {"url": "https://x", "oauth": {"callbackUrl": "https://b.example/callback"}},
+        {"url": "https://x", "oauth": {"callbackUrl": "http://localhost/callback?token=1"}},
+        {"url": "https://x", "oauth": {"callbackUrl": "http://localhost/callback#fragment"}},
+        {"url": "https://x", "oauth": {"callbackUrl": "http://localhost:19876/callback", "callbackPort": 19877}},
+        {"url": "https://x", "oauth": {"callbackUrl": "http://[::1]/callback", "clientRegistration": "cimd"}},
+        {"url": "https://x", "oauth": {"callbackUrl": "http://localhost/other", "clientRegistration": "cimd"}},
+        {"url": "https://x", "oauth": {"authServerMetadataUrl": "http://b.example/metadata"}},
         {"url": "https://x", "auth": {}},
     ],
 )
@@ -538,9 +575,9 @@ def test_invalid_project_entries_keep_the_valid_global_server(tmp_path: Path, en
         ({"command": "project", "env": {"X": "!get-token"}}, "env.X"),
         ({"type": "stdio", "command": "project", "url": "https://x"}, "url"),
         ({"exposure": "hidden", "toolExposure": {"read,write": "direct"}}, "toolExposure"),
-        ({"url": "https://x", "oauth": {"callbackUrl": "http://localhost/callback"}}, "oauth.callbackUrl"),
         ({"url": "https:///x"}, "url"),
         ({"url": r"https://good\other"}, "url"),
+        ({"url": "https://x/\ud800"}, "url"),
     ],
 )
 def test_project_entries_that_need_manual_setup_shadow_global_servers(
@@ -701,6 +738,26 @@ def test_partial_http_override_preserves_its_priority_with_unmigrated_oauth(tmp_
     [
         ({}, "https://project.example/mcp"),
         ({"oauth": {"clientId": "id", "callbackPort": 19876}}, "https://project.example/mcp"),
+        ({"oauth": {"callbackUrl": "http://localhost:19876/callback"}}, "https://project.example/mcp"),
+        (
+            {"oauth": {"callbackUrl": "http://127.1:19876/callback", "callbackPort": 19876}},
+            "https://project.example/mcp",
+        ),
+        (
+            {"oauth": {"callbackUrl": "http://localhost:80/callback", "callbackPort": 19876}},
+            "https://project.example/mcp",
+        ),
+        (
+            {"oauth": {"callbackUrl": "http://[0:0:0:0:0:0:0:1]/callback"}},
+            "https://project.example/mcp",
+        ),
+        (
+            {"oauth": {"callbackUrl": "http://localhost/a/%2e%2e/callback", "clientRegistration": "cimd"}},
+            "https://project.example/mcp",
+        ),
+        ({"oauth": {"authServerMetadataUrl": "https://login.example/metadata"}}, "https://project.example/mcp"),
+        ({"oauth": {"authServerMetadataUrl": "https://例子.example/metadata"}}, "https://project.example/mcp"),
+        ({"oauth": {"authServerMetadataUrl": "http://localhost/metadata"}}, "https://project.example/mcp"),
         ({"oauth": {"clientRegistration": "cimd"}}, "https://project.example/mcp"),
         # URL details are copied as written; only the scheme's letter case changes.
         ({"url": "HTTPS://Project.example/Case?Key=Value"}, "https://Project.example/Case?Key=Value"),

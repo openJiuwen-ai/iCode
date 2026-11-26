@@ -79,7 +79,6 @@ import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from chrys.foundation.platform import get_platform
 from chrys.service.mcp.importers.base import (
@@ -91,6 +90,7 @@ from chrys.service.mcp.importers.base import (
     McpSourceError,
     Problem,
     SourceErrorKind,
+    SourceReaderRefusal,
     SourceReadError,
     SourceServer,
     Value,
@@ -122,7 +122,6 @@ _REFERENCE_RE = re.compile(r"\x00!?(?:env|file):[^}]*\}")
 _ENV_RE = re.compile(r"\x00env:([A-Za-z_][A-Za-z0-9_]*)\}")
 _FILE_RE = re.compile(r"\x00!?file:[^}]*\}")
 _REFERENCE_START_RE = re.compile(r"\x00!?")
-_ENCODED_DOT_SEGMENTS = frozenset(("%2e", "%2e%2e", ".%2e", "%2e."))
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _LOCAL_FIELDS = ("type", "command", "environment", "enabled", "timeout", "cwd")
 _REMOTE_FIELDS = ("type", "url", "headers", "enabled", "timeout", "oauth")
@@ -177,12 +176,18 @@ class OpenCodeSource:
         conditional_rules: list[dict[str, tuple[bool, str]]] = []
         timeout = _DEFAULT_TIMEOUT_SECONDS
         for path, global_file in _files(ctx):
-            layer, rejected = _read_layer(path)
-            errors.extend(rejected)
-            if rejected and (not global_file or any(error.kind is SourceErrorKind.UNREADABLE for error in rejected)):
-                # A file the importer cannot interpret can still restrict servers in other files.
-                return McpImportResult((), tuple(errors))
+            try:
+                layer, rejected = _read_layer(path)
+            except SourceReadError as exc:
+                error = exc.at(path)
+                if isinstance(exc, SourceReaderRefusal) or exc.kind is SourceErrorKind.UNREADABLE:
+                    # An unreadable file can still restrict servers defined in other files.
+                    return McpImportResult((), (*errors, error))
+                layer, rejected = None, [error]
             if rejected:
+                errors.extend(rejected)
+                if not global_file:
+                    return McpImportResult((), tuple(errors))
                 # OpenCode falls back to defaults for its entire regular global configuration.
                 entries.clear()
                 tools.clear()
@@ -259,13 +264,10 @@ class _Layer:
 
 
 def _read_layer(path: Path) -> tuple[_Layer | None, list[McpSourceError]]:
-    try:
-        text = read_text(path)
-        if text is None:
-            return None, []
-        document = _parse_document(text)
-    except SourceReadError as exc:
-        return None, [exc.at(path)]
+    text = read_text(path)
+    if text is None:
+        return None, []
+    document = _parse_document(text)
     table = document.get("mcp", {})
     if not isinstance(table, dict):
         return None, [McpSourceError(str(path), SourceErrorKind.INVALID, field="mcp")]
@@ -620,15 +622,6 @@ def strip_jsonc(text: str) -> str:
     return _TRAILING_COMMA_RE.sub(lambda m: m.group(1) or " ", _JSONC_TOKEN_RE.sub(blank, text))
 
 
-def _has_encoded_dot_segment(url: str) -> bool:
-    """OpenCode's URL parser resolves these path segments while iCode preserves them."""
-    try:
-        path = urlsplit(url).path
-    except ValueError:
-        return False  # The shared converter reports invalid URLs.
-    return not _ENCODED_DOT_SEGMENTS.isdisjoint(path.lower().split("/"))
-
-
 def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float) -> SourceServer | None:
     """Convert a merged, decoded entry with a usable command or URL."""
     prefix = f"mcp.{name}"
@@ -702,15 +695,9 @@ def _server(name: str, entry: dict[str, Any], path: str, default_timeout: float)
             return None
         values, value_refusal = _values(headers, f"{prefix}.headers", FieldUse.HEADER_VALUE)
         fields = [(prefix, name, FieldUse.NAME), (f"{prefix}.url", url, FieldUse.URL)]
-        url_refusal = (
-            (f"{prefix}.url", Problem.VALUE_NOT_REPRESENTABLE, ValueReason.INVALID, FieldUse.URL)
-            if _has_encoded_dot_segment(url)
-            else None
-        )
         field, problem, reason, use = (
             _first_refusal(fields)
             or value_refusal
-            or url_refusal
             or ("", Problem.VALUE_NOT_REPRESENTABLE, ValueReason.INVALID, FieldUse.VALUE)
         )
         warnings = [missing_fields(entry, _REMOTE_FIELDS, prefix)]

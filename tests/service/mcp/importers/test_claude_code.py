@@ -7,12 +7,14 @@ from __future__ import annotations
 import json
 import ntpath
 import os
+import sys
 import unicodedata
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import pytest
 
+from chrys.foundation.platform.files import SecureFileError
 from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind, base, claude_code
 from chrys.service.mcp.importers import WarningKind as Kind
 from chrys.service.mcp.importers.claude_code import ClaudeCodeSource
@@ -182,6 +184,25 @@ def test_local_beats_project_beats_user_for_the_same_name(tmp_path: Path) -> Non
         "shared": "local",
     }
     assert candidates["team"].source_path == str(workspace / ".mcp.json")
+
+
+def test_project_servers_are_read_from_ancestor_folders_nearest_first_for_precedence(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    module = repo / "module"
+    workspace = module / "pkg"
+    (repo / ".git").mkdir(parents=True)
+    workspace.mkdir(parents=True)
+    _write(tmp_path / ".mcp.json", {"mcpServers": {"outside": {"command": "outer"}}})
+    _write(repo / ".mcp.json", {"mcpServers": {"docs": {"command": "repo"}}})
+    _write(module / ".mcp.json", {"mcpServers": {"docs": {"command": "module"}}})
+
+    candidates = {c.name: c for c in _discover(tmp_path / "home", workspace).candidates}
+
+    assert {name: c.config.command for name, c in candidates.items() if c.config} == {
+        "docs": "module",
+        "outside": "outer",
+    }
+    assert candidates["docs"].source_path == str(module / ".mcp.json")
 
 
 def test_servers_turned_off_in_claude_code_are_imported_turned_off(tmp_path: Path) -> None:
@@ -407,6 +428,88 @@ def test_an_untrusted_repository_cannot_approve_all_its_servers(tmp_path: Path) 
     assert candidate.config.enabled is False
 
 
+@pytest.mark.parametrize("trusted", [False, True], ids=["untrusted", "trusted"])
+def test_local_false_overrides_blanket_approval_in_a_trusted_project(tmp_path: Path, trusted: bool) -> None:
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _write(home / ".claude.json", {"projects": {str(repo): {"hasTrustDialogAccepted": trusted}}})
+    _write(home / ".claude" / "settings.json", {"enableAllProjectMcpServers": True, "enabledMcpjsonServers": ["named"]})
+    _write(repo / ".claude" / "settings.local.json", {"enableAllProjectMcpServers": False})
+    _write(repo / ".mcp.json", {"mcpServers": {"docs": {"command": "run"}, "named": {"command": "run"}}})
+
+    enabled = {c.name: c.config.enabled for c in _discover(home, repo).candidates if c.config}
+
+    assert enabled == {"docs": not trusted, "named": True}
+
+
+@pytest.mark.parametrize(
+    ("legacy", "local", "trusted", "enabled"),
+    [
+        pytest.param(True, None, True, True, id="legacy-true-overrides-user-and-shared"),
+        pytest.param(False, None, True, True, id="legacy-false-preserves-user-and-shared-approval"),
+        pytest.param(True, False, True, False, id="local-false-overrides-legacy"),
+        pytest.param(False, True, True, True, id="local-true-overrides-legacy"),
+        pytest.param(True, None, False, False, id="legacy-true-requires-trust"),
+    ],
+)
+def test_legacy_blanket_approval_has_local_precedence(
+    tmp_path: Path, legacy: bool, local: bool | None, trusted: bool, enabled: bool
+) -> None:
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    entry = {"hasTrustDialogAccepted": trusted, "enableAllProjectMcpServers": legacy}
+    _write(home / ".claude.json", {"projects": {str(repo): entry}})
+    _write(home / ".claude" / "settings.json", {"enableAllProjectMcpServers": not legacy})
+    _write(repo / ".claude" / "settings.json", {"enableAllProjectMcpServers": not legacy})
+    _write(repo / ".claude" / "settings.local.json", {} if local is None else {"enableAllProjectMcpServers": local})
+    _write(repo / ".mcp.json", {"mcpServers": {"docs": {"command": "run"}}})
+
+    (candidate,) = _discover(home, repo).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.enabled is enabled
+
+
+@pytest.mark.parametrize(
+    ("rejections", "enabled"),
+    [
+        pytest.param(None, True, id="no-rejections"),
+        pytest.param(["other"], True, id="named-rejections"),
+        # Claude Code moves no approval from an entry whose rejections are not all names.
+        pytest.param(["other", 1], False, id="unmovable-rejections"),
+        pytest.param("other", False, id="rejections-not-a-list"),
+    ],
+)
+def test_legacy_blanket_approval_lands_in_the_current_local_file_above_the_workspaces_older_one(
+    tmp_path: Path, rejections: object, enabled: bool
+) -> None:
+    home, repo, workspace = _repository(tmp_path)
+    entry: dict[str, Any] = {"hasTrustDialogAccepted": True, "enableAllProjectMcpServers": True}
+    if rejections is not None:
+        entry["disabledMcpjsonServers"] = rejections
+    _write(home / ".claude.json", {"projects": {str(repo): entry}})
+    _write(workspace / ".claude" / "settings.local.json", {"enableAllProjectMcpServers": False})
+    _write(workspace / ".mcp.json", {"mcpServers": {"docs": {"command": "run"}}})
+
+    (candidate,) = _discover(home, workspace).candidates
+
+    assert candidate.config is not None
+    # On Windows the workspace's file is the current one, and its explicit false stands.
+    assert candidate.config.enabled is (enabled and sys.platform != "win32")
+
+
+def test_legacy_approved_names_need_movable_rejections(tmp_path: Path) -> None:
+    home, repo, _ = _repository(tmp_path)
+    entry = {"hasTrustDialogAccepted": True, "enabledMcpjsonServers": ["docs"], "disabledMcpjsonServers": "x"}
+    _write(home / ".claude.json", {"projects": {str(repo): entry}})
+    _write(repo / ".mcp.json", {"mcpServers": {"docs": {"command": "run"}}})
+
+    (candidate,) = _discover(home, repo).candidates
+
+    assert candidate.config is not None
+    assert candidate.config.enabled is False
+
+
 def test_an_empty_approved_name_does_not_approve_every_server(tmp_path: Path) -> None:
     home, repo = tmp_path / "home", tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
@@ -477,33 +580,195 @@ def test_claude_config_dir_moves_the_global_file(tmp_path: Path) -> None:
     assert [c.name for c in result.candidates] == ["srv"]
 
 
-@pytest.mark.parametrize("over_limit", [False, True], ids=["malformed", "unreadable"])
-def test_shared_file_failure_preserves_only_known_definitions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, over_limit: bool
-) -> None:
+def _shared_file_case(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A user server ``srv``, a local server and a workspace ``.mcp.json`` that redefines ``srv``."""
     home, workspace = tmp_path / "home", tmp_path / "ws"
-    shared = workspace / ".mcp.json"
+    workspace.mkdir()
+    key = os.path.realpath(workspace).replace(os.sep, "/")
     _write(
         home / ".claude.json",
-        {
-            "mcpServers": {"srv": {"command": "user"}},
-            "projects": {
-                os.path.realpath(workspace).replace(os.sep, "/"): {"mcpServers": {"local": {"command": "run"}}}
-            },
-        },
+        {"mcpServers": {"srv": {"command": "user"}}, "projects": {key: {"mcpServers": {"local": {"command": "run"}}}}},
     )
-    if over_limit:
-        monkeypatch.setattr(base, "MAX_SOURCE_BYTES", 512)
-        _write(shared, {"mcpServers": {"srv": {"command": "shared"}}, "padding": " " * 512})
-    else:
+    return home, workspace, workspace / ".mcp.json"
+
+
+def _broken_shared_file(shared: Path, case: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    redefinition = {"mcpServers": {"srv": {"command": "shared"}}}
+    if case == "malformed":
         _write(shared, '{"mcpServers": ')
+    elif case == "over-claude-code-limit":
+        monkeypatch.setattr(claude_code, "_MCP_JSON_MAX_BYTES", 512)
+        _write(shared, {**redefinition, "padding": " " * 512})
+    elif case == "directory":
+        shared.mkdir()
+    elif case == "not-utf-8":
+        shared.write_bytes(json.dumps({**redefinition, "note": "x"}).encode().replace(b'"x"', b'"\xff"'))
+    else:
+        _write(shared, redefinition)
+        refused, secure_open = shared.resolve(), base.secure_open_regular_binary
+
+        def refuse(path: Path) -> BinaryIO:
+            if path == refused:
+                raise SecureFileError("refused")
+            return secure_open(path)
+
+        monkeypatch.setattr(base, "secure_open_regular_binary", refuse)
+
+
+@pytest.mark.parametrize(
+    ("case", "kind", "kept"),
+    [
+        pytest.param("malformed", SourceErrorKind.UNPARSABLE, True, id="malformed"),
+        pytest.param("over-claude-code-limit", SourceErrorKind.TOO_LARGE, True, id="over-claude-code-limit"),
+        pytest.param("directory", SourceErrorKind.UNREADABLE, True, id="directory"),
+        # Claude Code reads what only iCode's reader refuses, so the file may replace any lower definition.
+        pytest.param("not-utf-8", SourceErrorKind.UNPARSABLE, False, id="not-utf-8"),
+        pytest.param("refused-regular-file", SourceErrorKind.UNREADABLE, False, id="refused-regular-file"),
+    ],
+)
+def test_a_shared_file_claude_code_skips_keeps_the_other_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, kind: SourceErrorKind, kept: bool
+) -> None:
+    home, workspace, shared = _shared_file_case(tmp_path)
+    _broken_shared_file(shared, case, monkeypatch)
 
     result = _discover(home, workspace)
 
-    assert [c.name for c in result.candidates] == (["local"] if over_limit else ["srv", "local"])
+    assert [c.name for c in result.candidates] == (["srv", "local"] if kept else ["local"])
+    if kept:
+        assert result.candidates[0].config is not None
+        assert result.candidates[0].config.command == "user"
     (error,) = result.source_errors
-    assert error.path == str(shared)
-    assert error.kind is (SourceErrorKind.UNREADABLE if over_limit else SourceErrorKind.UNPARSABLE)
+    assert (error.path, error.kind) == (str(shared), kind)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_a_shared_file_without_read_permission_is_skipped_and_the_other_files_kept(tmp_path: Path) -> None:
+    home, workspace, shared = _shared_file_case(tmp_path)
+    _write(shared, {"mcpServers": {"srv": {"command": "shared"}}})
+    shared.chmod(0)
+    try:
+        if os.access(shared, os.R_OK):
+            pytest.skip("this user can read a file without read permission")
+        result = _discover(home, workspace)
+    finally:
+        shared.chmod(0o600)
+
+    assert [(c.name, c.config.command if c.config else None) for c in result.candidates] == [
+        ("srv", "user"),
+        ("local", "run"),
+    ]
+    (error,) = result.source_errors
+    assert (error.path, error.kind) == (str(shared), SourceErrorKind.UNREADABLE)
+
+
+def _repository(tmp_path: Path, *, trusted: bool = True) -> tuple[Path, Path, Path]:
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _write(home / ".claude.json", {"projects": {str(repo): {"hasTrustDialogAccepted": trusted}}})
+    return home, repo, repo / "sub"
+
+
+def test_the_project_folders_local_settings_override_the_workspaces_older_ones(tmp_path: Path) -> None:
+    home, repo, workspace = _repository(tmp_path)
+    _write(repo / ".claude" / "settings.local.json", {"enableAllProjectMcpServers": True})
+    # Where Claude Code kept them before 2.1.211; still read beneath the project folder's.
+    _write(
+        workspace / ".claude" / "settings.local.json",
+        {"enableAllProjectMcpServers": False, "enabledMcpjsonServers": ["listed"], "disabledMcpjsonServers": ["no"]},
+    )
+    _write(workspace / ".mcp.json", {"mcpServers": {name: {"command": "run"} for name in ("docs", "listed", "no")}})
+
+    enabled = {c.name: c.config.enabled for c in _discover(home, workspace).candidates if c.config}
+
+    # On Windows Claude Code keeps the local settings in the session folder.
+    assert enabled == {"docs": sys.platform != "win32", "listed": True, "no": False}
+
+
+def test_local_settings_stay_in_the_workspace_when_the_project_folder_is_the_home_folder(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    workspace = repo / "sub"
+    (repo / ".git").mkdir(parents=True)
+    _write(repo / ".claude.json", {"projects": {str(repo): {"hasTrustDialogAccepted": True}}})
+    _write(
+        repo / ".claude" / "settings.local.json",
+        {"enableAllProjectMcpServers": True, "enabledMcpjsonServers": ["listed"], "disabledMcpjsonServers": ["no"]},
+    )
+    _write(workspace / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["mine"]})
+    _write(
+        workspace / ".mcp.json", {"mcpServers": {name: {"command": "run"} for name in ("docs", "listed", "no", "mine")}}
+    )
+
+    enabled = {c.name: c.config.enabled for c in _discover(repo, workspace).candidates if c.config}
+
+    # Claude Code doesn't read the project folder's file then: it only adds restrictions.
+    assert enabled == {"docs": False, "listed": False, "no": False, "mine": True}
+
+
+@pytest.mark.parametrize(
+    "folder",
+    [
+        pytest.param("connector-downloads", id="exact"),
+        pytest.param(
+            "Connector-Downloads. ",
+            id="case-and-trailing",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows drops trailing dots and spaces"),
+        ),
+        pytest.param("connector-\u200cdownloads", id="invisible-character"),
+    ],
+)
+def test_project_files_in_a_connector_downloads_folder_are_skipped_and_reported(tmp_path: Path, folder: str) -> None:
+    home, repo, _ = _repository(tmp_path)
+    downloads = repo / folder
+    workspace = downloads / "inner"
+    _write(home / ".claude" / "settings.json", {"enableAllProjectMcpServers": True})
+    _write(home / ".claude.json", {
+        "mcpServers": {"tool": {"command": "user"}},
+        "projects": {str(repo): {"hasTrustDialogAccepted": True}},
+    })  # fmt: skip
+    _write(repo / ".mcp.json", {"mcpServers": {"repo": {"command": "run"}}})
+    _write(downloads / ".mcp.json", {"mcpServers": {"tool": {"command": "downloaded"}}})
+    _write(workspace / ".mcp.json", {"mcpServers": {"inner": {"command": "downloaded"}}})
+
+    result = _discover(home, workspace)
+
+    assert {c.name: c.config.command for c in result.candidates if c.config} == {"tool": "user", "repo": "run"}
+    assert [(e.path, e.kind) for e in result.source_errors] == [
+        (str(downloads / ".mcp.json"), SourceErrorKind.DOWNLOADS_FOLDER),
+        (str(workspace / ".mcp.json"), SourceErrorKind.DOWNLOADS_FOLDER),
+    ]
+
+
+def test_a_folder_only_starting_with_the_downloads_name_is_read(tmp_path: Path) -> None:
+    home, repo, _ = _repository(tmp_path)
+    workspace = repo / "connector-downloads-archive"
+    _write(home / ".claude" / "settings.json", {"enableAllProjectMcpServers": True})
+    _write(workspace / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}}})
+
+    result = _discover(home, workspace)
+
+    assert [c.name for c in result.candidates] == ["srv"]
+    assert result.source_errors == ()
+
+
+def test_settings_in_a_connector_downloads_folder_restrict_but_do_not_approve(tmp_path: Path) -> None:
+    home, repo, _ = _repository(tmp_path)
+    workspace = repo / "connector-downloads"
+    _write(repo / ".mcp.json", {"mcpServers": {"approved": {"command": "run"}, "denied": {"command": "run"}}})
+    _write(workspace / ".claude" / "settings.json", {"enabledMcpjsonServers": ["approved"]})
+    _write(
+        workspace / ".claude" / "settings.local.json",
+        {"enabledMcpjsonServers": ["approved"], "permissions": {"deny": ["mcp__denied"]}},
+    )
+    _write(repo / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["denied"]})
+
+    result = _discover(home, workspace)
+
+    assert {c.name: (c.config.enabled, c.config.allowed_tools) for c in result.candidates if c.config} == {
+        "approved": (False, None),
+        # The project folder's own file still approves on POSIX, where Claude Code reads it.
+        "denied": (sys.platform != "win32", []),
+    }
 
 
 @pytest.mark.parametrize("policy", [".claude.json", ".claude/settings.json", "ws/.claude/settings.local.json"])
@@ -532,9 +797,11 @@ def test_an_unreadable_policy_does_not_offer_servers_without_its_restrictions(
 
 
 def test_detect_needs_a_config_file(tmp_path: Path) -> None:
-    source, ctx = ClaudeCodeSource(), ImportContext(str(tmp_path / "ws"), tmp_path, {})
+    workspace = tmp_path / "repo" / "module" / "pkg"
+    workspace.mkdir(parents=True)
+    source, ctx = ClaudeCodeSource(), ImportContext(str(workspace), tmp_path, {})
     assert not source.detect(ctx)
 
-    _write(tmp_path / "ws" / ".mcp.json", {})
+    _write(workspace.parent / ".mcp.json", {})
 
     assert source.detect(ctx)

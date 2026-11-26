@@ -739,6 +739,21 @@ def test_project_servers_are_withheld_when_a_global_reference_could_disable_them
     ]
 
 
+def test_project_servers_are_withheld_when_global_policy_has_invalid_utf8(tmp_path: Path) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "ws"
+    global_path = _global(home)
+    global_path.parent.mkdir(parents=True)
+    global_path.write_bytes(b'{"username":"\xff","permission":{"docs_*":"deny"}}')
+    _write(workspace / "opencode.json", {"mcp": {"docs": {"type": "local", "command": ["run"]}}})
+
+    result = _discover(home, workspace)
+
+    assert result.candidates == ()
+    assert [(error.path, error.kind) for error in result.source_errors] == [
+        (str(global_path), SourceErrorKind.UNPARSABLE)
+    ]
+
+
 def test_project_servers_are_withheld_when_global_policy_exceeds_the_import_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
