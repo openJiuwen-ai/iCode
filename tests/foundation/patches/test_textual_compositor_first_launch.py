@@ -28,8 +28,12 @@ def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode:
     assert textual_compositor_cjk._NEW_RENDER_CHOPS not in source
     if patch_mode in ("already-patched", "earlier-release"):
         for patch in textual_compositor_cjk._PATCHES:
-            # A release before the left-edge fix patched every other fragment.
-            if patch_mode == "already-patched" or patch is not textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH:
+            # Earlier releases already installed the original eleven fragments.
+            if patch_mode == "already-patched" or patch not in (
+                textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH,
+                *textual_compositor_cjk._PARTIAL_ROW_PATCHES,
+                textual_compositor_cjk._FULL_FRAME_FOR_JOINED_TEXT,
+            ):
                 source = source.replace(patch.old_fragment, patch.new_fragment, 1)
     target.write_text(source, encoding="utf-8")
 
@@ -66,11 +70,11 @@ existing_update = ChopsUpdate([], []) if sentinel_before is not None else ChopsU
 if sys.argv[2] != "runtime-only":
     results = apply_all()
     cjk_results = [r for r in results if r.patch in textual_compositor_cjk._PATCHES]
-    assert len(cjk_results) == 12
+    assert len(cjk_results) == 15
     status = "skipped" if sys.argv[2] != "startup" else "applied"
-    left_edge = textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH
-    left_edge_status = "applied" if sys.argv[2] == "earlier-release" else status
-    assert all(r.status == (left_edge_status if r.patch is left_edge else status) for r in cjk_results), cjk_results
+    partial = (textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH, *textual_compositor_cjk._PARTIAL_ROW_PATCHES, textual_compositor_cjk._FULL_FRAME_FOR_JOINED_TEXT)
+    partial_status = "applied" if sys.argv[2] == "earlier-release" else status
+    assert all(r.status == (partial_status if r.patch in partial else status) for r in cjk_results), cjk_results
 else:
     source_before = Path(compositor_module.__file__).read_bytes()
     textual_compositor_cjk.apply_runtime_patch()

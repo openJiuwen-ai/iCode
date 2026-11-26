@@ -44,14 +44,14 @@ combining-mark boundaries remain outside this patch's scope.
 The raw terminal path therefore starts a strip that begins left of the span at
 the span's left edge, moved back to the start of a double-width character the
 edge divides.  The cells it no longer writes lie outside the dirty region, so
-the terminal already shows them.  A
-segment whose characters join (emoji sequences, flags, combining marks) is
-written whole, as stock Textual does, since Rich measures such sequences per
-code point and a crop could split one.
+the terminal already shows them. Widgets outside the dirty rectangle reserve their
+usual space on those rows without rendering. When a span would cut a joined glyph's
+strip, use the normal full-frame row origins: terminals can disagree with Rich about
+the width of an emoji, particularly across cursor styles.
 
 Upgrade warning: ``_compositor.py`` is one all-or-nothing patch group containing
-these 12 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
-13 fragments aborts the entire file group. Textual is imported before
+these 15 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
+16 fragments aborts the entire file group. Textual is imported before
 ``bootstrap_runtime()`` on the TUI path, so the runtime patch stages the same CJK
 fragments in memory and installs all affected methods on the existing classes.
 It preserves imported class aliases and instances, and applies independently of
@@ -264,28 +264,25 @@ _NEW_RENDER_SEGMENTS_LEFT_EDGE = """\
                     continue
 
                 if x < x1:
-                    # A merged strip can start over cells whose widgets this
-                    # partial update did not render. Start at the span, or at
-                    # the double-width character that its edge divides. A
-                    # segment whose characters join (emoji sequences, flags,
-                    # combining marks) is written whole, as stock Textual does.
+                    # The compositor falls back to complete rows for joined
+                    # text. Only ordinary characters have stable crop columns.
+                    text = strip.text
                     crop_start = x1 - x
                     position = 0
-                    for segment in strip:
-                        segment_end = position + cell_len(segment.text)
-                        if segment_end > crop_start:
-                            break
-                        position = segment_end
-                    text = segment.text
-                    if text.isascii() or all(
-                        cell_len(character) and not "\\U0001f1e6" <= character <= "\\U0001f1ff"
-                        for character in text
-                    ):
+                    if text.isascii() and text.isprintable():
+                        if crop_start >= len(text):
+                            continue
+                        position = crop_start
+                    elif all(cell_len(c) and not 0x1F1E6 <= ord(c) <= 0x1F1FF for c in text):
                         for character in text:
-                            character_end = position + cell_len(character)
-                            if character_end > crop_start:
+                            next_position = position + cell_len(character)
+                            if next_position > crop_start:
                                 break
-                            position = character_end
+                            position = next_position
+                        else:
+                            # A divided strip may reserve more cells than it paints.
+                            continue
+                    if position:
                         strip = strip.crop(position)
                         x += position
 """
@@ -333,7 +330,7 @@ def apply_runtime_patch() -> None:
     # Stage the same fragments for both pristine and already-patched installs.
     source = Path(compositor_mod.__file__).read_text(encoding="utf-8")
     for patch in _PATCHES:
-        if patch.new_fragment in source:
+        if patch.new_fragment in source or any(fragment in source for fragment in patch.equivalent_fragments):
             continue
         if patch.old_fragment not in source:
             logger.warning("Skipping Textual compositor CJK runtime patch: fragment drifted: %s", patch.description)
@@ -417,6 +414,34 @@ _NEW_GET_RENDERS = """\
 
         for widget, region, clip in widgets_iter:"""
 
+# Keep cuts imposed by unrendered widgets. Both anchors are outside the older
+# generator fragment, so an already-patched Textual install picks them up too.
+_PARTIAL_ROW_PATCHES = (
+    FilePatch(
+        package="textual",
+        module_file="_compositor.py",
+        old_fragment="            crop_overlaps = crop.overlaps",
+        new_fragment="            crop_overlaps = _Region(0, crop.y, self.size.width, crop.height).overlaps",
+        description="Consider widgets on the affected rows in their original paint order",
+    ),
+    FilePatch(
+        package="textual",
+        module_file="_compositor.py",
+        old_fragment="            if contains_region(clip, region):\n                yield (",
+        new_fragment="""\
+            if crop is not None and not crop.overlaps(clip):
+                # This widget owns its cells but has no dirty pixels. A blank
+                # strip reserves the same chops without calling render_lines.
+                # It lies outside every span, so it is never printed.
+                visible = intersection(region, clip)
+                yield region, clip, [Strip.blank(visible.width)] * visible.height
+                continue
+            if contains_region(clip, region):
+                yield (""",
+        description="Reserve unrendered widgets' cells before composing lower widgets",
+    ),
+)
+
 # ---------------------------------------------------------------------------
 # Patch 8: render_full_update -- lambda to _ALWAYS_TRUE
 # ---------------------------------------------------------------------------
@@ -439,6 +464,42 @@ _OLD_PARTIAL_UPDATE = """\
 _NEW_PARTIAL_UPDATE = """\
         chops = self._render_chops(crop, is_rendered_line)
         return ChopsUpdate(chops, spans)"""
+
+# A terminal may expand a joined emoji across styles or count its component
+# glyphs differently from Rich. Neither an absolute cursor move after it nor a
+# replay up to a guessed right column is safe. Preserve ChopsUpdate's contract
+# while emitting the same rows, at the same origins, as a full terminal frame.
+_FULL_FRAME_FOR_JOINED_TEXT = FilePatch(
+    package="textual",
+    module_file="_compositor.py",
+    old_fragment=_NEW_PARTIAL_UPDATE,
+    new_fragment="""\
+        background_screens = visible_screen_stack.get([]).copy()
+        chops = self._render_chops(crop, is_rendered_line)
+        for y, left, _right in spans:
+            if left <= 0:
+                continue
+            for x, strip in chops[y].items():
+                if strip is None or not x < left < x + strip.cell_length:
+                    continue
+                text = strip.text
+                if text.isascii() or all(cell_len(c) and not 0x1F1E6 <= ord(c) <= 0x1F1FF for c in text):
+                    continue
+                # Rendering a modal may consume its background screen stack.
+                token = visible_screen_stack.set(background_screens)
+                try:
+                    rows = self._render_chops(screen_region, _ALWAYS_TRUE)
+                finally:
+                    visible_screen_stack.reset(token)
+                width = screen_region.width
+                full_chops = [
+                    {0: Strip((segment for part in row.values() if part is not None for segment in part), width)}
+                    for row in rows
+                ]
+                return ChopsUpdate(full_chops, [(y, 0, width) for y in range(screen_region.height)])
+        return ChopsUpdate(chops, spans)""",
+    description="Use complete frame rows when terminal-dependent widths prevent a left crop",
+)
 
 # ---------------------------------------------------------------------------
 # Patch 10: render_strips -- lambda to _ALWAYS_TRUE
@@ -595,6 +656,7 @@ _PATCHES = (
     ),
     _DIRTY_SPAN_LEFT_EDGE_PATCH,
     _DIRTY_SPAN_CROP_PATCH,
+    *_PARTIAL_ROW_PATCHES,
     FilePatch(
         package="textual",
         module_file=_TARGET,
@@ -615,7 +677,9 @@ _PATCHES = (
         old_fragment=_OLD_PARTIAL_UPDATE,
         new_fragment=_NEW_PARTIAL_UPDATE,
         description="Remove chop_ends from render_partial_update",
+        equivalent_fragments=(_FULL_FRAME_FOR_JOINED_TEXT.new_fragment,),
     ),
+    _FULL_FRAME_FOR_JOINED_TEXT,
     FilePatch(
         package="textual",
         module_file=_TARGET,

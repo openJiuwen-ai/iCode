@@ -23,6 +23,7 @@ from textual._compositor import ChopsUpdate
 from textual._context import visible_screen_stack
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
+from textual.geometry import Region
 from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.widgets import Static
@@ -36,9 +37,8 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
 
     ``tests/conftest.py`` imports tab selection before this module, so the global
     registry order differs from a fresh production bootstrap.  Build the order
-    explicitly: all 12 CJK patches, then the one tab-selection patch.  The 13
-    fragments currently have no chained dependencies, but retaining production
-    order keeps this drift guard correct if one is added later.
+    explicitly: all 15 CJK patches, then the one tab-selection patch. The
+    joined-text fallback builds on the earlier partial-update fragment.
     """
     tab_matches = [
         patch
@@ -47,7 +47,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
         and patch.module_file == "_compositor.py"
         and patch.old_fragment == textual_tab_selection._COMPOSITOR_GET_WIDGET_AND_OFFSET_AT_OLD
     ]
-    assert len(textual_compositor_cjk._PATCHES) == 12
+    assert len(textual_compositor_cjk._PATCHES) == 15
     assert len(tab_matches) == 1
     return (*textual_compositor_cjk._PATCHES, tab_matches[0])
 
@@ -238,9 +238,10 @@ def test_render_segments_crops_at_complete_character_boundaries(
         pytest.param("点击查看", 10, 13, 40, 12, "击查看", id="cjk-mid-character"),
         pytest.param("点击查看", 10, 14, 40, 14, "查看", id="cjk-aligned"),
         pytest.param("点击查看详情", 10, 13, 18, 12, "击查看", id="cjk-both-edges"),
-        pytest.param("ok ❤️ done", 0, 4, 40, 0, "ok ❤️ done", id="emoji-variation-written-whole"),
-        pytest.param("ok 👩‍💻 done", 0, 6, 40, 0, "ok 👩‍💻 done", id="emoji-zwj-written-whole"),
-        pytest.param("ok 🇨🇳 done", 0, 4, 40, 0, "ok 🇨🇳 done", id="flag-written-whole"),
+        pytest.param("ok ❤️ done", 0, 4, 40, 0, "ok ❤️ done", id="emoji-variation"),
+        pytest.param("ok 👩‍💻 done", 0, 6, 40, 0, "ok 👩‍💻 done", id="after-emoji-zwj"),
+        pytest.param("ok 🇨🇳 done", 0, 4, 40, 0, "ok 🇨🇳 done", id="flag"),
+        pytest.param("🇨🇳🇺🇸!", 0, 3, 4, 0, "🇨🇳🇺🇸", id="second-flag"),
     ],
 )
 def test_render_segments_starts_at_the_dirty_span(
@@ -254,7 +255,7 @@ def test_render_segments_starts_at_the_dirty_span(
 ) -> None:
     """Cells left of the span are not repainted, apart from a divided wide character.
 
-    A segment whose characters join is written whole, so no sequence is split.
+    A character spanning multiple code points is written whole.
     """
     update = object.__new__(ChopsUpdate)
     update.chops = [{chop_x: Strip([Segment(text)])}]
@@ -264,6 +265,53 @@ def test_render_segments_starts_at_the_dirty_span(
 
     assert terminal_output.startswith(Control.move_to(expected_x, 0).segment.text)
     assert Text.from_ansi(terminal_output).plain == expected
+
+
+@pytest.mark.parametrize(
+    ("prefix", "styled", "suffix", "terminal_width", "dirty"),
+    [
+        ("A👩‍", "💻", "notes", 8, (4, 7)),
+        ("A❤", "️", "notes", 8, (1, 2)),
+        ("", "🏃🏽‍♀️", "abcdefghijklmnopqr", 20, (19, 20)),
+        ("🫱🏽‍", "🫲🏾", "abcdefghijklmnop", 20, (16, 17)),
+    ],
+)
+async def test_partial_update_with_joined_text_replays_the_full_frame(
+    _preserve_runtime_targets: None, prefix: str, styled: str, suffix: str, terminal_width: int, dirty: tuple[int, int]
+) -> None:
+    # The cursor can split a glyph across styles. Terminals may also advance
+    # a different number of columns than Rich for the very same emoji.
+    value = Text.assemble(prefix, (styled, "bold"), suffix)
+
+    class EmojiApp(App[None]):
+        CSS = "Static { height: 1; width: 100%; }"
+
+        def compose(self) -> ComposeResult:
+            yield Static(value)
+            yield Static("NEXT LINE")
+
+    textual_compositor_cjk.apply_runtime_patch()
+    app = EmojiApp()
+    async with app.run_test(size=(terminal_width, 4)) as pilot:
+        await pilot.pause()
+        compositor = app.screen._compositor
+        console = Console(force_terminal=True)
+        full = compositor.render_full_update().render_segments(console)
+        start, end = dirty
+        compositor._dirty_regions.add(Region(start, 0, end - start, 1))
+        partial = compositor.render_partial_update()
+
+    assert isinstance(partial, ChopsUpdate)
+    assert partial.render_segments(console) == full
+
+
+def test_left_crop_past_the_last_rendered_cell(_render_segments_implementation: str) -> None:
+    # A divided chop may reserve a trailing cell beyond its surviving text.
+    # Replaying the final segment there can wrap onto the next terminal row.
+    update = object.__new__(ChopsUpdate)
+    update.chops = [{1: Strip([Segment("abcdef  ")], 9)}]
+    update.spans = [(0, 9, 10)]
+    assert update.render_segments(Console(force_terminal=True)) == ""
 
 
 _CURSOR_MOVE = re.compile(r"\x1b\[(\d+);(\d+)H")
@@ -307,7 +355,9 @@ class _AppWithSidebar(App[None]):
         yield Static("工作区", id="sidebar")
 
 
-async def test_sidebar_repaint_under_a_dialog_keeps_its_body(_preserve_runtime_targets: None) -> None:
+async def test_sidebar_repaint_under_a_dialog_keeps_its_body(
+    _preserve_runtime_targets: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A repaint of the sidebar beside a dialog leaves the dialog's body on screen.
 
     The body ends at the sidebar's left edge; the dialog's border and padding
@@ -322,14 +372,25 @@ async def test_sidebar_repaint_under_a_dialog_keeps_its_body(_preserve_runtime_t
         dialog = app.screen
         assert isinstance(dialog, _WorkspaceCreated)
         sidebar = app.screen_stack[0].query_one("#sidebar")
-        assert dialog.query_one("#body").region.right == sidebar.region.x
+        body = dialog.query_one("#body")
+        assert body.region.right == sidebar.region.x
 
         token = visible_screen_stack.set(app._background_screens)
         try:
             screen = [strip.text for strip in dialog._compositor.render_strips()]
+
+            def unexpected_body_render(_crop):
+                pytest.fail("the sidebar repaint rendered the omitted dialog body")
+
+            monkeypatch.setattr(body, "render_lines", unexpected_body_render)
             # MainScreen forwards each region it repaints under a dialog this way.
             dialog._compositor._dirty_regions.add(sidebar.region)
             update = dialog._compositor.render_partial_update()
+            assert update is not None
+            # A lower widget must not own a strip crossing into the omitted body,
+            # including when a terminal replays joined glyphs from the strip origin.
+            body_chop = update.chops[body.region.y][body.region.x]
+            assert body_chop is not None and body_chop.cell_length == body.region.width
         finally:
             visible_screen_stack.reset(token)
 
