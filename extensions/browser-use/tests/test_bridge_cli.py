@@ -155,7 +155,7 @@ def test_cli_doctor_handles_a_non_object_manifest(tmp_path: Path, monkeypatch: p
 
 def test_cli_requires_a_host_executable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     extension = _extension(tmp_path)
-    monkeypatch.setattr(bridge_install.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(bridge_install, "which_trusted", lambda _name: None)
     with pytest.raises(SystemExit):
         bridge_install.main(["install", "--extension-dir", str(extension)])
 
