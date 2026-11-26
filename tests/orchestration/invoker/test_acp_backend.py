@@ -19,8 +19,8 @@ from chrys.orchestration.invoker.contracts import AbortCause, Aborted, Failed, O
 from chrys.service.acp_client import AcpAgentClient
 from chrys.service.approval.policy import ApprovalMode
 from tests.orchestration.sub_agents._acp_fakes import make_broker
-from tests.service.acp_client.helpers import make_spec
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.service.acp_client.helpers import CallbackRecorder, make_spec
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, with_wait_deadline
 
 
 async def test_direct_backend_has_no_caller_binding_and_owns_monotonic_transport(tmp_path: Path) -> None:
@@ -60,8 +60,9 @@ async def test_direct_backend_has_no_caller_binding_and_owns_monotonic_transport
         await backend.aclose()
 
 
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_direct_backend_close_drains_active_managed_transport(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait_for_child_window
 ) -> None:
     bus = EventBus()
     origin = InvocationOrigin("sub_agent", "parent", "child", None)
@@ -87,13 +88,7 @@ async def test_direct_backend_close_drains_active_managed_transport(
     request = RunRequest([Message("user", ["work"])], RunIntent.FRESH, origin)
     running = asyncio.create_task(backend.run(request))
     try:
-        # The window spawns and initializes the stub agent: a cold process start.
-        await wait_for(
-            lambda: entered.is_set() or running.done(),
-            timeout=ENGINE_TURN_TIMEOUT,
-            description="prompt sent to the ACP stub",
-        )
-        assert entered.is_set(), running.result()
+        await wait_for_child_window(running, entered, "prompt sent to the ACP stub")
         await asyncio.wait_for(asyncio.gather(backend.aclose(), backend.aclose()), 10)
         outcome = await running
         assert isinstance(outcome, Aborted)
@@ -110,8 +105,9 @@ async def test_direct_backend_close_drains_active_managed_transport(
         await asyncio.gather(running, return_exceptions=True)
 
 
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_direct_backend_close_does_not_join_caller_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait_for_child_window
 ) -> None:
     bus = EventBus()
     origin = InvocationOrigin("sub_agent", "parent", "child", None)
@@ -148,13 +144,7 @@ async def test_direct_backend_close_does_not_join_caller_cleanup(
     running = asyncio.create_task(caller())
     closing = None
     try:
-        # The window spawns and initializes the stub agent: a cold process start.
-        await wait_for(
-            lambda: entered.is_set() or running.done(),
-            timeout=ENGINE_TURN_TIMEOUT,
-            description="prompt sent to the ACP stub",
-        )
-        assert entered.is_set(), running.result()
+        await wait_for_child_window(running, entered, "prompt sent to the ACP stub")
         closing = asyncio.create_task(backend.aclose())
         # Joining the caller here would deadlock its finally against this close.
         # pytest-timeout also bounds regressions that cannot drain cancellation.
@@ -300,3 +290,24 @@ async def test_common_shell_publishes_cascade_after_direct_backend_abort(tmp_pat
         assert shell.evidence.passes == (shell.outcome.handle.pass_id,)
     finally:
         await backend.aclose()
+
+
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_child_window_budget_starts_after_the_acp_handshake(tmp_path: Path, wait_for_child_window) -> None:
+    client = AcpAgentClient(make_spec(tmp_path), CallbackRecorder())
+    entered = asyncio.Event()
+
+    async def start_session() -> None:
+        await client.connect()
+        await client.open_session()
+        entered.set()
+
+    operation = asyncio.create_task(start_session())
+    try:
+        # No scheduling time is needed after session/new. Starting this clock before spawn fails immediately.
+        await wait_for_child_window(operation, entered, "ACP session opened", window_timeout=0)
+        await operation
+    finally:
+        operation.cancel()
+        await asyncio.gather(operation, return_exceptions=True)
+        await client.force_close()

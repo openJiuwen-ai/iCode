@@ -31,7 +31,7 @@ from chrys.service.acp_client.errors import AcpTransportError
 from chrys.service.tools.result_metadata import tool_result_metadata
 from tests.orchestration.sub_agents._acp_fakes import make_controller
 from tests.service.acp_client.helpers import make_spec
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, with_wait_deadline
 
 
 @pytest.mark.parametrize("scenario", ["happy", "refusal", "empty", "prompt_truncated"])
@@ -205,7 +205,10 @@ async def test_acp_closed_retry_ticket_is_stale_before_transport(tmp_path) -> No
     await controller.policy.backend.aclose()
 
 
-async def test_real_acp_overlap_rejected_before_factory_prompt_ordinal_and_disk(tmp_path, monkeypatch):
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_real_acp_overlap_rejected_before_factory_prompt_ordinal_and_disk(
+    tmp_path, monkeypatch, wait_for_child_window
+):
     import asyncio
 
     from chrys.orchestration.invoker.contracts import OverlappingRun
@@ -229,13 +232,7 @@ async def test_real_acp_overlap_rejected_before_factory_prompt_ordinal_and_disk(
         controller.policy.backend.run(RunRequest([Message("user", ["first"])], RunIntent.FRESH, controller.origin))
     )
     try:
-        # The window spawns and initializes the stub agent: a cold process start.
-        await wait_for(
-            lambda: entered.is_set() or first.done(),
-            timeout=ENGINE_TURN_TIMEOUT,
-            description="first prompt sent to the ACP stub",
-        )
-        assert entered.is_set(), first.result()
+        await wait_for_child_window(first, entered, "first prompt sent to the ACP stub")
         ordinal = controller.policy.backend.transport_ordinal
         active = controller.policy.backend.active_handle
         factory_calls = factory.call_count
@@ -258,5 +255,5 @@ async def test_real_acp_overlap_rejected_before_factory_prompt_ordinal_and_disk(
         assert isinstance(await first, Ok)
     finally:
         release.set()
-        await asyncio.gather(first, return_exceptions=True)
         await controller.policy.backend.aclose()
+        await asyncio.gather(first, return_exceptions=True)

@@ -591,7 +591,9 @@ def _painted_cells(update: CompositorUpdate) -> _Painted:
 
     Textual prints a changed span from the start of each chop (one widget's part of a line) it
     overlaps, and may run past the span for a wide character, so the span itself undercounts: the
-    whole chop is counted, up to the strip's own width.
+    whole chop is counted, up to the strip's own width.  The CJK compositor patch starts most chops
+    that begin left of the span at the span instead; counting them whole only redraws an image row
+    that was not erased.
     """
     if isinstance(update, _OverlayFrame):
         return {}

@@ -12,10 +12,11 @@ from chrys.foundation.events.types import InvocationPaused
 from chrys.orchestration.invoker.contracts import AbortCause
 from tests.orchestration.sub_agents._acp_fakes import make_controller
 from tests.service.acp_client.helpers import make_spec
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, with_wait_deadline
 
 
-async def test_acp_abort_result_and_cancel_active_finalize_once(tmp_path, monkeypatch):
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_acp_abort_result_and_cancel_active_finalize_once(tmp_path, monkeypatch, wait_for_child_window):
     bus = EventBus()
     shell = make_controller(
         bus, tmp_path, spec_factory=lambda ordinal: make_spec(tmp_path, scenario="prompt_cancelled")
@@ -70,13 +71,7 @@ async def test_acp_abort_result_and_cancel_active_finalize_once(tmp_path, monkey
     running = asyncio.create_task(caller(), name="abort-result")
     cancelling = None
     try:
-        # The window spawns and initializes the stub agent: a cold process start.
-        await wait_for(
-            lambda: paused.is_set() or running.done(),
-            timeout=ENGINE_TURN_TIMEOUT,
-            description="ACP sub-agent paused",
-        )
-        assert paused.is_set(), running.result()
+        await wait_for_child_window(running, paused, "ACP sub-agent paused")
         assert shell.request_abort() is True
         await asyncio.wait_for(abort_entered.wait(), 5)
         cancelling = asyncio.create_task(cancel(), name="cancel-active")

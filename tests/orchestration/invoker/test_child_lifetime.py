@@ -35,13 +35,14 @@ from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.session.sub_agent_logs import SubAgentSessionLogWriter
 from tests.support.acp_fixtures import STUB_SCRIPT
 from tests.support.paths import SRC_ROOT
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, with_wait_deadline
 
 
 @pytest.mark.parametrize("cancel_at_end", [False, True])
 @pytest.mark.parametrize("backend", ["kernel", "acp"])
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_returned_child_retains_registry_until_writer_usage_and_end_hook_finish(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_at_end: bool, backend: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_at_end: bool, backend: str, wait_for_child_window
 ) -> None:
     client = MockChatClient(responses=[MockResponse(text="done")])
     monkeypatch.setattr(tools_module, "create_client", create_autospec(tools_module.create_client, return_value=client))
@@ -135,13 +136,7 @@ async def test_returned_child_retains_registry_until_writer_usage_and_end_hook_f
         )
     task = asyncio.create_task(tools.get_tools()[0].func(prompt="work"))
     try:
-        # For the ACP backend the window spawns and initializes the stub agent: a cold process start.
-        await wait_for(
-            lambda: end_entered.is_set() or task.done(),
-            timeout=ENGINE_TURN_TIMEOUT,
-            description="sub-agent end hook entered",
-        )
-        assert end_entered.is_set(), task.result()
+        await wait_for_child_window(task, end_entered, "sub-agent end hook entered", acp=backend == "acp")
         assert not task.done()
         assert tools._total_active == 1
         assert bool(tools._live_approvals) is (backend == "kernel")

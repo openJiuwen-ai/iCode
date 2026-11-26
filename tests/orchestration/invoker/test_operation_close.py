@@ -43,7 +43,7 @@ from tests.support.close_races import assert_entered_before_completion
 from tests.support.loaded_agents import install_loaded_agent
 from tests.support.paths import SRC_ROOT
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, with_wait_deadline
 
 
 def test_parent_commit_cannot_rebind_after_consumption():
@@ -68,8 +68,15 @@ def test_parent_commit_cannot_rebind_after_consumption():
 
 @pytest.mark.parametrize("backend", ["kernel", "acp"])
 @pytest.mark.parametrize("window", ["pause", "pause-callback", "returned"])
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_prepared_close_drains_registered_operation_in_all_three_windows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine, backend: str, window: str, engine_services
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agent_engine,
+    backend: str,
+    window: str,
+    engine_services,
+    wait_for_child_window,
 ) -> None:
     entered, release_end, latched = asyncio.Event(), asyncio.Event(), asyncio.Event()
     bus = EventBus()
@@ -192,13 +199,9 @@ async def test_prepared_close_drains_registered_operation_in_all_three_windows(
         sub_agent_parent_result_metadata.reset(token)
     closing: asyncio.Task[None] | None = None
     try:
-        # For the ACP backend the window spawns and initializes the stub agent: a cold process start.
-        await wait_for(
-            lambda: entered.is_set() or operation.done(),
-            timeout=ENGINE_TURN_TIMEOUT,
-            description="child operation reached the close window",
+        await wait_for_child_window(
+            operation, entered, "child operation reached the close window", acp=backend == "acp"
         )
-        assert entered.is_set(), operation.result()
         controller = next(iter(tools._controllers.values()))
         original_request = controller.request_close
         original_commit = controller._parent_interrupted_result_commit
