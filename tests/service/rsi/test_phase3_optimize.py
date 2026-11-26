@@ -222,3 +222,73 @@ async def test_optimize_reruns_only_failing_cases(tmp_path: Path) -> None:
     assert calls[0] == ["already-ok", "need-hello"]  # baseline full suite
     assert calls[1] == ["need-hello"]  # gate: only still-failing ids
     assert calls[2] == ["already-ok", "need-hello"]  # full-suite confirm before adopt
+
+
+# ---------------------------------------------------------------------------
+# AppendInstructions paragraph-block de-duplication (regression tests)
+# ---------------------------------------------------------------------------
+
+
+def test_append_instructions_does_not_drop_substring_between_different_blocks() -> None:
+    """A paragraph whose text appears inside an existing paragraph must still be appended."""
+    base = "Build everything first, then run tests."
+    profile = AgentProfile(name="P", instructions=base)
+    result = apply_mutations(profile, [AppendInstructions(text="run tests.")])
+    assert result.instructions == f"{base}\n\nrun tests.\n"
+
+
+def test_append_instructions_preserves_indentation_when_deduping() -> None:
+    """Blocks that differ only in leading indentation must both be kept."""
+    base = " send()"
+    add = "  send()"
+    profile = AgentProfile(name="P", instructions=base)
+    result = apply_mutations(profile, [AppendInstructions(text=add)])
+    assert result.instructions == f"{base}\n\n{add}\n"
+
+
+def test_append_instructions_dedupes_with_crlf_and_space_only_blank_lines() -> None:
+    """Windows line endings and whitespace-only blank lines are still recognised as paragraph separators."""
+    base = "A\r\n  \r\nB"
+    profile = AgentProfile(name="P", instructions=base)
+    result = apply_mutations(profile, [AppendInstructions(text="B")])
+    assert result.instructions.count("B") == 1
+
+
+def test_append_instructions_is_idempotent_when_blocks_match_exactly() -> None:
+    """Applying the same full-blocks instruction twice appends nothing the second time."""
+    profile = AgentProfile(name="P")
+    first = apply_mutations(profile, [AppendInstructions(text="Block one\n\nBlock two")])
+    second = apply_mutations(first, [AppendInstructions(text="Block one\n\nBlock two")])
+    assert second.instructions.count("Block one") == 1
+    assert second.instructions.count("Block two") == 1
+    assert second.instructions == first.instructions
+
+
+def test_append_instructions_adds_non_contiguous_multi_block_instructions() -> None:
+    """A non-contiguous subset of existing blocks must still be appended."""
+    profile = AgentProfile(name="P", instructions="P1\n\nP2\n\nP3")
+    result = apply_mutations(profile, [AppendInstructions(text="P1\n\nP3")])
+    assert result.instructions == "P1\n\nP2\n\nP3\n\nP1\n\nP3\n"
+
+
+def test_append_instructions_pure_whitespace_is_a_noop() -> None:
+    """Appending only whitespace / newlines should not write empty blocks."""
+    profile = AgentProfile(name="P")
+    result = apply_mutations(profile, [AppendInstructions(text="   \n\n  ")])
+    assert result.instructions == ""
+
+
+def test_append_instructions_dedupes_exact_single_block() -> None:
+    """Single full block present exactly once should not be doubled."""
+    profile = AgentProfile(name="P", instructions="Middle block.")
+    result = apply_mutations(profile, [AppendInstructions(text="Middle block.")])
+    assert result.instructions.count("Middle block.") == 1
+
+
+def test_append_instructions_ignores_trailing_whitespace_when_deduping() -> None:
+    """Trailing spaces are stripped on save, so replaying the instruction must not duplicate it."""
+    profile = AgentProfile(name="P")
+    first = apply_mutations(profile, [AppendInstructions(text="Run tests.  ")])
+    second = apply_mutations(first, [AppendInstructions(text="Run tests.")])
+    assert second.instructions.count("Run tests.") == 1
+    assert second.instructions == first.instructions
