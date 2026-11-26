@@ -884,9 +884,8 @@ async def click_when_settled(
 async def click_sidebar_tab(pilot: Pilot, sidebar: Widget, tab: Tab) -> None:
     """Click *tab*'s label, first bringing it into view through the overflow mark on its side.
 
-    While the tabs overflow, a label can sit partly or entirely past either edge
-    of the strip; a user reaches it through the mark on that side. Activating a
-    tab scrolls the strip with an animation, so each check waits until it stops.
+    Show the whole label when it fits, or click the visible part when the label fills
+    the strip. Activating a tab scrolls with an animation, so wait until it stops.
     """
     tabs = sidebar.query_one(TabbedContent).query_one(Tabs)
     strip = tabs.query_one("#tabs-scroll")
@@ -896,10 +895,13 @@ async def click_sidebar_tab(pilot: Pilot, sidebar: Widget, tab: Tab) -> None:
         return not animator.is_being_animated(strip, "scroll_x") and screen_is_settled(pilot.app, pilot.app.screen)
 
     await wait_for(at_rest, pilot=pilot, description="tab strip at rest")
-    while not (
-        strip.content_region.x <= tab.content_region.x and tab.content_region.right <= strip.content_region.right
-    ):
-        side = "left" if tab.content_region.x < strip.content_region.x else "right"
+    while True:
+        view, label = strip.content_region, tab.content_region
+        visible = view.intersection(label)
+        if visible.width and visible.width == min(view.width, label.width):
+            await click_when_settled(pilot, tab, offset=(visible.x - tab.region.x, 0))
+            return
+        side = "left" if label.x < view.x else "right"
         mark = sidebar.query_one(f"#sidebar-tabs-overflow-{side}", TabOverflowMark)
         assert mark.active, f"{tab.label_text} is cut on the {side} but that mark is not lit"
         before = strip.scroll_x
@@ -909,7 +911,6 @@ async def click_sidebar_tab(pilot: Pilot, sidebar: Widget, tab: Tab) -> None:
             pilot=pilot,
             description=f"the {side} mark slides the strip",
         )
-    await click_when_settled(pilot, tab, offset=(tab.styles.padding.left, 0))
 
 
 def delay_resize_dispatch(app: App[None], monkeypatch: pytest.MonkeyPatch, delay: float) -> None:

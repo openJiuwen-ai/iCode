@@ -91,7 +91,7 @@ Anthropic-compatible services have their own cache behavior: they may honor, ign
 
 ### Check that caching works
 
-Open the sidebar (**Ctrl+G** shows or hides it; on a terminal too narrow for it, it stays hidden until the window is wider) and select the "Context" tab. When the tabs do not all fit, click **❯** or **❮** at either end of the tab row, or scroll over it, to reach the others. In the "Token Usage" section, the "Cached" row shows the session's accumulated reported cache reads. It grows when a request reports a hit, not necessarily on every call. `-` does not prove caching is disabled: the service may report no hits or omit cache usage.
+Open the sidebar (**Ctrl+G** shows or hides it; on a terminal too narrow for it, it stays hidden until the window is wider) and select the "Context" tab. When the tabs do not all fit, click **❯** or **❮** at either end of the tab row, or scroll over it, to reach the others. Each visible arrow takes one cell at its edge. In the "Token Usage" section, the "Cached" row shows the session's accumulated reported cache reads. It grows when a request reports a hit, not necessarily on every call. `-` does not prove caching is disabled: the service may report no hits or omit cache usage.
 
 If "Cached" stays at `-` or stops growing:
 

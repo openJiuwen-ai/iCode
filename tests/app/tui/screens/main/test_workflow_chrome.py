@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_INTERRUPTED, StatusBar
 from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
@@ -40,6 +42,7 @@ from tests.app.tui.screens.main._workflow_support import (
     workflow_selection,
 )
 from tests.orchestration.workflows._hosting import make_workdir, write_workflow
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_sidebar_tab, click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
@@ -395,6 +398,64 @@ async def test_workflow_sidebar_hides_chat_tabs_and_restores_selection(
         assert tabs.get_tab("tab-toc").display and tabs.get_tab("tab-tasks").display
         assert tabs.get_tab("tab-context").display
         assert not tabs.query_one(Tabs).can_focus
+
+
+@pytest.mark.parametrize(("locale", "width"), [("en", 45), ("zh-Hans", 47)])
+async def test_entering_workflow_keeps_the_current_sidebar_tab_in_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locale: str, width: int
+) -> None:
+    monkeypatch.chdir(make_workdir(tmp_path))
+    app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), settings=Settings(locale=locale))
+    app.animation_level = "full"
+    async with app.run_test(size=(width, 28)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        content = main.query_one(SidebarPanel).query_one(TabbedContent)
+        tabs = content.query_one(Tabs)
+        strip = tabs.query_one("#tabs-scroll")
+        await wait_for(lambda: content.active == "tab-toc" and screen_is_settled(app, main), pilot=pilot)
+        assert strip.scroll_offset.x == 0
+
+        await click_when_settled(pilot, "#mode-badge")
+        await wait_for(lambda: isinstance(app.screen, AppModeDialog) and app.screen.is_mounted, pilot=pilot)
+        picker = app.screen.query_one(OptionList)
+        picker.highlighted = 1
+
+        # Keep the scroll animation at its first frame until the workflow tabs have been laid out.
+        with monkeypatch.context() as animation_patch:
+            now = app.animator._get_time()
+            animation_patch.setattr(app.animator, "_get_time", lambda: now)
+            picker.action_select()
+            await wait_for(
+                lambda: app.screen is main and content.active == "tab-debug" and screen_is_settled(app, main),
+                description="workflow sidebar laid out",
+            )
+
+        await pilot.wait_for_scheduled_animations()
+        debug = content.get_tab("tab-debug")
+        assert strip.content_region.overlaps(debug.content_region)
+
+
+@pytest.mark.parametrize("chat_tab", ["tab-tasks", "tab-debug"])
+async def test_workflow_realigns_the_sidebar_after_scroll_reflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chat_tab: str
+) -> None:
+    monkeypatch.chdir(make_workdir(tmp_path))
+    app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
+    async with app.run_test(size=(45, 28)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        sidebar = main.query_one(SidebarPanel)
+        content = sidebar.query_one(TabbedContent)
+        strip = content.query_one("#tabs-scroll")
+        await click_sidebar_tab(pilot, sidebar, content.get_tab(chat_tab))
+        await wait_for(lambda: content.active == chat_tab and strip.scroll_x > 0, pilot=pilot)
+
+        # Textual's scroll reflow can update the tab geometry without notifying virtual_size watchers.
+        monkeypatch.setattr(strip, "_size_updated", partial(strip._size_updated, layout=False))
+        await switch_mode(main, pilot)
+        await wait_for(lambda: content.active == "tab-debug" and screen_is_settled(app, main), pilot=pilot)
+        assert strip.content_region.overlaps(content.get_tab("tab-debug").content_region)
 
 
 async def test_slow_source_read_does_not_switch_back_to_code_tab(

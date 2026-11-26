@@ -1290,7 +1290,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 verify_commands=self._trajectory_verify_commands,
             )
             yield ShellPanel(working_directory=self._workspace_cwd())
-            yield SidebarPanel(locale_controller=self._locale_controller).data_bind(
+            yield SidebarPanel(
+                locale_controller=self._locale_controller, before_hiding_focus=self._focus_shell_if_active
+            ).data_bind(
                 context_usage_state=MainScreen.context_usage_state,
                 todo_state=MainScreen.todo_state,
                 background_tasks=MainScreen.background_tasks_state,
@@ -2122,6 +2124,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def _set_shell_mode_state(self, active: bool) -> None:
         self.shell_mode_state = active
+
+    def _focus_shell_if_active(self) -> None:
+        if self._state.shell.active:
+            self.set_focus(self.query_one(ShellPanel).query_one(Terminal), scroll_visible=False)
 
     def _sync_sidebar_tab_strip_focus(self) -> None:
         """Make the sidebar tab strip focusable exactly where sidebar focus is not handed back.

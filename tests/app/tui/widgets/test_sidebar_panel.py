@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import pytest
 from rich.cells import cell_len
 from textual import events
@@ -76,7 +78,11 @@ async def _wait_for_overflow(pilot, sidebar: SidebarPanel) -> None:
     strip = tabs.query_one("#tabs-scroll")
     app = pilot.app
     await wait_for(
-        lambda: tabs.has_class("-overflow") and strip.max_scroll_x > 0 and screen_is_settled(app, app.screen),
+        lambda: (
+            any(mark.active for mark in _marks(sidebar))
+            and strip.max_scroll_x > 0
+            and screen_is_settled(app, app.screen)
+        ),
         pilot=pilot,
         description="the tabs overflow the sidebar",
     )
@@ -261,13 +267,13 @@ def _fits_without_marks(sidebar: SidebarPanel) -> bool:
         _clipped_left(tabs, strip) is None
         and _clipped_right(tabs, strip) is None
         and not any(mark.visible for mark in _marks(sidebar))
-        and tabs.region.x == sidebar.content_region.x
-        and tabs.region.right == sidebar.content_region.right
+        and strip.region.x == sidebar.content_region.x
+        and strip.region.right == sidebar.content_region.right
     )
 
 
 def _mark_text(mark: Widget) -> str:
-    return str(mark.render_line(0).text).strip()
+    return mark.render_line(0).text if mark.visible else ""
 
 
 def _clipped_right(tabs: Tabs, strip: Widget) -> Tab | None:
@@ -301,24 +307,37 @@ async def test_a_narrow_tab_strip_marks_each_side_with_a_hidden_tab(monkeypatch:
         assert sidebar.toc_panel.region.width == sidebar.content_region.width == 40
         assert sidebar.toc_panel.region.x == sidebar.content_region.x
         assert sidebar.toc_panel.region.right == sidebar.content_region.right
-        # The reserved cells never sit over the tabs themselves.
-        assert left.region.width == right.region.width == 2
-        assert left.region.x == sidebar.content_region.x
-        assert right.region.right == sidebar.content_region.right
-        assert tabs.region.x - sidebar.content_region.x == 2
-        assert sidebar.content_region.right - tabs.region.right == 2
-        assert left.region.right <= strip.region.x
-        assert right.region.x >= strip.region.right
+        # The left edge keeps its full width when only the right arrow shows.
+        assert right.region.width == 1 and right.region.right == sidebar.content_region.right
+        assert strip.region.x == sidebar.content_region.x
+        assert right.region.x == strip.region.right
         await wait_for(lambda: _mark_text(right) == "\u276f" and _mark_text(left) == "", pilot=pilot)
         assert right.styles.pointer == "pointer"
 
         strip.scroll_x = strip.max_scroll_x // 2
         await wait_for(lambda: strip.scroll_x == strip.max_scroll_x // 2, pilot=pilot)
-        await wait_for(lambda: _mark_text(left) == "\u276e" and _mark_text(right) == "\u276f", pilot=pilot)
+        await wait_for(
+            lambda: (
+                _mark_text(left) == "\u276e"
+                and _mark_text(right) == "\u276f"
+                and screen_is_settled(pilot.app, pilot.app.screen)
+            ),
+            pilot=pilot,
+        )
+        assert left.region.width == 1 and left.region.x == sidebar.content_region.x
+        assert left.region.right == strip.region.x
+        assert right.region.x == strip.region.right
 
         strip.scroll_x = strip.max_scroll_x
         await wait_for(lambda: strip.scroll_x == strip.max_scroll_x, pilot=pilot)
-        await wait_for(lambda: _mark_text(left) == "\u276e" and _mark_text(right) == "", pilot=pilot)
+        await wait_for(
+            lambda: (
+                _mark_text(left) == "\u276e" and not right.visible and screen_is_settled(pilot.app, pilot.app.screen)
+            ),
+            pilot=pilot,
+        )
+        assert left.region.right == strip.region.x
+        assert strip.region.right == sidebar.content_region.right
         assert left.styles.pointer == "pointer"
         assert right.styles.pointer != "pointer"
 
@@ -340,9 +359,7 @@ class _StyledSidebarApp(SidebarSizingApp):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("theme", [CHRYS_THEME, CHRYS_ANSI_THEME], ids=["truecolor", "ansi"])
-async def test_a_mark_keeps_a_blank_cell_toward_the_tabs_in_the_unselected_tab_colour(
-    monkeypatch: pytest.MonkeyPatch, theme: Theme
-) -> None:
+async def test_a_mark_uses_one_cell_in_the_unselected_tab_colour(monkeypatch: pytest.MonkeyPatch, theme: Theme) -> None:
     monkeypatch.setattr("chrys.app.tui.widgets.sidebar.buddy.current_buddy", lambda: None)
     async with _StyledSidebarApp(theme).run_test(size=(120, 30)) as pilot:
         sidebar = pilot.app.query_one(SidebarPanel)
@@ -352,8 +369,8 @@ async def test_a_mark_keeps_a_blank_cell_toward_the_tabs_in_the_unselected_tab_c
         strip.scroll_x = strip.max_scroll_x // 2
         left, right = _marks(sidebar)
         await wait_for(lambda: _mark_text(left) == "\u276e" and _mark_text(right) == "\u276f", pilot=pilot)
-        assert str(left.render_line(0).text) == "\u276e "
-        assert str(right.render_line(0).text) == " \u276f"
+        assert str(left.render_line(0).text) == "\u276e"
+        assert str(right.render_line(0).text) == "\u276f"
         unselected = next(tab for tab in tabs.query(Tab).results(Tab) if not tab.has_class("-active"))
         assert left.styles.color == unselected.styles.color == right.styles.color
 
@@ -424,12 +441,12 @@ async def test_on_a_narrow_strip_each_click_shows_one_whole_label(monkeypatch: p
         sidebar = pilot.app.query_one(SidebarPanel)
         tabs = sidebar.query_one(TabbedContent).query_one(Tabs)
         strip = tabs.query_one("#tabs-scroll")
-        # 13 cells leave 7 for the strip: Context's label (7) fits, its tab (9) does not.
-        sidebar.fit_beside(13)
-        await wait_for(lambda: sidebar.region.width == 13, pilot=pilot)
+        # 11 cells leave 7 with both marks. Context's label (7) fits, its tab (9) does not.
+        sidebar.fit_beside(11)
+        await wait_for(lambda: sidebar.region.width == 11, pilot=pilot)
         await _wait_for_overflow(pilot, sidebar)
         left, right = _marks(sidebar)
-        assert strip.content_region.width == 7
+        assert strip.content_region.width == 8
 
         for direction, mark, clipped in (("right", right, _clipped_right), ("left", left, _clipped_left)):
             seen: list[str] = []
@@ -467,14 +484,14 @@ def _shown_characters(tabs: Tabs, strip: Widget) -> set[tuple[int, int]]:
 @pytest.mark.parametrize(
     ("labels", "workflow", "room", "view", "tight"),
     [
-        (None, False, 7, 1, True),
-        (None, False, 8, 2, True),
-        (None, False, 9, 3, False),
-        (_CHINESE_LABELS, False, 9, 3, True),
-        (_CHINESE_LABELS, False, 11, 5, False),
+        (None, False, 5, 1, True),
+        (None, False, 6, 2, True),
+        (None, False, 7, 3, False),
+        (_CHINESE_LABELS, False, 7, 3, True),
+        (_CHINESE_LABELS, False, 9, 5, False),
         # Unpadded, the two workflow labels would fit the 8 cells exactly: overflow
         # is still judged with the padding, so dropping it cannot end the overflow.
-        (_CHINESE_LABELS, True, 10, 4, True),
+        (_CHINESE_LABELS, True, 8, 4, True),
     ],
     ids=["english-1", "english-2", "english-3", "chinese-3", "chinese-5", "chinese-workflow-4"],
 )
@@ -505,7 +522,6 @@ async def test_a_narrow_tab_strip_always_shows_a_whole_character(
         await wait_for(lambda: sidebar.region.width == room, pilot=pilot)
         await _wait_for_overflow(pilot, sidebar)
         left, right = _marks(sidebar)
-        assert strip.content_region.width == view
         # Switching mode makes Textual slide the strip back to the selected tab: let that slide end.
         await wait_for(
             lambda: (
@@ -525,6 +541,8 @@ async def test_a_narrow_tab_strip_always_shows_a_whole_character(
 
         strip.scroll_to(x=0, animate=False, force=True)
         await wait_for(lambda: strip.scroll_x == 0 and screen_is_settled(app, app.screen), pilot=pilot)
+        assert not left.active and right.active
+        assert strip.content_region.width == view + 1
         for mark in (right, left):
             seen = _shown_characters(tabs, strip)
             while mark.active:
@@ -535,13 +553,14 @@ async def test_a_narrow_tab_strip_always_shows_a_whole_character(
                 )
                 shown = _shown_characters(tabs, strip)
                 assert shown, f"a click leaves no whole character at {strip.scroll_x}"
+                if left.active and right.active:
+                    assert strip.content_region.width == view
                 seen |= shown
             assert seen == every
 
-        for position in range(strip.max_scroll_x + 1):
+        for position in range(strip.virtual_size.width - view):
             strip.scroll_to(x=position, animate=False, force=True)
-            await wait_for(lambda position=position: strip.scroll_x == position, pilot=pilot)
-            await pilot.pause()
+            await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
             assert _shown_characters(tabs, strip), f"scrolled to {position}, the strip shows no whole character"
 
         # Selecting a tab scrolls it into view: the strip still shows a character.
@@ -551,37 +570,6 @@ async def test_a_narrow_tab_strip_always_shows_a_whole_character(
             tabs.active = tab.id or ""
             await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot)
             assert _shown_characters(tabs, strip), f"selecting {tab.label.plain} leaves no whole character"
-
-
-@pytest.mark.asyncio
-async def test_a_mark_appearing_moves_no_tab_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A mark keeps its cells while hidden, so the tabs do not move when it comes or goes."""
-    monkeypatch.setattr("chrys.app.tui.widgets.sidebar.buddy.current_buddy", lambda: None)
-    async with SidebarSizingApp().run_test(size=(120, 30)) as pilot:
-        app = pilot.app
-        sidebar = app.query_one(SidebarPanel)
-        tabs = sidebar.query_one(TabbedContent).query_one(Tabs)
-        strip = tabs.query_one("#tabs-scroll")
-        await _wait_for_overflow(pilot, sidebar)
-        left, _right = _marks(sidebar)
-
-        def shown(text: str) -> bool:
-            # Compared only once any layout the change asked for has been laid out.
-            return _mark_text(left) == text and screen_is_settled(app, app.screen)
-
-        await wait_for(lambda: shown(""), pilot=pilot)
-        strip_width = strip.container_size.width
-        before = [(tab.region.x, tab.render_line(0).text) for tab in tabs.query(Tab).results(Tab)]
-
-        left.set_active(True)
-        await wait_for(lambda: shown("\u276e"), pilot=pilot)
-        assert strip.container_size.width == strip_width
-        assert [(tab.region.x, tab.render_line(0).text) for tab in tabs.query(Tab).results(Tab)] == before
-
-        left.set_active(False)
-        await wait_for(lambda: shown(""), pilot=pilot)
-        assert strip.container_size.width == strip_width
-        assert [(tab.region.x, tab.render_line(0).text) for tab in tabs.query(Tab).results(Tab)] == before
 
 
 @pytest.mark.asyncio
@@ -615,12 +603,15 @@ async def test_marks_follow_resize_locale_and_workflow_mode(monkeypatch: pytest.
         await _wait_for_sidebar_width(pilot, sidebar, 42)
         await wait_for(lambda: _mark_text(right) == "\u276f", pilot=pilot)
 
-        # Wide enough for the Chinese labels but not the English ones.
-        assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
-        await wait_for(lambda: _fits_without_marks(sidebar), pilot=pilot)
+        # Wide enough for the Chinese labels but not the English ones. A scroll reflow
+        # can apply the new label widths without notifying the virtual_size watcher.
+        with monkeypatch.context() as scroll_reflow:
+            scroll_reflow.setattr(strip, "_size_updated", partial(strip._size_updated, layout=False))
+            assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
+            await wait_for(lambda: _fits_without_marks(sidebar), pilot=pilot)
 
-        assert controller.switch_locale("en").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
-        await wait_for(lambda: _mark_text(right) == "\u276f", pilot=pilot)
+            assert controller.switch_locale("en").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
+            await wait_for(lambda: _mark_text(right) == "\u276f", pilot=pilot)
 
         sidebar.set_workflow_mode(True)
         await wait_for(lambda: _fits_without_marks(sidebar), pilot=pilot)
