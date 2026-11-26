@@ -1551,3 +1551,11 @@ def test_fill_run_skips_enter_on_extra_blank_line_or_stripped_prewrap_indent(mon
         not (call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter") for call in session2.client.calls
     )
     assert "preserveWhitespace" in actionability.FIELD_STATE_FN
+
+
+def test_focus_fn_ignores_default_collapsed_caret_synthesized_by_focus() -> None:
+    """FOCUS_FN checks selection before focus() so clear=False appends at the end of an unfocused contenteditable."""
+    src = actionability.FOCUS_FN
+    assert "hadSelectionBeforeFocus" in src
+    assert src.index("hadSelectionBeforeFocus") < src.index("this.focus()")
+    assert "!existing.collapsed" in src

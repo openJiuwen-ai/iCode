@@ -1165,12 +1165,7 @@ class BrowserSession:
                 self._unclosed_targets = []
             if self._closed:
                 self._browser_identity = ""
-            if (
-                not client_dead
-                and client is not None
-                and not self._transport.owns_browser
-                and self._transport.browser_commands
-            ):
+            if not client_dead and client is not None and not self._transport.owns_browser:
                 for extra_id in owned_targets:
                     if extra_id != target_id:
                         with contextlib.suppress(Exception):
@@ -1489,7 +1484,7 @@ class BrowserSession:
             expected_name
             and actual_name
             and actual_tag != "select"
-            and name_source != "href"
+            and name_source not in {"href", "attr"}
             and not _matches_live_ref_name(entry.fingerprint.get("role", ""), expected_name, actual_name)
             and (name_source != "ax" or not await self._ax_name_matches(entry, cdp_session_id, expected_name))
         ):

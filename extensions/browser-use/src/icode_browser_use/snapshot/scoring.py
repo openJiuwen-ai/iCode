@@ -152,6 +152,43 @@ def _matches_spec(node: FusedNode, spec: str) -> bool:
     )
 
 
+def _drop_redundant_ancestors(candidates: list[Candidate], spec: str) -> list[Candidate]:
+    """Suppress non-interactive ancestors that merely echo an interactive descendant's name.
+
+    A ``<td><button>Resolve INC-0117</button></td>`` exposes both the ``button``
+    and its non-interactive ``cell`` ancestor with the same accessible name.
+    Unless the caller explicitly targeted the ancestor's role/tag, keep the
+    interactive descendant as the sole contender instead of failing with a
+    spurious ambiguity error.
+    """
+    target = _norm(spec)
+    interactive_by_ancestor: dict[tuple[str, str | None, int, str], int] = {}
+    for candidate in candidates:
+        node = candidate.node
+        if not node.interactive or not node.ancestor_ids:
+            continue
+        name = _norm(node.name)
+        if not name:
+            continue
+        for ancestor_id in node.ancestor_ids:
+            key = (node.frame_id, node.cdp_session_id, ancestor_id, name)
+            prev = interactive_by_ancestor.get(key)
+            if prev is None or candidate.score > prev:
+                interactive_by_ancestor[key] = candidate.score
+    if not interactive_by_ancestor:
+        return candidates
+    filtered: list[Candidate] = []
+    for candidate in candidates:
+        node = candidate.node
+        if not node.interactive and target not in {_norm(node.role), _norm(node.tag)}:
+            key = (node.frame_id, node.cdp_session_id, node.backend_node_id, _norm(node.name))
+            child_score = interactive_by_ancestor.get(key)
+            if child_score is not None and child_score >= candidate.score:
+                continue
+        filtered.append(candidate)
+    return filtered
+
+
 def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
     """Score every spec-matching node, keep the positive ones and sort descending."""
     seen_names: dict[str, int] = {}
@@ -167,6 +204,7 @@ def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
         value = score(node, spec, seen_names=seen_names)
         if value > 0:
             candidates.append(Candidate(node=node, score=value))
+    candidates = _drop_redundant_ancestors(candidates, spec)
     candidates.sort(key=lambda candidate: candidate.score, reverse=True)
     return candidates
 

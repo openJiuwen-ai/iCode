@@ -297,3 +297,69 @@ def test_fusion_records_the_dom_parent_and_ancestors() -> None:
     assert nodes[field_backend].ancestor_ids == (100 + form, 100 + label)
     assert nodes[100 + form].parent_backend_id == 0
     assert nodes[100 + form].ancestor_ids == ()
+
+
+def test_interactive_child_inside_same_name_cell_resolves_without_ambiguity() -> None:
+    doc = _Doc()
+    table = doc.element("table")
+    row = doc.element("tr", table)
+    cell = doc.element("td", row, text="Resolve INC-0117")
+    button = doc.element("button", cell, text="Resolve INC-0117")
+    ax = {
+        "nodes": [
+            _ax(doc, cell, "cell", "Resolve INC-0117"),
+            _ax(doc, button, "button", "Resolve INC-0117"),
+        ]
+    }
+    nodes = fuse(doc.payload(), ax, frame=FRAME, target_id="t")
+
+    best = resolve_ambiguity(rank(nodes, "Resolve INC-0117"))
+    assert best.node.tag == "button"
+    assert best.node.interactive is True
+
+    # Two distinct buttons with the same label must still raise TargetAmbiguous.
+    row2 = doc.element("tr", table)
+    cell2 = doc.element("td", row2, text="Resolve INC-0117")
+    button2 = doc.element("button", cell2, text="Resolve INC-0117")
+    ax2 = {
+        "nodes": [
+            _ax(doc, cell, "cell", "Resolve INC-0117"),
+            _ax(doc, button, "button", "Resolve INC-0117"),
+            _ax(doc, cell2, "cell", "Resolve INC-0117"),
+            _ax(doc, button2, "button", "Resolve INC-0117"),
+        ]
+    }
+    nodes2 = fuse(doc.payload(), ax2, frame=FRAME, target_id="t")
+    with pytest.raises(TargetAmbiguous):
+        resolve_ambiguity(rank(nodes2, "Resolve INC-0117"))
+
+
+def test_unnamed_form_control_falls_back_to_readable_name_or_id_only() -> None:
+    doc = _Doc()
+    body = doc.element("body")
+    heading = doc.element("h3", body, text="Dropdown List")
+    sel = doc.element("select", body, attrs={"id": "dropdown"})
+    noisy = doc.element("select", body, attrs={"id": ":r0:"})
+    hashed = doc.element("input", body, attrs={"id": "field-8f92a01b", "type": "text"})
+    labelled = doc.element("select", body, attrs={"id": "ignored_id", "aria-label": "Country"})
+    ax = {
+        "nodes": [
+            _ax(doc, heading, "heading", "Dropdown List"),
+            _ax(doc, sel, "combobox", ""),
+            _ax(doc, noisy, "combobox", ""),
+            _ax(doc, hashed, "textbox", ""),
+            _ax(doc, labelled, "combobox", "Country"),
+        ]
+    }
+    nodes = fuse(doc.payload(), ax, frame=FRAME, target_id="t")
+
+    assert nodes[sel].name == "dropdown"
+    assert nodes[sel].name_from_attr is True
+    assert nodes[sel].fingerprint()["name_source"] == "attr"
+    assert nodes[noisy].name == ""
+    assert nodes[hashed].name == ""
+    assert nodes[labelled].name == "Country"
+    assert nodes[labelled].name_from_attr is False
+
+    best = resolve_ambiguity(rank(nodes, "dropdown"))
+    assert best.node.tag == "select"

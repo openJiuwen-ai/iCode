@@ -90,8 +90,10 @@ globalThis.chrome = {
   },
   webNavigation: {
     onCommitted: event(),
+    onCreatedNavigationTarget: event(),
   },
   tabs: {
+    onCreated: event(),
     onRemoved: event(),
     create: async ({ url }) => ({ id: 50, windowId: 1, url }),
     get: async (tabId) => ({ id: tabId, windowId: 1, url: "https://example.com/" }),
@@ -618,4 +620,98 @@ test("dangerous CDP methods are refused and unlisted events are dropped", async 
   onEvent({ tabId: 88, sessionId: "child-1" }, "Log.entryAdded", { entry: { text: "secret" } });
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual(port.messages, []);
+});
+
+test("attach enables focus emulation and adopts allowed popups opened by owned tabs", async () => {
+  const handle = port.onMessage.listeners[0];
+  const onCreated = chrome.tabs.onCreated.listeners[0];
+  const onRemoved = chrome.tabs.onRemoved.listeners[0];
+  const sent = [];
+  const origSend = chrome.debugger.sendCommand;
+  const origGet = chrome.tabs.get;
+  localData.sitePermissions = { "https://example.com": "allow" };
+  chrome.debugger.sendCommand = async (target, method, params) => {
+    sent.push({ target, method, params });
+    return {};
+  };
+  chrome.tabs.get = async (tabId) => {
+    if (tabId === 101) {
+      return { id: 101, windowId: 2, url: "https://example.com/popup", title: "Popup" };
+    }
+    if (tabId === 102) {
+      return { id: 102, windowId: 2, url: "https://evil.invalid/steal", title: "Evil" };
+    }
+    return { id: tabId, windowId: 2, url: "https://example.com/video", title: "Owned" };
+  };
+  try {
+    port.messages.length = 0;
+    handle({ id: 120, method: "Target.attachToTarget", params: { targetId: "88" }, leaseId: "lease-tab" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.ok(
+      sent.some(
+        (c) =>
+          c.target.tabId === 88 &&
+          c.method === "Emulation.setFocusEmulationEnabled" &&
+          c.params &&
+          c.params.enabled === true
+      )
+    );
+
+    // 1. Allowed popup opened by owned tab 88 is adopted and announced.
+    port.messages.length = 0;
+    sent.length = 0;
+    onCreated({ id: 101, openerTabId: 88, pendingUrl: "https://example.com/popup", windowId: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const attached = port.messages.find((m) => m.method === "Target.attachedToTarget");
+    assert.ok(attached, JSON.stringify(port.messages));
+    assert.equal(attached.params.sessionId, "101");
+    assert.equal(attached.params.targetInfo.openerId, "88");
+    assert.equal(attached.params.targetInfo.type, "page");
+    assert.ok(
+      sent.some((c) => c.target.tabId === 101 && c.method === "Emulation.setFocusEmulationEnabled")
+    );
+
+    // 2. Unapproved popup origin is NOT adopted.
+    port.messages.length = 0;
+    onCreated({ id: 102, openerTabId: 88, pendingUrl: "https://evil.invalid/steal", windowId: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(
+      port.messages.find((m) => m.method === "Target.attachedToTarget"),
+      undefined
+    );
+
+    // 3. User-opened tab (opener not owned) is NOT adopted.
+    port.messages.length = 0;
+    onCreated({ id: 103, openerTabId: 999, pendingUrl: "https://example.com/user", windowId: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(
+      port.messages.find((m) => m.method === "Target.attachedToTarget"),
+      undefined
+    );
+
+    // 4. Popup opened from a background tab where Chrome sets wrong openerTabId
+    //    is still adopted via webNavigation.onCreatedNavigationTarget (true sourceTabId).
+    port.messages.length = 0;
+    const onCreatedNav = chrome.webNavigation.onCreatedNavigationTarget.listeners[0];
+    onCreatedNav({ tabId: 104, sourceTabId: 88, url: "https://example.com/bg-popup" });
+    onCreated({ id: 104, openerTabId: 999, pendingUrl: "https://example.com/bg-popup", windowId: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const attachedNav = port.messages.filter((m) => m.method === "Target.attachedToTarget");
+    assert.equal(attachedNav.length, 1);
+    assert.equal(attachedNav[0].params.sessionId, "104");
+    assert.equal(attachedNav[0].params.targetInfo.openerId, "88");
+
+    // 5. External close of adopted popup notifies Python via Target.detachedFromTarget.
+    port.messages.length = 0;
+    onRemoved(101);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const detached = port.messages.find((m) => m.method === "Target.detachedFromTarget");
+    assert.deepEqual(detached, {
+      method: "Target.detachedFromTarget",
+      params: { sessionId: "101", targetId: "101" },
+    });
+  } finally {
+    chrome.debugger.sendCommand = origSend;
+    chrome.tabs.get = origGet;
+  }
 });

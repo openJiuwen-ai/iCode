@@ -47,6 +47,7 @@ let policyWrite = Promise.resolve();
 let dnrWrite = Promise.resolve();
 const ownedTabs = new Set();
 const closingTabs = new Set();
+const adoptingTabs = new Set();
 const sessions = new Map(); // child sessionId -> { tabId, targetId, url }
 let bridgeReady = false;
 let bridgeLeaseId = null;
@@ -546,6 +547,91 @@ async function runCheckedProbeScript(target, params) {
   return (await chrome.debugger.sendCommand(target, "Page.addScriptToEvaluateOnNewDocument", { source })) || {};
 }
 
+async function enableFocusEmulation(tabId) {
+  try {
+    await chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true });
+  } catch {
+    // Best effort: older Chromium builds or minimal test doubles may not support it.
+  }
+}
+
+async function adoptPopupTab({ tabId, openerTabId, url = "" }) {
+  if (!port || tabId === undefined || openerTabId === undefined) return;
+  if (!ownedTabs.has(openerTabId) || ownedTabs.has(tabId) || closingTabs.has(tabId) || adoptingTabs.has(tabId)) return;
+  adoptingTabs.add(tabId);
+  try {
+    let initialUrl = url || "";
+    if (!initialUrl) {
+      try {
+        const t = await chrome.tabs.get(tabId);
+        initialUrl = (t && (t.pendingUrl || t.url)) || "";
+      } catch {
+        return;
+      }
+    }
+    if (isForeignExtension(initialUrl)) return;
+    if (!isSafeBlankUrl(initialUrl)) {
+      const state = await permissionFor(initialUrl);
+      if (state !== "allow") return;
+    }
+    const sourcePort = port;
+    await rememberOwned(tabId);
+    try {
+      await groupTab(tabId);
+    } catch {
+      // Best effort: popup windows may disallow tab grouping.
+    }
+    try {
+      await chrome.debugger.attach({ tabId }, "1.3");
+    } catch {
+      await forgetOwned(tabId);
+      return;
+    }
+    await enableFocusEmulation(tabId);
+    let currentTab = null;
+    try {
+      currentTab = await chrome.tabs.get(tabId);
+    } catch {
+      await forgetOwned(tabId);
+      return;
+    }
+    const finalUrl = (currentTab && (currentTab.url || currentTab.pendingUrl)) || initialUrl;
+    const allowed = !isForeignExtension(finalUrl) && (isSafeBlankUrl(finalUrl) || (await permissionFor(finalUrl)) === "allow");
+    if (!allowed || port !== sourcePort) {
+      closingTabs.add(tabId);
+      try {
+        await chrome.debugger.detach({ tabId });
+      } catch {
+        // Best effort.
+      } finally {
+        closingTabs.delete(tabId);
+      }
+      if (!allowed) await forgetOwned(tabId);
+      return;
+    }
+    postBridge(
+      {
+        method: "Target.attachedToTarget",
+        params: {
+          sessionId: String(tabId),
+          targetInfo: {
+            type: "page",
+            targetId: String(tabId),
+            openerId: String(openerTabId),
+            url: finalUrl,
+            title: (currentTab && currentTab.title) || "",
+          },
+          waitingForDebugger: false,
+        },
+        sessionId: null,
+      },
+      sourcePort
+    );
+  } finally {
+    adoptingTabs.delete(tabId);
+  }
+}
+
 async function handle(message, sourcePort = port) {
   if (!message || typeof message.method !== "string") return;
   const { id, method, params, sessionId } = message;
@@ -581,6 +667,7 @@ async function handle(message, sourcePort = port) {
     requireOwned(tabId);
     await assertTabPermission(tabId);
     await chrome.debugger.attach({ tabId }, "1.3");
+    await enableFocusEmulation(tabId);
     result = { sessionId: String(tabId) };
   } else if (method === "Target.closeTarget") {
     const tabId = Number(params && params.targetId);
@@ -968,9 +1055,31 @@ if (chrome.storage && chrome.storage.onChanged) {
   });
 }
 
+if (chrome.webNavigation && chrome.webNavigation.onCreatedNavigationTarget) {
+  chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
+    if (!details) return;
+    void adoptPopupTab({ tabId: details.tabId, openerTabId: details.sourceTabId, url: details.url || "" });
+  });
+}
+
+if (chrome.tabs && chrome.tabs.onCreated) {
+  chrome.tabs.onCreated.addListener((tab) => {
+    if (!tab) return;
+    void adoptPopupTab({ tabId: tab.id, openerTabId: tab.openerTabId, url: tab.pendingUrl || tab.url || "" });
+  });
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
+  const wasOwned = ownedTabs.has(tabId);
+  const wasClosing = closingTabs.has(tabId);
   void forgetOwned(tabId);
   forgetSessions(tabId);
+  if (wasOwned && !wasClosing && port) {
+    postBridge({
+      method: "Target.detachedFromTarget",
+      params: { sessionId: String(tabId), targetId: String(tabId) },
+    });
+  }
 });
 
 chrome.runtime.onStartup.addListener(async () => {

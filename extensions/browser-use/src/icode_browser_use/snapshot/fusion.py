@@ -131,6 +131,8 @@ class FusedNode:
     """The ``href`` attribute of an ``<a>``/``<area>``, as written in the DOM."""
     name_from_href: bool = False
     """``name`` is the link's ``href`` (no accessible name): it is a path, not page text."""
+    name_from_attr: bool = False
+    """``name`` fell back to a human-readable ``name``/``id`` attribute on an unnamed form control."""
     parent_backend_id: int = 0
     """``backend_node_id`` of the direct DOM parent element (0 for the document root)."""
     ancestor_ids: tuple[int, ...] = ()
@@ -147,6 +149,8 @@ class FusedNode:
         fingerprint = {"role": self.role, "name": _fp_name(self.name), "tag": self.tag, "nth": str(self.nth)}
         if self.name_from_href:
             fingerprint["name_source"] = "href"
+        elif self.name_from_attr:
+            fingerprint["name_source"] = "attr"
         elif self.name_from_ax:
             fingerprint["name_source"] = "ax"
         return fingerprint
@@ -259,8 +263,21 @@ _IMAGE_LABEL_DEPTH = 3
 #: label: ``cursor: pointer`` is inherited, so plain wrappers inside a link would
 #: otherwise be named too.
 _IMAGE_LABEL_ROLES = frozenset({"link", "button"})
+_FORM_CONTROL_TAGS = frozenset({"select", "input", "textarea"})
+_READABLE_ATTR_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,39}$")
+_HEX_HASH_RE = re.compile(r"[0-9a-f]{8,}", re.IGNORECASE)
 _HREF_NAME_LIMIT = 120
 _UNNAMEABLE_HREF_SCHEMES = ("javascript:", "data:", "blob:")
+
+
+def _readable_control_attr(raw: str) -> str:
+    """Return a clean ``name``/``id`` attribute for an unnamed form control, or ``""``."""
+    val = (raw or "").strip()
+    if not val or not _READABLE_ATTR_RE.fullmatch(val):
+        return ""
+    if sum(ch.isdigit() for ch in val) > 3 or _HEX_HASH_RE.search(val):
+        return ""
+    return val
 
 
 def _image_labels(nodes_section: dict[str, Any], strings: list[Any], parent_index: list[Any]) -> dict[int, str]:
@@ -638,6 +655,7 @@ def _fuse_document(
             strings=strings,
         )
         name_from_href = False
+        name_from_attr = False
         if not name:
             # Icon-only controls: the AX name is empty, so fall back to the labels the
             # DOM still carries (a wrapped image's only for a link/button, so plain
@@ -649,6 +667,16 @@ def _fuse_document(
                 or attrs.get("title", "").strip()
                 or (image_labels.get(position, "") if control else "")
             )
+            if not name and tag in _FORM_CONTROL_TAGS:
+                if placeholder:
+                    name = placeholder
+                else:
+                    attr_name = _readable_control_attr(attrs.get("name", "")) or _readable_control_attr(
+                        attrs.get("id", "")
+                    )
+                    if attr_name:
+                        name = attr_name
+                        name_from_attr = True
             if not name:
                 name = _href_name(href)
                 name_from_href = bool(name)
@@ -675,6 +703,7 @@ def _fuse_document(
                 cdp_session_id=cdp_session_id,
                 href=href,
                 name_from_href=name_from_href,
+                name_from_attr=name_from_attr,
                 parent_backend_id=parent_backend_id,
                 ancestor_ids=ancestor_ids,
                 name_from_ax=bool(ax_name),
