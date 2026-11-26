@@ -1352,6 +1352,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def on_resize(self, event: Resize) -> None:
         self._set_theme_editor_compact(self.theme_editor is not None and event.size.width < 128)
+        self._fit_sidebar()
         # The quote pill sits where its drag ended; a new layout moves the text away from it. The selection stays.
         self._hide_quote_popup()
 
@@ -1366,6 +1367,15 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self.app.stylesheet.update_nodes((self.query_one(ChatColumn), self.query_one(ChatPanel)))
         if self.theme_editor is not None and self.theme_editor.is_mounted:
             self.theme_editor.update_node_styles(animate=False)
+        # The compact editor changes the chat column's minimum, which the sidebar's room follows.
+        self._fit_sidebar()
+
+    def _fit_sidebar(self) -> None:
+        # The chat column's ``min-width`` (the workflow panel's is the same): the sidebar gets what is left.
+        size = self.size
+        main_min_width = self.query_one(ChatColumn).styles.min_width
+        main = 0 if main_min_width is None else int(main_min_width.resolve(size, size))
+        self.query_one(SidebarPanel).fit_beside(size.width - main)
 
     def on_screen_suspend(self, _event: ScreenSuspend) -> None:
         """Stop suggestion animation while an overlay covers this screen."""

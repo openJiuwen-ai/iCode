@@ -23,7 +23,7 @@ from textual.events import Click, MouseScrollDown, MouseScrollUp
 from textual.message import Message
 from textual.messages import Prune
 from textual.widget import Widget
-from textual.widgets import Button, Static
+from textual.widgets import Button, Static, Tab, TabbedContent, Tabs
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.main.commands import SlashCommandActions
@@ -49,12 +49,14 @@ from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult, Wor
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.app.tui.widgets.loading import RunningTitle
+from chrys.app.tui.widgets.sidebar.panel import TabOverflowMark
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.service.approval.policy import ApprovalMode
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -877,6 +879,37 @@ async def click_when_settled(
     await pilot.pause()
     await wait_for(takes_the_click, pilot=pilot, description=f"{target!r} can take a click")
     assert await pilot.click(found[0], offset=offset, **modifiers)
+
+
+async def click_sidebar_tab(pilot: Pilot, sidebar: Widget, tab: Tab) -> None:
+    """Click *tab*'s label, first bringing it into view through the overflow mark on its side.
+
+    While the tabs overflow, a label can sit partly or entirely past either edge
+    of the strip; a user reaches it through the mark on that side. Activating a
+    tab scrolls the strip with an animation, so each check waits until it stops.
+    """
+    tabs = sidebar.query_one(TabbedContent).query_one(Tabs)
+    strip = tabs.query_one("#tabs-scroll")
+    animator = pilot.app.animator
+
+    def at_rest() -> bool:
+        return not animator.is_being_animated(strip, "scroll_x") and screen_is_settled(pilot.app, pilot.app.screen)
+
+    await wait_for(at_rest, pilot=pilot, description="tab strip at rest")
+    while not (
+        strip.content_region.x <= tab.content_region.x and tab.content_region.right <= strip.content_region.right
+    ):
+        side = "left" if tab.content_region.x < strip.content_region.x else "right"
+        mark = sidebar.query_one(f"#sidebar-tabs-overflow-{side}", TabOverflowMark)
+        assert mark.active, f"{tab.label_text} is cut on the {side} but that mark is not lit"
+        before = strip.scroll_x
+        await click_when_settled(pilot, mark)
+        await wait_for(
+            lambda before=before: strip.scroll_x != before and at_rest(),
+            pilot=pilot,
+            description=f"the {side} mark slides the strip",
+        )
+    await click_when_settled(pilot, tab, offset=(tab.styles.padding.left, 0))
 
 
 def delay_resize_dispatch(app: App[None], monkeypatch: pytest.MonkeyPatch, delay: float) -> None:

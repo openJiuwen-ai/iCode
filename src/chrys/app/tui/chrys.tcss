@@ -263,12 +263,17 @@ App:ansi .config-add-button.config-add-button-compact.-active {
 
 /* Shared control styling */
 
-App Tab {
+App Tab,
+App TabOverflowMark {
     color: $foreground 75%;
 }
-App:ansi Tab {
+App:ansi Tab,
+App:ansi TabOverflowMark {
     color: $foreground 60%;
     text-style: none;
+}
+App TabOverflowMark.-active:hover {
+    color: $foreground;
 }
 App Tab.-active {
     color: $foreground;

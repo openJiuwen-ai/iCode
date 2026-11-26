@@ -41,7 +41,7 @@ from tests.app.tui.screens.main._workflow_support import (
 )
 from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import click_when_settled, resize_when_settled
+from tests.support.tui_helpers import click_sidebar_tab, click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 from tests.support.workflow_workers import python_workflow
 
@@ -369,7 +369,7 @@ async def test_workflow_sidebar_hides_chat_tabs_and_restores_selection(
         assert main is not None
         sidebar = main.query_one(SidebarPanel)
         tabs = sidebar.query_one(TabbedContent)
-        await click_when_settled(pilot, tabs.get_tab(chat_tab))
+        await click_sidebar_tab(pilot, sidebar, tabs.get_tab(chat_tab))
         await wait_for(lambda: tabs.active == chat_tab, pilot=pilot)
         await switch_mode(main, pilot)
         expected = "tab-debug"
