@@ -84,6 +84,8 @@ The INFO field `policy_candidate` shows whether the AST and YAML rules qualify b
 
 Bash expansions are checked in the original source. For example, `grep -F '$DEMO_TOKEN' README.md` searches for literal text. Sensitive paths found in decoded arguments still require approval. The sensitive-data check also inspects source explicitly passed to `eval` or to a recognized shell with `-c`, including common `timeout`, `nice` and `xargs` forms. These commands DEFER from the structured shortcut.
 
+If Pre-Judge cannot tell which command a recognized wrapper may run, diagnostics record `reason=unresolved_carrier`. In enforce mode the call still requires approval, even with `shell: auto` or an empty ruleset. Shadow logs the same finding and leaves approval behavior unchanged.
+
 ### Compatibility and limitations
 
 DEFER delegates to the existing read-only checker; it does not reimplement that checker as a second YAML engine. Its existing capabilities and limitations are retained, including shell-specific handling. This shortcut remains separate from the `shell_filter: read_only` preset, which has different semantics. The AST layer does not certify a glob as a fully resolved `argv_exact` vector, even when the legacy shortcut independently approves the command. Compatibility tests cover representative cases; they are not a proof of safety for every possible command.

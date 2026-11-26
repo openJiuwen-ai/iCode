@@ -513,18 +513,31 @@ async def test_literal_dollar_argv_preserves_readonly_approval(tmp_path, monkeyp
 @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
 @pytest.mark.parametrize("matches", [False, True])
 @pytest.mark.parametrize(
-    ("command", "head", "source_sensitive"),
+    ("command", "head", "detected"),
     [
-        ("eval 'echo' '$DEMO_TOKEN'", "eval", False),
-        ("timeout -s TERM 5 bash -c 'echo $DEMO_TOKEN'", "timeout", False),
-        ("bash --noprofile -c 'echo $DEMO_TOKEN'", "bash", True),
-        ("nice -n 5 /bin/bash -c 'echo $DEMO_TOKEN'", "nice", False),
-        ("xargs -n1 bash -c 'echo $DEMO_TOKEN'", "xargs", False),
+        ("eval 'echo' '$DEMO_TOKEN'", "eval", "decoded"),
+        ("timeout -s TERM 5 bash -c 'echo $DEMO_TOKEN'", "timeout", "decoded"),
+        ("bash --noprofile -c 'echo $DEMO_TOKEN'", "bash", "source"),
+        ("nice -n 5 /bin/bash -c 'echo $DEMO_TOKEN'", "nice", "decoded"),
+        ("xargs -n1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded"),
+        pytest.param("xargs -0 -r -n 1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="xargs-separate"),
+        pytest.param("xargs -0rn 1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="xargs-grouped"),
+        pytest.param("xargs -0rn1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="xargs-attached"),
+        pytest.param("xargs '--replace={}' bash -c 'echo $DEMO_TOKEN'", "xargs", "unresolved", id="xargs-unresolved"),
+        pytest.param(
+            "xargs \"$GROUP_FLAGS\" bash -c 'echo $DEMO_TOKEN'", "xargs", "unresolved", id="xargs-dynamic-options"
+        ),
+        pytest.param(
+            "timeout 5 xargs '--replace={}' bash -c 'echo $DEMO_TOKEN'",
+            "timeout",
+            "unresolved",
+            id="nested-unresolved",
+        ),
+        pytest.param("xargs --version", "xargs", "clear", id="xargs-version"),
+        pytest.param("xargs -0rn1 grep -F '$DEMO_TOKEN'", "xargs", "clear", id="xargs-literal"),
     ],
 )
-async def test_carrier_source_sensitivity_is_enforce_only(
-    monkeypatch, caplog, mode, matches, command, head, source_sensitive
-):
+async def test_carrier_source_sensitivity_is_enforce_only(monkeypatch, caplog, mode, matches, command, head, detected):
     require_grammars("tree_sitter", "tree_sitter_bash")
     rules = (Rule("carrier", Route.ALLOW, Matcher("argv_first", (head,))),) if matches else ()
     policy = Policy(mode, "carrier-policy", rules)
@@ -532,8 +545,6 @@ async def test_carrier_source_sensitivity_is_enforce_only(
     observed = route(command, "bash", policy)
     assert observed.route is Route.DEFER
     assert observed.policy_candidate is Route.DEFER
-    assert observed.sensitive is (mode != "off")
-    assert observed.decoded_sensitive_target is (mode != "off" and not source_sensitive)
 
     tool = bound_bash_tool()
     bus = EventBus()
@@ -550,7 +561,7 @@ async def test_carrier_source_sensitivity_is_enforce_only(
     try:
         with caplog.at_level(logging.INFO, logger=approval_module._prejudge_logger.name):
             await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
-        if mode == "enforce" or source_sensitive:
+        if detected == "source" or (mode == "enforce" and detected != "clear"):
             assert len(requests) == 1
             (decision,) = middleware.drain_decisions()
             assert decision["status"] == "user_rejected"
@@ -560,10 +571,17 @@ async def test_carrier_source_sensitivity_is_enforce_only(
             assert not middleware.drain_decisions()
             execute.assert_awaited_once()
         if mode != "off":
-            assert f"{mode} route=defer reason=sensitive_target" in caplog.text
-            assert f"decoded_sensitive_target={str(not source_sensitive).lower()}" in caplog.text
+            reason = {"unresolved": "unresolved_carrier", "clear": "opaque_carrier"}.get(detected, "sensitive_target")
+            assert f"{mode} route=defer reason={reason}" in caplog.text
+            assert f"decoded_sensitive_target={str(detected == 'decoded').lower()}" in caplog.text
+            assert f"unresolved_carrier={str(detected == 'unresolved').lower()}" in caplog.text
+            assert command not in caplog.text
     finally:
         await middleware.close()
+
+    assert observed.sensitive is (mode != "off" and detected in {"decoded", "source"})
+    assert observed.decoded_sensitive_target is (mode != "off" and detected == "decoded")
+    assert observed.unresolved_carrier is (mode != "off" and detected == "unresolved")
 
 
 async def test_bypass_skips_invalid_policy_loading_and_shadow(monkeypatch, caplog):

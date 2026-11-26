@@ -118,7 +118,28 @@ _ENV_OPTIONS_WITH_VALUES = frozenset({"-u", "--unset", "-C", "--chdir"})
 _MAX_SHELL_INDIRECTION_ANALYSIS_CHARS = 8192
 _MAX_SHELL_SENSITIVE_RECURSION = 3
 _CARRIER_OPTIONS = {
+    "command": ({"-p", "-v", "-V"}, set()),
+    "env": ({"-i", "--ignore-environment", "-0", "--null"}, _ENV_OPTIONS_WITH_VALUES),
     "nice": (set(), {"-n", "--adjustment"}),
+    "sudo": (
+        {
+            "-A",
+            "--askpass",
+            "-b",
+            "--background",
+            "-E",
+            "--preserve-env",
+            "-H",
+            "--set-home",
+            "-n",
+            "--non-interactive",
+            "-P",
+            "--preserve-groups",
+            "-S",
+            "--stdin",
+        },
+        _SUDO_OPTIONS_WITH_VALUES - {"--askpass"},
+    ),
     "timeout": ({"--foreground", "--preserve-status", "-v", "--verbose"}, {"-s", "--signal", "-k", "--kill-after"}),
     "xargs": (
         {"-0", "--null", "-r", "--no-run-if-empty", "-t", "--verbose", "-x", "--exit"},
@@ -420,8 +441,8 @@ def _posix_sudo_target_index(segment: Sequence[str], index: int) -> int:
     return index
 
 
-def _carrier_target_index(segment: Sequence[str], index: int, carrier: str) -> int:
-    """Locate the command after documented options of a recognized carrier."""
+def _carrier_target_index(segment: Sequence[str], index: int, carrier: str) -> int | None:
+    """Return the command index, len(segment) for a known no-command form, or None."""
     flags, values = _CARRIER_OPTIONS[carrier]
     index += 1
     while index < len(segment) and segment[index].startswith("-"):
@@ -429,25 +450,61 @@ def _carrier_target_index(segment: Sequence[str], index: int, carrier: str) -> i
         index += 1
         if option == "--":
             break
-        if option in values:
-            index += 1
-        elif (
-            option in flags
-            or (option.startswith("--") and option.partition("=")[0] in values and "=" in option)
-            or (not option.startswith("--") and len(option) > 2 and option[:2] in values)
-            or (carrier == "nice" and option[1:].isdecimal())
-        ):
+        if carrier != "command" and option in {"--help", "--version"}:
+            return len(segment)
+        if (carrier == "nice" and option[1:].isdecimal()) or (carrier == "env" and option == "-"):
             continue
+        if option == "-":
+            index -= 1
+            break
+
+        value = None
+        takes_value = False
+        if option.startswith("--"):
+            name, separator, attached = option.partition("=")
+            if name in values:
+                takes_value = True
+                value = attached if separator else None
+            elif option not in flags:
+                return None
         else:
-            return len(segment)
+            for end, char in enumerate(option[1:], start=2):
+                name = "-" + char
+                if name in values:
+                    takes_value = True
+                    value = option[end:] if end < len(option) else None
+                    break
+                if name not in flags:
+                    return None
+                if carrier == "command" and name in {"-v", "-V"}:
+                    return len(segment)
+        if takes_value:
+            if value is None:
+                if index >= len(segment):
+                    return None
+                value = segment[index]
+                index += 1
+            if not value or value == "--":
+                return None
+
+    if carrier in {"env", "sudo"}:
+        while index < len(segment) and _POSIX_ENV_ASSIGNMENT_RE.fullmatch(segment[index]):
+            index += 1
+        if index >= len(segment):
+            return None
     if carrier == "timeout":
-        if index >= len(segment) or not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)[smhd]?", segment[index]):
-            return len(segment)
+        if index + 1 >= len(segment) or not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)[smhd]?", segment[index]):
+            return None
         index += 1
+    # xargs has a fixed default command (echo). nice and command are inert without a command.
     return index
 
 
-def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: bool) -> int:
+def _decoded_executable_name(word: str) -> str:
+    return os.path.normcase(os.path.basename(word)).removesuffix(".exe")
+
+
+def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: bool) -> int | None:
     """Return the executable position after recognized wrappers."""
     index = 0
     while index < len(segment):
@@ -456,20 +513,22 @@ def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: 
         if index >= len(segment):
             return index
 
-        wrapper_name = os.path.basename(segment[index])
-        if decoded_carriers:
-            wrapper_name = wrapper_name.removesuffix(".exe")
-            if wrapper_name in _CARRIER_OPTIONS:
-                index = _carrier_target_index(segment, index, wrapper_name)
-                continue
+        word = segment[index]
+        wrapper_name = _decoded_executable_name(word) if decoded_carriers else os.path.basename(word)
+        if decoded_carriers and wrapper_name in _CARRIER_OPTIONS:
+            target = _carrier_target_index(segment, index, wrapper_name)
+            if target is None:
+                return None
+            # An external wrapper executes its command operand, even if it contains '='.
+            if target < len(segment) and _POSIX_ENV_ASSIGNMENT_RE.fullmatch(segment[target]):
+                return target
+            index = target
+            continue
         if wrapper_name == "env":
             index = _posix_env_command_target_index(segment, index)
             continue
         if wrapper_name == "command":
-            target = _posix_command_builtin_target_index(segment, index)
-            if decoded_carriers and any(token not in {"-p", "--"} for token in segment[index + 1 : target]):
-                return len(segment)
-            index = target
+            index = _posix_command_builtin_target_index(segment, index)
             continue
         if wrapper_name == "sudo":
             index = _posix_sudo_target_index(segment, index)
@@ -480,18 +539,21 @@ def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: 
 
 def _posix_shell_payloads(
     segments: Iterable[Sequence[str]], *, shell_name: str, decoded_carriers: bool
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str] | None]:
     """Extract arguments that a recognized command interprets as shell source."""
-    payloads: list[tuple[str, str]] = []
+    payloads: list[tuple[str, str] | None] = []
     for segment in segments:
         index = _posix_unwrapped_command_index(segment, decoded_carriers=decoded_carriers)
+        if index is None:
+            payloads.append(None)
+            continue
         if index >= len(segment):
             continue
 
         if (
             decoded_carriers
             and segment[index] == "eval"
-            and all(word in {"command", "-p", "--"} for word in segment[:index])
+            and all(word in {"command", "--"} or re.fullmatch(r"-p+", word) for word in segment[:index])
         ):
             args = segment[index + 1 :]
             if args and args[0] == "--":
@@ -501,9 +563,8 @@ def _posix_shell_payloads(
                 payloads.append((shell_name, " ".join(args)))
             continue
 
-        nested_shell = os.path.basename(segment[index])
-        if decoded_carriers:
-            nested_shell = nested_shell.removesuffix(".exe")
+        word = segment[index]
+        nested_shell = _decoded_executable_name(word) if decoded_carriers else os.path.basename(word)
         if nested_shell not in POSIX_SHELL_NAMES:
             continue
 
@@ -513,6 +574,8 @@ def _posix_shell_payloads(
             if option == "-c" or (option.startswith("-") and not option.startswith("--") and "c" in option[1:]):
                 if option_index + 1 < len(segment):
                     payloads.append((nested_shell, segment[option_index + 1]))
+                elif decoded_carriers:
+                    payloads.append(None)
                 break
             if option == "--":
                 break
@@ -529,55 +592,74 @@ def _posix_shell_payloads(
     return payloads
 
 
+def _source_payloads_may_access_sensitive_data(
+    payloads: Iterable[tuple[str, str] | None], *, depth: int, decoded_carriers: bool
+) -> bool | None:
+    unresolved = False
+    for payload in payloads:
+        if payload is None:
+            unresolved = True
+            continue
+        nested_shell, command = payload
+        sensitive = _shell_command_may_access_sensitive_data(
+            command, shell_name=nested_shell, depth=depth, decoded_carriers=decoded_carriers
+        )
+        if sensitive is True:
+            return True
+        unresolved |= sensitive is None
+    return None if unresolved else False
+
+
 def _posix_command_indirection_may_access_sensitive_data(
     command: str, *, shell_name: str, depth: int, decoded_carriers: bool
-) -> bool:
+) -> bool | None:
     """Return True if shell indirection executes sensitive env access."""
     if depth >= _MAX_SHELL_SENSITIVE_RECURSION:
-        return False
+        return None if decoded_carriers else False
     if len(command) > _MAX_SHELL_INDIRECTION_ANALYSIS_CHARS:
         return True
     payloads = _posix_shell_payloads(
         _posix_command_segments(command), shell_name=shell_name, decoded_carriers=decoded_carriers
     )
     payloads.extend((shell_name, payload) for payload in _posix_substitution_payloads(command))
-    return any(
-        _shell_command_may_access_sensitive_data(
-            payload, shell_name=nested_shell, depth=depth + 1, decoded_carriers=decoded_carriers
-        )
-        for nested_shell, payload in payloads
-    )
+    return _source_payloads_may_access_sensitive_data(payloads, depth=depth + 1, decoded_carriers=decoded_carriers)
 
 
 def _shell_command_may_access_sensitive_data(
     command: str, *, shell_name: str, depth: int, decoded_carriers: bool = False
-) -> bool:
+) -> bool | None:
     """Recursive implementation for shell sensitive-data classification."""
     powershell_env_access = shell_name in ("pwsh", "powershell") and _POWERSHELL_ENV_ACCESS_RE.search(command)
     posix_env_access = shell_name in ("", "bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "git_bash")
     windows_env_access = shell_name in ("", "cmd")
-    return bool(
+    if (
         _ENV_DUMP_RE.search(command)
         or powershell_env_access
         or (posix_env_access and _posix_command_references_sensitive_env(command))
-        or (
-            posix_env_access
-            and _posix_command_indirection_may_access_sensitive_data(
-                command, shell_name=shell_name, depth=depth, decoded_carriers=decoded_carriers
-            )
-        )
         or (windows_env_access and _windows_command_references_sensitive_env(command))
         or target_may_access_sensitive_data(command)
-    )
+    ):
+        return True
+    if posix_env_access:
+        return _posix_command_indirection_may_access_sensitive_data(
+            command, shell_name=shell_name, depth=depth, decoded_carriers=decoded_carriers
+        )
+    return False
 
 
 def shell_command_may_access_sensitive_data(command: str, *, shell_name: str = "") -> bool:
     """Return True when a read-only-looking shell command should still be judged."""
-    return _shell_command_may_access_sensitive_data(command, shell_name=shell_name, depth=0)
+    return _shell_command_may_access_sensitive_data(command, shell_name=shell_name, depth=0) is True
 
 
-def shell_argv_may_access_sensitive_data(argv: tuple[str, ...], *, shell_name: str) -> bool:
-    """Inspect decoded argv in addition to the original shell source."""
+def shell_argv_may_access_sensitive_data(
+    argv: tuple[str, ...], *, shell_name: str, complete: bool = True
+) -> bool | None:
+    """Inspect decoded argv, returning None when a carrier's command cannot be located."""
+    if not complete:
+        if argv and shell_name in {"bash", "git_bash"} and _decoded_executable_name(argv[0]) in _CARRIER_OPTIONS:
+            return None
+        return False
     for token in argv:
         if target_may_access_sensitive_data(token):
             return True
@@ -594,9 +676,10 @@ def shell_argv_may_access_sensitive_data(argv: tuple[str, ...], *, shell_name: s
             target = next((arg for arg in argv[1:] if not _POSIX_ENV_ASSIGNMENT_RE.fullmatch(arg)), "")
             if not target or target.startswith("-") or target in {"env", "printenv"}:
                 return True
-        return any(
-            _shell_command_may_access_sensitive_data(payload, shell_name=nested_shell, depth=0, decoded_carriers=True)
-            for nested_shell, payload in _posix_shell_payloads((argv,), shell_name=shell_name, decoded_carriers=True)
+        return _source_payloads_may_access_sensitive_data(
+            _posix_shell_payloads((argv,), shell_name=shell_name, decoded_carriers=True),
+            depth=0,
+            decoded_carriers=True,
         )
     return False
 

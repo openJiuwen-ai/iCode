@@ -447,7 +447,8 @@ class ApprovalMiddleware(FunctionMiddleware):
                     observed = route(cmd, tool_name, self._prejudge)
                     sensitive = sensitive_shell or observed.sensitive
                     if mode == "enforce":
-                        sensitive_shell = sensitive
+                        # Use the sensitive-data approval path when the carrier may run uninspected source.
+                        sensitive_shell = sensitive or observed.unresolved_carrier
                     reason = observed.reason_code
                     if sensitive:
                         reason = "sensitive_target"
@@ -470,7 +471,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                                 reason = "untrusted_launch_context"
                     _prejudge_logger.info(
                         "%s route=%s reason=%s policy=%s digest=%s rules=%s spans=%s "
-                        "policy_candidate=%s decoded_sensitive_target=%s",
+                        "policy_candidate=%s decoded_sensitive_target=%s unresolved_carrier=%s",
                         mode,
                         Route.ALLOW if prepared_shell is not None else Route.DEFER,
                         reason,
@@ -480,6 +481,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                         observed.matched_node_spans,
                         observed.policy_candidate,
                         "true" if observed.decoded_sensitive_target else "false",
+                        "true" if observed.unresolved_carrier else "false",
                     )
                 except Exception as exc:
                     prepared_shell = None

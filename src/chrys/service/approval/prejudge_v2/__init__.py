@@ -73,6 +73,7 @@ class PreJudgeResult:
     sensitive: bool = False
     decoded_sensitive_target: bool = False
     policy_candidate: Route = Route.DEFER
+    unresolved_carrier: bool = False
 
 
 MatcherField = Literal["argv_exact", "argv_first"]
@@ -577,6 +578,7 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
     reason = analysis.unsupported[0] if analysis.unsupported else "unmatched_unit"
     raw_sensitive = shell_command_may_access_sensitive_data(command, shell_name=dialect)
     argv_sensitive = False
+    unresolved_carrier = False
     for node in analysis.executable_nodes:
         allowed = False
         for rule in policy.rules:
@@ -587,13 +589,16 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
                 allowed = True
         if not allowed:
             all_allowed = False
-        if node.argv is not None and shell_argv_may_access_sensitive_data(node.argv, shell_name=dialect):
-            argv_sensitive = True
+        classified = shell_argv_may_access_sensitive_data(
+            node.argv or node.prefix, shell_name=dialect, complete=node.argv is not None
+        )
+        argv_sensitive |= classified is True
+        unresolved_carrier |= classified is None
     policy_candidate = Route.ALLOW if all_allowed else Route.DEFER
     sensitive = raw_sensitive or argv_sensitive
-    if sensitive:
+    if sensitive or unresolved_carrier:
         all_allowed = False
-        reason = "sensitive_target"
+        reason = "sensitive_target" if sensitive else "unresolved_carrier"
     return PreJudgeResult(
         Route.ALLOW if all_allowed else Route.DEFER,
         "all_units_allowed" if all_allowed else reason,
@@ -605,4 +610,5 @@ def route(command: str, dialect: str, policy: Policy) -> PreJudgeResult:
         sensitive,
         argv_sensitive and not raw_sensitive,
         policy_candidate,
+        unresolved_carrier,
     )

@@ -84,6 +84,8 @@ INFO 日志的 `policy_candidate` 表示 AST 和 YAML 规则在敏感目标及�
 
 Bash 展开在原始命令文本中检查。例如，`grep -F '$DEMO_TOKEN' README.md` 搜索的是字面文本。解码参数中发现的敏感路径仍然需要审批。敏感数据检查也会分析显式传给 `eval` 或已识别 Shell 的 `-c` 参数的源码，包括常见的 `timeout`、`nice` 和 `xargs` 用法。这些命令会从结构化快捷审批 DEFER。
 
+如果 Pre-Judge 无法确定已识别的包装命令可能运行哪个子命令，诊断会记录 `reason=unresolved_carrier`。在 enforce 模式下，即使设置了 `shell: auto` 或规则集为空，调用仍然需要审批。Shadow 会记录相同的发现，审批行为保持不变。
+
 ### 兼容性与当前限制
 
 DEFER 直接复用既有只读检查器，而不再用另一套 YAML 引擎重写它。原有能力和限制均保留，包括各 Shell 的处理方式。这条快捷审批与 `shell_filter: read_only` 预设相互独立，两者语义不同。即使原有快捷审批允许某条命令，AST 层也不会把未展开的 glob 认定为完整的静态 `argv_exact` 参数。兼容性测试覆盖了代表性案例，并不证明所有可能命令都安全。
