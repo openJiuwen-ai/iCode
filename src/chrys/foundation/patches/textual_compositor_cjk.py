@@ -45,8 +45,9 @@ The raw terminal path therefore starts a strip that begins left of the span at
 the span's left edge, moved back to the start of a double-width character the
 edge divides.  The cells it no longer writes lie outside the dirty region, so
 the terminal already shows them. Widgets outside the dirty rectangle reserve their
-usual space on those rows without rendering. Use full-frame row origins when
-cutting a strip whose widths may differ across terminals. A terminal with an
+usual space on those rows without rendering. Replay width-dependent rows from
+column zero and repair a possible wrap on the following line. Use a full frame
+when the damage cannot be bounded. A terminal with an
 older Unicode table can advance just one column for a newer wide character.
 
 Upgrade warning: ``_compositor.py`` is one all-or-nothing patch group containing
@@ -73,7 +74,13 @@ from chrys.foundation.patches.patcher import FilePatch, register
 _RUNTIME_PATCH_MARKER = "_chrys_complete_cjk_compositor"
 _RUNTIME_PATCH_TEXTUAL_VERSION = "8.2.7"
 logger = logging.getLogger(__name__)
-_RUNTIME_HELPERS = ("_stable_character_width", "_has_stable_crop_widths")
+_RUNTIME_HELPERS = (
+    "_stable_character_width",
+    "_has_stable_crop_widths",
+    "_measure_repaint_strip",
+    "_measure_repaint_row",
+    "_render_width_dependent_update",
+)
 _RUNTIME_TARGETS = {
     "ChopsUpdate": ("__init__", "__rich_console__", "render_segments"),
     "Compositor": ("_get_renders", "render_full_update", "render_partial_update", "render_strips", "_render_chops"),
@@ -371,7 +378,9 @@ _TERMINAL_WIDTH_UPGRADE = FilePatch(
 )
 
 
-def _crop_width_patches(*, old_fragment: str, new_fragment: str, description: str) -> tuple[FilePatch, FilePatch]:
+def _crop_width_patches(
+    *, old_fragment: str, new_fragment: str, description: str, later: tuple[str, ...] = ()
+) -> tuple[FilePatch, FilePatch]:
     """Stage the earlier implementation, then upgrade it on new and existing installs."""
     previous = new_fragment.replace(
         "_has_stable_crop_widths(text)",
@@ -379,10 +388,20 @@ def _crop_width_patches(*, old_fragment: str, new_fragment: str, description: st
     )
     return (
         FilePatch(
-            "textual", "_compositor.py", old_fragment, previous, description, equivalent_fragments=(new_fragment,)
+            "textual",
+            "_compositor.py",
+            old_fragment,
+            previous,
+            description,
+            equivalent_fragments=(new_fragment, *later),
         ),
         FilePatch(
-            "textual", "_compositor.py", previous, new_fragment, "Recognize bare emoji when checking crop widths"
+            "textual",
+            "_compositor.py",
+            previous,
+            new_fragment,
+            "Recognize bare emoji when checking crop widths",
+            equivalent_fragments=later,
         ),
     )
 
@@ -611,6 +630,21 @@ _NEW_PARTIAL_UPDATE = """\
 # glyphs differently from Rich. Neither an absolute cursor move after it nor a
 # replay up to a guessed right column is safe. Preserve ChopsUpdate's contract
 # while emitting the same rows, at the same origins, as a full terminal frame.
+_BOUNDED_PARTIAL_UPDATE = """\
+        background_screens = visible_screen_stack.get([]).copy()
+        chops = self._render_chops(crop, is_rendered_line)
+        for y, left, _right in spans:
+            if left <= 0:
+                continue
+            for x, strip in chops[y].items():
+                if x >= left:
+                    break
+                if strip is not None and left < x + strip.cell_length:
+                    text = strip.text
+                    if not _has_stable_crop_widths(text):
+                        return _render_width_dependent_update(self, crop, chops, spans, background_screens)
+        return ChopsUpdate(chops, spans)"""
+
 _FULL_FRAME_FOR_JOINED_TEXT, _FRAME_WIDTH_UPGRADE = _crop_width_patches(
     old_fragment=_NEW_PARTIAL_UPDATE,
     new_fragment="""\
@@ -639,6 +673,7 @@ _FULL_FRAME_FOR_JOINED_TEXT, _FRAME_WIDTH_UPGRADE = _crop_width_patches(
                 return ChopsUpdate(full_chops, [(y, 0, width) for y in range(screen_region.height)])
         return ChopsUpdate(chops, spans)""",
     description="Use complete frame rows when terminal-dependent widths prevent a left crop",
+    later=(_BOUNDED_PARTIAL_UPDATE,),
 )
 
 # ---------------------------------------------------------------------------
@@ -799,6 +834,159 @@ _COMPOSITION_UPGRADES = (
     FilePatch("textual", _TARGET, _NEW_RENDER_CHOPS, _FAST_RENDER_CHOPS, "Reuse fully owned strips"),
 )
 
+_REPAINT_HELPERS = r"""
+def _measure_repaint_strip(strip: Strip) -> tuple[int, bool] | None:
+    # Bound the advance on terminals using different Unicode width tables.
+    columns = 0
+    aligned = True
+    for segment in strip:
+        if segment.control:
+            return None
+        text = segment.text
+        if text.isascii():
+            if text and not text.isprintable():
+                return None
+            columns += len(text)
+            continue
+        for character in text:
+            width = _stable_character_width(character)
+            if width >= 0:
+                columns += width
+            elif character.isprintable() or character in ("\u00ad", "\u200d"):
+                # Terminals can display each component of a joined glyph separately.
+                columns += 2
+                aligned = False
+            else:
+                return None
+    return columns, aligned and columns == strip.cell_length
+
+
+def _measure_repaint_row(row, measurements) -> tuple[int, bool] | None:
+    columns = 0
+    aligned = True
+    for x, strip in row.items():
+        if strip is None or strip is _MERGED_STRIP:
+            continue
+        # The composed rows keep the immutable strips alive throughout this update.
+        key = id(strip)
+        measurement = measurements.get(key)
+        if measurement is None:
+            measurement = _measure_repaint_strip(strip)
+            if measurement is None:
+                return None
+            measurements[key] = measurement
+        advance, stable = measurement
+        aligned = aligned and x == columns and stable
+        columns += advance
+    return columns, aligned
+
+
+def _render_width_dependent_update(compositor, crop, chops, spans, background_screens):
+    screen = compositor.size.region
+    width, height = compositor.size
+
+    def render_rows(region, is_rendered_line):
+        # Rendering a modal may consume its background stack on each pass.
+        token = visible_screen_stack.set(background_screens.copy())
+        try:
+            return compositor._render_chops(region, is_rendered_line)
+        finally:
+            visible_screen_stack.reset(token)
+
+    def whole_row(row):
+        return {0: Strip((segment for strip in row.values() if strip is not None for segment in strip), width)}
+
+    dirty_rows = {y for y, _, _ in spans}
+    top = min(dirty_rows)
+    stop = min(height, max(dirty_rows) + 2)
+    # A left-hand widget can shift the physical origin of a different strip
+    # on the same row. Check those origins even when the dirty edge falls in
+    # an ASCII strip. Reuse the first pass except on rows where _get_renders
+    # substituted a blank for a horizontally omitted widget, or skipped a
+    # potential successor entirely.
+    successors = {y + 1 for y in dirty_rows if y + 1 < height}
+    complete_rows = dirty_rows | successors
+    missing = successors - dirty_rows
+    if crop.width < width:
+        for region, clip in compositor.visible_widgets.values():
+            if not crop.overlaps(clip):
+                first = max(top, region.y, clip.y)
+                last = min(stop, region.bottom, clip.bottom)
+                missing.update(dirty_rows.intersection(range(first, last)))
+    rows = list(chops)
+    if missing:
+        start = min(missing)
+        band = Region(0, start, width, max(missing) - start + 1)
+        complete = render_rows(band, missing.__contains__)
+        for y in missing:
+            rows[y] = complete[y]
+    whole_rows = set()
+    measurements = {}
+    repair_next = False
+    for y in range(top, stop):
+        if y not in dirty_rows and not repair_next:
+            continue
+        if y not in complete_rows:
+            # A second wrap can reach an uncomposed gap before a later dirty row.
+            break
+        measurement = _measure_repaint_row(rows[y], measurements)
+        if measurement is None:
+            break
+        columns, aligned = measurement
+        if repair_next or not aligned or columns > width:
+            whole_rows.add(y)
+        repair_next = columns > width
+        # A wide character at the right margin may leave a cell unused. A
+        # larger spill, or a line feed at the bottom margin, needs a full frame.
+        if repair_next and (columns > 2 * width - 1 or y >= height - 2):
+            break
+    else:
+        if not repair_next:
+            for y in whole_rows:
+                chops[y] = whole_row(rows[y])
+            retained = [span for span in spans if span[0] not in whole_rows]
+            retained.extend((y, 0, width) for y in whole_rows)
+            return ChopsUpdate(chops, sorted(retained))
+
+    if len(complete_rows) < height:
+        rows = render_rows(screen, _ALWAYS_TRUE)
+    return ChopsUpdate([whole_row(row) for row in rows], [(y, 0, width) for y in range(height)])
+"""
+
+_ROW_REPAINT_UPGRADES = (
+    FilePatch(
+        "textual",
+        _TARGET,
+        "            crop = Region.from_union(update_regions).intersection(screen_region)",
+        """\
+            dirty_bounds = Region.from_union(update_regions)
+            crop = dirty_bounds.intersection(screen_region)
+            if not crop:
+                return None
+            if crop != dirty_bounds:
+                # A resize can leave old widget regions beyond the new viewport.
+                update_regions = [visible for region in update_regions if (visible := region.intersection(crop))]
+                if not update_regions:
+                    return None
+                crop = Region.from_union(update_regions)""",
+        "Keep repaint spans within the current viewport after a resize",
+    ),
+    FilePatch(
+        "textual",
+        _TARGET,
+        "class ReflowResult(NamedTuple):",
+        _REPAINT_HELPERS.lstrip() + "\n\nclass ReflowResult(NamedTuple):",
+        "Bound terminal-dependent repaint widths and repair wrapped rows",
+    ),
+    FilePatch(
+        "textual",
+        _TARGET,
+        _FRAME_WIDTH_UPGRADE.new_fragment,
+        _BOUNDED_PARTIAL_UPDATE,
+        "Repaint only affected rows when terminal widths differ",
+    ),
+)
+
 _PATCHES = (
     _CROP_WIDTH_HELPER_PATCH,
     _TERMINAL_WIDTH_UPGRADE,
@@ -862,7 +1050,11 @@ _PATCHES = (
         old_fragment=_OLD_PARTIAL_UPDATE,
         new_fragment=_NEW_PARTIAL_UPDATE,
         description="Remove chop_ends from render_partial_update",
-        equivalent_fragments=(_FULL_FRAME_FOR_JOINED_TEXT.new_fragment, _FRAME_WIDTH_UPGRADE.new_fragment),
+        equivalent_fragments=(
+            _FULL_FRAME_FOR_JOINED_TEXT.new_fragment,
+            _FRAME_WIDTH_UPGRADE.new_fragment,
+            _BOUNDED_PARTIAL_UPDATE,
+        ),
     ),
     _FULL_FRAME_FOR_JOINED_TEXT,
     _FRAME_WIDTH_UPGRADE,
@@ -882,6 +1074,7 @@ _PATCHES = (
         equivalent_fragments=(_FAST_RENDER_CHOPS,),
     ),
     *_COMPOSITION_UPGRADES,
+    *_ROW_REPAINT_UPGRADES,
 )
 
 register(*_PATCHES)

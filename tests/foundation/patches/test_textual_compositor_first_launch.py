@@ -23,6 +23,7 @@ from tests.support.installed_packages import copy_installed_package
         "earlier-release",
         "previous-pr",
         "before-composition",
+        "before-row-repaint",
         "initial-pr",
         "bare-emoji-pr",
         "cached-pr",
@@ -50,9 +51,8 @@ def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode:
         textual_compositor_cjk._LEFT_WIDTH_UPGRADE,
         textual_compositor_cjk._FRAME_WIDTH_UPGRADE,
     )
-    before_composition = [
-        patch for patch in install_patches if patch not in textual_compositor_cjk._COMPOSITION_UPGRADES
-    ]
+    before_rows = [patch for patch in install_patches if patch not in textual_compositor_cjk._ROW_REPAINT_UPGRADES]
+    before_composition = [patch for patch in before_rows if patch not in textual_compositor_cjk._COMPOSITION_UPGRADES]
     previous_pr = [patch for patch in before_composition if patch not in width_upgrades]
     sidebar_fixes = (
         textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH,
@@ -65,6 +65,7 @@ def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode:
     installed = {
         "already-patched": install_patches,
         "before-composition": before_composition,
+        "before-row-repaint": before_rows,
         "initial-pr": earlier_release,
         "bare-emoji-pr": bare_emoji_pr,
         "cached-pr": bare_emoji_pr,
@@ -181,7 +182,9 @@ async def main():
             await pilot.pause()
             full = compositor.render_full_update().render_segments(console)
             compositor._dirty_regions.add(Region(3, 0, 2, 1))
-            assert compositor.render_partial_update().render_segments(console) == full
+            update = compositor.render_partial_update()
+            expected = full if title.startswith("✍") else full.split("\\n")[0]
+            assert update.render_segments(console) == expected
 
 asyncio.run(main())
 assert Compositor._render_chops is not original_render_chops

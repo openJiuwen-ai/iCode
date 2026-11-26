@@ -78,7 +78,7 @@ def _compile_staged_render_segments() -> Callable[[Any, Console], str]:
     helpers = [
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in textual_compositor_cjk._RUNTIME_HELPERS
+        if isinstance(node, ast.FunctionDef) and node.name in ("_has_stable_crop_widths", "_stable_character_width")
     ]
 
     namespace: dict[str, Any] = {
@@ -301,7 +301,7 @@ def test_render_segments_starts_at_the_dirty_span(
         ("🫱🏽‍", "🫲🏾", "abcdefghijklmnop", 20, (16, 17)),
     ],
 )
-async def test_partial_update_with_terminal_dependent_width_replays_the_full_frame(
+async def test_terminal_dependent_width_replays_complete_rows(
     _preserve_runtime_targets: None, prefix: str, styled: str, suffix: str, terminal_width: int, dirty: tuple[int, int]
 ) -> None:
     # The cursor can split a glyph across styles. Terminals may also advance
@@ -327,7 +327,15 @@ async def test_partial_update_with_terminal_dependent_width_replays_the_full_fra
         partial = compositor.render_partial_update()
 
     assert isinstance(partial, ChopsUpdate)
-    assert partial.render_segments(console) == full
+    # Preserve every segment and style from column zero, including a successor
+    # if these glyphs can wrap. Normal title updates spare unrelated rows.
+    origins = [y for y, left, right in partial.spans if (left, right) == (0, terminal_width)]
+    assert origins == list(range(len(partial.spans)))
+    if prefix in ("🫠 ", "🥹 "):
+        assert origins == [0]
+    elif prefix in ("✍ ", "🕵 "):
+        assert origins == [0, 1]
+    assert partial.render_segments(console) == "\n".join(full.split("\n")[: len(origins)])
 
 
 def test_left_crop_past_the_last_rendered_cell(_render_segments_implementation: str) -> None:
@@ -490,3 +498,240 @@ def test_crop_width_cache_reuses_codepoints_across_different_lines(_preserve_run
     after = cached_width.cache_info()
     assert after.misses == before.misses
     assert after.hits > before.hits
+
+
+@pytest.mark.parametrize(
+    ("row", "text", "expected_rows"),
+    [
+        (1, "🫠 title", [1]),
+        (1, "✍ title", [1, 2]),
+        (4, "✍ title", list(range(6))),
+        (1, "🏃🏽‍♀️" * 6, list(range(6))),
+    ],
+    ids=["local", "wrap", "bottom-margin", "unbounded-spill"],
+)
+async def test_width_dependent_repaint_preserves_row_origins(_preserve_runtime_targets, row, text, expected_rows):
+    class Rows(App[None]):
+        CSS = "Static { height: 1; width: 100%; }"
+
+        def compose(self) -> ComposeResult:
+            for y in range(6):
+                yield Static(text if y == row else f"row {y}", markup=False)
+
+    textual_compositor_cjk.apply_runtime_patch()
+    async with Rows().run_test(size=(12, 6)) as pilot:
+        compositor = pilot.app.screen._compositor
+        console = Console(force_terminal=True)
+        full = compositor.render_full_update().render_segments(console).split("\n")
+        compositor._dirty_regions.add(Region(3, row, 2, 1))
+        update = compositor.render_partial_update()
+        assert update is not None
+        assert update.spans == [(y, 0, 12) for y in expected_rows]
+        assert update.render_segments(console) == "\n".join(full[y] for y in expected_rows)
+
+
+async def test_sidebar_refresh_under_emoji_title_spares_unrelated_rows(
+    tmp_path, monkeypatch, _preserve_runtime_targets
+):
+    from textual.widgets import Input
+
+    from chrys.app.tui.screens.dialogs.session_title import SessionTitleDialog
+    from chrys.app.tui.widgets.chat.messages import AgentMessage, UserMessage
+    from chrys.app.tui.widgets.chat.panel import ChatPanel
+    from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
+    from tests.support.pilot_barrier import screen_is_settled
+    from tests.support.tui_app_harness import make_chrys_app
+    from tests.support.waiting import wait_for
+
+    textual_compositor_cjk.apply_runtime_patch()
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(82, 45)) as pilot:
+        main = app._main_screen
+        sidebar = main.query_one(SidebarPanel)
+        if not sidebar.display:
+            main.action_toggle_sidebar()
+        panel = main.query_one(ChatPanel)
+        for index in range(8):
+            await panel.mount(UserMessage(f"问题 {index}"), AgentMessage(f"## Answer {index}\n\nA **paragraph**."))
+        dialog = SessionTitleDialog(custom_title="🫠 Investigate sidebar repaint regression")
+        await app.push_screen(dialog)
+        await wait_for(lambda: dialog.is_mounted and screen_is_settled(app, dialog), pilot=pilot)
+        field = dialog.query_one(Input)
+        field.cursor_blink = False
+        await pilot.press("home", "right", "right", "right")
+        title_y = field.content_region.y
+        assert field.content_region.x < sidebar.region.x < field.content_region.right
+
+        compositor = dialog._compositor
+        render_chops = compositor._render_chops
+        render_uncertain = compositor_mod._render_width_dependent_update
+        repaint_bands = []
+
+        def record_passes(comp, crop, chops, spans, backgrounds):
+            if comp is not compositor or crop != sidebar.region:
+                return render_uncertain(comp, crop, chops, spans, backgrounds)
+            bands = []
+            repaint_bands.append(bands)
+
+            def record_band(region, is_rendered_line):
+                bands.append(region)
+                return render_chops(region, is_rendered_line)
+
+            with monkeypatch.context() as scope:
+                scope.setattr(comp, "_render_chops", record_band)
+                return render_uncertain(comp, crop, chops, spans, backgrounds)
+
+        monkeypatch.setattr(compositor_mod, "_render_width_dependent_update", record_passes)
+        displayed = []
+        display = app._display
+
+        def record_display(screen, update):
+            if screen is dialog and isinstance(update, ChopsUpdate):
+                displayed.append(update)
+            return display(screen, update)
+
+        monkeypatch.setattr(app, "_display", record_display)
+        sidebar.refresh()
+        await wait_for(
+            lambda: any((title_y, 0, 82) in update.spans for update in displayed),
+            pilot=pilot,
+            description="the sidebar repaint redraws the emoji title from column zero",
+        )
+        repaint = next(update for update in displayed if (title_y, 0, 82) in update.spans)
+        assert repaint_bands and all(band.height <= 2 for bands in repaint_bands for band in bands)
+        assert any(left == sidebar.region.x for _, left, _ in repaint.spans)
+        assert len({y for y, left, right in repaint.spans if (left, right) == (0, 82)}) < 5
+
+
+def test_width_dependent_repaint_clips_damage_from_before_a_resize(_preserve_runtime_targets, monkeypatch):
+    from textual.geometry import Size
+
+    textual_compositor_cjk.apply_runtime_patch()
+    comp = compositor_mod.Compositor()
+    comp.size = Size(8, 4)
+    comp._cuts = [[0, 8] for _ in range(4)]
+    region = comp.size.region
+    strips = [Strip([Segment("🫠 title")])] + [Strip.blank(8)] * 3
+    monkeypatch.setattr(comp, "_get_renders", lambda crop: [(region, region, strips)])
+    offscreen = Region(2, 9, 10, 3)
+    comp._dirty_regions.update([Region(3, 0, 1, 1), offscreen])
+    update = comp.render_partial_update()
+    assert update is not None and update.spans == [(0, 0, 8)]
+    assert Text.from_ansi(update.render_segments(Console(force_terminal=True))).plain == "🫠 title"
+    comp._dirty_regions.add(offscreen)
+    assert comp.render_partial_update() is None
+    # The bounding box touches the screen even though neither rectangle does.
+    comp._dirty_regions.update([Region(0, 8, 3, 2), Region(10, 0, 3, 2)])
+    assert comp.render_partial_update() is None
+
+
+@pytest.mark.parametrize(
+    ("prefix", "control"),
+    [("🫠", Control.bell().segment), ("ab", Control.bell().segment), ("ab", Segment("\t")), ("ab", Segment("\r"))],
+    ids=["emoji-bell", "ascii-bell", "tab", "carriage-return"],
+)
+def test_control_segment_retains_full_frame_fallback(_preserve_runtime_targets, monkeypatch, prefix, control):
+    from textual.geometry import Size
+
+    textual_compositor_cjk.apply_runtime_patch()
+    comp = compositor_mod.Compositor()
+    comp.size = Size(10, 5)
+    comp._cuts = [[0, 10] for _ in range(5)]
+    region = comp.size.region
+    strips = [Strip([Segment(prefix), control, Segment(" title  ")])] + [Strip.blank(10)] * 4
+    monkeypatch.setattr(comp, "_get_renders", lambda crop: [(region, region, strips)])
+    comp._dirty_regions.add(Region(3, 0, 2, 1))
+    update = comp.render_partial_update()
+    assert update is not None and update.spans == [(y, 0, 10) for y in range(5)]
+    console = Console(force_terminal=True)
+    assert update.render_segments(console) == comp.render_full_update().render_segments(console)
+
+
+@pytest.mark.parametrize(("emoji", "height"), [("🫠", 6), ("✍", 2)], ids=["bounded", "bottom-margin"])
+async def test_width_dependent_repaint_restores_stacked_modal_backgrounds(_preserve_runtime_targets, emoji, height):
+    class Bottom(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Static("ROOT")
+
+    class Middle(ModalScreen[None]):
+        DEFAULT_CSS = "Middle { background: $background 30%; } Middle Static { offset: 5 0; width: 4; height: 1; }"
+
+        def compose(self) -> ComposeResult:
+            yield Static("MID")
+
+    class Top(ModalScreen[None]):
+        DEFAULT_CSS = "Top { background: $background 30%; } Top Static { offset: 10 0; width: 14; height: 1; }"
+
+        def compose(self) -> ComposeResult:
+            yield Static(f"{emoji} title")
+
+    textual_compositor_cjk.apply_runtime_patch()
+    async with Bottom().run_test(size=(24, height)) as pilot:
+        app = pilot.app
+        await app.push_screen(Middle())
+        await app.push_screen(Top())
+        await pilot.pause()
+        comp = app.screen._compositor
+        console = Console(force_terminal=True)
+        full = comp.render_update(full=True, screen_stack=app._background_screens).render_segments(console)
+        assert all(text in Text.from_ansi(full).plain for text in ("ROOT", "MID", emoji))
+        comp._dirty_regions.add(Region(15, 0, 2, 1))
+        update = comp.render_update(screen_stack=app._background_screens)
+        assert isinstance(update, ChopsUpdate)
+        expected_rows = 1 if height == 6 else height
+        assert update.spans == [(y, 0, 24) for y in range(expected_rows)]
+        assert update.render_segments(console) == "\n".join(full.split("\n")[:expected_rows])
+
+
+def test_sidebar_repaint_uses_real_width_of_an_omitted_left_widget(_preserve_runtime_targets, monkeypatch):
+    from textual.geometry import Size
+
+    textual_compositor_cjk.apply_runtime_patch()
+    comp = compositor_mod.Compositor()
+    comp.size = Size(12, 6)
+    comp._cuts = [[0, 12], [0, 4, 12], *[[0, 12] for _ in range(4)]]
+    # The dirty edge crosses an emoji on row zero and an ASCII strip on row one.
+    # On a Unicode 11 terminal the left widget is a cell narrower than its
+    # layout on row one, shifting the physical column where SIDEBAR begins.
+    title = Region(0, 0, 12, 1)
+    left = Region(0, 1, 4, 1)
+    right = Region(4, 1, 8, 1)
+    lower = Region(0, 2, 12, 4)
+    comp._visible_widgets = {Static(): (r, r) for r in (title, left, right, lower)}
+
+    def render(crop):
+        return [
+            (title, title, [Strip([Segment("🫠 title    ")])]),
+            (left, left, [Strip([Segment("🫠ab")]) if crop.overlaps(left) else Strip.blank(4)]),
+            (right, right, [Strip([Segment("SIDEBAR ")])]),
+            (lower, lower, [Strip.blank(12)] * 4),
+        ]
+
+    monkeypatch.setattr(comp, "_get_renders", render)
+    comp._dirty_regions.add(Region(6, 0, 3, 2))
+    update = comp.render_partial_update()
+    assert update is not None and update.spans == [(0, 0, 12), (1, 0, 12)]
+    console = Console(force_terminal=True)
+    full = comp.render_full_update().render_segments(console)
+    assert update.render_segments(console) == "\n".join(full.split("\n")[:2])
+
+
+async def test_consecutive_wraps_repair_the_gap_before_a_later_dirty_row(_preserve_runtime_targets):
+    class Rows(App[None]):
+        CSS = "Static { height: 1; width: 100%; }"
+
+        def compose(self) -> ComposeResult:
+            for text in ["✍12345678901", "✍abcdefghijk", "ROW2--target", "third", "fourth", "fifth", "last"]:
+                yield Static(text, markup=False)
+
+    textual_compositor_cjk.apply_runtime_patch()
+    async with Rows().run_test(size=(12, 7)) as pilot:
+        compositor = pilot.app.screen._compositor
+        console = Console(force_terminal=True)
+        full = compositor.render_full_update().render_segments(console)
+        compositor._dirty_regions.update([Region(3, 0, 2, 1), Region(2, 5, 2, 1)])
+        update = compositor.render_partial_update()
+        assert update is not None
+        assert (2, 0, 12) in update.spans
+        assert "ROW2--target" in update.chops[2][0].text
+        assert update.render_segments(console) == full
