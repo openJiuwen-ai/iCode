@@ -575,10 +575,12 @@ async def test_a_relative_command_without_cwd_is_found_from_the_workspace(tmp_pa
 # ── The connection test (Test button) ───────────────────────────────
 
 
-async def test_import_save_reload_and_launch_preserve_cwd(tmp_path: Path) -> None:
+async def test_import_save_reload_and_launch_preserve_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import json
 
     home, workspace = tmp_path / "home", tmp_path / "workspace"
+    for key in ("HOME", "USERPROFILE", "APPDATA"):
+        monkeypatch.setenv(key, str(home))
 
     def prepare() -> MCPServerConfig:
         (workspace / "tools" / "server").mkdir(parents=True)

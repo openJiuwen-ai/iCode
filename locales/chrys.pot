@@ -3907,6 +3907,12 @@ msgstr ""
 msgid "tui.agent_config.validation.mcp.transport"
 msgstr ""
 
+#. English: Enter a URL with a host, such as https://example.com/mcp.
+#. chrys-meta={"fingerprint":"3f6c18e1824e54dfdec4d3e8986a123486dfbb550d8016b2bfacf3ca23abbe95","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/validation_messages.py
+msgid "tui.agent_config.validation.mcp.url_host"
+msgstr ""
+
 #. English: URL is required for HTTP transport.
 #. chrys-meta={"fingerprint":"e4958c17d78feeebcf69123e32eedd8c59a0e43f690850319bcf0c1f7d4a606b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/validation_messages.py
@@ -9559,19 +9565,11 @@ msgstr ""
 msgid "tui.mcp.import.warning.auth_not_imported"
 msgstr ""
 
-#. English: After import, the server's working directory may differ from the
-#. original. To keep using the original folder, enter its full path in “Working
-#. Directory”.
-#. chrys-meta={"fingerprint":"45ba72f0706da5b28e0df271cd01a627dae08cc14d0b431cb89f8ee133e0b136","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/import_mcp_view.py
-msgid "tui.mcp.import.warning.codex_relative_cwd"
-msgstr ""
-
-#. English: ChatGPT's tool timeout is set to 0, but {app} requires a timeout
+#. English: {agent}'s tool timeout is set to 0, but {app} requires a timeout
 #. greater than 0, so the imported server will use the default MCP request
 #. timeout. To change it, enter a number of seconds greater than 0 in “MCP
 #. Request Timeout (seconds)”.
-#. chrys-meta={"fingerprint":"539c9f2af8b0d012c689c1c80455cfe89a7f9ad7ff50e6ce04ae4141347cd4d1","multiline":false,"placeholders":["app"]}
+#. chrys-meta={"fingerprint":"1ddd977b67e337492767e58da12f865156a25a262ae4c0cab0fed4f58a678d83","multiline":false,"placeholders":["agent","app"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.default_timeout"
 msgstr ""
@@ -9595,10 +9593,10 @@ msgid "tui.mcp.import.warning.opencode_variable_cwd"
 msgstr ""
 
 #. English: After import, the connection timeout may differ from the one in
-#. ChatGPT. Click “Test”; if the connection times out, increase “MCP Request
+#. {agent}. Click “Test”; if the connection times out, increase “MCP Request
 #. Timeout (seconds)” and retry. Increasing this value also increases the tool
 #. call timeout.
-#. chrys-meta={"fingerprint":"6548fe62b89147849dbdbfba97877a723934d33f71f17177b7b41936d822b0f9","multiline":false,"placeholders":[]}
+#. chrys-meta={"fingerprint":"d198f06cc5369492cfb1282483e46a2611362614fcb483c48668e61827875b01","multiline":false,"placeholders":["agent"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.startup_wait"
 msgstr ""
@@ -9616,6 +9614,14 @@ msgstr ""
 #. chrys-meta={"fingerprint":"4a11294114cc56060c403a2d2984b124eb5aa918cd8b177c365b7414a38ad710","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.tools_restricted"
+msgstr ""
+
+#. English: The defaults for some environment variable references were dropped.
+#. Set the variables before starting {app}, or enter fixed values in the server
+#. settings.
+#. chrys-meta={"fingerprint":"a7f85deb4203a86b45e1cf52d79b40d47c2decdbef5cbfd7c0733ecd11c35beb","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.variable_defaults_dropped"
 msgstr ""
 
 #. English: Imported {count} MCP server. Review it, then click Save.

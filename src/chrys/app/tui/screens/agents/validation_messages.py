@@ -2,7 +2,15 @@
 
 """Shared locale-neutral validation prose for agent configuration."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from chrys.foundation.i18n import msg
+from chrys.service.mcp.validation import McpHttpUrlError, validate_mcp_http_url
+
+if TYPE_CHECKING:
+    from chrys.foundation.i18n import MessageRef
 
 # Labels shared by visible controls and validation prose.
 DISPLAY_NAME = msg("tui.agent_config.basic.display_name", fallback="Display Name")
@@ -402,6 +410,10 @@ MCP_URL_SCHEME = msg(
     "tui.agent_config.validation.mcp.url_scheme",
     fallback="URL must start with http:// or https://.",
 )
+MCP_URL_HOST = msg(
+    "tui.agent_config.validation.mcp.url_host",
+    fallback="Enter a URL with a host, such as https://example.com/mcp.",
+)
 MCP_COMMAND_REQUIRED = msg(
     "tui.agent_config.validation.mcp.command_required",
     fallback="command is required for stdio transport.",
@@ -454,3 +466,15 @@ MCP_ROW_KEY_REQUIRED = msg(
     "tui.agent_config.validation.mcp.row_key_required",
     fallback="{label} row {row}: key name is required when a value is set.",
 )
+
+
+def mcp_http_url_error_message(url: str) -> MessageRef | None:
+    """Bind the message for an HTTP URL field's validation error."""
+    error = validate_mcp_http_url(url)
+    if error is McpHttpUrlError.REQUIRED:
+        return MCP_URL_REQUIRED.bind()
+    if error is McpHttpUrlError.SCHEME:
+        return MCP_URL_SCHEME.bind()
+    if error is McpHttpUrlError.HOST:
+        return MCP_URL_HOST.bind()
+    return None

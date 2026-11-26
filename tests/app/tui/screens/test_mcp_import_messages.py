@@ -37,6 +37,7 @@ from chrys.service.mcp.importers.claude_code import ClaudeCodeSource
 from chrys.service.mcp.importers.codex import CodexSource
 from chrys.service.mcp.importers.opencode import OpenCodeSource
 from chrys.service.mcp.importers.pi import PiSource
+from chrys.service.profiles.agents.schema import MCPServerConfig
 
 
 def discover(home: Path, source: str, entry: dict[str, object] | str) -> McpImportCandidate:
@@ -171,7 +172,7 @@ def test_changed_line_endings_have_localized_advice_without_parameter_values(loc
         ),
         (
             "claude",
-            {"command": "run", "env": {"A": "${TOKEN:-fallback}", "DIR": "${CLAUDE_PROJECT_DIR}"}},
+            {"command": "run", "env": {"A": "${TOKEN}", "DIR": "${CLAUDE_PROJECT_DIR}"}},
             "env",
             {"A": "{{TOKEN}}", "DIR": "{{CLAUDE_PROJECT_DIR}}"},
         ),
@@ -237,24 +238,19 @@ def test_unknown_settings_name_the_location_without_promising_support(tmp_path, 
     assert ("manually" if locale == "en" else "手动") not in saved.description
 
 
-@pytest.mark.parametrize("source", ["codex", "claude", "opencode", "pi"])
 @pytest.mark.parametrize("locale", ["en", "zh-Hans"])
-def test_oauth_advice_is_conditional_and_survives_import(tmp_path, source, locale) -> None:
-    entry = (
-        'url = "https://example.com"\nauth = "oauth"\n'
-        if source == "codex"
-        else {
-            "url": "https://example.com",
-            "type": "remote" if source == "opencode" else "http",
-            "oauth": {},
-        }
+def test_oauth_advice_is_conditional_and_survives_import(locale: str) -> None:
+    warning = ImportWarning(WarningKind.AUTH_NOT_IMPORTED)
+    item = McpImportCandidate(
+        "srv",
+        "/config",
+        MCPServerConfig(name="srv", transport="http", url="https://example.com"),
+        warnings=(warning,),
     )
-    item = discover(tmp_path, source, entry)
-    assert [warning.kind for warning in item.warnings] == [WarningKind.AUTH_NOT_IMPORTED]
     localizer = Localizer(locale)
-    saved = imported_config(item, source, localizer.render)
+    saved = imported_config(item, "ChatGPT", localizer.render)
     assert saved is not None
-    text = localizer.render(warning_text(item.warnings[0], source))
+    text = localizer.render(warning_text(warning, "ChatGPT"))
     assert text in saved.description
     if locale == "en":
         assert "does not yet support MCP OAuth" in text
@@ -264,6 +260,15 @@ def test_oauth_advice_is_conditional_and_survives_import(tmp_path, source, local
         assert "暂不支持 MCP OAuth" in text
         assert "如果服务器支持令牌" in text
         assert "如果仅支持 OAuth" in text
+
+
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+@pytest.mark.parametrize("kind", [WarningKind.STARTUP_WAIT, WarningKind.DEFAULT_TIMEOUT])
+def test_timeout_warnings_name_the_source_application(locale: str, kind: WarningKind) -> None:
+    text = Localizer(locale).render(warning_text(ImportWarning(kind), "Source App"))
+
+    assert "Source App" in text
+    assert "ChatGPT" not in text
 
 
 def test_known_warnings_keep_the_connection_timeout_and_tool_results(tmp_path) -> None:
@@ -286,13 +291,23 @@ def test_known_warnings_keep_the_connection_timeout_and_tool_results(tmp_path) -
         {
             "type": "http",
             "url": "https://example.com",
-            "headers": {"Authorization": "${ANTHROPIC_API_KEY}", "X-Other": "kept"},
+            "headers": {
+                "Authorization": "${ANTHROPIC_API_KEY:-private-credential}",
+                "X-Region": "${REGION:-private-region}",
+                "X-Zone": "${ZONE:-private-zone}",
+            },
             "oauth": {},
         },
     )
     assert claude.config is not None
-    assert claude.config.headers == {"X-Other": "kept"}
-    assert [w.kind for w in claude.warnings] == [WarningKind.AUTH_HEADERS, WarningKind.AUTH_NOT_IMPORTED]
+    assert claude.config.headers == {"X-Region": "{{REGION}}", "X-Zone": "{{ZONE}}"}
+    assert claude.warnings == (
+        ImportWarning(WarningKind.AUTH_HEADERS, ("mcpServers.srv.headers.Authorization",)),
+        ImportWarning(WarningKind.AUTH_NOT_IMPORTED),
+        ImportWarning(
+            WarningKind.VARIABLE_DEFAULTS_DROPPED, ("mcpServers.srv.headers.X-Region", "mcpServers.srv.headers.X-Zone")
+        ),
+    )
     pi = discover(tmp_path, "pi", {"command": "run", "exposure": "codemode", "toolExposure": {"big_*": "direct"}})
     assert pi.config is not None
     assert pi.config.allowed_tools is None
@@ -303,11 +318,22 @@ def test_known_warnings_keep_the_connection_timeout_and_tool_results(tmp_path) -
         for item in (codex, claude, pi):
             saved = imported_config(item, "Source", localizer.render)
             assert saved is not None
+            assert "private-" not in saved.description
             for warning in item.warnings:
                 assert localizer.render(warning_text(warning, "Source")) in saved.description
         text = localizer.render(warning_text(pi.warnings[0], "Pi"))
         assert ("Loading Strategy" if locale == "en" else "加载策略") in text
         assert ("turned off" if locale == "en" else "暂未启用") not in text
+
+
+def test_pi_url_without_http_prefix_is_refused_in_preview(tmp_path: Path) -> None:
+    item = discover(tmp_path, "pi", {"url": "https:example.org/mcp"})
+
+    assert item.config is None
+    assert item.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert names_field(item)
+    assert item.problem_field == "mcpServers.srv.url"
+    assert format_message(problem_text(item)) == "URL must start with http:// or https://."
 
 
 @pytest.mark.parametrize(

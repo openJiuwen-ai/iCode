@@ -14,8 +14,8 @@ the global one of the same name; a project entry with none of ``command``,
 ``toolExposure`` of the global server it names. Basic fields are checked
 before replacing an earlier definition; an invalid project entry reports an
 error and leaves the global server intact.
-OAuth options and URL details beyond an ``http``/``https`` scheme are not
-validated: they are copied as written.
+For an OAuth configuration whose acceptance depends on Pi's callback or
+metadata URL rules, a same-named project definition is shown for manual setup.
 
 Values in ``env`` and ``headers`` may reference ``$NAME`` or ``${NAME}``; ``$$``
 and ``$!`` are a literal ``$`` and ``!``. A value starting with ``!`` runs a
@@ -30,16 +30,16 @@ an HTTP server requests it. Import warns about explicit sign-in settings.
 can; a rule hiding tools iCode can't express imports the server with no tools.
 ``timeout`` is in seconds, default 60.
 
-Checked against https://github.com/earendil-works/pi tag ``v1.5.2`` (commit
-b4afdddf44), read 2026-11-12; paths are under ``packages/coding-agent/src``:
+Checked against https://github.com/earendil-works/pi tag ``v1.6.0`` (commit
+faac585884), read 2026-11-24. Paths are under ``packages/coding-agent/src``:
 the files and project overrides (``extensions/mcp/config.ts``), trust
 (``core/trust-manager.ts``, ``core/project-trust.ts``, ``utils/paths.ts``), the
 variables and ``!`` commands (``core/resolve-config-value.ts``), the server
 fields and exposure (``core/mcp-servers.ts``, delegating shared validation to
-``packages/mcp/src/config.ts:165-173``) and ``~`` expansion
-(``extensions/mcp/runtime.ts:91-123``).
+``packages/mcp/src/config.ts``) and ``~`` expansion
+(``extensions/mcp/runtime.ts``).
 ``cwd`` must be a string: null and false are invalid, not defaults.
-It is a literal path (no variable or command expansion): runtime.ts:120
+It is a literal path (no variable or command expansion): ``createDefaultTransport``
 expands its home prefix, then resolves it lexically from the session folder.
 Import keeps ordinary paths relative; an empty string, like absence, means
 that session folder. Remaining tildes are shielded from iCode's expansion.
@@ -51,9 +51,11 @@ import ntpath
 import os
 import posixpath
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.parse import urlsplit
 
 from chrys.foundation.platform import get_platform
 from chrys.service.mcp.importers.base import (
@@ -65,6 +67,7 @@ from chrys.service.mcp.importers.base import (
     Problem,
     SourceErrorKind,
     SourceReadError,
+    SourceReadLimitError,
     SourceServer,
     Value,
     ValueReason,
@@ -80,6 +83,7 @@ from chrys.service.mcp.importers.base import (
     positive_number,
     read_json_object,
 )
+from chrys.service.mcp.validation import validate_mcp_http_url
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -89,8 +93,11 @@ _NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 _VARIABLE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Pi accepts only http and https URLs, in any letter case.
 _HTTP_SCHEME_RE = re.compile(r"https?:", re.IGNORECASE)
+_COMMON_HTTP_HOST_RE = re.compile(r"[A-Za-z0-9._-]+|[A-Fa-f0-9:.]+")
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _OVERRIDE_KEYS = frozenset({"enabled", "exposure", "toolExposure"})
+_OAUTH_URL_FIELDS = ("callbackUrl", "authServerMetadataUrl")
 _READ = (
     "type",
     "command",
@@ -109,8 +116,14 @@ _READ_EXPOSURE = (*_READ, "exposure", "toolExposure")
 
 class _Read(Protocol):
     def __call__(self, path: Path, *, strict: bool = False) -> dict[str, Any] | None:
-        """The object in *path*, ``{}`` when it is missing, ``None`` when unusable (the error is listed)."""
+        """The object in *path*, empty when missing, ``None`` on error. Propagate read-limit failures."""
         ...
+
+
+class _HttpEndpoint(Enum):
+    INVALID = auto()
+    MANUAL = auto()
+    PORTABLE = auto()
 
 
 _FULL, _ON_DEMAND, _HIDDEN = "full", "on_demand", "hidden"
@@ -145,16 +158,30 @@ class PiSource:
                 return read_json_object(path, strict=strict) or {}
             except SourceReadError as exc:
                 errors.append(exc.at(path))
+                if isinstance(exc, SourceReadLimitError):
+                    raise
                 return None
 
         agent = _agent_folder(ctx)
         files = [agent / "mcp.json"]
         project = Path(ctx.workspace_cwd) / ".pi" / "mcp.json" if ctx.workspace_cwd else None
-        if project is not None and project.is_file() and _trusted(ctx.workspace_cwd or "", agent, read, errors):
-            files.append(project)
+        if project is not None and project.is_file():
+            try:
+                if _trusted(ctx.workspace_cwd or "", agent, read, errors):
+                    files.append(project)
+            except SourceReadLimitError:
+                # Pi may trust this project and use overrides we cannot evaluate.
+                return McpImportResult(source_errors=tuple(errors))
         entries: dict[str, tuple[dict[str, Any], SourceServer]] = {}
         for position, path in enumerate(files):
-            document = read(path)
+            try:
+                document = read_json_object(path, strict=True)
+            except SourceReadError as exc:
+                errors.append(exc.at(path))
+                # Either layer may affect the other through overrides or namespace conflicts.
+                if isinstance(exc, SourceReadLimitError):
+                    return McpImportResult(source_errors=tuple(errors))
+                continue
             if document is None:
                 continue
             servers = document.get("mcpServers", {})
@@ -183,6 +210,22 @@ class PiSource:
                 if any(other != name and other.replace("-", "_") == name.replace("-", "_") for other in entries):
                     errors.append(error)
                     continue
+                if (
+                    position
+                    and not override
+                    and name in entries
+                    and server.transport == "http"
+                    and (oauth_field := _unverified_oauth_field(entry.get("oauth", {})))
+                    and not server.blocked_field
+                ):
+                    # Pi may keep the global entry if it rejects this replacement's OAuth URL.
+                    server = replace(
+                        server,
+                        blocked_field=f"{error.field}.oauth.{oauth_field}",
+                        blocked_problem=Problem.VALUE_NOT_REPRESENTABLE,
+                        blocked_reason=ValueReason.INVALID,
+                        blocked_use=FieldUse.VALUE,
+                    )
                 # Keep refusal candidates instead of silently choosing an earlier definition.
                 entries[name] = (entry, server)
         candidates = tuple(convert(server) for _, server in entries.values())
@@ -254,6 +297,50 @@ def _is_exposure(value: object) -> bool:
     return isinstance(value, str) and value in _EXPOSURES
 
 
+def _valid_oauth(value: object) -> bool:
+    """Check OAuth settings that Pi can reject before choosing the server."""
+    if not isinstance(value, dict):
+        return False
+    port = value.get("callbackPort", 1)
+    if not isinstance(port, int | float) or isinstance(port, bool) or not 1 <= port <= 65535 or port != int(port):
+        return False
+    strings = ("clientId", "clientSecret", "scope", "clientName", *_OAUTH_URL_FIELDS)
+    if not all(isinstance(value.get(key, ""), str) for key in strings) or not value.get("clientName", "pi").strip():
+        return False
+    registration = value.get("clientRegistration", "auto")
+    return registration in ("auto", "dcr") or (registration == "cimd" and not value.keys() & {"clientId", "clientName"})
+
+
+def _unverified_oauth_field(value: Mapping[str, Any]) -> str:
+    """Identify OAuth settings that require Pi's URL validation to verify a replacement."""
+    return next((key for key in _OAUTH_URL_FIELDS if key in value), "")
+
+
+def _http_endpoint(url: str, *, provider_auth: bool) -> _HttpEndpoint:
+    """Check common Pi HTTP endpoints before choosing an override."""
+    text = url.replace("\t", "").replace("\r", "").replace("\n", "").strip()
+    scheme = _HTTP_SCHEME_RE.match(text)
+    if scheme is None:
+        return _HttpEndpoint.INVALID
+    rest = text[scheme.end() :]
+    # Pi's URL parser treats extra slashes and backslashes as separators, which can change the target.
+    authority = re.split(r"[/\\?#]", rest.lstrip("/\\"), maxsplit=1)[0]
+    try:
+        parts = urlsplit(f"https://{authority}")
+        host = parts.hostname
+        _ = parts.port
+    except ValueError:
+        return _HttpEndpoint.INVALID
+    if not host or any(char.isspace() or char in "<>^|" for char in host):
+        return _HttpEndpoint.INVALID
+    if provider_auth and scheme[0].lower() == "http:" and host not in _LOOPBACK_HOSTS:
+        return _HttpEndpoint.INVALID
+    target = re.split(r"[?#]", rest, maxsplit=1)[0]
+    if not target.startswith(f"//{authority}") or "\\" in target or not _COMMON_HTTP_HOST_RE.fullmatch(host):
+        return _HttpEndpoint.MANUAL
+    return _HttpEndpoint.PORTABLE
+
+
 def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceServer | None:
     """The server pi would run, checked by its basic fields only, or ``None`` for an entry it rejects."""
     prefix = f"mcpServers.{name}"
@@ -271,12 +358,14 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         or timeout is None
     ):
         return None
+    endpoint = _HttpEndpoint.PORTABLE
     if isinstance(entry.get("url"), str) and kind in ("", "http", "streamable-http"):
         transport = "http"
+        endpoint = _http_endpoint(entry["url"], provider_auth="auth" in entry)
         if (
-            not _HTTP_SCHEME_RE.match(entry["url"].strip())
+            endpoint is _HttpEndpoint.INVALID
             or not is_str_mapping(entry.get("headers", {}))
-            or ("oauth" in entry and not isinstance(entry["oauth"], dict))
+            or not _valid_oauth(entry.get("oauth", {}))
         ):
             return None
         if "auth" in entry:
@@ -289,6 +378,16 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
             return None
         if "cwd" in entry and not isinstance(entry["cwd"], str):
             return None
+        if "url" in entry:
+            # Pi's runtime chooses HTTP on the presence of a URL, even for validated STDIO entries.
+            return SourceServer(
+                name,
+                path,
+                transport,
+                blocked_field=f"{prefix}.url",
+                blocked_reason=ValueReason.INVALID,
+                blocked_use=FieldUse.URL,
+            )
     else:
         return None
     texts: Mapping[str, str] = entry.get("env" if transport == "stdio" else "headers", {})
@@ -301,7 +400,7 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
     authorized = any(key.lower() == "authorization" for key in texts)
     if transport == "http" and ("auth" in entry or ("oauth" in entry and not authorized)):
         warnings.append(ImportWarning(WarningKind.AUTH_NOT_IMPORTED))
-    return SourceServer(
+    server = SourceServer(
         name,
         path,
         transport,
@@ -333,6 +432,15 @@ def _server(name: str, entry: dict[str, Any], path: str, home: Path) -> SourceSe
         cwd=literal(_cwd(entry["cwd"], home)) if transport == "stdio" and entry.get("cwd") else None,
         cwd_path=f"{prefix}.cwd",
     )
+    if endpoint is _HttpEndpoint.MANUAL and not blocked and validate_mcp_http_url(server.url.strip().lower()) is None:
+        return replace(
+            server,
+            blocked_field=server.url_path,
+            blocked_problem=Problem.VALUE_NOT_REPRESENTABLE,
+            blocked_reason=ValueReason.INVALID,
+            blocked_use=FieldUse.URL,
+        )
+    return server
 
 
 def _cwd(text: str, home: Path) -> str:

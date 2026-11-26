@@ -49,14 +49,16 @@ def test_explicit_env_overrides_passed_variables_by_platform(
         f'command = "run"\nenv_vars = ["PATH", "PYTHONPATH"]\nenv = {{ {explicit} = "literal" }}\n',
     )
 
-    expected = {explicit: "literal"}
-    if not windows and explicit != "PYTHONPATH":
-        expected["PYTHONPATH"] = "{{PYTHONPATH}}"
+    # The passed-on PYTHONPATH is never copied; it warns only when env doesn't set it.
+    overridden = windows or explicit == "PYTHONPATH"
     assert candidate.config is not None
-    assert candidate.config.env == expected
+    assert candidate.config.env == {explicit: "literal"}
+    assert candidate.warnings == (
+        () if overridden else (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.env_vars",)),)
+    )
 
 
-@pytest.mark.parametrize("tools", [["read,delete"], [" read"], [""], ["read", "read"]])
+@pytest.mark.parametrize("tools", [["read,delete"], [" read"], [""]])
 def test_unrepresentable_allowlist_refuses_the_original_setting(tmp_path: Path, tools: list[str]) -> None:
     candidate = _only(tmp_path, 'command = "run"\nenabled_tools = ' + json.dumps(tools) + "\n")
 
@@ -65,11 +67,49 @@ def test_unrepresentable_allowlist_refuses_the_original_setting(tmp_path: Path, 
     assert candidate.problem_field == "mcp_servers.srv.enabled_tools"
 
 
-def test_http_cwd_is_reported_as_not_imported(tmp_path: Path) -> None:
-    candidate = _only(tmp_path, 'url = "https://x/mcp"\ncwd = "/unused"\nhttp_headers = { Authorization = "token" }\n')
+@pytest.mark.parametrize("command", ["", " "], ids=["empty", "blank"])
+def test_a_stdio_command_with_nothing_to_run_is_refused(tmp_path: Path, command: str) -> None:
+    candidate = _only(tmp_path, f"command = {json.dumps(command)}\n")
+
+    assert candidate.config is None
+    assert (candidate.problem, candidate.problem_field) == (
+        Problem.VALUE_NOT_REPRESENTABLE,
+        "mcp_servers.srv.command",
+    )
+
+
+def test_a_stdio_command_keeps_whitespace_in_the_executable_name(tmp_path: Path) -> None:
+    command = "/opt/mcp/server "
+    candidate = _only(tmp_path, f'command = {json.dumps(command)}\nargs = ["--flag"]\n')
+
     assert candidate.config is not None
-    assert candidate.config.cwd == ""
-    assert candidate.warnings == (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.cwd",)),)
+    assert (candidate.config.command, candidate.config.args) == (command, ["--flag"])
+
+
+@pytest.mark.parametrize(
+    ("definition", "conflict", "field"),
+    [
+        ('url = "https://x/mcp"', 'cwd = "/unused"', "cwd"),
+        ('command = "run"', 'http_headers = { Authorization = "token" }', "http_headers"),
+    ],
+    ids=["http-with-cwd", "stdio-with-headers"],
+)
+def test_transport_conflict_in_an_overlay_refuses_only_the_affected_server(
+    tmp_path: Path, definition: str, conflict: str, field: str
+) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    project = workspace / ".codex/config.toml"
+    user = f'[mcp_servers.srv]\n{definition}\n[mcp_servers.other]\ncommand = "keep"\n'
+    _write(home / ".codex/config.toml", user + _trust(workspace))
+    _write(project, f"[mcp_servers.srv]\n{conflict}\n")
+
+    result = _discover(home, workspace)
+
+    (candidate,) = result.candidates
+    assert candidate.name == "other"
+    assert candidate.config is not None
+    (error,) = result.source_errors
+    assert (error.path, error.kind, error.field) == (str(project), SourceErrorKind.INVALID, f"mcp_servers.srv.{field}")
 
 
 @pytest.mark.parametrize("scopes", ['["read"]', "[]", '"read"'])
@@ -94,8 +134,8 @@ def test_scopes_alone_are_reported_as_not_imported(tmp_path: Path, scopes: str) 
         ),
         ('command = "run"\nenabled = false\n', {"enabled": False}),
         (
-            'command = "run"\nenabled_tools = ["a", "b"]\ndisabled_tools = ["b"]\n',
-            {"allowed_tools": ["a"]},
+            'command = "run"\nenabled_tools = ["read", "delete", "write", "read"]\ndisabled_tools = ["delete"]\n',
+            {"allowed_tools": ["read", "write"]},
         ),
         ('url = "https://x"\nhttp_headers = { "bad name" = "1", X = "2" }\n', {"headers": {"X": "2"}}),
         (f'command = "run"\ntool_timeout_sec = 1{"0" * 400}\n', {"request_timeout": MAX_REQUEST_TIMEOUT_SECONDS}),
@@ -104,7 +144,7 @@ def test_scopes_alone_are_reported_as_not_imported(tmp_path: Path, scopes: str) 
         "stdio",
         "bearer-beats-authorization",
         "disabled",
-        "enabled-minus-disabled",
+        "deduplicate-and-filter-enabled-tools",
         "invalid-header-name",
         "huge-timeout",
     ],
@@ -133,18 +173,39 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
             {},
         ),
         ('url = "https://x"\n', (), {}),
-        # iCode passes on its whole environment but these two, so they must be set.
+        # iCode passes on its whole environment but these two, which are not copied: the user is told.
         (
-            'command = "run"\nenv_vars = ["PATH", "PYTHONPATH", { name = "PYTHONHOME", source = "local" }]\n',
-            (),
-            {"env": {"PYTHONPATH": "{{PYTHONPATH}}", "PYTHONHOME": "{{PYTHONHOME}}"}},
+            'command = "run"\nenv_vars = ["PYTHONPATH"]\n',
+            (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.env_vars",)),),
+            {"env": {}},
+        ),
+        (
+            'command = "run"\nenv_vars = ["PATH", { name = "PYTHONHOME", source = "local" }]\n',
+            (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.env_vars",)),),
+            {"env": {}},
         ),
         (
             'command = "run"\nenv_vars = ["PYTHONPATH"]\nenv = { PYTHONPATH = "/x" }\n',
             (),
             {"env": {"PYTHONPATH": "/x"}},
         ),
+        ('command = "run"\nenv_vars = ["PATH", "HOME"]\n', (), {"env": {}}),
+        (
+            'command = "run"\nenv_vars = ["PYTHONPATH"]\nextra = 1\n',
+            (ImportWarning(Kind.NOT_IMPORTED, ("mcp_servers.srv.extra", "mcp_servers.srv.env_vars")),),
+            {"env": {}},
+        ),
         ('command = "run"\ndisabled_tools = ["rm"]\n', (ImportWarning(Kind.TOOLS_RESTRICTED),), {"allowed_tools": []}),
+        (
+            'url = "https://x"\nomit_tools_from = ["direct", "deferred", "code_mode"]\n',
+            (ImportWarning(Kind.TOOLS_RESTRICTED, ("mcp_servers.srv.omit_tools_from",)),),
+            {"allowed_tools": []},
+        ),
+        (
+            'url = "https://x"\nenabled_tools = ["read"]\nomit_tools_from = ["direct"]\n',
+            (ImportWarning(Kind.TOOLS_RESTRICTED, ("mcp_servers.srv.omit_tools_from",)),),
+            {"allowed_tools": []},
+        ),
         (
             'command = "run"\ntool_timeout_sec = 0\n',
             (ImportWarning(Kind.DEFAULT_TIMEOUT, ("mcp_servers.srv.tool_timeout_sec",)),),
@@ -164,9 +225,14 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, body: str, expected: d
         "provider-auth",
         "explicit-oauth-with-scopes",
         "no-headers",
-        "passed-variables",
+        "passed-python-path",
+        "passed-python-home-table",
         "passed-variable-set",
+        "passed-ordinary-variables",
+        "passed-variable-with-unread-setting",
         "deny-only",
+        "all-exposure-omitted",
+        "restricted-exposure-with-allowlist",
         "zero-timeout",
         "unread-settings",
     ],
@@ -256,7 +322,7 @@ def test_project_files_merge_into_same_named_user_servers(tmp_path: Path) -> Non
     # Tables merge key by key; a list or a value replaces the earlier one.
     assert (a.command, a.args, a.env) == ("root", ["z"], {"A": "1", "B": "2"})
     assert a.cwd == "root-dir"
-    assert candidates["a"].warnings == (ImportWarning(Kind.CODEX_RELATIVE_CWD),)
+    assert candidates["a"].warnings == ()
     assert off.enabled is False
     assert (web.url, web.headers) == ("https://workspace", {"X": "1"})
     # The file shown is the last one that sets the connection.
@@ -392,15 +458,22 @@ def test_a_worktree_is_not_trusted_through_a_folder_whose_git_is_another_reposit
     assert _discover(home, worktree).candidates == ()
 
 
-@pytest.mark.parametrize(("git", "read"), [("folder", ["srv"]), ("submodule", [])], ids=["checkout", "submodule"])
+@pytest.mark.parametrize(
+    ("git", "read"),
+    [("checkout", ["srv"]), ("submodule", []), ("incomplete", [])],
+)
 def test_only_a_main_checkout_lends_its_trust_to_a_project_inside_it(tmp_path: Path, git: str, read: list[str]) -> None:
     home, repo = tmp_path / "home", tmp_path / "super" / "sub"
     workspace = repo / "pkg"
-    if git == "folder":
+    if git == "checkout":
         _repo(repo)
-    else:
+        (workspace / ".git").mkdir(parents=True)
+        workspace /= "nested"
+    elif git == "submodule":
         _write(tmp_path / "super" / ".git" / "modules" / "sub" / "HEAD", "ref: refs/heads/main\n")
         _write(repo / ".git", "gitdir: ../.git/modules/sub\n")
+    else:
+        (repo / ".git").mkdir(parents=True)
     _write(workspace / "pyproject.toml", "")
     # The project is pkg, by its marker; the repository around it counts only as a main checkout.
     _write(home / ".codex" / "config.toml", 'project_root_markers = ["pyproject.toml"]\n' + _trust(repo))
@@ -440,13 +513,34 @@ def test_codex_home_moves_the_user_file(tmp_path: Path) -> None:
     ],
     ids=["bad-toml", "servers-not-a-table"],
 )
-def test_broken_files_are_reported(tmp_path: Path, text: str, kind: SourceErrorKind, field: str) -> None:
-    _write(tmp_path / ".codex" / "config.toml", text)
+def test_a_broken_trusted_project_file_does_not_fall_back_to_user_servers(
+    tmp_path: Path, text: str, kind: SourceErrorKind, field: str
+) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    _write(home / ".codex" / "config.toml", '[mcp_servers.srv]\ncommand = "user"\n' + _trust(workspace))
+    project = workspace / ".codex" / "config.toml"
+    _write(project, text)
 
-    (error,) = _discover(tmp_path).source_errors
+    result = _discover(home, workspace)
 
-    assert (error.kind, error.field) == (kind, field)
+    assert result.candidates == ()
+    (error,) = result.source_errors
+    assert (error.path, error.kind, error.field) == (str(project), kind, field)
     assert kind is not SourceErrorKind.UNPARSABLE or error.line == 1
+
+
+def test_a_malformed_server_override_does_not_offer_the_old_definition(tmp_path: Path) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    user = '[mcp_servers.srv]\ncommand = "user"\n[mcp_servers.other]\ncommand = "other"\n'
+    _write(home / ".codex" / "config.toml", user + _trust(workspace))
+    project = workspace / ".codex" / "config.toml"
+    _write(project, "[mcp_servers]\nsrv = false\n")
+
+    result = _discover(home, workspace)
+
+    assert [c.name for c in result.candidates] == ["other"]
+    (error,) = result.source_errors
+    assert (error.path, error.kind, error.field) == (str(project), SourceErrorKind.INVALID, "mcp_servers.srv")
 
 
 @pytest.mark.parametrize(
@@ -454,7 +548,7 @@ def test_broken_files_are_reported(tmp_path: Path, text: str, kind: SourceErrorK
     ["a = " + "[" * 5000 + "]" * 5000 + "\n", "a = " + "1" * 5000 + "\n"],
     ids=["nested-too-deep", "number-too-long"],
 )
-def test_a_file_too_large_to_parse_is_reported_and_the_others_still_listed(tmp_path: Path, text: str) -> None:
+def test_a_trusted_file_too_large_to_parse_is_reported(tmp_path: Path, text: str) -> None:
     home, repo = tmp_path / "home", _repo(tmp_path / "repo")
     workspace = repo / "work"
     _write(home / ".codex" / "config.toml", _trust(repo))
@@ -463,7 +557,7 @@ def test_a_file_too_large_to_parse_is_reported_and_the_others_still_listed(tmp_p
 
     result = _discover(home, workspace)
 
-    assert [c.name for c in result.candidates] == ["srv"]
+    assert result.candidates == ()
     assert [(e.path, e.kind) for e in result.source_errors] == [
         (str(repo / ".codex" / "config.toml"), SourceErrorKind.UNPARSABLE)
     ]

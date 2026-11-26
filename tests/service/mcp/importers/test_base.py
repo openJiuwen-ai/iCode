@@ -9,7 +9,6 @@ import math
 import os
 import re
 import sys
-import unicodedata
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -35,7 +34,6 @@ from chrys.service.mcp.importers.base import (
     merge_entries,
     merge_warnings,
     parse_json_object,
-    path_matches,
     read_text,
     render,
 )
@@ -110,6 +108,50 @@ def test_convert_caps_an_unbounded_timeout() -> None:
     assert config.request_timeout == MAX_REQUEST_TIMEOUT_SECONDS
 
 
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+def test_convert_preserves_uniform_command_line_endings(line_ending: str) -> None:
+    command = f"run{line_ending}server"
+    args = (f"a{line_ending}b", line_ending, "", r"literal\r\n")
+
+    candidate = convert(SourceServer("srv", "/cfg.json", "stdio", command=command, args=args))
+
+    assert candidate.config is not None
+    assert (candidate.config.command, candidate.config.args) == (command, list(args))
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "field", "use"),
+    [
+        ("run", ("a\rb\nc",), "args[0]", FieldUse.ARGUMENT),
+        ("run", ("a\r\nb\nc",), "args[0]", FieldUse.ARGUMENT),
+        ("run", ("a\rb", "c\nd"), "args[0]", FieldUse.ARGUMENT),
+        ("run", ("a\r\nb", "c\nd"), "args[1]", FieldUse.ARGUMENT),
+        ("run\rserver", ("a\nb",), "command", FieldUse.COMMAND),
+    ],
+    ids=["mixed-cr-lf", "mixed-crlf-lf", "across-args-cr-lf", "across-args-crlf-lf", "command-and-args"],
+)
+def test_convert_refuses_the_command_part_whose_line_endings_would_change(
+    command: str, args: tuple[str, ...], field: str, use: FieldUse
+) -> None:
+    server = SourceServer(
+        "srv",
+        "/cfg.json",
+        "stdio",
+        command=command,
+        args=args,
+        command_path="servers.srv.command",
+        arg_paths=tuple(f"servers.srv.args[{index}]" for index in range(len(args))),
+    )
+
+    candidate = convert(server)
+
+    assert candidate.config is None
+    assert candidate.problem is Problem.VALUE_NOT_REPRESENTABLE
+    assert candidate.reason is ValueReason.LINE_ENDINGS
+    assert candidate.field_use is use
+    assert candidate.problem_field == f"servers.srv.{field}"
+
+
 @pytest.mark.parametrize("separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
 def test_convert_refuses_argument_separators_the_command_editor_rewrites(separator: str) -> None:
     candidate = convert(_stdio(args=(f"a{separator}b",), arg_paths=("servers.srv.args[0]",)))
@@ -130,7 +172,6 @@ def test_convert_refuses_argument_separators_the_command_editor_rewrites(separat
         (("read ",), ValueReason.WHITESPACE),
         (("",), ValueReason.EMPTY),
         ((" \t",), ValueReason.EMPTY),
-        (("read", "read"), ValueReason.INVALID),
     ],
 )
 def test_convert_refuses_tool_lists_the_editor_cannot_preserve(field, names, reason) -> None:
@@ -225,6 +266,18 @@ def test_convert_refuses_values_icode_cannot_hold(server: SourceServer, problem:
     assert candidate.transport == ("sse" if problem is Problem.UNSUPPORTED_CONNECTION else "")
 
 
+@pytest.mark.parametrize("command", ["", " ", "\r\n"], ids=["empty", "space", "line-break"])
+def test_convert_refuses_a_stdio_command_with_nothing_to_run(command: str) -> None:
+    candidate = convert(SourceServer("srv", "/cfg.json", "stdio", command=command, command_path="servers.srv.command"))
+
+    assert (candidate.config, candidate.problem) == (None, Problem.VALUE_NOT_REPRESENTABLE)
+    assert (candidate.problem_field, candidate.reason, candidate.field_use) == (
+        "servers.srv.command",
+        ValueReason.EMPTY,
+        FieldUse.COMMAND,
+    )
+
+
 @pytest.mark.parametrize(
     ("server", "field", "use"),
     [
@@ -263,6 +316,18 @@ def test_convert_refuses_control_characters_the_fields_would_draw_raw(
     assert (candidate.problem_field, candidate.reason, candidate.field_use) == (field, ValueReason.CHARACTERS, use)
 
 
+@pytest.mark.parametrize("name", ["", " \t "])
+def test_convert_refuses_names_that_the_editor_would_treat_as_empty(name: str) -> None:
+    candidate = convert(SourceServer(name, "/cfg.json", "stdio", command="run"))
+
+    assert candidate.config is None
+    assert (candidate.problem, candidate.field_use, candidate.reason) == (
+        Problem.VALUE_NOT_REPRESENTABLE,
+        FieldUse.NAME,
+        ValueReason.EMPTY,
+    )
+
+
 @pytest.mark.parametrize("url", ["https://a\n.example/x", "https://a/\tx", "https://a/\rx"], ids=["lf", "tab", "cr"])
 def test_convert_refuses_a_line_break_or_tab_within_a_url(url: str) -> None:
     candidate = convert(SourceServer("srv", "/cfg.json", "http", url=url, url_path="servers.srv.url"))
@@ -297,25 +362,21 @@ def test_convert_trims_header_whitespace_and_ignores_env_of_http_servers() -> No
         ("https://x/mcp", "https://x/mcp"),
         ("  https://x/mcp", "https://x/mcp"),
         ("https://x/mcp  ", "https://x/mcp"),
-        ("  https://x/mcp  ", "https://x/mcp"),
         ("\t\r\nhttps://x/mcp\r\n\t", "https://x/mcp"),
         ("\u00a0https://x/mcp\u3000", "https://x/mcp"),
         (" https://x/a b?key=a b ", "https://x/a b?key=a b"),
         (" https://x/mcp%20?key=%20 ", "https://x/mcp%20?key=%20"),
         (" HTTPS://X/Path?Key=HTTP:Value ", "https://X/Path?Key=HTTP:Value"),
-        ("Example.COM/HTTP:x", "Example.COM/HTTP:x"),
     ],
     ids=[
         "unchanged",
         "leading",
         "trailing",
-        "both",
         "ascii-whitespace",
         "unicode-whitespace",
         "internal",
         "encoded",
         "scheme-case",
-        "no-scheme",
     ],
 )
 def test_convert_trims_only_surrounding_url_whitespace(url: str, expected: str) -> None:
@@ -482,17 +543,6 @@ async def test_an_imported_allowlist_connects_with_only_the_remote_tool_it_names
         assert [tool.name for tool in tools] == [f"{config.tool_name_prefix}_files_read"]
     finally:
         await adapter.disconnect_all()
-
-
-def test_a_stored_path_names_a_folder_only_as_spelled(tmp_path: Path) -> None:
-    folder = str(tmp_path / "caf\u00e9")
-
-    # Claude Code writes Windows keys with ``/``.
-    assert path_matches(folder.replace(os.sep, "/"), folder)
-    # Where the filesystem tells the spellings apart, they are two folders.
-    assert not path_matches(unicodedata.normalize("NFD", folder), folder)
-    # Through a link, ``..`` can lead elsewhere than its lexical collapse.
-    assert not path_matches(str(tmp_path / "other" / ".." / "caf\u00e9"), folder)
 
 
 _RELATIVE_SOURCES = [

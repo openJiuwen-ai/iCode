@@ -71,8 +71,6 @@ from chrys.app.tui.screens.agents.validation_messages import (
     MCP_TOOL_LIST_DUPLICATE,
     MCP_TOOL_LIST_EMPTY,
     MCP_TRANSPORT,
-    MCP_URL_REQUIRED,
-    MCP_URL_SCHEME,
     NAME_FIELD,
     NAME_ITEM,
     PATH_FIELD,
@@ -90,6 +88,7 @@ from chrys.app.tui.screens.agents.validation_messages import (
     SUB_AGENT_CONTEXT,
     TOOL_NAME_IDENTIFIER,
     ZERO_OR_GREATER,
+    mcp_http_url_error_message,
 )
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef
 from chrys.foundation.i18n.formatting import format_message
@@ -98,6 +97,7 @@ from chrys.foundation.util.env_templates import resolve_env_templates
 from chrys.service.context.memory_loader import validate_memory_config
 from chrys.service.mcp.validation import (
     MCP_PROGRESSIVE_CONTROL_TOOL_NAMES,
+    is_blank_mcp_stdio_command,
     validate_mcp_tool_loading_policy,
     validate_mcp_tool_name_prefix,
 )
@@ -850,12 +850,10 @@ def mcp_draft_errors_by_server(
                 )
             seen_names.add(lower_name)
         if server.transport == "http":
-            if not server.url:
-                errors.append(_prefixed_server_error(render_message, prefix, display, MCP_URL_REQUIRED.bind()))
-            elif not server.url.startswith(("http://", "https://")):
-                errors.append(_prefixed_server_error(render_message, prefix, display, MCP_URL_SCHEME.bind()))
+            if (message := mcp_http_url_error_message(server.url)) is not None:
+                errors.append(_prefixed_server_error(render_message, prefix, display, message))
         elif server.transport == "stdio":
-            if not server.command:
+            if is_blank_mcp_stdio_command(server.command):
                 errors.append(_prefixed_server_error(render_message, prefix, display, MCP_COMMAND_REQUIRED.bind()))
         else:
             errors.append(_prefixed_server_error(render_message, prefix, display, MCP_TRANSPORT.bind()))

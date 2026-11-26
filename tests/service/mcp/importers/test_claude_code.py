@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import unicodedata
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind, claude_code
+from chrys.service.mcp.importers import ImportContext, ImportWarning, Problem, SourceErrorKind, base, claude_code
 from chrys.service.mcp.importers import WarningKind as Kind
 from chrys.service.mcp.importers.claude_code import ClaudeCodeSource
 from tests.support.symlinks import symlink_or_skip
@@ -75,7 +76,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
     [
         (
             {"command": "run", "env": {"A": "${A:-1}", "DIR": "${CLAUDE_PROJECT_DIR}/x"}},
-            (),
+            (ImportWarning(Kind.VARIABLE_DEFAULTS_DROPPED, ("mcpServers.srv.env.A",)),),
         ),
         (
             {"type": "http", "url": "https://x", "oauth": {"clientId": "c"}, "headersHelper": "get-headers"},
@@ -94,7 +95,7 @@ def test_entries_convert_to_icode_servers(tmp_path: Path, entry: dict[str, Any],
         ),
         ({"type": "http", "url": "https://x"}, ()),
     ],
-    ids=["required-variables", "auth-and-helper", "credential-header", "unknown-field", "no-headers"],
+    ids=["variable-default", "auth-and-helper", "credential-header", "unknown-field", "no-headers"],
 )
 def test_what_the_import_leaves_out_is_reported(
     tmp_path: Path, entry: dict[str, Any], warnings: tuple[ImportWarning, ...]
@@ -234,6 +235,37 @@ def test_servers_turned_off_in_claude_code_are_imported_turned_off(tmp_path: Pat
     }
 
 
+def test_mcp_tool_denials_restrict_only_matching_servers(tmp_path: Path) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    _write(
+        home / ".claude.json",
+        {"mcpServers": {name: {"command": "run"} for name in ("git.tools", "git_tools_backup", "data", "docs")}},
+    )
+    _write(
+        home / ".claude" / "settings.json",
+        {"permissions": {"deny": ["mcp__git_tools__*", "Bash"], "ask": ["mcp__git_tools_backup"]}},
+    )
+    _write(workspace / ".claude" / "settings.json", {"permissions": {"deny": ["mcp__data__delete"]}})
+    _write(workspace / ".claude" / "settings.local.json", {"permissions": {"deny": ["mcp__docs"]}})
+
+    result = _discover(home, workspace)
+    assert result.source_errors == ()
+    assert {c.name: c.config.allowed_tools for c in result.candidates if c.config} == {
+        "git.tools": [],
+        "git_tools_backup": None,
+        "data": [],
+        "docs": [],
+    }
+    warning = ImportWarning(Kind.TOOLS_RESTRICTED, ("permissions.deny",))
+    assert {c.name: c.warnings for c in result.candidates} == {
+        "git.tools": (warning,),
+        "git_tools_backup": (),
+        "data": (warning,),
+        "docs": (warning,),
+    }
+    assert all(c.config is not None and c.config.enabled for c in result.candidates)
+
+
 @pytest.mark.parametrize("trusted", [False, True], ids=["untrusted", "trusted"])
 def test_a_repository_cannot_approve_its_own_servers_until_its_folder_is_trusted(tmp_path: Path, trusted: bool) -> None:
     home, repo = tmp_path / "home", tmp_path / "repo"
@@ -354,9 +386,13 @@ def test_on_windows_the_key_spelled_as_claude_code_writes_it_wins_over_another_c
     # The folder was renamed from ``Repo`` to ``repo``; Claude Code kept the old key, ahead of the new one,
     # with the drive letter as Claude Code was started.
     old, current = f"{drive}:/Work/Repo", f"{drive}:/Work/repo"
-    config = {"projects": {old: {"disabledMcpServers": []}, current: {"disabledMcpServers": ["a"]}}}
+    config = {"projects": {old: {"hasTrustDialogAccepted": True}, current: {"disabledMcpServers": ["a"]}}}
 
     assert claude_code._entry(config, "C:\\Work\\repo") == {"disabledMcpServers": ["a"]}
+    del config["projects"][current]
+    with monkeypatch.context() as windows:
+        windows.setattr(os.path, "normcase", ntpath.normcase)
+        assert claude_code._entry(config, "C:\\Work\\repo") is None
 
 
 def test_an_untrusted_repository_cannot_approve_all_its_servers(tmp_path: Path) -> None:
@@ -441,16 +477,58 @@ def test_claude_config_dir_moves_the_global_file(tmp_path: Path) -> None:
     assert [c.name for c in result.candidates] == ["srv"]
 
 
-def test_a_broken_file_is_reported_and_the_others_still_listed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("over_limit", [False, True], ids=["malformed", "unreadable"])
+def test_shared_file_failure_preserves_only_known_definitions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, over_limit: bool
+) -> None:
+    home, workspace = tmp_path / "home", tmp_path / "ws"
+    shared = workspace / ".mcp.json"
+    _write(
+        home / ".claude.json",
+        {
+            "mcpServers": {"srv": {"command": "user"}},
+            "projects": {
+                os.path.realpath(workspace).replace(os.sep, "/"): {"mcpServers": {"local": {"command": "run"}}}
+            },
+        },
+    )
+    if over_limit:
+        monkeypatch.setattr(base, "MAX_SOURCE_BYTES", 512)
+        _write(shared, {"mcpServers": {"srv": {"command": "shared"}}, "padding": " " * 512})
+    else:
+        _write(shared, '{"mcpServers": ')
+
+    result = _discover(home, workspace)
+
+    assert [c.name for c in result.candidates] == (["local"] if over_limit else ["srv", "local"])
+    (error,) = result.source_errors
+    assert error.path == str(shared)
+    assert error.kind is (SourceErrorKind.UNREADABLE if over_limit else SourceErrorKind.UNPARSABLE)
+
+
+@pytest.mark.parametrize("policy", [".claude.json", ".claude/settings.json", "ws/.claude/settings.local.json"])
+def test_an_unreadable_policy_does_not_offer_servers_without_its_restrictions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: str
+) -> None:
     workspace = tmp_path / "ws"
-    _write(tmp_path / ".claude.json", {"mcpServers": {"srv": {"command": "run"}}})
-    _write(workspace / ".mcp.json", '{"mcpServers": ')
+    _write(workspace / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}}})
+    _write(tmp_path / ".claude/settings.json", {"enableAllProjectMcpServers": True})
+    assert (candidate := _discover(tmp_path, workspace).candidates[0]).config is not None
+    assert candidate.config.enabled
+    path = tmp_path / policy
+    value = {
+        ".claude.json": {"projects": {os.path.realpath(workspace): {"disabledMcpServers": ["srv"]}}},
+        ".claude/settings.json": {"disabledMcpjsonServers": ["srv"]},
+        "ws/.claude/settings.local.json": {"permissions": {"deny": ["mcp__srv"]}},
+    }
+    _write(path, {**value[policy], "padding": " " * 512})
+    monkeypatch.setattr(base, "MAX_SOURCE_BYTES", 512)
 
     result = _discover(tmp_path, workspace)
 
-    assert [c.name for c in result.candidates] == ["srv"]
+    assert result.candidates == ()
     (error,) = result.source_errors
-    assert (error.path, error.kind) == (str(workspace / ".mcp.json"), SourceErrorKind.UNPARSABLE)
+    assert (error.path, error.kind) == (str(path), SourceErrorKind.UNREADABLE)
 
 
 def test_detect_needs_a_config_file(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from chrys.app.tui.screens.agents.validation_messages import MCP_URL_HOST, MCP_URL_SCHEME
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
@@ -37,7 +38,7 @@ _NOT_IMPORTED = msg(
 )
 _STARTUP_WAIT = msg(
     "tui.mcp.import.warning.startup_wait",
-    fallback="After import, the connection timeout may differ from the one in ChatGPT. Click “Test”; if the connection times out, increase “MCP Request Timeout (seconds)” and retry. Increasing this value also increases the tool call timeout.",
+    fallback="After import, the connection timeout may differ from the one in {agent}. Click “Test”; if the connection times out, increase “MCP Request Timeout (seconds)” and retry. Increasing this value also increases the tool call timeout.",
 )
 _APPROVAL = msg(
     "tui.mcp.import.warning.approval",
@@ -45,7 +46,7 @@ _APPROVAL = msg(
 )
 _DEFAULT_TIMEOUT = msg(
     "tui.mcp.import.warning.default_timeout",
-    fallback="ChatGPT's tool timeout is set to 0, but {app} requires a timeout greater than 0, so the imported server will use the default MCP request timeout. To change it, enter a number of seconds greater than 0 in “MCP Request Timeout (seconds)”.",
+    fallback="{agent}'s tool timeout is set to 0, but {app} requires a timeout greater than 0, so the imported server will use the default MCP request timeout. To change it, enter a number of seconds greater than 0 in “MCP Request Timeout (seconds)”.",
 )
 _AUTH_NOT_IMPORTED = msg(
     "tui.mcp.import.warning.auth_not_imported",
@@ -59,13 +60,13 @@ _TOOLS_RESTRICTED = msg(
     "tui.mcp.import.warning.tools_restricted",
     fallback="The original application's tool restrictions cannot be carried over directly, so this server's tools are initially turned off after import. Choose the tools you need in “Available Tool Scope”.",
 )
+_VARIABLE_DEFAULTS_DROPPED = msg(
+    "tui.mcp.import.warning.variable_defaults_dropped",
+    fallback="The defaults for some environment variable references were dropped. Set the variables before starting {app}, or enter fixed values in the server settings.",
+)
 _TOOL_LOADING = msg(
     "tui.mcp.import.warning.tool_loading",
     fallback="Some tool loading rules were not copied. After import, check “Loading Strategy” and “Initially Visible Tools”.",
-)
-_CODEX_RELATIVE_CWD = msg(
-    "tui.mcp.import.warning.codex_relative_cwd",
-    fallback="After import, the server's working directory may differ from the original. To keep using the original folder, enter its full path in “Working Directory”.",
 )
 _OPENCODE_VARIABLE_CWD = msg(
     "tui.mcp.import.warning.opencode_variable_cwd",
@@ -213,12 +214,14 @@ def warning_text(warning: ImportWarning, agent: str) -> MessageRef:
         Kind.AUTH_HEADERS: _AUTH_HEADERS,
         Kind.TOOLS_RESTRICTED: _TOOLS_RESTRICTED,
         Kind.TOOL_LOADING: _TOOL_LOADING,
-        Kind.CODEX_RELATIVE_CWD: _CODEX_RELATIVE_CWD,
         Kind.OPENCODE_VARIABLE_CWD: _OPENCODE_VARIABLE_CWD,
+        Kind.VARIABLE_DEFAULTS_DROPPED: _VARIABLE_DEFAULTS_DROPPED,
     }[warning.kind]
-    if warning.kind is Kind.AUTH_NOT_IMPORTED:
+    if warning.kind in (Kind.AUTH_NOT_IMPORTED, Kind.DEFAULT_TIMEOUT):
         return message.bind(agent=agent, app=APP_DISPLAY_NAME)
-    if warning.kind in (Kind.APPROVAL, Kind.DEFAULT_TIMEOUT):
+    if warning.kind is Kind.STARTUP_WAIT:
+        return message.bind(agent=agent)
+    if warning.kind in (Kind.APPROVAL, Kind.VARIABLE_DEFAULTS_DROPPED):
         return message.bind(app=APP_DISPLAY_NAME)
     return message.bind()
 
@@ -231,6 +234,10 @@ def problem_text(candidate: McpImportCandidate, render: Callable[[MessageRef], s
         return _UNSUPPORTED_CONNECTION.bind(transport=transport, app=APP_DISPLAY_NAME)
     if candidate.problem is Problem.REMOTE_ENVIRONMENT:
         return _REMOTE_ENVIRONMENT.bind(app=APP_DISPLAY_NAME)
+    if candidate.reason is ValueReason.URL_SCHEME:
+        return MCP_URL_SCHEME.bind()
+    if candidate.reason is ValueReason.URL_HOST:
+        return MCP_URL_HOST.bind()
     use = candidate.field_use
     if candidate.reason is ValueReason.LINE_ENDINGS:
         return _LINE_ENDINGS.bind(field=render(_FIELDS[use].bind()))

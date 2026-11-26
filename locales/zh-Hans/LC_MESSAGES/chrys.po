@@ -3944,6 +3944,12 @@ msgstr "{label}不得包含空{item}。"
 msgid "tui.agent_config.validation.mcp.transport"
 msgstr "传输方式必须是 stdio 或 http。"
 
+#. English: Enter a URL with a host, such as https://example.com/mcp.
+#. chrys-meta={"fingerprint":"3f6c18e1824e54dfdec4d3e8986a123486dfbb550d8016b2bfacf3ca23abbe95","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/validation_messages.py
+msgid "tui.agent_config.validation.mcp.url_host"
+msgstr "请输入包含主机名或 IP 地址的 URL，例如 https://example.com/mcp。"
+
 #. English: URL is required for HTTP transport.
 #. chrys-meta={"fingerprint":"e4958c17d78feeebcf69123e32eedd8c59a0e43f690850319bcf0c1f7d4a606b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/validation_messages.py
@@ -9776,22 +9782,14 @@ msgstr "部分请求头引用了原应用的认证变量，因此未复制。如
 msgid "tui.mcp.import.warning.auth_not_imported"
 msgstr "无法沿用 {agent} 中的登录状态。{app} 暂不支持 MCP OAuth 登录。如果服务器支持令牌认证，请按服务器说明在“请求头”中配置；如果仅支持 OAuth 登录，则暂时无法在 {app} 中使用。"
 
-#. English: After import, the server's working directory may differ from the
-#. original. To keep using the original folder, enter its full path in “Working
-#. Directory”.
-#. chrys-meta={"fingerprint":"45ba72f0706da5b28e0df271cd01a627dae08cc14d0b431cb89f8ee133e0b136","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/import_mcp_view.py
-msgid "tui.mcp.import.warning.codex_relative_cwd"
-msgstr "导入后，服务器使用的工作目录可能与原来不同。如需继续使用原来的文件夹，请在“工作目录”中填写它的完整路径。"
-
-#. English: ChatGPT's tool timeout is set to 0, but {app} requires a timeout
+#. English: {agent}'s tool timeout is set to 0, but {app} requires a timeout
 #. greater than 0, so the imported server will use the default MCP request
 #. timeout. To change it, enter a number of seconds greater than 0 in “MCP
 #. Request Timeout (seconds)”.
-#. chrys-meta={"fingerprint":"539c9f2af8b0d012c689c1c80455cfe89a7f9ad7ff50e6ce04ae4141347cd4d1","multiline":false,"placeholders":["app"]}
+#. chrys-meta={"fingerprint":"1ddd977b67e337492767e58da12f865156a25a262ae4c0cab0fed4f58a678d83","multiline":false,"placeholders":["agent","app"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.default_timeout"
-msgstr "ChatGPT 中的工具超时设为 0，但 {app} 要求超时秒数大于 0，因此导入后将使用默认的 MCP 请求超时。如需调整，请在“MCP 请求超时（秒）”中填写大于 0 的秒数。"
+msgstr "{agent} 中的工具超时设为 0，但 {app} 要求超时秒数大于 0，因此导入后将使用默认的 MCP 请求超时。如需调整，请在“MCP 请求超时（秒）”中填写大于 0 的秒数。"
 
 #. English: Some settings from the original application were not copied. After
 #. import, test the connection and check that the features you need are
@@ -9812,13 +9810,13 @@ msgid "tui.mcp.import.warning.opencode_variable_cwd"
 msgstr "此工作目录使用了环境变量。导入后，服务器使用的工作目录可能与导入前在 OpenCode 中使用的文件夹不同。如需继续使用该文件夹，请在“工作目录”中填写它的完整路径。点击“测试”可检查连接，但连接成功不代表使用的文件夹符合预期。"
 
 #. English: After import, the connection timeout may differ from the one in
-#. ChatGPT. Click “Test”; if the connection times out, increase “MCP Request
+#. {agent}. Click “Test”; if the connection times out, increase “MCP Request
 #. Timeout (seconds)” and retry. Increasing this value also increases the tool
 #. call timeout.
-#. chrys-meta={"fingerprint":"6548fe62b89147849dbdbfba97877a723934d33f71f17177b7b41936d822b0f9","multiline":false,"placeholders":[]}
+#. chrys-meta={"fingerprint":"d198f06cc5369492cfb1282483e46a2611362614fcb483c48668e61827875b01","multiline":false,"placeholders":["agent"]}
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.startup_wait"
-msgstr "导入后，连接服务器的最长等待时间可能与 ChatGPT 中不同。请点击“测试”；如提示连接超时，可增大“MCP 请求超时（秒）”后重试。调大此值也会延长工具调用的最长等待时间。"
+msgstr "导入后，连接服务器的最长等待时间可能与 {agent} 中不同。请点击“测试”；如提示连接超时，可增大“MCP 请求超时（秒）”后重试。调大此值也会延长工具调用的最长等待时间。"
 
 #. English: Some tool loading rules were not copied. After import, check
 #. “Loading Strategy” and “Initially Visible Tools”.
@@ -9834,6 +9832,14 @@ msgstr "部分工具的加载方式未沿用。请在导入后检查“加载策
 #: src/chrys/app/tui/screens/agents/import_mcp_view.py
 msgid "tui.mcp.import.warning.tools_restricted"
 msgstr "原应用的工具限制不能直接沿用，导入后暂未启用该服务器的工具。请在“可用工具范围”中选择需要的工具。"
+
+#. English: The defaults for some environment variable references were dropped.
+#. Set the variables before starting {app}, or enter fixed values in the server
+#. settings.
+#. chrys-meta={"fingerprint":"a7f85deb4203a86b45e1cf52d79b40d47c2decdbef5cbfd7c0733ecd11c35beb","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/agents/import_mcp_view.py
+msgid "tui.mcp.import.warning.variable_defaults_dropped"
+msgstr "部分环境变量引用的默认值未导入。请在启动 {app} 前设置这些变量，或在服务器的对应设置中填写固定值。"
 
 #. English: Imported {count} MCP server. Review it, then click Save.
 #. English-plural: Imported {count} MCP servers. Review them, then click Save.
@@ -18930,6 +18936,12 @@ msgstr "工作区列表无法保存：{reason}"
 
 #~ msgid "tui.markdown.diagram.open_truncated"
 #~ msgstr "打开完整图表（{kind}，{width}×{height}）"
+
+#~ msgid "tui.mcp.import.problem.codex_relative_cwd"
+#~ msgstr "原工作目录取决于启动 ChatGPT 或 Codex 时所在的目录。请手动添加服务器，并在“工作目录”中填写完整路径。"
+
+#~ msgid "tui.mcp.import.warning.codex_relative_cwd"
+#~ msgstr "导入后，服务器使用的工作目录可能与原来不同。如需继续使用原来的文件夹，请在“工作目录”中填写它的完整路径。"
 
 #~ msgid "tui.model_indicator.label.configure"
 #~ msgstr "模型未配置"

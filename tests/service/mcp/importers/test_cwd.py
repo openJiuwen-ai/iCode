@@ -55,10 +55,7 @@ def test_absent_relative_and_absolute_paths(home_path: Path, source: str, cwd: s
 
     assert candidate.config is not None
     assert candidate.config.cwd == (os.path.normpath(cwd) if cwd and source != "codex" else cwd or "")
-    expected = (
-        (ImportWarning(WarningKind.CODEX_RELATIVE_CWD),) if source == "codex" and cwd in (".", "tools/server") else ()
-    )
-    assert candidate.warnings == expected
+    assert candidate.warnings == ()
 
 
 @pytest.fixture
@@ -248,35 +245,6 @@ def test_supported_windows_cwd_remains_importable(
     set_source_platform(monkeypatch, windows=True)
     (candidate,) = discover(home_path, source, {"cwd": cwd}).candidates
     assert candidate.config is not None
-
-
-@pytest.mark.parametrize(
-    ("cwd", "windows", "relative"),
-    [
-        (r"C:\tools", True, False),
-        (r"C:\tools", False, True),
-        ("D:/server", True, False),
-        ("D:/server", False, True),
-        (r"\\host\share\server", True, False),
-        (r"\\host\share\server", False, True),
-        ("/tools", True, True),
-        ("/tools", False, False),
-        (r"\tools", True, True),
-        (r"\tools", False, True),
-        (".", True, True),
-        (".", False, True),
-        ("tools/server", True, True),
-        ("tools/server", False, True),
-    ],
-)
-def test_codex_relative_cwd_warning_follows_source_platform(
-    home_path: Path, monkeypatch: pytest.MonkeyPatch, cwd: str, windows: bool, relative: bool
-) -> None:
-    set_source_platform(monkeypatch, windows=windows)
-    (candidate,) = discover(home_path, "codex", {"cwd": cwd}).candidates
-    assert candidate.config is not None
-    assert candidate.config.cwd == cwd
-    assert candidate.warnings == ((ImportWarning(WarningKind.CODEX_RELATIVE_CWD),) if relative else ())
 
 
 def test_opencode_variable_drive_path_keeps_reference_with_warning(

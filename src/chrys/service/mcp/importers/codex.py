@@ -14,33 +14,34 @@ checkout), so a repository can't add or change servers on its own. A later
 file's entry merges into an earlier same-named one, table by table, its other
 values replacing; so a project can turn off or narrow a user server by naming
 only the settings it changes. A server's file is the last one that sets its
-``command`` or ``url``.
+``command`` or ``url``. A trusted config file that can't be read or parsed
+leaves the effective servers unknown, so there are no import candidates.
 
 Values in ``env`` and ``http_headers`` are literal. ``env_http_headers`` and
 ``bearer_token_env_var`` name variables, which become iCode references; Codex
 leaves out a header whose variable is unset, while iCode reports a connection
-error. A deny-only tool filter (``disabled_tools`` without
-``enabled_tools``) can't be expressed, so the server is imported with no
-tools. ``tool_timeout_sec`` defaults to Codex's 300 seconds. ``env_vars``
-names variables Codex passes on from its own environment; iCode passes on its
-whole environment except ``PYTHONHOME`` and ``PYTHONPATH``, so those two
-become references the user must set.
+error. Tool exposure omissions and deny-only tool filters can't be expressed,
+so the server is imported with no tools. ``tool_timeout_sec`` defaults to
+Codex's 300 seconds. ``env_vars`` names variables Codex passes on from its own
+environment; iCode passes on nearly all of its environment, so they are left
+out. iCode never passes on ``PYTHONHOME`` and ``PYTHONPATH``: naming either
+there, unless ``env`` sets it, warns that a setting was not copied, and the
+user can set it in Env.
 
 An omitted ``cwd`` uses the session folder. An explicit relative ``cwd``
 (including ``.``) instead starts at Codex's process launch folder, even when
-its workspace is elsewhere; import preserves the path with a warning to
-check that change of base. ``~`` and shell variables are literal paths.
+its workspace is elsewhere; import preserves the relative path for iCode to resolve from the session folder. ``~`` and shell variables are literal paths.
 
-Checked against https://github.com/openai/codex tag ``rust-v0.167.2``
-(commit ce21072c90), read 2026-11-12; paths are under ``codex-rs``: the files
+Checked against https://github.com/openai/codex tag ``rust-v0.172.0``
+(commit 3d86e43b07), read 2026-11-24. Paths are under ``codex-rs``: the files
 read and trust (``config/src/loader/mod.rs``), how they merge
 (``config/src/merge.rs``), the server fields
 (``config/src/mcp_types.rs``), header variables and bearer tokens
 (``rmcp-client/src/utils.rs``) and the 300-second default
-(``codex-mcp/src/rmcp_client.rs:122``).
+(``codex-mcp/src/rmcp_client.rs``, ``DEFAULT_TOOL_TIMEOUT``).
 The explicit ``cwd`` is passed to the subprocess unchanged; only its absence
 gets the launcher's session-folder fallback
-(``rmcp-client/src/stdio_server_launcher.rs:453-472`` and
+(``LocalStdioServerLauncher::launch_server`` in ``rmcp-client/src/stdio_server_launcher.rs`` and
 ``codex-mcp/src/rmcp_client.rs``). Local Codex 0.167.2 probes on
 2026-11-12, through app-server threads with different ``cwd`` values and
 ``codex exec -C`` with different workspaces, confirmed: absent uses the
@@ -51,9 +52,7 @@ current process folder establishes the original Codex launch folder.
 
 from __future__ import annotations
 
-import ntpath
 import os
-import posixpath
 import re
 import tomllib
 from pathlib import Path
@@ -64,6 +63,7 @@ from chrys.service.mcp.importers.base import (
     FieldUse,
     ImportContext,
     ImportWarning,
+    McpImportCandidate,
     McpImportResult,
     McpSourceError,
     Problem,
@@ -75,7 +75,6 @@ from chrys.service.mcp.importers.base import (
     Var,
     WarningKind,
     convert,
-    git_root,
     is_str_list,
     is_str_mapping,
     literal,
@@ -97,6 +96,7 @@ _READ = {
     "args",
     "env",
     "env_vars",
+    "cwd",
     "url",
     "http_headers",
     "env_http_headers",
@@ -104,14 +104,27 @@ _READ = {
     "enabled",
     "enabled_tools",
     "disabled_tools",
+    "omit_tools_from",
     "auth",
     "oauth",
     "oauth_resource",
     "environment_id",
 }
+_STDIO_ONLY = ("args", "env", "env_vars", "cwd")
+_HTTP_ONLY = (
+    "bearer_token_env_var",
+    "http_headers_helper",
+    "http_headers",
+    "env_http_headers",
+    "oauth",
+    "oauth_resource",
+    "auth",
+)
+_TOOL_EXPOSURES = {"direct", "deferred", "code_mode"}
 # A zero timeout has no iCode equivalent: the server keeps iCode's default, with a warning.
 _TIMEOUT = "tool_timeout_sec"
-# What iCode leaves out of the environment a stdio server inherits.
+# What iCode leaves out of the environment a stdio server inherits. Codex passing one on
+# can't be copied: a reference fails when it is unset and would bring back iCode's own value.
 _NOT_INHERITED = frozenset({"PYTHONHOME", "PYTHONPATH"})
 
 
@@ -129,33 +142,61 @@ class CodexSource:
 
     def discover(self, ctx: ImportContext) -> McpImportResult:
         errors: list[McpSourceError] = []
-        entries: dict[str, tuple[dict[str, Any], str]] = {}
+        entries: dict[str, tuple[object, str]] = {}
         user_path = _user_file(ctx)
-        user: dict[str, Any] = {}
         try:
             user = _read_toml(user_path)
         except SourceReadError as exc:
-            errors.append(exc.at(user_path))
+            return McpImportResult((), (exc.at(user_path),))
         documents: list[tuple[Path, dict[str, Any]]] = [(user_path, user)]
         for path in _project_files(ctx, user, user_path):
             try:
                 documents.append((path, _read_toml(path)))
             except SourceReadError as exc:
                 errors.append(exc.at(path))
+        if errors:
+            return McpImportResult((), tuple(errors))
+
+        invalid_table: McpSourceError | None = None
         for path, document in documents:
-            table = document.get("mcp_servers", {})
-            if not isinstance(table, dict):
-                errors.append(McpSourceError(str(path), SourceErrorKind.INVALID, field="mcp_servers"))
+            if "mcp_servers" not in document:
                 continue
+            table = document["mcp_servers"]
+            if not isinstance(table, dict):
+                # A scalar replaces the server map. A later table can restore it, starting empty.
+                entries.clear()
+                invalid_table = McpSourceError(str(path), SourceErrorKind.INVALID, field="mcp_servers")
+                continue
+            invalid_table = None
             for name, entry in table.items():
                 if not isinstance(entry, dict):
+                    # A scalar replaces the entire server table and must shadow the old definition.
+                    entries[name] = (entry, str(path))
                     continue
                 base, base_path = entries.get(name, ({}, str(path)))
-                if entry.keys() & {"command", "url"}:
+                if not isinstance(base, dict):
+                    base, base_path = {}, str(path)
+                elif entry.keys() & {"command", "url"}:
                     base_path = str(path)
                 entries[name] = (merge_entries(base, entry), base_path)
-        found = (_server(name, entry, path) for name, (entry, path) in entries.items())
-        return McpImportResult(tuple(convert(server) for server in found if server is not None), tuple(errors))
+        if invalid_table is not None:
+            return McpImportResult((), (invalid_table,))
+        candidates: list[McpImportCandidate] = []
+        for name, (entry, path) in entries.items():
+            if not isinstance(entry, dict):
+                errors.append(McpSourceError(path, SourceErrorKind.INVALID, field=f"mcp_servers.{name}"))
+            elif field := _transport_conflict(entry):
+                # An overlay may supply the conflicting field without replacing the command or URL.
+                for source_path, document in reversed(documents):
+                    table = document.get("mcp_servers")
+                    source_entry = table.get(name) if isinstance(table, dict) else None
+                    if isinstance(source_entry, dict) and field in source_entry:
+                        path = str(source_path)
+                        break
+                errors.append(McpSourceError(path, SourceErrorKind.INVALID, field=f"mcp_servers.{name}.{field}"))
+            elif (server := _server(name, entry, path)) is not None:
+                candidates.append(convert(server))
+        return McpImportResult(tuple(candidates), tuple(errors))
 
 
 def _user_file(ctx: ImportContext) -> Path:
@@ -180,9 +221,9 @@ def _project_files(ctx: ImportContext, user: dict[str, Any], user_path: Path) ->
     workspace = Path(os.path.abspath(ctx.workspace_cwd))
     ancestors = [workspace, *workspace.parents]
     root = _marker_root(ancestors, markers if is_str_list(markers) else [".git"]) or workspace
-    repo = git_root(ctx.workspace_cwd)
+    repo = _marker_root(ancestors, [".git"])
     # Codex knows no repository folder where it finds no main checkout (a submodule, say).
-    main = main_checkout(repo) if repo else None
+    main = main_checkout(str(repo)) if repo else None
     fallback = [root, *([Path(main)] if main else [])]
     files: list[Path] = []
     for folder in reversed(ancestors[: ancestors.index(root) + 1]):
@@ -265,9 +306,8 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
     if not _shape_is_valid(entry):
         return None
     stdio = "command" in entry
-    known = (*_READ, _TIMEOUT, "cwd") if stdio else (*_READ, _TIMEOUT)
     omitted = {"startup_timeout_sec": WarningKind.STARTUP_WAIT, "default_tools_approval_mode": WarningKind.APPROVAL}
-    warnings: list[ImportWarning | None] = [missing_fields(entry, (*known, *omitted), prefix)]
+    warnings: list[ImportWarning | None] = [missing_fields(entry, (*_READ, _TIMEOUT, *omitted), prefix)]
     warnings.extend(ImportWarning(kind, (f"{prefix}.{key}",)) for key, kind in omitted.items() if key in entry)
     headers, blocked, reason = ({}, "", ValueReason.INVALID) if stdio else _headers(entry, prefix)
     problem = Problem.VALUE_NOT_REPRESENTABLE
@@ -275,21 +315,24 @@ def _server(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         blocked, problem = remote, Problem.REMOTE_ENVIRONMENT
     env: dict[str, Value] = {key: literal(text) for key, text in entry.get("env", {}).items()}
     if stdio:
-        # Codex anchors explicit relative paths at launch, iCode at the session;
-        # even "." is explicit and must not collapse into the absent-cwd default.
-        cwd_paths = ntpath if get_platform().is_windows else posixpath
-        if "cwd" in entry and entry["cwd"] and not cwd_paths.isabs(entry["cwd"]):
-            warnings.append(ImportWarning(WarningKind.CODEX_RELATIVE_CWD))
         passed = [name for name in _passed_variables(entry) if name.upper() in _NOT_INHERITED]
         windows = get_platform().is_windows
         explicit = {key.upper() if windows else key for key in env}
-        passed = [name for name in passed if (name.upper() if windows else name) not in explicit]
-        env |= {name: (Var(name),) for name in passed}
+        if any((name.upper() if windows else name) not in explicit for name in passed):
+            # One "not copied" warning lists every such setting.
+            unread = warnings[0]
+            warnings[0] = ImportWarning(
+                WarningKind.NOT_IMPORTED, (*(unread.items if unread else ()), f"{prefix}.env_vars")
+            )
     elif entry.get("auth") in ("oauth", "chatgpt", "ema_auth") or "oauth" in entry or "oauth_resource" in entry:
         warnings.append(ImportWarning(WarningKind.AUTH_NOT_IMPORTED))
     allowed: tuple[str, ...] | None = None
     enabled_tools, disabled_tools = entry.get("enabled_tools"), entry.get("disabled_tools", [])
-    if enabled_tools is not None:
+    if entry.get("omit_tools_from", []):
+        # A name allowlist cannot preserve the surfaces on which Codex exposes those names.
+        allowed = ()
+        warnings.append(ImportWarning(WarningKind.TOOLS_RESTRICTED, (f"{prefix}.omit_tools_from",)))
+    elif enabled_tools is not None:
         allowed = tuple(tool for tool in enabled_tools if tool not in disabled_tools)
     elif disabled_tools:
         allowed = ()
@@ -345,14 +388,27 @@ def _passed_variables(entry: dict[str, Any]) -> list[str]:
     return [name for name in names if isinstance(name, str) and _VARIABLE.fullmatch(name)]
 
 
+def _transport_conflict(entry: dict[str, Any]) -> str:
+    """The first transport setting Codex rejects for the declared connection type."""
+    if ("command" in entry) == ("url" in entry):
+        return ""
+    if "bearer_token" in entry:
+        return "bearer_token"
+    incompatible = _HTTP_ONLY if "command" in entry else _STDIO_ONLY
+    return next((field for field in incompatible if field in entry), "")
+
+
 def _shape_is_valid(entry: dict[str, Any]) -> bool:
-    """Codex's own checks on the settings the import reads."""
+    """Check the types of settings the import reads."""
     if ("command" in entry) == ("url" in entry):
         return False
     strings = ("command", "url", "bearer_token_env_var", "environment_id", "cwd")
     if any(key in entry and not isinstance(entry[key], str) for key in strings):
         return False
     if any(key in entry and not is_str_list(entry[key]) for key in ("args", "enabled_tools", "disabled_tools")):
+        return False
+    omissions = entry.get("omit_tools_from", [])
+    if not is_str_list(omissions) or not _TOOL_EXPOSURES.issuperset(omissions):
         return False
     if any(key in entry and not is_str_mapping(entry[key]) for key in ("env", "http_headers", "env_http_headers")):
         return False

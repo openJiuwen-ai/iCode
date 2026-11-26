@@ -38,6 +38,8 @@ class MCPServerConfig:
     - ``stdio``: Spawn a local process (requires ``command``).
     - ``http``: Connect via Streamable HTTP/SSE (requires ``url``).
 
+    ``command`` is the executable name. Supply its arguments in ``args``.
+
     Common optional fields: ``description``, ``tool_name_prefix``,
     ``allowed_tools``, ``request_timeout``.
     """

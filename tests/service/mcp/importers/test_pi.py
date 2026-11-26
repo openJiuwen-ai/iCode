@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from chrys.foundation.util.env_templates import resolve_env_templates
-from chrys.service.mcp.importers import ImportContext, ImportWarning, McpSourceError, Problem, SourceErrorKind, pi
+from chrys.service.mcp.importers import ImportContext, ImportWarning, McpSourceError, Problem, SourceErrorKind, base, pi
 from chrys.service.mcp.importers import WarningKind as Kind
 from chrys.service.mcp.importers.pi import PiSource
 from tests.support.symlinks import symlink_or_skip
@@ -211,6 +211,35 @@ def test_project_servers_replace_global_ones_and_overrides_only_change_exposure(
     assert (a.command, a.enabled, a.use_progressive_disclosure) == ("global", False, False)
     assert (b.command, b.env, b.cwd) == ("project", {}, "")
     assert a.cwd == "a-dir"
+
+
+def test_unread_project_file_cannot_fall_back_to_an_enabled_global_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    project = workspace / ".pi" / "mcp.json"
+    agent = _global(tmp_path).parent
+    _write(_global(tmp_path), {"mcpServers": {"srv": {"command": "global"}}})
+    _write(agent / "settings.json", {"defaultProjectTrust": "always"})
+    monkeypatch.setattr(base, "MAX_SOURCE_BYTES", 512)
+
+    _write(project, '{"mcpServers": {"srv": {"url": "https://x", "timeout": Infinity}}}')
+    rejected = _discover(tmp_path, workspace)
+    (fallback,) = rejected.candidates
+    assert fallback.config is not None
+    assert (fallback.config.command, fallback.config.enabled) == ("global", True)
+    assert rejected.source_errors == (McpSourceError(str(project), SourceErrorKind.UNPARSABLE),)
+
+    for path, content in (
+        (project, {"mcpServers": {"srv": {"enabled": False}}}),
+        (agent / "settings.json", {"defaultProjectTrust": "always"}),
+        (agent / "trust.json", {str(workspace): True}),
+    ):
+        _write(path, " " * 512 + json.dumps(content))
+        unread = _discover(tmp_path, workspace)
+        assert unread.candidates == ()
+        assert unread.source_errors == (McpSourceError(str(path), SourceErrorKind.UNREADABLE),)
+        _write(path, content)
 
 
 @pytest.mark.parametrize(
@@ -476,15 +505,19 @@ def test_home_expansion_normalizes_the_agent_folder_before_reading(tmp_path: Pat
         {"command": "project", "type": ""},
         {"url": "ftp://x"},
         {"url": "example.com/mcp"},
+        {"url": "https://"},
+        {"url": "https://host:bad"},
+        {"url": "https://bad host"},
         {"url": "https://x", "auth": {"provider": "github"}},
         {"url": "https://x", "oauth": False},
+        {"url": "https://x", "oauth": {"callbackPort": 0}},
         {"url": "https://x", "auth": {}},
     ],
 )
 def test_invalid_project_entries_keep_the_valid_global_server(tmp_path: Path, entry: dict[str, Any]) -> None:
     workspace = tmp_path / "ws"
     project = workspace / ".pi" / "mcp.json"
-    _write(_global(tmp_path), {"mcpServers": {"srv": {"command": "global", "env": {"X": "kept"}}}})
+    _write(_global(tmp_path), {"mcpServers": {"srv": {"command": "global", "env": {"X": "kept"}, "enabled": False}}})
     _write(tmp_path / ".pi" / "agent" / "trust.json", {str(workspace): True})
     _write(project, {"mcpServers": {"srv": entry}})
 
@@ -493,21 +526,25 @@ def test_invalid_project_entries_keep_the_valid_global_server(tmp_path: Path, en
     (candidate,) = result.candidates
     assert candidate.config is not None
     assert (candidate.config.command, candidate.config.env) == ("global", {"X": "kept"})
+    assert not candidate.config.enabled
     assert candidate.source_path == str(_global(tmp_path))
     (error,) = result.source_errors
     assert (error.path, error.kind, error.field) == (str(project), SourceErrorKind.INVALID, "mcpServers.srv")
 
 
 @pytest.mark.parametrize(
-    "entry",
+    ("entry", "field"),
     [
-        {"command": "project", "env": {"X": "!get-token"}},
-        {"command": "project", "env": {"X": " leading-space"}},
-        {"exposure": "hidden", "toolExposure": {"read,write": "direct"}},
+        ({"command": "project", "env": {"X": "!get-token"}}, "env.X"),
+        ({"type": "stdio", "command": "project", "url": "https://x"}, "url"),
+        ({"exposure": "hidden", "toolExposure": {"read,write": "direct"}}, "toolExposure"),
+        ({"url": "https://x", "oauth": {"callbackUrl": "http://localhost/callback"}}, "oauth.callbackUrl"),
+        ({"url": "https:///x"}, "url"),
+        ({"url": r"https://good\other"}, "url"),
     ],
 )
-def test_valid_but_unrepresentable_project_entries_still_replace_global_servers(
-    tmp_path: Path, entry: dict[str, Any]
+def test_project_entries_that_need_manual_setup_shadow_global_servers(
+    tmp_path: Path, entry: dict[str, Any], field: str
 ) -> None:
     workspace = tmp_path / "ws"
     _write(_global(tmp_path), {"mcpServers": {"srv": {"command": "global"}}})
@@ -518,7 +555,7 @@ def test_valid_but_unrepresentable_project_entries_still_replace_global_servers(
 
     (candidate,) = result.candidates
     assert candidate.config is None
-    assert candidate.problem is not None
+    assert candidate.problem_field == f"mcpServers.srv.{field}"
     assert result.source_errors == ()
 
 
@@ -536,6 +573,29 @@ def test_authentication_warnings_follow_explicit_settings(tmp_path: Path, fields
 
     assert candidate.config is not None
     assert candidate.warnings == ((ImportWarning(Kind.AUTH_NOT_IMPORTED),) if warn else ())
+
+
+def test_provider_auth_requires_https_or_loopback(tmp_path: Path) -> None:
+    fields = {"auth": {"provider": "github"}, "headers": {"Authorization": "Bearer $TOKEN"}}
+    path = _global(tmp_path)
+    _write(
+        path,
+        {
+            "mcpServers": {
+                "unsafe": {"url": "http://remote.example/mcp", **fields},
+                "loopback": {"url": "http://[::1]/mcp", **fields},
+            },
+        },
+    )
+
+    result = _discover(tmp_path)
+
+    (candidate,) = result.candidates
+    assert candidate.config is not None
+    assert candidate.config.url == "http://[::1]/mcp"
+    assert candidate.config.headers == {"Authorization": "Bearer {{TOKEN}}"}
+    assert candidate.warnings == (ImportWarning(Kind.AUTH_NOT_IMPORTED),)
+    assert result.source_errors == (McpSourceError(str(path), SourceErrorKind.INVALID, field="mcpServers.unsafe"),)
 
 
 @pytest.mark.parametrize(
@@ -559,9 +619,7 @@ def test_invalid_oauth_settings_are_source_errors(tmp_path: Path, oauth: object)
         {"clientRegistration": "cimd", "callbackUrl": "http://localhost/callback"},
     ],
 )
-def test_unmigrated_oauth_options_are_not_revalidated_without_an_override(
-    tmp_path: Path, oauth: dict[str, Any]
-) -> None:
+def test_standalone_oauth_options_are_imported_with_a_warning(tmp_path: Path, oauth: dict[str, Any]) -> None:
     candidate = _only(tmp_path, {"url": "https://x", "oauth": oauth})
 
     assert candidate.config is not None
@@ -583,24 +641,47 @@ def test_an_exposure_override_keeps_global_provider_auth(tmp_path: Path) -> None
     assert result.source_errors == ()
 
 
-def test_a_project_namespace_clash_keeps_the_loaded_global_server(tmp_path: Path) -> None:
+@pytest.mark.parametrize("global_readable", [True, False])
+def test_a_project_namespace_clash_cannot_start_the_project_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_readable: bool
+) -> None:
     workspace = tmp_path / "ws"
-    _write(_global(tmp_path), {"mcpServers": {"a-b": {"command": "global"}}})
+    global_path = _global(tmp_path)
+    document = {"mcpServers": {"a-b": {"command": "global", "enabled": False}}}
+    if global_readable:
+        _write(global_path, document)
+    else:
+        monkeypatch.setattr(base, "MAX_SOURCE_BYTES", 512)
+        _write(global_path, json.dumps(document) + " " * 512)
     _write(tmp_path / ".pi" / "agent" / "trust.json", {str(workspace): True})
-    _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"a_b": {"command": "project"}}})
+    project = workspace / ".pi" / "mcp.json"
+    _write(project, {"mcpServers": {"a_b": {"command": "project"}}})
 
     result = _discover(tmp_path, workspace)
 
-    assert [candidate.name for candidate in result.candidates] == ["a-b"]
-    (error,) = result.source_errors
-    assert error.field == "mcpServers.a_b"
+    if global_readable:
+        (candidate,) = result.candidates
+        assert candidate.name == "a-b"
+        assert candidate.config is not None
+        assert candidate.config.enabled is False
+        assert result.source_errors == (McpSourceError(str(project), SourceErrorKind.INVALID, field="mcpServers.a_b"),)
+    else:
+        assert result.candidates == ()
+        assert result.source_errors == (McpSourceError(str(global_path), SourceErrorKind.UNREADABLE),)
 
 
 def test_partial_http_override_preserves_its_priority_with_unmigrated_oauth(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     _write(
         _global(tmp_path),
-        {"mcpServers": {"srv": {"url": "https://x", "oauth": {"clientRegistration": "cimd"}}}},
+        {
+            "mcpServers": {
+                "srv": {
+                    "url": "https://x",
+                    "oauth": {"clientRegistration": "cimd", "callbackUrl": "http://localhost/callback"},
+                }
+            }
+        },
     )
     _write(tmp_path / ".pi" / "agent" / "trust.json", {str(workspace): True})
     _write(workspace / ".pi" / "mcp.json", {"mcpServers": {"srv": {"enabled": False}}})
@@ -619,7 +700,8 @@ def test_partial_http_override_preserves_its_priority_with_unmigrated_oauth(tmp_
     ("fields", "url"),
     [
         ({}, "https://project.example/mcp"),
-        ({"oauth": {"clientId": "id"}}, "https://project.example/mcp"),
+        ({"oauth": {"clientId": "id", "callbackPort": 19876}}, "https://project.example/mcp"),
+        ({"oauth": {"clientRegistration": "cimd"}}, "https://project.example/mcp"),
         # URL details are copied as written; only the scheme's letter case changes.
         ({"url": "HTTPS://Project.example/Case?Key=Value"}, "https://Project.example/Case?Key=Value"),
         ({"url": "http://127.1/mcp"}, "http://127.1/mcp"),
@@ -639,3 +721,4 @@ def test_http_project_servers_replace_global_ones(tmp_path: Path, fields: dict[s
     assert result.source_errors == ()
     assert candidate.config is not None
     assert (candidate.config.transport, candidate.config.url) == ("http", url)
+    assert candidate.warnings == ((ImportWarning(Kind.AUTH_NOT_IMPORTED),) if "oauth" in fields else ())

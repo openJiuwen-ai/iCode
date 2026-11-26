@@ -14,6 +14,7 @@ import pytest
 from rich.cells import cell_len
 from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
+from textual.geometry import Region
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TextArea
 
 from chrys.app.tui.i18n import LocaleController
@@ -717,11 +718,12 @@ async def test_stdio_command_line_parses_into_command_and_args() -> None:
 
 
 def test_a_saved_command_line_shown_in_the_field_reads_back_as_the_same_arguments() -> None:
+    command = " python server.py "
     args = ["[/bold] literal", 'say "hi"', "", "C:\\Program Files\\data\\", "two\nlines", "--flag"]
 
-    shown = MCPConnectionCard._format_command_line("python server.py", args)
+    shown = MCPConnectionCard._format_command_line(command, args)
 
-    assert MCPConnectionCard._split_command_line(shown) == ("python server.py", args)
+    assert MCPConnectionCard._split_command_line(shown) == (command, args)
 
 
 def test_a_command_typed_over_several_lines_splits_at_the_line_breaks() -> None:
@@ -1276,6 +1278,7 @@ async def test_test_connect_button_shows_markdown_report_dialog() -> None:
         raw_name = "server\x1b]52;c;VEVTVA==\x1b\\\u202e\u200b"
         card.query_one("#mcp-name-0", Input).value = raw_name
 
+        cwd = "/work/team  A/`server`\nbranch\tend"
         report = MCPTestReport(
             server_name="everything",
             server_title="Everything Server",
@@ -1286,7 +1289,7 @@ async def test_test_connect_button_shows_markdown_report_dialog() -> None:
             tools=(("echo", "Echo a message."),),
             prompts=(),
             initial_tool_names=None,
-            effective_cwd="/workspace/server",
+            effective_cwd=cwd,
         )
         panel.test_adapter.test_connection = AsyncMock(return_value=report)  # type: ignore[method-assign]
 
@@ -1303,17 +1306,19 @@ async def test_test_connect_button_shows_markdown_report_dialog() -> None:
         # text body is gone with the rest of the loading chrome.
         assert dialog.has_class("-markdown")
         assert not dialog.query("#connection-test-message")
-        # The widget's source fills in asynchronously on mount — poll for it.
+        markdown = dialog.query_one("#connection-test-markdown", VirtualizedMarkdown)
         await wait_for(
-            lambda: bool(dialog.query_one("#connection-test-markdown", VirtualizedMarkdown).source),
+            lambda: bool(markdown.source) and markdown.size.width > 0,
             pilot=pilot,
-            description="MCP test report markdown source",
+            description="MCP test report ready to render",
         )
-        source = dialog.query_one("#connection-test-markdown", VirtualizedMarkdown).source
+        source = markdown.source
         assert "**Everything Server** · `everything` · v1.0.0 · MCP `2025-06-18`" in source
         assert "| `tools` | ✓ |" in source
         assert "- **echo** — Echo a message." in source
-        assert "Working directory: `/workspace/server`" in source
+        strips = markdown.render_lines(Region(0, 0, markdown.size.width, markdown.size.height))
+        rows = [strip.text.strip() for strip in strips]
+        assert r"Working directory: /work/team  A/`server`\nbranch\tend" in rows
         assert not app.notifications
 
 
@@ -1328,6 +1333,47 @@ def test_connection_error_marks_external_controls_without_changing_exception(loc
     assert "\u202e" in shown and "\u200b" in shown
     assert "�" in shown and "\nfailed" in shown
     assert str(error) == raw
+
+
+def test_connection_error_preserves_the_display_spelling_of_the_working_directory() -> None:
+    cwd = "/work/team  A/`server`\nbranch\tend on TabPane(id='mcp') "
+    error = MCPConnectionError("srv", "stdio", effective_cwd=cwd)
+
+    shown = MCPConfigPanel._format_connection_error(error)
+
+    assert shown.splitlines()[-1] == r"Working directory: /work/team  A/`server`\nbranch\tend on TabPane(id='mcp') "
+    assert error.effective_cwd == cwd
+
+
+@pytest.mark.parametrize("message", ["", "  \n"], ids=["empty", "blank"])
+@pytest.mark.parametrize("error_type", [RuntimeError, MCPConnectionError])
+def test_connection_error_without_text_names_its_class(error_type: type[Exception], message: str) -> None:
+    error = error_type("srv", "stdio") if error_type is MCPConnectionError else error_type()
+    error.args = (message,)
+
+    shown = MCPConfigPanel._format_connection_error(error)
+
+    assert shown.splitlines()[-1] == error_type.__name__
+
+
+@pytest.mark.asyncio
+async def test_test_connect_button_rejects_a_quoted_blank_executable() -> None:
+    app = _MCPPanelApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        panel = MCPConfigPanel([])
+        await app.mount(panel)
+        await pilot.pause()
+
+        card = await _add_mcp_card(panel, pilot)
+        card.query_one("#mcp-cmd-0", TextArea).text = '" " --flag'
+        connect = AsyncMock()
+        panel.test_adapter.test_connection = connect  # type: ignore[method-assign]
+
+        card.query_one("#mcp-test-btn-0").press()
+        dialog = await _wait_for_test_dialog(app, pilot, success=False)
+
+        assert "command is required for stdio transport." in _dialog_message(dialog)
+        connect.assert_not_called()
 
 
 @pytest.mark.asyncio

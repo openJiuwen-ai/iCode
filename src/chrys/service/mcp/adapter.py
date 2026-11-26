@@ -41,6 +41,7 @@ from chrys.service.mcp._stdio_transport import MAX_STDIO_PATH_DISPLAY_CHARS as M
 from chrys.service.mcp._stdio_transport import MAX_STDIO_STDERR_BYTES_CAPTURED as MAX_STDIO_STDERR_BYTES_CAPTURED
 from chrys.service.mcp._stdio_transport import MAX_STDIO_STDERR_PREVIEW_LINES as MAX_STDIO_STDERR_PREVIEW_LINES
 from chrys.service.mcp._stdio_transport import _StdioFailureDiagnostics
+from chrys.service.mcp._stdio_transport import format_stdio_path as format_stdio_path
 from chrys.service.mcp._stdio_transport import tolerant_stdio_client as tolerant_stdio_client
 from chrys.service.mcp.cache import (
     MCPAcquisitionScope,

@@ -26,8 +26,7 @@ from contextvars import ContextVar
 from types import TracebackType
 from typing import Any, TextIO, cast
 
-from chrys.foundation.i18n.formatting import sanitize_legacy_block, sanitize_legacy_scalar
-from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.i18n.formatting import sanitize_legacy_block
 from chrys.foundation.platform.runtime_paths import (
     is_windows_store_python_stub,
     path_env_key,
@@ -148,14 +147,14 @@ class _StdioFailureDiagnostics:
     effective_cwd: str = ""
 
 
-def _display_path(value: str) -> str:
-    """Make a raw filesystem path safe for a single-line message.
+def format_stdio_path(path: str) -> str:
+    """Preserve printable path characters and escape the rest for single-line display."""
+    return "".join(char if char.isprintable() else ascii(char)[1:-1] for char in path)
 
-    Paths come from ``os.fsdecode`` and config, so they may carry lone
-    surrogates (not UTF-8 encodable) or control characters (which could forge
-    extra diagnostic lines).  The raw value stays on the exception attribute.
-    """
-    text = sanitize_legacy_scalar(surrogate_safe_text(value))
+
+def _display_path(value: str) -> str:
+    """Bound the path in error messages. The exception attribute keeps the raw value."""
+    text = format_stdio_path(value)
     if len(text) > MAX_STDIO_PATH_DISPLAY_CHARS:
         text = text[: MAX_STDIO_PATH_DISPLAY_CHARS - 1] + "…"
     return text

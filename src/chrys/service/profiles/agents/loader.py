@@ -303,6 +303,10 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
         if not isinstance(transport, str) or transport not in _VALID_TRANSPORTS:
             msg = f"MCP server '{entry.get('name', '?')}' has invalid transport '{transport}', must be one of {_VALID_TRANSPORTS}"
             raise AgentProfileLoadError(msg, field="tools.mcp.transport")
+        command = entry.get("command", "")
+        if transport == "stdio" and not isinstance(command, str):
+            # Keep the profile editable and let MCP validation flag the missing executable.
+            command = ""
         allowed_tools = (
             None
             if entry.get("allowed_tools") is None
@@ -341,7 +345,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 name=entry["name"],
                 transport=transport,
                 # stdio
-                command=entry.get("command", ""),
+                command=command,
                 args=entry.get("args", []),
                 env=_mcp_string_mapping(entry.get("env"), "tools.mcp.env") if transport == "stdio" else {},
                 encoding=entry.get("encoding"),

@@ -9,6 +9,16 @@ into literal text and variable references, and what the import leaves out.
 into a refusal when iCode can't hold a value as written. Importers only read:
 they never run commands, connect to servers or read a variable's current value.
 Results carry codes, never prose, so the UI localizes them.
+
+Judge source compatibility by the import result. Follow source rules that
+determine which servers appear, what they run or connect to, whether they are
+enabled, and which tools they expose. If an override leaves the target or
+access uncertain, mark the affected candidate unavailable. Falling back to a
+global entry can re-enable a server the project disabled. For differences
+that leave the connection usable and preserve access restrictions, a warning
+is enough (for example, when iCode can represent only one request timeout).
+Keep source-specific rules here in the importers and share validation that
+also applies to hand-written iCode profiles through the MCP validation module.
 """
 
 from __future__ import annotations
@@ -35,9 +45,11 @@ from chrys.foundation.util.header_charset import header_name_charset_error, head
 from chrys.service.mcp.validation import (
     MAX_MCP_EXPOSED_TOOL_NAME_LENGTH,
     MCP_PROGRESSIVE_CONTROL_TOOL_NAMES,
+    McpHttpUrlError,
     build_prefixed_mcp_name,
-    is_windows_drive_relative_path,
+    is_blank_mcp_stdio_command,
     normalize_mcp_name,
+    validate_mcp_http_url,
     validate_mcp_tool_name_prefix,
 )
 from chrys.service.profiles.agents.schema import MCPServerConfig
@@ -56,13 +68,14 @@ MAX_REQUEST_TIMEOUT_SECONDS = timedelta.max.days * 86_400
 _COMMAND_LINE_BREAK = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]")
 # A URL scheme, which every source reads in any letter case and the editor accepts only in lower case.
 _URL_SCHEME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*:")
+_JS_SERVER_NAME_CHARACTER_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 
 class WarningKind(StrEnum):
     """Something the import changed or left out that the user must act on."""
 
     NOT_IMPORTED = "not_imported"
-    """Unrecognized source settings not copied; ``items`` names them."""
+    """Source settings not copied (unrecognized, or values iCode won't pass on); ``items`` names them."""
     STARTUP_WAIT = "startup_wait"
     APPROVAL = "approval"
     DEFAULT_TIMEOUT = "default_timeout"
@@ -72,10 +85,10 @@ class WarningKind(StrEnum):
     """OAuth or provider sign-in, which only the source application holds."""
     TOOLS_RESTRICTED = "tools_restricted"
     """Tool rules iCode can't express, so the server is imported with no tools."""
-    CODEX_RELATIVE_CWD = "codex_relative_cwd"
-    """An explicit relative cwd, anchored at Codex's launch folder rather than its workspace."""
     OPENCODE_VARIABLE_CWD = "opencode_variable_cwd"
     """A cwd whose future variable values can change path semantics; ``items`` names the field."""
+    VARIABLE_DEFAULTS_DROPPED = "variable_defaults_dropped"
+    """Variable defaults iCode cannot keep; ``items`` names the fields whose references had them."""
 
 
 class Problem(StrEnum):
@@ -130,6 +143,8 @@ class ValueReason(StrEnum):
     WINDOWS_PATH = "windows_path"
     VARIABLE_PARENT = "variable_parent"
     LINE_ENDINGS = "line_endings"
+    URL_SCHEME = "url_scheme"
+    URL_HOST = "url_host"
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,21 +286,32 @@ class SourceReadError(Exception):
         return McpSourceError(str(path), self.kind, self.field, self.line, self.column)
 
 
+class SourceReadLimitError(SourceReadError):
+    """The importer could not read the whole file under its own size limit."""
+
+    def __init__(self) -> None:
+        super().__init__(SourceErrorKind.UNREADABLE)
+
+
 def read_text(path: Path) -> str | None:
     """The text of *path*; ``None`` when it does not exist. Raises :class:`SourceReadError` when unusable.
 
     A link is followed, as the owning application follows it (dotfile managers link these files).
     """
-    if not os.path.exists(path):
+    try:
+        target = path.resolve(strict=True)
+    except FileNotFoundError, NotADirectoryError:
         return None
+    except (OSError, ValueError) as exc:
+        raise SourceReadError(SourceErrorKind.UNREADABLE) from exc
     try:
         # The leaf is opened no-follow, so open the link's target, still checked to be a regular file.
-        with secure_open_regular_binary(Path(os.path.realpath(path))) as handle:
+        with secure_open_regular_binary(target) as handle:
             raw = handle.read(MAX_SOURCE_BYTES + 1)
     except OSError as exc:
         raise SourceReadError(SourceErrorKind.UNREADABLE) from exc
     if len(raw) > MAX_SOURCE_BYTES:
-        raise SourceReadError(SourceErrorKind.UNREADABLE)
+        raise SourceReadLimitError
     try:
         # Every source application reads its files as UTF-8 (a leading BOM skipped); a guessed encoding
         # would import other values.
@@ -304,7 +330,7 @@ def parse_json_object(text: str, *, strict: bool = False) -> dict[str, Any]:
     if not text.strip() and not strict:
         return {}
     try:
-        document = json.loads(text)
+        document = json.loads(text, parse_constant=_reject_json_constant)
     except json.JSONDecodeError as exc:
         raise SourceReadError(SourceErrorKind.UNPARSABLE, line=exc.lineno, column=exc.colno) from exc
     except (ValueError, RecursionError) as exc:
@@ -312,6 +338,10 @@ def parse_json_object(text: str, *, strict: bool = False) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise SourceReadError(SourceErrorKind.INVALID)
     return document
+
+
+def _reject_json_constant(_: str) -> None:
+    raise SourceReadError(SourceErrorKind.UNPARSABLE)
 
 
 def read_json_object(path: Path, *, strict: bool = False) -> dict[str, Any] | None:
@@ -448,28 +478,6 @@ def main_checkout(root: str) -> str | None:
     return main
 
 
-def path_matches(key: str, folder: str) -> bool:
-    """Whether a path an application stored as a key names *folder*, as given or as its real path.
-
-    The key itself is not resolved: an application looks up the spelling it computes, so a key
-    naming another path to the same folder is a different entry (and may decide differently).
-    """
-    if key == folder:
-        return True
-    try:
-        spellings = {_path_key(folder), _path_key(os.path.realpath(folder))}
-        return _path_key(key) in spellings
-    except OSError, ValueError:
-        return False
-
-
-def _path_key(path: str) -> str:
-    # Only what Windows itself ignores: letter case and ``/`` for ``\`` (Claude Code writes Windows keys
-    # with ``/``). Nothing else is rewritten: no ``..`` collapsed, which could name another folder, and
-    # no Unicode normalization, since where the filesystem tells the spellings apart they are two folders.
-    return os.path.normcase(path)
-
-
 def located(path: str, ctx: ImportContext) -> Path:
     """*path* from a variable, as the application started in the workspace finds it."""
     found = Path(path)
@@ -506,6 +514,11 @@ def merge_entries(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, An
 
 def is_str_list(value: object) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def normalize_js_server_name(name: str) -> str:
+    """Replace each UTF-16 code unit outside the tool name alphabet with an underscore."""
+    return _JS_SERVER_NAME_CHARACTER_RE.sub(lambda match: "__" if ord(match[0]) > 0xFFFF else "_", name)
 
 
 def is_str_mapping(value: object) -> bool:
@@ -601,9 +614,18 @@ def convert(server: SourceServer) -> McpImportCandidate:
     if server.blocked_field:
         return refuse(server.blocked_problem, server.blocked_field, server.blocked_reason, server.blocked_use)
     characters = ValueReason.CHARACTERS
+    if not server.name.strip():
+        return refuse(Problem.VALUE_NOT_REPRESENTABLE, "", ValueReason.EMPTY, FieldUse.NAME)
     if _has_controls(server.name):
         return refuse(Problem.VALUE_NOT_REPRESENTABLE, "", characters, FieldUse.NAME)
     if server.transport == "stdio":
+        if is_blank_mcp_stdio_command(server.command):
+            return refuse(
+                Problem.VALUE_NOT_REPRESENTABLE,
+                server.command_path,
+                ValueReason.EMPTY,
+                FieldUse.COMMAND,
+            )
         changed = _changed_command_part((server.command, *server.args))
         if changed is not None:
             path = server.command_path
@@ -623,24 +645,28 @@ def convert(server: SourceServer) -> McpImportCandidate:
     ):
         if names is None:
             continue
-        # The editor joins with commas, strips each item and rejects empty or duplicate names.
+        # The editor joins with commas and strips each item.
         for name in names:
             if not name.strip() or name != name.strip() or "," in name:
                 return refuse(Problem.VALUE_NOT_REPRESENTABLE, path, value_reason(name))
             if _has_controls(name):
                 return refuse(Problem.VALUE_NOT_REPRESENTABLE, path, characters)
-        if len(set(names)) != len(names):
-            return refuse(Problem.VALUE_NOT_REPRESENTABLE, path)
     stdio = server.transport == "stdio"
     env: dict[str, str] = {}
     headers: dict[str, str] = {}
     cwd = ""
+    url = ""
     if stdio:
         if server.cwd is not None:
             text = render(shield_tilde(server.cwd))
             if text is None or not text.strip() or text != text.strip() or _unsafe_cwd(text):
                 return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.cwd_path, value_reason(text), FieldUse.CWD)
-            if get_platform().is_windows and not variables(server.cwd) and is_windows_drive_relative_path(text):
+            if (
+                get_platform().is_windows
+                and not variables(server.cwd)
+                and ntpath.splitdrive(text)[0]
+                and not ntpath.isabs(text)
+            ):
                 # The runtime refuses drive-relative paths even on the workspace's drive.
                 return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.cwd_path, ValueReason.WINDOWS_PATH, FieldUse.CWD)
             cwd = text
@@ -661,9 +687,17 @@ def convert(server: SourceServer) -> McpImportCandidate:
                 )
             env[key] = text
     else:
-        # A one-line field: its surrounding whitespace is trimmed below, but nothing within may break the line.
-        if _has_controls(server.url.strip(), allowed=""):
+        url = _URL_SCHEME_RE.sub(lambda m: m[0].lower(), server.url.strip(), count=1)
+        # The URL is edited in a one-line field.
+        if _has_controls(url, allowed=""):
             return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.url_path, characters, FieldUse.URL)
+        if (url_error := validate_mcp_http_url(url)) is not None:
+            reason = {
+                McpHttpUrlError.REQUIRED: ValueReason.EMPTY,
+                McpHttpUrlError.SCHEME: ValueReason.URL_SCHEME,
+                McpHttpUrlError.HOST: ValueReason.URL_HOST,
+            }[url_error]
+            return refuse(Problem.VALUE_NOT_REPRESENTABLE, server.url_path, reason, FieldUse.URL)
         for key, value in server.headers.items():
             text = render(value)
             if text is not None:
@@ -683,14 +717,14 @@ def convert(server: SourceServer) -> McpImportCandidate:
         args=list(server.args) if stdio else [],
         env=env,
         cwd=cwd,
-        url="" if stdio else _URL_SCHEME_RE.sub(lambda m: m[0].lower(), server.url.strip(), count=1),
+        url=url,
         headers=headers,
         enabled=server.enabled,
         # Shown, never run: drawn safely rather than refusing the server for it.
         description=sanitize_terminal_block(server.description),
-        allowed_tools=None if server.allowed_tools is None else list(server.allowed_tools),
+        allowed_tools=None if server.allowed_tools is None else list(dict.fromkeys(server.allowed_tools)),
         use_progressive_disclosure=server.progressive,
-        always_load=list(server.always_load),
+        always_load=list(dict.fromkeys(server.always_load)),
         request_timeout=None if server.timeout_seconds is None else request_timeout_seconds(server.timeout_seconds),
     )
     return McpImportCandidate(

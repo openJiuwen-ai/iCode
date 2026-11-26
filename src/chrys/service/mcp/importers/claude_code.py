@@ -15,7 +15,7 @@ precedence first, a same-named server replacing an earlier one:
   looked up as Claude Code keys it: in NFC Unicode form, with ``/`` on Windows.
 
 Values in ``env`` and ``headers`` may reference ``${VAR}`` or ``${VAR:-default}``;
-iCode has no default syntax, so the default is dropped. Missing or empty
+iCode drops the default and warns about the affected fields. Missing or empty
 variables cause a connection error in iCode.
 ``CLAUDE_PROJECT_DIR``, which Claude Code sets for its stdio servers, must be
 set by the user. Claude Code reads credential variables as empty in a remote
@@ -36,19 +36,17 @@ a repository can't approve its own servers. Approvals and rejections match a ser
 name differs only in characters other than letters, digits, ``_`` and ``-``,
 as in Claude Code. Managed settings are not read.
 
-Checked against the docs above and
-https://code.claude.com/docs/en/settings-reference: the scopes and variables
-on 2026-11-04 (Claude Code 2.1.318), turning servers off and approvals on
-2026-11-11. The project key, the credential variables and trust were read
-from the Claude Code 2.1.318 bundle, as the docs name only examples of them.
-The public repository was checked again on 2026-11-12: latest tag v2.1.322
-(commit 6e1e44f643), main at 927b66497b. Its changelog reports MCP OAuth
-redirect hardening, but it does not contain the full configuration loader.
-The bundle checks above remain
-the basis for project keys, credential variables and trust; the NFC form of the
-project key was read from the Claude Code 2.1.330 binary on 2026-11-23.
-Recheck those when Claude Code changes where it keeps servers or how it turns
-them off.
+An explicit MCP tool denial in the settings files above imports the affected
+server with no tools. Claude Code can deny individual tools, which iCode
+cannot map without a tool catalog.
+
+The scopes, variables and approvals are documented above and in
+https://code.claude.com/docs/en/settings-reference. Rechecked on 2026-11-24
+against tag ``v2.1.331`` (commit bd07f2a121) in
+https://github.com/anthropics/claude-code and the installed 2.1.331 binary.
+The public repository provides the changelog. The installed bundle supplies the
+configuration loader, including project-key normalization to NFC, and the rules
+for blanking credential variables in remote headers.
 """
 
 from __future__ import annotations
@@ -68,6 +66,7 @@ from chrys.service.mcp.importers.base import (
     McpImportResult,
     McpSourceError,
     Problem,
+    SourceErrorKind,
     SourceReadError,
     SourceServer,
     Value,
@@ -81,7 +80,7 @@ from chrys.service.mcp.importers.base import (
     linked_common_dir,
     located,
     missing_fields,
-    path_matches,
+    normalize_js_server_name,
     positive_number,
     project_folders,
     read_json_object,
@@ -90,13 +89,14 @@ from chrys.service.mcp.importers.base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterable, Iterator, Mapping
 
-_DOLLAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
+_DOLLAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}")
+_MCP_DENY_RE = re.compile(r"mcp__[A-Za-z0-9_-]+(?:__\*)?")
 
 # The variables Claude Code reads as empty in a remote server's headers, in any case and with an
 # ``INPUT_`` prefix too [doc: mcp, "Credential variables that read as empty", which names examples;
-# the full set read from the 2.1.318 bundle]. Every ``CLAUDE_`` name is covered by the pattern below.
+# the names were checked against the 2.1.331 bundle]. Every ``CLAUDE_`` name is covered below.
 _CREDENTIAL_NAMES = frozenset({
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL",
     "AGENT_PROXY_AUTH_TOKEN", "ALL_INPUTS", "ALL_PROXY", "ANACONDA_API_TOKEN", "ANTHROPIC_API_KEY",
@@ -130,7 +130,6 @@ _CREDENTIAL_PATTERN = re.compile(
     r"CLAUDE_.*|OTEL_.*|GIT_CONFIG_(?:PARAMETERS|(?:KEY|VALUE)_\d+)|CARGO_REGISTRIES_.*"
     r"|(?:ORG_GRADLE_PROJECT|POETRY_PYPI_TOKEN|POETRY_HTTP_BASIC|CONAN_LOGIN_USERNAME|CONAN_PASSWORD)_.*|BUNDLE_.*__.*"
 )
-_NAME_CHARACTER_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
 # Read and dropped without a note: ``alwaysLoad`` only changes when Claude Code loads tools, and
 # the rest are Claude Code's own bookkeeping.
@@ -155,20 +154,19 @@ class ClaudeCodeSource:
     def discover(self, ctx: ImportContext) -> McpImportResult:
         errors: list[McpSourceError] = []
 
-        def read(path: Path) -> dict[str, Any]:
+        def read_policy(path: Path) -> dict[str, Any] | None:
             try:
                 return read_json_object(path) or {}
             except SourceReadError as exc:
                 errors.append(exc.at(path))
-                return {}
+                return None
 
         config_path, settings_path = _user_files(ctx)
-        config = read(config_path)
+        config = read_policy(config_path)
+        if config is None:
+            # This file contains both server definitions and the project's enablement and trust.
+            return McpImportResult(source_errors=tuple(errors))
         key, project = _project_entry(config, ctx.workspace_cwd) if ctx.workspace_cwd else ("", {})
-        user = list(_servers(config.get("mcpServers"), config_path))
-        shared = [server for path in _project_files(ctx) for server in _servers(read(path).get("mcpServers"), path)]
-        local = list(_servers(project.get("mcpServers"), config_path))
-        repo_settings = _repo_settings_files(ctx, key)
         trusted = project.get("hasTrustDialogAccepted") is True
         rejected = _mcpjson_names(project.get("disabledMcpjsonServers"))
         # Older Claude Code kept approvals in the project's entry; it now moves them to the local
@@ -184,12 +182,19 @@ class ClaudeCodeSource:
 
         if trusted:
             approve(project)
-        user_settings = read(settings_path)
+        user_settings = read_policy(settings_path)
+        if user_settings is None:
+            return McpImportResult(source_errors=tuple(errors))
         rejected |= _mcpjson_names(user_settings.get("disabledMcpjsonServers"))
         approve(user_settings)
-        for path in repo_settings:
-            settings = read(path)
+        tool_denials = _mcp_tool_denials(user_settings)
+        for path in _repo_settings_files(ctx, key):
+            settings = read_policy(path)
+            if settings is None:
+                # A policy file can restrict tools on any server.
+                return McpImportResult(source_errors=tuple(errors))
             rejected |= _mcpjson_names(settings.get("disabledMcpjsonServers"))
+            tool_denials.update(_mcp_tool_denials(settings))
             # A repository's own files can approve its servers only once the user trusts its folder.
             if trusted:
                 approve(settings)
@@ -201,9 +206,22 @@ class ClaudeCodeSource:
             name = _mcpjson_name(server.name)
             return from_mcp_json and (name in rejected or not (approve_all or name in approved))
 
-        layers = ((user, False), (shared, True), (local, False))
+        layers = [(list(_servers(config.get("mcpServers"), config_path)), False)]
+        for path in _project_files(ctx):
+            try:
+                document = read_json_object(path)
+            except SourceReadError as exc:
+                errors.append(exc.at(path))
+                if exc.kind is SourceErrorKind.UNREADABLE:
+                    # This file could replace any definition from the lower-priority files.
+                    layers.clear()
+                continue
+            if document is not None:
+                layers.append((list(_servers(document.get("mcpServers"), path)), True))
+        layers.append((list(_servers(project.get("mcpServers"), config_path)), False))
         servers = (replace(s, enabled=False) if off(s, mcp_json) else s for group, mcp_json in layers for s in group)
-        return McpImportResult(tuple(convert(server) for server in by_name(servers)), tuple(errors))
+        candidates = tuple(convert(_restrict_tools(server, tool_denials)) for server in by_name(servers))
+        return McpImportResult(candidates, tuple(errors))
 
 
 def _user_files(ctx: ImportContext) -> tuple[Path, Path]:
@@ -220,7 +238,7 @@ def _project_files(ctx: ImportContext) -> list[Path]:
 
 
 def _repo_settings_files(ctx: ImportContext, key: str) -> list[Path]:
-    """The repository's settings files that approve or reject ``.mcp.json`` servers.
+    """The repository's settings files that govern MCP servers and tools.
 
     The workspace's shared one and its local ones, which Claude Code keeps in the project's folder
     (the main checkout for a linked worktree; in the workspace before 2.1.211).
@@ -275,8 +293,6 @@ def _entry(config: Mapping[str, Any], folder: str) -> dict[str, Any] | None:
     if project is None and windows:
         # The drive letter's case follows how each app was started (``c:`` or ``C:``); the rest is the folder's.
         project = next((value for key, value in projects.items() if _drive_folded(key) == _drive_folded(spelled)), None)
-    if project is None:
-        project = next((value for key, value in projects.items() if path_matches(key, folder)), None)
     return project if isinstance(project, dict) else None
 
 
@@ -290,15 +306,36 @@ def _mcpjson_names(value: object) -> set[str]:
 
 def _mcpjson_name(name: str) -> str:
     """*name* as Claude Code compares ``.mcp.json`` approvals: other characters as ``_``; plugins as written."""
-    if name.startswith("plugin:"):
-        return name
-    # Per UTF-16 code unit, as Claude Code's JavaScript replaces: a character beyond U+FFFF is two.
-    normalized = _NAME_CHARACTER_RE.sub(lambda match: "_" * (2 if ord(match.group()) > 0xFFFF else 1), name)
+    return name if name.startswith("plugin:") else _normalized_mcp_name(name)
+
+
+def _normalized_mcp_name(name: str) -> str:
+    normalized = normalize_js_server_name(name)
     return re.sub(r"_+", "_", normalized).strip("_") if name.startswith("claude.ai ") else normalized
 
 
 def _names(value: object) -> set[str]:
     return {name for name in value if isinstance(name, str)} if isinstance(value, list) else set()
+
+
+def _mcp_tool_denials(settings: Mapping[str, Any]) -> set[str]:
+    permissions = settings.get("permissions")
+    if not isinstance(permissions, dict):
+        return set()
+    return {rule for rule in _names(permissions.get("deny")) if _MCP_DENY_RE.fullmatch(rule)}
+
+
+def _restrict_tools(server: SourceServer, denials: set[str]) -> SourceServer:
+    namespace = f"mcp__{_normalized_mcp_name(server.name)}"
+    prefix = f"{namespace}__"
+    if (
+        namespace in denials
+        or f"{prefix}*" in denials
+        or any(rule.startswith(prefix) and not rule.endswith("*") and len(rule) > len(prefix) for rule in denials)
+    ):
+        warning = ImportWarning(WarningKind.TOOLS_RESTRICTED, ("permissions.deny",))
+        return replace(server, allowed_tools=(), warnings=(*server.warnings, warning))
+    return server
 
 
 def _servers(servers: object, path: Path) -> Iterator[SourceServer]:
@@ -339,7 +376,10 @@ def _stdio(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         ("", FieldUse.VALUE),
     )
     values = {key: _value(text) for key, text in env.items()}
-    warnings = [missing_fields(entry, _STDIO_FIELDS, prefix)]
+    warnings = [
+        missing_fields(entry, _STDIO_FIELDS, prefix),
+        _default_warning(env.items(), f"{prefix}.env"),
+    ]
     return SourceServer(
         name,
         path,
@@ -376,6 +416,7 @@ def _http(name: str, entry: dict[str, Any], path: str) -> SourceServer | None:
         ImportWarning(WarningKind.AUTH_HEADERS, tuple(dropped)) if dropped else None,
         ImportWarning(WarningKind.AUTH_NOT_IMPORTED) if "oauth" in entry else None,
         missing_fields(entry, _HTTP_FIELDS, prefix),
+        _default_warning(((key, headers[key]) for key in values), f"{prefix}.headers"),
     ]
     return SourceServer(
         name,
@@ -406,6 +447,15 @@ def is_credential_variable(name: str) -> bool:
 
 def _value(text: str) -> Value:
     return split_variables(text, _DOLLAR_RE)
+
+
+def _default_warning(values: Iterable[tuple[str, str]], prefix: str) -> ImportWarning | None:
+    fields = tuple(
+        f"{prefix}.{key}"
+        for key, text in values
+        if any(match.group("default") is not None for match in _DOLLAR_RE.finditer(text))
+    )
+    return ImportWarning(WarningKind.VARIABLE_DEFAULTS_DROPPED, fields) if fields else None
 
 
 def _timeout(entry: dict[str, Any]) -> float | None:

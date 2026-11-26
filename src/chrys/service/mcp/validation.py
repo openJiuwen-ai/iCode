@@ -4,15 +4,36 @@
 
 from __future__ import annotations
 
-import ntpath
 import re
 from collections.abc import Collection
+from enum import StrEnum
+from urllib.parse import urlsplit
 
 MAX_MCP_EXPOSED_TOOL_NAME_LENGTH = 64
 MCP_PROGRESSIVE_CONTROL_TOOL_NAMES = ("list_mcp_tools", "load_tool", "unload_tool")
 
 _PROVIDER_SAFE_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _TOOL_NAME_PREFIX_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$")
+
+
+class McpHttpUrlError(StrEnum):
+    REQUIRED = "required"
+    SCHEME = "scheme"
+    HOST = "host"
+
+
+def validate_mcp_http_url(url: str) -> McpHttpUrlError | None:
+    """Check the minimum URL requirements for an editable HTTP server."""
+    if not url:
+        return McpHttpUrlError.REQUIRED
+    if not url.startswith(("http://", "https://")):
+        return McpHttpUrlError.SCHEME
+    try:
+        if not urlsplit(url).hostname:
+            return McpHttpUrlError.HOST
+    except ValueError:
+        return McpHttpUrlError.HOST
+    return None
 
 
 def normalize_mcp_name(name: str) -> str:
@@ -25,6 +46,11 @@ def normalize_mcp_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "-", name)
 
 
+def is_blank_mcp_stdio_command(command: str) -> bool:
+    """Whether the executable name is empty or consists only of whitespace."""
+    return not command or command.isspace()
+
+
 def build_prefixed_mcp_name(normalized_name: str, tool_name_prefix: str | None) -> str:
     """The name iCode exposes for a tool or prompt whose normalized name is *normalized_name*."""
     if not tool_name_prefix:
@@ -34,11 +60,6 @@ def build_prefixed_mcp_name(normalized_name: str, tool_name_prefix: str | None) 
         return normalized_name
     trimmed_name = normalized_name.lstrip("_.-")
     return f"{normalized_prefix}_{trimmed_name}" if trimmed_name else normalized_prefix
-
-
-def is_windows_drive_relative_path(path: str) -> bool:
-    """Whether Windows resolves *path* from a drive's current folder (for example ``C:tools``)."""
-    return bool(ntpath.splitdrive(path)[0]) and not ntpath.isabs(path)
 
 
 def validate_mcp_exposed_tool_name(value: object) -> str | None:

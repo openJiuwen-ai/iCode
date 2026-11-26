@@ -1641,6 +1641,28 @@ tools:
     assert mcps[1].expose_instructions is True
 
 
+def test_load_mcp_stdio_command_preserves_whitespace(tmp_path: Path) -> None:
+    p = tmp_path / "mcp_commands.yaml"
+    p.write_text(
+        """\
+name: mcp-command-whitespace-test
+tools:
+  mcp:
+    - name: padded
+      transport: stdio
+      command: "  python  "
+    - name: blank
+      transport: stdio
+      command: "   "
+""",
+        encoding="utf-8",
+    )
+
+    profile = load_profile_from_yaml(p)
+
+    assert [server.command for server in profile.tools.mcp] == ["  python  ", "   "]
+
+
 @pytest.mark.parametrize(
     ("shell_filter", "expected"),
     [

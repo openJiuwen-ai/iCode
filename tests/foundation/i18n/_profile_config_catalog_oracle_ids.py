@@ -400,6 +400,7 @@ PROFILE_CONFIG_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.agent_config.validation.mcp.tool_list_duplicate",
         "tui.agent_config.validation.mcp.tool_list_empty",
         "tui.agent_config.validation.mcp.transport",
+        "tui.agent_config.validation.mcp.url_host",
         "tui.agent_config.validation.mcp.url_required",
         "tui.agent_config.validation.mcp.url_scheme",
         "tui.agent_config.validation.memory_context",

@@ -21,6 +21,7 @@ from chrys.service.mcp._stdio_transport import (
 from chrys.service.mcp.errors import MCPToolNameValidationError
 from chrys.service.mcp.validation import (
     MCP_PROGRESSIVE_CONTROL_TOOL_NAMES,
+    is_blank_mcp_stdio_command,
     validate_mcp_tool_loading_policy,
     validate_mcp_tool_name_prefix,
 )
@@ -91,7 +92,7 @@ def _validate_config(config: MCPServerConfig) -> None:
             violations={prefix_error},
         )
     if config.transport == "stdio":
-        if not config.command:
+        if is_blank_mcp_stdio_command(config.command):
             raise ValueError(f"MCP server {config.name!r} (stdio) requires 'command'")
     elif config.transport == "http":
         if not config.url:

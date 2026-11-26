@@ -300,6 +300,9 @@ def test_create_http_tool_carries_bypass_proxy() -> None:
     [
         pytest.param({"name": "x", "transport": "grpc"}, "Unknown MCP transport", id="unknown-transport"),
         pytest.param({"name": "s", "transport": "stdio"}, "requires 'command'", id="stdio-without-command"),
+        pytest.param(
+            {"name": "s", "transport": "stdio", "command": "   "}, "requires 'command'", id="stdio-blank-command"
+        ),
         pytest.param({"name": "h", "transport": "http"}, "requires 'url'", id="http-without-url"),
         pytest.param({"name": "", "transport": "stdio", "command": "python"}, "non-empty 'name'", id="without-name"),
     ],

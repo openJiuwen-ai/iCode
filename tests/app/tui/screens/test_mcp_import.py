@@ -44,7 +44,7 @@ from chrys.service.mcp.importers import (
     WarningKind,
 )
 from chrys.service.mcp.importers.base import SourceServer, convert
-from chrys.service.mcp.importers.codex import CodexSource
+from chrys.service.mcp.importers.opencode import OpenCodeSource
 from chrys.service.mcp.importers.pi import PiSource
 from tests.app.tui.screens._mcp_import_support import (
     FakeSource,
@@ -88,6 +88,39 @@ async def test_pi_url_protocol_is_normalized_before_editor_save(tmp_path: Path, 
         card = app.panel.query_one(MCPConnectionCard)
         assert card.validate() == []
         assert card.get_config().url == protocol.lower() + suffix
+
+
+async def test_opencode_server_named_with_a_reference_gets_its_own_card(tmp_path: Path) -> None:
+    # A referenced key once reached the card title as a str subclass, and the whole pane failed.
+    source_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "team_{env:X}": {"type": "local", "command": ["run"]},
+                    "ok": {"type": "local", "command": ["ok"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = OpenCodeSource().discover(ImportContext(None, tmp_path, {}))
+    assert result.source_errors == ()
+    app = PanelApp(MCPConfigPanel([]))
+    async with app.run_test(size=(120, 50)) as pilot:
+        dialog = await open_dialog(app, pilot, [FakeSource("opencode", "OpenCode", result)])
+        items = await wait_for_items(dialog, pilot, 2)
+
+        assert [(result.candidates[item.index].name, badge_text(item)) for item in items] == [
+            ("ok", ""),
+            ("team_{env:X}", "Can't import"),
+        ]
+        assert not dialog.query(Static).filter(".mcp-import-error")
+        items[0].tick.value = True
+        await import_ticked(dialog, pilot)
+        await wait_for(lambda: len(app.panel.query(MCPConnectionCard)) == 1, pilot=pilot, description="card added")
+        assert app.panel.query_one(MCPConnectionCard).get_config().command == "ok"
 
 
 def _unsupported(name: str, problem: Problem, field: str = "") -> McpImportCandidate:
@@ -313,45 +346,35 @@ async def test_preview_and_imported_fields_keep_raw_values_through_copy_edit_and
             assert edited.url == config.url
 
 
-@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize("windows", [False, True], ids=["posix-quoting", "windows-quoting"])
 @pytest.mark.parametrize(
-    ("command", "args", "changed"),
+    ("args", "saved_args"),
     [
-        ("run", ["plain", "", r"literal\r\n"], False),
-        ("run", ["a\nb", "\n"], False),
-        ("run", ["a\r\nb", "\r\n"], False),
-        ("run", ["a\rb", "\r"], False),
-        ("run\r\nserver", ["a\r\nb"], False),
-        ("run", ["a\rb\nc"], True),
-        ("run", ["a\r\nb\nc"], True),
-        ("run", ["a\rb", "c\nd"], True),
-        ("run", ["a\nb", "c\r\nd"], True),
-        ("run\rserver", ["a\nb"], True),
-        ("run", ["a\u2028b"], True),
+        (("a\r\nb", "\r\n"), ["a\r\nb", "\r\n"]),
+        (("a\rb\nc",), ["a\nb\nc"]),
     ],
+    ids=["uniform-crlf", "mixed-cr-lf"],
 )
 async def test_import_line_ending_decision_matches_the_mounted_command_editor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool, command: str, args: list[str], changed: bool
+    monkeypatch: pytest.MonkeyPatch, windows: bool, args: tuple[str, ...], saved_args: list[str]
 ) -> None:
     monkeypatch.setattr(
         "chrys.app.tui.screens.agents.panels.mcp.get_platform", lambda: SimpleNamespace(is_windows=windows)
     )
-    path = tmp_path / ".codex" / "config.toml"
-    path.parent.mkdir()
-    path.write_text(
-        f"[mcp_servers.srv]\ncommand = {json.dumps(command)}\nargs = {json.dumps(args)}\n", encoding="utf-8"
-    )
-    (item,) = CodexSource().discover(ImportContext(None, tmp_path)).candidates
-    assert (item.config is None) is changed
-    if changed:
+    item = convert(SourceServer("srv", "/cfg.json", "stdio", command="run", args=args))
+    if list(args) == saved_args:
+        assert item.config is not None
+        config = item.config
+    else:
+        assert item.config is None
         assert item.reason is ValueReason.LINE_ENDINGS
-    # Mount refused values too to verify the refusal against the actual editor.
-    config = item.config if item.config is not None else stdio("srv", command, *args)
+        # Existing configurations can still supply the arguments import refuses.
+        config = stdio("srv", "run", *args)
     app = PanelApp(MCPConfigPanel([config]))
     async with app.run_test() as pilot:
         await pilot.pause()
         saved = app.panel.query_one(MCPConnectionCard).get_config()
-        assert ((saved.command, saved.args) != (command, args)) is changed
+        assert (saved.command, saved.args) == ("run", saved_args)
 
 
 async def test_localization_and_source_switch_keep_current_folds() -> None:
@@ -415,21 +438,6 @@ async def test_import_keeps_representable_tool_policy_through_editor(allowed, pr
         assert saved.allowed_tools == (None if allowed is None else list(allowed))
         assert saved.use_progressive_disclosure is progressive
         assert saved.always_load == list(always)
-
-
-def test_codex_relative_cwd_warning_survives_import_in_both_languages() -> None:
-    warning = ImportWarning(WarningKind.CODEX_RELATIVE_CWD)
-    for locale in ("en", "zh-Hans"):
-        localizer = Localizer(locale)
-        config = imported_config(
-            candidate(replace(stdio("srv"), cwd="."), warnings=(warning,)), "ChatGPT", localizer.render
-        )
-        assert config is not None
-        assert config.cwd == "."
-        assert localizer.render(warning_text(warning, "ChatGPT")) in config.description
-        assert "/src" not in localizer.render(warning_text(warning, "ChatGPT"))
-        assert "ChatGPT" in config.description
-        assert "Codex" not in config.description
 
 
 def test_opencode_variable_cwd_warning_survives_import_in_both_languages() -> None:

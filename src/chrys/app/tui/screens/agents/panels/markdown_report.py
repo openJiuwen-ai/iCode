@@ -3,13 +3,13 @@
 """Shared building blocks for remote-info Markdown reports.
 
 Used by the agent-config Test dialogs (ACP handshake, MCP connection) to
-render information supplied by an external process. Every remote-controlled
-string must pass through :func:`inline_text` or :func:`code_span` so crafted
-agent/server text cannot forge block structure in the rendered report.
+render information supplied by an external process. Sanitize interpolated
+strings with the inline formatters so they cannot forge block structure.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -44,6 +44,16 @@ def inline_text(value: Any) -> str:
 def code_span(value: Any) -> str:
     """Inline code span that a remote string cannot break out of."""
     return "`{}`".format(inline_text(value).replace("`", "'"))
+
+
+def literal_code_span(text: str) -> str:
+    """Wrap display-safe single-line text in Markdown, preserving spaces and backticks."""
+    if not text:
+        return ""
+    delimiter = "`" * (max(map(len, re.findall(r"`+", text)), default=0) + 1)
+    # CommonMark strips one outer space from each side unless the span is all spaces.
+    padding = " " if text.strip(" ") else ""
+    return f"{delimiter}{padding}{text}{padding}{delimiter}"
 
 
 def md_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:

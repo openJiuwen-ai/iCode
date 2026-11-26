@@ -33,6 +33,7 @@ from chrys.app.tui.screens.agents.panels.markdown_report import (
     code_span,
     definition_bullets,
     inline_text,
+    literal_code_span,
     md_table,
 )
 from chrys.app.tui.screens.agents.validation_messages import (
@@ -53,11 +54,10 @@ from chrys.app.tui.screens.agents.validation_messages import (
     MCP_TIMEOUT_VALID,
     MCP_TOOL_LIST_DUPLICATE,
     MCP_TOOL_LIST_EMPTY,
-    MCP_URL_REQUIRED,
-    MCP_URL_SCHEME,
     NAME_FIELD,
     SERVER_ERROR,
     TOOL_NAME_ITEM,
+    mcp_http_url_error_message,
 )
 from chrys.app.tui.screens.agents.validation_messages import (
     MCP_ENVIRONMENT_VARIABLES as _ENVIRONMENT_VARIABLES,
@@ -90,9 +90,14 @@ from chrys.service.mcp.adapter import (
     STANDARD_CAPABILITY_GROUPS,
     MCPAdapter,
     MCPToolConfigurationError,
+    format_stdio_path,
 )
-from chrys.service.mcp.errors import StdioWorkingDirectoryError
-from chrys.service.mcp.validation import MCP_PROGRESSIVE_CONTROL_TOOL_NAMES, validate_mcp_tool_name_prefix
+from chrys.service.mcp.errors import MCPConnectionError, StdioWorkingDirectoryError
+from chrys.service.mcp.validation import (
+    MCP_PROGRESSIVE_CONTROL_TOOL_NAMES,
+    is_blank_mcp_stdio_command,
+    validate_mcp_tool_name_prefix,
+)
 from chrys.service.tools.names import chrys_reserved_tool_names
 
 logger = logging.getLogger(__name__)
@@ -1558,22 +1563,18 @@ class MCPConnectionCard(CollapsibleConfigCard):
         if self._transport == "http":
             with contextlib.suppress(Exception):
                 url = self.query_one(f"#mcp-url-{self._index}", Input).value.strip()
-                if not url:
-                    errors.append(self._render_server_error(display_name, MCP_URL_REQUIRED.bind()))
-                elif not url.startswith(("http://", "https://")):
-                    errors.append(self._render_server_error(display_name, MCP_URL_SCHEME.bind()))
+                if (message := mcp_http_url_error_message(url)) is not None:
+                    errors.append(self._render_server_error(display_name, message))
         else:
             with contextlib.suppress(Exception):
-                command_line = self.query_one(f"#mcp-cmd-{self._index}", EnhancedTextArea).text.strip()
-                if not command_line:
-                    errors.append(self._render_server_error(display_name, MCP_COMMAND_REQUIRED.bind()))
+                command_line = self.query_one(f"#mcp-cmd-{self._index}", EnhancedTextArea).text
+                try:
+                    command, _args = self._split_command_line(command_line, render_message=self._render_message)
+                except ValueError as exc:
+                    errors.append(self._render_server_message(display_name, str(exc)))
                 else:
-                    try:
-                        command, _args = self._split_command_line(command_line, render_message=self._render_message)
-                        if not command:
-                            errors.append(self._render_server_error(display_name, MCP_COMMAND_REQUIRED.bind()))
-                    except ValueError as exc:
-                        errors.append(self._render_server_message(display_name, str(exc)))
+                    if is_blank_mcp_stdio_command(command):
+                        errors.append(self._render_server_error(display_name, MCP_COMMAND_REQUIRED.bind()))
             with contextlib.suppress(NoMatches):
                 if "\0" in self.query_one(f"#mcp-cwd-{self._index}", Input).value:
                     errors.append(self._render_server_error(display_name, MCP_CWD_NUL.bind()))
@@ -2129,10 +2130,13 @@ class MCPConfigPanel(VerticalScroll):
         """Normalize transport/query errors into readable text for the test dialog."""
         kind = cls._classify_connection_error(exc)
 
-        raw = str(exc).strip() or exc.__class__.__name__
-        marker = " on TabPane(id='mcp')"
-        if marker in raw:
-            raw = raw.replace(marker, "")
+        raw = str(exc)
+        if not isinstance(exc, MCPConnectionError):
+            # Textual's widget suffix. An MCPConnectionError ends with the server's working
+            # directory, shown as spelled (surrounding spaces and that text included).
+            raw = raw.strip().replace(" on TabPane(id='mcp')", "")
+        if not raw.strip():
+            raw = exc.__class__.__name__
 
         if kind == "configuration":
             friendly = render_message(_CONNECTION_CONFIGURATION_CONFLICT.bind())
@@ -2273,7 +2277,8 @@ def _format_mcp_report(
         _connection_caption(config, render_message),
     ]
     if config.transport == "stdio" and report.effective_cwd is not None:
-        sections.append(render_message(_REPORT_WORKING_DIRECTORY.bind(cwd=code_span(report.effective_cwd))))
+        cwd = literal_code_span(format_stdio_path(report.effective_cwd))
+        sections.append(render_message(_REPORT_WORKING_DIRECTORY.bind(cwd=cwd)))
     sections.extend(
         [
             f"### {render_message(_CAPABILITIES_HEADING.bind())}",

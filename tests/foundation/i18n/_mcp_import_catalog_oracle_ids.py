@@ -74,10 +74,10 @@ MCP_IMPORT_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.mcp.import.ticked_count",
         "tui.mcp.import.title",
         "tui.mcp.import.warning.auth_not_imported",
-        "tui.mcp.import.warning.codex_relative_cwd",
         "tui.mcp.import.warning.not_imported",
         "tui.mcp.import.warning.opencode_variable_cwd",
         "tui.mcp.import.warning.tools_restricted",
+        "tui.mcp.import.warning.variable_defaults_dropped",
         ("tui.mcp.imported", "tui.mcp.imported#plural"),
         "tui.mcp.wait_before_importing",
     }

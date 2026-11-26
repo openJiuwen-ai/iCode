@@ -72,7 +72,7 @@ def test_format_mcp_report_shows_effective_stdio_directory_below_command(
         tools=(),
         prompts=(),
         initial_tool_names=None,
-        effective_cwd="/work/a `b`/[c]*|<d>\\folder\n### fake",
+        effective_cwd="/work/team  A/[c]*|<d>\\folder\n### fake\x1b[2J\u202e\udcff``",
     )
 
     text = _format_mcp_report(config, report, render_message=Localizer(locale).render)
@@ -81,7 +81,7 @@ def test_format_mcp_report_shows_effective_stdio_directory_below_command(
         sections = text.split("\n\n")
         assert "`stdio`" in sections[1]
         assert "`python`" in sections[1]
-        assert sections[2] == f"{label}`/work/a 'b'/[c]*|<d>\\folder ### fake`"
+        assert sections[2] == label + r"``` /work/team  A/[c]*|<d>\folder\n### fake\x1b[2J\u202e\udcff`` ```"
         assert sections[3].startswith("### ")
         assert "unresolved" not in text
     else:

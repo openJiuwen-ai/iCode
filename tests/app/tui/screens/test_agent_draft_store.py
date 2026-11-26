@@ -60,6 +60,14 @@ def test_mcp_draft_reports_invalid_timeout_without_crashing(timeout: object) -> 
     assert validate_mcp_draft("Code", profile) == ["Code: Server 'server': timeout must be a positive integer."]
 
 
+@pytest.mark.parametrize("command", ["", " "], ids=["empty", "blank"])
+def test_mcp_draft_reports_a_stdio_command_with_nothing_to_run(command: str) -> None:
+    server = MCPServerConfig(name="server", transport="stdio", command=command)
+    profile = AgentProfile(name="Code", tools=ToolsConfig(mcp=[server]))
+
+    assert validate_mcp_draft("Code", profile) == ["Code: Server 'server': command is required for stdio transport."]
+
+
 def test_agent_draft_store_rejects_dirty_duplicate_name_against_registry() -> None:
     draft = _Draft(
         key="draft:1",

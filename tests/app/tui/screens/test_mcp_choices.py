@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from chrys.app.tui.screens.agents.agent_draft_store import validate_mcp_draft
 from chrys.app.tui.screens.agents.mcp_choices import (
     MCPConflictKind,
     collect_mcp_choices,
@@ -206,6 +207,8 @@ def test_malformed_yaml_servers_do_not_hide_valid_siblings(
     assert choices.hidden_count == 1
     assert [choice.config.name for choice in choices.choices] == ["good"]
     assert len(source.tools.mcp) == 2
+    if field == "command":
+        assert validate_mcp_draft("Code", source) == ["Code: Server 'broken': command is required for stdio transport."]
 
 
 def test_summaries_hide_credentials_arguments_and_url_query() -> None:
