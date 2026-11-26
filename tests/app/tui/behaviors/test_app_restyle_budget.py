@@ -16,7 +16,7 @@ from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_sidebar_tab
 from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, wait_for, wait_until_quiet, with_wait_deadline
 
 
@@ -514,7 +514,8 @@ async def test_chat_sidebar_tab_clicks_do_not_bounce_focus_over_a_populated_tran
         await main.query_one(ChatPanel).mount(*(Static(f"Transcript row {index}") for index in range(256)))
         chat_input = main.query_one(InputBar).query_one("#chat-input")
         await wait_for(lambda: main.focused is chat_input, pilot=pilot, description="chat input owns focus")
-        tabs = main.query_one(SidebarPanel).query_one(TabbedContent)
+        sidebar = main.query_one(SidebarPanel)
+        tabs = sidebar.query_one(TabbedContent)
         targets = ("tab-debug", "tab-tasks")
         focus_changes: list[Widget | None] = []
 
@@ -528,7 +529,7 @@ async def test_chat_sidebar_tab_clicks_do_not_bounce_focus_over_a_populated_tran
             patch.object(main, "refresh_bindings", autospec=True, side_effect=main.refresh_bindings) as bindings,
         ):
             for target in targets:
-                await click_when_settled(pilot, tabs.get_tab(target))
+                await click_sidebar_tab(pilot, sidebar, tabs.get_tab(target))
                 await wait_for(lambda target=target: tabs.active == target, pilot=pilot)
             await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled main screen")
 
