@@ -22,6 +22,7 @@ from tests.support.installed_packages import copy_installed_package
         "already-patched",
         "earlier-release",
         "previous-pr",
+        "before-composition",
         "initial-pr",
         "bare-emoji-pr",
         "cached-pr",
@@ -49,7 +50,10 @@ def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode:
         textual_compositor_cjk._LEFT_WIDTH_UPGRADE,
         textual_compositor_cjk._FRAME_WIDTH_UPGRADE,
     )
-    previous_pr = [patch for patch in install_patches if patch not in width_upgrades]
+    before_composition = [
+        patch for patch in install_patches if patch not in textual_compositor_cjk._COMPOSITION_UPGRADES
+    ]
+    previous_pr = [patch for patch in before_composition if patch not in width_upgrades]
     sidebar_fixes = (
         textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH,
         *textual_compositor_cjk._PARTIAL_ROW_PATCHES,
@@ -57,9 +61,10 @@ def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode:
     )
     earlier_release = [patch for patch in previous_pr if patch not in sidebar_fixes]
     assert len(previous_pr) == 15 and len(earlier_release) == 11
-    bare_emoji_pr = [patch for patch in install_patches if patch != textual_compositor_cjk._TERMINAL_WIDTH_UPGRADE]
+    bare_emoji_pr = [patch for patch in before_composition if patch != textual_compositor_cjk._TERMINAL_WIDTH_UPGRADE]
     installed = {
         "already-patched": install_patches,
+        "before-composition": before_composition,
         "initial-pr": earlier_release,
         "bare-emoji-pr": bare_emoji_pr,
         "cached-pr": bare_emoji_pr,

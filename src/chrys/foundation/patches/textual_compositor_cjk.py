@@ -50,8 +50,8 @@ cutting a strip whose widths may differ across terminals. A terminal with an
 older Unicode table can advance just one column for a newer wide character.
 
 Upgrade warning: ``_compositor.py`` is one all-or-nothing patch group containing
-these 20 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
-21 fragments aborts the entire file group. Textual is imported before
+the CJK fragments and the tab-selection fragment. A mismatch in any
+fragment aborts the entire file group. Textual is imported before
 ``bootstrap_runtime()`` on the TUI path, so the runtime patch stages the same CJK
 fragments in memory and installs all affected methods on the existing classes.
 It preserves imported class aliases and instances, and applies independently of
@@ -64,6 +64,7 @@ import __future__
 import ast
 import logging
 from bisect import bisect_left, bisect_right
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,7 @@ from chrys.foundation.patches.patcher import FilePatch, register
 _RUNTIME_PATCH_MARKER = "_chrys_complete_cjk_compositor"
 _RUNTIME_PATCH_TEXTUAL_VERSION = "8.2.7"
 logger = logging.getLogger(__name__)
+_RUNTIME_HELPERS = ("_stable_character_width", "_has_stable_crop_widths")
 _RUNTIME_TARGETS = {
     "ChopsUpdate": ("__init__", "__rich_console__", "render_segments"),
     "Compositor": ("_get_renders", "render_full_update", "render_partial_update", "render_strips", "_render_chops"),
@@ -321,19 +323,50 @@ def _has_stable_crop_widths(text: str) -> bool:
     return True
 """
 
+_CACHED_CROP_WIDTHS = """\
+from functools import lru_cache
+
+
+@lru_cache(maxsize=4096)
+def _stable_character_width(character: str) -> int:
+    # Return a stable cell width or -1 if terminals may disagree.
+    from unicodedata import category, ucd_3_2_0
+    from rich.cells import get_character_cell_size, load_cell_table
+
+    if character.isascii():
+        return 1 if character.isprintable() else -1
+    legacy_category = ucd_3_2_0.category(character)
+    if (
+        legacy_category.startswith(("C", "M"))
+        or legacy_category != category(character)
+        or character in load_cell_table("latest").narrow_to_wide
+    ):
+        return -1
+    width = 2 if ucd_3_2_0.east_asian_width(character) in ("W", "F") else 1
+    if cell_len(character) != width or get_character_cell_size(character, "latest") != width:
+        return -1
+    return width
+
+
+def _has_stable_crop_widths(text: str) -> bool:
+    # Cache Unicode properties per character, without retaining transcript lines.
+    return (text.isascii() and text.isprintable()) or all(_stable_character_width(c) >= 0 for c in text)
+"""
+
 _CROP_WIDTH_HELPER_PATCH = FilePatch(
     package="textual",
     module_file="_compositor.py",
     old_fragment="class ReflowResult(NamedTuple):",
     new_fragment=_PREVIOUS_CROP_WIDTH_HELPER + "\n\nclass ReflowResult(NamedTuple):",
     description="Share the terminal width check between crop and repaint paths",
-    equivalent_fragments=(_CROP_WIDTH_HELPER,),
+    equivalent_fragments=(_CROP_WIDTH_HELPER, _CACHED_CROP_WIDTHS),
 )
 _TERMINAL_WIDTH_UPGRADE = FilePatch(
     package="textual",
     module_file="_compositor.py",
     old_fragment=_PREVIOUS_CROP_WIDTH_HELPER,
     new_fragment=_CROP_WIDTH_HELPER,
+    equivalent_fragments=(_CACHED_CROP_WIDTHS,),
     description="Avoid left crops after characters whose width depends on the terminal Unicode version",
 )
 
@@ -445,10 +478,8 @@ def apply_runtime_patch() -> None:
 
     tree = ast.parse(source)
     classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
-    width_helper = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_has_stable_crop_widths"
-    )
-    methods: list[ast.stmt] = [width_helper]
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    methods: list[ast.stmt] = [functions[name] for name in _RUNTIME_HELPERS]
     for class_name, names in _RUNTIME_TARGETS.items():
         definitions = {node.name: node for node in classes[class_name].body if isinstance(node, ast.FunctionDef)}
         for name in names:
@@ -463,7 +494,7 @@ def apply_runtime_patch() -> None:
         flags=__future__.annotations.compiler_flag,
         dont_inherit=True,
     )
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Any] = {"lru_cache": lru_cache}
     # Compile only the selected methods from the pinned, fragment-validated
     # dependency. Their globals stay bound to the live module. Do not reload
     # its classes: textual.screen and existing instances retain those identities.
@@ -478,7 +509,8 @@ def apply_runtime_patch() -> None:
     merged_strip = getattr(compositor_mod, "_MERGED_STRIP", None)
     if merged_strip is None:
         merged_strip = compositor_mod.Strip([], 0)
-    compositor_mod._has_stable_crop_widths = namespace["_has_stable_crop_widths"]
+    for name in _RUNTIME_HELPERS:
+        setattr(compositor_mod, name, namespace[name])
     compositor_mod.bisect_left = bisect_left
     compositor_mod.bisect_right = bisect_right
     compositor_mod._MERGED_STRIP = merged_strip
@@ -726,6 +758,47 @@ _NEW_RENDER_CHOPS = """\
 # ---------------------------------------------------------------------------
 _TARGET = "_compositor.py"
 
+_CUT_RANGE = """\
+                final_cuts = line_cuts[lo:hi]
+
+                if len(final_cuts) < 2:
+                    continue"""
+
+_FAST_RENDER_CHOPS = _NEW_RENDER_CHOPS.replace(
+    _CUT_RANGE,
+    """\
+                if hi - lo < 2:
+                    continue
+                first = line_cuts[lo]
+                claimed = chops_line[first] is not None
+                if hi - lo == 2:
+                    if claimed:
+                        continue
+                    if strip.cell_length == line_cuts[hi - 1] - render_x:
+                        chops_line[first] = strip
+                        continue
+
+                final_cuts = line_cuts[lo:hi]
+                # An entirely covered run cannot contribute. If an uncovered
+                # run fits exactly, Strip.divide would return the same strip.
+                for cut in final_cuts[1:-1]:
+                    if (chops_line[cut] is not None) != claimed:
+                        break
+                else:
+                    if claimed:
+                        continue
+                    if strip.cell_length == final_cuts[-1] - render_x:
+                        chops_line[first] = strip
+                        for cut in final_cuts[1:-1]:
+                            chops_line[cut] = _MERGED_STRIP
+                        continue""",
+)
+
+_COMPOSITION_UPGRADES = (
+    FilePatch("textual", _TARGET, _CROP_WIDTH_HELPER, _CACHED_CROP_WIDTHS, "Cache stable widths per character"),
+    FilePatch("textual", _TARGET, _NEW_RENDER_CHOPS, _FAST_RENDER_CHOPS, "Reuse fully owned strips"),
+)
+
 _PATCHES = (
     _CROP_WIDTH_HELPER_PATCH,
     _TERMINAL_WIDTH_UPGRADE,
@@ -806,7 +879,9 @@ _PATCHES = (
         old_fragment=_OLD_RENDER_CHOPS,
         new_fragment=_NEW_RENDER_CHOPS,
         description="CJK-safe effective cuts with bisect optimization in _render_chops",
+        equivalent_fragments=(_FAST_RENDER_CHOPS,),
     ),
+    *_COMPOSITION_UPGRADES,
 )
 
 register(*_PATCHES)

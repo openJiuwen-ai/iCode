@@ -8,6 +8,7 @@ import ast
 import importlib.util
 import re
 from collections.abc import Callable, Iterator
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
 
     ``tests/conftest.py`` imports tab selection before this module, so the global
     registry order differs from a fresh production bootstrap.  Build the order
-    explicitly: all 20 CJK patches, then the one tab-selection patch. The
+    explicitly: all CJK patches, then the one tab-selection patch. The
     joined-text fallback builds on the earlier partial-update fragment.
     """
     tab_matches = [
@@ -47,7 +48,6 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
         and patch.module_file == "_compositor.py"
         and patch.old_fragment == textual_tab_selection._COMPOSITOR_GET_WIDGET_AND_OFFSET_AT_OLD
     ]
-    assert len(textual_compositor_cjk._PATCHES) == 20
     assert len(tab_matches) == 1
     return (*textual_compositor_cjk._PATCHES, tab_matches[0])
 
@@ -75,20 +75,21 @@ def _compile_staged_render_segments() -> Callable[[Any, Console], str]:
     render_segments = next(
         node for node in chops_update.body if isinstance(node, ast.FunctionDef) and node.name == "render_segments"
     )
-    width_helper = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_has_stable_crop_widths"
-    )
+    helpers = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in textual_compositor_cjk._RUNTIME_HELPERS
+    ]
 
     namespace: dict[str, Any] = {
         "Console": Console,
         "Control": Control,
         "_MERGED_STRIP": object(),
         "cell_len": cell_len,
+        "lru_cache": lru_cache,
     }
     exec(
-        compile(
-            ast.Module(body=[width_helper, render_segments], type_ignores=[]), "<staged textual._compositor>", "exec"
-        ),
+        compile(ast.Module(body=[*helpers, render_segments], type_ignores=[]), "<staged textual._compositor>", "exec"),
         namespace,
     )
     implementation = namespace["render_segments"]
@@ -144,7 +145,13 @@ def _preserve_runtime_targets(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]
         for name in names:
             monkeypatch.setattr(cls, name, getattr(cls, name))
     absent_globals: list[str] = []
-    for name in ("bisect_left", "bisect_right", "_MERGED_STRIP", "_ALWAYS_TRUE", "_has_stable_crop_widths"):
+    for name in (
+        "bisect_left",
+        "bisect_right",
+        "_MERGED_STRIP",
+        "_ALWAYS_TRUE",
+        *textual_compositor_cjk._RUNTIME_HELPERS,
+    ):
         if hasattr(compositor_mod, name):
             monkeypatch.setattr(compositor_mod, name, getattr(compositor_mod, name))
         else:
@@ -159,7 +166,7 @@ def test_runtime_fragment_drift_leaves_all_live_methods_unchanged(
     tmp_path, monkeypatch, caplog, _preserve_runtime_targets
 ):
     monkeypatch.setattr(ChopsUpdate, "render_segments", lambda self, console: "old render")
-    source = _staged_patched_compositor_source().replace(textual_compositor_cjk._NEW_RENDER_CHOPS, "unmatched body")
+    source = _staged_patched_compositor_source().replace(textual_compositor_cjk._FAST_RENDER_CHOPS, "unmatched body")
     target = tmp_path / "_compositor.py"
     target.write_text(source, encoding="utf-8")
     monkeypatch.setattr(compositor_mod, "__file__", str(target))
@@ -434,3 +441,52 @@ async def test_sidebar_repaint_under_a_dialog_keeps_its_body(
 
     assert update is not None
     assert _replay(screen, update.render_segments(Console(force_terminal=True))) == screen
+
+
+@pytest.mark.parametrize("cuts", [[0, 8], [0, 1, 3, 8]])
+def test_render_chops_reuses_fully_owned_strip(_preserve_runtime_targets, monkeypatch, cuts):
+    textual_compositor_cjk.apply_runtime_patch()
+    comp = compositor_mod.Compositor()
+    comp._cuts = [cuts]
+    region = Region(0, 0, 8, 1)
+    front = Strip([Segment("你好世界")])
+    back = Strip([Segment("covered!")])
+    monkeypatch.setattr(comp, "_get_renders", lambda crop: [(region, region, [front]), (region, region, [back])])
+
+    def unexpected_division(self, cuts):
+        pytest.fail("A completely covered or exactly fitting strip was divided")
+
+    monkeypatch.setattr(Strip, "divide", unexpected_division)
+    (row,) = comp._render_chops(region, lambda y: True)
+    assert row[0] is front
+    assert all(row[x] is compositor_mod._MERGED_STRIP for x in cuts[1:-1])
+
+
+def test_render_chops_short_strip_leaves_other_buckets_available(_preserve_runtime_targets, monkeypatch):
+    textual_compositor_cjk.apply_runtime_patch()
+    comp = compositor_mod.Compositor()
+    comp._cuts = [[0, 2, 4, 6]]
+    region = Region(0, 0, 6, 1)
+    middle = Region(2, 0, 2, 1)
+    layers = [
+        (middle, middle, [Strip([Segment("MM")])]),
+        (region, region, [Strip([Segment("短")])]),
+        (region, region, [Strip([Segment("abcdef")])]),
+    ]
+    monkeypatch.setattr(comp, "_get_renders", lambda crop: layers)
+    (row,) = comp._render_chops(region, lambda y: True)
+    assert [part.text for part in row.values()] == ["短", "MM", "ef"]
+
+
+def test_crop_width_cache_reuses_codepoints_across_different_lines(_preserve_runtime_targets):
+    textual_compositor_cjk.apply_runtime_patch()
+    cached_width = compositor_mod._stable_character_width
+    cached_width.cache_clear()
+    assert compositor_mod._has_stable_crop_widths("中文")
+    assert not compositor_mod._has_stable_crop_widths("中🫠")
+    before = cached_width.cache_info()
+    assert compositor_mod._has_stable_crop_widths("文中文")
+    assert not compositor_mod._has_stable_crop_widths("文🫠")
+    after = cached_width.cache_info()
+    assert after.misses == before.misses
+    assert after.hits > before.hits
