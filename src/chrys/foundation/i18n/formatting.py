@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -178,7 +178,9 @@ def _is_lookup_id(template: str) -> bool:
     return bool(_LOOKUP_ID_RE.fullmatch(_normalized_lookup_candidate(template)))
 
 
-def format_message(reference: MessageRef, template: str | None = None) -> str:
+def format_message(
+    reference: MessageRef, template: str | None = None, *, render_nested: Callable[[MessageRef], str] | None = None
+) -> str:
     """Render *reference*, falling back to English for an invalid translation."""
     from chrys.foundation.i18n.messages import _render_arguments
 
@@ -186,7 +188,7 @@ def format_message(reference: MessageRef, template: str | None = None) -> str:
     fallback = definition.fallback if reference.count is None or reference.count == 1 else definition.plural_fallback
     if fallback is None:
         raise ValueError("A plural reference requires a plural fallback.")
-    parameters = _render_arguments(reference)
+    parameters = _render_arguments(reference, render_nested or format_message)
     english = format_template(fallback, parameters, multiline=definition.multiline)
     if template is None:
         return english

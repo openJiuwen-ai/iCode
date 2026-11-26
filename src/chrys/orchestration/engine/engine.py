@@ -78,10 +78,7 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mutations.coordination import MutationCoordinator
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.session.history import SessionHistoryManager
-from chrys.service.state.store import (
-    SESSION_WRITE_LOCK_TIMEOUT_SECONDS,
-    atomic_copy_file,
-)
+from chrys.service.state.store import SESSION_WRITE_LOCK_TIMEOUT_SECONDS
 from chrys.service.todos.tracker import TodoTracker
 from chrys.service.trajectory.state import TurnRecord, turn_records
 
@@ -727,7 +724,6 @@ class AgentEngine:
             "roll back",
             lambda: self._rollback.on_user_rollback(
                 event,
-                atomic_copy_file=atomic_copy_file,
                 lock_timeout_seconds=SESSION_WRITE_LOCK_TIMEOUT_SECONDS,
             ),
             workflow_active_display=_WORKFLOW_ROLLBACK_ACTIVE.bind(),

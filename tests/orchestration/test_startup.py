@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from chrys import __version__
 from chrys.foundation.config.process_env import process_env_snapshot
 from chrys.foundation.config.runtime_pointer import get_model_pointer
 from chrys.foundation.config.spec import SettingOrigin, Source
@@ -311,7 +312,7 @@ def test_bootstrap_draws_the_renamed_theme_even_when_the_document_cannot_be_rewr
     document = tmp_path / "config" / "settings.yaml"
     document.write_text("ui:\n  theme: chrys-dark\n", encoding="utf-8")
 
-    def explode() -> None:
+    def explode(*, backup=None) -> None:
         raise TimeoutError("lock busy")
 
     monkeypatch.setattr("chrys.foundation.config.migrations.migrate_renamed_theme", explode)
@@ -406,7 +407,7 @@ def test_bootstrap_starts_when_the_buddy_model_cannot_be_moved(monkeypatch: pyte
     document = tmp_path / "config" / "settings.yaml"
     document.write_text("model:\n  role:\n    buddy_model_id: glm-4.6\n", encoding="utf-8")
 
-    def explode(_successor: object) -> None:
+    def explode(_successor: object, *, backup=None) -> None:
         raise TimeoutError("lock busy")
 
     monkeypatch.setattr("chrys.foundation.config.migrations.migrate_buddy_model_profile", explode)
@@ -536,7 +537,7 @@ def test_notification_import_failure_warns_that_previous_preferences_may_not_app
 ) -> None:
     _quiet_bootstrap(monkeypatch, tmp_path)
 
-    def explode() -> None:
+    def explode(*, backup=None) -> None:
         raise TimeoutError("lock busy")
 
     monkeypatch.setattr("chrys.foundation.config.migrations.migrate_notifications_v0", explode)
@@ -684,7 +685,7 @@ def test_notification_migration_failure_does_not_skip_theme_rename(monkeypatch, 
     settings_path = tmp_path / "config" / "settings.yaml"
     settings_path.write_text("ui:\n  theme: chrys-dark\n", encoding="utf-8")
 
-    def fail_import() -> None:
+    def fail_import(*, backup=None) -> None:
         raise TimeoutError("notification lock busy")
 
     monkeypatch.setattr("chrys.foundation.config.migrations.migrate_notifications_v0", fail_import)
@@ -713,3 +714,34 @@ def test_corrupt_settings_without_legacy_notifications_does_not_warn_about_migra
     assert result.loaded.document_error
     assert not any(warning.code == "notifications_migration_failed" for warning in result.warnings)
     assert path.read_text(encoding="utf-8") == "ui: [broken"
+
+
+@pytest.mark.parametrize("migration", ["theme", "buddy", "notifications"])
+def test_bootstrap_legacy_settings_migration_preserves_original_bytes(monkeypatch, tmp_path, migration):
+    _quiet_bootstrap(monkeypatch, tmp_path)
+    config = tmp_path / "config"
+    document = config / "settings.yaml"
+    legacy = {
+        "theme": "ui: {theme: chrys-dark}",
+        "buddy": "model: {role: {buddy_model_id: retired-model}}",
+        "notifications": "ui: {theme: chrys}",
+    }
+    original = ("# 用户的设置\r\nmigrations: {notifications_v0: done}\r\n" + legacy[migration] + "\r\n").encode(
+        "utf-8-sig"
+    )
+    document.write_bytes(original)
+    if migration == "notifications":
+        (config / "notifications.yaml").write_text("enabled: false\n", encoding="utf-8")
+
+    bootstrap = startup.bootstrap_runtime()
+
+    assert bootstrap.warnings == []
+    updated = yaml.safe_load(document.read_bytes())
+    if migration == "theme":
+        assert updated["ui"]["theme"] == "chrys"
+    elif migration == "buddy":
+        assert "model" not in updated
+    else:
+        assert updated["notifications"]["enabled"] is False
+    backup = config / "backups" / __version__ / document.name
+    assert backup.is_file() and backup.read_bytes() == original

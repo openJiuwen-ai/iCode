@@ -34,7 +34,7 @@ from chrys.app.tui.widgets.chat.messages import (
 from chrys.app.tui.widgets.chat.scroll_controller import ManualScrollGcGuard
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
-from chrys.foundation.errors.display import DISPLAY_WITH_HINT
+from chrys.foundation.errors.display import with_display_hint
 from chrys.foundation.events.types import InvocationContentDelta
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.patches.textual_precompose import precompose_tree
@@ -835,9 +835,11 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
         elif isinstance(operation, TranscriptRetryOp):
             message = self._render_message(operation.message)
             if operation.hint is not None:
-                message = render_str(
-                    widget_localizer(self),
-                    DISPLAY_WITH_HINT.bind(message=message, hint=self._render_message(operation.hint)),
+                localizer = widget_localizer(self)
+                message = with_display_hint(
+                    message,
+                    self._render_message(operation.hint),
+                    render=lambda reference: render_str(localizer, reference),
                 )
             if operation.compaction:
                 self._live.show_compaction_retry(

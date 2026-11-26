@@ -6,6 +6,7 @@ from chrys.foundation.i18n.locale import SUPPORTED_LOCALES, normalize_locale
 from chrys.foundation.i18n.localizer import CatalogLoadWarning, CatalogWarningCode, Localizer
 from chrys.foundation.i18n.messages import (
     DisplayBlock,
+    DisplayJoined,
     DisplayPath,
     DisplaySequence,
     MessageArg,
@@ -20,6 +21,7 @@ __all__ = [
     "CatalogLoadWarning",
     "CatalogWarningCode",
     "DisplayBlock",
+    "DisplayJoined",
     "DisplayPath",
     "DisplaySequence",
     "Localizer",

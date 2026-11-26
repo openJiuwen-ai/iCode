@@ -131,6 +131,8 @@ The `*` in the `Active` column marks the model profile that is active by default
 
 ## Get JSON output
 
+When a warning includes a cause, iCode prints it with the warning in progress, quiet, and JSON output.
+
 With `--json`, successful results are written as JSON objects to standard output (`stdout`), and errors and warnings are written as JSON objects to standard error (`stderr`). No progress is shown. For example:
 
 ```shell

@@ -51,7 +51,7 @@ from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent
 from tests.support.windows_replace import briefly_held_unlink
 
 
-async def test_reset_session_to_welcome_deletes_state_and_reports_missing_profile(
+async def test_reset_session_to_welcome_deletes_state_without_an_agent_profile(
     tmp_path: Path, *, engine_services
 ) -> None:
     events: list[Error] = []
@@ -94,7 +94,7 @@ async def test_reset_session_to_welcome_deletes_state_and_reports_missing_profil
     assert engine.session.runtime_meta.last_usage_details == {}
     assert engine.session.shutting_down is False
     assert engine.state is EngineState.UNINITIALIZED
-    assert [event.code for event in events] == ["no_agent_profile"]
+    assert events == []
 
 
 async def test_reset_session_to_welcome_leaves_no_delete_intent_for_the_id_it_restarts_on(
@@ -313,7 +313,7 @@ async def test_reset_session_to_welcome_session_end_hooks_see_session_file(tmp_p
     assert hook_manager.exists_during_fire == [True]
     assert hook_manager.payloads[0]["session_id"] == "reset_me"
     assert not session_dir.exists()
-    assert [event.code for event in events] == ["no_agent_profile"]
+    assert events == []
 
 
 async def test_reset_session_to_welcome_delete_failure_restores_engine_state(

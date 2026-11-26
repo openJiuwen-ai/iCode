@@ -26,7 +26,7 @@ from chrys.app.parsing import (
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
-from chrys.foundation.errors.display import DISPLAY_WITH_HINT
+from chrys.foundation.errors.display import with_display_hint
 from chrys.foundation.events.types import Event, Warning
 from chrys.foundation.i18n import DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_terminal_block
@@ -427,17 +427,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             message = runtime.localizer.render(event.display_message)
             if event.display_hint is not None:
-                message = runtime.localizer.render(
-                    DISPLAY_WITH_HINT.bind(message=message, hint=runtime.localizer.render(event.display_hint))
+                message = with_display_hint(
+                    message, runtime.localizer.render(event.display_hint), render=runtime.localizer.render
                 )
             if event.code == "executor_error":
                 # The display says what went wrong; the raw text is the evidence.
                 detail = event.message.strip() or None
         if event.code == "session_cwd_missing":
             hint = _localized_or_english(_SESSION_CWD_MISSING_HINT.bind(), as_json=args.json, runtime=runtime)
-            message = _localized_or_english(
-                DISPLAY_WITH_HINT.bind(message=message, hint=hint), as_json=args.json, runtime=runtime
-            )
+            render = runtime.localizer.render if runtime is not None and not args.json else None
+            message = with_display_hint(message, hint, render=render)
         headless.write_error(
             message,
             as_json=args.json,

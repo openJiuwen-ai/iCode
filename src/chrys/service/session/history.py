@@ -445,15 +445,16 @@ class SessionHistoryManager:
     # Marker operations
     # ------------------------------------------------------------------
 
-    def insert_turn_marker(self, started_at: datetime | str | None = None) -> None:
+    def insert_turn_marker(self, started_at: datetime | str | None = None, *, turn_number: int | None = None) -> None:
         """Insert a turn marker at the end of history, with when its pass began (*started_at*) if known."""
         state = self._state
         if state is None or not state.get("messages"):
             return
         from chrys.service.context.providers.history import CompressibleHistoryProvider
 
-        turn_counter = state.get("turn_counter", 0) + 1
-        CompressibleHistoryProvider.insert_marker(state, turn_counter, started_at=try_normalize_created_at(started_at))
+        if turn_number is None:
+            turn_number = state.get("turn_counter", 0) + 1
+        CompressibleHistoryProvider.insert_marker(state, turn_number, started_at=try_normalize_created_at(started_at))
 
     def insert_interrupted_marker(
         self,
@@ -698,20 +699,20 @@ class SessionHistoryManager:
             retained_other_records=not has_work and other_records_present,
         )
 
-    def close_unfinished_turn(self) -> bool:
-        """Give a restored in-flight turn the same boundary as a crash checkpoint."""
+    def close_unfinished_turn(self, *, completed_turn: int | None = None) -> bool:
+        """Restore a missing turn boundary, using the verified turn for a rollback."""
         messages = self.messages
         if not messages or messages[-1].additional_properties.get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN:
             return False
         if not any(opens_turn(message) for message in messages[current_turn_start(messages) :]):
             return False
-        if self.trailing_status_marker() is None:
+        if completed_turn is None and self.trailing_status_marker() is None:
             self.insert_interrupted_marker(
                 reason=format_message(SESSION_CLOSED_MESSAGE.bind()),
                 source="",
                 status_code=HistoryMarkerKind.STATUS_SESSION_CLOSED,
             )
-        self.insert_turn_marker()
+        self.insert_turn_marker(turn_number=completed_turn)
         return True
 
     def remove_all_status_markers(self) -> None:

@@ -1181,7 +1181,6 @@ class RuntimeControls:
                     Error(code="workspace_change_failed", message=str(exc), session_id=self._session.session_id)
                 )
                 raise
-            live_plan = self._session.workspace_plan
             await self._start_or_restart_with_permit(
                 permit,
                 self._session.agent_profile,
@@ -1189,7 +1188,6 @@ class RuntimeControls:
                 workspace_plan=self._lifecycle.workspaces.plan(
                     workspace=new_workspace,
                     snapshot=RegistrySnapshot(),
-                    live_plan=live_plan if live_plan is not None and live_plan.departure is not None else None,
                 ),
                 staged_loaded=staged_loaded,
             )
@@ -1351,6 +1349,7 @@ class RuntimeControls:
                 staged_loaded=staged_loaded,
                 commit_workspace=commit,
             )
+            await self._lifecycle.workspaces.warn_missing_references(self._session.session_id, plan)
             departure = plan.departure
             if plan.left_workspace and departure is not None and self._session.surface is SessionSurface.CLI:
                 await self._bus.publish(workspace_left_warning(self._session.session_id, departure.name))

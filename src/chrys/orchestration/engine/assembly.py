@@ -195,6 +195,7 @@ def assemble_agent_engine(
         side_questions=side_questions,
     )
     rollback = RollbackController(
+        state_store=state_store,
         session=session,
         current=current,
         permits=permits,

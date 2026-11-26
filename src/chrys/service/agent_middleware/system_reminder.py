@@ -843,11 +843,8 @@ class SystemReminderMiddleware(ChatMiddleware):
         state = self._turns.current()
         if message is None or state is None or not _is_visible(message):
             return None
-        missing = _catalog_updates(
-            _latest_visible_catalogs(messages, self._rendered_records(messages)),
-            self._catalog_items(state),
-            self._withdrawn_notices,
-        )
+        in_view = _latest_visible_catalogs(messages, self._rendered_records(messages))
+        missing = _catalog_updates(in_view, self._catalog_items(state, in_view), self._withdrawn_notices)
         if not missing:
             return None
         kept = [c for c in message.contents if not self._is_last_words_reminder_content(c)]
@@ -937,7 +934,6 @@ class SystemReminderMiddleware(ChatMiddleware):
         context: ChatContext,
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
-        reminder_items = self._build_reminder_items()
         applied_switch: SwitchSnapshot | None = None
         # Replace user messages in the per-call shallow copy only.  This
         # renders recorded reminders and defangs user-authored reminder tags
@@ -958,6 +954,7 @@ class SystemReminderMiddleware(ChatMiddleware):
         handle = _service_handle(context.options.get("conversation_id") if context.options is not None else None)
         held = self._held_catalogs[1] if self._held_catalogs is not None and self._held_catalogs[0] == handle else {}
         in_view = {**held, **_latest_visible_catalogs(messages, records)}
+        reminder_items = self._build_reminder_items(in_view)
         turn_recorded = self._turn_recorded(messages, records, target_idx) if target is not None else []
         new_items = self._unsent_reminders(in_view, turn_recorded, reminder_items) if target is not None else []
         # A note whose turn shows no record of it (a session saved before
@@ -1044,9 +1041,9 @@ class SystemReminderMiddleware(ChatMiddleware):
 
     def _build_reminders(self) -> list[str]:
         """Every reminder text this turn offers, whether or not already sent."""
-        return [item.text for item in self._build_reminder_items()]
+        return [item.text for item in self._build_reminder_items({})]
 
-    def _build_reminder_items(self) -> list[_ReminderItem]:
+    def _build_reminder_items(self, in_view: Mapping[str, str]) -> list[_ReminderItem]:
         state = self._turns.local()
         if state is None:
             # Fallback for direct middleware use without ``prepare_turn()``.
@@ -1057,9 +1054,9 @@ class SystemReminderMiddleware(ChatMiddleware):
             state.skill_catalog = self._sources.skills.snapshot()
             state.mcp_instructions = self._sources.mcp.snapshot()
             self._turns.install_local(state)
-        return self._compose_items(state)
+        return self._compose_items(state, in_view)
 
-    def _compose_items(self, state: TurnReminderState) -> list[_ReminderItem]:
+    def _compose_items(self, state: TurnReminderState, in_view: Mapping[str, str]) -> list[_ReminderItem]:
         """Every reminder *state* offers, in send order, each with the kind that decides its re-send.
 
         The one place the send order is written: the turn line, the
@@ -1076,15 +1073,16 @@ class SystemReminderMiddleware(ChatMiddleware):
         items.extend(_ReminderItem("event", text) for text in state.event_reminders)
         if state.file_change is not None:
             items.append(_ReminderItem("event", state.file_change.text))
-        items.extend(self._catalog_items(state))
+        items.extend(self._catalog_items(state, in_view))
         return items
 
-    def _catalog_items(self, state: TurnReminderState) -> list[_ReminderItem]:
+    def _catalog_items(self, state: TurnReminderState, in_view: Mapping[str, str]) -> list[_ReminderItem]:
         """The standing context this turn offers, one item per catalog name."""
+        runtime = self._sources.runtime_env
         return [
             _ReminderItem("catalog", text, name)
             for name, text in (
-                (self._sources.runtime_env.name, state.runtime_hint),
+                (runtime.name, runtime.with_departure(state.runtime_hint, in_view.get(runtime.name))),
                 (self._sources.sub_agents.name, state.sub_agent_tip),
                 (self._sources.todo.name, state.todo),
                 (self._sources.background_tasks.name, state.background_tasks),

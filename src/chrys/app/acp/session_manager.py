@@ -11,7 +11,7 @@ import os
 import tempfile
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
@@ -70,6 +70,7 @@ from chrys.foundation.models.workspace import (
 )
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.text.yaml_io import dump_yaml
+from chrys.foundation.util.once_close import finish_close
 from chrys.foundation.util.session_ids import SESSION_SHORT_ID_LEN, session_short_id
 from chrys.orchestration.engine.workspaces import registry_unreadable_warning
 from chrys.orchestration.session_host import WORKSPACE_WARNING_CODES, ChrysSessionHost, collect_workspace_warnings
@@ -159,7 +160,7 @@ class ManagedSession:
     hook_confirmations: AcpSessionHookConfirmations | None = None
     # Serializes runtime-control mutations (model/workspace/profile/settings) so
     # two concurrent requests on one session can't each resolve from the other's
-    # completion event — ``_await_runtime_mutation`` correlates only by session id
+    # completion event — ``_await_runtime_mutation_locked`` correlates only by session id
     # and result type, which is ambiguous under overlap.
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Prompts serialize per session, not process-wide. Lifecycle operations
@@ -956,6 +957,33 @@ class AcpSessionManager:
             raise AcpSessionError(msg)
         return session
 
+    @contextlib.asynccontextmanager
+    async def _mutating_session(self, session: ManagedSession) -> AsyncGenerator[None]:
+        async with session.mutation_lock:
+            if self._sessions.get(session.session_id) is not session or session.closing:
+                raise AcpSessionError(f"ACP session is not active: {session.session_id}")
+            try:
+                yield
+            finally:
+                await finish_close(asyncio.create_task(self._retire_lost_session(session)))
+
+    async def _retire_lost_session(self, session: ManagedSession) -> None:
+        engine = session.host.engine
+        async with engine.permits.gate_lock:
+            if (
+                session.host.session_id == session.session_id
+                and engine.current.loaded is not None
+                and not engine.session.shutting_down
+            ):
+                return
+            session.closing = True
+        async with self._lock:
+            if self._sessions.get(session.session_id) is not session:
+                return
+            self._sessions.pop(session.session_id)
+        async with session.prompt_lock:
+            await session.shutdown()
+
     def tool_kind_resolver(self, session_id: str) -> Callable[[str], str]:
         """Return a resolver for live tool kinds in an active session."""
         session = self.get(session_id)
@@ -998,16 +1026,30 @@ class AcpSessionManager:
     ) -> RollbackResult:
         """Request rollback and wait for the backend result."""
         session = self.get(session_id)
+        async with self._mutating_session(session):
+            return await self._rollback_locked(
+                session, target_turn=target_turn, revert_changes=revert_changes, selected_paths=selected_paths
+            )
+
+    async def _rollback_locked(
+        self,
+        session: ManagedSession,
+        *,
+        target_turn: int,
+        revert_changes: bool,
+        selected_paths: list[str] | None,
+    ) -> RollbackResult:
         bus = session.host.event_bus
+        rollback_session_id = session.session_id
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future[RollbackResult] = loop.create_future()
 
         async def _on_result(event: RollbackResult) -> None:
-            if event.session_id == session.host.session_id and not result_future.done():
+            if event.session_id == rollback_session_id and not result_future.done():
                 result_future.set_result(event)
 
         async def _on_error(event: Error) -> None:
-            if event.session_id == session.host.session_id and not result_future.done():
+            if event.session_id == rollback_session_id and not result_future.done():
                 result_future.set_exception(AcpSessionError(event.message or event.code or "Rollback failed."))
 
         async def _on_warning(event: Warning) -> None:
@@ -1016,7 +1058,7 @@ class AcpSessionManager:
             # (service_session_incompatible, sub_agents_reload_discarded) before the
             # RollbackResult — those must not be mistaken for a refusal.
             if (
-                event.session_id == session.host.session_id
+                event.session_id == rollback_session_id
                 and (event.code or "").startswith("rollback_")
                 and not result_future.done()
             ):
@@ -1031,7 +1073,7 @@ class AcpSessionManager:
                     target_turn=target_turn,
                     revert_changes=revert_changes,
                     selected_paths=selected_paths,
-                    session_id=session.host.session_id,
+                    session_id=rollback_session_id,
                 )
             )
             return await asyncio.wait_for(result_future, timeout=30)
@@ -1039,6 +1081,7 @@ class AcpSessionManager:
             msg = "Timed out waiting for rollback result."
             raise AcpSessionError(msg) from exc
         finally:
+            result_future.cancel()
             await bus.unsubscribe(RollbackResult, _on_result)
             await bus.unsubscribe(Error, _on_error)
             await bus.unsubscribe(Warning, _on_warning)
@@ -1070,7 +1113,7 @@ class AcpSessionManager:
         session = self.get(session_id)
         bus = session.host.event_bus
 
-        async with session.mutation_lock:
+        async with self._mutating_session(session):
             loop = asyncio.get_running_loop()
             result_future: asyncio.Future[ApprovalModeUpdated] = loop.create_future()
 
@@ -1091,17 +1134,17 @@ class AcpSessionManager:
     async def switch_agent(self, session_id: str, profile_name: str) -> ProfileSwitched:
         """Switch the active session to another agent profile."""
         session = self.get(session_id)
-        self.load_registries()
-        profile = self._agent_registry.resolve_selector(profile_name)
-        if profile is None:
-            # Invalid profiles publish an Error rather than ProfileSwitched, so reject
-            # here instead of waiting out the 60s timeout for an event that never comes.
-            msg = f"Agent profile not found: {profile_name}"
-            available = ", ".join(sorted(self._agent_registry.list_names()))
-            if available:
-                msg = f"{msg}. Available profiles: {available}"
-            raise AcpSessionError(msg)
-        async with session.mutation_lock:
+        async with self._mutating_session(session):
+            self.load_registries()
+            profile = self._agent_registry.resolve_selector(profile_name)
+            if profile is None:
+                # Invalid profiles publish an Error rather than ProfileSwitched, so reject
+                # here instead of waiting out the 60s timeout for an event that never comes.
+                msg = f"Agent profile not found: {profile_name}"
+                available = ", ".join(sorted(self._agent_registry.list_names()))
+                if available:
+                    msg = f"{msg}. Available profiles: {available}"
+                raise AcpSessionError(msg)
             if session.profile_name == profile.name:
                 return session.host.engine.current_profile_snapshot()
             result = await self._await_runtime_mutation_locked(
@@ -1114,44 +1157,6 @@ class AcpSessionManager:
             session.profile_name = result.to_profile or profile.name
             return result
 
-    async def _await_runtime_mutation(
-        self,
-        session: ManagedSession,
-        command: Event,
-        result_type: type[_RuntimeEventT],
-        *,
-        timeout_message: str,
-        failure_message: str,
-        timeout: float | None = 60,
-        warnings: list[Warning] | None = None,
-    ) -> _RuntimeEventT:
-        """Publish a runtime-control command and await its result event.
-
-        Resolves on the success event, or fails fast on ``Error`` /
-        ``AgentLoadFailed``. A rebuild failure publishes ``AgentLoadFailed`` and
-        then raises inside the bus handler (swallowed by default), so without
-        watching it the request would hang until the timeout.
-
-        Args:
-            warnings: Collects the ``Warning`` events this session publishes
-                while the mutation runs. Passed as a list rather than returned
-                so the caller decides whether the diagnosis is worth carrying —
-                only the reload has anything to say.
-        """
-        # Serialize mutations on this session: two concurrent calls of the same
-        # result type would otherwise each be eligible to resolve from whichever
-        # completion event fires first, crossing the wires.
-        async with session.mutation_lock:
-            return await self._await_runtime_mutation_locked(
-                session,
-                command,
-                result_type,
-                timeout_message=timeout_message,
-                failure_message=failure_message,
-                timeout=timeout,
-                warnings=warnings,
-            )
-
     async def _await_runtime_mutation_locked(
         self,
         session: ManagedSession,
@@ -1163,7 +1168,7 @@ class AcpSessionManager:
         timeout: float | None = 60,
         warnings: list[Warning] | None = None,
     ) -> _RuntimeEventT:
-        """Publish a runtime-control command while the session mutation lock is held."""
+        """Publish under the session mutation lock and collect the result, failure, and optional warnings."""
         bus = session.host.event_bus
         sid = session.host.session_id
         loop = asyncio.get_running_loop()
@@ -1203,18 +1208,19 @@ class AcpSessionManager:
 
     async def set_model_profile(self, session_id: str, profile_id: str) -> ModelProfileSwitched:
         """Switch the active model for this session while preserving the saved default."""
-        self.load_registries()
-        if not profile_id or self._model_registry.get(profile_id) is None:
-            msg = f"Model profile not found: {profile_id}"
-            raise AcpSessionError(msg)
         session = self.get(session_id)
-        return await self._await_runtime_mutation(
-            session,
-            SetModelProfile(profile_id=profile_id, session_id=session.host.session_id),
-            ModelProfileSwitched,
-            timeout_message=f"Timed out waiting for model switch: {profile_id}",
-            failure_message="Model switch failed.",
-        )
+        async with self._mutating_session(session):
+            self.load_registries()
+            if not profile_id or self._model_registry.get(profile_id) is None:
+                msg = f"Model profile not found: {profile_id}"
+                raise AcpSessionError(msg)
+            return await self._await_runtime_mutation_locked(
+                session,
+                SetModelProfile(profile_id=profile_id, session_id=session.session_id),
+                ModelProfileSwitched,
+                timeout_message=f"Timed out waiting for model switch: {profile_id}",
+                failure_message="Model switch failed.",
+            )
 
     async def session_history(self, *, cwd: str | None, session_id: str) -> tuple[str, SessionTranscript | None]:
         """Return persisted messages, folds and turn records, scoped to the requesting workspace cwd.
@@ -1287,21 +1293,27 @@ class AcpSessionManager:
                 process, so what this session settled on earlier ends.
         """
         session = self.get(session_id)
-        async with session.mutation_lock:
-            # Under the lock: this moves the registries' versions, which a full
-            # reload of this session holding the lock is about to check.
-            self._agent_registry.load_all()
-            self._model_registry.load_all()
-            result = await self._await_runtime_mutation_locked(
-                session,
-                SettingsReload(follow_process_model=follow_process_model),
-                SettingsReloaded,
-                timeout_message="Timed out waiting for settings reload.",
-                failure_message="Settings reload failed.",
-                warnings=warnings,
+        async with self._mutating_session(session):
+            result = await self._reload_settings_locked(
+                session, warnings=warnings, follow_process_model=follow_process_model
             )
         await asyncio.to_thread(self._refresh_default_settings)
         return result
+
+    async def _reload_settings_locked(
+        self, session: ManagedSession, *, warnings: list[Warning] | None, follow_process_model: bool
+    ) -> SettingsReloaded:
+        # These versions must stay stable while a full reload on this session runs.
+        self._agent_registry.load_all()
+        self._model_registry.load_all()
+        return await self._await_runtime_mutation_locked(
+            session,
+            SettingsReload(follow_process_model=follow_process_model),
+            SettingsReloaded,
+            timeout_message="Timed out waiting for settings reload.",
+            failure_message="Settings reload failed.",
+            warnings=warnings,
+        )
 
     async def reload_settings_full(
         self, session_id: str, *, warnings: list[Warning] | None = None
@@ -1324,7 +1336,7 @@ class AcpSessionManager:
         result: SettingsReloaded | None = None
         unfinished: str | None = None
         try:
-            async with asyncio.timeout_at(deadline), session.mutation_lock:
+            async with asyncio.timeout_at(deadline), self._mutating_session(session):
                 before = handle.base
                 result = await self._await_runtime_mutation_locked(
                     session,
@@ -1386,16 +1398,16 @@ class AcpSessionManager:
                 sets ``rollback_snapshots_keep`` to ``0`` is told it succeeded,
                 the ``0`` is written to disk, and the runtime quietly uses ``1``.
         """
-        self.get(session_id)
-        # Off-thread: the write takes the settings file's lock and the refresh
-        # reads the file back, and this server answers every other request on
-        # the same event loop.
-        result = await asyncio.to_thread(self.set_config_option, key, value)
-        await self.reload_settings(
-            session_id,
-            warnings=warnings,
-            follow_process_model=_config_option(key).env_alias == MODEL_POINTER_ENV,
-        )
+        session = self.get(session_id)
+        async with self._mutating_session(session):
+            # Let the settings write finish even if the caller cancels while it takes the file lock.
+            result = await finish_close(asyncio.create_task(asyncio.to_thread(self.set_config_option, key, value)))
+            await self._reload_settings_locked(
+                session,
+                warnings=warnings,
+                follow_process_model=_config_option(key).env_alias == MODEL_POINTER_ENV,
+            )
+        await asyncio.to_thread(self._refresh_default_settings)
         return result
 
     async def set_workspace(
@@ -1415,10 +1427,10 @@ class AcpSessionManager:
         session = self.get(session_id)
         # Validate strictly (must exist, be a dir, resolve absolutely) like new/load.
         resolved_cwd = _resolve_dir(primary_cwd)
-        command = WorkspaceChange(
-            primary_cwd=resolved_cwd, session_id=session.host.session_id, require_leave_confirmation=False
-        )
-        async with session.mutation_lock:
+        async with self._mutating_session(session):
+            command = WorkspaceChange(
+                primary_cwd=resolved_cwd, session_id=session.session_id, require_leave_confirmation=False
+            )
             if _installed_workspace(session) is not None:
                 return await self._set_workspace_locked(session, command, warnings)
             result = await self._await_runtime_mutation_locked(
@@ -1428,8 +1440,8 @@ class AcpSessionManager:
                 timeout_message=f"Timed out waiting for workspace update: {resolved_cwd}",
                 failure_message="Workspace update failed.",
             )
-        session.cwd = result.primary_cwd or resolved_cwd
-        return result
+            session.cwd = result.primary_cwd or resolved_cwd
+            return result
 
     async def _set_workspace_locked(
         self, session: ManagedSession, command: WorkspaceChange, warnings: list[Warning] | None
@@ -1478,11 +1490,11 @@ class AcpSessionManager:
             if session is not None:
                 session.closing = True
 
-    async def close(self, session_id: str) -> None:
-        """Close an active session."""
+    async def close(self, session_id: str, *, expected: ManagedSession | None = None) -> None:
+        """Close an active session, optionally only if it is the expected host."""
         async with self._lock:
             session = self._sessions.get(session_id)
-            if session is not None:
+            if session is not None and (expected is None or session is expected):
                 session.closing = True
                 async with session.prompt_lock:
                     self._sessions.pop(session_id, None)
@@ -1577,7 +1589,7 @@ class AcpSessionManager:
         return meta.updated_at > primary_meta.updated_at
 
     def _resolve_active_session(self, session_id: str) -> ManagedSession | None:
-        """Resolve an already-active session without consulting persisted session listings."""
+        """Resolve a registered host without consulting persisted session listings."""
         raw = (session_id or "").strip()
         if not raw:
             msg = "session_id is required."

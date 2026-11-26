@@ -974,6 +974,12 @@ def test_importing_the_llm_package_loads_no_provider_sdk(tmp_path: Any) -> None:
     assert _fresh_interpreter_output(code, tmp_path) == "[]"
 
 
+@pytest.mark.parametrize("module", ["chrys.foundation.text.model_json", "chrys.kernel", "chrys.service.llm"])
+def test_module_imports_in_a_fresh_interpreter(module: str, tmp_path: Any) -> None:
+    """All three first imports also succeed on main."""
+    _fresh_interpreter_output(f"import {module}", tmp_path)
+
+
 _RECORD_FIRST_THREADS = textwrap.dedent(
     """
     import platform, sys, threading

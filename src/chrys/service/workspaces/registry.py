@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayPath, msg
+from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.workspace import WorkingDir, Workspace, control_chars_as_spaces
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import atomic_write_text
@@ -28,7 +29,7 @@ from chrys.foundation.util.session_ids import session_id_key
 from chrys.service.workspaces.paths import PRIMARY_MISSING, contains
 
 if TYPE_CHECKING:
-    from chrys.foundation.i18n import MessageRef
+    from chrys.foundation.i18n import MessageDef, MessageRef
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,58 @@ _NAME_EXISTS = msg("workspaces.name_exists", fallback="A workspace with the name
 _NAME_CONTROL_CHAR = msg("workspaces.name_control_char", fallback="A workspace name can't contain control characters.")
 _OVERLAP = msg("workspaces.overlap", fallback="Overlaps with {path}")
 _FOLDER_INVALID = msg("workspaces.folder_invalid", fallback="Workspace folders must use absolute paths.")
+_EXPECTED_OBJECT = msg(
+    "workspaces.registry_expected_object",
+    fallback="Cannot read the workspace list at {path}. Entry {row}, field {field}: Expected an object.",
+)
+_EXPECTED_STRING = msg(
+    "workspaces.registry_expected_string",
+    fallback="Cannot read the workspace list at {path}. Entry {row}, field {field}: Expected a string.",
+)
+_EXPECTED_LIST = msg(
+    "workspaces.registry_expected_list",
+    fallback="Cannot read the workspace list at {path}. Entry {row}, field {field}: Expected a list.",
+)
+_EXPECTED_WORKSPACE_ID = msg(
+    "workspaces.registry_expected_id",
+    fallback=(
+        "Cannot read the workspace list at {path}. Entry {row}, field {field}: "
+        "Expected ws_ followed by 32 lowercase hexadecimal digits."
+    ),
+)
+_WORKSPACE_ID_EXISTS = msg(
+    "workspaces.registry_id_exists",
+    fallback="Cannot read the workspace list at {path}. Entry {row}, field {field}: ID {id} already exists.",
+)
+_REGISTRY_FOLDER_INVALID = msg(
+    "workspaces.registry_folder_invalid",
+    fallback=(
+        "Cannot read the workspace list at {path}. Entry {row}, field {field}: Workspace folders must use absolute paths."
+    ),
+)
+_REGISTRY_NAME_EMPTY = msg(
+    "workspaces.registry_name_empty",
+    fallback="Cannot read the workspace list at {path}. Entry {row}, field {field}: Enter a workspace name.",
+)
+_REGISTRY_NAME_EXISTS = msg(
+    "workspaces.registry_name_exists",
+    fallback=(
+        "Cannot read the workspace list at {path}. Entry {row}, field {field}: "
+        "A workspace with the name {name} already exists."
+    ),
+)
+_REGISTRY_NAME_CONTROL_CHAR = msg(
+    "workspaces.registry_name_control_char",
+    fallback=(
+        "Cannot read the workspace list at {path}. Entry {row}, field {field}: "
+        "A workspace name can't contain control characters."
+    ),
+)
+_REGISTRY_NAME_ERRORS = {
+    _NAME_EMPTY: _REGISTRY_NAME_EMPTY,
+    _NAME_EXISTS: _REGISTRY_NAME_EXISTS,
+    _NAME_CONTROL_CHAR: _REGISTRY_NAME_CONTROL_CHAR,
+}
 
 
 _LOCK_TIMEOUT = 1.0
@@ -189,6 +242,30 @@ def _tidy_path(path: str) -> str:
     return drive + (os.sep if rest[:1] in separators and rest else "") + os.sep.join(parts)
 
 
+def _validate_name(name: str, workspaces: tuple[Workspace, ...], workspace_id: str | None) -> str:
+    name = name.strip()
+    if not name:
+        raise WorkspaceRegistryError("Enter a workspace name.", _NAME_EMPTY.bind())
+    if control_chars_as_spaces(name) != name:
+        raise WorkspaceRegistryError("A workspace name can't contain control characters.", _NAME_CONTROL_CHAR.bind())
+    if any(workspace.id != workspace_id and _name_key(workspace.name) == _name_key(name) for workspace in workspaces):
+        raise WorkspaceRegistryError(f"A workspace with the name {name} already exists.", _NAME_EXISTS.bind(name=name))
+    return name
+
+
+def _validate_folder(path: str) -> str:
+    if "\x00" in path:
+        raise WorkspaceRegistryError("Workspace folders must use absolute paths.", _FOLDER_INVALID.bind())
+    try:
+        os.fsencode(path)
+    except UnicodeEncodeError as error:
+        raise WorkspaceRegistryError("Workspace folders must use encodable paths.", _FOLDER_INVALID.bind()) from error
+    path = os.path.expanduser(path)
+    if not os.path.isabs(path):
+        raise WorkspaceRegistryError("Workspace folders must use absolute paths.", _FOLDER_INVALID.bind())
+    return _tidy_path(path)
+
+
 def _validate_entry(
     name: str,
     primary: str,
@@ -196,32 +273,14 @@ def _validate_entry(
     *,
     workspaces: tuple[Workspace, ...],
     previous: Workspace | None = None,
-    require_primary_exists: bool = True,
 ) -> tuple[str, str, tuple[str, ...]]:
-    """Validate persisted and proposed entries; only a new primary must still exist."""
-    name = name.strip()
-    if not name:
-        raise WorkspaceRegistryError("Enter a workspace name.", _NAME_EMPTY.bind())
-    if control_chars_as_spaces(name) != name:
-        raise WorkspaceRegistryError("A workspace name can't contain control characters.", _NAME_CONTROL_CHAR.bind())
-    workspace_id = previous.id if previous is not None else None
-    if any(workspace.id != workspace_id and _name_key(workspace.name) == _name_key(name) for workspace in workspaces):
-        raise WorkspaceRegistryError(f"A workspace with the name {name} already exists.", _NAME_EXISTS.bind(name=name))
-    if any("\x00" in path for path in (primary, *folders)):
-        raise WorkspaceRegistryError("Workspace folders must use absolute paths.", _FOLDER_INVALID.bind())
-    try:
-        for path in (primary, *folders):
-            os.fsencode(path)
-    except UnicodeEncodeError as error:
-        raise WorkspaceRegistryError("Workspace folders must use encodable paths.", _FOLDER_INVALID.bind()) from error
-    primary, *related_paths = (os.path.expanduser(path) for path in (primary, *folders))
-    if any(not os.path.isabs(path) for path in (primary, *related_paths)):
-        raise WorkspaceRegistryError("Workspace folders must use absolute paths.", _FOLDER_INVALID.bind())
-    primary = _tidy_path(primary)
-    related = tuple(_tidy_path(path) for path in related_paths)
+    """Validate a proposed entry. Only a new primary must exist."""
+    name = _validate_name(name, workspaces, previous.id if previous is not None else None)
+    primary = _validate_folder(primary)
+    related = tuple(_validate_folder(path) for path in folders)
     if previous is not None and primary != previous.primary_cwd:
         raise WorkspaceRegistryError("The primary folder cannot be changed.", _PRIMARY_IMMUTABLE.bind())
-    if require_primary_exists and previous is None and not os.path.isdir(primary):
+    if previous is None and not os.path.isdir(primary):
         raise WorkspaceRegistryError(
             f"Primary folder does not exist: {primary}", PRIMARY_MISSING.bind(path=DisplayPath(primary))
         )
@@ -249,6 +308,26 @@ class WorkspaceRegistry:
         self.path = path if path is not None else get_platform().config_dir / "workspaces.json"
         self._cached: tuple[tuple[int, int, int, int, int], RegistrySnapshot] | None = None
 
+    def _invalid_row(
+        self, row: int, field: str, message: MessageDef, *, workspace_id: str | None = None, name: str | None = None
+    ) -> WorkspaceRegistryError:
+        path = DisplayPath(self.path)
+        if workspace_id is not None:
+            display = message.bind(path=path, row=row, field=field, id=workspace_id)
+        elif name is not None:
+            display = message.bind(path=path, row=row, field=field, name=name)
+        else:
+            display = message.bind(path=path, row=row, field=field)
+        return WorkspaceRegistryError(format_message(display), display, code="workspace_registry_unreadable")
+
+    def _read_folder(self, path: object, row: int, field: str) -> str:
+        if not isinstance(path, str):
+            raise self._invalid_row(row, field, _REGISTRY_FOLDER_INVALID)
+        try:
+            return _validate_folder(path)
+        except WorkspaceRegistryError as error:
+            raise self._invalid_row(row, field, _REGISTRY_FOLDER_INVALID) from error
+
     def _read(self) -> RegistrySnapshot:
         try:
             raw = json.loads(_read_regular_text(self.path))
@@ -263,27 +342,33 @@ class WorkspaceRegistry:
             raise ValueError("Invalid workspace registry")
         workspaces: list[Workspace] = []
         used: dict[str, str] = {}
-        for item in raw["workspaces"]:
+        for row, item in enumerate(raw["workspaces"], start=1):
             if not isinstance(item, dict):
-                raise ValueError("Invalid workspace definition")
-            if any(not isinstance(item.get(key), str) or not item[key] for key in ("id", "name", "primary_cwd")):
-                raise ValueError("Invalid workspace definition")
+                raise self._invalid_row(row, "workspaces", _EXPECTED_OBJECT)
+            workspace_id = item.get("id")
+            if not isinstance(workspace_id, str) or not is_workspace_id(workspace_id):
+                raise self._invalid_row(row, "id", _EXPECTED_WORKSPACE_ID)
+            if workspace_id in used:
+                raise self._invalid_row(row, "id", _WORKSPACE_ID_EXISTS, workspace_id=workspace_id)
+            name = item.get("name")
+            if not isinstance(name, str):
+                raise self._invalid_row(row, "name", _EXPECTED_STRING)
+            try:
+                name = _validate_name(name, tuple(workspaces), None)
+            except WorkspaceRegistryError as error:
+                reason = error.display_message.definition
+                duplicate_name = name.strip() if reason == _NAME_EXISTS else None
+                raise self._invalid_row(row, "name", _REGISTRY_NAME_ERRORS[reason], name=duplicate_name) from error
+            primary = self._read_folder(item.get("primary_cwd"), row, "primary_cwd")
             folders = item.get("working_dirs")
+            if not isinstance(folders, list):
+                raise self._invalid_row(row, "working_dirs", _EXPECTED_LIST)
+            related = [self._read_folder(path, row, f"working_dirs[{index}]") for index, path in enumerate(folders)]
             used_at = item.get("last_used_at", "")
-            if (
-                not isinstance(folders, list)
-                or any(not isinstance(path, str) or not os.path.isabs(path) for path in folders)
-                or not os.path.isabs(item["primary_cwd"])
-                or not isinstance(used_at, str)
-                or not is_workspace_id(item["id"])
-                or item["id"] in used
-            ):
-                raise ValueError("Invalid workspace definition")
-            name, primary, related = _validate_entry(
-                item["name"], item["primary_cwd"], folders, workspaces=tuple(workspaces), require_primary_exists=False
-            )
-            used[item["id"]] = used_at
-            workspaces.append(_definition(item["id"], name, primary, related))
+            if not isinstance(used_at, str):
+                raise self._invalid_row(row, "last_used_at", _EXPECTED_STRING)
+            used[workspace_id] = used_at
+            workspaces.append(_definition(workspace_id, name, primary, related))
         sessions = raw.get("sessions", {})
         if not isinstance(sessions, dict) or any(
             not isinstance(session_id, str) or not session_id or not isinstance(workspace_id, str) or not workspace_id
@@ -317,7 +402,7 @@ class WorkspaceRegistry:
             if isinstance(error, FileNotFoundError):
                 return RegistrySnapshot()
             return RegistrySnapshot(
-                error=error if isinstance(error, _NewerRegistry) else _registry_unreadable(self.path)
+                error=error if isinstance(error, WorkspaceRegistryError) else _registry_unreadable(self.path)
             )
 
     def validate(
@@ -366,7 +451,7 @@ class WorkspaceRegistry:
                     entries = list(snapshot.workspaces)
                     sessions = dict(snapshot.sessions)
                     used = dict(snapshot.last_used_at)
-                except _NewerRegistry:
+                except WorkspaceRegistryError:
                     raise
                 except (OSError, ValueError, RecursionError) as error:
                     raise _registry_unreadable(self.path) from error

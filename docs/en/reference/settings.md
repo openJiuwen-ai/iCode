@@ -13,6 +13,8 @@ For steps to change settings in the terminal user interface (TUI) and when those
 
 Quit all running iCode instances before upgrading. iCode rewrites old names in settings, approval files, and workflow records once, keeping the originals in `<config_dir>/backups/<version>/`. Older versions cannot use rewritten data or data saved in the new format, including pending hook jobs and workflows continued after upgrading. To keep the option of going back, back up the entire configuration directory and any session directory stored elsewhere. Restore files from `backups/<version>/` to their original locations. Restore `backups/<version>/sessions/` to your actual session directory, the `sessions/` subdirectory of `storage.session_root_dir` if set. A `.<sha256>` suffix marks another original of the same file, backed up later. Use the copy without a suffix by default.
 
+This backup also keeps the original `settings.yaml` when iCode imports old notification preferences or updates a retired theme or buddy model setting. If the backup cannot be written, iCode leaves the original settings in place.
+
 iCode looks for `.chrys/settings.yaml` only in the current session's working directory. It does not search parent directories or subdirectories.
 
 UTF-8 is recommended for settings files. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. Settings are always saved as UTF-8.

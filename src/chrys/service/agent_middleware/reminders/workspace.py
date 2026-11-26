@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The workspace section of the runtime reminder: folder index, instruction paths, departure line.
+"""The workspace section of the runtime reminder: folder index and instruction paths.
 
 It is computed once per build from the memory files this build loaded, so the
 reminder carries the same text for the same workspace and files — a workspace's
@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from chrys.foundation.models.workspace import path_identity
 from chrys.foundation.platform.paths import is_absolute_path
+from chrys.foundation.text.model_json import model_path
 from chrys.service.context.memory_loader import memory_file_path
 
 if TYPE_CHECKING:
@@ -44,7 +45,7 @@ def workspace_index_lines(
     relative_names = [name for name in memory.files if not is_absolute_path(os.path.expanduser(name.strip()))]
     lines = ["Workspace folders:"]
     for folder in folders:
-        lines.append(f"- {folder}" + (" (primary)" if folder == cwd else ""))
+        lines.append(f"- {model_path(folder)}" + (" (primary)" if folder == cwd else ""))
         try:
             base = Path(folder).resolve()
         except OSError:
@@ -58,7 +59,7 @@ def workspace_index_lines(
             if identity not in seen:
                 seen.add(identity)
                 # The physical path: tools may fold `..` in the folder's spelling before symlinks.
-                references.append(str(path))
+                references.append(model_path(str(path)))
         if references:
             lines.append("  Instructions for this folder: " + ", ".join(references))
             lines.append("  Read them before working in this folder; they apply only inside it.")

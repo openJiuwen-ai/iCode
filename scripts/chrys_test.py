@@ -268,7 +268,15 @@ REGULAR_RULES = (
     TestRule("tests/support/test_workflow_previews.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/service/workflows/test_py39_harness.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/service/agent_middleware/test_reminder_lifecycle.py", _REMINDER_PIPELINE),
-    TestRule("tests/service/llm/test_client_contracts.py", _LLM_CLIENT_SOURCES),
+    TestRule(
+        "tests/service/llm/test_client_contracts.py",
+        (
+            *_LLM_CLIENT_SOURCES,
+            "src/chrys/foundation/platform/**",
+            "src/chrys/foundation/text/**",
+            "src/chrys/kernel/**",
+        ),
+    ),
     TestRule("tests/service/llm/test_persisted_names.py", ("src/chrys/service/llm/**",)),
     TestRule("tests/app/features/buddy", ("src/chrys/app/features/buddy/sprites/*.toml",)),
     # The install scripts run in a subprocess.

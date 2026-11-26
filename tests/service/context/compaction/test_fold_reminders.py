@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 
 _RECORD = HistoryMarkerKind.SYSTEM_REMINDERS_KEY
 _CATALOG = "<available_skills>\n  <name>review</name>\n</available_skills>"
-_RUNTIME = "[Runtime Environment]\n  Working directory: /work"
+_RUNTIME = '[Runtime Environment]\n  Working directory: "/work"'
 
 
 def _middleware(monkeypatch: pytest.MonkeyPatch) -> tuple[SystemReminderMiddleware, LastWordsState]:

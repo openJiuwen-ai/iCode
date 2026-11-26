@@ -14,6 +14,7 @@ import os
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.platform.paths import is_absolute_path
+from chrys.foundation.text.model_json import model_path
 from chrys.service.tools.result_metadata import tool_error
 from chrys.service.tools.session_artifacts import is_document_artifact_handle
 
@@ -24,7 +25,7 @@ def working_dir_missing_error(path: str) -> str:
     """Return the model-visible error for a session working directory that is gone."""
     return tool_error(
         WORKING_DIR_MISSING_KIND,
-        f"working directory no longer exists — {path} (deleted or moved outside {APP_DISPLAY_NAME}). "
+        f"working directory no longer exists — {model_path(path)} (deleted or moved outside {APP_DISPLAY_NAME}). "
         "Stop and tell the user; they need to choose another working directory.",
         details={"cwd": path},
     )

@@ -10,11 +10,33 @@ from textual.app import App, ComposeResult
 
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.welcome import WelcomeWidget
+from chrys.foundation.util.session_ids import session_short_id
 
 
 class _PanelApp(App):
     def compose(self) -> ComposeResult:
         yield ChatPanel()
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_session_id_removes_the_rendered_border_title() -> None:
+    async with _PanelApp().run_test() as pilot:
+        screen = pilot.app.screen
+        panel = screen.query_one(ChatPanel)
+        session_id = "0123456789abcdef"
+        short_id = session_short_id(session_id)
+        panel.set_session_id(session_id)
+        panel.set_session_title("Original first prompt")
+        await pilot.pause()
+        border = screen._compositor.render_strips()[panel.region.y].text
+        assert f"{short_id} · Original first prompt" in border
+
+        panel.set_session_id("")
+        await pilot.pause()
+
+        border = screen._compositor.render_strips()[panel.region.y].text
+        assert short_id not in border
+        assert "Original first prompt" not in border
 
 
 @pytest.mark.asyncio

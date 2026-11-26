@@ -19,8 +19,9 @@ from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
 from chrys.orchestration.engine.workspaces import MembershipWrite, WorkspacePlan
-from chrys.service.mutations.types import RollbackPlan
+from chrys.service.mutations.types import RestoreOutcome, RestoreResult, RollbackPlan
 from chrys.service.profiles.agents.schema import AgentProfile
+from chrys.service.state.serializers import serialize_message
 from chrys.service.state.store import JsonFileStateStore, atomic_copy_file
 from tests.support.event_capture import collect_events
 from tests.support.loaded_agents import install_loaded_agent
@@ -61,11 +62,13 @@ def _make_engine(
 
 
 def _write_session_json(path: Path, messages: list[dict[str, Any]] | None = None) -> None:
-    """Write a minimal session.json so ``_write_rollback_snapshot`` has something to copy."""
+    """Write a minimal checkpoint with restorable history for snapshot tests."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    if messages is None:
+        messages = [serialize_message(Message("user", ["saved conversation"]))]
     data = {
         "meta": {"session_id": "rb_test", "agent_profile": "p"},
-        "state": {"messages": messages or [], "compressed_msgs": []},
+        "state": {"messages": messages, "compressed_msgs": []},
     }
     path.write_text(json.dumps(data), encoding="utf-8")
 
@@ -151,8 +154,9 @@ def fake_reset(engine: AgentEngine, *, engine_services) -> Callable[..., Awaitab
         write_lock_held: bool = False,
         after_delete: Any = None,
         before_restart: Any = None,
+        failure_hint: Any = None,
     ) -> bool:
-        _ = write_lock_held, before_restart
+        _ = write_lock_held, before_restart, failure_hint
         engine_services(engine).workspace_change_tracker.reset_for_restart()
         if after_delete is not None:
             await after_delete()
@@ -190,11 +194,6 @@ class _FakeTurn:
     detection_truncated: bool = False
 
 
-@dataclass
-class _FakeRestoreResult:
-    changed: bool
-
-
 class _FakeMutationTracker:
     def __init__(self, turn_ids: list[int]) -> None:
         self._turns = [_FakeTurn(turn_id) for turn_id in turn_ids]
@@ -218,6 +217,6 @@ class _FakeMutationTracker:
         *,
         only_paths: set[str] | None = None,
         plan: RollbackPlan | None = None,
-    ) -> list[_FakeRestoreResult]:
+    ) -> list[RestoreResult]:
         self.rollback_calls.append((turn_ids, only_paths))
-        return [_FakeRestoreResult(changed=True), _FakeRestoreResult(changed=False)]
+        return [RestoreResult("changed", RestoreOutcome.APPLIED), RestoreResult("matched", RestoreOutcome.NOOP)]

@@ -153,6 +153,7 @@ class WorkflowSessionView:
             meta = await store.load_session_meta(session_id, strict=True)
             if meta is None or meta.kind != "workflow":
                 raise ValueError(text.render(text.NO_RECORD.bind(), self.host.locale_controller))
+            session_id = meta.session_id
             name = meta.latest_run.title if meta.latest_run is not None else meta.workflow_id
             state = await store.load_workflow_session(session_id)
             if state is None:

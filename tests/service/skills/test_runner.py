@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import json
 import os
 import shutil
 import sys
@@ -801,7 +802,7 @@ async def test_directory_deleted_just_before_the_spawn_is_reported_as_that_direc
 
     assert spawned_in == [str(workspace)]
     if explicit_cwd:
-        assert result == f"Error: 'cwd' is not an existing directory: {workspace}"
+        assert result == f"Error: 'cwd' is not an existing directory: {json.dumps(str(workspace), ensure_ascii=False)}"
         assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "invalid_cwd"
     else:
         assert result == working_dir_missing_error(str(workspace))

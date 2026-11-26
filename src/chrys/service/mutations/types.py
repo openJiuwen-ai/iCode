@@ -10,10 +10,75 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, cast
+from enum import Enum, StrEnum
+from typing import TYPE_CHECKING, Any, cast
 
+from chrys.foundation.i18n import DisplayJoined, DisplayPath, DisplaySequence, MessageDef, MessageRef, msg
 from chrys.foundation.models.mutation_scope import ChatTurnScope, WorkflowRunScope
+from chrys.foundation.platform.paths import display_relpath
+
+if TYPE_CHECKING:
+    from chrys.foundation.events.types import RollbackResult
+
+ROLLBACK_DETECTION_INCOMPLETE = msg(
+    "rollback.detection_incomplete",
+    fallback="Some file changes from the discarded turns could not be detected.",
+)
+ROLLBACK_RESTORE_UNKNOWN = msg(
+    "rollback.restore_unknown",
+    fallback="File restoration results are unknown. Check the working files.",
+)
+
+_FILES_RESTORED = msg(
+    "rollback.result.files_restored",
+    fallback="{count} file restored",
+    plural_fallback="{count} files restored",
+)
+_ALREADY_MATCHED = msg("rollback.result.already_matched", fallback="{matched_count} already matched")
+_FAILED_COUNT = msg("rollback.result.failed_count", fallback="{failed_count} failed")
+_FAILED_PREVIEW = msg("rollback.result.failed_preview", fallback="Failed: {preview}{suffix}")
+_FILES_EXCLUDED = msg(
+    "rollback.result.files_excluded",
+    fallback="{count} file excluded from revert: {preview}{suffix}",
+    plural_fallback="{count} files excluded from revert: {preview}{suffix}",
+)
+_ERROR_REASON = msg("rollback.result.error_reason", fallback="error")
+_MORE_SUFFIX = msg("rollback.result.more_suffix", fallback=" (+{extra_count} more)")
+ROLLBACK_WARNING_NOTE = msg("rollback.warning_note", fallback="⚠ {message}")
+_EXCLUSION_UNRESTORABLE = msg(
+    "rollback.exclusion.unrestorable",
+    fallback="no restorable backup",
+)
+_EXCLUSION_MOVE_POISONED = msg(
+    "rollback.exclusion.move_poisoned",
+    fallback="move source unrecoverable",
+)
+_EXCLUSION_FOREIGN = msg(
+    "rollback.exclusion.foreign",
+    fallback="changed by another session",
+)
+_EXCLUSION_CONTESTED = msg(
+    "rollback.exclusion.contested",
+    fallback="modified internally and externally",
+)
+_EXCLUSION_PEER_MODIFIED_SINCE = msg(
+    "rollback.exclusion.peer_modified_since",
+    fallback="changed by another session since",
+)
+EXCLUSION_PREVIEW_ITEM = msg(
+    "rollback.exclusion.preview_item",
+    fallback="{path} ({reason})",
+)
+
+_RESTORE_COUNTS = msg("rollback.restore_counts", fallback="{counts}.")
+_RESTORE_FAILURE_ITEM = msg("rollback.restore_failure_item", fallback="{path}: {reason}")
+_ROLLBACK_UNSELECTED = msg(
+    "rollback.unselected_files",
+    fallback="{count} file left unchanged: {paths}{suffix}",
+    plural_fallback="{count} files left unchanged: {paths}{suffix}",
+)
+_ROLLBACK_PREVIEW_LIMIT = 3
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -260,6 +325,112 @@ class RollbackExclusionReason(Enum):
     FOREIGN = "foreign"  # change attributed to a peer session
     CONTESTED = "contested"  # local + peer writes on the same path
     PEER_MODIFIED_SINCE = "peer_modified_since"  # peer claim newer than our last mutation
+
+
+_EXCLUSION_LABELS: dict[RollbackExclusionReason, MessageDef] = {
+    RollbackExclusionReason.UNRESTORABLE: _EXCLUSION_UNRESTORABLE,
+    RollbackExclusionReason.MOVE_POISONED: _EXCLUSION_MOVE_POISONED,
+    RollbackExclusionReason.FOREIGN: _EXCLUSION_FOREIGN,
+    RollbackExclusionReason.CONTESTED: _EXCLUSION_CONTESTED,
+    RollbackExclusionReason.PEER_MODIFIED_SINCE: _EXCLUSION_PEER_MODIFIED_SINCE,
+}
+
+
+def exclusion_reason_label(reason: RollbackExclusionReason | str) -> MessageRef | str:
+    """Human label for an exclusion reason — enum or raw ``.value`` string.
+
+    Event payloads carry reasons as primitive strings (foundation must
+    not import the service enum); unknown values render verbatim so a
+    newer engine never breaks an older consumer.
+    """
+    if isinstance(reason, str):
+        try:
+            reason = RollbackExclusionReason(reason)
+        except ValueError:
+            return str(reason)
+    definition = _EXCLUSION_LABELS.get(reason)
+    return reason.value if definition is None else definition.bind()
+
+
+def _rollback_more_suffix(size: int) -> str | MessageRef:
+    return _MORE_SUFFIX.bind(extra_count=size - _ROLLBACK_PREVIEW_LIMIT) if size > _ROLLBACK_PREVIEW_LIMIT else ""
+
+
+class RollbackFileWarning(StrEnum):
+    """File outcome advisories, serialized as their existing English warning strings."""
+
+    DETECTION_INCOMPLETE = ROLLBACK_DETECTION_INCOMPLETE.fallback
+    RESTORE_UNKNOWN = ROLLBACK_RESTORE_UNKNOWN.fallback
+
+    def reported_in(self, warnings: list[str]) -> bool:
+        return any(warning is self for warning in warnings)
+
+
+def rollback_file_result_messages(result: RollbackResult, cwd: str) -> list[MessageRef]:
+    """Summarize the same file outcomes after either a successful or a failed restart."""
+    results, exclusions = result.restore_results, result.exclusions
+    warnings = [w for w in result.warnings if not isinstance(w, RollbackFileWarning)]
+    retained = result.untouched_paths
+    lines: list[MessageRef] = []
+    if results:
+        restored = sum(result.changed for result in results)
+        matched = sum(result.ok and not result.changed for result in results)
+        failed = [result for result in results if not result.ok]
+        counts = [_FILES_RESTORED.bind(count=restored)]
+        if matched:
+            counts.append(_ALREADY_MATCHED.bind(matched_count=matched))
+        if failed:
+            counts.append(_FAILED_COUNT.bind(failed_count=len(failed)))
+        lines.append(_RESTORE_COUNTS.bind(counts=DisplayJoined(tuple(counts), ", ")))
+        if failed:
+            preview = tuple(
+                _RESTORE_FAILURE_ITEM.bind(
+                    path=DisplayPath(os.path.basename(result.path)),
+                    reason=result.reason or _ERROR_REASON.bind(),
+                )
+                for result in failed[:_ROLLBACK_PREVIEW_LIMIT]
+            )
+            lines.append(
+                _FAILED_PREVIEW.bind(
+                    preview=DisplayJoined(preview, "; "),
+                    suffix=_rollback_more_suffix(len(failed)),
+                )
+            )
+    if exclusions:
+        preview = tuple(
+            EXCLUSION_PREVIEW_ITEM.bind(
+                path=DisplayPath(os.path.basename(path)),
+                reason=exclusion_reason_label(reason),
+            )
+            for path, reason in exclusions[:_ROLLBACK_PREVIEW_LIMIT]
+        )
+        lines.append(
+            _FILES_EXCLUDED.bind(
+                count=len(exclusions),
+                preview=DisplayJoined(preview, "; "),
+                suffix=_rollback_more_suffix(len(exclusions)),
+            )
+        )
+    if warnings:
+        preview = DisplayJoined(tuple(warnings[:_ROLLBACK_PREVIEW_LIMIT]), " ")
+        lines.append(
+            ROLLBACK_WARNING_NOTE.bind(message=DisplayJoined((preview, _rollback_more_suffix(len(warnings))), ""))
+        )
+    if retained:
+        lines.append(
+            _ROLLBACK_UNSELECTED.bind(
+                count=len(retained),
+                paths=DisplaySequence(
+                    DisplayPath(display_relpath(path, cwd)) for path in retained[:_ROLLBACK_PREVIEW_LIMIT]
+                ),
+                suffix=_rollback_more_suffix(len(retained)),
+            )
+        )
+    if RollbackFileWarning.DETECTION_INCOMPLETE.reported_in(result.warnings):
+        lines.append(ROLLBACK_DETECTION_INCOMPLETE.bind())
+    if RollbackFileWarning.RESTORE_UNKNOWN.reported_in(result.warnings):
+        lines.append(ROLLBACK_RESTORE_UNKNOWN.bind())
+    return lines
 
 
 @dataclass(frozen=True)

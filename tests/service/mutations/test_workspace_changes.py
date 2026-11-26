@@ -60,6 +60,15 @@ def _root_key(path: Path) -> str:
     return canonical_path(str(path))
 
 
+def test_quoted_path_keeps_chinese_file_names_readable(tmp_path: Path) -> None:
+    name = "资料\n下一行\u2028记录.txt"
+    quoted = workspace_changes._quoted_path(str(tmp_path / name), str(tmp_path))
+
+    assert "资料" in quoted
+    assert len(quoted.splitlines()) == 1
+    assert json.loads(quoted) == name
+
+
 def test_agent_notice_rebases_physical_paths_to_alias_cwd(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()
@@ -444,6 +453,29 @@ def test_non_git_scan_ignores_dynamic_gitignore_and_detects_mode(tmp_path: Path)
     assert notice is not None
     assert 'modified: "ignored.txt"' in notice
     assert 'created: "ignored.txt"' not in notice
+
+
+def test_non_git_scan_narrowing_reports_only_missing_baseline(tmp_path: Path) -> None:
+    parent = tmp_path / "P"
+    child = parent / "lib"
+    child.mkdir(parents=True)
+    target = child / "file.txt"
+    target.write_text("original", encoding="utf-8")
+
+    tracker = WorkspaceChangeTracker()
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(parent)))
+    baseline = tracker.capture_baseline(1)
+    root = baseline.roots[_root_key(parent)]
+    assert root.mode is BaselineMode.SCAN
+    assert _root_key(target) in root.files
+
+    tracker.apply_retarget(tracker.resolve_retarget(_workspace(child)))
+    target.write_text("changed externally", encoding="utf-8")
+
+    assert _tracker_notice(tracker, child) == (
+        "Workspace changes since the previous turn (contents not shown):\n\n"
+        'Workspace state unavailable for ".": no comparable previous baseline.'
+    )
 
 
 def test_more_than_32_roots_reports_exact_aggregate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

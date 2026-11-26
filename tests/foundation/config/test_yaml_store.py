@@ -233,7 +233,10 @@ def test_a_genuinely_empty_document_still_reads_as_an_empty_mapping(tmp_path: Pa
     assert read_yaml_doc(path) == {}
 
 
-def test_a_read_still_works_when_the_lock_cannot_be_created(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("migration_probe", [False, True], ids=["read", "migration-probe"])
+def test_a_read_still_works_when_the_lock_cannot_be_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration_probe: bool
+) -> None:
     """A read-only config directory must not make the document unreadable."""
     # The read takes the lock as a courtesy to Windows writers, and taking it
     # means creating a sidecar. On a locked-down machine — or a directory owned
@@ -241,13 +244,23 @@ def test_a_read_still_works_when_the_lock_cannot_be_created(tmp_path: Path, monk
     # every entry point over a file we can read perfectly well.
     path = tmp_path / "settings.yaml"
     path.write_text(yaml.safe_dump({"ui": {"theme": "solar"}}), encoding="utf-8")
+    lock_attempted = False
 
     def refuse(_self: object) -> None:
+        nonlocal lock_attempted
+        lock_attempted = True
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(yaml_store.FileLock, "acquire", refuse)
 
-    assert read_yaml_doc(path) == {"ui": {"theme": "solar"}}
+    if migration_probe:
+        document = yaml_store.migrate_yaml_doc(
+            path, lambda _doc: pytest.fail("no migration needed"), needs_edit=lambda _doc: False
+        )
+    else:
+        document = read_yaml_doc(path)
+    assert lock_attempted
+    assert document == {"ui": {"theme": "solar"}}
 
 
 def test_a_read_still_refuses_a_lock_another_process_is_holding(tmp_path: Path) -> None:
@@ -512,3 +525,44 @@ def test_trust_migration_does_not_replace_read_only_settings(tmp_path):
     finally:
         path.chmod(0o600)
     assert path.read_bytes() == original
+
+
+def test_save_waits_while_migration_probe_is_reading(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, current_thread
+
+    path = tmp_path / "settings.yaml"
+    path.write_text("value: old\n", encoding="utf-8")
+    probe_reading, release_probe, save_waiting = (Event() for _ in range(3))
+    read_bytes = Path.read_bytes
+    acquire = yaml_store.FileLock.acquire
+
+    def pause_probe_read(target):
+        if target == path and current_thread().name.startswith("probe"):
+            probe_reading.set()
+            assert release_probe.wait(5)
+        return read_bytes(target)
+
+    def observe_save_lock(lock):
+        if current_thread().name.startswith("save"):
+            save_waiting.set()
+        return acquire(lock)
+
+    monkeypatch.setattr(Path, "read_bytes", pause_probe_read)
+    monkeypatch.setattr(yaml_store.FileLock, "acquire", observe_save_lock)
+
+    with (
+        ThreadPoolExecutor(1, thread_name_prefix="probe") as reader,
+        ThreadPoolExecutor(1, thread_name_prefix="save") as writer,
+    ):
+        probe = reader.submit(yaml_store.migrate_yaml_doc, path, lambda doc: doc, needs_edit=lambda _doc: False)
+        try:
+            assert probe_reading.wait(5)
+            saved = writer.submit(update_yaml_doc, path, lambda doc: {**doc, "value": "new"})
+            assert save_waiting.wait(5)
+            with pytest.raises(TimeoutError):
+                saved.result(timeout=0.2)
+        finally:
+            release_probe.set()
+        assert probe.result(timeout=5) == {"value": "old"}
+        assert saved.result(timeout=5) == {"value": "new"}

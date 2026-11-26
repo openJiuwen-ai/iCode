@@ -13,6 +13,8 @@
 
 升级前请退出所有正在运行的 iCode 实例。iCode 会一次性改写设置、审批文件和工作流记录中的旧名称，并将原文件保存在 `<config_dir>/backups/<version>/`。旧版无法使用改写后的数据或新版保存的数据，包括待执行的钩子任务和升级后继续运行的工作流。如可能退回旧版，请先备份整个配置目录，以及存放在其他位置的会话目录。还原时，将 `backups/<version>/` 中的文件复制回原位置。将 `backups/<version>/sessions/` 还原到实际会话目录，设置了 `storage.session_root_dir` 时即其下的 `sessions/`。带 `.<sha256>` 后缀的是同一文件之后又备份的另一份原件，默认使用不带后缀的那份。
 
+导入旧版通知偏好或更新旧版主题和伙伴模型设置时，iCode 也会在该目录中保留原始的 `settings.yaml`。如果无法写入备份，iCode 会保留原设置。
+
 iCode 仅在当前会话的工作目录下查找 `.chrys/settings.yaml`，不向父目录或子目录查找。
 
 设置文件建议使用 UTF-8。iCode 也会自动检测 GBK/GB18030 等常见旧编码，以及带 BOM 的 UTF-16/UTF-32。保存设置时一律使用 UTF-8。

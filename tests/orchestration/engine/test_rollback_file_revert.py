@@ -27,6 +27,7 @@ from tests.orchestration.engine._rollback_helpers import (
     _FakeMutationTracker,
     _make_engine,
     _state_after_turns,
+    _write_session_json,
     fake_reset,
     fake_restore_factory,
     seed_turns,
@@ -57,10 +58,12 @@ class TestRollbackFileRevert:
             write_lock_held: bool = False,
             after_delete: Any = None,
             before_restart: Any = None,
+            failure_hint: Any = None,
         ) -> bool:
-            _ = write_lock_held
-            assert after_delete is None
+            _ = write_lock_held, failure_hint
+            assert after_delete is not None
             assert before_restart is not None
+            await after_delete()
             lifecycle.append(f"reset:{session_id}")
             engine_services(engine).history.bind({"messages": [], "compressed_msgs": [], "turn_counter": 0})
             engine.session.turn_number = 0
@@ -321,8 +324,9 @@ class TestRollbackFileRevert:
             write_lock_held: bool = False,
             after_delete: Any = None,
             before_restart: Any = None,
+            failure_hint: Any = None,
         ) -> bool:
-            _ = write_lock_held, after_delete, before_restart
+            _ = write_lock_held, after_delete, before_restart, failure_hint
             return False
 
         # Record the call itself, not what it was told: a welcome rollback passes
@@ -373,8 +377,9 @@ async def test_rollback_welcome_reverts_selected_paths_and_reports_changed_files
         write_lock_held: bool = False,
         after_delete: Any = None,
         before_restart: Any = None,
+        failure_hint: Any = None,
     ) -> bool:
-        _ = write_lock_held, before_restart
+        _ = write_lock_held, before_restart, failure_hint
         reset_calls.append(session_id)
         if after_delete is not None:
             await after_delete()
@@ -460,7 +465,7 @@ async def test_rollback_reverts_explicit_turn_ids_above_target(
     snap_dir = session_dir / "snapshots"
     snap_dir.mkdir(parents=True)
     (session_dir / "session.json").write_text("{}", encoding="utf-8")
-    (snap_dir / "turn_3.json").write_text("{}", encoding="utf-8")
+    _write_session_json(snap_dir / "turn_3.json")
 
     restore_calls: list[tuple[str, bool]] = []
 

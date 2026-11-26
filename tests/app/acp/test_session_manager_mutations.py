@@ -136,10 +136,6 @@ async def test_switch_agent_surfaces_rebuild_failure(tmp_path) -> None:
     manager = _manager(str(tmp_path), _StaticListStore([]))
     bus = EventBus()
 
-    class _BusHost:
-        session_id = "s1"
-        event_bus = bus
-
     async def _fail_rebuild(event: AgentProfileSwitch) -> None:
         # Mirror soft_restart: a valid profile whose rebuild fails publishes
         # AgentLoadFailed (then raises inside the handler, which the bus swallows).
@@ -150,7 +146,7 @@ async def test_switch_agent_surfaces_rebuild_failure(tmp_path) -> None:
         session_id="s1",
         cwd=str(tmp_path),
         profile_name="Bootstrap",
-        host=_BusHost(),  # type: ignore[arg-type]
+        host=_InjectHost(bus, is_turn_active=False),  # type: ignore[arg-type]
     )
 
     with pytest.raises(AcpSessionError, match="rebuild boom"):

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import signal
 import sys
@@ -55,6 +56,7 @@ from chrys.service.tools.builtins.shell_filter import ShellCommandFilter
 from chrys.service.tools.spill import TOOL_RESULTS_DIR_NAME
 
 IS_UNIX = sys.platform != "win32"
+_UNUSUAL_PATH_COMPONENT = '项目\n\t\u2028\u2029\x85"\\\udcfe'
 
 
 @pytest.fixture
@@ -121,10 +123,15 @@ def test_tools_excludes_list_workspace_dirs_when_empty(runtime: SessionEnvironme
 
 def test_list_workspace_dirs_no_workspace(runtime: SessionEnvironment) -> None:
     """Empty workspace → falls back to ``Current directory`` line."""
-    shell = ShellTools(runtime)
-    out = shell.list_workspace_dirs()
-    assert "No workspace active" in out
-    assert runtime.cwd in out
+    cwd = runtime.cwd + os.sep + _UNUSUAL_PATH_COMPONENT
+    rt = replace(runtime, cwd=cwd)
+
+    (line,) = ShellTools(rt).list_workspace_dirs().splitlines()
+
+    assert line.startswith("No workspace active. Current directory: ")
+    assert json.loads(line.removeprefix("No workspace active. Current directory: ")) == cwd
+    assert "项目" in line
+    line.encode("utf-8")
 
 
 def test_list_workspace_dirs_lists_entries(tmp_path: Path) -> None:
@@ -149,6 +156,29 @@ def test_list_workspace_dirs_missing_dir(tmp_path: Path) -> None:
     rt = SessionEnvironment.capture(workspace=ws)
     out = ShellTools(rt).list_workspace_dirs()
     assert "MISSING" in out
+
+
+def test_list_workspace_dirs_quotes_paths_on_single_lines(runtime: SessionEnvironment) -> None:
+    cwd = runtime.cwd + os.sep + _UNUSUAL_PATH_COMPONENT
+    available = WorkingDir(runtime.cwd, label="main\nlabel\x85here", is_primary=True)
+    missing = cwd + os.sep + "缺失"
+    rt = replace(
+        runtime,
+        cwd=cwd,
+        working_dirs=(available,),
+        missing_working_dirs=(missing,),
+    )
+
+    lines = ShellTools(rt).list_workspace_dirs().splitlines()
+
+    assert len(lines) == 3
+    assert "项目" in lines[0]
+    assert json.loads(lines[0].removeprefix("Workspace directories (cwd: ").removesuffix("):")) == cwd
+    assert lines[1].endswith(" [main label here] (primary) ok")
+    assert json.loads(lines[1].removeprefix("  ").removesuffix(" [main label here] (primary) ok")) == available.path
+    assert json.loads(lines[2].removeprefix("  ").removesuffix(" MISSING")) == missing
+    assert "缺失" in lines[2]
+    "\n".join(lines).encode("utf-8")
 
 
 # ───────────────────────── execute error branches ─────────────────────

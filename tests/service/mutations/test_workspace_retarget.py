@@ -15,7 +15,7 @@ from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
 
 
 def _header(cwd):
-    return f"Note: relative paths below are against the previous workspace directory {json.dumps(str(cwd), ensure_ascii=True)}."
+    return f"Note: relative paths below are against the previous workspace directory {json.dumps(str(cwd), ensure_ascii=False)}."
 
 
 def _state(tracker):
@@ -25,6 +25,27 @@ def _state(tracker):
         tracker.baseline,
         tracker._pending_boundary_notice,
         tracker._pending_safety,
+    )
+
+
+def test_previous_workspace_directory_is_one_readable_json_literal(tmp_path):
+    previous = str(tmp_path / "旧目录\u2028项目")
+    tracker = WorkspaceChangeTracker()
+    tracker.queue_safety_notice("Retained changes", cwd=previous)
+    tracker.apply_retarget(tracker.resolve_retarget(Workspace(primary_cwd=str(tmp_path)), resolve_scope=False))
+
+    notice = tracker.take_pending_notice()
+    assert notice is not None
+    header, text = notice.splitlines()
+    assert text == "Retained changes"
+    assert "旧目录" in header
+    assert (
+        json.loads(
+            header.removeprefix(
+                "Note: relative paths below are against the previous workspace directory "
+            ).removesuffix(".")
+        )
+        == previous
     )
 
 

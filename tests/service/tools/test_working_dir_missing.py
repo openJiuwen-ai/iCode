@@ -11,6 +11,7 @@ that never resolve against it keep working.
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -38,7 +39,8 @@ from tests.support.symlinks import symlink_or_skip
 
 def _missing_text(path: Path | str) -> str:
     return (
-        f"Error: working directory no longer exists — {path} (deleted or moved outside {APP_DISPLAY_NAME}). "
+        f"Error: working directory no longer exists — {json.dumps(str(path), ensure_ascii=False)} "
+        f"(deleted or moved outside {APP_DISPLAY_NAME}). "
         "Stop and tell the user; they need to choose another working directory."
     )
 
@@ -89,6 +91,18 @@ def test_working_dir_missing_error_text_and_metadata(gone: Path) -> None:
         result = working_dir_missing_error(str(gone))
 
     _assert_working_dir_missing(result, metadata, gone)
+
+
+def test_missing_working_directory_path_is_one_line_in_the_tool_result(gone: Path) -> None:
+    cwd = str(gone / "项目\n目录\u2028子")
+    with _tool_metadata() as metadata:
+        result = working_dir_missing_error(cwd)
+
+    assert len(result.splitlines()) == 1
+    assert "项目" in result
+    quoted = result.removeprefix("Error: working directory no longer exists — ").split(" (deleted", 1)[0]
+    assert json.loads(quoted) == cwd
+    assert metadata[TOOL_ERROR_DETAILS_METADATA_KEY] == {"cwd": cwd}
 
 
 @pytest.mark.parametrize("raw_path", ["notes.txt", ".", "src/../notes.txt", "  notes.txt  "])
@@ -189,7 +203,7 @@ async def test_shell_nonexistent_working_dir_is_reported_as_that_directory(elsew
         result = await shell.execute("echo hello", reason="test", workdir=workdir)
 
     resolved = str(elsewhere / "nope")
-    assert result == f"Error: workdir not found — {resolved}"
+    assert result == f"Error: workdir not found — {json.dumps(resolved, ensure_ascii=False)}"
     assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "working_dir_not_found"
     assert metadata[TOOL_ERROR_DETAILS_METADATA_KEY] == {"working_dir": workdir, "resolved_path": resolved}
 

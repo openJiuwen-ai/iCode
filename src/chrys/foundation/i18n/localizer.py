@@ -135,33 +135,33 @@ class Localizer:
                 lookup_ids = {definition.key, plural_id}
         except LookupError, OSError, TypeError, ValueError, ZeroDivisionError:
             logger.warning("Invalid i18n catalog lookup; using English fallback.")
-            return format_message(reference)
+            return format_message(reference, render_nested=self.render)
 
         if _formatting._normalized_lookup_candidate(template) in lookup_ids:
             logger.debug("Missing i18n catalog entry; using English fallback.")
-            return format_message(reference)
+            return format_message(reference, render_nested=self.render)
 
         validator = bundle.validate_template
         if validator is None:
-            return format_message(reference)
+            return format_message(reference, render_nested=self.render)
         names = validator(template, definition.multiline)
         if names is None:
             logger.warning("Invalid i18n catalog entry; using English fallback.")
-            return format_message(reference)
+            return format_message(reference, render_nested=self.render)
 
-        parameters = _render_arguments(reference)
+        parameters = _render_arguments(reference, self.render)
         parameter_names = set(parameters)
         if names - {"count"} != parameter_names - {"count"} or ("count" in names and "count" not in parameter_names):
             logger.warning("Invalid i18n catalog entry; using English fallback.")
-            return format_message(reference)
+            return format_message(reference, render_nested=self.render)
         try:
             translated = template.format_map(parameters)
         except KeyError, ValueError:
             logger.warning("Invalid i18n catalog entry; using English fallback.")
-            return format_message(reference)
+            return format_message(reference, render_nested=self.render)
         if not has_visible_content(translated):
             logger.warning("Invalid i18n catalog entry; using English fallback.")
-            return format_message(reference)
+            return format_message(reference, render_nested=self.render)
         return translated
 
     def _build_bundle(self, locale_name: str) -> _CatalogBundle:

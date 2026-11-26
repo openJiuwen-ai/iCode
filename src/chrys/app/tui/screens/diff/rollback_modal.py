@@ -30,15 +30,18 @@ from chrys.app.tui.util.diff_labels import filter_and_dedupe_entries
 from chrys.app.tui.util.mutation_sources import merge_mutation_source as _merge_source
 from chrys.app.tui.util.removal import remove_children_shielded, remove_shielded
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, Select
-from chrys.foundation.i18n import DisplayBlock, DisplayPath, MessageDef, MessageRef, msg
+from chrys.foundation.i18n import DisplayBlock, DisplayPath, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform.paths import display_relpath
 from chrys.service.mutations.types import (
+    EXCLUSION_PREVIEW_ITEM,
+    ROLLBACK_WARNING_NOTE,
     FileHashDiff,
     MutationOp,
     MutationProvenance,
     RollbackExclusionReason,
     SnapshotSkipReason,
+    exclusion_reason_label,
 )
 
 if TYPE_CHECKING:
@@ -96,32 +99,7 @@ _REFRESH_PREVIEW_ERROR = msg(
     fallback="Error: unable to load this discard preview — {detail}",
     multiline=True,
 )
-_WARNING_NOTE = msg("tui.rollback.warning_note", fallback="⚠ {message}")
 _MORE_EXCLUSIONS = msg("tui.rollback.exclusions.more", fallback="+{extra_count} more")
-_EXCLUSION_UNRESTORABLE = msg(
-    "tui.rollback.exclusion.unrestorable",
-    fallback="no restorable backup",
-)
-_EXCLUSION_MOVE_POISONED = msg(
-    "tui.rollback.exclusion.move_poisoned",
-    fallback="move source unrecoverable",
-)
-_EXCLUSION_FOREIGN = msg(
-    "tui.rollback.exclusion.foreign",
-    fallback="changed by another session",
-)
-_EXCLUSION_CONTESTED = msg(
-    "tui.rollback.exclusion.contested",
-    fallback="modified internally and externally",
-)
-_EXCLUSION_PEER_MODIFIED_SINCE = msg(
-    "tui.rollback.exclusion.peer_modified_since",
-    fallback="changed by another session since",
-)
-EXCLUSION_PREVIEW_ITEM = msg(
-    "tui.rollback.exclusion.preview_item",
-    fallback="{path} ({reason})",
-)
 
 
 # Dismissal payload: ``(target_turn, revert_changes, selected_paths | None)``
@@ -367,32 +345,7 @@ def _build_cumulative_entries(
     return entries
 
 
-# Human labels for the modal's exclusion note section.
-_EXCLUSION_LABELS: dict[RollbackExclusionReason, MessageDef] = {
-    RollbackExclusionReason.UNRESTORABLE: _EXCLUSION_UNRESTORABLE,
-    RollbackExclusionReason.MOVE_POISONED: _EXCLUSION_MOVE_POISONED,
-    RollbackExclusionReason.FOREIGN: _EXCLUSION_FOREIGN,
-    RollbackExclusionReason.CONTESTED: _EXCLUSION_CONTESTED,
-    RollbackExclusionReason.PEER_MODIFIED_SINCE: _EXCLUSION_PEER_MODIFIED_SINCE,
-}
-
 _EXCLUSION_NOTE_MAX_PATHS = 3
-
-
-def exclusion_reason_label(reason: RollbackExclusionReason | str) -> MessageRef | str:
-    """Human label for an exclusion reason — enum or raw ``.value`` string.
-
-    Event payloads carry reasons as primitive strings (foundation must
-    not import the service enum); unknown values render verbatim so a
-    newer engine never breaks an older consumer.
-    """
-    if isinstance(reason, str):
-        try:
-            reason = RollbackExclusionReason(reason)
-        except ValueError:
-            return str(reason)
-    definition = _EXCLUSION_LABELS.get(reason)
-    return reason.value if definition is None else definition.bind()
 
 
 def plan_for_target(tracker: MutationTracker, target_turn: int) -> RollbackPlan | None:
@@ -454,7 +407,7 @@ def _warning_note_text(
     active peers yield two identical strings — one line suffices.
     """
     unique = dict.fromkeys(w.message for w in warnings)
-    references = (_WARNING_NOTE.bind(message=message) for message in unique)
+    references = (ROLLBACK_WARNING_NOTE.bind(message=message) for message in unique)
     if locale_controller is None:
         return "\n".join(format_message(reference) for reference in references)
     return "\n".join(render_str(locale_controller.localizer, reference) for reference in references)

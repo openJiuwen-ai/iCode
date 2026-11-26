@@ -497,6 +497,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             callbacks=BackendEventCallbacks(
                 accept_approval_update=self._accept_approval_update,
                 route_session_error=self._route_session_error,
+                reset_rollback_request=self._rollback_controller.reset_pending,
                 prompt_missing_working_dir=self._workspace_actions.prompt_missing_working_dir,
                 set_agent_running=self._set_agent_running,
                 set_agent_loading=self._set_agent_loading,

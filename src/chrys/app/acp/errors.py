@@ -17,7 +17,7 @@ from typing import Any
 from acp import RequestError
 
 from chrys.app.acp.json_values import json_text, to_json_object
-from chrys.foundation.errors.display import DISPLAY_WITH_HINT
+from chrys.foundation.errors.display import with_display_hint
 from chrys.foundation.events.types import Error
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
@@ -63,9 +63,7 @@ def english_hint(display_message: MessageRef | None, display_hint: MessageRef | 
     if display_message is None:
         return None
     message = format_message(display_message)
-    if display_hint is None:
-        return message
-    return format_message(DISPLAY_WITH_HINT.bind(message=message, hint=format_message(display_hint)))
+    return with_display_hint(message, format_message(display_hint) if display_hint is not None else None)
 
 
 def failure_fields(

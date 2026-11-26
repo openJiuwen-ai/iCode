@@ -163,6 +163,33 @@ async def test_explicit_new_cancel_during_settings_load_preserves_a(workspace_ca
 
 
 @pytest.mark.parametrize("action", ["new", "clear"])
+async def test_replacement_closes_the_runtime_after_a_teardown_failure(workspace_case, tmp_path, monkeypatch, action):
+    engine, *_ = await _session_with_options(workspace_case, tmp_path)
+    sid = engine.session_id
+    assert sid is not None
+    primary = workspace_case.store.session_dir(sid) / "session.json"
+    close = engine.lifecycle.close_session
+
+    async def fail_first_close():
+        monkeypatch.setattr(engine.lifecycle, "close_session", close)
+        if action == "new":
+            await close()
+        raise RuntimeError("session teardown failed")
+
+    monkeypatch.setattr(engine.lifecycle, "close_session", fail_first_close)
+    event = SessionNew() if action == "new" else SessionClear(session_id=sid)
+    async with capture_event_sequence(engine.event_bus, Error, SessionReady) as events:
+        await engine.event_bus.publish(event)
+
+    (error,) = events
+    assert isinstance(error, Error)
+    assert (error.code, error.session_id) == ("session_restore_failed", sid)
+    assert engine.session_id is None
+    assert engine.current.loaded is None
+    assert primary.exists() is (action == "new")
+
+
+@pytest.mark.parametrize("action", ["new", "clear"])
 async def test_missing_workspace_primary_refuses_replacement_before_closing(workspace_case, tmp_path, action):
     primary = tmp_path / "primary"
     primary.mkdir()
@@ -252,6 +279,7 @@ async def test_explicit_new_installs_one_target_after_commit(workspace_case, tmp
         monkeypatch.setattr(
             engine.loader, "build", create_autospec(engine.loader.build, side_effect=RuntimeError("build failed"))
         )
+    sessions_before = dict(registry.snapshot().sessions)
     async with capture_event_sequence(engine.event_bus, Error, SessionReady, Warning) as events:
         if mode == "build-failure":
             with pytest.raises(RuntimeError, match="build failed"):
@@ -264,8 +292,11 @@ async def test_explicit_new_installs_one_target_after_commit(workspace_case, tmp
     if mode == "build-failure":
         assert ready == []
         assert engine.current.loaded is None
-        assert registry.snapshot().workspace_id_for_session(engine.session_id) is None
-        assert any(isinstance(item, Error) and item.code == "session_new_failed" for item in events)
+        assert engine.session_id is None
+        assert dict(registry.snapshot().sessions) == sessions_before
+        (error,) = [item for item in events if isinstance(item, Error)]
+        assert (error.code, error.session_id) == ("session_restore_failed", outgoing)
+        assert error.display_message == session_lifecycle._NEW_SESSION_FAILED.bind(detail="build failed")
         return
     (landed,) = ready
     assert landed.session_id == engine.session_id

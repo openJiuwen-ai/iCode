@@ -271,6 +271,7 @@ class TestUnboundRecorder:
         fork_dir.mkdir()
         await recorder.fork(
             origin_session_id=SESSION_ID,
+            forked_at_sequence=0,
             fork_session_id=FORK_SESSION_ID,
             fork_session_dir=fork_dir,
             fork_write_lock_path=tmp_path / "fork.write.lock",
@@ -1401,6 +1402,7 @@ class TestFork:
         fork_dir.mkdir()
         await bound.recorder.fork(
             origin_session_id=SESSION_ID,
+            forked_at_sequence=origin_last,
             fork_session_id=FORK_SESSION_ID,
             fork_session_dir=fork_dir,
             fork_write_lock_path=tmp_path / "fork.write.lock",
@@ -1439,6 +1441,7 @@ class TestFork:
         fork_dir.mkdir()
         await bound.recorder.fork(
             origin_session_id=SESSION_ID,
+            forked_at_sequence=bound.trajectory.last_assigned_sequence(),
             fork_session_id=FORK_SESSION_ID,
             fork_session_dir=fork_dir,
             fork_write_lock_path=None,

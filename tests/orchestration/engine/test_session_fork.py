@@ -4,8 +4,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+from collections.abc import Callable
+from dataclasses import replace
+from pathlib import Path
 from types import MethodType, SimpleNamespace
-from unittest.mock import create_autospec
+from uuid import uuid4
 
 import pytest
 
@@ -14,12 +19,20 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Error, SessionFork, SessionForked
 from chrys.foundation.i18n import DisplayBlock
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.session_surface import SessionSurface
+from chrys.foundation.trajectory.event_types import EventType, ProfileKind
+from chrys.foundation.trajectory.reader import read_trajectory
 from chrys.kernel import Message
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.state.store import JsonFileStateStore
+from chrys.service.trajectory.session import trajectory_events_path
+from tests.support.event_capture import capture_events
 from tests.support.loaded_agents import install_loaded_agent
+from tests.support.rollback_spec import ask
+from tests.support.waiting import ENGINE_TURN_TIMEOUT
+from tests.support.workspace_engine import workspace_case as workspace_case
 
 
 async def _collect(out: list[object], event: object) -> None:
@@ -52,6 +65,106 @@ async def _raise_timeout(_self: AgentEngine, **_kwargs: object) -> None:
 
 async def _raise_runtime_error(_self: AgentEngine, **_kwargs: object) -> None:
     raise RuntimeError("disk full")
+
+
+@pytest.mark.parametrize(
+    ("in_workspace", "committed"),
+    [
+        pytest.param(True, False, id="workspace-before-commit"),
+        pytest.param(True, True, id="workspace-after-commit"),
+        pytest.param(False, True, id="unspecified-after-commit"),
+    ],
+)
+async def test_cancelled_fork_respects_the_disk_commit(workspace_case, tmp_path, monkeypatch, in_workspace, committed):
+    workspace = workspace_case.registry.create("Team", str(tmp_path)) if in_workspace else None
+    engine = await workspace_case(tmp_path, workspace_id=workspace.id if workspace else None)
+    await ask(engine, "fork this turn")
+    parent_id = engine.session_id
+    assert parent_id is not None
+    store = workspace_case.store
+    root = store.session_dir(parent_id).parent
+    registry_before = workspace_case.registry.snapshot()
+    events = await capture_events(engine.event_bus, SessionForked)
+
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    finished_copy = asyncio.Event()
+    release = threading.Event()
+    prepare = store._prepare_fork_directory
+    copy_session = store.fork_session
+
+    def hold_copy():
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(ENGINE_TURN_TIMEOUT), "fork copy was not released"
+
+    def prepare_and_hold(
+        tmp_dir: Path,
+        *,
+        dest_dir: Path,
+        parent_session_id: str,
+        new_session_id: str,
+        copied_sub_agent_artifacts: list[str],
+        last_surface: SessionSurface | None = None,
+    ):
+        prepared = prepare(
+            tmp_dir,
+            dest_dir=dest_dir,
+            parent_session_id=parent_session_id,
+            new_session_id=new_session_id,
+            copied_sub_agent_artifacts=copied_sub_agent_artifacts,
+            last_surface=last_surface,
+        )
+        if not committed:
+            # The only cancellation point left before the rename.
+            hold_copy()
+        return prepared
+
+    def copy(
+        parent_session_id: str,
+        *,
+        last_surface: SessionSurface | None = None,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> str:
+        try:
+            if check_cancelled is None:
+                new_id = copy_session(parent_session_id, last_surface=last_surface)
+            else:
+                new_id = copy_session(parent_session_id, last_surface=last_surface, check_cancelled=check_cancelled)
+            if committed:
+                hold_copy()
+            return new_id
+        finally:
+            loop.call_soon_threadsafe(finished_copy.set)
+
+    monkeypatch.setattr(store, "_prepare_fork_directory", prepare_and_hold)
+    monkeypatch.setattr(store, "fork_session", copy)
+    fork = asyncio.create_task(engine.event_bus.publish(SessionFork(session_id=parent_id), raise_handler_errors=True))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=ENGINE_TURN_TIMEOUT)
+        assert len(list(root.glob("[!.]*/session.json"))) == (2 if committed else 1)
+        assert not events
+        fork.cancel()
+        await asyncio.sleep(0)
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(fork, timeout=ENGINE_TURN_TIMEOUT)
+        await asyncio.wait_for(finished_copy.wait(), timeout=ENGINE_TURN_TIMEOUT)
+
+    assert not list(root.glob(".*.fork.*.tmp"))
+    assert len(list(root.glob("[!.]*/session.json"))) == (2 if committed else 1)
+    if not committed:
+        assert not events
+        assert workspace_case.registry.snapshot() == registry_before
+        return
+
+    (forked,) = events
+    assert forked.session_id == forked.parent_session_id == parent_id
+    new_id = forked.new_session_id
+    provenance = read_trajectory(trajectory_events_path(store.session_dir(new_id)))
+    (origin,) = [record for record in provenance.events if record.event_type == EventType.SESSION_FORKED]
+    assert origin.payload["origin_session_id"] == parent_id
+    assert workspace_case.registry.snapshot().session_workspace(new_id) == workspace
 
 
 @pytest.mark.asyncio
@@ -271,71 +384,105 @@ async def test_session_fork_store_save_failure_does_not_copy_stale_state(
     assert [session.session_id for session in sessions] == [parent_id]
 
 
-async def test_fork_prelude_keeps_identity_captured_before_reload(tmp_path, monkeypatch, agent_engine) -> None:
-    import asyncio
+async def test_fork_prelude_keeps_parent_identity_after_restore_and_reload(
+    workspace_case, tmp_path, monkeypatch
+) -> None:
+    from chrys.foundation.events.types import SessionRestore
+    from tests.support.waiting import wait_for
 
-    from chrys.foundation.trajectory.event_types import EventType
-    from chrys.foundation.trajectory.reader import read_trajectory
-    from chrys.service.llm.clients import create_client
-    from chrys.service.llm.mock import MockChatClient
-    from chrys.service.profiles.agents.schema import AgentProfile, CompactionConfig, ToolsConfig
-    from chrys.service.trajectory import fork as fork_module
-    from chrys.service.trajectory.session import trajectory_events_path
+    engine = await workspace_case(tmp_path)
+    await ask(engine, "fork this history")
+    parent_id = engine.session_id
+    assert parent_id is not None
+    store = workspace_case.store
+    original = read_trajectory(trajectory_events_path(store.session_dir(parent_id))).events
+    (parent_started,) = [event for event in original if event.event_type == EventType.SESSION_STARTED]
+    profile = engine.agent_profile
+    assert profile is not None
+    other = tmp_path / "other"
+    other_id = str(uuid4())
+    await asyncio.to_thread(other.mkdir)
+    await store.save_session(other_id, {"messages": [Message("user", ["another session"])]}, primary_cwd=str(other))
 
-    monkeypatch.setattr(
-        "chrys.orchestration.engine.build.builder.create_client",
-        create_autospec(create_client, side_effect=lambda *args, **kwargs: MockChatClient()),
-    )
-    bus = EventBus()
-    store = JsonFileStateStore(tmp_path)
-    engine = agent_engine(bus, settings=Settings(), state_store=store)
-    events: list[SessionForked] = []
+    loop = asyncio.get_running_loop()
+    entered, release = asyncio.Event(), threading.Event()
+    copy_session = store.fork_session
 
-    async def record_forked(event: SessionForked) -> None:
-        events.append(event)
+    def held_copy(
+        parent_session_id: str,
+        *,
+        last_surface: SessionSurface | None = None,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> str:
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(ENGINE_TURN_TIMEOUT)
+        if check_cancelled is None:
+            return copy_session(parent_session_id, last_surface=last_surface)
+        return copy_session(parent_session_id, last_surface=last_surface, check_cancelled=check_cancelled)
 
-    await bus.subscribe(SessionForked, record_forked)
-    profile = AgentProfile(
-        name="First",
-        instructions="First agent",
-        tools=ToolsConfig(builtins=[]),
-        compaction=CompactionConfig(enabled=False),
-    )
-    await engine.start(profile)
-    engine.current.loaded.bindings.backend.history_state["messages"] = [Message("user", ["fork this history"])]
-    captured = engine.loader.trajectory_session_start_info()
-    assert captured.agent_profile_fingerprint
-    assert captured.model_profile_fingerprint
-    entered = asyncio.Event()
-    activate = asyncio.Event()
-    write_prelude = fork_module._write_prelude
-
-    async def held_prelude(trajectory, origin_session_id, forked_at_sequence):
-        assert not trajectory.is_active
-        entered.set()
-        await activate.wait()
-        return await write_prelude(trajectory, origin_session_id, forked_at_sequence)
-
-    monkeypatch.setattr(fork_module, "_write_prelude", held_prelude)
-    fork_task = asyncio.create_task(engine.lifecycle.on_session_fork(SessionFork(session_id=engine.session_id)))
+    monkeypatch.setattr(store, "fork_session", held_copy)
+    bus = engine.event_bus
+    forked = await capture_events(bus, SessionForked)
+    task = asyncio.create_task(bus.publish(SessionFork(session_id=parent_id), raise_handler_errors=True))
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        replacement = AgentProfile(
-            name="Second",
-            instructions="Second agent",
-            tools=ToolsConfig(builtins=[]),
-            compaction=CompactionConfig(enabled=False),
-        )
-        await engine.lifecycle.reload(replacement)
-        assert engine.current.manifest.agent_profile_fingerprint != captured.agent_profile_fingerprint
+        await wait_for(lambda: entered.is_set() or task.done(), timeout=ENGINE_TURN_TIMEOUT, description="fork copy")
+        if task.done():
+            await task
+        await bus.publish(SessionRestore(session_id=other_id), raise_handler_errors=True)
+        assert engine.session_id == other_id
+        await engine.lifecycle.reload(replace(profile, name="Replacement", instructions="A different agent"))
+        assert engine.current.manifest.agent_profile_fingerprint != parent_started.payload["agent_profile_fingerprint"]
     finally:
-        activate.set()
-        await asyncio.wait_for(fork_task, timeout=5)
+        release.set()
+        await asyncio.wait_for(task, timeout=ENGINE_TURN_TIMEOUT)
 
-    assert len(events) == 1
-    log = read_trajectory(trajectory_events_path(store.session_dir(events[0].new_session_id)))
+    (event,) = forked
+    log = read_trajectory(trajectory_events_path(store.session_dir(event.new_session_id)))
     assert log.corrupt_lines == []
-    started = [event for event in log.events if event.event_type == EventType.SESSION_STARTED]
-    assert len(started) == 1
-    assert started[0].payload["agent_profile_fingerprint"] == captured.agent_profile_fingerprint
-    assert started[0].payload["model_profile_fingerprint"] == captured.model_profile_fingerprint
+    (started,) = [item for item in log.events if item.event_type == EventType.SESSION_STARTED]
+    (origin,) = [item for item in log.events if item.event_type == EventType.SESSION_FORKED]
+    parent_log = read_trajectory(trajectory_events_path(store.session_dir(parent_id)))
+    assert origin.payload == {
+        "origin_session_id": parent_id,
+        "forked_at_sequence": parent_log.events[-1].sequence,
+    }
+    assert parent_started.payload["agent_profile_fingerprint"]
+    assert parent_started.payload["model_profile_fingerprint"]
+    for key in ("agent_profile_fingerprint", "model_profile_fingerprint", "workspace_fingerprint"):
+        assert started.payload[key] == parent_started.payload[key], key
+
+
+async def test_fork_records_parent_events_added_during_copy(workspace_case, tmp_path, monkeypatch) -> None:
+    engine = await workspace_case(tmp_path)
+    await ask(engine, "fork this history")
+    parent_id = engine.session_id
+    assert parent_id is not None
+    store = workspace_case.store
+    parent_log = trajectory_events_path(store.session_dir(parent_id))
+    sequence_before_copy = read_trajectory(parent_log).events[-1].sequence
+    loop = asyncio.get_running_loop()
+    prepare_directory = store._prepare_fork_directory
+
+    def append_event_during_copy(*args, **kwargs):
+        prepared = prepare_directory(*args, **kwargs)
+        appended = asyncio.run_coroutine_threadsafe(
+            engine._trajectory_recorder.profile_switched(
+                kind=ProfileKind.AGENT, from_fingerprint="previous", to_fingerprint="current"
+            ),
+            loop,
+        )
+        appended.result(timeout=ENGINE_TURN_TIMEOUT)
+        return prepared
+
+    monkeypatch.setattr(store, "_prepare_fork_directory", append_event_during_copy)
+    forked = await capture_events(engine.event_bus, SessionForked)
+    await engine.event_bus.publish(SessionFork(session_id=parent_id), raise_handler_errors=True)
+
+    (event,) = forked
+    last_parent_event = read_trajectory(parent_log).events[-1]
+    assert last_parent_event.event_type == EventType.PROFILE_SWITCHED
+    assert last_parent_event.sequence > sequence_before_copy
+    child_log = read_trajectory(trajectory_events_path(store.session_dir(event.new_session_id)))
+    (origin,) = [item for item in child_log.events if item.event_type == EventType.SESSION_FORKED]
+    assert origin.payload["origin_session_id"] == parent_id
+    assert origin.payload["forked_at_sequence"] == last_parent_event.sequence
