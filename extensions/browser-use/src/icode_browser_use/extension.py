@@ -47,11 +47,19 @@ from urllib.parse import urljoin, urlsplit
 from chrys.extensions import Extension, ToolCall, ToolContext, ToolError, TurnContext
 
 from . import cli, registry
+from ._proc import atomic_write_private
 from .actions import build_tool_defs
 from .broker_client import BrokerCallUnknown, BrokerSession
 from .config import BrowserConfig, BrowserEnv, ConfigError
 from .errors import PRE_DISPATCH_ERROR_CODES, Blocked, BrowserError, ConnectionClosed, Unavailable
-from .locking import InstanceLock, acquire_instance_lock, probe_instance_lock, try_acquire_instance_lock
+from .locking import (
+    InstanceLock,
+    acquire_file_lock,
+    acquire_instance_lock,
+    probe_instance_lock,
+    try_acquire_file_lock,
+    try_acquire_instance_lock,
+)
 from .policy import canonical_origin
 from .logging import set_log_sink
 from .prompts import BROWSER_PLAYBOOK, COMPACT_BROWSER_PLAYBOOK
@@ -203,6 +211,8 @@ class _Browser:
     #: its record is not written, so a failed start keeps the previous generation's.
     record_pending: bool = False
     close_task: asyncio.Task[None] | None = None
+    idle_reclaim_task: asyncio.Task[None] | None = None
+    slot_generation_stamped: bool = False
     visited_origins: list[str] = field(default_factory=list)
     blocked_origins: list[str] = field(default_factory=list)
     screenshots: list[str] = field(default_factory=list)
@@ -611,7 +621,40 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int, *, persist: bool
     _browsers[browser_id] = browser
     if persist:
         _save_record(manifest, record)
+        if reclaim_on_idle:
+            _arm_unstarted_idle_reclaim(browser, base.idle_close_seconds)
     return browser
+
+
+def _arm_unstarted_idle_reclaim(browser: _Browser, idle_close_seconds: float) -> None:
+    """Reclaim an abandoned one-shot sub-agent/side-question handle that never launched Chrome."""
+    if idle_close_seconds <= 0 or browser.idle_reclaim_task is not None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    browser_id = browser.id
+    delay = max(0.5, float(idle_close_seconds))
+
+    async def _reclaim_unstarted_idle() -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        target = _browsers.get(browser_id)
+        if target is None or target.close_task is not None:
+            return
+        sess = target.session
+        if isinstance(sess, BrokerSession):
+            if sess.connected:
+                return
+        elif sess.started_once or sess.state != "idle":
+            return
+        target.idle_reclaim_task = None
+        await _ensure_close_task(target)
+
+    browser.idle_reclaim_task = loop.create_task(_reclaim_unstarted_idle())
 
 
 def _get(ctx: ToolContext, browser_id: str) -> _Browser:
@@ -705,18 +748,23 @@ def _format_session_facts(browser: _Browser) -> str:
 
 async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> str:
     """Run one core tool and return its text blocks joined for the model."""
+    if browser.idle_reclaim_task is not None:
+        if not browser.idle_reclaim_task.done():
+            browser.idle_reclaim_task.cancel()
+        browser.idle_reclaim_task = None
     is_write = name in _WRITE_TOOL_NAMES
     try:
         blocks = await _call(browser, name, arguments)
     except ToolError as exc:
-        if is_write and not _sync_write_actions(browser) and exc.code not in _PRE_DISPATCH_ERROR_CODES:
+        cause = exc.__cause__
+        pre_dispatch = exc.code in _PRE_DISPATCH_ERROR_CODES or (isinstance(cause, BrowserError) and cause.pre_dispatch)
+        if is_write and not _sync_write_actions(browser) and not pre_dispatch:
             browser.write_actions += 1
         if (
             exc.code in {"browser_blocked", "browser_policy_denied"}
             or "site_blocked" in exc.message
             or "site_permission_required" in exc.message
         ):
-            cause = exc.__cause__
             blocked_origin = cause.blocked_origin if isinstance(cause, BrowserError) else ""
             if blocked_origin:
                 _record_origin(browser.blocked_origins, blocked_origin)
@@ -737,6 +785,16 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
         # A block that arrived during this call is attributed (above) or already
         # drained; it must not relabel a later, unrelated failure.
         getattr(browser.session, "consume_site_blocked_origin", lambda: "")()
+        if (
+            browser.ephemeral_state_dir is not None
+            and not browser.slot_generation_stamped
+            and not browser.record_pending
+            and browser.record is not None
+            and bool(getattr(browser.session, "owns_state_dir", False))
+            and browser.ephemeral_state_dir.is_dir()
+        ):
+            _write_slot_generation(browser.ephemeral_state_dir, browser.record.resume_id)
+            browser.slot_generation_stamped = True
         snapshot = browser.session.snapshot
         browser.url = snapshot.url or browser.url
         browser.title = snapshot.title or browser.title
@@ -756,6 +814,8 @@ async def browser_open(ctx: ToolContext) -> str:
         _DEFER_MANIFEST_PERSIST = False
     if browser.record is not None:
         await _asave_record(browser.manifest, browser.record)
+    if _is_reclaimable_on_idle(ctx):
+        _arm_unstarted_idle_reclaim(browser, browser.session.cfg.idle_close_seconds)
     return f"browser_id: {browser.id}"
 
 
@@ -836,7 +896,14 @@ async def browser_list(ctx: ToolContext) -> str:
         if browser.record is not None and browser.record.resume_id:
             line += f" resume_id={browser.record.resume_id}"
         lines.append(line)
-        if not isinstance(browser.session, BrokerSession) and browser.session.state == "ready":
+        owned_pages: list[Any] = []
+        if isinstance(browser.session, BrokerSession):
+            if browser.session.connected:
+                with contextlib.suppress(Exception):
+                    listed = await browser.session.list_pages()
+                    if isinstance(listed, list):
+                        owned_pages = listed
+        elif browser.session.state == "ready":
             pages_fn = getattr(browser.session, "pages", None)
             owned_pages = list(pages_fn()) if callable(pages_fn) else []
             if len(owned_pages) > 1:
@@ -846,13 +913,14 @@ async def browser_list(ctx: ToolContext) -> str:
                         refreshed = await list_pages_fn()
                         if isinstance(refreshed, list) and refreshed:
                             owned_pages = refreshed
-                tab_parts = []
-                for info in owned_pages:
-                    mark = "*" if getattr(info, "current", False) else ""
-                    tid = str(getattr(info, "target_id", "") or "")
-                    url = str(getattr(info, "url", "") or "about:blank")
-                    tab_parts.append(f"#{getattr(info, 'index', '?')}{mark} tab_id={tid} url={url}")
-                lines.append("  tabs: " + " | ".join(tab_parts))
+        if len(owned_pages) > 1:
+            tab_parts = []
+            for info in owned_pages:
+                mark = "*" if getattr(info, "current", False) else ""
+                tid = str(getattr(info, "target_id", "") or "")
+                url = str(getattr(info, "url", "") or "about:blank")
+                tab_parts.append(f"#{getattr(info, 'index', '?')}{mark} tab_id={tid} url={url}")
+            lines.append("  tabs: " + " | ".join(tab_parts))
         if reason:
             lines.append(f"  reason: {reason}")
         lines.append(f"  next: {next_step}")
@@ -964,17 +1032,41 @@ async def browser_resume(
         )
     if backend == "owned":
         state_dir = base.state_dir / "agents" / _owner_key(ctx) / f"slot-{slot}"
-        try:
-            probe = await acquire_instance_lock(state_dir, wait=0)
-        except Unavailable as exc:
+        slot_lock = await acquire_file_lock(_slot_lifecycle_lock_path(state_dir), wait=5.0)
+        if slot_lock is None:
             raise ToolError(
-                f"That profile is in use by another plugin instance ({exc}); close it before resuming.",
+                "That profile is busy with another plugin instance; retry after it finishes.",
                 code="browser_resume_blocked",
-            ) from exc
-        probe.release()
-    browser = _allocate(ctx, base, slot, persist=False)
-    if browser.record is not None:
-        await _asave_record(browser.manifest, browser.record)
+            )
+        try:
+            if path is not None:
+                fresh_records, _ = registry.load(path)
+                if not any(item.resume_id == resume_id for item in fresh_records):
+                    raise ToolError(
+                        f"Unknown resume_id {resume_id!r}; call browser_list to see this session's recorded browsers.",
+                        code="unknown_resume",
+                    )
+            try:
+                probe = await acquire_instance_lock(state_dir, wait=0)
+            except Unavailable as exc:
+                raise ToolError(
+                    f"That profile is in use by another plugin instance ({exc}); close it before resuming.",
+                    code="browser_resume_blocked",
+                ) from exc
+            try:
+                browser = _allocate(ctx, base, slot, persist=False)
+                if browser.record is not None:
+                    await _asave_record(browser.manifest, browser.record)
+                    _write_slot_generation(state_dir, browser.record.resume_id)
+                    browser.slot_generation_stamped = True
+            finally:
+                probe.release()
+        finally:
+            slot_lock.release()
+    else:
+        browser = _allocate(ctx, base, slot, persist=False)
+        if browser.record is not None:
+            await _asave_record(browser.manifest, browser.record)
     if backend == "broker":
         note = (
             "reacquired the Broker session for this slot; the Broker may still hold the original page. "
@@ -1523,47 +1615,120 @@ async def browser_screenshot(
     )
 
 
-def _stage_ephemeral_dir(state_dir: Path) -> tuple[Path | None, bool, InstanceLock | None]:
-    """Move *state_dir* aside before releasing its slot, but only while owning it.
+_SLOT_GENERATION_FILE = "slot.generation"
 
-    Returns ``(cleanup_target, slot_can_be_reused, held_lock)``. Ownership is
-    proven by taking the folder's instance lock now, not by having held it once:
-    a handle whose lock was released on idle must never delete a folder another
-    instance has taken over since, so a busy lock means "leave it alone".
 
-    A successful rename clears ``slot-N`` at once and the renamed folder is
-    deleted in the background. If renaming is impossible (e.g. a transient
-    Windows lock), the folder is deleted in place while *held_lock* is kept, and
-    the caller keeps the slot reserved and releases the lock afterwards.
+def _slot_lifecycle_lock_path(state_dir: Path) -> Path:
+    """Cross-process lock file outside *state_dir* and its owner folder.
+
+    Keeping the lock outside *state_dir* lets Windows rename *state_dir* while
+    holding the lock, eliminating any takeover window between generation check
+    and directory removal; keeping it outside ``agents/<owner_key>`` also lets
+    empty owner folders be ``rmdir()``'d without ever unlinking an active lock.
+    """
+    return state_dir.parent.parent / ".slot-locks" / f"{state_dir.parent.name}-{state_dir.name}.lock"
+
+
+def _read_slot_generation(state_dir: Path) -> str:
+    try:
+        return (state_dir / _SLOT_GENERATION_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _write_slot_generation(state_dir: Path, resume_id: str) -> None:
+    if not resume_id or not state_dir.is_dir():
+        return
+    with contextlib.suppress(OSError):
+        atomic_write_private(state_dir / _SLOT_GENERATION_FILE, f"{resume_id}\n", strict=False)
+
+
+def _manifest_allows_reclaim(browser: _Browser) -> bool:
+    """True only when *browser* is still the active persisted generation for its slot."""
+    if browser.record is None or not browser.record.resume_id or browser.record_pending:
+        return False
+    if browser.manifest is None:
+        return True
+    try:
+        with _manifest_lock(browser.manifest):
+            records, problem = registry.load(browser.manifest)
+    except OSError:
+        return False
+    if problem in {"unreadable", "unexpected shape"}:
+        return False
+    owner_key = browser.record.owner_key
+    slot = browser.record.slot
+    same_slot = [item for item in records if item.owner_key == owner_key and item.slot == slot]
+    if not same_slot:
+        # Fail closed when a manifest exists and no longer names this generation.
+        return not browser.manifest.exists()
+    return all(item.resume_id == browser.record.resume_id for item in same_slot)
+
+
+def _stage_ephemeral_dir(
+    state_dir: Path, *, browser: _Browser | None = None
+) -> tuple[Path | None, bool, InstanceLock | None, bool]:
+    """Move *state_dir* aside before releasing its slot, only while owning both lock and generation.
+
+    Returns ``(cleanup_target, slot_can_be_reused, held_lock, record_dropped)``.
+    A cross-process lifecycle lock outside *state_dir* serializes generation
+    checks and directory staging against concurrent ``browser_resume`` takeovers
+    (including the brief Windows ``instance.lock`` release needed for rename).
     """
     if not state_dir.exists():
-        return None, True, None
-    lock = try_acquire_instance_lock(state_dir)
-    if lock is None:
-        logger.warning("ephemeral state dir %s is held by another instance; leaving it in place", state_dir)
-        return None, True, None
-    staged = state_dir.parent / f".reclaim-{state_dir.name}-{secrets.token_hex(4)}"
-    attempts = 2 if os.name == "nt" else 1
-    for attempt in range(attempts):
-        if attempt:
-            # Windows cannot rename a folder that has an open file (our lock) in
-            # it: release, rename at once, and re-prove ownership if that fails.
-            lock.release()
-        try:
-            state_dir.rename(staged)
-        except FileNotFoundError:
-            lock.release()
-            return None, True, None
-        except OSError:
-            continue
-        lock.release()
-        return staged, True, None
-    if attempts > 1:
+        return None, True, None, False
+    lifecycle_lock = try_acquire_file_lock(_slot_lifecycle_lock_path(state_dir))
+    if lifecycle_lock is None:
+        logger.warning("ephemeral state dir %s is busy with another slot operation; leaving it in place", state_dir)
+        return None, True, None, False
+    try:
+        if not state_dir.exists():
+            return None, True, None, False
         lock = try_acquire_instance_lock(state_dir)
         if lock is None:
             logger.warning("ephemeral state dir %s is held by another instance; leaving it in place", state_dir)
-            return None, True, None
-    return state_dir, False, lock
+            return None, True, None, False
+        if browser is not None:
+            expected_id = browser.record.resume_id if browser.record is not None else ""
+            stamped = _read_slot_generation(state_dir)
+            if (stamped and stamped != expected_id) or not _manifest_allows_reclaim(browser):
+                lock.release()
+                logger.info(
+                    "ephemeral state dir %s belongs to a newer generation (%s != %s); leaving it in place",
+                    state_dir,
+                    stamped or "manifest",
+                    expected_id,
+                )
+                return None, True, None, False
+        staged = state_dir.parent / f".reclaim-{state_dir.name}-{secrets.token_hex(4)}"
+        attempts = 2 if os.name == "nt" else 1
+        for attempt in range(attempts):
+            if attempt:
+                # Windows cannot rename a folder that has an open file (our lock) in
+                # it: release instance.lock while lifecycle_lock stays held so no
+                # cross-host browser_resume can take over between release and rename.
+                lock.release()
+            try:
+                state_dir.rename(staged)
+            except FileNotFoundError:
+                lock.release()
+                return None, True, None, False
+            except OSError:
+                continue
+            lock.release()
+            dropped = False
+            if browser is not None:
+                _drop_record(browser)
+                dropped = True
+            return staged, True, None, dropped
+        if attempts > 1:
+            lock = try_acquire_instance_lock(state_dir)
+            if lock is None:
+                logger.warning("ephemeral state dir %s is held by another instance; leaving it in place", state_dir)
+                return None, True, None, False
+        return state_dir, False, lock, False
+    finally:
+        lifecycle_lock.release()
 
 
 def _cleanup_ephemeral_dir(state_dir: Path) -> None:
@@ -1589,18 +1754,26 @@ async def _close_and_forget(browser: _Browser) -> None:
     cleanup_target: Path | None = None
     cleanup_lock: InstanceLock | None = None
     reserved_slot: tuple[str | None, str, str | None, int] | None = None
+    record_dropped = False
+    idle_task = browser.idle_reclaim_task
+    browser.idle_reclaim_task = None
+    if idle_task is not None and idle_task is not asyncio.current_task() and not idle_task.done():
+        idle_task.cancel()
     try:
         await browser.session.aclose()
     finally:
         if browser.ephemeral_state_dir is not None and bool(getattr(browser.session, "owns_state_dir", False)):
-            cleanup_target, slot_free, cleanup_lock = _stage_ephemeral_dir(browser.ephemeral_state_dir)
+            cleanup_target, slot_free, cleanup_lock, record_dropped = _stage_ephemeral_dir(
+                browser.ephemeral_state_dir, browser=browser
+            )
             if not slot_free:
                 reserved_slot = _slot_key(browser)
                 _reclaiming_slots.add(reserved_slot)
         _browsers.pop(browser.id, None)
         try:
             # Off the loop: on Windows the rewrite runs icacls.
-            await asyncio.to_thread(_drop_record, browser)
+            if not record_dropped:
+                await asyncio.to_thread(_drop_record, browser)
             if cleanup_target is not None:
                 await asyncio.to_thread(_cleanup_ephemeral_dir, cleanup_target)
         finally:

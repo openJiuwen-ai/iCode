@@ -77,17 +77,44 @@ def _set_native_value_fn(value: str) -> str:
         " const desc=proto ? Object.getOwnPropertyDescriptor(proto,'value') : null;"
         " const setVal=(v)=>{ if (desc && typeof desc.set==='function') desc.set.call(this,v); else this.value=v; };"
         f" const target={target_js};"
+        " let expected=target;"
+        " if (typeof document!=='undefined' && typeof document.createElement==='function') {"
+        "  try {"
+        "   const probe=document.createElement('input');"
+        "   probe.type=this.type||'text';"
+        "   if (typeof this.hasAttribute==='function' && this.hasAttribute('step')) {"
+        "    probe.setAttribute('step', this.getAttribute('step')||'');"
+        "   }"
+        "   probe.value=target;"
+        "   expected=String(probe.value||'');"
+        "  } catch (_) { expected=target; }"
+        " }"
+        " if (target !== '' && expected === '') {"
+        "  return {accepted:false, value:prev, expected:''};"
+        " }"
         " setVal(target);"
         " const after=String(this.value||'');"
         " if (target !== '' && after === '') {"
         "  setVal(prev);"
-        "  return {accepted:false, value:prev};"
+        "  return {accepted:false, value:prev, expected:''};"
         " }"
-        " this.dispatchEvent(new Event('input',{bubbles:true}));"
+        " this.dispatchEvent(new Event('input',{bubbles:true,composed:true}));"
         " this.dispatchEvent(new Event('change',{bubbles:true}));"
-        " return {accepted:true, value:String(this.value||'')};"
+        " return {accepted:true, value:String(this.value||''), expected};"
         "}"
     )
+
+
+def _strip_temporal_zero_seconds(value: str) -> str:
+    """Normalize trailing ``:00`` / ``.000`` / ``:00.000`` on ISO time/datetime strings."""
+    cleaned = value
+    if "." in cleaned:
+        head, frac = cleaned.rsplit(".", 1)
+        if frac and set(frac) == {"0"}:
+            cleaned = head
+    if cleaned.endswith(":00") and cleaned.count(":") >= 2:
+        cleaned = cleaned[:-3]
+    return cleaned
 
 
 def _direct_value_matches(actual: Any, expected: str, input_type: str) -> bool:
@@ -95,8 +122,8 @@ def _direct_value_matches(actual: Any, expected: str, input_type: str) -> bool:
     expected_str = _normalize_native_value(expected)
     if actual_str == expected_str:
         return True
-    if input_type in {"time", "datetime-local"} and expected_str.endswith(":00") and actual_str == expected_str[:-3]:
-        return True
+    if input_type in {"time", "datetime-local"}:
+        return _strip_temporal_zero_seconds(actual_str) == _strip_temporal_zero_seconds(expected_str)
     return False
 
 
@@ -111,7 +138,7 @@ _CLEAR_FN = (
     "    ? HTMLTextAreaElement.prototype : (typeof HTMLInputElement!=='undefined' ? HTMLInputElement.prototype : null);"
     "  const desc=proto ? Object.getOwnPropertyDescriptor(proto,'value') : null;"
     "  if (desc && typeof desc.set==='function') desc.set.call(this,''); else this.value='';"
-    "  this.dispatchEvent(new Event('input',{bubbles:true}));"
+    "  this.dispatchEvent(new Event('input',{bubbles:true,composed:true}));"
     " }"
     " return true;"
     "}"
@@ -565,7 +592,10 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
             raise
         except (CDPTimeout, BrowserError) as exc:
             return await _uncertain_fill(session, entry, f"readback_failed:{type(exc).__name__}", action_id)
-        if not _direct_value_matches(state.get("text"), text, focus_type):
+        expected_direct = (
+            set_val.get("expected") if isinstance(set_val, dict) and isinstance(set_val.get("expected"), str) else text
+        )
+        if not _direct_value_matches(state.get("text"), expected_direct, focus_type):
             mismatch = True
     else:
         if clear:

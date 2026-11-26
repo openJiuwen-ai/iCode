@@ -18,11 +18,19 @@ class BrowserError(Exception):
 
     code = "browser_unavailable"
 
-    def __init__(self, message: str, *, details: str = "", blocked_origin: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: str = "",
+        blocked_origin: str = "",
+        pre_dispatch: bool = False,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.details = details
         self.blocked_origin = blocked_origin
+        self.pre_dispatch = pre_dispatch
 
     def render(self) -> str:
         """Return the model-visible text: ``code: message`` plus optional details."""

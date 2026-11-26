@@ -241,6 +241,38 @@ def _try_acquire(fd: int) -> bool:
     return True
 
 
+def try_acquire_file_lock(path: Path) -> InstanceLock | None:
+    """Acquire an advisory lock on *path* without blocking or creating owner metadata."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+    if sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)
+    try:
+        if _try_acquire(fd):
+            return InstanceLock(path=path, _fd=fd, owner_path=None, pid=os.getpid())
+    except BaseException:
+        os.close(fd)
+        raise
+    os.close(fd)
+    return None
+
+
+async def acquire_file_lock(path: Path, *, wait: float = 5.0) -> InstanceLock | None:
+    """Acquire an advisory lock on *path*, waiting up to *wait* seconds."""
+    deadline = time.monotonic() + max(0.0, wait)
+    while True:
+        lock = try_acquire_file_lock(path)
+        if lock is not None:
+            return lock
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(0.05)
+
+
 def try_acquire_instance_lock(state_dir: Path) -> InstanceLock | None:
     """Take the state-dir lock only if nobody holds it right now; never waits.
 

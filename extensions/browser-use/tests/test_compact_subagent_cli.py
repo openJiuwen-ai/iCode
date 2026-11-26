@@ -438,3 +438,69 @@ async def test_browser_list_exposes_refreshed_popup_urls_in_compact_mode(monkeyp
         ext._browsers.clear()
         monkeypatch.delenv("ICODE_BROWSER_TOOLSET", raising=False)
         importlib.reload(ext)
+
+
+@pytest.mark.asyncio
+async def test_compact_broker_browser_list_shows_tabs_and_unstarted_broker_write_counts_zero(monkeypatch, tmp_path):
+    from icode_browser_use.broker import BrokerServer
+    from icode_browser_use.broker_client import BrokerSession
+
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ICODE_BROWSER_BROKER", "1")
+    monkeypatch.setenv("ICODE_BROWSER_BROKER_AUTOSTART", "0")
+    monkeypatch.setenv("ICODE_BROWSER_TOOLSET", "compact")
+    try:
+        reloaded = importlib.reload(ext)
+        ctx = _tool_ctx(tmp_path, session_id="s-broker-compact")
+        opened = await reloaded.browser_open(ctx)
+        bid = opened.split("browser_id: ", 1)[1].strip()
+        assert isinstance(reloaded._browsers[bid].session, BrokerSession)
+
+        # 1. Broker not running + autostart=0: write failure must NOT increment write_actions.
+        with pytest.raises(ToolError, match="browser broker is not running"):
+            await reloaded.browser_press_key(ctx, bid, "Enter")
+        closed = await reloaded.browser_close(ctx, bid)
+        assert "write_actions: 0" in closed
+
+        # 2. Live Broker with 2 tabs: compact browser_list exposes refreshed tab URLs.
+        cfg = BrowserConfig.from_env()
+        fake_pages = [
+            SimpleNamespace(
+                index=1, target_id="t1", url="http://127.0.0.1:18765/popup", title="Launcher", current=True
+            ),
+            SimpleNamespace(
+                index=2, target_id="t2", url="http://127.0.0.1:18765/report.pdf", title="Report", current=False
+            ),
+        ]
+
+        class _FakeBrokerPageSession:
+            state = "ready"
+            snapshot = SimpleNamespace(url="http://127.0.0.1:18765/popup", title="Launcher")
+
+            async def list_pages(self):
+                return list(fake_pages)
+
+            async def aclose(self):
+                self.state = "closed"
+
+        async def _fake_tool_caller(_session, _tool, _arguments):
+            return [{"type": "text", "text": "ok"}]
+
+        server = BrokerServer(cfg, session_factory=lambda _c: _FakeBrokerPageSession(), tool_caller=_fake_tool_caller)
+        await server.start()
+        try:
+            opened2 = await reloaded.browser_open(ctx)
+            bid2 = opened2.split("browser_id: ", 1)[1].strip()
+            await reloaded.browser_snapshot(ctx, bid2)
+            listed = await reloaded.browser_list(ctx)
+            assert "tabs:" in listed
+            assert "tab_id=t2" in listed
+            assert "http://127.0.0.1:18765/report.pdf" in listed
+            await reloaded.browser_close(ctx, bid2)
+        finally:
+            await server.aclose()
+    finally:
+        ext._browsers.clear()
+        for key in ("ICODE_BROWSER_BROKER", "ICODE_BROWSER_BROKER_AUTOSTART", "ICODE_BROWSER_TOOLSET"):
+            monkeypatch.delenv(key, raising=False)
+        importlib.reload(ext)

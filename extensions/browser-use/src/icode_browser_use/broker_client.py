@@ -40,6 +40,9 @@ class BrokerCallUnknown(BrowserError):
 class _BrokerNotRunning(Unavailable):
     """Internal marker: no live Broker process was found at discovery time."""
 
+    def __init__(self, message: str, *, details: str = "", blocked_origin: str = "") -> None:
+        super().__init__(message, details=details, blocked_origin=blocked_origin, pre_dispatch=True)
+
 
 class BrokerSession:
     """A BrowserSession-shaped facade over a Broker lease (extension adapter)."""
@@ -61,6 +64,10 @@ class BrokerSession:
         self.snapshot.url = self.client.last_url
         self.snapshot.title = self.client.last_title
         return blocks
+
+    async def list_pages(self) -> list[SimpleNamespace]:
+        """Refresh owned tab metadata from the Broker without spawning or launching Chrome."""
+        return await self.client.list_pages()
 
     def mark_disconnected(self) -> None:
         return None
@@ -109,13 +116,40 @@ class BrokerClient:
             return
         response = await self._request("acquire", owner=self.owner, session_id=self.session_id)
         if not response.get("ok"):
-            raise BrowserError(str(response.get("error") or "broker acquire failed"))
+            raise BrowserError(str(response.get("error") or "broker acquire failed"), pre_dispatch=True)
         lease_id = response.get("lease_id")
         generation = response.get("generation")
         if not isinstance(lease_id, str) or not lease_id or not isinstance(generation, str):
-            raise Unavailable("broker returned an invalid lease")
+            raise Unavailable("broker returned an invalid lease", pre_dispatch=True)
         self.lease_id = lease_id
         self.lease_generation = generation
+
+    async def list_pages(self) -> list[SimpleNamespace]:
+        """Query the Broker for owned tabs when already connected; never spawns or connects."""
+        if not self.connected:
+            return []
+        response = await self._request(
+            "tabs",
+            lease_id=self.lease_id,
+            generation=self.lease_generation,
+            allow_spawn=False,
+        )
+        if not response.get("ok"):
+            return []
+        raw_pages = response.get("pages")
+        if not isinstance(raw_pages, list):
+            return []
+        return [
+            SimpleNamespace(
+                index=int(item.get("index", idx + 1)),
+                target_id=str(item.get("target_id", "") or ""),
+                url=str(item.get("url", "") or ""),
+                title=str(item.get("title", "") or ""),
+                current=bool(item.get("current", False)),
+            )
+            for idx, item in enumerate(raw_pages)
+            if isinstance(item, dict)
+        ]
 
     async def call(self, tool: str, arguments: Any) -> list[dict[str, Any]]:
         for attempt in range(2):
@@ -242,7 +276,7 @@ class BrokerClient:
                             "status=uncertain retryable=false: broker call may have executed; do not retry"
                         ) from exc
                     if not sent:
-                        raise BrowserError(f"broker_unavailable: {exc}") from exc
+                        raise BrowserError(f"broker_unavailable: {exc}", pre_dispatch=True) from exc
                     if attempt == 0:
                         continue
                     raise ConnectionClosed("broker unavailable") from exc
@@ -268,9 +302,9 @@ class BrokerClient:
             self._spawn()
             payload = await self._wait_discovery()
         if payload is None:
-            raise ConnectionClosed("cannot connect to the browser broker")
+            raise ConnectionClosed("cannot connect to the browser broker", pre_dispatch=True)
         if payload.get("protocol_version") != 1:
-            raise Unavailable("browser broker protocol mismatch; stop the old broker and retry")
+            raise Unavailable("browser broker protocol mismatch; stop the old broker and retry", pre_dispatch=True)
         if (
             payload.get("allowed_domains") != list(self.cfg.allowed_domains)
             or payload.get("allowed_origins") != list(self.cfg.allowed_origins)
@@ -294,7 +328,8 @@ class BrokerClient:
         ):
             raise Unavailable(
                 "browser broker config differs from this client; "
-                "stop the broker with icode-browser-use-broker --stop and restart it"
+                "stop the broker with icode-browser-use-broker --stop and restart it",
+                pre_dispatch=True,
             )
         try:
             reader, writer = await asyncio.wait_for(
@@ -308,7 +343,7 @@ class BrokerClient:
             self._drop_connection()
             self._reader = None
             self._writer = None
-            raise ConnectionClosed("cannot connect to the browser broker") from exc
+            raise ConnectionClosed("cannot connect to the browser broker", pre_dispatch=True) from exc
 
     def _read_discovery(self) -> dict[str, Any] | None:
         try:

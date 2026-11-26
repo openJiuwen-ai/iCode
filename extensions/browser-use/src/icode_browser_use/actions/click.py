@@ -171,30 +171,30 @@ async def _read_tab_url_once(session: Any, new_tab_id: str) -> tuple[str, bool]:
 
 
 async def _resolve_new_tab_url(session: Any, new_tab_id: str, facts: dict[str, Any]) -> str:
-    """Return the best available http(s) URL for a newly opened tab, or ``""``.
+    """Return the observed http(s) URL for a newly opened tab, or ``""``.
 
     Popups opened via ``window.open('about:blank', '_blank')`` commonly assign
-    ``popup.location`` asynchronously after a timer or API call. When the tab
-    exists but is still blank and the session can refresh tab URLs, poll briefly
-    so callers (especially the compact toolset) receive the resolved URL directly.
+    ``popup.location`` asynchronously after a timer or API call (even when the
+    triggering ``<a>`` carried a fallback ``href``). Poll ``list_pages()`` first
+    and report only the URL actually observed on the tab; fall back to
+    ``facts['href']`` only for minimal sessions that do not expose ``list_pages``.
     """
     url, present = await _read_tab_url_once(session, new_tab_id)
     if url:
         return url
-    href_url = _http_url_or_empty(facts.get("href"))
-    if href_url:
-        return href_url
     list_pages = getattr(session, "list_pages", None)
-    if not (present and callable(list_pages)):
-        return ""
-    for _ in range(_NEW_TAB_URL_POLLS):
-        await _sleep(_NEW_TAB_URL_POLL)
-        url, present = await _read_tab_url_once(session, new_tab_id)
-        if url:
-            return url
+    if callable(list_pages):
         if not present:
-            break
-    return ""
+            return ""
+        for _ in range(_NEW_TAB_URL_POLLS):
+            await _sleep(_NEW_TAB_URL_POLL)
+            url, present = await _read_tab_url_once(session, new_tab_id)
+            if url:
+                return url
+            if not present:
+                break
+        return ""
+    return _http_url_or_empty(facts.get("href"))
 
 
 def _new_tab_since(session: Any, before_ids: set[str]) -> str | None:
@@ -616,30 +616,32 @@ async def _hit_test(
 
 
 async def _dispatch_click(session: Any, x: float, y: float, button: str, count: int) -> None:
-    """Emit the mouseMoved / mousePressed / mouseReleased triple at (x, y)."""
+    """Emit mouseMoved followed by *count* press/release pairs with incrementing clickCount."""
     await flush_pending_input_releases(session)
     client = session.require_client()
-    common = {"x": x, "y": y, "button": button, "clickCount": count, "pointerType": "mouse"}
-    release_params = {**common, "clickCount": 0, "type": "mouseReleased", "buttons": 0}
+    clicks = max(1, int(count))
+    base = {"x": x, "y": y, "button": button, "pointerType": "mouse"}
+    release_params = {**base, "clickCount": 0, "type": "mouseReleased", "buttons": 0}
     await client.send(
         "Input.dispatchMouseEvent",
-        {**common, "type": "mouseMoved", "buttons": 0},
+        {**base, "clickCount": clicks if clicks == 1 else 0, "type": "mouseMoved", "buttons": 0},
         session_id=session.session_id,
         timeout=session.cfg.cdp_timeout,
     )
     note_pending_input_release(session, "Input.dispatchMouseEvent", release_params, session.session_id)
-    await client.send(
-        "Input.dispatchMouseEvent",
-        {**common, "type": "mousePressed", "buttons": _BUTTON_MASK[button]},
-        session_id=session.session_id,
-        timeout=session.cfg.cdp_timeout,
-    )
-    await client.send(
-        "Input.dispatchMouseEvent",
-        {**common, "type": "mouseReleased", "buttons": 0},
-        session_id=session.session_id,
-        timeout=session.cfg.cdp_timeout,
-    )
+    for step in range(1, clicks + 1):
+        await client.send(
+            "Input.dispatchMouseEvent",
+            {**base, "clickCount": step, "type": "mousePressed", "buttons": _BUTTON_MASK[button]},
+            session_id=session.session_id,
+            timeout=session.cfg.cdp_timeout,
+        )
+        await client.send(
+            "Input.dispatchMouseEvent",
+            {**base, "clickCount": step, "type": "mouseReleased", "buttons": 0},
+            session_id=session.session_id,
+            timeout=session.cfg.cdp_timeout,
+        )
     clear_pending_input_releases(session)
 
 

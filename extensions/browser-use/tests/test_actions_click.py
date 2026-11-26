@@ -1524,3 +1524,86 @@ def test_click_resolves_delayed_popup_url_and_bridge_late_adoption(monkeypatch) 
     assert "tab_id=t-popup-late" in text
     assert "url=https://example.com/preview/runtime-token-42" in text
     assert "browser_navigate 到 https://example.com/preview/runtime-token-42" in text
+
+
+def test_click_polls_observed_tab_url_instead_of_link_fallback_href(monkeypatch) -> None:
+    pages = [SimpleNamespace(target_id="t", url="https://example.com/")]
+    session = FakeSession()
+    session.cfg = SimpleNamespace(cdp_timeout=1.0, evaluate_timeout=1.0, toolset="compact")
+    session.pages = lambda: list(pages)  # type: ignore[attr-defined]
+    list_calls = 0
+
+    async def fake_list_pages():
+        nonlocal list_calls
+        list_calls += 1
+        if list_calls >= 3:
+            pages[1].url = "https://example.com/report.pdf"
+        return list(pages)
+
+    session.list_pages = fake_list_pages  # type: ignore[attr-defined]
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "submitLike" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "connected": True,
+                    "tag": "a",
+                    "name": "Download report",
+                    "href": "https://example.com/fallback",
+                    "submitLike": False,
+                },
+            }
+        return {}
+
+    async def fake_eval_value(*_args, **_kwargs):
+        return {
+            "href": "https://example.com/",
+            "mutations": 0,
+            "expanded": 0,
+            "dialogs": 0,
+            "active": "a",
+            "toasts": [],
+        }
+
+    async def fake_hit_point(*_args, **_kwargs):
+        return 10.0, 10.0
+
+    async def fake_dispatch(*_args, **_kwargs):
+        pages.append(SimpleNamespace(target_id="t-report", url="about:blank"))
+
+    monkeypatch.setattr(click, "call_value", fake_call_value)
+    monkeypatch.setattr(click, "eval_value", fake_eval_value)
+    monkeypatch.setattr(click, "_hit_point", fake_hit_point)
+    monkeypatch.setattr(click, "_dispatch_click", fake_dispatch)
+    monkeypatch.setattr(click, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(click.run(session, {"target": "Download report", "button": "left", "click_count": 1}))
+    text = blocks[0]["text"]
+    assert "url=https://example.com/report.pdf" in text
+    assert "/fallback" not in text
+
+
+def test_dispatch_click_double_click_sends_two_press_release_pairs() -> None:
+    session = FakeSession()
+    recorded: list[tuple[str, dict]] = []
+
+    class _RecordingClient:
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            recorded.append((method, dict(params or {})))
+            return {"result": {"value": None}}
+
+    session.client = _RecordingClient()  # type: ignore[assignment]
+    asyncio.run(click._dispatch_click(session, 12.0, 34.0, "left", 2))
+    mouse_events = [
+        (params["type"], params["clickCount"], params["buttons"])
+        for method, params in recorded
+        if method == "Input.dispatchMouseEvent"
+    ]
+    assert mouse_events == [
+        ("mouseMoved", 0, 0),
+        ("mousePressed", 1, 1),
+        ("mouseReleased", 1, 0),
+        ("mousePressed", 2, 1),
+        ("mouseReleased", 2, 0),
+    ]

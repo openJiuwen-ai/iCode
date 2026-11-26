@@ -352,6 +352,12 @@ class BrokerServer:
                     message.get("arguments"),
                 )
                 return {"id": request_id, "ok": True, "blocks": blocks, "url": url, "title": title}
+            if op == "tabs":
+                pages = await self._list_pages(
+                    str(message.get("lease_id", "")),
+                    str(message.get("generation", "")),
+                )
+                return {"id": request_id, "ok": True, "pages": pages}
             if op == "release":
                 lease = self.leases.get(str(message.get("lease_id", "")))
                 if lease is None or lease.generation != str(message.get("generation", "")):
@@ -526,6 +532,33 @@ class BrokerServer:
             raise Unavailable("broker tool returned an invalid result")
         snapshot = getattr(session, "snapshot", None)
         return result, str(getattr(snapshot, "url", "") or ""), str(getattr(snapshot, "title", "") or "")
+
+    async def _list_pages(self, lease_id: str, generation: str) -> list[dict[str, Any]]:
+        """Return currently owned tabs for a ready session without launching Chrome."""
+        lease = self.leases.get(lease_id)
+        if lease is None or lease.generation != generation:
+            raise Unavailable("broker lease is not active")
+        lease.last_seen = time.monotonic()
+        self._last_activity = lease.last_seen
+        session = self.sessions.get(lease.session_id)
+        if session is None or getattr(session, "state", None) != "ready":
+            return []
+        list_pages_fn = getattr(session, "list_pages", None)
+        if callable(list_pages_fn):
+            pages = await list_pages_fn()
+        else:
+            pages_fn = getattr(session, "pages", None)
+            pages = list(pages_fn()) if callable(pages_fn) else []
+        return [
+            {
+                "index": int(getattr(info, "index", idx + 1)),
+                "target_id": str(getattr(info, "target_id", "") or ""),
+                "url": str(getattr(info, "url", "") or ""),
+                "title": str(getattr(info, "title", "") or ""),
+                "current": bool(getattr(info, "current", False)),
+            }
+            for idx, info in enumerate(pages)
+        ]
 
     async def aclose(self) -> None:
         if self._server is not None:

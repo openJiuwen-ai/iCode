@@ -1619,3 +1619,65 @@ def test_fill_supports_native_date_and_rejects_invalid_iso_before_dispatch(monke
             )
         )
     assert session.journal.dispatched_count == 1
+
+
+def test_native_temporal_fill_uses_composed_input_and_browser_normalized_expected_for_submit(monkeypatch) -> None:
+    fn_src = fill._set_native_value_fn("2027-05-19T10:15:00.000")
+    assert "composed:true" in fn_src
+    assert "document.createElement('input')" in fn_src
+    assert "composed:true" in fill._CLEAR_FN
+
+    session = FakeSession()
+    session.state = {"tag": "input", "editable": False, "focused": True, "text": ""}
+    session.client.state = session.state
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "input",
+                    "type": "datetime-local",
+                    "readOnly": False,
+                    "disabled": False,
+                    "text": session.state["text"],
+                },
+            }
+        if "HTMLInputElement.prototype" in function and "accepted" in function:
+            session.state["text"] = "2027-05-19T10:15"
+            return {
+                "type": "object",
+                "value": {
+                    "accepted": True,
+                    "value": "2027-05-19T10:15",
+                    "expected": "2027-05-19T10:15",
+                },
+            }
+        if "this.isContentEditable" in function:
+            return {"type": "object", "value": dict(session.state)}
+        return {}
+
+    async def fake_page_state(_session, _cdp_session_id):
+        return {"href": "https://example.com/form", "mutations": 0, "expanded": 0, "dialogs": 0}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+    monkeypatch.setattr(fill, "_page_state", fake_page_state)
+    monkeypatch.setattr(fill, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {
+                "target": "Departure",
+                "text": "2027-05-19T10:15:00.000",
+                "clear": True,
+                "submit": True,
+                "keypress_fallback": False,
+            },
+        )
+    )
+    rendered = blocks[0]["text"]
+    assert "读回与输入不一致" not in rendered
+    assert any(call[0] == "Input.dispatchKeyEvent" and call[1].get("key") == "Enter" for call in session.client.calls)

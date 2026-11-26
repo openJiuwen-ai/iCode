@@ -399,3 +399,82 @@ def test_records_survive_a_json_round_trip(tmp_path, monkeypatch) -> None:
         assert raw == {"schema": registry.SCHEMA_VERSION, "records": [record.to_dict()]}
 
     asyncio.run(scenario())
+
+
+def test_stale_workflow_close_preserves_profile_dir_after_newer_generation_resumed_and_idled(
+    tmp_path, monkeypatch
+) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    wf_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="A",
+        session_id="s-wf",
+        invocation_type="workflow_node",
+        caller_name="wf",
+        invocation_id="inv-1",
+    )
+
+    async def scenario() -> None:
+        opened = await ext.browser_open(wf_ctx)
+        bid_a = opened.split("browser_id: ", 1)[1].strip()
+        browser_a = ext._browsers[bid_a]
+        state_dir = browser_a.ephemeral_state_dir
+        assert state_dir is not None
+        state_dir.mkdir(parents=True, exist_ok=True)
+        cookie_marker = state_dir / "Cookies.txt"
+        cookie_marker.write_text("from-a", encoding="utf-8")
+        browser_a.session.owns_state_dir = True  # type: ignore[attr-defined]
+        assert browser_a.record is not None
+        resume_id_a = browser_a.record.resume_id
+
+        # Simulate Host B in another process resuming the same workflow slot while Host A is idle.
+        saved_a = ext._browsers.pop(bid_a)
+        resumed = await ext.browser_resume(wf_ctx, resume_id_a)
+        bid_b = resumed.splitlines()[0].split("browser_id: ", 1)[1].strip()
+        browser_b = ext._browsers[bid_b]
+        assert browser_b.record is not None and browser_b.record.resume_id != resume_id_a
+        cookie_marker.write_text("from-b-cookie", encoding="utf-8")
+
+        # Now B is idle (no instance lock held), and stale Host A closes.
+        ext._browsers.pop(bid_b)
+        ext._browsers[bid_a] = saved_a
+        await ext.browser_close(wf_ctx, bid_a)
+
+        assert state_dir.is_dir(), "closing stale handle A must not delete B's profile dir"
+        assert cookie_marker.read_text(encoding="utf-8") == "from-b-cookie"
+        remaining = records_for(wf_ctx)
+        assert [r.resume_id for r in remaining] == [browser_b.record.resume_id]
+
+    asyncio.run(scenario())
+
+
+def test_unstarted_subagent_handle_is_reclaimed_after_idle_timeout(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0.05")
+    sub_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Browser",
+        session_id="s-sub",
+        invocation_type="sub_agent",
+        caller_name="browser_agent",
+        invocation_id="sub-inv-9",
+    )
+
+    async def scenario() -> None:
+        opened = await ext.browser_open(sub_ctx)
+        bid = opened.split("browser_id: ", 1)[1].strip()
+        assert bid in ext._browsers
+        assert len(records_for(sub_ctx)) == 1
+        for _ in range(50):
+            if bid not in ext._browsers and records_for(sub_ctx) == []:
+                break
+            await asyncio.sleep(0.05)
+        assert bid not in ext._browsers
+        assert records_for(sub_ctx) == []
+
+    asyncio.run(scenario())

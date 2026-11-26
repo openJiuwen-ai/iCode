@@ -820,3 +820,6 @@ def test_page_text_changed_and_text_observe_same_origin_and_oopif_iframes(determ
     assert "status=succeeded" in rendered_text
     assert "basis=text_match" in rendered_text
     assert "FRAME-204" in rendered_text
+    assert "isRendered" in wait_for._PAGE_TEXT_EXPR
+    assert "getBoundingClientRect" in wait_for._PAGE_TEXT_EXPR
+    assert "window.innerWidth" in wait_for._page_text_expr(child_frame=True)

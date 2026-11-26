@@ -141,12 +141,41 @@ def _node_probe_fn(needle: str = "") -> str:
 _NODE_PROBE_FN = _node_probe_fn()
 
 
-def _page_text_expr(needle: str = "") -> str:
+def _page_text_expr(needle: str = "", *, child_frame: bool = False) -> str:
     needle_js = json.dumps(needle) if needle else "''"
+    hidden_child_guard = (
+        " if((window.innerWidth||0)<=0 || (window.innerHeight||0)<=0){"
+        "  const out={text:'', text_digest:'hidden'};"
+        f"  if({needle_js}) out.text_hit=false;"
+        "  return out;"
+        " }"
+        if child_frame
+        else ""
+    )
     return (
-        f"(()=>{{{_DEEP_TEXT_JS}{_TEXT_DIGEST_JS}"
+        f"(()=>{{{hidden_child_guard}{_DEEP_TEXT_JS}{_TEXT_DIGEST_JS}"
         " const body=document.body;"
         " const mainRaw=body?String(deepText(body)||''):'';"
+        " const isRendered=(el)=>{"
+        "  if(!el || !el.isConnected) return false;"
+        "  let cur=el;"
+        "  while(cur && cur.nodeType===1){"
+        "   if(cur.hidden===true) return false;"
+        "   try{"
+        "    const win=(cur.ownerDocument && cur.ownerDocument.defaultView) || window;"
+        "    const st=win && typeof win.getComputedStyle==='function' ? win.getComputedStyle(cur) : null;"
+        "    if(st && (st.display==='none' || st.visibility==='hidden' || st.visibility==='collapse' || st.opacity==='0')) return false;"
+        "   }catch(_){}"
+        "   if(cur.parentElement){ cur=cur.parentElement; continue; }"
+        "   const root=cur.getRootNode ? cur.getRootNode() : null;"
+        "   cur=(root && root.host) ? root.host : null;"
+        "  }"
+        "  if(typeof el.getBoundingClientRect==='function'){"
+        "   const r=el.getBoundingClientRect();"
+        "   if(r.width<=0 || r.height<=0) return false;"
+        "  }"
+        "  return true;"
+        " };"
         " const frameTexts=[];"
         " const seenDocs=new Set([document]);"
         " const walkFrames=(root)=>{"
@@ -160,6 +189,7 @@ def _page_text_expr(needle: str = "") -> str:
         "    if(el.shadowRoot) queue.push(el.shadowRoot);"
         "    const tag=(el.tagName||'').toUpperCase();"
         "    if(tag==='IFRAME' || tag==='FRAME'){"
+        "     if(!isRendered(el)) continue;"
         "     try{"
         "      const cd=el.contentDocument;"
         "      if(cd && !seenDocs.has(cd)){"
@@ -437,11 +467,12 @@ async def _read_page_text(session: Any, deadline: float, *, needle: str = "") ->
     parts = [body] if body else []
     digests = [digest]
     combined_hit = hit
+    child_expr = _page_text_expr(needle, child_frame=True)
     for oopif_sid in oopifs:
         if _remaining(deadline) <= 0:
             break
         try:
-            child_raw = await _evaluate(session, expr, deadline, cdp_session_id=oopif_sid)
+            child_raw = await _evaluate(session, child_expr, deadline, cdp_session_id=oopif_sid)
         except ConnectionClosed:
             raise
         except (CDPTimeout, BrowserError):
