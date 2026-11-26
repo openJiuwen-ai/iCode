@@ -170,7 +170,7 @@ def test_local_beats_project_beats_user_for_the_same_name(tmp_path: Path) -> Non
         home / ".claude.json",
         {
             "mcpServers": {"shared": {"command": "user"}, "mine": {"command": "user"}},
-            "projects": {str(repo): {"mcpServers": {"shared": {"command": "local"}}}},
+            "projects": {repo.as_posix(): {"mcpServers": {"shared": {"command": "local"}}}},
         },
     )
     _write(repo / ".mcp.json", {"mcpServers": {"shared": {"command": "root"}, "team": {"command": "root"}}})
@@ -216,7 +216,7 @@ def test_servers_turned_off_in_claude_code_are_imported_turned_off(tmp_path: Pat
         {
             "mcpServers": {"user-off": run, "user-on": run},
             "projects": {
-                str(repo): {
+                repo.as_posix(): {
                     "mcpServers": {"local-off": run},
                     # /mcp turns off any server; approvals cover only .mcp.json servers.
                     "disabledMcpServers": ["user-off", "local-off", "team-toggled-off"],
@@ -293,7 +293,7 @@ def test_a_repository_cannot_approve_its_own_servers_until_its_folder_is_trusted
     (repo / ".git").mkdir(parents=True)
     # Older Claude Code kept approvals in the project's entry, now moved to the trust-gated local settings.
     entry = {"enabledMcpjsonServers": ["approved-in-entry"], "hasTrustDialogAccepted": trusted}
-    _write(home / ".claude.json", {"projects": {str(repo): entry}})
+    _write(home / ".claude.json", {"projects": {repo.as_posix(): entry}})
     names = ["approved-by-user", "approved-by-repo", "approved-locally", "approved-in-entry", "pending"]
     _write(repo / ".mcp.json", {"mcpServers": {name: {"command": "run"} for name in names}})
     _write(home / ".claude" / "settings.json", {"enabledMcpjsonServers": ["approved-by-user"]})
@@ -315,7 +315,7 @@ def test_trusting_a_folder_above_the_project_does_not_let_the_repository_approve
     home, repo = tmp_path / "home", tmp_path / "repos" / "repo"
     (repo / ".git").mkdir(parents=True)
     # Claude Code reads approvals from a repository's own settings only when the project itself is trusted.
-    _write(home / ".claude.json", {"projects": {str(tmp_path / "repos"): {"hasTrustDialogAccepted": True}}})
+    _write(home / ".claude.json", {"projects": {(tmp_path / "repos").as_posix(): {"hasTrustDialogAccepted": True}}})
     _write(repo / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}}})
     _write(repo / ".claude" / "settings.json", {"enabledMcpjsonServers": ["srv"]})
 
@@ -357,7 +357,7 @@ def test_trust_kept_under_another_path_to_the_project_does_not_count(tmp_path: P
     (repo / ".git").mkdir(parents=True)
     symlink_or_skip(tmp_path / "alias", repo, target_is_directory=True)
     # Claude Code looks the project up under its real path only.
-    _write(home / ".claude.json", {"projects": {str(tmp_path / "alias"): {"hasTrustDialogAccepted": True}}})
+    _write(home / ".claude.json", {"projects": {(tmp_path / "alias").as_posix(): {"hasTrustDialogAccepted": True}}})
     _write(repo / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}}})
     _write(repo / ".claude" / "settings.json", {"enabledMcpjsonServers": ["srv"]})
 
@@ -372,7 +372,7 @@ def test_trust_kept_under_another_unicode_spelling_does_not_count(tmp_path: Path
     home, repo = tmp_path / "home", tmp_path / "caf\u00e9"
     (repo / ".git").mkdir(parents=True)
     # Where the filesystem tells the spellings apart, the other one is another folder.
-    key = str(repo) if spelling == "exact" else unicodedata.normalize("NFD", str(repo))
+    key = repo.as_posix() if spelling == "exact" else unicodedata.normalize("NFD", repo.as_posix())
     _write(home / ".claude.json", {"projects": {key: {"hasTrustDialogAccepted": True}}})
     _write(repo / ".mcp.json", {"mcpServers": {"srv": {"command": "run"}}})
     _write(repo / ".claude" / "settings.json", {"enabledMcpjsonServers": ["srv"]})
@@ -387,7 +387,7 @@ def test_a_decomposed_folder_name_is_looked_up_in_the_nfc_form_claude_code_keys_
     home, repo = tmp_path / "home", tmp_path / unicodedata.normalize("NFD", "caf\u00e9")
     (repo / ".git").mkdir(parents=True)
     # Claude Code NFC-normalizes the folder it starts in, on every platform, before keying the project.
-    key = unicodedata.normalize("NFC", os.path.realpath(repo))
+    key = unicodedata.normalize("NFC", repo.resolve().as_posix())
     _write(
         home / ".claude.json",
         {"mcpServers": {"user": {"command": "run"}}, "projects": {key: {"disabledMcpServers": ["user"]}}},
@@ -432,7 +432,7 @@ def test_an_untrusted_repository_cannot_approve_all_its_servers(tmp_path: Path) 
 def test_local_false_overrides_blanket_approval_in_a_trusted_project(tmp_path: Path, trusted: bool) -> None:
     home, repo = tmp_path / "home", tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
-    _write(home / ".claude.json", {"projects": {str(repo): {"hasTrustDialogAccepted": trusted}}})
+    _write(home / ".claude.json", {"projects": {repo.as_posix(): {"hasTrustDialogAccepted": trusted}}})
     _write(home / ".claude" / "settings.json", {"enableAllProjectMcpServers": True, "enabledMcpjsonServers": ["named"]})
     _write(repo / ".claude" / "settings.local.json", {"enableAllProjectMcpServers": False})
     _write(repo / ".mcp.json", {"mcpServers": {"docs": {"command": "run"}, "named": {"command": "run"}}})
@@ -458,7 +458,7 @@ def test_legacy_blanket_approval_has_local_precedence(
     home, repo = tmp_path / "home", tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     entry = {"hasTrustDialogAccepted": trusted, "enableAllProjectMcpServers": legacy}
-    _write(home / ".claude.json", {"projects": {str(repo): entry}})
+    _write(home / ".claude.json", {"projects": {repo.as_posix(): entry}})
     _write(home / ".claude" / "settings.json", {"enableAllProjectMcpServers": not legacy})
     _write(repo / ".claude" / "settings.json", {"enableAllProjectMcpServers": not legacy})
     _write(repo / ".claude" / "settings.local.json", {} if local is None else {"enableAllProjectMcpServers": local})
@@ -487,7 +487,7 @@ def test_legacy_blanket_approval_lands_in_the_current_local_file_above_the_works
     entry: dict[str, Any] = {"hasTrustDialogAccepted": True, "enableAllProjectMcpServers": True}
     if rejections is not None:
         entry["disabledMcpjsonServers"] = rejections
-    _write(home / ".claude.json", {"projects": {str(repo): entry}})
+    _write(home / ".claude.json", {"projects": {repo.as_posix(): entry}})
     _write(workspace / ".claude" / "settings.local.json", {"enableAllProjectMcpServers": False})
     _write(workspace / ".mcp.json", {"mcpServers": {"docs": {"command": "run"}}})
 
@@ -501,7 +501,7 @@ def test_legacy_blanket_approval_lands_in_the_current_local_file_above_the_works
 def test_legacy_approved_names_need_movable_rejections(tmp_path: Path) -> None:
     home, repo, _ = _repository(tmp_path)
     entry = {"hasTrustDialogAccepted": True, "enabledMcpjsonServers": ["docs"], "disabledMcpjsonServers": "x"}
-    _write(home / ".claude.json", {"projects": {str(repo): entry}})
+    _write(home / ".claude.json", {"projects": {repo.as_posix(): entry}})
     _write(repo / ".mcp.json", {"mcpServers": {"docs": {"command": "run"}}})
 
     (candidate,) = _discover(home, repo).candidates
@@ -536,7 +536,7 @@ def test_a_linked_worktree_reads_what_claude_code_keeps_for_the_main_checkout(tm
     home, main, worktree = tmp_path / "home", tmp_path / "main", tmp_path / "wt"
     _linked_worktree(main, worktree)
     project = {"mcpServers": {"mine": {"command": "local"}}, "disabledMcpServers": ["mine"]}
-    _write(home / ".claude.json", {"projects": {str(main): project}})
+    _write(home / ".claude.json", {"projects": {main.as_posix(): project}})
 
     (candidate,) = _discover(home, worktree).candidates
 
@@ -555,7 +555,9 @@ def test_a_bare_repositorys_worktree_reads_what_claude_code_keeps_for_the_reposi
     worktree.mkdir()
     (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
     project = {"mcpServers": {"mine": {"command": "local"}}, "disabledMcpServers": ["user"]}
-    _write(home / ".claude.json", {"mcpServers": {"user": {"command": "run"}}, "projects": {str(common): project}})
+    _write(
+        home / ".claude.json", {"mcpServers": {"user": {"command": "run"}}, "projects": {common.as_posix(): project}}
+    )
 
     enabled = {c.name: c.config.enabled for c in _discover(home, worktree).candidates if c.config}
 
@@ -566,7 +568,7 @@ def test_a_worktree_the_main_checkout_does_not_list_reads_nothing_kept_for_it(tm
     home, main, worktree = tmp_path / "home", tmp_path / "main", tmp_path / "wt"
     # The main checkout's records name another folder, so the .git file is not its worktree's.
     _linked_worktree(main, worktree, backlink=tmp_path / "elsewhere" / ".git")
-    _write(home / ".claude.json", {"projects": {str(main): {"mcpServers": {"mine": {"command": "local"}}}}})
+    _write(home / ".claude.json", {"projects": {main.as_posix(): {"mcpServers": {"mine": {"command": "local"}}}}})
 
     assert _discover(home, worktree).candidates == ()
 
@@ -584,7 +586,7 @@ def _shared_file_case(tmp_path: Path) -> tuple[Path, Path, Path]:
     """A user server ``srv``, a local server and a workspace ``.mcp.json`` that redefines ``srv``."""
     home, workspace = tmp_path / "home", tmp_path / "ws"
     workspace.mkdir()
-    key = os.path.realpath(workspace).replace(os.sep, "/")
+    key = workspace.resolve().as_posix()
     _write(
         home / ".claude.json",
         {"mcpServers": {"srv": {"command": "user"}}, "projects": {key: {"mcpServers": {"local": {"command": "run"}}}}},
@@ -665,7 +667,7 @@ def test_a_shared_file_without_read_permission_is_skipped_and_the_other_files_ke
 def _repository(tmp_path: Path, *, trusted: bool = True) -> tuple[Path, Path, Path]:
     home, repo = tmp_path / "home", tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
-    _write(home / ".claude.json", {"projects": {str(repo): {"hasTrustDialogAccepted": trusted}}})
+    _write(home / ".claude.json", {"projects": {repo.as_posix(): {"hasTrustDialogAccepted": trusted}}})
     return home, repo, repo / "sub"
 
 
@@ -689,7 +691,7 @@ def test_local_settings_stay_in_the_workspace_when_the_project_folder_is_the_hom
     repo = tmp_path / "repo"
     workspace = repo / "sub"
     (repo / ".git").mkdir(parents=True)
-    _write(repo / ".claude.json", {"projects": {str(repo): {"hasTrustDialogAccepted": True}}})
+    _write(repo / ".claude.json", {"projects": {repo.as_posix(): {"hasTrustDialogAccepted": True}}})
     _write(
         repo / ".claude" / "settings.local.json",
         {"enableAllProjectMcpServers": True, "enabledMcpjsonServers": ["listed"], "disabledMcpjsonServers": ["no"]},
@@ -724,7 +726,7 @@ def test_project_files_in_a_connector_downloads_folder_are_skipped_and_reported(
     _write(home / ".claude" / "settings.json", {"enableAllProjectMcpServers": True})
     _write(home / ".claude.json", {
         "mcpServers": {"tool": {"command": "user"}},
-        "projects": {str(repo): {"hasTrustDialogAccepted": True}},
+        "projects": {repo.as_posix(): {"hasTrustDialogAccepted": True}},
     })  # fmt: skip
     _write(repo / ".mcp.json", {"mcpServers": {"repo": {"command": "run"}}})
     _write(downloads / ".mcp.json", {"mcpServers": {"tool": {"command": "downloaded"}}})
@@ -782,7 +784,7 @@ def test_an_unreadable_policy_does_not_offer_servers_without_its_restrictions(
     assert candidate.config.enabled
     path = tmp_path / policy
     value = {
-        ".claude.json": {"projects": {os.path.realpath(workspace): {"disabledMcpServers": ["srv"]}}},
+        ".claude.json": {"projects": {workspace.resolve().as_posix(): {"disabledMcpServers": ["srv"]}}},
         ".claude/settings.json": {"disabledMcpjsonServers": ["srv"]},
         "ws/.claude/settings.local.json": {"permissions": {"deny": ["mcp__srv"]}},
     }
