@@ -231,6 +231,7 @@ class _Browser:
 
 _browsers: dict[str, _Browser] = {}
 _reclaiming_slots: set[tuple[str | None, str, str | None, int]] = set()
+_allocating_slots: set[tuple[str | None, str, str | None, int]] = set()
 _MAX_BROWSERS = 2
 """Runaway guard: one agent build may keep at most this many browsers open."""
 
@@ -603,16 +604,12 @@ def _recoverable(ctx: ToolContext) -> list[registry.ManifestRecord]:
 _DEFER_MANIFEST_PERSIST = False
 
 
-def _open(ctx: ToolContext) -> _Browser:
-    """Allocate a browser in the first free profile slot for this agent build.
-
-    The registry is mutated only in this synchronous block, so no lock is needed:
-    there is no ``await`` between reading the used slots and writing the entry.
-    """
-    base = _config()
+def _next_free_slot(ctx: ToolContext) -> int:
+    """Return the first free profile slot for *ctx*, or raise ``browser_limit``."""
     _prune_closed()
+    busy_slots = _reclaiming_slots | _allocating_slots
     used = {browser.slot for browser in _mine(ctx)} | {
-        slot for slot in range(_MAX_BROWSERS) if _ctx_slot_key(ctx, slot) in _reclaiming_slots
+        slot for slot in range(_MAX_BROWSERS) if _ctx_slot_key(ctx, slot) in busy_slots
     }
     slot = next((index for index in range(_MAX_BROWSERS) if index not in used), None)
     if slot is None:
@@ -620,7 +617,27 @@ def _open(ctx: ToolContext) -> _Browser:
             f"This agent already has {_MAX_BROWSERS} browsers open; reuse a browser_id or call browser_close.",
             code="browser_limit",
         )
+    return slot
+
+
+def _open(ctx: ToolContext) -> _Browser:
+    """Allocate a browser in the first free profile slot for this agent build.
+
+    The registry is mutated only in this synchronous block, so no lock is needed:
+    there is no ``await`` between reading the used slots and writing the entry.
+    """
+    base = _config()
+    slot = _next_free_slot(ctx)
     return _allocate(ctx, base, slot, persist=not _DEFER_MANIFEST_PERSIST)
+
+
+_DEFAULT_OPEN = _open
+
+
+def _allocate_via_open(ctx: ToolContext, base: BrowserConfig, slot: int) -> _Browser:
+    if _open is not _DEFAULT_OPEN:
+        return _open(ctx)
+    return _allocate(ctx, base, slot, persist=False)
 
 
 def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int, *, persist: bool = True) -> _Browser:
@@ -1000,14 +1017,49 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
 @_tool(requires_approval=True)
 async def browser_open(ctx: ToolContext) -> str:
     """Allocate a browser handle and return its browser_id; launch/connect is deferred until a page tool needs it."""
-    global _DEFER_MANIFEST_PERSIST
-    _DEFER_MANIFEST_PERSIST = True
+    base = _config()
+    slot = _next_free_slot(ctx)
+    slot_key = _ctx_slot_key(ctx, slot)
+    _allocating_slots.add(slot_key)
     try:
-        browser = _open(ctx)
+        if base.backend == "owned":
+            state_dir = base.state_dir / "agents" / _owner_key(ctx) / f"slot-{slot}"
+            slot_lock = await acquire_file_lock(_slot_lifecycle_lock_path(state_dir), wait=5.0)
+            if slot_lock is None:
+                raise ToolError(
+                    "That profile is busy with another plugin instance; retry after it finishes.",
+                    code="browser_open_blocked",
+                )
+            try:
+                if state_dir.exists():
+                    try:
+                        probe = await acquire_instance_lock(state_dir, wait=0)
+                    except Unavailable as exc:
+                        raise ToolError(
+                            f"That profile is in use by another plugin instance ({exc}); close it before opening.",
+                            code="browser_open_blocked",
+                        ) from exc
+                    try:
+                        browser = _allocate_via_open(ctx, base, slot)
+                        if browser.record is not None:
+                            if await _asave_record(browser.manifest, browser.record):
+                                browser.manifest_committed = True
+                            _write_slot_generation(state_dir, browser.record.resume_id)
+                            browser.slot_generation_stamped = True
+                    finally:
+                        probe.release()
+                else:
+                    browser = _allocate_via_open(ctx, base, slot)
+                    if browser.record is not None and await _asave_record(browser.manifest, browser.record):
+                        browser.manifest_committed = True
+            finally:
+                slot_lock.release()
+        else:
+            browser = _allocate_via_open(ctx, base, slot)
+            if browser.record is not None and await _asave_record(browser.manifest, browser.record):
+                browser.manifest_committed = True
     finally:
-        _DEFER_MANIFEST_PERSIST = False
-    if browser.record is not None and await _asave_record(browser.manifest, browser.record):
-        browser.manifest_committed = True
+        _allocating_slots.discard(slot_key)
     if _is_reclaimable_on_idle(ctx):
         _arm_unstarted_idle_reclaim(browser, browser.session.cfg.idle_close_seconds)
     return f"browser_id: {browser.id}"
@@ -1227,7 +1279,11 @@ async def browser_resume(
             code="browser_resume_backend_mismatch",
         )
     slot = record.slot
-    if any(browser.slot == slot for browser in _mine(ctx)) or _ctx_slot_key(ctx, slot) in _reclaiming_slots:
+    if (
+        any(browser.slot == slot for browser in _mine(ctx))
+        or _ctx_slot_key(ctx, slot) in _reclaiming_slots
+        or _ctx_slot_key(ctx, slot) in _allocating_slots
+    ):
         raise ToolError(
             f"Slot {slot} already has a live browser; use its browser_id, close it first, or call browser_open.",
             code="browser_resume_conflict",

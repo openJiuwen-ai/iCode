@@ -693,3 +693,136 @@ def test_unstarted_subagent_handle_reclaims_after_empty_browser_logs(
         assert records_for(sub_ctx) == [], "unstarted manifest record should be dropped after idle timeout"
 
     asyncio.run(scenario())
+
+
+def test_normal_close_then_reopen_owned_handle_succeeds_on_navigate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 regression: browser_open -> browser_navigate -> browser_close -> browser_open -> browser_navigate."""
+    configure(monkeypatch, tmp_path)
+    turn_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Main",
+        session_id="s-reopen",
+        invocation_type="turn",
+        caller_name="Main",
+    )
+
+    async def fake_call(browser: ext._Browser, name: str, arguments: dict[str, object]) -> list[dict[str, object]]:
+        url = str(arguments.get("url") or "")
+        assert browser.slot_state_dir is not None
+        (browser.slot_state_dir / "chrome").mkdir(parents=True, exist_ok=True)
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        browser.session._started_once = True  # type: ignore[attr-defined]
+        browser.session._state = "ready"  # type: ignore[attr-defined]
+        browser.session._snapshot.url = url  # type: ignore[attr-defined]
+        return [{"type": "text", "text": f"navigated:{url}"}]
+
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    async def scenario() -> None:
+        bid1 = (await ext.browser_open(turn_ctx)).split("browser_id: ", 1)[1].strip()
+        b1 = ext._browsers[bid1]
+        assert b1.record is not None
+        resume1 = b1.record.resume_id
+        state_dir = b1.slot_state_dir
+        assert state_dir is not None
+
+        await ext.browser_navigate(turn_ctx, "https://example.com/first", bid1)
+        assert ext._read_slot_generation(state_dir) == resume1
+        cookie = state_dir / "chrome" / "Cookies"
+        cookie.write_text("persisted-main-cookie", encoding="utf-8")
+
+        await ext.browser_close(turn_ctx, bid1)
+        assert state_dir.is_dir(), "persistent main-turn profile dir stays after normal close"
+        assert records_for(turn_ctx) == []
+
+        # Reopen in the same session: browser_open must refresh slot.generation so navigate succeeds.
+        bid2 = (await ext.browser_open(turn_ctx)).split("browser_id: ", 1)[1].strip()
+        b2 = ext._browsers[bid2]
+        assert b2.record is not None
+        resume2 = b2.record.resume_id
+        assert resume2 != resume1
+        assert ext._read_slot_generation(state_dir) == resume2
+
+        nav2 = await ext.browser_navigate(turn_ctx, "https://example.com/second", bid2)
+        assert "navigated:https://example.com/second" in nav2
+        assert cookie.read_text(encoding="utf-8") == "persisted-main-cookie"
+        assert [r.resume_id for r in records_for(turn_ctx)] == [resume2]
+        await ext.browser_close(turn_ctx, bid2)
+
+    asyncio.run(scenario())
+
+
+def test_dual_host_concurrent_browser_open_blocks_b_and_keeps_a_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 regression: Host B calling browser_open while Host A holds slot-0 must be rejected and leave A usable."""
+    from icode_browser_use.locking import acquire_instance_lock
+
+    configure(monkeypatch, tmp_path)
+    turn_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Main",
+        session_id="s-dual-open",
+        invocation_type="turn",
+        caller_name="Main",
+    )
+
+    async def fake_call(browser: ext._Browser, name: str, arguments: dict[str, object]) -> list[dict[str, object]]:
+        url = str(arguments.get("url") or "")
+        assert browser.slot_state_dir is not None
+        browser.slot_state_dir.mkdir(parents=True, exist_ok=True)
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        browser.session._started_once = True  # type: ignore[attr-defined]
+        browser.session._state = "ready"  # type: ignore[attr-defined]
+        browser.session._snapshot.url = url  # type: ignore[attr-defined]
+        return [{"type": "text", "text": f"navigated:{url}"}]
+
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    async def scenario() -> None:
+        bid_a = (await ext.browser_open(turn_ctx)).split("browser_id: ", 1)[1].strip()
+        browser_a = ext._browsers[bid_a]
+        assert browser_a.record is not None and browser_a.slot_state_dir is not None
+        resume_a = browser_a.record.resume_id
+        state_dir = browser_a.slot_state_dir
+        await ext.browser_navigate(turn_ctx, "https://example.com/a1", bid_a)
+        assert ext._read_slot_generation(state_dir) == resume_a
+
+        # Host A actively holds slot-0's instance lock.
+        a_lock = await acquire_instance_lock(state_dir, wait=0)
+        try:
+            # Simulate Host B in another process (empty in-memory _browsers) calling browser_open.
+            saved_a = ext._browsers.pop(bid_a)
+            try:
+                with pytest.raises(ToolError) as exc_info:
+                    await ext.browser_open(turn_ctx)
+                assert exc_info.value.code == "browser_open_blocked"
+                assert "state_dir_locked" in exc_info.value.message
+                assert ext._browsers == {}
+                assert ext._read_slot_generation(state_dir) == resume_a
+                assert [r.resume_id for r in records_for(turn_ctx)] == [resume_a]
+            finally:
+                ext._browsers[bid_a] = saved_a
+
+            # Host A must still be able to navigate on its original handle.
+            nav_a2 = await ext.browser_navigate(turn_ctx, "https://example.com/a2", bid_a)
+            assert "navigated:https://example.com/a2" in nav_a2
+            assert [r.resume_id for r in records_for(turn_ctx)] == [resume_a]
+        finally:
+            a_lock.release()
+
+        await ext.browser_close(turn_ctx, bid_a)
+
+        # Once Host A closes, Host B can cleanly open and navigate on slot-0.
+        bid_b = (await ext.browser_open(turn_ctx)).split("browser_id: ", 1)[1].strip()
+        nav_b = await ext.browser_navigate(turn_ctx, "https://example.com/b1", bid_b)
+        assert "navigated:https://example.com/b1" in nav_b
+        await ext.browser_close(turn_ctx, bid_b)
+
+    asyncio.run(scenario())

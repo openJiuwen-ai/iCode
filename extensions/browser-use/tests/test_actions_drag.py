@@ -191,3 +191,115 @@ def test_drag_refuses_same_element_and_blocks_disabled_source(monkeypatch) -> No
     assert "dispatch=not_sent" in blocks[0]["text"]
     assert "status=blocked" in blocks[0]["text"]
     assert not session.client.calls
+
+
+def test_drag_preserves_verified_corner_point_when_source_centre_is_occluded(monkeypatch) -> None:
+    """P1 regression: when source centre is occluded and a corner is clickable, pointerdown must use the corner."""
+    session = _DragSession(trigger_html5=False)
+    mutations = 0
+    # Source quad: x in [0, 100], y in [0, 40] -> centre=(50, 20), inset top-left corner=(15.0, 6.0)
+    source_quad = [0.0, 0.0, 100.0, 0.0, 100.0, 40.0, 0.0, 40.0]
+    target_quad = [220.0, 0.0, 360.0, 0.0, 360.0, 100.0, 220.0, 100.0]
+
+    async def send_with_quads(method, params=None, session_id=None, timeout=None):
+        nonlocal mutations
+        params = dict(params or {})
+        session.client.calls.append((method, params))
+        if method == "Runtime.evaluate":
+            expr = str(params.get("expression") or "")
+            if "innerWidth" in expr:
+                return {"result": {"value": {"w": 1280, "h": 900}}}
+            return {
+                "result": {
+                    "value": {
+                        "href": "https://example.com",
+                        "mutations": mutations,
+                        "expanded": 0,
+                        "dialogs": 0,
+                        "active": "div",
+                    }
+                }
+            }
+        if method == "DOM.getContentQuads":
+            oid = params.get("objectId")
+            return {"quads": [source_quad if oid == "oid-1" else target_quad]}
+        if method == "Input.dispatchMouseEvent" and params.get("type") == "mouseReleased":
+            mutations = 1
+        return {}
+
+    async def fake_facts(*_args, **_kwargs):
+        return {"connected": True, "tag": "div", "disabled": False, "ariaDisabled": False}
+
+    async def fake_locate(*_args, **_kwargs):
+        return 15.0, 6.0, "corner", {"inside": True, "tag": "DIV"}
+
+    async def fake_safe_hit(_s, _oid, x, y, *_args, **_kwargs):
+        # Centre (50, 20) is covered by an unrelated third control; corner (15.0, 6.0) hits source.
+        if abs(x - 50.0) < 1.0 and abs(y - 20.0) < 1.0:
+            return {"connected": True, "inside": False, "tag": "BUTTON", "id": "decoy"}
+        return {"connected": True, "inside": True, "tag": "DIV", "id": "source"}
+
+    session.client.send = send_with_quads  # type: ignore[method-assign]
+    monkeypatch.setattr(drag, "_target_facts", fake_facts)
+    monkeypatch.setattr(drag, "_locate_hit", fake_locate)
+    monkeypatch.setattr(drag, "_safe_hit_test", fake_safe_hit)
+    monkeypatch.setattr(drag, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(drag.run(session, {"source": "Task Alpha", "target": "Done Column", "steps": 4}))
+    text = blocks[0]["text"]
+    assert "status=succeeded" in text, text
+    pressed = [
+        p for m, p in session.client.calls if m == "Input.dispatchMouseEvent" and p.get("type") == "mousePressed"
+    ]
+    assert len(pressed) == 1
+    assert (pressed[0]["x"], pressed[0]["y"]) == (15.0, 6.0), f"must press verified corner, got {pressed[0]}"
+
+
+def test_drag_refuses_not_sent_when_source_and_target_cannot_fit_in_viewport(monkeypatch) -> None:
+    """P1 regression: multi-screen separated source and target must abort with dispatch=not_sent (no wrong click)."""
+    session = _DragSession(trigger_html5=False)
+    scroll_y = [0.0]
+
+    def _quad(x: float, doc_y: float, w: float, h: float) -> list[float]:
+        y = doc_y - scroll_y[0]
+        return [x, y, x + w, y, x + w, y + h, x, y + h]
+
+    async def send_multiscreen(method, params=None, session_id=None, timeout=None):
+        params = dict(params or {})
+        session.client.calls.append((method, params))
+        if method == "Runtime.evaluate":
+            expr = str(params.get("expression") or "")
+            if "innerWidth" in expr:
+                return {"result": {"value": {"w": 1280, "h": 900}}}
+            return {"result": {"value": {"href": "https://example.com", "mutations": 0}}}
+        if method == "DOM.scrollIntoViewIfNeeded":
+            oid = params.get("objectId")
+            scroll_y[0] = 0.0 if oid == "oid-1" else 2400.0
+            return {}
+        if method == "DOM.getContentQuads":
+            oid = params.get("objectId")
+            return {
+                "quads": [_quad(20.0, 100.0, 100.0, 40.0) if oid == "oid-1" else _quad(220.0, 2800.0, 140.0, 100.0)]
+            }
+        return {}
+
+    async def fake_facts(*_args, **_kwargs):
+        return {"connected": True, "tag": "div", "disabled": False, "ariaDisabled": False}
+
+    async def fake_locate(*_args, **_kwargs):
+        scroll_y[0] = 0.0
+        return 70.0, 120.0, "centre", {"inside": True}
+
+    session.client.send = send_multiscreen  # type: ignore[method-assign]
+    monkeypatch.setattr(drag, "_target_facts", fake_facts)
+    monkeypatch.setattr(drag, "_locate_hit", fake_locate)
+    monkeypatch.setattr(drag, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(drag.run(session, {"source": "Task Alpha", "target": "Done Column", "steps": 4}))
+    text = blocks[0]["text"]
+    assert "dispatch=not_sent" in text, text
+    assert "status=blocked" in text, text
+    mouse_calls = [p for m, p in session.client.calls if m == "Input.dispatchMouseEvent"]
+    assert mouse_calls == [], f"no pointer events may be sent when endpoints cannot fit in viewport: {mouse_calls}"
+    rows = session.journal.rows_for("browser_drag", 5)
+    assert any(r["reason"] == "not_simultaneously_visible" and r["dispatch"] == "not_sent" for r in rows)

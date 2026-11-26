@@ -106,8 +106,14 @@ _HTML_FN = "function(){ return this.outerHTML || ''; }"
 
 _SCRIPT_RE = re.compile(r"<(script|style|noscript|template|svg)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _HEAD_RE = re.compile(r"<head\b[^>]*>.*?</head>", re.IGNORECASE | re.DOTALL)
+_HIDDEN_CSS_DECL = (
+    r"(?:display\s*:\s*none"
+    r"|visibility\s*:\s*(?:hidden|collapse)"
+    r"|opacity\s*:\s*(?:0+(?:\.0+)?|\.0+)%?)"
+    r"(?:\s*!\s*important)?"
+)
 _HIDDEN_STYLE_BLOCK_RE = re.compile(
-    r"<([a-z0-9-]+)\b[^>]*\bstyle\s*=\s*[\"'][^\"']*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?:\.0+)?\b)[^\"']*[\"'][^>]*>.*?</\1>",
+    rf"<([a-z0-9-]+)\b[^>]*\bstyle\s*=\s*([\"'])(?:[^\"']*;)?\s*{_HIDDEN_CSS_DECL}\s*(?:;[^\"']*)?\2[^>]*>.*?</\1>",
     re.IGNORECASE | re.DOTALL,
 )
 _TABLE_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)

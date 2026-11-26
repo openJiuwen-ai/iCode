@@ -1150,3 +1150,167 @@ def test_real_chrome_pr325_takeover_oopif_rollback_and_broker_compact(
         srv.server_close()
         cross_srv.shutdown()
         cross_srv.server_close()
+
+
+def test_real_chrome_reopen_dual_host_drag_guard_and_markdown_opacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real-Chrome regression for PR #325 round-2 review findings:
+    1) normal browser_open -> browser_navigate -> browser_close -> browser_open -> browser_navigate succeeds;
+    2) dual-host concurrent browser_open while Host A holds slot-0 is blocked and Host A stays usable;
+    3) browser_drag with occluded source centre presses the verified corner (0 decoy clicks);
+    4) browser_drag with multi-screen separated endpoints returns dispatch=not_sent (0 decoy clicks);
+    5) browser_extract(format='markdown') keeps opacity:0.5 visible text and strips opacity:0.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from chrys.extensions import ToolContext, ToolError
+    from smoke_common import chrome_executable
+
+    import icode_browser_use.extension as ext
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def _html(self, body: str) -> None:
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path == "/page1":
+                self._html("<!doctype html><html><body><h1>Page One</h1></body></html>")
+            elif path == "/page2":
+                self._html("<!doctype html><html><body><h1>Page Two</h1></body></html>")
+            elif path == "/drag-corner":
+                self._html(
+                    "<!doctype html><html><body style='margin:0'>"
+                    "<div style='position:relative;width:600px;height:300px'>"
+                    "  <div id='src' role='button' style='position:absolute;left:20px;top:20px;width:160px;height:80px;background:#eef'>Card Corner</div>"
+                    "  <button id='decoy' type='button' style='position:absolute;left:70px;top:40px;width:60px;height:40px;z-index:10'>Decoy</button>"
+                    "  <div id='dst' role='region' aria-label='Drop Zone' style='position:absolute;left:280px;top:20px;width:180px;height:120px;background:#efe'>Drop Zone</div>"
+                    "</div>"
+                    "<p id='out'>DRAG:0;DECOY:0</p>"
+                    "<script>"
+                    "let dragging=false, dragged=0, decoy=0;"
+                    "const out=document.getElementById('out');"
+                    "const upd=()=>{ out.textContent='DRAG:'+dragged+';DECOY:'+decoy; };"
+                    "document.getElementById('decoy').addEventListener('pointerdown', ()=>{ decoy++; upd(); });"
+                    "document.getElementById('src').addEventListener('pointerdown', ()=>{ dragging=true; });"
+                    "document.getElementById('dst').addEventListener('pointerup', ()=>{ if(dragging){ dragging=false; dragged++; upd(); } });"
+                    "</script></body></html>"
+                )
+            elif path == "/drag-far":
+                self._html(
+                    "<!doctype html><html><body style='margin:0'>"
+                    "<div id='src' role='button' style='margin:40px;width:160px;height:60px;background:#eef'>Top Card</div>"
+                    "<div style='height:2600px'></div>"
+                    "<button id='decoy-far' type='button' style='position:fixed;left:40px;top:40px;width:160px;height:60px;display:none'>Far Decoy</button>"
+                    "<div id='dst' role='region' aria-label='Bottom Zone' style='margin:40px;width:180px;height:120px;background:#efe'>Bottom Zone</div>"
+                    "<p id='out'>DECOY:0</p>"
+                    "<script>"
+                    "let decoy=0;"
+                    "const df=document.getElementById('decoy-far'), out=document.getElementById('out');"
+                    "window.addEventListener('scroll', ()=>{ df.style.display = window.scrollY > 500 ? 'block' : 'none'; });"
+                    "df.addEventListener('pointerdown', ()=>{ decoy++; out.textContent='DECOY:'+decoy; });"
+                    "</script></body></html>"
+                )
+            elif path == "/opacity":
+                self._html(
+                    "<!doctype html><html><body>"
+                    "<h1>Notice Board</h1>"
+                    "<p style='opacity:0.5'>Muted visible hint</p>"
+                    "<p style='opacity:0'>Hidden injection text</p>"
+                    "</body></html>"
+                )
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    origin = f"http://127.0.0.1:{srv.server_address[1]}"
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory(prefix="browser-use-pr325-r2-", ignore_cleanup_errors=True) as td:
+            root = Path(td).resolve()
+            (root / "ws").mkdir()
+            if _ORIG_USERPROFILE is not None:
+                monkeypatch.setenv("USERPROFILE", _ORIG_USERPROFILE)
+            if _ORIG_HOME is not None:
+                monkeypatch.setenv("HOME", _ORIG_HOME)
+            if _ORIG_APPDATA is not None:
+                monkeypatch.setenv("APPDATA", _ORIG_APPDATA)
+            if _ORIG_LOCALAPPDATA is not None:
+                monkeypatch.setenv("LOCALAPPDATA", _ORIG_LOCALAPPDATA)
+            monkeypatch.setenv("ICODE_BROWSER_ALLOWED_ORIGINS", origin)
+            monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(root / "state"))
+            monkeypatch.setenv("ICODE_BROWSER_HEADLESS", "1")
+            monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0")
+            monkeypatch.setenv("ICODE_BROWSER_EXECUTABLE", str(chrome_executable()))
+
+            ctx = ToolContext.for_testing(
+                root / "ws",
+                data_dir=root / "data",
+                session_data_dir=root / "session",
+                agent_name="Main",
+                session_id="e2e-pr325-r2",
+                invocation_type="turn",
+                caller_name="Main",
+            )
+            # 1. Normal close -> reopen -> navigate
+            bid1 = (await ext.browser_open(ctx)).split("browser_id: ", 1)[1].strip()
+            await ext.browser_navigate(ctx, f"{origin}/page1", bid1)
+            await ext.browser_close(ctx, bid1)
+
+            bid2 = (await ext.browser_open(ctx)).split("browser_id: ", 1)[1].strip()
+            try:
+                nav2 = await ext.browser_navigate(ctx, f"{origin}/page2", bid2)
+                assert "Page Two" in nav2, nav2
+
+                # 2. Dual-host concurrent browser_open while Host A is running on slot-0
+                saved_a = ext._browsers.pop(bid2)
+                try:
+                    with pytest.raises(ToolError) as blocked_exc:
+                        await ext.browser_open(ctx)
+                    assert blocked_exc.value.code == "browser_open_blocked"
+                finally:
+                    ext._browsers[bid2] = saved_a
+                nav_still_ok = await ext.browser_navigate(ctx, f"{origin}/drag-corner", bid2)
+                assert "Card Corner" in nav_still_ok, nav_still_ok
+
+                # 3. Drag with occluded centre uses verified corner (0 decoy hits)
+                drag_ok = await ext.browser_drag(ctx, bid2, "Card Corner", "Drop Zone", steps=4)
+                assert "status=succeeded" in drag_ok, drag_ok
+                out_corner = await ext.browser_extract(ctx, bid2, query="#out")
+                assert "DRAG:1;DECOY:0" in out_corner, out_corner
+
+                # 4. Multi-screen separated drag returns dispatch=not_sent (0 decoy hits)
+                await ext.browser_navigate(ctx, f"{origin}/drag-far", bid2)
+                drag_far = await ext.browser_drag(ctx, bid2, "Top Card", "Bottom Zone", steps=4)
+                assert "dispatch=not_sent" in drag_far, drag_far
+                assert "status=blocked" in drag_far, drag_far
+                out_far = await ext.browser_extract(ctx, bid2, query="#out")
+                assert "DECOY:0" in out_far, out_far
+
+                # 5. Markdown extract preserves opacity:0.5 and strips opacity:0
+                await ext.browser_navigate(ctx, f"{origin}/opacity", bid2)
+                txt = await ext.browser_extract(ctx, bid2, format="text")
+                md = await ext.browser_extract(ctx, bid2, format="markdown")
+                assert "Muted visible hint" in txt and "Hidden injection text" not in txt, txt
+                assert "Muted visible hint" in md and "Hidden injection text" not in md, md
+            finally:
+                if bid2 in ext._browsers:
+                    await ext.browser_close(ctx, bid2)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        srv.shutdown()
+        srv.server_close()

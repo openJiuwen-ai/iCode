@@ -112,6 +112,30 @@ def test_html_to_markdown_preserves_gfm_table_columns_and_strips_hidden_blocks()
     assert "2135270" not in md
 
 
+def test_html_to_markdown_keeps_translucent_opacity_and_strips_zero_opacity() -> None:
+    """P2 regression: opacity:0.5 / 0.05 / .5 and backface-visibility:hidden must stay; opacity:0 / 0.0 stripped."""
+    html = (
+        "<html><body>"
+        '<p style="opacity:0">ZERO-1</p>'
+        '<p style="opacity: 0.00 !important;">ZERO-2</p>'
+        '<p style="color:red; opacity:.0; font-size:12px">ZERO-3</p>'
+        '<p style="opacity: 0%">ZERO-4</p>'
+        '<p style="visibility: hidden">VIS-HIDDEN</p>'
+        '<p style="opacity:0.5">KEEP-HALF</p>'
+        '<p style="color: #666; opacity: 0.05; margin: 0">KEEP-FAINT</p>'
+        '<p style="opacity: .5">KEEP-DOT-HALF</p>'
+        '<p style="backface-visibility: hidden">KEEP-BACKFACE</p>'
+        '<p style="fill-opacity: 0">KEEP-FILL-OPACITY</p>'
+        '<div style="opacity:0.5"><p style="opacity:0">NESTED-ZERO</p><p>NESTED-KEEP</p></div>'
+        "</body></html>"
+    )
+    md = extract.html_to_markdown(html)
+    for hidden in ("ZERO-1", "ZERO-2", "ZERO-3", "ZERO-4", "VIS-HIDDEN", "NESTED-ZERO"):
+        assert hidden not in md, f"{hidden} should be stripped from markdown: {md!r}"
+    for visible in ("KEEP-HALF", "KEEP-FAINT", "KEEP-DOT-HALF", "KEEP-BACKFACE", "KEEP-FILL-OPACITY", "NESTED-KEEP"):
+        assert visible in md, f"{visible} must be preserved in markdown: {md!r}"
+
+
 def test_deep_text_js_skips_opacity_zero_subtrees() -> None:
     import json
     import shutil
