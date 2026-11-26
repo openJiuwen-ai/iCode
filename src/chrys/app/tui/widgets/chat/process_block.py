@@ -30,6 +30,7 @@ from chrys.foundation.i18n import msg
 
 if TYPE_CHECKING:
     from rich.text import Text
+    from textual.geometry import Size
     from textual.widget import Widget
 
 _CALLS = msg("tui.chat.process.tool_calls", fallback="{count} tool call: ", plural_fallback="{count} tool calls: ")
@@ -91,6 +92,10 @@ class ProcessBlock(ProcessGuideMixin, FoldGap, Static, can_focus=False):
         """What its tool groups' calls were, kept current as they change."""
         self.collapsed = False
         self.requested_collapsed = True
+
+    def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
+        # This fixed-height header paints at the size its parent just gave it.
+        return super()._size_updated(size, virtual_size, container_size, layout=False)
 
     def focus_on_click(self) -> bool:
         """Keep transcript clicks in the composer, as tool and thinking headers do."""

@@ -10,6 +10,10 @@ from unittest.mock import patch
 
 import pytest
 from textual.events import Resize, Show
+from textual.geometry import Offset, Size
+from textual.screen import Screen
+from textual.selection import Selection
+from textual.widget import Widget
 from textual.widgets import Static, TabbedContent, Tabs
 from textual.widgets._tabs import Underline
 
@@ -19,7 +23,9 @@ from chrys.app.tui.theme import CHRYS_LEGACY_THEME
 from chrys.app.tui.themes.document import copy_theme
 from chrys.app.tui.themes.store import UserThemeStore
 from chrys.app.tui.widgets.btw import ChatColumn
+from chrys.app.tui.widgets.chat.messages import AgentMessage, MessageHeaderRow, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.sidebar.panel import SidebarPanel, TabOverflowMark
 from chrys.foundation.config.settings import Settings
 from tests.support.pilot_barrier import screen_is_settled
@@ -328,3 +334,215 @@ async def test_wide_or_hidden_sidebar_does_not_request_layout_on_terminal_resize
         await resize_without_sidebar_layout(60, 30)
         await pilot.press("ctrl+g")
         await wait_for(lambda: sidebar.region.width == 25 and sidebar.region.right == 60, pilot=pilot)
+
+
+async def test_transcript_height_updates_do_not_requeue_layout_during_resize_or_sidebar_toggle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make_chrys_app(tmp_path / "sessions")
+    async with app.run_test(size=(120, 24)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        sidebar = main.query_one(SidebarPanel)
+        answer = "## Check\n\n" + "A long reply with CJK 中文 and an emoji 🫠. " * 28
+        prompt = "A long request. " * 20
+        entries = [entry for _ in range(6) for entry in (UserMessage(prompt), AgentMessage(answer))]
+        await panel.mount(*entries)
+        bodies = list(panel.query(VirtualizedMarkdown))
+        await wait_for(
+            lambda: len(bodies) == 12 and all(body.shown_source for body in bodies) and screen_is_settled(app, main),
+            pilot=pilot,
+            description="the transcript has parsed and laid out",
+        )
+        initial_height = panel.virtual_size.height
+        panel.scroll_end(animate=False, immediate=True)
+        await wait_for(lambda: panel.scroll_y == panel.max_scroll_y, pilot=pilot, description="at the latest message")
+
+        inside_update: set[Widget] = set()
+        committed: set[Widget] = set()
+        requeued: list[Widget] = []
+        vertical_scrollbars_shown: list[Widget] = []
+        virtual_size_reactive = Widget.virtual_size
+        vertical_scrollbar_reactive = Widget.show_vertical_scrollbar
+        reactive_type = type(virtual_size_reactive)
+        set_reactive = reactive_type._set
+        size_updated = Widget._size_updated
+
+        def observe_reactive(self, widget, value, always=False):
+            if self is virtual_size_reactive and widget in inside_update and widget.virtual_size != value:
+                requeued.append(widget)
+            if self is vertical_scrollbar_reactive and value is True and widget in bodies:
+                vertical_scrollbars_shown.append(widget)
+            return set_reactive(self, widget, value, always=always)
+
+        def observe_size(self, size, virtual_size, container_size, layout=True):
+            if not isinstance(self, (UserMessage, MessageHeaderRow, SidebarPanel)) or self.virtual_size == virtual_size:
+                return size_updated(self, size, virtual_size, container_size, layout=layout)
+            committed.add(self)
+            inside_update.add(self)
+            try:
+                return size_updated(self, size, virtual_size, container_size, layout=layout)
+            finally:
+                inside_update.remove(self)
+
+        monkeypatch.setattr(reactive_type, "_set", observe_reactive)
+        monkeypatch.setattr(Widget, "_size_updated", observe_size)
+
+        await resize_when_settled(pilot, 64, 24)
+        await wait_for(
+            lambda: panel.virtual_size.height > initial_height and panel.scroll_y == panel.max_scroll_y,
+            pilot=pilot,
+            description="wrapping at the narrow width preserves the bottom anchor",
+        )
+        narrow_height = panel.virtual_size.height
+        await pilot.press("ctrl+g")
+        await wait_for(
+            lambda: (
+                not sidebar.display
+                and panel.virtual_size.height < narrow_height
+                and panel.scroll_y == panel.max_scroll_y
+                and screen_is_settled(app, main)
+            ),
+            pilot=pilot,
+            description="the transcript wraps and stays anchored when the sidebar hides",
+        )
+        assert {type(widget) for widget in committed} >= {UserMessage, MessageHeaderRow, SidebarPanel}
+        assert not requeued, [type(widget).__name__ for widget in requeued]
+        assert not vertical_scrollbars_shown
+
+
+async def test_resize_layout_consumes_a_pending_request_and_retains_a_new_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make_chrys_app(tmp_path / "sessions")
+    async with app.run_test(size=(120, 24)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="the initial layout settled")
+        pending_at_reflow: list[bool] = []
+        new_request_survived: list[bool] = []
+        layout = Screen._refresh_layout
+        screen_resize = type(main)._screen_resized
+
+        def observe_layout(self, size: Size | None = None, scroll: bool = False) -> None:
+            if self is main and size == Size(80, 24):
+                pending_at_reflow.append(main._layout_required)
+                layout(self, size, scroll)
+                main.refresh(layout=True)
+            else:
+                layout(self, size, scroll)
+
+        def request_layout_before_resize(self, size: Size) -> None:
+            if self is main and size == Size(80, 24) and self.outer_size != size:
+                main.refresh(layout=True)
+                assert main._layout_required
+                screen_resize(self, size)
+                new_request_survived.append(main._layout_required)
+            else:
+                screen_resize(self, size)
+
+        monkeypatch.setattr(Screen, "_refresh_layout", observe_layout)
+        monkeypatch.setattr(type(main), "_screen_resized", request_layout_before_resize)
+        await resize_when_settled(pilot, 80, 24)
+        assert pending_at_reflow == [False]
+        assert new_request_survived == [True]
+
+
+async def test_reopening_sidebar_restores_offscreen_markdown_layout_before_selection(tmp_path: Path) -> None:
+    app = make_chrys_app(tmp_path / "sessions")
+    async with app.run_test(size=(120, 24)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        sidebar = main.query_one(SidebarPanel)
+        reply = "## Check\n\n" + "A long reply with CJK 中文 and an emoji 🫠. " * 28
+        entries = [entry for _ in range(6) for entry in (UserMessage("A long request. " * 20), AgentMessage(reply))]
+        await panel.mount(*entries)
+        bodies = list(panel.query(VirtualizedMarkdown))
+        await wait_for(
+            lambda: len(bodies) == 12 and all(body.shown_source for body in bodies) and screen_is_settled(app, main),
+            pilot=pilot,
+            description="history has settled at the original width",
+        )
+        original_sizes = [body.virtual_size for body in bodies]
+        first_answer = bodies[1]
+        selection = Selection(Offset(0, 15), Offset(20, 19))
+        selected = first_answer.get_selection(selection)
+        assert selected is not None
+
+        panel.scroll_end(animate=False, immediate=True)
+        await wait_for(lambda: panel.scroll_y == panel.max_scroll_y, pilot=pilot)
+        await pilot.press("ctrl+g")
+        await wait_for(
+            lambda: (
+                not sidebar.display
+                and all(body.virtual_size.width > size.width for body, size in zip(bodies, original_sizes, strict=True))
+                and screen_is_settled(app, main)
+            ),
+            pilot=pilot,
+            description="sidebar hidden and history wrapped wider",
+        )
+
+        # A geometry read can rebuild the full map before the queued full reflow
+        # sends Resize. Offscreen markdown must already be measured by then.
+        sidebar.display = True
+        main._compositor._full_map_invalidated = True
+        assert first_answer.region.width == original_sizes[1].width
+        assert [body.virtual_size for body in bodies] == original_sizes
+        assert first_answer.get_selection(selection) == selected
+        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot)
+
+
+async def test_sidebar_restores_wrapping_on_the_first_frame_after_same_height_stream_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make_chrys_app(tmp_path / "sessions")
+    async with app.run_test(size=(120, 24)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        sidebar = main.query_one(SidebarPanel)
+        source = "\n\n".join(f"Line {index} short" for index in range(5))
+        answer = AgentMessage(source, is_final=False)
+        await panel.mount(answer, *[UserMessage("A filler request. " * 30) for _ in range(6)])
+        body = answer.query_one(VirtualizedMarkdown)
+        await wait_for(
+            lambda: body.shown_source == source and screen_is_settled(app, main),
+            pilot=pilot,
+            description="streaming message initially placed with the sidebar",
+        )
+        original_size = body.virtual_size
+        await pilot.press("ctrl+g")
+        await wait_for(
+            lambda: body.virtual_size.width > original_size.width and screen_is_settled(app, main),
+            pilot=pilot,
+            description="message placed with the sidebar hidden",
+        )
+        wide_size = body.virtual_size
+
+        expanded = "\n\n".join(f"Line {index} " + ("word " * 17).strip() for index in range(5))
+        answer.stream_update(expanded, is_final=False)
+        await wait_for(
+            lambda: body.shown_source == expanded and screen_is_settled(app, main),
+            pilot=pilot,
+            description="longer stream content settled at the same wide height",
+        )
+        assert body.virtual_size == wide_size
+        frames: list[tuple[int, int]] = []
+        paint = type(main)._compositor_refresh
+
+        def observe_paint(self) -> None:
+            if self is main and sidebar.display and body._size.width == original_size.width:
+                frames.append((body._size.height, body._width_at_last_layout))
+            paint(self)
+
+        monkeypatch.setattr(type(main), "_compositor_refresh", observe_paint)
+        await pilot.press("ctrl+g")
+        await wait_for(
+            lambda: bool(frames) and screen_is_settled(app, main),
+            pilot=pilot,
+            description="first frame with the sidebar shown",
+        )
+        assert body.virtual_size.height > original_size.height
+        assert frames[0] == (body.virtual_size.height, body.virtual_size.width)

@@ -1669,6 +1669,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             # Mount the complete dock before measuring the resized transcript.
             self.refresh(layout=True)
             return
+        if size and not scroll and not self.app.is_inline:
+            # An explicit resize performs the queued layout now. Consume the
+            # old flag before reflow so requests raised during it still run.
+            self._layout_required = False
         super()._refresh_layout(size, scroll)
         # Now — and only now — the compositor's visible map matches the new
         # scroll offset, so a pending chat-highlight re-projection is safe.
