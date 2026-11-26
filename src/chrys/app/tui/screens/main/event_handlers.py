@@ -1122,6 +1122,8 @@ class BackendEventHandler:
             )
         elif event.is_retry:
             self._ui().apply_retry_started(event.note_message_id, event.opening_item_id)
+            if self.agent_running:
+                await self._ui().clear_settled_status()
         else:
             self._ui().apply_turn_started(event.turn_number, opening_item_id=event.opening_item_id)
 

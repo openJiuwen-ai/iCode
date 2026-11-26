@@ -17,7 +17,12 @@ import chrys.orchestration.engine.build.builder as builder_module
 import chrys.service.agent_middleware.events.tool_events as tool_events_module
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.main.screen import MainScreen
-from chrys.app.tui.widgets.chat.messages import MessageRollbackButton, ThinkingMessage, UserMessage
+from chrys.app.tui.widgets.chat.messages import (
+    InterruptedMessage,
+    MessageRollbackButton,
+    ThinkingMessage,
+    UserMessage,
+)
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
@@ -283,6 +288,237 @@ async def test_fast_cleanup_and_turn_started_wait_for_the_new_opener_to_mount(tm
         assert [message.text for message in panel.query(UserMessage)] == ["New input"]
         assert panel.query_one(UserMessage).turn_number == 6
         assert [item.turn_index for item in panel.toc_items] == [6]
+
+
+async def test_turn_started_clears_the_previous_interrupted_status(tmp_path: Path) -> None:
+    """A retry/continue starts without a user message; its TurnStarted owns the card's cleanup."""
+    from chrys.foundation.events.types import TurnStarted
+
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(80, 28)):
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        panel = main.query_one(ChatPanel)
+        panel.set_session_id("current")
+        await panel.add_user_message("Previous")
+        panel.apply_turn_started(6)
+        await panel.add_interrupted()
+        assert len(panel.query(InterruptedMessage)) == 1
+        panel.capture_settled_status()
+
+        main._state.run.agent_running = True
+        main._state.run.started_at = datetime.now(tz=UTC)
+        await bus.publish(
+            TurnStarted(
+                session_id="current",
+                timestamp=main._state.run.started_at + timedelta(seconds=1),
+                turn_number=7,
+                is_retry=True,
+            ),
+            raise_handler_errors=True,
+        )
+
+        assert not panel.query(InterruptedMessage)
+
+
+async def test_deferred_retry_turn_started_keeps_the_new_retry_countdown(tmp_path: Path) -> None:
+    """A retry notice mounted while the retry's TurnStarted waits is newer than that TurnStarted's cleanup."""
+    from textual.widgets import Button
+
+    from chrys.app.tui.widgets.chat.messages import RetryMessage
+    from chrys.foundation.events.types import InvocationRetryAttempt, TurnStarted
+    from chrys.foundation.models.invocations import InvocationOrigin
+
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(80, 28)):
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        panel = main.query_one(ChatPanel)
+        panel.set_session_id("current")
+        await panel.add_user_message("Previous")
+        panel.apply_turn_started(6)
+        await panel.add_interrupted()
+
+        main._state.run.agent_running = True
+        main._state.run.started_at = datetime.now(tz=UTC)
+        panel.capture_settled_status()
+        main._state.render_gate.begin()
+        await bus.publish(
+            TurnStarted(
+                session_id="current",
+                timestamp=main._state.run.started_at + timedelta(seconds=1),
+                turn_number=7,
+                is_retry=True,
+            ),
+            raise_handler_errors=True,
+        )
+        await bus.publish(
+            InvocationRetryAttempt(
+                message="Stream stalled",
+                attempt=1,
+                max_attempts=5,
+                delay_seconds=30,
+                wait_id="wait-1",
+                origin=InvocationOrigin("turn", "", "turn-test", None),
+            ),
+            raise_handler_errors=True,
+        )
+        retry = panel.query_one(RetryMessage)
+        retry_now = retry.query_one(".retry-now-btn", Button)
+        assert retry_now.is_mounted
+        assert not panel.query(InterruptedMessage)
+
+        main._state.render_gate.finish(rendered=True)
+        await main._input_flow.flush_deferred_agent_messages()
+
+        assert panel.query_one(RetryMessage) is retry
+        assert retry.query_one(".retry-now-btn", Button) is retry_now
+
+
+@pytest.mark.parametrize("is_retry", [False, True])
+@pytest.mark.parametrize("deferred", [False, True])
+async def test_turn_started_keeps_an_interruption_mounted_while_it_waited(
+    tmp_path: Path, *, is_retry: bool, deferred: bool
+) -> None:
+    """An interrupt while the TurnStarted waits, or before a late one, mounts a newer card that must stay."""
+    from chrys.foundation.events.types import TurnStarted
+
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(80, 28)):
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        panel = main.query_one(ChatPanel)
+        panel.set_session_id("current")
+        await panel.add_user_message("Previous")
+        panel.apply_turn_started(6)
+        await panel.add_interrupted()
+
+        main._state.run.agent_running = True
+        main._state.run.started_at = datetime.now(tz=UTC)
+        if is_retry:
+            panel.capture_settled_status()
+        if deferred:
+            main._state.render_gate.begin()
+            await bus.publish(
+                TurnStarted(
+                    session_id="current",
+                    timestamp=main._state.run.started_at + timedelta(seconds=1),
+                    turn_number=7,
+                    is_retry=is_retry,
+                ),
+                raise_handler_errors=True,
+            )
+        await main._input_flow.publish_interrupt()
+        interrupted = panel.query_one(InterruptedMessage)
+        assert len(panel.query(InterruptedMessage)) == 1
+        if not deferred:
+            await bus.publish(
+                TurnStarted(
+                    session_id="current",
+                    timestamp=main._state.run.started_at + timedelta(seconds=1),
+                    turn_number=7,
+                    is_retry=is_retry,
+                ),
+                raise_handler_errors=True,
+            )
+        else:
+            main._state.render_gate.finish(rendered=True)
+            await main._input_flow.flush_deferred_agent_messages()
+
+        assert panel.query_one(InterruptedMessage) is interrupted
+
+
+async def test_retry_turn_started_during_interrupt_mount_keeps_the_new_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry capture is taken before publish_interrupt can mount a new card."""
+    from chrys.foundation.events.types import TurnStarted
+
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(80, 28)):
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        panel = main.query_one(ChatPanel)
+        panel.set_session_id("current")
+        await panel.add_user_message("Previous")
+        panel.apply_turn_started(6)
+        await panel.add_interrupted()
+        panel.capture_settled_status()
+
+        main._state.run.agent_running = True
+        main._state.run.started_at = datetime.now(tz=UTC)
+        mounted = asyncio.Event()
+        release = asyncio.Event()
+        original = main._view_adapter.render_interrupted
+
+        async def render_interrupted_then_wait() -> None:
+            await original()
+            mounted.set()
+            await release.wait()
+
+        monkeypatch.setattr(main._view_adapter, "render_interrupted", render_interrupted_then_wait)
+        interrupt_task = asyncio.create_task(main._input_flow.publish_interrupt())
+        try:
+            await wait_for(mounted.is_set, description="interrupt card mounted")
+            new_card = panel.query_one(InterruptedMessage)
+            assert main._state.run.agent_running
+
+            await bus.publish(
+                TurnStarted(
+                    session_id="current",
+                    timestamp=main._state.run.started_at + timedelta(seconds=1),
+                    turn_number=7,
+                    is_retry=True,
+                ),
+                raise_handler_errors=True,
+            )
+        finally:
+            release.set()
+            await interrupt_task
+
+        assert panel.query_one(InterruptedMessage) is new_card
+
+
+async def test_retry_turn_started_while_old_card_is_gone_keeps_the_next_card(tmp_path: Path) -> None:
+    """A deferred TurnStarted must not re-read the transcript after the new card mounts."""
+    from chrys.foundation.events.types import TurnStarted
+
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(80, 28)):
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        panel = main.query_one(ChatPanel)
+        panel.set_session_id("current")
+        await panel.add_user_message("Previous")
+        panel.apply_turn_started(6)
+        await panel.add_interrupted()
+        panel.capture_settled_status()
+
+        main._state.run.agent_running = True
+        main._state.run.started_at = datetime.now(tz=UTC)
+        main._state.render_gate.begin()
+        await panel.remove_trailing_status()
+        assert not panel.query(InterruptedMessage)
+        await bus.publish(
+            TurnStarted(
+                session_id="current",
+                timestamp=main._state.run.started_at + timedelta(seconds=1),
+                turn_number=7,
+                is_retry=True,
+            ),
+            raise_handler_errors=True,
+        )
+        await panel.add_interrupted()
+        new_card = panel.query_one(InterruptedMessage)
+        main._state.render_gate.finish(rendered=True)
+        await main._input_flow.flush_deferred_agent_messages()
+
+        assert panel.query_one(InterruptedMessage) is new_card
 
 
 @pytest.mark.parametrize("deferred", [False, True])

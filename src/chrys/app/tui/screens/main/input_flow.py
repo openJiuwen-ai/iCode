@@ -503,6 +503,9 @@ class InputFlowController:
 
         # Guidance shows as a note the retry's TurnStarted names by this id.
         event = UserRetry(text=text, client_message_id=uuid4().hex[:12] if text else None)
+        # Capture the card as the user starts the retry, before any replacement
+        # can mount; the TurnStarted must not read the transcript later.
+        self._view.capture_settled_status()
         self._state.render_gate.begin()
         # A refusal gives back the whole draft, its unfilled fields included, as for Enter.
         self._begin_claim(text, kind="retry", draft=draft)
