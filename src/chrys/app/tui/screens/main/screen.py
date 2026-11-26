@@ -1307,7 +1307,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # popup adjacent to input and paints over the reserved status row
         # without changing transcript geometry while suggestions are filtered.
         yield PromptCard()
-        yield SuggestionList(locale_controller=self._locale_controller)
+        yield SuggestionList(locale_controller=self._locale_controller, before_open=self._hide_quote_popup)
         input_bar = InputBar(locale_controller=self._locale_controller)
         input_bar.submit_router = self._route_submit
         input_bar.draft_place = self._input_flow.place
@@ -1546,7 +1546,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         popup = self._quote_popup()
         if pointer is None or area is None or popup is None:
             return
-        if self.query_one(SuggestionList).is_visible:
+        suggestions = self.query_one_optional(SuggestionList)
+        if suggestions is not None and suggestions.is_visible:
             return
         # Never text of both transcripts: a drag from the card onto its counter or into the chat mixes theirs in.
         # Text the sidebar adds is let through, as before the card could be quoted.

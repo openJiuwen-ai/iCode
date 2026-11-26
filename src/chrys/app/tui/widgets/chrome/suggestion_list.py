@@ -29,6 +29,8 @@ from chrys.foundation.i18n import msg
 from chrys.foundation.i18n.formatting import format_message
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual.timer import Timer
 
     from chrys.app.tui.i18n import LocaleController
@@ -124,10 +126,12 @@ class SuggestionList(Widget):
         *,
         marquee: OverflowMarquee | None = None,
         locale_controller: LocaleController | None = None,
+        before_open: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._locale_controller = locale_controller
+        self._before_open = before_open
         self._mode: str = ""
         self._values: list[str | None] = []
         self._kinds: list[str] = []
@@ -175,7 +179,7 @@ class SuggestionList(Widget):
         self._clear_items()
         self._set_loading(True)
         self._sync_height()
-        set_widget_visibility_without_layout(self, True)
+        self._show_popup()
         self._cancel_marquee()
         self.refresh()
 
@@ -202,8 +206,13 @@ class SuggestionList(Widget):
         # Plain Content: a path in the title must not be parsed as markup.
         self.border_title = Content(title) if title else None
         self._populate(items, disabled, initial)
-        set_widget_visibility_without_layout(self, True)
+        self._show_popup()
         self._restart_marquee()
+
+    def _show_popup(self) -> None:
+        if self._before_open is not None:
+            self._before_open()
+        set_widget_visibility_without_layout(self, True)
 
     def hide(self) -> None:
         """Hide and clear the suggestion list."""
