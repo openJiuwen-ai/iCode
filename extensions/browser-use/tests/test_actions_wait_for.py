@@ -13,6 +13,7 @@ from icode_browser_use.actions import wait_for
 from icode_browser_use.errors import (
     BadRequest,
     BrowserError,
+    CDPTimeout,
     ConnectionClosed,
     StaleRef,
     TargetAmbiguous,
@@ -894,3 +895,119 @@ def test_wait_for_skips_css_hidden_cross_origin_oopif_for_text_and_text_changed(
     )[0]["text"]
     assert "status=timeout" in res_text
     assert "BACKGROUND-READY-934" not in res_text or "value='BACKGROUND-READY-934'" in res_text
+
+
+def test_wait_for_text_changed_does_not_report_success_when_deadline_drops_oopif(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2 #2 regression: static page with visible cross-origin iframe must timeout, never succeed on partial sample."""
+    clock = [100.0]
+    monkeypatch.setattr(wait_for.time, "monotonic", lambda: clock[0])
+
+    async def fake_sleep(delay: float) -> None:
+        clock[0] += delay
+
+    monkeypatch.setattr(wait_for, "_sleep", fake_sleep)
+
+    main_polls = [0]
+
+    class DeadlineEdgeOopifClient(FakeClient):
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            if method == "Runtime.evaluate":
+                if session_id == "oopif-vis":
+                    return {
+                        "result": {
+                            "value": {"text": "Static Child", "text_digest": "d:child-static", "text_hit": False}
+                        }
+                    }
+                main_polls[0] += 1
+                # On poll 2 (baseline was poll 1), advance the clock past the 0.85s deadline
+                # right as the main-frame read returns so the OOPIF loop sees remaining <= 0.
+                if main_polls[0] >= 2:
+                    clock[0] = 100.851
+                return {"result": {"value": {"text": "Static Main", "text_digest": "d:main-static", "text_hit": False}}}
+            return await super().send(method, params, session_id=session_id, timeout=timeout)
+
+    session = FakeSession(client=DeadlineEdgeOopifClient())
+    session.current_page_oopif_sessions = lambda: ["oopif-vis"]  # type: ignore[attr-defined]
+    res = asyncio.run(
+        wait_for.run(
+            session,
+            {"condition": "text_changed", "target": "", "value": "", "timeout_ms": 850, "return_mode": "text"},
+        )
+    )[0]["text"]
+    assert "status=timeout" in res, res
+    assert "status=succeeded" not in res, res
+    assert "page_text_sample_incomplete" in res, res
+
+
+def test_wait_for_text_changed_and_baseline_ignore_incomplete_oopif_timeout() -> None:
+    """When an attached OOPIF times out or visibility check errors, baseline returns None and text_changed times out."""
+    fail_child = [False]
+    fail_visibility = [False]
+    released_groups: list[tuple[str, str | None]] = []
+
+    class FlakyOopifClient(FakeClient):
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            params = dict(params or {})
+            if method == "Runtime.releaseObjectGroup":
+                released_groups.append((str(params.get("objectGroup") or ""), session_id))
+                return {}
+            if method == "Page.getFrameTree" and session_id == "oopif-1":
+                return {"frameTree": {"frame": {"id": "frame-1"}}}
+            if method == "DOM.getFrameOwner" and params.get("frameId") == "frame-1":
+                if fail_visibility[0]:
+                    raise CDPTimeout("DOM.getFrameOwner", 0.05)
+                return {"backendNodeId": 88}
+            if method == "DOM.resolveNode" and params.get("backendNodeId") == 88:
+                return {"object": {"objectId": "obj-88"}}
+            if method == "Runtime.callFunctionOn" and params.get("objectId") == "obj-88":
+                return {"result": {"value": True}}
+            if method == "Runtime.evaluate":
+                if session_id == "oopif-1":
+                    if fail_child[0]:
+                        raise CDPTimeout("Runtime.evaluate", 0.05)
+                    return {"result": {"value": {"text": "Child", "text_digest": "d:child"}}}
+                return {"result": {"value": {"text": "Main", "text_digest": "d:main"}}}
+            return await super().send(method, params, session_id=session_id, timeout=timeout)
+
+    session = FakeSession(client=FlakyOopifClient())
+    session.current_page_oopif_sessions = lambda: ["oopif-1"]  # type: ignore[attr-defined]
+
+    # Complete baseline works and releases the temporary visibility object group.
+    baseline = asyncio.run(wait_for.read_text_baseline(session, ""))
+    assert baseline == "d:main|oopif-1:d:child"
+    assert released_groups, "is_oopif_visible should release its temporary DOM.resolveNode objectGroup"
+
+    # Incomplete baseline (child timeout) returns None instead of poisoning baseline with main-only digest.
+    fail_child[0] = True
+    assert asyncio.run(wait_for.read_text_baseline(session, "")) is None
+
+    # text_changed with complete baseline must timeout (not falsely succeed) when child evaluate times out.
+    res_child_to = asyncio.run(
+        wait_for.run_with_baseline(
+            session,
+            {"condition": "text_changed", "target": "", "value": "", "timeout_ms": 120},
+            baseline=baseline,
+        )
+    )[0]["text"]
+    assert "status=timeout" in res_child_to
+
+    # Visibility probe error fails closed for wait_for (never reads child and never falsely reports text_changed).
+    fail_child[0] = False
+    fail_visibility[0] = True
+    res_vis_err = asyncio.run(
+        wait_for.run_with_baseline(
+            session,
+            {"condition": "text_changed", "target": "", "value": "", "timeout_ms": 120},
+            baseline=baseline,
+        )
+    )[0]["text"]
+    assert "status=timeout" in res_vis_err
+    res_text_err = asyncio.run(
+        wait_for.run(
+            session,
+            {"condition": "text", "target": "", "value": "Child", "timeout_ms": 120},
+        )
+    )[0]["text"]
+    assert "status=timeout" in res_text_err

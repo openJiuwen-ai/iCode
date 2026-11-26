@@ -210,10 +210,16 @@ class _Browser:
     backend: str = ""
     record: registry.ManifestRecord | None = None
     manifest: Path | None = None
+    slot_state_dir: Path | None = None
     ephemeral_state_dir: Path | None = None
     #: True while an implicit browser_navigate has not started successfully yet:
     #: its record is not written, so a failed start keeps the previous generation's.
     record_pending: bool = False
+    #: True when this handle is creating a brand-new Owned slot dir (no prior dir or manifest record).
+    created_fresh_state_dir: bool = False
+    reclaim_on_idle: bool = False
+    manifest_committed: bool = False
+    superseded: bool = False
     close_task: asyncio.Task[None] | None = None
     idle_reclaim_task: asyncio.Task[None] | None = None
     slot_generation_stamped: bool = False
@@ -461,19 +467,75 @@ def _manifest_path(ctx: ToolContext) -> Path | None:
         return None
 
 
-def _save_record(path: Path | None, record: registry.ManifestRecord) -> None:
+def _save_record(path: Path | None, record: registry.ManifestRecord) -> bool:
     """Persist one record, superseding older generations of its slot; never breaks a call."""
     if path is None:
-        return
+        return False
     try:
         with _manifest_lock(path):
             records, problem = registry.load(path)
             if problem in {"unreadable", "unexpected shape"}:
                 logger.warning("browser manifest %s; skipping write to avoid wiping records", problem)
-                return
+                return False
             registry.save(path, registry.supersede(records, record))
+            return True
     except OSError as exc:
         logger.warning("browser manifest write failed: %s", exc)
+        return False
+
+
+def _slot_has_manifest_record(path: Path | None, owner_key: str, slot: int) -> bool:
+    """Whether *path* already holds any record for ``(owner_key, slot)`` (fails closed on read error)."""
+    if path is None:
+        return False
+    try:
+        with _manifest_lock(path):
+            records, problem = registry.load(path)
+    except OSError:
+        return True
+    if problem in {"unreadable", "unexpected shape"}:
+        return True
+    return any(item.owner_key == owner_key and item.slot == slot for item in records)
+
+
+def _update_record_if_owned(
+    path: Path | None,
+    record: registry.ManifestRecord,
+    *,
+    slot_state_dir: Path | None = None,
+) -> bool:
+    """Persist an updated record only while *record.resume_id* still owns its slot."""
+    if path is None:
+        return False
+    if slot_state_dir is not None:
+        stamped = _read_slot_generation(slot_state_dir)
+        if stamped and stamped != record.resume_id:
+            logger.warning(
+                "browser manifest update skipped: slot %d belongs to %s, not %s",
+                record.slot,
+                stamped,
+                record.resume_id,
+            )
+            return False
+    try:
+        with _manifest_lock(path):
+            records, problem = registry.load(path)
+            if problem in {"unreadable", "unexpected shape"}:
+                logger.warning("browser manifest %s; skipping write to avoid wiping records", problem)
+                return False
+            same_slot = [item for item in records if item.owner_key == record.owner_key and item.slot == record.slot]
+            if not same_slot or any(item.resume_id != record.resume_id for item in same_slot):
+                logger.warning(
+                    "browser manifest update skipped: slot %d is no longer owned by %s",
+                    record.slot,
+                    record.resume_id,
+                )
+                return False
+            registry.save(path, registry.upsert(records, record))
+            return True
+    except OSError as exc:
+        logger.warning("browser manifest write failed: %s", exc)
+        return False
 
 
 _MANIFEST_LOCKS: dict[str, threading.Lock] = {}
@@ -488,11 +550,11 @@ def _manifest_lock(path: Path) -> threading.Lock:
         return _MANIFEST_LOCKS.setdefault(key, threading.Lock())
 
 
-async def _asave_record(path: Path | None, record: registry.ManifestRecord) -> None:
+async def _asave_record(path: Path | None, record: registry.ManifestRecord) -> bool:
     """Off-loop manifest persistence so Windows ``icacls`` never stalls the event loop."""
     if path is None:
-        return
-    await asyncio.to_thread(_save_record, path, record)
+        return False
+    return await asyncio.to_thread(_save_record, path, record)
 
 
 def _browser_origin(browser: _Browser) -> str:
@@ -501,14 +563,23 @@ def _browser_origin(browser: _Browser) -> str:
 
 
 async def _apersist(browser: _Browser) -> None:
-    """Async off-loop origin persistence."""
-    if browser.manifest is None or browser.record is None or browser.record_pending:
+    """Async off-loop origin persistence; never overwrites a slot taken over by another handle."""
+    if browser.superseded or browser.manifest is None or browser.record is None or browser.record_pending:
         return
     origin = _browser_origin(browser)
     if browser.record.origin == origin:
         return
-    browser.record = dataclasses.replace(browser.record, origin=origin, updated_at=time.time())
-    await _asave_record(browser.manifest, browser.record)
+    updated = dataclasses.replace(browser.record, origin=origin, updated_at=time.time())
+    saved = await asyncio.to_thread(
+        _update_record_if_owned,
+        browser.manifest,
+        updated,
+        slot_state_dir=browser.slot_state_dir,
+    )
+    if saved:
+        browser.record = updated
+    elif _check_slot_ownership(browser) is not None:
+        browser.superseded = True
 
 
 def _recoverable(ctx: ToolContext) -> list[registry.ManifestRecord]:
@@ -610,6 +681,13 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int, *, persist: bool
         updated_at=time.time(),
     )
     manifest = _manifest_path(ctx)
+    owner_key = _owner_key(ctx)
+    slot_state_dir = state_dir if backend == "owned" else None
+    created_fresh_state_dir = (
+        slot_state_dir is not None
+        and not slot_state_dir.exists()
+        and not _slot_has_manifest_record(manifest, owner_key, slot)
+    )
     browser = _Browser(
         browser_id,
         session,
@@ -620,14 +698,68 @@ def _allocate(ctx: ToolContext, base: BrowserConfig, slot: int, *, persist: bool
         backend=backend,
         record=record,
         manifest=manifest,
+        slot_state_dir=slot_state_dir,
         ephemeral_state_dir=state_dir if backend == "owned" and _is_ephemeral_invocation(ctx) else None,
+        created_fresh_state_dir=created_fresh_state_dir,
+        reclaim_on_idle=reclaim_on_idle,
     )
+    set_guard = getattr(session, "set_slot_acquire_guard", None)
+    if slot_state_dir is not None and callable(set_guard):
+
+        async def _verify_slot_on_acquire() -> None:
+            target = _browsers.get(browser_id)
+            if target is None or target.slot_state_dir is None:
+                return
+            slot_dir = target.slot_state_dir
+            slot_lock = await acquire_file_lock(_slot_lifecycle_lock_path(slot_dir), wait=5.0)
+            if slot_lock is None:
+                raise Unavailable(
+                    "That profile slot is busy with another plugin lifecycle operation; retry after it finishes.",
+                    pre_dispatch=True,
+                )
+            try:
+                if target.record_pending:
+                    if target.created_fresh_state_dir:
+                        preexisting = any(
+                            child.name not in {"instance.lock", "instance.owner.json"} for child in slot_dir.iterdir()
+                        )
+                        has_record = target.record is not None and _slot_has_manifest_record(
+                            target.manifest, target.record.owner_key, target.slot
+                        )
+                        if preexisting or has_record:
+                            target.created_fresh_state_dir = False
+                    return
+                reason = _check_slot_ownership(target)
+                if reason is not None:
+                    target.superseded = True
+                    err = BrowserError(
+                        f"Browser handle {target.id} is no longer the active owner of its slot ({reason}); "
+                        "call browser_close on this stale handle and use browser_list / browser_resume or browser_open.",
+                        pre_dispatch=True,
+                    )
+                    err.code = "browser_superseded"
+                    raise err
+                if target.record is not None and target.record.resume_id:
+                    _write_slot_generation(slot_dir, target.record.resume_id)
+                    target.slot_generation_stamped = True
+            finally:
+                slot_lock.release()
+
+        set_guard(_verify_slot_on_acquire)
     _browsers[browser_id] = browser
     if persist:
-        _save_record(manifest, record)
+        if _save_record(manifest, record):
+            browser.manifest_committed = True
         if reclaim_on_idle:
             _arm_unstarted_idle_reclaim(browser, base.idle_close_seconds)
     return browser
+
+
+def _is_unstarted_session(session: BrowserSession | BrokerSession) -> bool:
+    """Whether *session* has not launched/connected yet (so its own idle watchdog is not active)."""
+    if isinstance(session, BrokerSession):
+        return not session.connected
+    return not getattr(session, "started_once", False) and getattr(session, "state", "") in {"idle", "failed"}
 
 
 def _arm_unstarted_idle_reclaim(browser: _Browser, idle_close_seconds: float) -> None:
@@ -649,16 +781,72 @@ def _arm_unstarted_idle_reclaim(browser: _Browser, idle_close_seconds: float) ->
         target = _browsers.get(browser_id)
         if target is None or target.close_task is not None:
             return
-        sess = target.session
-        if isinstance(sess, BrokerSession):
-            if sess.connected:
-                return
-        elif sess.started_once or sess.state != "idle":
+        if not _is_unstarted_session(target.session):
             return
         target.idle_reclaim_task = None
         await _ensure_close_task(target)
 
     browser.idle_reclaim_task = loop.create_task(_reclaim_unstarted_idle())
+
+
+def _cancel_unstarted_idle_reclaim(browser: _Browser) -> None:
+    task = browser.idle_reclaim_task
+    browser.idle_reclaim_task = None
+    if task is not None and task is not asyncio.current_task() and not task.done():
+        task.cancel()
+
+
+def _maybe_rearm_unstarted_idle_reclaim(browser: _Browser) -> None:
+    if (
+        browser.reclaim_on_idle
+        and not browser.record_pending
+        and browser.close_task is None
+        and browser.id in _browsers
+        and _is_unstarted_session(browser.session)
+    ):
+        _arm_unstarted_idle_reclaim(browser, browser.session.cfg.idle_close_seconds)
+
+
+def _check_slot_ownership(browser: _Browser) -> str | None:
+    """Return a conflict description when *browser* has been superseded on its slot, else ``None``."""
+    if browser.superseded:
+        return "this browser handle was superseded by a newer session on the same slot"
+    if browser.record is None or not browser.record.resume_id or browser.record_pending:
+        return None
+    expected_id = browser.record.resume_id
+    if browser.slot_state_dir is not None:
+        stamped = _read_slot_generation(browser.slot_state_dir)
+        if stamped and stamped != expected_id:
+            return f"slot {browser.slot} is now owned by newer generation {stamped} (this handle is {expected_id})"
+    if browser.manifest is not None:
+        try:
+            with _manifest_lock(browser.manifest):
+                records, problem = registry.load(browser.manifest)
+        except OSError:
+            return None
+        if problem not in {"unreadable", "unexpected shape"}:
+            owner_key = browser.record.owner_key
+            slot = browser.record.slot
+            same_slot = [item for item in records if item.owner_key == owner_key and item.slot == slot]
+            if same_slot:
+                other = next((item.resume_id for item in same_slot if item.resume_id != expected_id), None)
+                if other is not None:
+                    return f"slot {slot} is now owned by newer generation {other} (this handle is {expected_id})"
+            elif browser.manifest_committed and browser.manifest.exists():
+                return f"slot {slot} record {expected_id} is no longer active in the manifest"
+    return None
+
+
+async def _ensure_handle_active(browser: _Browser) -> None:
+    """Reject operations on handles whose slot was already resumed/superseded by another instance."""
+    reason = await asyncio.to_thread(_check_slot_ownership, browser)
+    if reason is not None:
+        browser.superseded = True
+        raise ToolError(
+            f"Browser handle {browser.id} is no longer the active owner of its slot ({reason}); "
+            "call browser_close on this stale handle and use browser_list / browser_resume or browser_open.",
+            code="browser_superseded",
+        )
 
 
 def _get(ctx: ToolContext, browser_id: str) -> _Browser:
@@ -752,12 +940,10 @@ def _format_session_facts(browser: _Browser) -> str:
 
 async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> str:
     """Run one core tool and return its text blocks joined for the model."""
-    if browser.idle_reclaim_task is not None:
-        if not browser.idle_reclaim_task.done():
-            browser.idle_reclaim_task.cancel()
-        browser.idle_reclaim_task = None
+    _cancel_unstarted_idle_reclaim(browser)
     is_write = name in _WRITE_TOOL_NAMES
     try:
+        await _ensure_handle_active(browser)
         blocks = await _call(browser, name, arguments)
     except ToolError as exc:
         cause = exc.__cause__
@@ -790,20 +976,24 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
         # drained; it must not relabel a later, unrelated failure.
         getattr(browser.session, "consume_site_blocked_origin", lambda: "")()
         if (
-            browser.ephemeral_state_dir is not None
+            not browser.superseded
+            and browser.slot_state_dir is not None
             and not browser.slot_generation_stamped
             and not browser.record_pending
             and browser.record is not None
             and bool(getattr(browser.session, "owns_state_dir", False))
-            and browser.ephemeral_state_dir.is_dir()
+            and browser.slot_state_dir.is_dir()
+            and _check_slot_ownership(browser) is None
         ):
-            _write_slot_generation(browser.ephemeral_state_dir, browser.record.resume_id)
+            _write_slot_generation(browser.slot_state_dir, browser.record.resume_id)
             browser.slot_generation_stamped = True
-        snapshot = browser.session.snapshot
-        browser.url = snapshot.url or browser.url
-        browser.title = snapshot.title or browser.title
-        _record_origin(browser.visited_origins, browser.url)
-        await _apersist(browser)
+        if not browser.superseded:
+            snapshot = browser.session.snapshot
+            browser.url = snapshot.url or browser.url
+            browser.title = snapshot.title or browser.title
+            _record_origin(browser.visited_origins, browser.url)
+            await _apersist(browser)
+        _maybe_rearm_unstarted_idle_reclaim(browser)
     return rendered
 
 
@@ -816,8 +1006,8 @@ async def browser_open(ctx: ToolContext) -> str:
         browser = _open(ctx)
     finally:
         _DEFER_MANIFEST_PERSIST = False
-    if browser.record is not None:
-        await _asave_record(browser.manifest, browser.record)
+    if browser.record is not None and await _asave_record(browser.manifest, browser.record):
+        browser.manifest_committed = True
     if _is_reclaimable_on_idle(ctx):
         _arm_unstarted_idle_reclaim(browser, browser.session.cfg.idle_close_seconds)
     return f"browser_id: {browser.id}"
@@ -825,6 +1015,12 @@ async def browser_open(ctx: ToolContext) -> str:
 
 def _describe(browser: _Browser) -> tuple[str, str, str]:
     """Map the transport state to ``(state, reason, next step)`` for the model."""
+    if browser.superseded:
+        return (
+            "superseded",
+            "another instance resumed or took over this slot",
+            "call browser_close on this stale handle, then call browser_list",
+        )
     session = browser.session
     if isinstance(session, BrokerSession):
         if session.connected:
@@ -910,11 +1106,13 @@ async def browser_list(ctx: ToolContext) -> str:
         elif browser.session.state == "ready":
             pages_fn = getattr(browser.session, "pages", None)
             owned_pages = list(pages_fn()) if callable(pages_fn) else []
-            if len(owned_pages) > 1:
+            action_lock = getattr(browser.session, "_action_lock", None)
+            busy = bool(callable(getattr(action_lock, "locked", None)) and action_lock.locked())
+            if len(owned_pages) > 1 and not busy:
                 list_pages_fn = getattr(browser.session, "list_pages", None)
                 if callable(list_pages_fn):
                     with contextlib.suppress(Exception):
-                        refreshed = await list_pages_fn()
+                        refreshed = await asyncio.wait_for(list_pages_fn(), timeout=1.0)
                         if isinstance(refreshed, list) and refreshed:
                             owned_pages = refreshed
         if len(owned_pages) > 1:
@@ -1060,7 +1258,8 @@ async def browser_resume(
             try:
                 browser = _allocate(ctx, base, slot, persist=False)
                 if browser.record is not None:
-                    await _asave_record(browser.manifest, browser.record)
+                    if await _asave_record(browser.manifest, browser.record):
+                        browser.manifest_committed = True
                     _write_slot_generation(state_dir, browser.record.resume_id)
                     browser.slot_generation_stamped = True
             finally:
@@ -1069,8 +1268,8 @@ async def browser_resume(
             slot_lock.release()
     else:
         browser = _allocate(ctx, base, slot, persist=False)
-        if browser.record is not None:
-            await _asave_record(browser.manifest, browser.record)
+        if browser.record is not None and await _asave_record(browser.manifest, browser.record):
+            browser.manifest_committed = True
     if backend == "broker":
         note = (
             "reacquired the Broker session for this slot; the Broker may still hold the original page. "
@@ -1151,9 +1350,24 @@ async def _commit_pending_record(browser: _Browser) -> None:
     if not browser.record_pending:
         return
     browser.record_pending = False
-    if browser.record is not None:
-        browser.record = dataclasses.replace(browser.record, origin=_browser_origin(browser), updated_at=time.time())
-        await _asave_record(browser.manifest, browser.record)
+    if browser.superseded or browser.record is None:
+        return
+    browser.record = dataclasses.replace(browser.record, origin=_browser_origin(browser), updated_at=time.time())
+    slot_dir = browser.slot_state_dir
+    if slot_dir is not None and bool(getattr(browser.session, "owns_state_dir", False)):
+        slot_lock = await acquire_file_lock(_slot_lifecycle_lock_path(slot_dir), wait=5.0)
+        try:
+            if await _asave_record(browser.manifest, browser.record):
+                browser.manifest_committed = True
+            if slot_dir.is_dir():
+                _write_slot_generation(slot_dir, browser.record.resume_id)
+                browser.slot_generation_stamped = True
+        finally:
+            if slot_lock is not None:
+                slot_lock.release()
+    else:
+        if await _asave_record(browser.manifest, browser.record):
+            browser.manifest_committed = True
 
 
 @_tool(requires_approval=False)
@@ -1684,7 +1898,12 @@ async def browser_screenshot(
     arguments: dict[str, object] = {"full_page": full_page}
     if target:
         arguments["target"] = target
-    blocks = await _call(browser, "browser_screenshot", arguments)
+    _cancel_unstarted_idle_reclaim(browser)
+    try:
+        await _ensure_handle_active(browser)
+        blocks = await _call(browser, "browser_screenshot", arguments)
+    finally:
+        _maybe_rearm_unstarted_idle_reclaim(browser)
     image = next((block for block in blocks if block.get("type") == "image"), None)
     if image is None:
         return _text(blocks) or "screenshot returned no image"
@@ -1736,9 +1955,25 @@ def _write_slot_generation(state_dir: Path, resume_id: str) -> None:
 
 
 def _manifest_allows_reclaim(browser: _Browser) -> bool:
-    """True only when *browser* is still the active persisted generation for its slot."""
-    if browser.record is None or not browser.record.resume_id or browser.record_pending:
+    """True only when *browser* owns its slot (active generation, or a freshly created pending dir)."""
+    if browser.superseded or browser.record is None or not browser.record.resume_id:
         return False
+    if browser.record_pending:
+        if not browser.created_fresh_state_dir:
+            return False
+        if browser.manifest is None:
+            return True
+        try:
+            with _manifest_lock(browser.manifest):
+                records, problem = registry.load(browser.manifest)
+        except OSError:
+            return False
+        if problem in {"unreadable", "unexpected shape"}:
+            return False
+        owner_key = browser.record.owner_key
+        slot = browser.record.slot
+        same_slot = [item for item in records if item.owner_key == owner_key and item.slot == slot]
+        return not same_slot
     if browser.manifest is None:
         return True
     try:
@@ -1854,7 +2089,11 @@ async def _close_and_forget(browser: _Browser) -> None:
     try:
         await browser.session.aclose()
     finally:
-        if browser.ephemeral_state_dir is not None and bool(getattr(browser.session, "owns_state_dir", False)):
+        if (
+            not browser.superseded
+            and browser.ephemeral_state_dir is not None
+            and bool(getattr(browser.session, "owns_state_dir", False))
+        ):
             cleanup_target, slot_free, cleanup_lock, record_dropped = _stage_ephemeral_dir(
                 browser.ephemeral_state_dir, browser=browser
             )
@@ -1888,7 +2127,10 @@ def _drop_record(browser: _Browser) -> None:
             if problem in {"unreadable", "unexpected shape"}:
                 logger.warning("browser manifest skipped drop (%s): %s", problem, browser.manifest)
                 return
-            registry.save(browser.manifest, registry.drop(records, browser.record.resume_id))
+            remaining = registry.drop(records, browser.record.resume_id)
+            if len(remaining) == len(records):
+                return
+            registry.save(browser.manifest, remaining)
     except OSError as exc:
         logger.warning("browser manifest update failed: %s", exc)
 

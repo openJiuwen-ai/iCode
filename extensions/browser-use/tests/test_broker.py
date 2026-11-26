@@ -768,3 +768,174 @@ def test_broker_does_not_cancel_inflight_write_on_client_disconnect(tmp_path) ->
             await broker.aclose()
 
     asyncio.run(scenario())
+
+
+def test_broker_browser_list_does_not_block_on_busy_handle(tmp_path, monkeypatch) -> None:
+    """Broker issue 1: browser_list must return promptly while another handle runs a multi-second wait."""
+    import importlib
+    import time
+
+    from chrys.extensions import ToolContext
+
+    import icode_browser_use.extension as ext
+
+    for key in tuple(os.environ):
+        if key.startswith("ICODE_BROWSER_"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("ICODE_BROWSER_ALLOWED_DOMAINS", "example.com")
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ICODE_BROWSER_BROKER", "1")
+    reloaded = importlib.reload(ext)
+    reloaded._browsers.clear()
+
+    wait_started = asyncio.Event()
+    release_wait = asyncio.Event()
+
+    class BusySession:
+        def __init__(self) -> None:
+            self.state = "ready"
+            self.snapshot = SimpleNamespace(url="https://example.com/busy", title="Busy")
+
+        def pages(self):
+            return [
+                SimpleNamespace(index=1, target_id="t1", url="https://example.com/busy", title="Busy", current=True),
+                SimpleNamespace(index=2, target_id="t2", url="https://example.com/popup", title="Popup", current=False),
+            ]
+
+        async def list_pages(self):
+            await asyncio.sleep(3.0)
+            return self.pages()
+
+    async def tool_caller(_session, tool, _arguments):
+        if tool.name == "browser_wait_for":
+            wait_started.set()
+            await release_wait.wait()
+            return [{"type": "text", "text": "status=timeout"}]
+        return [{"type": "text", "text": "ok"}]
+
+    context = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="A",
+        session_id="s-busy-list",
+    )
+
+    async def scenario() -> None:
+        broker = BrokerServer(
+            _cfg(tmp_path / "state"),
+            session_factory=lambda _cfg: BusySession(),
+            tool_caller=tool_caller,
+        )
+        await broker.start()
+        try:
+            bid = (await reloaded.browser_open(context)).removeprefix("browser_id: ").strip()
+            await reloaded.browser_navigate(context, "https://example.com/busy", bid)
+            wait_task = asyncio.create_task(
+                reloaded.browser_wait_for(context, bid, condition="text", value="never", timeout_ms=3500)
+            )
+            await asyncio.wait_for(wait_started.wait(), timeout=2.0)
+
+            started = time.monotonic()
+            listed = await reloaded.browser_list(context)
+            elapsed = time.monotonic() - started
+            assert elapsed < 0.5, f"browser_list blocked for {elapsed:.2f}s behind busy handle"
+            assert f"browser_id={bid}" in listed
+            assert "tab_id=t2" in listed, "cached popup tab should still appear without blocking"
+
+            release_wait.set()
+            await asyncio.wait_for(wait_task, timeout=2.0)
+            await reloaded.browser_close(context, bid)
+        finally:
+            release_wait.set()
+            await broker.aclose()
+            reloaded._browsers.clear()
+
+    asyncio.run(scenario())
+
+
+def test_compact_client_connected_to_full_broker_gets_compact_popup_hint(tmp_path) -> None:
+    """Broker issue 2: a compact client connected to a default full Broker must get the compact popup hint."""
+    from icode_browser_use.actions._shared import effective_toolset
+
+    async def tool_caller(session, _tool, _arguments):
+        mode = effective_toolset(session)
+        if mode == "compact":
+            return [{"type": "text", "text": "当前 compact 工具集不包含标签切换工具，请勿调用 browser_tab_switch"}]
+        return [{"type": "text", "text": "可用 browser_tab_switch 切换查看"}]
+
+    async def scenario() -> None:
+        full_cfg = BrowserConfig(allowed_domains=("example.com",), state_dir=tmp_path, toolset="full")
+        compact_cfg = BrowserConfig(allowed_domains=("example.com",), state_dir=tmp_path, toolset="compact")
+        broker = BrokerServer(
+            full_cfg,
+            session_factory=lambda session_cfg: SimpleNamespace(
+                cfg=session_cfg, state="ready", snapshot=SimpleNamespace(url="", title="")
+            ),
+            tool_caller=tool_caller,
+        )
+        await broker.start()
+        try:
+            compact_client = BrokerClient(compact_cfg, owner="owner-compact", session_id="s-compact")
+            compact_blocks = await compact_client.call("browser_click", {"target": "Open Popup"})
+            assert "compact 工具集不包含标签切换工具" in compact_blocks[0]["text"]
+            assert "可用 browser_tab_switch" not in compact_blocks[0]["text"]
+            await compact_client.aclose()
+
+            full_client = BrokerClient(full_cfg, owner="owner-full", session_id="s-full")
+            full_blocks = await full_client.call("browser_click", {"target": "Open Popup"})
+            assert "可用 browser_tab_switch" in full_blocks[0]["text"]
+            await full_client.aclose()
+        finally:
+            await broker.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_broker_press_key_missing_executable_returns_unavailable_and_counts_zero_writes(tmp_path, monkeypatch) -> None:
+    """Broker issue 3: missing Chrome binary (ENOENT) via online Broker must count write_actions: 0."""
+    import importlib
+
+    from chrys.extensions import ToolContext, ToolError
+
+    import icode_browser_use.extension as ext
+
+    for key in tuple(os.environ):
+        if key.startswith("ICODE_BROWSER_"):
+            monkeypatch.delenv(key)
+    missing_exe = str(tmp_path / "does-not-exist-chrome-binary")
+    monkeypatch.setenv("ICODE_BROWSER_ALLOWED_DOMAINS", "example.com")
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ICODE_BROWSER_BROKER", "1")
+    monkeypatch.setenv("ICODE_BROWSER_EXECUTABLE", missing_exe)
+    reloaded = importlib.reload(ext)
+    reloaded._browsers.clear()
+
+    context = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="A",
+        session_id="s-enoent",
+    )
+
+    async def scenario() -> None:
+        broker_cfg = BrowserConfig(
+            allowed_domains=("example.com",),
+            state_dir=tmp_path / "state",
+            executable=missing_exe,
+        )
+        broker = BrokerServer(broker_cfg)
+        await broker.start()
+        try:
+            bid = (await reloaded.browser_open(context)).removeprefix("browser_id: ").strip()
+            with pytest.raises(ToolError) as exc_info:
+                await reloaded.browser_press_key(context, bid, "Enter")
+            assert exc_info.value.code == "browser_unavailable"
+            closed = await reloaded.browser_close(context, bid)
+            assert "write_actions: 0" in closed, closed
+        finally:
+            await broker.aclose()
+            reloaded._browsers.clear()
+
+    asyncio.run(scenario())

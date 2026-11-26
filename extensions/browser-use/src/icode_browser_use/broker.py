@@ -23,6 +23,7 @@ from typing import Any
 
 from ._proc import atomic_write_private
 from .actions import build_tool_defs
+from .actions._shared import override_call_toolset
 from .bridge.protocol import MAX_TCP_MESSAGE_BYTES, ProtocolError, encode_message, read_async_frame
 from .config import BrowserConfig, BrowserEnv, ConfigError
 from .errors import BrowserError, Unavailable
@@ -346,13 +347,14 @@ class BrokerServer:
                     "generation": lease.generation,
                 }
             if op == "call":
-                blocks, url, title = await self._call(
+                blocks, url, title, pages = await self._call(
                     str(message.get("lease_id", "")),
                     str(message.get("generation", "")),
                     str(message.get("tool", "")),
                     message.get("arguments"),
+                    toolset=str(message.get("toolset") or ""),
                 )
-                return {"id": request_id, "ok": True, "blocks": blocks, "url": url, "title": title}
+                return {"id": request_id, "ok": True, "blocks": blocks, "url": url, "title": title, "pages": pages}
             if op == "tabs":
                 pages = await self._list_pages(
                     str(message.get("lease_id", "")),
@@ -404,6 +406,8 @@ class BrokerServer:
             payload: dict[str, Any] = {"id": request_id, "ok": False, "error": exc.message, "code": exc.code}
             if exc.blocked_origin:
                 payload["blocked_origin"] = exc.blocked_origin
+            if exc.pre_dispatch:
+                payload["pre_dispatch"] = True
             return payload
         except Exception as exc:  # noqa: BLE001 - broker boundary
             return {"id": request_id, "ok": False, "error": f"broker_error: {exc}"}
@@ -506,50 +510,8 @@ class BrokerServer:
             self.leases[lease.lease_id] = lease
             return lease
 
-    async def _call(
-        self, lease_id: str, generation: str, tool_name: str, arguments: Any
-    ) -> tuple[list[dict[str, Any]], str, str]:
-        lease = self.leases.get(lease_id)
-        if lease is None or lease.generation != generation:
-            raise Unavailable("broker lease is not active")
-        lease.last_seen = time.monotonic()
-        self._last_activity = lease.last_seen
-        tool = self._tools.get(tool_name)
-        if tool is None:
-            raise Unavailable(
-                f"unknown tool: {tool_name}; this Broker process may predate the installed plugin - restart it"
-            )
-        session = self.sessions.get(lease.session_id)
-        if session is None:
-            raise Unavailable("broker lease is not active")
-        lease.in_flight += 1
-        try:
-            result = await self._tool_caller(session, tool, arguments)
-        finally:
-            lease.in_flight = max(0, lease.in_flight - 1)
-            lease.last_seen = time.monotonic()
-            self._last_activity = lease.last_seen
-        if not isinstance(result, list) or not all(isinstance(block, dict) for block in result):
-            raise Unavailable("broker tool returned an invalid result")
-        snapshot = getattr(session, "snapshot", None)
-        return result, str(getattr(snapshot, "url", "") or ""), str(getattr(snapshot, "title", "") or "")
-
-    async def _list_pages(self, lease_id: str, generation: str) -> list[dict[str, Any]]:
-        """Return currently owned tabs for a ready session without launching Chrome."""
-        lease = self.leases.get(lease_id)
-        if lease is None or lease.generation != generation:
-            raise Unavailable("broker lease is not active")
-        lease.last_seen = time.monotonic()
-        self._last_activity = lease.last_seen
-        session = self.sessions.get(lease.session_id)
-        if session is None or getattr(session, "state", None) != "ready":
-            return []
-        list_pages_fn = getattr(session, "list_pages", None)
-        if callable(list_pages_fn):
-            pages = await list_pages_fn()
-        else:
-            pages_fn = getattr(session, "pages", None)
-            pages = list(pages_fn()) if callable(pages_fn) else []
+    @staticmethod
+    def _serialize_pages(pages: Any) -> list[dict[str, Any]]:
         return [
             {
                 "index": int(getattr(info, "index", idx + 1)),
@@ -560,6 +522,76 @@ class BrokerServer:
             }
             for idx, info in enumerate(pages)
         ]
+
+    @classmethod
+    def _cached_pages_payload(cls, session: Any) -> list[dict[str, Any]]:
+        pages_fn = getattr(session, "pages", None)
+        pages = list(pages_fn()) if callable(pages_fn) else []
+        return cls._serialize_pages(pages)
+
+    async def _call(
+        self,
+        lease_id: str,
+        generation: str,
+        tool_name: str,
+        arguments: Any,
+        *,
+        toolset: str = "",
+    ) -> tuple[list[dict[str, Any]], str, str, list[dict[str, Any]]]:
+        lease = self.leases.get(lease_id)
+        if lease is None or lease.generation != generation:
+            raise Unavailable("broker lease is not active", pre_dispatch=True)
+        lease.last_seen = time.monotonic()
+        self._last_activity = lease.last_seen
+        tool = self._tools.get(tool_name)
+        if tool is None:
+            raise Unavailable(
+                f"unknown tool: {tool_name}; this Broker process may predate the installed plugin - restart it",
+                pre_dispatch=True,
+            )
+        session = self.sessions.get(lease.session_id)
+        if session is None:
+            raise Unavailable("broker lease is not active", pre_dispatch=True)
+        lease.in_flight += 1
+        try:
+            with override_call_toolset(toolset):
+                result = await self._tool_caller(session, tool, arguments)
+        finally:
+            lease.in_flight = max(0, lease.in_flight - 1)
+            lease.last_seen = time.monotonic()
+            self._last_activity = lease.last_seen
+        if not isinstance(result, list) or not all(isinstance(block, dict) for block in result):
+            raise Unavailable("broker tool returned an invalid result")
+        snapshot = getattr(session, "snapshot", None)
+        return (
+            result,
+            str(getattr(snapshot, "url", "") or ""),
+            str(getattr(snapshot, "title", "") or ""),
+            self._cached_pages_payload(session),
+        )
+
+    async def _list_pages(self, lease_id: str, generation: str) -> list[dict[str, Any]]:
+        """Return currently owned tabs for a ready session without launching Chrome or blocking on busy handles."""
+        lease = self.leases.get(lease_id)
+        if lease is None or lease.generation != generation:
+            raise Unavailable("broker lease is not active")
+        lease.last_seen = time.monotonic()
+        self._last_activity = lease.last_seen
+        session = self.sessions.get(lease.session_id)
+        if session is None or getattr(session, "state", None) != "ready":
+            return []
+        action_lock = getattr(session, "_action_lock", None)
+        busy = lease.in_flight > 0 or bool(callable(getattr(action_lock, "locked", None)) and action_lock.locked())
+        if busy:
+            return self._cached_pages_payload(session)
+        list_pages_fn = getattr(session, "list_pages", None)
+        if callable(list_pages_fn):
+            try:
+                pages = await asyncio.wait_for(list_pages_fn(), timeout=1.0)
+            except (asyncio.TimeoutError, TimeoutError, Exception):
+                return self._cached_pages_payload(session)
+            return self._serialize_pages(pages)
+        return self._cached_pages_payload(session)
 
     async def aclose(self) -> None:
         if self._server is not None:

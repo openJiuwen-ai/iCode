@@ -191,6 +191,16 @@ _BG_SCREENSHOT_MSG = (
     "截图超时（reason=background_tab_throttled）：当前标签页处于后台，Chromium 渲染节流导致无法出图；"
     "请优先使用 browser_snapshot/browser_extract，或在需要视觉确认时先 browser_tab_switch 切到前台标签后重试"
 )
+_BG_SCREENSHOT_COMPACT_MSG = (
+    "截图超时（reason=background_tab_throttled）：当前标签页处于后台，Chromium 渲染节流导致无法出图；"
+    "请优先使用 browser_snapshot/browser_extract，或改用 full 工具集切到前台标签后重试"
+)
+
+
+def _bg_screenshot_msg(session: Any) -> str:
+    from ._shared import effective_toolset
+
+    return _BG_SCREENSHOT_COMPACT_MSG if effective_toolset(session) == "compact" else _BG_SCREENSHOT_MSG
 
 
 def _is_bridge_session(session: Any) -> bool:
@@ -206,7 +216,7 @@ async def _capture(session: Any, params: dict[str, Any], fmt: str) -> tuple[str,
         # Never send Page.captureScreenshot to a known background Bridge tab: Chromium's
         # PageHandler queues an unresolved CopyOutputRequest on hidden chrome.debugger
         # tabs, which can stall even a subsequent foreground capture after tab_switch.
-        raise Unavailable(_BG_SCREENSHOT_MSG)
+        raise Unavailable(_bg_screenshot_msg(session))
     full_timeout = float(getattr(session.cfg, "cdp_timeout", 20.0))
     timeout = min(_BG_SCREENSHOT_TIMEOUT, full_timeout) if pre_foreground is False else full_timeout
     try:
@@ -221,11 +231,11 @@ async def _capture(session: Any, params: dict[str, Any], fmt: str) -> tuple[str,
         if foreground is not False and callable(probe_fn):
             foreground = await probe_fn()
         if foreground is False:
-            raise Unavailable(_BG_SCREENSHOT_MSG) from exc
+            raise Unavailable(_bg_screenshot_msg(session)) from exc
         raise
     except BrowserError as exc:
         if "background_tab_throttled" in str(exc):
-            raise Unavailable(_BG_SCREENSHOT_MSG) from exc
+            raise Unavailable(_bg_screenshot_msg(session)) from exc
         raise
     data = str(response.get("data") or "")
     if not data:

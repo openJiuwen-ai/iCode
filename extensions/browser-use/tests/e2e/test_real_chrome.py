@@ -872,3 +872,281 @@ def test_real_chrome_double_click_guard_native_date_clear_false_and_hidden_cross
         srv.server_close()
         cross_srv.shutdown()
         cross_srv.server_close()
+
+
+def test_real_chrome_pr325_takeover_oopif_rollback_and_broker_compact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real-Chrome regression for PR #325 review findings:
+    1) takeover -> idle -> stale handle navigate rejected -> stale handle close preserves B's cookies & record;
+    2) static page with visible cross-origin iframe times out on text_changed (850ms) instead of false success;
+    3) ancestor visibility:hidden cross-origin iframe triggers neither text nor text_changed;
+    4) fresh sub-agent first implicit relative navigate fails and leaves 0 profile dirs on disk;
+    5) compact client against a default full Broker gets compact popup hint (no browser_tab_switch recommendation).
+    """
+    import importlib
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from chrys.extensions import ToolContext, ToolError
+    from smoke_common import chrome_executable
+
+    import icode_browser_use.extension as ext
+    from icode_browser_use import registry
+    from icode_browser_use.broker import BrokerServer
+    from icode_browser_use.config import BrowserConfig
+
+    cross_port = [0]
+
+    class _CrossHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path == "/static-child":
+                body = "<!doctype html><html><body><p id='c'>STATIC-CHILD-FRAME</p></body></html>"
+            elif path == "/hidden-ancestor-child":
+                body = (
+                    "<!doctype html><html><body><p id='h'>ANCESTOR-HIDDEN-INIT</p>"
+                    "<script>window.addEventListener('message', e => {"
+                    " if (e.data === 'mut') setTimeout(() => { document.getElementById('h').textContent = 'ANCESTOR-HIDDEN-UPDATED'; }, 50);"
+                    "});</script></body></html>"
+                )
+            elif path == "/other-origin":
+                body = "<!doctype html><html><body><h1>Other origin</h1></body></html>"
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    cross_srv = ThreadingHTTPServer(("127.0.0.1", 0), _CrossHandler)
+    cross_port[0] = cross_srv.server_address[1]
+    cross_origin = f"http://localhost:{cross_port[0]}"
+    threading.Thread(target=cross_srv.serve_forever, daemon=True).start()
+
+    class _PrimaryHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def _html(self, body: str) -> None:
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path == "/start":
+                self._html("<!doctype html><html><body><h1>Start A</h1></body></html>")
+            elif path == "/set-cookie":
+                data = b"<!doctype html><html><body><h1>Cookie Set</h1></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Set-Cookie", "persist_b=alive-from-b; Max-Age=3600; Path=/")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            elif path == "/check-cookie":
+                cookie_hdr = self.headers.get("Cookie", "")
+                self._html(f"<!doctype html><html><body><p id='ck'>COOKIE:{cookie_hdr}</p></body></html>")
+            elif path == "/static-oopif":
+                self._html(
+                    "<!doctype html><html><body><p>Static parent</p>"
+                    f'<iframe src="{cross_origin}/static-child" style="width:220px;height:90px"></iframe>'
+                    "</body></html>"
+                )
+            elif path == "/hidden-ancestor-oopif":
+                self._html(
+                    "<!doctype html><html><body><p>Pending</p>"
+                    '<button id="mut" type="button">Mutate hidden</button>'
+                    f'<div style="visibility:hidden"><iframe id="ha" src="{cross_origin}/hidden-ancestor-child" style="width:220px;height:90px"></iframe></div>'
+                    "<script>document.getElementById('mut').addEventListener('click', () => {"
+                    " document.getElementById('ha').contentWindow.postMessage('mut', '*');"
+                    "});</script></body></html>"
+                )
+            elif path == "/popup-opener":
+                self._html(
+                    "<!doctype html><html><body>"
+                    f'<a id="pop" href="{origin}/start" target="_blank" rel="opener">Open Popup</a>'
+                    "</body></html>"
+                )
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _PrimaryHandler)
+    origin = f"http://127.0.0.1:{srv.server_address[1]}"
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory(prefix="browser-use-pr325-e2e-", ignore_cleanup_errors=True) as td:
+            root = Path(td).resolve()
+            (root / "ws").mkdir()
+            if _ORIG_USERPROFILE is not None:
+                monkeypatch.setenv("USERPROFILE", _ORIG_USERPROFILE)
+            if _ORIG_HOME is not None:
+                monkeypatch.setenv("HOME", _ORIG_HOME)
+            if _ORIG_APPDATA is not None:
+                monkeypatch.setenv("APPDATA", _ORIG_APPDATA)
+            if _ORIG_LOCALAPPDATA is not None:
+                monkeypatch.setenv("LOCALAPPDATA", _ORIG_LOCALAPPDATA)
+            monkeypatch.setenv("ICODE_BROWSER_ALLOWED_ORIGINS", f"{origin},{cross_origin}")
+            monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(root / "state"))
+            monkeypatch.setenv("ICODE_BROWSER_HEADLESS", "1")
+            monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0")
+            monkeypatch.setenv("ICODE_BROWSER_EXECUTABLE", str(chrome_executable()))
+
+            # 1. Takeover -> idle -> stale navigate rejected -> stale close preserves B's cookie & record
+            wf_ctx = ToolContext.for_testing(
+                root / "ws",
+                data_dir=root / "data",
+                session_data_dir=root / "session",
+                agent_name="wf-agent",
+                session_id="e2e-pr325-wf",
+                invocation_type="workflow_node",
+                caller_name="wf",
+                invocation_id="inv-pr325-1",
+            )
+            nav_a = await ext.browser_navigate(wf_ctx, f"{origin}/start")
+            bid_a = nav_a.splitlines()[0].split("browser_id: ", 1)[1].strip()
+            browser_a = ext._browsers[bid_a]
+            assert browser_a.record is not None
+            resume_id_a = browser_a.record.resume_id
+            state_dir = browser_a.slot_state_dir
+            assert state_dir is not None
+            await browser_a.session._shutdown_idle()
+
+            # Simulate Host B taking over in a fresh process registry
+            saved_a = ext._browsers.pop(bid_a)
+            resumed_b = await ext.browser_resume(wf_ctx, resume_id_a)
+            bid_b = resumed_b.splitlines()[0].split("browser_id: ", 1)[1].strip()
+            browser_b = ext._browsers[bid_b]
+            assert browser_b.record is not None
+            resume_id_b = browser_b.record.resume_id
+            await ext.browser_navigate(wf_ctx, f"{origin}/set-cookie", bid_b)
+            await browser_b.session._shutdown_idle()
+            ext._browsers.pop(bid_b)
+
+            # Host A attempts stale navigate to another origin -> rejected; then closes -> B survives
+            ext._browsers[bid_a] = saved_a
+            with pytest.raises(ToolError) as stale_exc:
+                await ext.browser_navigate(wf_ctx, f"{cross_origin}/other-origin", bid_a)
+            assert stale_exc.value.code == "browser_superseded"
+            await ext.browser_close(wf_ctx, bid_a)
+
+            assert state_dir.is_dir()
+            recs, _ = registry.load(registry.manifest_path(wf_ctx))
+            assert [r.resume_id for r in recs] == [resume_id_b]
+
+            # Resume B and confirm persistent cookie survived
+            resumed_c = await ext.browser_resume(wf_ctx, resume_id_b)
+            bid_c = resumed_c.splitlines()[0].split("browser_id: ", 1)[1].strip()
+            try:
+                await ext.browser_navigate(wf_ctx, f"{origin}/check-cookie", bid_c)
+                ck_text = await ext.browser_extract(wf_ctx, bid_c, query="#ck")
+                assert "persist_b=alive-from-b" in ck_text, ck_text
+
+                # 2. Static page with visible cross-origin iframe must timeout on 850ms text_changed
+                await ext.browser_navigate(wf_ctx, f"{origin}/static-oopif", bid_c)
+                await asyncio.sleep(0.25)
+                wait_static = await ext.browser_wait_for(
+                    wf_ctx, bid_c, condition="text_changed", timeout_ms=850, return_mode="text"
+                )
+                assert "status=timeout" in wait_static, wait_static
+                assert "status=succeeded" not in wait_static, wait_static
+
+                # 3. Ancestor visibility:hidden cross-origin iframe triggers neither text nor text_changed
+                await ext.browser_navigate(wf_ctx, f"{origin}/hidden-ancestor-oopif", bid_c)
+                await asyncio.sleep(0.25)
+                click_ha = await ext.browser_click(
+                    wf_ctx,
+                    bid_c,
+                    "Mutate hidden",
+                    expect_condition="text_changed",
+                    expect_timeout_ms=600,
+                    expect_return="text",
+                )
+                assert "expect_status=timeout" in click_ha, click_ha
+                wait_ha = await ext.browser_wait_for(
+                    wf_ctx, bid_c, condition="text", value="ANCESTOR-HIDDEN-UPDATED", timeout_ms=400
+                )
+                assert "status=timeout" in wait_ha, wait_ha
+            finally:
+                if bid_c in ext._browsers:
+                    await ext.browser_close(wf_ctx, bid_c)
+
+            # 4. Fresh sub-agent implicit relative navigate fails and leaves 0 profile dirs
+            sub_ctx = ToolContext.for_testing(
+                root / "ws",
+                data_dir=root / "data",
+                session_data_dir=root / "session",
+                agent_name="sub-rel",
+                session_id="e2e-pr325-sub",
+                invocation_type="sub_agent",
+                caller_name="worker",
+                invocation_id="sub-rel-e2e-1",
+            )
+            sub_slot_dir = (root / "state") / "agents" / ext._owner_key(sub_ctx) / "slot-0"
+            with pytest.raises(ToolError) as rel_exc:
+                await ext.browser_navigate(sub_ctx, "/relative-path")
+            assert rel_exc.value.code == "browser_bad_request"
+            assert "open=0 recoverable=0" in await ext.browser_list(sub_ctx)
+            assert not sub_slot_dir.exists(), f"profile dir leaked: {sub_slot_dir}"
+
+            # 5. Compact client connected to a default full Broker gets compact popup hint
+            broker_state = root / "broker-state"
+            broker_cfg = BrowserConfig(
+                allowed_origins=(origin, cross_origin),
+                state_dir=broker_state,
+                headless=True,
+                idle_close_seconds=0,
+                executable=str(chrome_executable()),
+                toolset="full",
+            )
+            broker = BrokerServer(broker_cfg)
+            await broker.start()
+            try:
+                monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(broker_state))
+                monkeypatch.setenv("ICODE_BROWSER_BROKER", "1")
+                monkeypatch.setenv("ICODE_BROWSER_TOOLSET", "compact")
+                reloaded = importlib.reload(ext)
+                reloaded._browsers.clear()
+                b_ctx = ToolContext.for_testing(
+                    root / "ws",
+                    data_dir=root / "data",
+                    session_data_dir=root / "session",
+                    agent_name="compact-cli",
+                    session_id="e2e-pr325-broker",
+                )
+                nav_b = await reloaded.browser_navigate(b_ctx, f"{origin}/popup-opener")
+                bid_br = nav_b.splitlines()[0].split("browser_id: ", 1)[1].strip()
+                try:
+                    pop_res = await reloaded.browser_click(b_ctx, bid_br, "Open Popup")
+                    assert "effect=new_tab" in pop_res, pop_res
+                    assert "compact 工具集不包含标签切换工具" in pop_res, pop_res
+                    assert "可用 browser_tab_switch" not in pop_res, pop_res
+                finally:
+                    if bid_br in reloaded._browsers:
+                        await reloaded.browser_close(b_ctx, bid_br)
+            finally:
+                await broker.aclose()
+                monkeypatch.delenv("ICODE_BROWSER_BROKER", raising=False)
+                monkeypatch.delenv("ICODE_BROWSER_TOOLSET", raising=False)
+                importlib.reload(ext)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        cross_srv.shutdown()
+        cross_srv.server_close()

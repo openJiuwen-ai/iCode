@@ -456,28 +456,59 @@ def _current_oopif_sessions(session: Any) -> list[str]:
     return []
 
 
-async def _read_page_text(session: Any, deadline: float, *, needle: str = "") -> tuple[str, str, bool | None]:
-    """Read main-frame text/digest plus any attached cross-origin iframe (OOPIF) sessions."""
+@dataclass(frozen=True)
+class _PageTextSample:
+    """One page-wide text sample across the main frame and attached visible OOPIFs."""
+
+    text: str
+    digest: str
+    hit: bool | None
+    complete: bool
+
+
+async def _read_page_text(session: Any, deadline: float, *, needle: str = "") -> _PageTextSample:
+    """Read main-frame text/digest plus any attached visible cross-origin iframe (OOPIF) sessions.
+
+    ``complete`` is True only when every attached OOPIF was either confirmed hidden
+    or read before the deadline without error. Callers comparing against a baseline
+    (such as ``text_changed``) must never treat an incomplete sample as a change.
+    """
     expr = _page_text_expr(needle) if needle else _PAGE_TEXT_EXPR
     raw = await _evaluate(session, expr, deadline)
     body, digest, hit = _parse_text_result(raw)
     oopifs = _current_oopif_sessions(session)
     if not oopifs:
-        return body, digest, hit
+        return _PageTextSample(body, digest, hit, complete=True)
     parts = [body] if body else []
     digests = [digest]
     combined_hit = hit
+    complete = True
     child_expr = _page_text_expr(needle, child_frame=True)
+    eval_cap = float(getattr(getattr(session, "cfg", None), "evaluate_timeout", 5.0))
     for oopif_sid in oopifs:
-        if _remaining(deadline) <= 0:
+        rem = _remaining(deadline)
+        if rem <= 0:
+            complete = False
             break
-        if not await is_oopif_visible(session, oopif_sid, timeout=_probe_timeout(session, deadline)):
+        visible = await is_oopif_visible(
+            session,
+            oopif_sid,
+            timeout=min(eval_cap, rem),
+            fail_open=False,
+        )
+        if visible is False:
+            continue
+        if visible is None or _remaining(deadline) <= 0:
+            complete = False
+            if _remaining(deadline) <= 0:
+                break
             continue
         try:
             child_raw = await _evaluate(session, child_expr, deadline, cdp_session_id=oopif_sid)
         except ConnectionClosed:
             raise
         except (CDPTimeout, BrowserError):
+            complete = False
             continue
         child_text, child_digest, child_hit = _parse_text_result(child_raw)
         if child_text:
@@ -488,7 +519,7 @@ async def _read_page_text(session: Any, deadline: float, *, needle: str = "") ->
         elif needle and child_text and needle in child_text:
             combined_hit = True
     combined_text = "\n".join(parts)[:20000]
-    return combined_text, "|".join(digests), combined_hit
+    return _PageTextSample(combined_text, "|".join(digests), combined_hit, complete=complete)
 
 
 async def _call_node(
@@ -775,7 +806,8 @@ async def _collect_return_payload(
                     )
                     text_val = str(probe.get("text", ""))
                 else:
-                    text_val, _, _ = await asyncio.wait_for(_read_page_text(session, deadline), timeout=remaining)
+                    sample = await asyncio.wait_for(_read_page_text(session, deadline), timeout=remaining)
+                    text_val = sample.text
             except ConnectionClosed:
                 raise
             except Exception:
@@ -792,8 +824,8 @@ async def read_text_baseline(session: Any, target: str = "", *, timeout_s: float
     resolved_any = False
     try:
         if not target:
-            _, digest, _ = await _read_page_text(session, deadline)
-            return digest
+            sample = await _read_page_text(session, deadline)
+            return sample.digest if sample.complete else None
         entry = session.resolve_target(target)
         if entry is None:
             return None
@@ -948,11 +980,12 @@ async def _run_with_baseline_outcome(
                     basis = "url_match"
                     last = f"url={href[:300]}"
                 elif condition == "text" and not target:
-                    body, _, hit = await _read_page_text(session, deadline, needle=value)
-                    observed_text = body
-                    ok = hit if hit is not None else (value in body)
+                    sample = await _read_page_text(session, deadline, needle=value)
+                    if sample.complete or observed_text is None:
+                        observed_text = sample.text
+                    ok = sample.hit if sample.hit is not None else (value in sample.text)
                     basis = "text_match"
-                    last = f"page_text_hit={ok}"
+                    last = f"page_text_hit={ok}" if sample.complete or ok else "page_text_sample_incomplete"
                     if not ok:
                         can_refresh = capture_and_register is not _shared_capture or hasattr(
                             session, "read_frame_metrics"
@@ -978,15 +1011,22 @@ async def _run_with_baseline_outcome(
                             basis = "shadow_text_match"
                             last = "page_text_hit=True (shadow_snapshot)"
                 elif condition == "text_changed" and not target:
-                    body, digest, _ = await _read_page_text(session, deadline)
-                    observed_text = body
-                    if baseline is None:
-                        baseline = digest
-                    ok = digest != baseline
-                    basis = "text_changed"
-                    last = f"page_text_changed={ok}"
-                    if ok:
-                        detail = _changed_text(body)
+                    sample = await _read_page_text(session, deadline)
+                    if not sample.complete:
+                        if observed_text is None:
+                            observed_text = sample.text
+                        ok = False
+                        basis = "text_changed"
+                        last = "page_text_sample_incomplete"
+                    else:
+                        observed_text = sample.text
+                        if baseline is None:
+                            baseline = sample.digest
+                        ok = sample.digest != baseline
+                        basis = "text_changed"
+                        last = f"page_text_changed={ok}"
+                        if ok:
+                            detail = _changed_text(sample.text)
                 elif condition == "stable" and not target:
                     probe = await _evaluate(session, stable_page_expr, deadline)
                     probe = probe if isinstance(probe, dict) else {}

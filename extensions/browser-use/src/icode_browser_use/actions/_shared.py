@@ -20,12 +20,42 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+import secrets
 import time
+from collections.abc import Iterator
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit
 
 from ..errors import BrowserError, CDPTimeout, ConnectionClosed, LoginRequired
 from ..logging import log
+
+#: Optional per-call toolset override (set by BrokerServer from the calling client's toolset).
+_CALL_TOOLSET: ContextVar[str | None] = ContextVar("icode_browser_call_toolset", default=None)
+
+
+def effective_toolset(session: Any) -> str:
+    """Active toolset for the current call: per-call Broker override, else ``session.cfg.toolset``."""
+    override = _CALL_TOOLSET.get()
+    if override in {"full", "compact"}:
+        return override
+    raw = str(getattr(getattr(session, "cfg", None), "toolset", "full") or "full").strip().lower()
+    return raw if raw in {"full", "compact"} else "full"
+
+
+@contextlib.contextmanager
+def override_call_toolset(toolset: str | None) -> Iterator[None]:
+    """Scope a calling client's toolset (``'full'`` or ``'compact'``) to one Broker dispatch."""
+    normalized = str(toolset or "").strip().lower()
+    if normalized not in {"full", "compact"}:
+        yield
+        return
+    token = _CALL_TOOLSET.set(normalized)
+    try:
+        yield
+    finally:
+        _CALL_TOOLSET.reset(token)
+
 
 #: A login form is "dominant" only on a sparse page (design §8.2, conservative).
 _LOGIN_INTERACTIVE_LIMIT = 12
@@ -519,15 +549,19 @@ async def is_oopif_visible(
     cdp_session_id: str | None,
     *,
     timeout: float | None = None,
-) -> bool:
+    fail_open: bool = True,
+) -> bool | None:
     """Return False when any ancestor ``<iframe>`` owning *cdp_session_id* is CSS-hidden or zero-sized.
 
     Walks the OOPIF parent chain up to the main frame, inspecting each owner
     ``<iframe>`` element and its ancestor chain in its parent document (catching
     ``visibility:hidden``, ``opacity:0``, ``display:none``, ``hidden``, and 0×0
     frames whose child ``window.innerWidth``/``innerHeight`` may still be > 0).
-    Defaults to ``True`` on minimal test doubles that do not implement
-    ``DOM.getFrameOwner``.
+    Defaults to ``True`` on minimal test doubles that return empty payloads for
+    ``Page.getFrameTree`` / ``DOM.getFrameOwner``. When *fail_open* is False,
+    a CDP timeout or error returns ``None`` instead of assuming visibility so
+    callers never leak hidden-frame text or mistake an incomplete poll for a
+    text change.
     """
     if not cdp_session_id:
         return True
@@ -535,71 +569,109 @@ async def is_oopif_visible(
     parent_fn = getattr(session, "oopif_parent", None)
     frame_id_fn = getattr(session, "oopif_frame_id", None)
     set_frame_id = getattr(session, "set_oopif_frame_id", None)
-    cdp_timeout = float(timeout) if timeout is not None else float(getattr(session.cfg, "cdp_timeout", 5.0))
-    eval_timeout = float(timeout) if timeout is not None else float(getattr(session.cfg, "evaluate_timeout", 5.0))
+    is_enabled_fn = getattr(session, "is_oopif_enabled", None)
+    default_cdp = float(getattr(session.cfg, "cdp_timeout", 5.0))
+    default_eval = float(getattr(session.cfg, "evaluate_timeout", 5.0))
+    check_deadline = (time.monotonic() + max(0.0, float(timeout))) if timeout is not None else None
+    object_group = f"chrys-vis-{secrets.token_hex(6)}"
+    resolved_parents: set[str | None] = set()
+
+    def _budget(fallback: float) -> float | None:
+        if check_deadline is None:
+            return fallback
+        rem = check_deadline - time.monotonic()
+        if rem <= 0:
+            return None
+        return max(0.05, min(fallback, rem))
+
     seen: set[str] = set()
     current: str | None = cdp_session_id
-    while current and current not in seen and len(seen) < 8:
-        seen.add(current)
-        parent = parent_fn(current) if callable(parent_fn) else None
-        parent_sid = parent or session.session_id
-        frame_id = frame_id_fn(current) if callable(frame_id_fn) else ""
-        if not frame_id:
+    try:
+        while current and current not in seen and len(seen) < 8:
+            seen.add(current)
+            parent = parent_fn(current) if callable(parent_fn) else None
+            parent_sid = parent or session.session_id
+            frame_id = frame_id_fn(current) if callable(frame_id_fn) else ""
+            if not frame_id:
+                step_timeout = _budget(default_cdp)
+                if step_timeout is None:
+                    return True if fail_open else None
+                try:
+                    tree = await client.send("Page.getFrameTree", session_id=current, timeout=step_timeout)
+                except ConnectionClosed:
+                    raise
+                except (CDPTimeout, BrowserError):
+                    return True if fail_open else None
+                frame = (tree or {}).get("frameTree", {}).get("frame", {}) if isinstance(tree, dict) else {}
+                frame_id = str(frame.get("id", "")) if isinstance(frame, dict) else ""
+                if frame_id and callable(set_frame_id):
+                    set_frame_id(current, frame_id)
+            if not frame_id:
+                current = parent
+                continue
+            if parent and callable(is_enabled_fn) and not is_enabled_fn(parent):
+                step_timeout = _budget(default_cdp)
+                if step_timeout is None:
+                    return True if fail_open else None
+                with contextlib.suppress(CDPTimeout, BrowserError):
+                    await client.send("DOM.enable", session_id=parent, timeout=step_timeout)
             try:
-                tree = await client.send("Page.getFrameTree", session_id=current, timeout=cdp_timeout)
+                step_timeout = _budget(default_cdp)
+                if step_timeout is None:
+                    return True if fail_open else None
+                owner = await client.send(
+                    "DOM.getFrameOwner",
+                    {"frameId": frame_id},
+                    session_id=parent_sid,
+                    timeout=step_timeout,
+                )
+                owner_backend = int((owner or {}).get("backendNodeId", 0) or 0) if isinstance(owner, dict) else 0
+                if not owner_backend:
+                    current = parent
+                    continue
+                step_timeout = _budget(default_cdp)
+                if step_timeout is None:
+                    return True if fail_open else None
+                resolved = await client.send(
+                    "DOM.resolveNode",
+                    {"backendNodeId": owner_backend, "objectGroup": object_group},
+                    session_id=parent_sid,
+                    timeout=step_timeout,
+                )
+                owner_object_id = (
+                    str(((resolved or {}).get("object") or {}).get("objectId", ""))
+                    if isinstance(resolved, dict)
+                    else ""
+                )
+                if not owner_object_id:
+                    current = parent
+                    continue
+                resolved_parents.add(parent)
+                step_timeout = _budget(default_eval)
+                if step_timeout is None:
+                    return True if fail_open else None
+                vis_res = await client.send(
+                    "Runtime.callFunctionOn",
+                    {
+                        "objectId": owner_object_id,
+                        "functionDeclaration": _IFRAME_VISIBLE_FN,
+                        "returnByValue": True,
+                    },
+                    session_id=parent_sid,
+                    timeout=step_timeout,
+                )
             except ConnectionClosed:
                 raise
             except (CDPTimeout, BrowserError):
-                return True
-            frame = (tree or {}).get("frameTree", {}).get("frame", {}) if isinstance(tree, dict) else {}
-            frame_id = str(frame.get("id", "")) if isinstance(frame, dict) else ""
-            if frame_id and callable(set_frame_id):
-                set_frame_id(current, frame_id)
-        if not frame_id:
+                return True if fail_open else None
+            val = ((vis_res or {}).get("result") or {}).get("value") if isinstance(vis_res, dict) else None
+            if val is False:
+                return False
             current = parent
-            continue
-        try:
-            owner = await client.send(
-                "DOM.getFrameOwner",
-                {"frameId": frame_id},
-                session_id=parent_sid,
-                timeout=cdp_timeout,
-            )
-            owner_backend = int((owner or {}).get("backendNodeId", 0) or 0) if isinstance(owner, dict) else 0
-            if not owner_backend:
-                current = parent
-                continue
-            resolved = await client.send(
-                "DOM.resolveNode",
-                {"backendNodeId": owner_backend},
-                session_id=parent_sid,
-                timeout=cdp_timeout,
-            )
-            owner_object_id = (
-                str(((resolved or {}).get("object") or {}).get("objectId", "")) if isinstance(resolved, dict) else ""
-            )
-            if not owner_object_id:
-                current = parent
-                continue
-            vis_res = await client.send(
-                "Runtime.callFunctionOn",
-                {
-                    "objectId": owner_object_id,
-                    "functionDeclaration": _IFRAME_VISIBLE_FN,
-                    "returnByValue": True,
-                },
-                session_id=parent_sid,
-                timeout=eval_timeout,
-            )
-        except ConnectionClosed:
-            raise
-        except (CDPTimeout, BrowserError):
-            return True
-        val = ((vis_res or {}).get("result") or {}).get("value") if isinstance(vis_res, dict) else None
-        if val is False:
-            return False
-        current = parent
-    return True
+        return True
+    finally:
+        for parent_ref in resolved_parents:
+            await release_object_group(session, object_group, cdp_session_id=parent_ref)
 
 
 async def resolve_oopif_offset(session: Any, cdp_session_id: str | None) -> tuple[float, float]:

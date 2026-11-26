@@ -478,3 +478,218 @@ def test_unstarted_subagent_handle_is_reclaimed_after_idle_timeout(tmp_path, mon
         assert records_for(sub_ctx) == []
 
     asyncio.run(scenario())
+
+
+def test_stale_handle_navigate_after_takeover_and_idle_is_rejected_and_close_preserves_b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 regression: takeover -> idle -> stale handle navigate -> stale handle close."""
+    configure(monkeypatch, tmp_path)
+    wf_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="A",
+        session_id="s-takeover",
+        invocation_type="workflow_node",
+        caller_name="wf",
+        invocation_id="inv-takeover",
+    )
+
+    launches: list[str] = []
+
+    async def fake_call(browser: ext._Browser, name: str, arguments: dict[str, object]) -> list[dict[str, object]]:
+        url = str(arguments.get("url") or "")
+        launches.append(f"{browser.id}:{name}:{url}")
+        if browser.slot_state_dir is not None:
+            browser.slot_state_dir.mkdir(parents=True, exist_ok=True)
+            (browser.slot_state_dir / "chrome").mkdir(exist_ok=True)
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        browser.session._started_once = True  # type: ignore[attr-defined]
+        browser.session._state = "ready"  # type: ignore[attr-defined]
+        browser.session._snapshot.url = url  # type: ignore[attr-defined]
+        return [{"type": "text", "text": f"navigated:{url}"}]
+
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    async def scenario() -> None:
+        # 1. Host A implicitly creates the session via browser_navigate(url) and goes idle.
+        nav_a = await ext.browser_navigate(wf_ctx, "https://example.com/start")
+        bid_a = nav_a.splitlines()[0].split("browser_id: ", 1)[1].strip()
+        browser_a = ext._browsers[bid_a]
+        assert browser_a.record is not None
+        resume_id_a = browser_a.record.resume_id
+        state_dir = browser_a.slot_state_dir
+        assert state_dir is not None
+        assert ext._read_slot_generation(state_dir) == resume_id_a
+        browser_a.session._state = "idle"  # type: ignore[attr-defined]
+
+        # 2. Host B resumes slot 0, writes persistent cookies, navigates, and goes idle.
+        saved_a = ext._browsers.pop(bid_a)
+        resumed = await ext.browser_resume(wf_ctx, resume_id_a)
+        bid_b = resumed.splitlines()[0].split("browser_id: ", 1)[1].strip()
+        browser_b = ext._browsers[bid_b]
+        assert browser_b.record is not None
+        resume_id_b = browser_b.record.resume_id
+        assert resume_id_b != resume_id_a
+        await ext.browser_navigate(wf_ctx, "https://example.com/logged-in", bid_b)
+        cookie_file = state_dir / "chrome" / "Cookies"
+        cookie_file.write_text("session=from-host-b", encoding="utf-8")
+        browser_b.session._state = "idle"  # type: ignore[attr-defined]
+        ext._browsers.pop(bid_b)
+
+        # 3. Host A tries to navigate to another origin with its stale handle -> MUST be rejected.
+        ext._browsers[bid_a] = saved_a
+        launches_before = len(launches)
+        with pytest.raises(ToolError) as exc_info:
+            await ext.browser_navigate(wf_ctx, "https://other.example.com/hijack", bid_a)
+        assert exc_info.value.code == "browser_superseded"
+        assert len(launches) == launches_before, "stale handle must be rejected before running _call"
+        assert ext._read_slot_generation(state_dir) == resume_id_b
+        assert [r.resume_id for r in records_for(wf_ctx)] == [resume_id_b]
+
+        # Even direct _apersist on a stale handle must verify slot ownership and refuse overwrite.
+        saved_a.superseded = False
+        saved_a.url = "https://other.example.com/direct"
+        await ext._apersist(saved_a)
+        assert [r.resume_id for r in records_for(wf_ctx)] == [resume_id_b]
+        assert saved_a.superseded is True
+
+        # And BrowserSession's on_slot_acquired guard also rejects a stale handle at lock reacquisition.
+        saved_a.superseded = False
+        assert saved_a.session._on_slot_acquired is not None  # type: ignore[attr-defined]
+        with pytest.raises(ext.BrowserError) as guard_exc:
+            await saved_a.session._on_slot_acquired()  # type: ignore[attr-defined]
+        assert guard_exc.value.code == "browser_superseded"
+        assert guard_exc.value.pre_dispatch is True
+        assert ext._read_slot_generation(state_dir) == resume_id_b
+
+        # 4. Closing stale handle A must succeed and preserve B's record, profile dir, and cookies.
+        closed = await ext.browser_close(wf_ctx, bid_a)
+        assert f"browser_id {bid_a} closed" in closed
+        assert bid_a not in ext._browsers
+        assert state_dir.is_dir()
+        assert cookie_file.read_text(encoding="utf-8") == "session=from-host-b"
+        assert ext._read_slot_generation(state_dir) == resume_id_b
+        assert [r.resume_id for r in records_for(wf_ctx)] == [resume_id_b]
+
+    asyncio.run(scenario())
+
+
+def test_first_implicit_navigate_failure_reclaims_fresh_dir_but_preserves_preexisting_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 #4 regression: fresh failed implicit navigate reclaims new profile dir; preexisting profile stays."""
+    from icode_browser_use.errors import BadRequest
+
+    configure(monkeypatch, tmp_path)
+
+    async def fail_relative(
+        browser: ext._Browser, _name: str, _arguments: dict[str, object]
+    ) -> list[dict[str, object]]:
+        # Simulate Chrome having launched and populated the slot profile dir before _precheck_url fails.
+        assert browser.slot_state_dir is not None
+        chrome_dir = browser.slot_state_dir / "chrome"
+        chrome_dir.mkdir(parents=True, exist_ok=True)
+        (chrome_dir / "Preferences").write_text("{}", encoding="utf-8")
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        browser.session._started_once = True  # type: ignore[attr-defined]
+        raise ToolError(BadRequest("相对 URL 需要有效的 http/https 当前页面").render(), code="browser_bad_request")
+
+    monkeypatch.setattr(ext, "_call", fail_relative)
+
+    async def scenario() -> None:
+        # Part A: Two brand-new sub-agents fail implicit relative navigation -> 0 records, 0 profile dirs left.
+        for inv_id in ("sub-rel-1", "sub-rel-2"):
+            sub_ctx = ToolContext.for_testing(
+                tmp_path,
+                data_dir=tmp_path / "data",
+                session_data_dir=tmp_path / "session",
+                agent_name="Sub",
+                session_id="s-sub-rel",
+                invocation_type="sub_agent",
+                caller_name="worker",
+                invocation_id=inv_id,
+            )
+            slot_dir = (tmp_path / "state") / "agents" / ext._owner_key(sub_ctx) / "slot-0"
+            assert not slot_dir.exists()
+            with pytest.raises(ToolError) as exc_info:
+                await ext.browser_navigate(sub_ctx, "/relative-only")
+            assert exc_info.value.code == "browser_bad_request"
+            listed = await ext.browser_list(sub_ctx)
+            assert "open=0 recoverable=0" in listed
+            assert not slot_dir.exists(), f"freshly created profile dir leaked on rollback: {slot_dir}"
+
+        # Part B: Pre-existing recoverable workflow profile must survive a failed implicit navigate rollback.
+        wf_ctx = ToolContext.for_testing(
+            tmp_path,
+            data_dir=tmp_path / "data",
+            session_data_dir=tmp_path / "session",
+            agent_name="WfAgent",
+            session_id="s-wf-rel",
+            invocation_type="workflow_node",
+            caller_name="step",
+            invocation_id="wf-inv-existing",
+        )
+        owner_key = ext._owner_key(wf_ctx)
+        existing_dir = (tmp_path / "state") / "agents" / owner_key / "slot-0"
+        (existing_dir / "chrome").mkdir(parents=True, exist_ok=True)
+        existing_cookie = existing_dir / "chrome" / "Cookies"
+        existing_cookie.write_text("existing-cookie", encoding="utf-8")
+        manifest = registry.manifest_path(wf_ctx)
+        prev_record = registry.new_record(
+            browser_id="b-prev",
+            resume_id="s0-prevgen",
+            session_id=wf_ctx.session_id,
+            agent_name=wf_ctx.agent_name,
+            owner_key=owner_key,
+            backend="owned",
+            generation="prevgen",
+            slot=0,
+            origin_url="https://example.com",
+        )
+        registry.save(manifest, [prev_record])
+
+        with pytest.raises(ToolError) as wf_exc:
+            await ext.browser_navigate(wf_ctx, "/relative-only")
+        assert wf_exc.value.code == "browser_bad_request"
+        assert existing_dir.is_dir(), "pre-existing recoverable profile dir must be preserved"
+        assert existing_cookie.read_text(encoding="utf-8") == "existing-cookie"
+        assert [r.resume_id for r in records_for(wf_ctx)] == ["s0-prevgen"]
+
+    asyncio.run(scenario())
+
+
+def test_unstarted_subagent_handle_reclaims_after_empty_browser_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 #5 regression: browser_logs returning 0 entries without launching Chrome must re-arm idle reclaim."""
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0.06")
+    sub_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Browser",
+        session_id="s-sub-logs",
+        invocation_type="sub_agent",
+        caller_name="browser_agent",
+        invocation_id="sub-inv-logs",
+    )
+
+    async def scenario() -> None:
+        opened = await ext.browser_open(sub_ctx)
+        bid = opened.split("browser_id: ", 1)[1].strip()
+        logs_text = await ext.browser_logs(sub_ctx, bid)
+        assert "日志 0 条" in logs_text
+        assert ext._browsers[bid].session.started_once is False
+        assert ext._browsers[bid].idle_reclaim_task is not None
+
+        for _ in range(50):
+            if bid not in ext._browsers and records_for(sub_ctx) == []:
+                break
+            await asyncio.sleep(0.05)
+        assert bid not in ext._browsers, "unstarted handle should be reclaimed after empty browser_logs"
+        assert records_for(sub_ctx) == [], "unstarted manifest record should be dropped after idle timeout"
+
+    asyncio.run(scenario())

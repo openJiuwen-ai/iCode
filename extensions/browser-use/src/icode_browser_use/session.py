@@ -221,11 +221,13 @@ class BrowserSession:
         journal_owner: str = "",
         journal_session: str = "",
         on_idle: Callable[[], Awaitable[None]] | None = None,
+        on_slot_acquired: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.cfg = cfg
         self._journal_owner = journal_owner
         self._journal_session = journal_session
         self._on_idle = on_idle
+        self._on_slot_acquired = on_slot_acquired
         self._journal: Journal | None = None
         self._retired_dispatched_by_tool: dict[str, int] = {}
         self._unrecorded_dispatched_writes = 0
@@ -723,9 +725,15 @@ class BrowserSession:
             self._state = "ready"
             self._start_idle_watchdog()
 
+    def set_slot_acquire_guard(self, guard: Callable[[], Awaitable[None]] | None) -> None:
+        """Install a callback verified after acquiring the state-dir lock and before launching Chrome."""
+        self._on_slot_acquired = guard
+
     async def _start(self) -> None:
         if self._transport.owns_browser:
             self._instance_lock = await acquire_instance_lock(self.cfg.state_dir)
+            if self._on_slot_acquired is not None:
+                await self._on_slot_acquired()
             self._owns_state_dir = True
         client, child = await self._transport.start()
         self._client = client

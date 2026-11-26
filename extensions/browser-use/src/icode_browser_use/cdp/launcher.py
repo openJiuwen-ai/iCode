@@ -682,8 +682,11 @@ def _spawn(argv: list[str], *, log_path: Path) -> ChildProcess:
     """Start the browser: ``stdin=DEVNULL``, stdout/stderr into a file (no pipe)."""
     log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     rotate_log_if_needed(log_path)
-    with open(log_path, "ab", buffering=0) as log_file:
-        child = _spawn_windows(argv, log_file) if sys.platform == "win32" else _spawn_posix(argv, log_file)
+    try:
+        with open(log_path, "ab", buffering=0) as log_file:
+            child = _spawn_windows(argv, log_file) if sys.platform == "win32" else _spawn_posix(argv, log_file)
+    except OSError as exc:
+        raise Unavailable(f"无法启动浏览器可执行文件（{argv[0]}）：{exc}", pre_dispatch=True) from exc
     _register_live_child(child)
     return child
 
@@ -1024,7 +1027,8 @@ async def launch_chrome(
     exe = cfg.executable or discover_chrome()
     if not exe:
         raise Unavailable(
-            "未找到 Chrome 或 Edge，请先安装其中一个。若已安装在非标准路径，请设置 ICODE_BROWSER_EXECUTABLE"
+            "未找到 Chrome 或 Edge，请先安装其中一个。若已安装在非标准路径，请设置 ICODE_BROWSER_EXECUTABLE",
+            pre_dispatch=True,
         )
 
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

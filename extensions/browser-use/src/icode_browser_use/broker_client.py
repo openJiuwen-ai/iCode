@@ -100,6 +100,7 @@ class BrokerClient:
         self.lease_generation = ""
         self.last_url = ""
         self.last_title = ""
+        self._last_pages: list[SimpleNamespace] = []
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._request_id = 0
@@ -124,19 +125,8 @@ class BrokerClient:
         self.lease_id = lease_id
         self.lease_generation = generation
 
-    async def list_pages(self) -> list[SimpleNamespace]:
-        """Query the Broker for owned tabs when already connected; never spawns or connects."""
-        if not self.connected:
-            return []
-        response = await self._request(
-            "tabs",
-            lease_id=self.lease_id,
-            generation=self.lease_generation,
-            allow_spawn=False,
-        )
-        if not response.get("ok"):
-            return []
-        raw_pages = response.get("pages")
+    @staticmethod
+    def _parse_pages(raw_pages: Any) -> list[SimpleNamespace]:
         if not isinstance(raw_pages, list):
             return []
         return [
@@ -151,6 +141,28 @@ class BrokerClient:
             if isinstance(item, dict)
         ]
 
+    async def list_pages(self) -> list[SimpleNamespace]:
+        """Query the Broker for owned tabs when idle; returns cached tabs immediately when busy."""
+        if not self.connected:
+            return []
+        if self._lock.locked():
+            return list(self._last_pages)
+        try:
+            response = await self._request(
+                "tabs",
+                lease_id=self.lease_id,
+                generation=self.lease_generation,
+                allow_spawn=False,
+                timeout=2.5,
+            )
+        except Exception:
+            return list(self._last_pages)
+        if not response.get("ok"):
+            return list(self._last_pages)
+        pages = self._parse_pages(response.get("pages"))
+        self._last_pages = pages
+        return list(pages)
+
     async def call(self, tool: str, arguments: Any) -> list[dict[str, Any]]:
         for attempt in range(2):
             await self.acquire()
@@ -161,6 +173,7 @@ class BrokerClient:
                     generation=self.lease_generation,
                     tool=tool,
                     arguments=arguments,
+                    toolset=self.cfg.toolset,
                 )
             except ConnectionClosed:
                 self.lease_id = ""
@@ -172,9 +185,15 @@ class BrokerClient:
                     raise Unavailable("broker returned an invalid result")
                 self.last_url = str(response.get("url", "") or "")
                 self.last_title = str(response.get("title", "") or "")
+                if "pages" in response:
+                    self._last_pages = self._parse_pages(response.get("pages"))
                 return blocks
             message = str(response.get("error") or "broker call failed")
-            error = BrowserError(message, blocked_origin=str(response.get("blocked_origin") or ""))
+            error = BrowserError(
+                message,
+                blocked_origin=str(response.get("blocked_origin") or ""),
+                pre_dispatch=bool(response.get("pre_dispatch", False)),
+            )
             error.code = str(response.get("code") or "browser_unavailable")
             if error.code == "browser_unavailable" and "lease is not active" in message:
                 self.lease_id = ""
@@ -195,6 +214,7 @@ class BrokerClient:
                 )
         self.lease_id = ""
         self.lease_generation = ""
+        self._last_pages = []
         if self._writer is not None:
             self._writer.close()
             with contextlib.suppress(Exception):
@@ -219,6 +239,7 @@ class BrokerClient:
             # No Broker process is running, so no Broker-side session exists to close.
             self.lease_id = ""
             self.lease_generation = ""
+            self._last_pages = []
             await self.aclose()
             return
         if not response.get("ok"):
@@ -226,9 +247,12 @@ class BrokerClient:
         # The Broker already dropped this lease during close; skip a redundant release.
         self.lease_id = ""
         self.lease_generation = ""
+        self._last_pages = []
         await self.aclose()
 
-    async def _request(self, op: str, *, allow_spawn: bool = True, **fields: Any) -> dict[str, Any]:
+    async def _request(
+        self, op: str, *, allow_spawn: bool = True, timeout: float | None = None, **fields: Any
+    ) -> dict[str, Any]:
         async with self._lock:
             for attempt in range(2):
                 sent = False
@@ -241,16 +265,21 @@ class BrokerClient:
                     self._writer.write(encode_message(request, limit=MAX_TCP_MESSAGE_BYTES))
                     await self._writer.drain()
                     sent = True
+                    read_timeout = (
+                        float(timeout)
+                        if timeout is not None
+                        else max(
+                            30.0,
+                            self.cfg.bridge_wait + 10.0,
+                            self.cfg.ready_timeout + 10.0,
+                            self.cfg.nav_load_timeout + 2 * self.cfg.cdp_timeout + 10.0,
+                            _requested_wait_seconds(fields) + 10.0,
+                        )
+                    )
                     response = (
                         await asyncio.wait_for(
                             read_async_frame(self._reader, limit=MAX_TCP_MESSAGE_BYTES),
-                            timeout=max(
-                                30.0,
-                                self.cfg.bridge_wait + 10.0,
-                                self.cfg.ready_timeout + 10.0,
-                                self.cfg.nav_load_timeout + 2 * self.cfg.cdp_timeout + 10.0,
-                                _requested_wait_seconds(fields) + 10.0,
-                            ),
+                            timeout=read_timeout,
                         )
                         if self._reader
                         else None
@@ -410,6 +439,7 @@ class BrokerClient:
     def _drop_connection(self) -> None:
         self.lease_id = ""
         self.lease_generation = ""
+        self._last_pages = []
         if self._writer is not None:
             self._writer.close()
             self._writer = None

@@ -57,19 +57,25 @@ async def call_tool(session: Any, tool: ToolDef, arguments: Any) -> list[ToolBlo
     """
     args = validate(tool.params, arguments)
     async with session.action_lock(tool.name):
-        if tool.name in {"browser_download_cancel", "browser_tab_close"}:
-            # Cancelling a tracked transfer or closing an owned tab never needs a
-            # browser start: an idle handle has no download and no tab to act on.
-            session.note_action()
-        elif tool.name not in {
-            "browser_close",
-            "browser_action_status",
-            "browser_downloads",
-            "browser_logs",
-            "browser_network_body",
-        }:
-            session.note_action()
-            await session.ensure_started()
+        try:
+            if tool.name in {"browser_download_cancel", "browser_tab_close"}:
+                # Cancelling a tracked transfer or closing an owned tab never needs a
+                # browser start: an idle handle has no download and no tab to act on.
+                session.note_action()
+            elif tool.name not in {
+                "browser_close",
+                "browser_action_status",
+                "browser_downloads",
+                "browser_logs",
+                "browser_network_body",
+            }:
+                session.note_action()
+                await session.ensure_started()
+        except BrowserError as exc:
+            # Any error raised before dispatch (budget exhausted, missing Chrome,
+            # launch failure, lock busy, superseded slot) never dispatched a write.
+            exc.pre_dispatch = True
+            raise
         before_journal = getattr(session, "_journal", None)
         before_dispatched = getattr(before_journal, "dispatched_count", 0) if before_journal is not None else 0
         try:
@@ -89,7 +95,7 @@ async def call_tool(session: Any, tool: ToolDef, arguments: Any) -> list[ToolBlo
                 raise PageHung("页面无响应，已回收该标签页，请重新 browser_navigate") from exc
             raise
         except BrowserError as exc:
-            if tool.name in _WRITE_TOOLS and exc.code not in PRE_DISPATCH_ERROR_CODES:
+            if tool.name in _WRITE_TOOLS and exc.code not in PRE_DISPATCH_ERROR_CODES and not exc.pre_dispatch:
                 after_journal = getattr(session, "_journal", None)
                 after_dispatched = getattr(after_journal, "dispatched_count", 0) if after_journal is not None else 0
                 if after_dispatched == before_dispatched:

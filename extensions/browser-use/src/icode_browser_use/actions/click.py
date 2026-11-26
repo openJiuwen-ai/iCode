@@ -1204,7 +1204,9 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         lines.append(f"tab_id={new_tab_id}")
         new_url = await _resolve_new_tab_url(session, new_tab_id, facts)
         url_hint = f"，url={new_url}" if new_url else ""
-        toolset = str(getattr(getattr(session, "cfg", None), "toolset", "full") or "full").strip().lower()
+        from ._shared import effective_toolset
+
+        toolset = effective_toolset(session)
         if toolset == "compact":
             if new_url:
                 lines.append(

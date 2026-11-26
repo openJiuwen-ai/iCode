@@ -122,6 +122,7 @@ PRE_DISPATCH_ERROR_CODES: frozenset[str] = frozenset(
         TargetAmbiguous.code,
         Blocked.code,
         "browser_policy_denied",
+        "browser_superseded",
         Busy.code,
         DialogPending.code,
     }
