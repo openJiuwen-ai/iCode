@@ -20,12 +20,14 @@ from chrys.kernel import Message
 from chrys.orchestration.engine.rollback import capture_snapshot_writer
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
+from chrys.service.state.serializers import serialize_message
 from tests.orchestration.engine._rollback_helpers import (
     _collect_events,
     _make_engine,
     _state_after_turns,
     _turn_marker,
     _write_session_json,
+    fake_restore_factory,
     seed_turns,
 )
 from tests.support.loaded_agents import install_loaded_agent
@@ -395,12 +397,9 @@ class TestSnapshotGapTolerance:
         snap_dir.mkdir(parents=True)
 
         # Layout: snapshots 3 and 5 exist (2 and 4 deleted by user).
-        (snap_dir / "turn_3.json").write_text(
-            json.dumps({"meta": {"session_id": "rb_test"}, "state": {"messages": ["t3"], "compressed_msgs": []}})
-        )
-        (snap_dir / "turn_5.json").write_text(
-            json.dumps({"meta": {"session_id": "rb_test"}, "state": {"messages": ["t5"], "compressed_msgs": []}})
-        )
+        kept_message = serialize_message(Message("user", ["t3"]))
+        _write_session_json(snap_dir / "turn_3.json", [kept_message])
+        _write_session_json(snap_dir / "turn_5.json", [serialize_message(Message("user", ["t5"]))])
         # Current live session.json (post-turn-5 state).
         session_file.write_text(
             json.dumps({"meta": {"session_id": "rb_test"}, "state": {"messages": ["live"], "compressed_msgs": []}})
@@ -415,7 +414,9 @@ class TestSnapshotGapTolerance:
         await engine._on_user_rollback(UserRollback(target_turn=2, revert_changes=False))
 
         restored = json.loads(session_file.read_text(encoding="utf-8"))
-        assert restored["state"]["messages"] == ["t3"]
+        messages = restored["state"]["messages"]
+        assert messages[:-1] == [kept_message]
+        assert messages[-1]["additional_properties"]["_turn"] == 2
 
         # Post-swap cleanup keeps the promoted turn_3 snapshot as the
         # recovery anchor for the new current state, but removes newer
@@ -449,57 +450,61 @@ class TestSnapshotGapTolerance:
 class TestRollbackSessionOverlayPreservation:
     """The custom title and last surface are session-scoped and must survive a snapshot restore."""
 
-    def test_read_and_reapply_session_overlays(self, tmp_path: Path) -> None:
-        from chrys.orchestration.engine.rollback import _read_session_overlays, _reapply_session_overlays
-
-        session_file = tmp_path / "session.json"
-        session_file.write_text(
-            json.dumps(
-                {
-                    "meta": {
-                        "title": "first msg",
-                        "custom_title": "Pinned",
-                        "generated_title": "Auto",
-                        "last_surface": "tui",
-                    },
-                    "state": {},
-                }
+    @pytest.mark.parametrize(
+        ("current", "prior", "expected"),
+        [
+            (
+                {"custom_title": "Pin", "last_surface": "tui"},
+                {"last_surface": "cli"},
+                {"custom_title": "Pin", "last_surface": "tui"},
             ),
-            encoding="utf-8",
-        )
-        overlays = _read_session_overlays(session_file)
-        assert overlays == {"custom_title": "Pinned", "last_surface": "tui"}
+            ({"generated_title": "New topic"}, {"generated_title": "Old topic"}, {"generated_title": "Old topic"}),
+            ({"custom_title": ""}, {"custom_title": "Old pin"}, {"custom_title": ""}),
+            ({}, {"last_surface": "acp"}, {"last_surface": "acp"}),
+        ],
+    )
+    async def test_promoted_metadata(self, tmp_path, engine_services, monkeypatch, current, prior, expected):
+        """Main produces these bytes, with a second primary replace when the current session has overlays."""
+        from chrys.foundation.platform import files
 
-        # Simulate the snapshot restore wiping the overlays wholesale.
-        session_file.write_text(
-            json.dumps({"meta": {"title": "first msg", "last_surface": "cli"}, "state": {}}), encoding="utf-8"
-        )
-        _reapply_session_overlays(session_file, overlays)
-        meta = json.loads(session_file.read_text(encoding="utf-8"))["meta"]
-        assert meta["custom_title"] == "Pinned"
-        assert meta["last_surface"] == "tui"
-        assert "generated_title" not in meta
-        assert meta["title"] == "first msg"
+        engine = _make_engine(tmp_path, engine_services=engine_services)
+        store = await seed_turns(engine, 2, engine_services=engine_services)
+        directory = store.session_dir("rb_test")
+        primary, snapshot = directory / "session.json", directory / "snapshots/turn_2.json"
+        for path, patch in ((primary, current), (snapshot, prior)):
+            envelope = json.loads(path.read_bytes())
+            for key in ("custom_title", "last_surface"):
+                envelope["meta"].pop(key, None)
+            envelope["meta"].update(patch)
+            if path == snapshot:
+                envelope["future_field"] = {"unknown": [1, 2]}
+                envelope["state"]["future_field"] = "preserve"
+                envelope["meta"]["future_field"] = {"custom": True}
+                envelope["state"]["messages"][0].setdefault("additional_properties", {})["future_field"] = 7
+            path.write_text(json.dumps(envelope), encoding="utf-8")
+        original = snapshot.read_bytes()
+        publishes = []
+        replace = files.replace_with_retry
 
-    def test_generated_title_from_snapshot_wins_on_rollback(self, tmp_path: Path) -> None:
-        """The current generated title summarizes turns the rollback discards;
-        the snapshot's own value is the one describing the restored history."""
-        from chrys.orchestration.engine.rollback import _read_session_overlays, _reapply_session_overlays
+        def record(source, dest):
+            if dest in (primary, directory / "session.json.bak"):
+                publishes.append(dest)
+            replace(source, dest)
 
-        session_file = tmp_path / "session.json"
-        session_file.write_text(
-            json.dumps({"meta": {"title": "x", "generated_title": "New topic"}, "state": {}}),
-            encoding="utf-8",
+        monkeypatch.setattr(files, "replace_with_retry", record)
+        engine.lifecycle.on_session_restore = fake_restore_factory(engine, store, engine_services=engine_services)
+        await engine._on_user_rollback(UserRollback(target_turn=1, revert_changes=False))
+        promoted = json.loads(original)
+        promoted["meta"].update(expected)
+        expected_bytes = (
+            json.dumps(promoted, indent=2, ensure_ascii=False).encode()
+            if any(key in current for key in ("custom_title", "last_surface"))
+            else original
         )
-        overlays = _read_session_overlays(session_file)
-
-        session_file.write_text(
-            json.dumps({"meta": {"title": "x", "generated_title": "Old topic"}, "state": {}}),
-            encoding="utf-8",
-        )
-        _reapply_session_overlays(session_file, overlays)
-        meta = json.loads(session_file.read_text(encoding="utf-8"))["meta"]
-        assert meta["generated_title"] == "Old topic"
+        assert primary.read_bytes() == expected_bytes
+        assert publishes == [primary, directory / "session.json.bak"]
+        assert (directory / "session.json.bak").read_bytes() == primary.read_bytes()
+        assert snapshot.read_bytes() == original
 
     def test_read_overlays_tolerates_missing_or_invalid_file(self, tmp_path: Path) -> None:
         from chrys.orchestration.engine.rollback import _read_session_overlays
@@ -508,27 +513,6 @@ class TestRollbackSessionOverlayPreservation:
         bad = tmp_path / "bad.json"
         bad.write_text("{not json", encoding="utf-8")
         assert _read_session_overlays(bad) == {}
-
-    def test_cleared_custom_title_survives_rollback(self, tmp_path: Path) -> None:
-        """An explicit empty custom_title (user cleared the pin) must override a snapshot's old pin."""
-        from chrys.orchestration.engine.rollback import _read_session_overlays, _reapply_session_overlays
-
-        session_file = tmp_path / "session.json"
-        session_file.write_text(
-            json.dumps({"meta": {"title": "x", "custom_title": "", "generated_title": "Auto"}, "state": {}}),
-            encoding="utf-8",
-        )
-        overlays = _read_session_overlays(session_file)
-        assert overlays == {"custom_title": ""}
-
-        # Snapshot from before the clear still carries the pin.
-        session_file.write_text(
-            json.dumps({"meta": {"title": "x", "custom_title": "Pinned"}, "state": {}}),
-            encoding="utf-8",
-        )
-        _reapply_session_overlays(session_file, overlays)
-        meta = json.loads(session_file.read_text(encoding="utf-8"))["meta"]
-        assert meta["custom_title"] == ""
 
     @pytest.mark.parametrize(("sidecar_hour", "expected"), [(11, "acp"), (9, "cli")], ids=["newer", "older"])
     def test_the_surface_of_a_newer_sidecar_is_the_one_kept(
@@ -546,22 +530,6 @@ class TestRollbackSessionOverlayPreservation:
         (tmp_path / "session.recovery.json").write_text(envelope(sidecar_hour, "acp"), encoding="utf-8")
 
         assert _read_session_overlays(session_file) == {"last_surface": expected}
-
-    def test_a_session_that_never_recorded_a_surface_keeps_the_snapshots(self, tmp_path: Path) -> None:
-        """Only a surface the current session recorded outranks the snapshot's."""
-        from chrys.orchestration.engine.rollback import _read_session_overlays, _reapply_session_overlays
-
-        session_file = tmp_path / "session.json"
-        session_file.write_text(json.dumps({"meta": {"title": "x"}, "state": {}}), encoding="utf-8")
-        overlays = _read_session_overlays(session_file)
-        assert overlays == {}
-
-        session_file.write_text(
-            json.dumps({"meta": {"title": "x", "last_surface": "acp"}, "state": {}}), encoding="utf-8"
-        )
-        _reapply_session_overlays(session_file, overlays)
-        meta = json.loads(session_file.read_text(encoding="utf-8"))["meta"]
-        assert meta["last_surface"] == "acp"
 
 
 # ---------------------------------------------------------------------------
@@ -587,9 +555,7 @@ class TestRollbackCoordinatorRecheck:
         session_file = session_dir / "session.json"
         snap_dir = session_dir / "snapshots"
         snap_dir.mkdir(parents=True)
-        (snap_dir / "turn_2.json").write_text(
-            json.dumps({"meta": {"session_id": "rb_test"}, "state": {"messages": ["t2"], "compressed_msgs": []}})
-        )
+        _write_session_json(snap_dir / "turn_2.json", [serialize_message(Message("user", ["t2"]))])
         session_file.write_text(
             json.dumps({"meta": {"session_id": "rb_test"}, "state": {"messages": ["live"], "compressed_msgs": []}})
         )

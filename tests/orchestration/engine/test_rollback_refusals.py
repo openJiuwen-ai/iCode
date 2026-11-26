@@ -193,8 +193,9 @@ class TestRollbackRefusals:
             write_lock_held: bool = False,
             after_delete: Any = None,
             before_restart: Any = None,
+            failure_hint: Any = None,
         ) -> bool:
-            _ = write_lock_held, after_delete, before_restart
+            _ = write_lock_held, after_delete, before_restart, failure_hint
             reset_observations.append((engine.state, engine.turns.turn_state.lease.prompt_admission_closed))
             return True
 

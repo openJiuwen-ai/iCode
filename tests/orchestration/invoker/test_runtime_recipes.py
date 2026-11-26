@@ -11,6 +11,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse, SetModelProfile, UserMessage
+from chrys.foundation.text.model_json import model_path
 from chrys.kernel import AgentSession, Content, Message, SessionContext, UsageDetails
 from chrys.kernel.compaction import _token_count
 from chrys.kernel.middleware import ChatMiddleware
@@ -228,8 +229,8 @@ async def test_real_build_preserves_main_child_model_context_approval_and_chat_i
         assert not {"Explore", "compress_context", "recall_context", "view_image"} & child_names
         assert root_messages[-1].text.startswith("root question <system-reminder>")
         assert child_messages[-1].text.startswith("child question <system-reminder>")
-        assert str(tmp_path) in root_messages[-1].text
-        assert str(tmp_path) in child_messages[-1].text
+        assert model_path(str(tmp_path)) in root_messages[-1].text
+        assert model_path(str(tmp_path)) in child_messages[-1].text
         assert len(approvals) == 1
         assert approvals[0].caller_name == "Explore"
         denied = [

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from chrys.foundation.text.model_json import model_json
+from chrys.foundation.text.model_json import model_json, model_path
 from chrys.kernel import ChatResponse, Message
 
 
@@ -78,7 +78,7 @@ def format_user_messages(messages: list[str]) -> tuple[str, str]:
 
 def build_user_prompt(request: ApprovalJudgeInput) -> str:
     """Build the user-turn prompt for the judge LLM call."""
-    workspace = ", ".join(request.workspace_roots) if request.workspace_roots else "(not specified)"
+    workspace = ", ".join(model_path(path) for path in request.workspace_roots) or "(not specified)"
     user_ctx, latest_user_ctx = format_user_messages(request.user_messages)
     formatted_args = model_json(request.args, default=str, indent=2)
 

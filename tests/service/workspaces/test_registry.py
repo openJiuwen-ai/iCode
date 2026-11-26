@@ -215,6 +215,19 @@ def test_registry_rejects_a_folder_that_aliases_the_primary(registry, tmp_path):
     assert registry.create("Team", str(primary), [str(related)]).primary_cwd == str(primary)
 
 
+@pytest.mark.skipif(sys.platform not in ("darwin", "win32"), reason="Requires platform folding of missing paths")
+def test_registry_rejects_overlapping_missing_folders_that_differ_in_case(registry, tmp_path):
+    (primary,) = make_workdirs(tmp_path, "Folder")
+    selected = registry.create("Team", str(primary))
+    primary.rmdir()
+    before = registry.path.read_bytes()
+
+    with pytest.raises(WorkspaceRegistryError, match="Overlaps"):
+        registry.update(selected.id, name="Team", primary=str(primary), folders=[str(tmp_path / "folder")])
+
+    assert registry.path.read_bytes() == before
+
+
 def test_registry_overlap_check_resolves_dotdot_as_the_workspace_opens(registry, tmp_path):
     """`alias/../refs` names physical/refs on POSIX but the sibling refs on Windows; both checks agree."""
     physical = tmp_path / "physical"
@@ -241,6 +254,18 @@ def test_registry_reads_a_list_saved_with_a_bom(registry, tmp_path):
     assert registry.snapshot().workspace(selected.id) == selected
     assert registry.update(selected.id, name="Renamed", primary=str(tmp_path), folders=[]).name == "Renamed"
     assert not registry.path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_registry_reads_handwritten_home_relative_folders(registry, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    primary, related = make_workdirs(tmp_path, "proj", "ref")
+    selected = registry.create("Team", str(primary), [str(related)])
+    payload = json.loads(registry.path.read_bytes())
+    payload["workspaces"][0].update(primary_cwd="~/proj", working_dirs=["~/ref"])
+    registry.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert registry.snapshot().workspace(selected.id) == selected
 
 
 def test_registry_rejects_a_noncanonical_workspace_id(registry, tmp_path):
@@ -336,3 +361,39 @@ registry.set_session_workspace(sys.argv[2], sys.argv[3])
     snapshot = WorkspaceRegistry(registry.path).snapshot()
     assert snapshot.sessions == {"First": selected.id, "Second": selected.id}
     assert snapshot.workspaces == (selected,)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_field", "reason", "translated"),
+    [
+        ("id", "bad-id", "id", "ws_", None),
+        ("name", "Badname", "name", "control characters", None),
+        ("name", "  fIrSt  ", "name", "already exists", None),
+        ("primary_cwd", "relative", "primary_cwd", "absolute", "绝对路径"),
+        ("working_dirs", ["relative"], "working_dirs[0]", "absolute", None),
+        ("working_dirs", "relative", "working_dirs", "Expected a list.", "应为列表"),
+        ("last_used_at", 42, "last_used_at", "string", None),
+    ],
+)
+def test_unreadable_registry_warning_points_to_the_invalid_workspace_row(
+    registry, tmp_path, field, value, expected_field, reason, translated
+):
+    from chrys.foundation.i18n import Localizer
+    from chrys.orchestration.engine.workspaces import registry_unreadable_warning
+
+    registry.create("First", str(tmp_path))
+    registry.create("Second", str(tmp_path))
+    payload = json.loads(registry.path.read_bytes())
+    payload["workspaces"][1][field] = value
+    registry.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    error = registry.snapshot().error
+    assert error is not None
+    warning = registry_unreadable_warning("saved", error)
+    assert "workspaces.json" in warning.message
+    assert f"Entry 2, field {expected_field}:" in warning.message
+    assert reason in warning.message
+    if translated is not None:
+        assert warning.display_message is not None
+        rendered = Localizer("zh-Hans").render(warning.display_message)
+        assert expected_field in rendered and translated in rendered

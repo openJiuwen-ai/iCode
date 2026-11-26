@@ -90,6 +90,7 @@ from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
+from chrys.orchestration.engine.workspaces import WORKSPACE_REFERENCE_MISSING
 from chrys.orchestration.workflows.catalog import WorkflowCatalog
 from chrys.orchestration.workflows.preview import PreparedWorkflow
 from chrys.orchestration.workflows.runner import WorkflowRunResult
@@ -187,7 +188,12 @@ _InvocationProse = (
 """Model output a sub-agent keeps private: only its own invocation's stream shows it."""
 
 WORKSPACE_WARNING_CODES: frozenset[str] = frozenset(
-    {"workspace_registry_unreadable", "workspace_membership_write_failed", "workspace_selected"}
+    {
+        "workspace_registry_unreadable",
+        "workspace_membership_write_failed",
+        "workspace_selected",
+        WORKSPACE_REFERENCE_MISSING,
+    }
 )
 """Workspace notices a frontend reports before its prompt event stream exists."""
 

@@ -14,17 +14,20 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import Error, RollbackResult, SessionRestore, UserRollback, Warning
-from chrys.foundation.i18n import DisplayBlock, DisplayPath, msg
+from chrys.foundation.i18n import DisplayBlock, DisplayJoined, DisplayPath, MessageRef, msg
+from chrys.foundation.platform.files import atomic_write_text
 from chrys.foundation.util.async_tasks import await_task_quiescence
 from chrys.foundation.util.lock import FileLock
+from chrys.orchestration.engine.session_lifecycle import SESSION_RESTART_FAILED
 from chrys.orchestration.engine.state.machine import EngineState
 from chrys.service.mutations.snapshot_files import (
+    read_rollback_snapshot,
     rollback_snapshot_for_target,
     rollback_snapshot_paths,
     snapshot_target_turn,
@@ -34,9 +37,13 @@ from chrys.service.mutations.snapshot_files import (
 from chrys.service.mutations.snapshot_files import (
     turn_prompt_previews as collect_turn_prompt_previews,
 )
+from chrys.service.mutations.types import (
+    RollbackFileWarning,
+    rollback_file_result_messages,
+)
 from chrys.service.mutations.workspace_changes import format_partial_revert_notice, format_retained_changes_notice
 from chrys.service.state.store import SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME, recorded_surface
-from chrys.service.trajectory.state import TurnRecord, turn_records
+from chrys.service.trajectory.state import turn_records
 
 if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import SettingsHandle
@@ -49,8 +56,10 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.state.machine import EngineStateMachine
     from chrys.orchestration.engine.state.session_writer import SessionWriter
     from chrys.orchestration.engine.trajectory import TrajectoryRecorder
+    from chrys.service.mutations.snapshot_files import RollbackSnapshot
     from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
     from chrys.service.session.history import SessionHistoryManager
+    from chrys.service.state.store import StateStore
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +122,11 @@ _ROLLBACK_SWAP_FAILED = msg(
     fallback="Failed to restore snapshot: {detail}",
     multiline=True,
 )
+_ROLLBACK_FILE_RESULTS = msg(
+    "rollback.file_results",
+    fallback="File restoration results:\n{detail}",
+    multiline=True,
+)
 _ROLLBACK_SESSION_CHANGED = msg(
     "rollback.session_changed",
     fallback="Discard cancelled because the active session changed.",
@@ -161,8 +175,8 @@ def _read_session_overlays(session_file: Path) -> dict[str, str]:
     pre-clear snapshot would resurrect the pin), and ``last_surface`` names
     the surface whose turn last worked in the session, which a rollback,
     not being a turn, never changes.  That turn may be one a crash cut
-    short, recorded only in a newer sidecar the restore after the swap
-    discards, so the surface is read as the store would read it.
+    short. Its surface may exist only in the newer sidecar that publication
+    will discard, so read it as the store would before replacing the primary.
     ``generated_title`` is deliberately NOT preserved: it summarizes the
     conversation, and after a rollback the snapshot's own value is the one
     that describes the restored turns — the newer title describes history
@@ -175,23 +189,6 @@ def _read_session_overlays(session_file: Path) -> dict[str, str]:
     if surface is not None:
         overlays["last_surface"] = surface
     return overlays
-
-
-def _reapply_session_overlays(session_file: Path, overlays: dict[str, str]) -> None:
-    """Merge preserved session-scoped meta back into the restored snapshot, best-effort."""
-    if not overlays:
-        return
-    from chrys.foundation.platform.files import atomic_write_text
-
-    try:
-        envelope = json.loads(session_file.read_text(encoding="utf-8"))
-        meta = envelope.get("meta") if isinstance(envelope, dict) else None
-        if not isinstance(meta, dict):
-            return
-        meta.update(overlays)
-        atomic_write_text(session_file, json.dumps(envelope, indent=2, ensure_ascii=False))
-    except OSError, ValueError:
-        logger.warning("Failed to preserve session metadata across rollback for %s", session_file, exc_info=True)
 
 
 def capture_snapshot_writer(session: ActiveSession, settings_handle: SettingsHandle) -> Callable[[], None]:
@@ -226,6 +223,7 @@ class RollbackController:
         current: CurrentAgent,
         permits: LifecyclePermits,
         writer: SessionWriter,
+        state_store: StateStore | None,
         turn_state: TurnRuntimeState,
         lifecycle: SessionLifecycle,
         bus: EventBus,
@@ -239,6 +237,7 @@ class RollbackController:
         self._current = current
         self._permits = permits
         self._writer = writer
+        self._state_store = state_store
         self._turn_state = turn_state
         self._lifecycle = lifecycle
         self._bus = bus
@@ -297,7 +296,7 @@ class RollbackController:
             turns = {turn for turn in turns if turn < current_turn}
         has_history = bool(
             (self._session.mutation_tracker is not None and self._session.mutation_tracker.get_all_turns())
-            or (self._history.is_bound and self._history.messages)
+            or (self._history.is_bound and (self._history.messages or self._history.state.get("compressed_msgs")))
         )
         if not has_history:
             return []
@@ -309,7 +308,6 @@ class RollbackController:
         self,
         event: UserRollback,
         *,
-        atomic_copy_file: Callable[[Path, Path], None],
         lock_timeout_seconds: float,
     ) -> None:
         """Handle rollback under an exclusive prompt/session-transition boundary."""
@@ -353,7 +351,6 @@ class RollbackController:
                 transition_owner=transition_owner,
                 target_turn=target_turn,
                 rolled_back_user_text=rolled_back_user_text,
-                atomic_copy_file=atomic_copy_file,
                 lock_timeout_seconds=lock_timeout_seconds,
             )
         finally:
@@ -497,17 +494,9 @@ class RollbackController:
         transition_owner: str,
         target_turn: int,
         rolled_back_user_text: str,
-        atomic_copy_file: Callable[[Path, Path], None],
         lock_timeout_seconds: float,
     ) -> None:
         """Secure rollback resources, then commit immediately before mutation."""
-
-        if (
-            target_turn > 0
-            and self._session.workspace_id is not None
-            and await self._refuse_missing_workspace_primary(sid)
-        ):
-            return
 
         welcome_reset_lock: FileLock | None = None
         if target_turn == 0:
@@ -533,7 +522,6 @@ class RollbackController:
                 transition_owner=transition_owner,
                 target_turn=target_turn,
                 rolled_back_user_text=rolled_back_user_text,
-                atomic_copy_file=atomic_copy_file,
                 lock_timeout_seconds=lock_timeout_seconds,
                 welcome_lock_lease=welcome_lock_lease,
             )
@@ -549,7 +537,6 @@ class RollbackController:
         transition_owner: str,
         target_turn: int,
         rolled_back_user_text: str,
-        atomic_copy_file: Callable[[Path, Path], None],
         lock_timeout_seconds: float,
         welcome_lock_lease: _RollbackLockLease,
     ) -> None:
@@ -569,13 +556,14 @@ class RollbackController:
             else None
         )
 
-        restore_results: list = []
-        plan_exclusions: list[tuple[str, str]] = []
-        plan_warnings: list[str] = []
-        plan_candidates: list[str] = []
-        revert_detection_truncated = False
-        welcome_file_rollback: Callable[[], Awaitable[None]] | None = None
-        post_swap_file_rollback: Callable[[], None] | None = None
+        result = RollbackResult(
+            session_id=sid,
+            target_turn=target_turn,
+            rolled_back_user_text=rolled_back_user_text,
+            discarded_turn_count=discarded_turn_count,
+        )
+        apply_file_rollback: Callable[[], None] | None = None
+        workspace_cwd = self._session.workspace_cwd()
         if event.revert_changes and tracker is not None and tracker_turn_ids:
             rollback_turn_ids = {tid for tid in tracker_turn_ids if tid > target_turn}
             only_paths: set[str] | None = set(event.selected_paths) if event.selected_paths else None
@@ -583,9 +571,10 @@ class RollbackController:
                 # Truncated detection means the rolled-back turns may hold
                 # writes that never became plan candidates; the flag lives on
                 # the turns rollback_turns removes, so capture it here.
-                revert_detection_truncated = any(
+                if any(
                     turn.detection_truncated for turn in tracker.get_all_turns() if turn.turn_id in rollback_turn_ids
-                )
+                ):
+                    result.warnings.append(RollbackFileWarning.DETECTION_INCOMPLETE)
                 try:
                     # Authoritative peer re-check before the only destructive
                     # consumer acts: force-reclassify against the coordination
@@ -599,7 +588,6 @@ class RollbackController:
                     # outside a git repo, claims were published under it, and
                     # the destructive rollback-time check must rediscover the
                     # same peer files.
-                    workspace_cwd = self._session.workspace_cwd()
                     if coordinator is not None:
                         try:
                             await loop.run_in_executor(
@@ -626,39 +614,38 @@ class RollbackController:
                             )
                         except Exception:
                             logger.debug("Rollback plan peer augmentation failed", exc_info=True)
-                    plan_exclusions = [(path, reason.value) for path, reason in plan.exclusions]
-                    plan_warnings = [w.message for w in plan.warnings]
-                    # Every path the rolled-back turns touched — entries the
-                    # restore will attempt plus exclusions it never will. The
-                    # turns are removed during execution, so the retained set
-                    # can only be derived from this pre-built list afterwards.
-                    plan_candidates = [path for path, _ in plan.entries] + [path for path, _ in plan.exclusions]
+                    result.exclusions = [(path, reason.value) for path, reason in plan.exclusions]
+                    result.warnings.extend(w.message for w in plan.warnings)
+                    paths = plan.paths
+                    selected = paths if only_paths is None else paths & only_paths
+                    result.untouched_paths = sorted(paths)
 
                     def _apply_file_rollback() -> None:
-                        nonlocal restore_results
+                        result.untouched_paths = sorted(paths - selected)
                         try:
-                            restore_results = tracker.rollback_turns(
+                            result.restore_results = tracker.rollback_turns(
                                 rollback_turn_ids,
                                 only_paths=only_paths,
                                 plan=plan,
                             )
+                            if selected.difference(row.path for row in result.restore_results):
+                                result.warnings.append(RollbackFileWarning.RESTORE_UNKNOWN)
                         except Exception:
                             logger.exception("Rollback file-restore failed (target_turn=%d)", target_turn)
-                            restore_results = []
+                            result.warnings.append(RollbackFileWarning.RESTORE_UNKNOWN)
 
-                    if target_turn == 0:
-
-                        async def _apply_welcome_file_rollback() -> None:
-                            _apply_file_rollback()
-
-                        welcome_file_rollback = _apply_welcome_file_rollback
-                    else:
-                        post_swap_file_rollback = _apply_file_rollback
+                    apply_file_rollback = _apply_file_rollback
                 except Exception:
                     logger.exception("Rollback file-restore failed (target_turn=%d)", target_turn)
-                    restore_results = []
+                    result.warnings.append(RollbackFileWarning.RESTORE_UNKNOWN)
 
         if await self._cancel_if_rollback_owner_changed(event, sid, session_generation):
+            return
+        if (
+            target_turn > 0
+            and self._session.workspace_id is not None
+            and await self._refuse_missing_workspace_primary(sid)
+        ):
             return
 
         session_dir = self._session.session_dir
@@ -668,12 +655,24 @@ class RollbackController:
         # name. Ordinals cannot stand in for them — after a failed or cancelled
         # turn the running counter is ahead of the saved one, and subtraction
         # would then retire a turn that never ran.
-        superseded_turn_ids: list[str] = []
-        if target_turn == 0:
-            # Every turn goes, and every command the turns started: before their
-            # files come back, which those commands could write again.
+        record_rollback = self._trajectory_recorder.rollback
+
+        def failure_hint() -> MessageRef | None:
+            lines = rollback_file_result_messages(result, workspace_cwd)
+            if not lines:
+                return None
+            return _ROLLBACK_FILE_RESULTS.bind(detail=DisplayJoined(tuple(lines), "\n"))
+
+        async def restore_working_files() -> None:
+            # The checkpoint has changed. Discarded commands must stop before
+            # their files come back, or they could write them again.
             if (tasks := self._session.background_tasks) is not None:
-                await tasks.stop_turns_after(0)
+                await tasks.stop_turns_after(target_turn)
+            if apply_file_rollback is not None:
+                apply_file_rollback()
+                result.files_reverted = sum(row.changed for row in result.restore_results)
+
+        if target_turn == 0:
             # Keep the old registry for the audit record: a successful reset
             # replaces the live history before the rollback event is committed.
             rollback_history_state = self._history.state if self._history.is_bound else None
@@ -681,119 +680,78 @@ class RollbackController:
             superseded_turn_ids = [record.turn_id for record in rollback_turns]
             self._permits.commit_session_transition(transition_owner)
 
-            try:
-                reset_succeeded = await self._lifecycle.reset_session_to_welcome(
-                    sid,
-                    write_lock_held=welcome_lock_lease.held,
-                    after_delete=welcome_file_rollback,
-                    before_restart=welcome_lock_lease.release,
+            async def finish_welcome_rollback() -> None:
+                try:
+                    reset_succeeded = await self._lifecycle.reset_session_to_welcome(
+                        sid,
+                        write_lock_held=welcome_lock_lease.held,
+                        after_delete=restore_working_files,
+                        before_restart=welcome_lock_lease.release,
+                        failure_hint=failure_hint,
+                    )
+                finally:
+                    welcome_lock_lease.release()
+                if not reset_succeeded:
+                    await self._bus.publish(
+                        Error(
+                            code="rollback_reset_failed",
+                            message="Rollback to welcome could not reset the session because the session state is busy.",
+                            display_message=_ROLLBACK_RESET_FAILED.bind(),
+                            session_id=sid,
+                        ),
+                    )
+                    return
+                # The reset has committed and released the welcome write lock. Its
+                # restarted recorder is bound lazily to the same log, so activation
+                # recovers the old branch and this event atomically opens the new one.
+                # A failed reset never reaches here and therefore never supersedes the
+                # branch of the session that was restored.
+                await record_rollback(
+                    superseded_turns=rollback_turns,
+                    target_turns=[],
                 )
-            finally:
-                welcome_lock_lease.release()
-            if not reset_succeeded:
+                if retained_notice:
+                    self._workspace_change_tracker.queue_safety_notice(
+                        retained_notice, cwd=self._session.workspace_cwd()
+                    )
+                self._queue_partial_revert_notice(result)
+                result.superseded_turn_ids = superseded_turn_ids
+                await self._bus.publish(result)
+
+            await self._permits.finish_committed_session_step(finish_welcome_rollback)
+            return
+
+        live_turns = turn_records(self._history.state if self._history.is_bound else None)
+
+        resume_at = self._lifecycle._restore_resume()
+        try:
+            snapshot = self._publish_rollback_snapshot(
+                session_dir, sid, target_turn, transition_owner, lock_timeout_seconds
+            )
+        except (OSError, ValueError) as exc:
+            # Releasing the write lock can fail after the primary was published.
+            if self._permits.session_generation != session_generation:
+                failure = exc
+                await self._permits.finish_committed_session_step(
+                    lambda: self._lifecycle._report_failed_session_restart(
+                        sid,
+                        failure,
+                        resume_at=resume_at,
+                        fallback_display=SESSION_RESTART_FAILED,
+                        failure_hint=failure_hint,
+                    )
+                )
+                return
+            if isinstance(exc, TimeoutError):
                 await self._bus.publish(
                     Error(
-                        code="rollback_reset_failed",
-                        message="Rollback to welcome could not reset the session because the session state is busy.",
-                        display_message=_ROLLBACK_RESET_FAILED.bind(),
+                        code="rollback_swap_locked",
+                        message=f"Timed out waiting for session lock: {exc}",
+                        display_message=_ROLLBACK_SWAP_LOCKED.bind(detail=DisplayBlock(str(exc))),
                         session_id=sid,
                     ),
                 )
                 return
-            # The reset has committed and released the welcome write lock. Its
-            # restarted recorder is bound lazily to the same log, so activation
-            # recovers the old branch and this event atomically opens the new one.
-            # A failed reset never reaches here and therefore never supersedes the
-            # branch of the session that was restored.
-            await self._trajectory_recorder.rollback(
-                superseded_turns=rollback_turns,
-                target_turns=[],
-            )
-            if retained_notice:
-                self._workspace_change_tracker.queue_safety_notice(retained_notice, cwd=self._session.workspace_cwd())
-            self._queue_partial_revert_notice(
-                plan_candidates, restore_results, detection_truncated=revert_detection_truncated
-            )
-            files_reverted = sum(1 for r in restore_results if r.changed)
-            await self._bus.publish(
-                RollbackResult(
-                    session_id=sid,
-                    target_turn=0,
-                    rolled_back_user_text=rolled_back_user_text,
-                    files_reverted=files_reverted,
-                    restore_results=restore_results,
-                    exclusions=plan_exclusions,
-                    warnings=plan_warnings,
-                    superseded_turn_ids=superseded_turn_ids,
-                    discarded_turn_count=discarded_turn_count,
-                ),
-            )
-            return
-
-        snapshot = rollback_snapshot_for_target(session_dir, target_turn)
-        session_file = session_dir / "session.json" if session_dir else None
-        if snapshot is None or session_file is None or not snapshot.path.exists():
-            await self._bus.publish(
-                Warning(
-                    code="rollback_snapshot_missing",
-                    message=f"Snapshot for turn {target_turn} is missing.",
-                    display_message=_ROLLBACK_SNAPSHOT_MISSING.bind(target_turn=target_turn),
-                    session_id=sid,
-                ),
-            )
-            return
-
-        # Before the files come back: a command the removed turns started could write them again.
-        if (tasks := self._session.background_tasks) is not None:
-            await tasks.stop_turns_after(target_turn)
-
-        live_turns = turn_records(self._history.state if self._history.is_bound else None)
-        # What the audit record is told the snapshot keeps: it is written before
-        # the swap, while the outgoing runtime still holds the pre-rollback
-        # registry, so the restored registry is not available yet. A snapshot
-        # whose payload does not parse names no turn, and superseding everything
-        # on the strength of it would mark history the restore is about to keep
-        # as retired — it names nothing instead.
-        superseded_for_record: list[TurnRecord] = []
-        if snapshot.readable:
-            kept_turn_ids = {record.turn_id for record in snapshot.turns}
-            superseded_for_record = [record for record in live_turns if record.turn_id not in kept_turn_ids]
-
-        if self._session.workspace_id is not None and await self._refuse_missing_workspace_primary(sid):
-            return
-        snapshot_missing_after_lock = False
-        try:
-            lock_path = self._session.session_write_lock_path(sid)
-            if lock_path is None:
-                raise OSError("session state store is unavailable")
-            with FileLock(lock_path, timeout=lock_timeout_seconds):
-                if not snapshot.path.exists():
-                    snapshot_missing_after_lock = True
-                else:
-                    overlays = _read_session_overlays(session_file)
-                    self._permits.commit_session_transition(transition_owner)
-                    atomic_copy_file(snapshot.path, session_file)
-                    _reapply_session_overlays(session_file, overlays)
-                    backup_file = session_file.with_name(SESSION_BACKUP_FILE_NAME)
-                    try:
-                        # Copy the restored (overlay-patched) primary so both files
-                        # stay identical.
-                        atomic_copy_file(session_file, backup_file)
-                    except OSError:
-                        with contextlib.suppress(OSError):
-                            backup_file.unlink()
-                        logger.warning("Failed to update rollback backup %s", backup_file, exc_info=True)
-        except TimeoutError as exc:
-            await self._bus.publish(
-                Error(
-                    code="rollback_swap_locked",
-                    message=f"Timed out waiting for session lock: {exc}",
-                    display_message=_ROLLBACK_SWAP_LOCKED.bind(detail=DisplayBlock(str(exc))),
-                    session_id=sid,
-                ),
-            )
-            return
-        except OSError as exc:
             await self._bus.publish(
                 Error(
                     code="rollback_swap_failed",
@@ -804,7 +762,7 @@ class RollbackController:
             )
             return
 
-        if snapshot_missing_after_lock:
+        if snapshot is None:
             await self._bus.publish(
                 Warning(
                     code="rollback_snapshot_missing",
@@ -815,137 +773,117 @@ class RollbackController:
             )
             return
 
-        if post_swap_file_rollback is not None:
-            post_swap_file_rollback()
-
-        if session_dir is not None:
-            snap_dir = session_dir / "snapshots"
-            if snap_dir.is_dir():
-                for path in rollback_snapshot_paths(session_dir):
-                    turn = snapshot_target_turn(path)
-                    if turn is None:
-                        continue
-                    if turn <= target_turn:
-                        continue
-                    try:
-                        path.unlink()
-                    except OSError:
-                        logger.debug("Failed to prune stale snapshot %s", path, exc_info=True)
+        target_turns = snapshot.turns
 
         # The rollback opens a new trajectory branch: recorded on the outgoing
         # runtime (the restore below closes it and the restored session resumes
         # on the new branch), after the swap lock is released — activation
         # takes the same lock — and while the live registry still names the
         # first superseded turn.
-        if self._session.workspace_id is None:
-            record_cancelled = False
-            try:
-                await self._trajectory_recorder.rollback(
-                    superseded_turns=superseded_for_record,
-                    target_turns=snapshot.turns,
-                )
-            except asyncio.CancelledError:
-                # The swap has committed but the engine still holds the pre-rollback
-                # history: leaving here would let the next save write that history
-                # back over the file the rollback just restored. The audit record is
-                # the only part that can be dropped, so the cancellation waits for the
-                # restore below and completes right after it.
-                task = asyncio.current_task()
-                if task is not None:
-                    task.uncancel()
-                record_cancelled = True
-
+        async def restore_committed_snapshot() -> None:
             with self._session.saves_suppressed():
-                await self._lifecycle.on_session_restore(
-                    SessionRestore(session_id=sid, ignore_recovery=True), for_rollback=True
-                )
-            if record_cancelled:
-                raise asyncio.CancelledError
-        else:
-            record_rollback = self._trajectory_recorder.rollback
-
-            async def restore_committed_snapshot() -> None:
-                audit_cancelled = False
                 try:
-                    await record_rollback(
-                        superseded_turns=superseded_for_record,
-                        target_turns=snapshot.turns,
-                    )
-                except asyncio.CancelledError:
-                    audit_cancelled = True
-                with self._session.saves_suppressed():
+                    await restore_working_files()
+                    for path in rollback_snapshot_paths(session_dir):
+                        turn = snapshot_target_turn(path)
+                        if turn is not None and turn > target_turn:
+                            try:
+                                path.unlink()
+                            except OSError:
+                                logger.debug("Failed to prune stale snapshot %s", path, exc_info=True)
+
+                    kept_turn_ids = {record.turn_id for record in target_turns}
+                    audit_cancelled = False
+                    try:
+                        await record_rollback(
+                            superseded_turns=[record for record in live_turns if record.turn_id not in kept_turn_ids],
+                            target_turns=target_turns,
+                        )
+                    except asyncio.CancelledError:
+                        audit_cancelled = True
+                    except Exception:
+                        logger.warning("Failed to record rollback of session %s", sid, exc_info=True)
                     await self._lifecycle.on_session_restore(
-                        SessionRestore(session_id=sid, ignore_recovery=True, require_leave_confirmation=False),
+                        SessionRestore(session_id=sid, ignore_recovery=True),
                         for_rollback=True,
                     )
-                if audit_cancelled:
-                    raise asyncio.CancelledError
+                except (Exception, asyncio.CancelledError) as exc:
+                    failure = (
+                        RuntimeError("Rollback restore was cancelled.")
+                        if isinstance(exc, asyncio.CancelledError)
+                        else exc
+                    )
+                    await self._lifecycle._report_failed_session_restart(
+                        sid,
+                        failure,
+                        resume_at=resume_at,
+                        fallback_display=SESSION_RESTART_FAILED,
+                        failure_hint=failure_hint,
+                    )
+                    raise
 
-            await self._permits.finish_committed_session_step(restore_committed_snapshot)
+            # Use the restored registry to report which turns were actually retired.
+            retained_ids = {
+                record.turn_id for record in turn_records(self._history.state if self._history.is_bound else None)
+            }
+            superseded_turns = [record for record in live_turns if record.turn_id not in retained_ids]
+            superseded_turn_ids = [record.turn_id for record in superseded_turns]
 
-        # What the rollback actually retired, read from the registry the restored
-        # session came back with: the snapshot names a state, but the restore may
-        # read another source (a save the crash sidecar won, a backup) or leave
-        # the session untouched, and a turn is superseded only when it is gone
-        # from the session that is live now.
-        retained_ids = {
-            record.turn_id for record in turn_records(self._history.state if self._history.is_bound else None)
-        }
-        superseded_turns = [record for record in live_turns if record.turn_id not in retained_ids]
-        superseded_turn_ids = [record.turn_id for record in superseded_turns]
+            if event.revert_changes:
+                self._workspace_change_tracker.invalidate()
+                # After the invalidate: the stale baseline can never rediscover
+                # files the revert retained, so they must be reported directly.
+                self._queue_partial_revert_notice(result)
+                await self._writer.save_current_session()
 
-        if event.revert_changes:
-            self._workspace_change_tracker.invalidate()
-            # After the invalidate: the stale baseline can never rediscover
-            # files the revert retained, so they must be reported directly.
-            self._queue_partial_revert_notice(
-                plan_candidates, restore_results, detection_truncated=revert_detection_truncated
-            )
-            await self._writer.save_current_session()
+            result.superseded_turn_ids = superseded_turn_ids
+            await self._bus.publish(result)
+            if audit_cancelled:
+                raise asyncio.CancelledError
 
-        files_reverted = sum(1 for r in restore_results if r.changed)
-        await self._bus.publish(
-            RollbackResult(
-                session_id=sid,
-                target_turn=target_turn,
-                rolled_back_user_text=rolled_back_user_text,
-                files_reverted=files_reverted,
-                restore_results=restore_results,
-                exclusions=plan_exclusions,
-                warnings=plan_warnings,
-                superseded_turn_ids=superseded_turn_ids,
-                discarded_turn_count=discarded_turn_count,
-            ),
-        )
+        await self._permits.finish_committed_session_step(restore_committed_snapshot)
 
-    def _queue_partial_revert_notice(
-        self,
-        plan_candidates: list[str],
-        restore_results: list,
-        *,
-        detection_truncated: bool = False,
-    ) -> None:
-        """Report rollback candidates the revert did not actually restore.
+    def _publish_rollback_snapshot(
+        self, session_dir: Path | None, sid: str, target_turn: int, owner: str, timeout: float
+    ) -> RollbackSnapshot | None:
+        """Publish the complete positive-turn checkpoint while holding the session write lock."""
+        if session_dir is None or (chosen := rollback_snapshot_for_target(session_dir, target_turn)) is None:
+            return None
+        lock_path = self._session.session_write_lock_path(sid)
+        if lock_path is None:
+            raise OSError("session state store is unavailable")
+        primary = session_dir / "session.json"
+        with FileLock(lock_path, timeout=timeout):
+            snapshot = read_rollback_snapshot(chosen, target_turn, sid, _read_session_overlays(primary))
+            if snapshot is None:
+                return None
+            atomic_write_text(primary, snapshot.payload)
+            self._permits.commit_session_transition(owner)
+            if self._state_store is not None:
+                with contextlib.suppress(OSError):
+                    self._state_store.discard_ignored_recovery_under_write_lock(sid)
+            backup = primary.with_name(SESSION_BACKUP_FILE_NAME)
+            try:
+                atomic_write_text(backup, snapshot.payload)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    backup.unlink()
+                logger.warning("Failed to update rollback backup %s", backup, exc_info=True)
+            return snapshot
 
-        Covers a partial ``selected_paths`` selection (unselected entries are
-        never attempted), plan exclusions, per-file restore failures, and a
-        restore pass that failed wholesale (empty results). Truncated
-        detection on a rolled-back turn means writes may exist that never
-        became candidates, so it warns even when every known candidate
-        restored. A fully-applied revert with complete detection queues
-        nothing.
-        """
-        if not plan_candidates and not detection_truncated:
-            return
-        restored = {result.path for result in restore_results if result.ok}
-        retained = [path for path in plan_candidates if path not in restored]
+    def _queue_partial_revert_notice(self, result: RollbackResult) -> None:
+        """Report known retained paths separately from an incomplete batch result."""
         cwd = self._session.workspace_cwd()
+        retained = [*result.untouched_paths, *(path for path, _ in result.exclusions)]
+        retained.extend(row.path for row in result.restore_results if not row.ok)
         notice = format_partial_revert_notice(
             retained,
             cwd=cwd,
             max_entries=self._settings_handle.settings.workspace_change_notice_max_entries,
-            detection_incomplete=detection_truncated,
+            detection_incomplete=RollbackFileWarning.DETECTION_INCOMPLETE.reported_in(result.warnings),
         )
+        if RollbackFileWarning.RESTORE_UNKNOWN.reported_in(result.warnings):
+            notice = "\n".join(filter(None, (notice, RollbackFileWarning.RESTORE_UNKNOWN)))
         if notice:
             self._workspace_change_tracker.queue_safety_notice(notice, cwd=cwd)
 

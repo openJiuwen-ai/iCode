@@ -484,6 +484,7 @@ def update_yaml_doc(
     mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
     *,
     lock_timeout: float = LOCK_TIMEOUT_SECONDS,
+    before_write: Callable[[Path, bytes | None], None] | None = None,
     committed: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Apply *mutator* to the document at *path* under an exclusive lock.
@@ -494,10 +495,13 @@ def update_yaml_doc(
 
     *mutator* receives the freshly read primary (an empty dict when absent) and returns the document to commit. If
     it raises or returns None, neither file is written.
+    *before_write*, when given, receives the target and original bytes before the commit, under the same lock.
 
     Returns the committed document.
     """
-    return _update_yaml_doc(path, mutator, _dump, lock_timeout=lock_timeout, committed=committed)
+    return _update_yaml_doc(
+        path, mutator, _dump, lock_timeout=lock_timeout, before_write=before_write, committed=committed
+    )
 
 
 def migrate_yaml_doc(
@@ -508,10 +512,15 @@ def migrate_yaml_doc(
     before_write: Callable[[Path, bytes | None], None] | None = None,
     committed: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """Preserve key order and optionally look for migration candidates before locking."""
+    """Preserve key order and probe for migration candidates under the document lock."""
     if needs_edit is not None:
         # A probe cannot seed fallback settings while another writer owns the lock.
-        current, _ = _primary(path.resolve(), remember=False)
+        try:
+            path.stat()
+        except FileNotFoundError:
+            return {}
+        with _read_guard(path, LOCK_TIMEOUT_SECONDS):
+            current, _ = _primary(path.resolve(), remember=False)
         if current is None or not needs_edit(current):
             return current if current is not None else {}
     return _update_yaml_doc(

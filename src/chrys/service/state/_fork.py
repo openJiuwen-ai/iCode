@@ -78,15 +78,25 @@ class SessionForkMixin:
         def _read_json_file(path: Path) -> dict[str, Any] | None: ...
 
         def _record_mru(self, session_id: str, updated_at: datetime | None) -> None: ...
-        def _migrate_if_needed_unlocked(self, session_id: str) -> Path | None: ...
+        def _remove_mru(self, session_id: str) -> None: ...
+        def _migrate_if_needed_unlocked(self, session_id: str, *, owns_active_lock: bool = False) -> Path | None: ...
 
-    def fork_session(self, parent_session_id: str, *, last_surface: SessionSurface | None = None) -> str:
+    def fork_session(
+        self,
+        parent_session_id: str,
+        *,
+        last_surface: SessionSurface | None = None,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> str:
         """Create an independent copy of *parent_session_id* with a new canonical id.
 
         *last_surface* names the surface that forked it; ``None`` keeps the parent's.
+        *check_cancelled* can abort the fork before its directory is published.
         """
         try:
-            return self._fork_session_sync(parent_session_id, last_surface=last_surface)
+            return self._fork_session_sync(
+                parent_session_id, last_surface=last_surface, check_cancelled=check_cancelled
+            )
         except SessionNotFoundError:
             raise
         except SessionForkError:
@@ -94,7 +104,9 @@ class SessionForkMixin:
         except Exception as exc:
             raise SessionForkError(f"Failed to fork session {parent_session_id}") from exc
 
-    def _fork_session_sync(self, parent_session_id: str, *, last_surface: SessionSurface | None = None) -> str:
+    def _fork_session_sync(
+        self, parent_session_id: str, *, last_surface: SessionSurface | None, check_cancelled: Callable[[], None] | None
+    ) -> str:
         """Sync implementation of session fork."""
         with FileLock(self._write_lock_path(parent_session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
             self._migrate_if_needed_unlocked(parent_session_id)
@@ -108,6 +120,8 @@ class SessionForkMixin:
 
             last_collision: SessionForkError | None = None
             for _attempt in range(SESSION_FORK_MAX_ID_ATTEMPTS):
+                if check_cancelled is not None:
+                    check_cancelled()
                 new_session_id = self._new_fork_session_id()
                 dest_dir = self._session_dir(new_session_id)
                 with FileLock(self._write_lock_path(new_session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
@@ -133,8 +147,14 @@ class SessionForkMixin:
                             last_surface=last_surface,
                         )
                         # Index before the rename commits the fork.
+                        if check_cancelled is not None:
+                            check_cancelled()
                         self._record_mru(new_session_id, fork_updated_at)
-                        os.replace(tmp_dir, dest_dir)
+                        try:
+                            os.replace(tmp_dir, dest_dir)
+                        except BaseException:
+                            self._remove_mru(new_session_id)
+                            raise
                         fsync_directory(self._dir)
                         tmp_dir = None
                         return new_session_id

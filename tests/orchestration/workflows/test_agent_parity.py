@@ -26,6 +26,7 @@ from chrys.foundation.events.types import (
     WorkflowNodeRetryRequest,
     WorkflowNodeStateChanged,
 )
+from chrys.foundation.text.model_json import model_path
 from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
 from chrys.foundation.util.chrys_headers import RequestRole, RequestScope
 from chrys.kernel import ChatResponseUpdate, Content
@@ -216,7 +217,7 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
         selected = registry.create("Selected", str(project), [str(related)])
         change = workspace_selection(selected.id)
         await host.engine.event_bus.publish(change, raise_handler_errors=True)
-        assert str(related) in runtime_reminder(host.engine)
+        assert model_path(str(related)) in runtime_reminder(host.engine)
         result, _events = await run(host, "skilled", input_text="Go")
     finally:
         await host.shutdown()
@@ -226,7 +227,7 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     assert "Remember: the build is green." in options["instructions"]
     assert "<name>review</name>" in (messages[-1].text or "")
     assert "Project:" not in (messages[-1].text or "")
-    assert str(related) in (messages[-1].text or "")
+    assert model_path(str(related)) in (messages[-1].text or "")
     assert {"load_skill", "read_skill_resource", "run_skill_script"} <= {tool.name for tool in options["tools"]}
 
 

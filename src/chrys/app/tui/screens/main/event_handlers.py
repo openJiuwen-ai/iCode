@@ -60,7 +60,7 @@ from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_THINKING,
 )
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
-from chrys.foundation.errors.display import DISPLAY_WITH_HINT
+from chrys.foundation.errors.display import with_display_hint
 from chrys.foundation.events.types import (
     AgentLoadFailed,
     AgentLoadFinished,
@@ -129,6 +129,7 @@ from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 from chrys.foundation.text.draft_references import image_labels_to_paths
 from chrys.foundation.tool_result_metadata import canonical_tool_result_status
 from chrys.orchestration.engine.run.attachments import replace_image_mentions_with_paths
+from chrys.orchestration.engine.workspaces import WORKSPACE_REFERENCE_MISSING
 from chrys.orchestration.workdir_migration import MIGRATION_NOTICE
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mutations.types import FileHashDiff
@@ -258,6 +259,7 @@ class BackendEventCallbacks:
 
     refresh_diff_preview: Callable[[bool], None] = lambda _reread: None
     refresh_rollback_targets: Callable[[], object] = lambda: None
+    reset_rollback_request: Callable[[], None] = lambda: None
 
 
 def _usage_source_debug_suffix(source_id: str, *, main_source_id: str) -> str:
@@ -388,9 +390,9 @@ class BackendEventHandler:
     def _render_display_with_hint(self, message: MessageRef, hint: MessageRef | None) -> str:
         """Render an error's display message and its hint in the current locale, joined as that locale joins them."""
         rendered = self._render_display(message)
-        if hint is None:
-            return rendered
-        return self._render_display(DISPLAY_WITH_HINT.bind(message=rendered, hint=self._render_display(hint)))
+        return with_display_hint(
+            rendered, self._render_display(hint) if hint is not None else None, render=self._render_display
+        )
 
     def _gateway(self) -> UiGateway:
         """Return the Textual dialog gateway."""
@@ -922,6 +924,31 @@ class BackendEventHandler:
         """Dismiss the image-compression modal after preparation finishes."""
         await self._image_compression().on_finished(event)
 
+    async def _reset_chat_for_session_change(
+        self, session_id: str | None, *, max_context_tokens: int | None = None
+    ) -> None:
+        ui = self._ui()
+        self.set_has_messages(False)
+        self.last_usage_tokens = 0
+        self.last_total_session_tokens = 0
+        self.chdir_original_cwd = None
+        ui.clear_todos()
+        ui.set_input_retry_mode(False)
+        ui.set_context_usage_state(
+            ContextUsageState.with_window(
+                used_tokens=0, max_context_tokens=max_context_tokens or DEFAULT_MAX_CONTEXT_TOKENS
+            )
+            if max_context_tokens is not None
+            else None
+        )
+        await ui.clear_chat()
+        self.update_toc()
+        with contextlib.suppress(Exception):
+            ui.reset_context_usage(max_context_tokens or 0)
+        if session_id is not None:
+            ui.set_chat_session_id(session_id)
+        ui.reset_session_title_state()
+
     async def on_session_ready(self, event: SessionReady) -> None:
         s = self
         ui = self._ui()
@@ -960,44 +987,23 @@ class BackendEventHandler:
         )
         ui.set_tool_info(trail)
         # During a restore, _on_session_restored handles the chat panel
-        # Outside a restore, a different session's chat still on screen (a restore that failed after
-        # closing it) is stale once another session is ready.
+        # Outside a restore, a different session's chat is stale once another session is ready.
         if s.creating_new_session or (
             session_changed and not s.restoring_session and ui.chat_session_id() not in ("", event.session_id)
         ):
             from chrys.foundation.platform import safe_getcwd
 
             s.creating_new_session = False
-            s.set_has_messages(False)
-            s.last_usage_tokens = 0
-            s.last_total_session_tokens = 0
-            # Post-success reset point: clearing on the SessionNew publish
-            # instead would desync the sidebar if backend startup fails.
-            ui.clear_todos()
-            ui.set_input_retry_mode(False)
-            s.chdir_original_cwd = None
             cwd = event.primary_cwd or safe_getcwd()
             previous_cwd = s.chdir_current_cwd
             s.chdir_current_cwd = cwd
-            ui.set_context_usage_state(
-                ContextUsageState.with_window(
-                    used_tokens=0,
-                    max_context_tokens=event.max_context_tokens or DEFAULT_MAX_CONTEXT_TOKENS,
-                )
-            )
             ui.set_terminal_title_for_cwd(cwd)
             if workspace_transition and previous_cwd and previous_cwd != cwd and os.path.isdir(cwd):
                 await ui.change_shell_directory(cwd)
             ui.set_input_paste_cwd(cwd)
-            await ui.clear_chat()
-            s.update_toc()
-            with contextlib.suppress(Exception):
-                ui.reset_context_usage(event.max_context_tokens)
+            await self._reset_chat_for_session_change(event.session_id, max_context_tokens=event.max_context_tokens)
             ui.set_chat_workspace_cwd(cwd)
             ui.update_welcome(profile=s.profile, cwd=cwd)
-            if event.session_id:
-                ui.set_chat_session_id(event.session_id)
-            ui.reset_session_title_state()
             ui.clear_status()
         elif not s.restoring_session:
             from chrys.foundation.platform import safe_getcwd
@@ -2042,7 +2048,12 @@ class BackendEventHandler:
         if (
             key in self._seen_warnings
             and not submit_rejected
-            and event.code not in {"workspace_registry_unreadable", "workspace_inherited_missing"}
+            and event.code
+            not in {
+                "workspace_registry_unreadable",
+                "workspace_inherited_missing",
+                WORKSPACE_REFERENCE_MISSING,
+            }
         ):
             return
         self._seen_warnings.add(key)
@@ -2199,8 +2210,6 @@ class BackendEventHandler:
         # words as evidence; other producers' display is their message in
         # the current locale, so it stands alone.
         with_raw = event.code == "executor_error" and event.display_message is not None and bool(raw_msg)
-        if s.agent_loading:
-            self._agent_load().fail(f"{display_full}\n{raw_msg}" if with_raw else display_full)
         terminal_request = GcAbsorbRequested(GcAbsorbReason.TURN_TERMINAL, terminal_boundary=True) if was_live else None
         # Build a short version for the status bar (strip JSON payload); its
         # one line has no room for the hint.
@@ -2213,10 +2222,33 @@ class BackendEventHandler:
             chat_msg = f"{display_full}\n{self._extract_error_detail(raw_msg)}"
         else:
             chat_msg = self._extract_error_detail(display_full)
+        provider = self._services.engine_provider
+        restore_closed_session = (
+            event.code in {"session_restore_failed", "workspace_membership_saved_open_failed"}
+            and provider is not None
+            and provider().session_id is None
+        )
         terminal_owned = not was_live
         try:
+            if restore_closed_session:
+                self._callbacks.reset_rollback_request()
+                self._state.session.load_owner = None
+                self._state.session.failed_new_session_id = None
+                s.creating_new_session = False
+                s.main_usage_source_id = ""
+                self._state.runtime.background_tasks = None
+                self._show_background_tasks()
+                self._state.runtime.hook_snapshots.clear()
+                self.refresh_hook_indicator()
+                ui.set_input_clipboard_dir(None)
+                await self._reset_chat_for_session_change("")
+            if s.agent_loading:
+                self._agent_load().fail(f"{display_full}\n{raw_msg}" if with_raw else display_full)
             ui.flash_status(STATUS_ERROR.bind(message=short_msg), error=True)
-            await ui.add_error(chat_msg)
+            if restore_closed_session:
+                await ui.add_error(chat_msg, action_label=None)
+            else:
+                await ui.add_error(chat_msg)
         finally:
             if not was_live or (self._state.run.generation == terminal_generation and s.agent_running):
                 if was_live:
@@ -2229,7 +2261,8 @@ class BackendEventHandler:
             return
         if terminal_request is not None:
             self._callbacks.post_gc_message(terminal_request)
-        ui.set_input_retry(INPUT_RETRY.bind())
+        if not restore_closed_session:
+            ui.set_input_retry(INPUT_RETRY.bind())
         if was_live and event.code not in _NON_TURN_NOTIFICATION_ERROR_CODES:
             self._notify(NotificationEvent.TURN_ERROR)
         s.debug("Error", f"[{event.code}] {full_msg[:60]}")

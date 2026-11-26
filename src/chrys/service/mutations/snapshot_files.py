@@ -14,11 +14,19 @@ from typing import TYPE_CHECKING
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.util.lock import FileLock
+from chrys.foundation.util.session_ids import same_session_id
+from chrys.service.session.history import SessionHistoryManager
+from chrys.service.session.persistence import has_real_messages
 from chrys.service.state._session_files import (
     SESSION_WRITE_LOCK_TIMEOUT_SECONDS,
     atomic_copy_file,
+    dump_session_envelope,
     parse_snapshot_turn,
+    read_session_envelope,
+    validated_checkpoint,
 )
+from chrys.service.state._session_meta import resolve_session_kind
+from chrys.service.state.serializers import deserialize_state, serialize_message
 from chrys.service.trajectory.state import TurnRecord, turn_records
 
 if TYPE_CHECKING:
@@ -32,14 +40,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class RollbackSnapshot:
-    """A rollback target's snapshot file and the turn registry inside it."""
+    """The complete primary checkpoint to publish and its trajectory registry."""
 
-    path: Path
+    payload: str
     turns: list[TurnRecord]
     """The registry as of that turn; empty when the snapshot predates the registry."""
-    readable: bool = True
-    """Whether the payload parsed. An unreadable snapshot names no turns at all —
-    not even the empty registry a readable snapshot without the key holds."""
 
 
 def rollback_snapshot_paths(session_dir: Path | None) -> list[Path]:
@@ -122,18 +127,55 @@ def snapshot_target_turns(session_dir: Path | None) -> set[int]:
     return turns
 
 
-def rollback_snapshot_for_target(session_dir: Path | None, target_turn: int) -> RollbackSnapshot | None:
-    """Return the newest snapshot whose payload represents *target_turn*, with its turn registry."""
-    matches = [path for path in rollback_snapshot_paths(session_dir) if snapshot_target_turn(path) == target_turn]
-    if not matches:
+def rollback_snapshot_for_target(session_dir: Path, target_turn: int) -> Path | None:
+    """Choose the newest filename representing this target, including legacy layouts."""
+    matches = (path for path in rollback_snapshot_paths(session_dir) if snapshot_target_turn(path) == target_turn)
+    return max(matches, key=parse_snapshot_turn, default=None)
+
+
+def read_rollback_snapshot(
+    chosen: Path, target_turn: int, session_id: str, overlays: dict[str, str]
+) -> RollbackSnapshot | None:
+    """Verify and prepare the exact bytes read under the publication lock."""
+    try:
+        raw, envelope = read_session_envelope(chosen)
+        envelope = validated_checkpoint(envelope)
+        if envelope is None:
+            raise ValueError("invalid checkpoint")
+        state, meta = envelope.get("state"), envelope["meta"]
+        if not isinstance(state, dict) or not same_session_id(meta.get("session_id"), session_id):
+            raise ValueError("invalid session state or identity")
+        if resolve_session_kind(meta) != "chat":
+            raise ValueError("expected a chat snapshot")
+        payload_turn = _payload_turn(state)
+        if (payload_turn if payload_turn is not None else _filename_target(chosen)) != target_turn:
+            return None
+        decoded = deserialize_state(state)
+        if not has_real_messages(decoded):
+            raise ValueError("empty history")
+
+        history = SessionHistoryManager()
+        history.bind(decoded)
+        added_boundary = history.close_unfinished_turn(completed_turn=target_turn)
+        if added_boundary:
+            # Preserve unknown fields on the original messages and envelope.
+            state["messages"].append(serialize_message(history.messages[-1]))
+        if (
+            added_boundary
+            or type(state.get("turn_counter")) is not int
+            or state["turn_counter"] != target_turn
+            or overlays
+        ):
+            state["turn_counter"] = target_turn
+            meta.update(overlays)
+            payload = dump_session_envelope(envelope)
+        else:
+            payload = raw.decode("utf-8")
+        return RollbackSnapshot(payload, turn_records(state))
+    except FileNotFoundError, NotADirectoryError:
         return None
-    chosen = max(matches, key=parse_snapshot_turn)
-    state = _snapshot_payload_state(chosen)
-    if state is None:
-        # The payload does not parse: the snapshot cannot be shown to hold any
-        # turn, so it is reported as naming none rather than as an empty registry.
-        return RollbackSnapshot(path=chosen, turns=[], readable=False)
-    return RollbackSnapshot(path=chosen, turns=turn_records(state))
+    except (OSError, KeyError, ValueError, TypeError, AttributeError, RecursionError) as exc:
+        raise ValueError(f"Snapshot for turn {target_turn} is unreadable.") from exc
 
 
 def snapshot_target_turn(path: Path) -> int | None:
@@ -150,6 +192,10 @@ def snapshot_target_turn(path: Path) -> int | None:
     turn = _snapshot_payload_turn_counter(path)
     if turn is not None:
         return turn
+    return _filename_target(path)
+
+
+def _filename_target(path: Path) -> int | None:
     snapshot_turn = parse_snapshot_turn(path)
     if snapshot_turn >= 1:
         return snapshot_turn if _is_legacy_numeric_snapshot_name(path) else snapshot_turn - 1
@@ -176,6 +222,10 @@ def _cached_snapshot_turn(path: Path, mtime_ns: int, size: int) -> int | None:
     state = _snapshot_payload_state(path)
     if state is None:
         return None
+    return _payload_turn(state)
+
+
+def _payload_turn(state: dict[str, object]) -> int | None:
     counter = _nonnegative_int(state.get("turn_counter"))
     if counter is not None:
         if counter > 0 or not _state_has_messages(state):
@@ -188,7 +238,7 @@ def _snapshot_payload_state(path: Path) -> dict[str, object] | None:
     """The snapshot's provider state, read from the envelope or the bare payload."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError, UnicodeDecodeError, OSError:
+    except ValueError, OSError, RecursionError:
         return None
     if not isinstance(raw, dict):
         return None

@@ -1725,6 +1725,9 @@ class RollbackResult(Event):
     plan (e.g. another chrys session has an active command in this
     tree).  Per-path hazards are exclusions, never warnings."""
 
+    untouched_paths: list[str] = field(default_factory=list)
+    """Absolute plan paths the file restore never attempted."""
+
 
 @dataclass
 class SessionDeleted(Event):

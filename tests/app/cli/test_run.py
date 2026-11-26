@@ -1948,3 +1948,44 @@ def test_write_result_neutralizes_terminal_controls_but_keeps_layout(
     else:
         # Redirected output is data for another program: byte-for-byte.
         assert stdout.getvalue() == text + "\n"
+
+
+@pytest.mark.parametrize(
+    ("mode", "message_has_hint"),
+    [
+        pytest.param("text", False, id="text"),
+        pytest.param("progress", False, id="progress"),
+        pytest.param("json", False, id="json"),
+        pytest.param("json", True, id="json-hint-already-in-message"),
+    ],
+)
+def test_run_warning_displays_its_reason(monkeypatch, capsys, mode, message_has_hint):
+    from chrys.foundation.config import yaml_store
+
+    _patch_host(monkeypatch)
+    hint = yaml_store._UNREADABLE.bind(path="settings.yaml", detail="sharing violation")
+    message = "Could not read previous settings."
+    with_hint = f"{message} {format_message(hint)}"
+    warning = Warning(
+        code="settings_read_failed",
+        message=with_hint if message_has_hint else message,
+        display_hint=hint,
+    )
+    args = ["hello", "--agent", "Headless"]
+    if mode == "progress":
+        monkeypatch.setattr(headless, "bootstrap_runtime", _fake_bootstrap())
+        FakeHost.run_events = [warning]
+    else:
+        if mode == "json":
+            monkeypatch.setenv("CHRYS_LOCALE", "zh-Hans")
+        monkeypatch.setattr(headless, "bootstrap_runtime", _fake_bootstrap(warnings=[warning]))
+        args.append("--json" if mode == "json" else "--quiet")
+
+    assert run_cli.main(args) == 0
+
+    stderr = capsys.readouterr().err
+    rendered = json.loads(stderr)["warning"] if mode == "json" else stderr
+    assert "Could not read previous settings." in rendered
+    assert "sharing violation" in rendered
+    if mode == "json":
+        assert rendered == with_hint

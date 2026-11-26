@@ -47,7 +47,7 @@ To start in a workspace, pass its name or ID with `--workspace`. `icode run` acc
 icode --workspace <workspace-name>
 ```
 
-iCode opens the session in the workspace's primary folder, and the agent can also work in its reference folders. A reference folder that does not exist when the workspace opens is left out.
+iCode opens the session in the workspace's primary folder, and the agent can also work in its reference folders. A reference folder that does not exist when the workspace opens is left out, and iCode warns once.
 
 `/new`, `/clear` and forking keep the session in its workspace. Switching with `/chdir` to any other folder, a reference folder included, leaves the workspace. If the session already has messages, iCode asks whether to move this session to the new folder or start a new session there.
 

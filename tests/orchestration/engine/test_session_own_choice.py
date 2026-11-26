@@ -53,7 +53,9 @@ from chrys.foundation.events.types import (
     WorkspaceOperation,
     WorkspaceUpdated,
 )
+from chrys.foundation.i18n import DisplayBlock
 from chrys.foundation.models.workspace import Workspace
+from chrys.orchestration.engine.session_lifecycle import SESSION_RESTART_FAILED
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import ModelConfig
@@ -919,9 +921,12 @@ async def test_failed_restore_restarts_with_settings_for_the_recovery_directory(
     assert engine.session.workspace_id is None
     assert engine.current.loaded is None
     assert not engine.session.guard.owns("restore_me")
-    # Only workspace and settings errors bring their own display text; this one is shown as main shows it.
     assert [(error.code, error.message, error.display_message) for error in errors] == [
-        ("session_restore_failed", "target build failed", None)
+        (
+            "session_restore_failed",
+            "target build failed",
+            SESSION_RESTART_FAILED.bind(detail=DisplayBlock("target build failed")),
+        )
     ]
     expected_root, retry_count = (
         (startup.resolve(), 2) if directory in {"deleted", "retargeted"} else (previous.resolve(), 3)

@@ -20,6 +20,7 @@ from acp.helpers import (
     update_user_message_text,
 )
 from acp.interfaces import Client
+from acp.schema import AgentMessageChunk, AgentThoughtChunk, ToolCallProgress, ToolCallStart, UserMessageChunk
 
 from chrys.foundation.hosted_tools import (
     HostedToolFamily,
@@ -210,6 +211,7 @@ async def replay_session_history(
     *,
     prefer_recovery: bool = False,
     tool_kind_resolver: Callable[[str], str] | None = None,
+    check_active: Callable[[], None] | None = None,
 ) -> dict[str, tuple[str, ...]]:
     """Emit basic ACP replay updates for a restored session.
 
@@ -237,10 +239,13 @@ async def replay_session_history(
                 answer_message_ids,
                 fold=fold,
                 tool_kind_resolver=tool_kind_resolver,
+                check_active=check_active,
             )
         payload = compressed_context_payload(
             fold.context_id, fold.summary, len(messages), fold.block.turn_range if fold.block else (0, 0), None
         )
+        if check_active is not None:
+            check_active()
         await client.ext_notification("chrys/context_compressed", {"sessionId": session_id, **payload})
 
     owners, openers = labels[-1]
@@ -252,6 +257,7 @@ async def replay_session_history(
         openers,
         answer_message_ids,
         tool_kind_resolver=tool_kind_resolver,
+        check_active=check_active,
     )
     return {segment: tuple(message_ids) for segment, message_ids in answer_message_ids.items()}
 
@@ -282,6 +288,7 @@ async def _replay_segment(
     *,
     fold: FoldItem | None = None,
     tool_kind_resolver: Callable[[str], str] | None = None,
+    check_active: Callable[[], None] | None = None,
 ) -> None:
     # Preserve active-message replay ids: tool summaries have never counted
     # towards their positions. In a block, ids use the stored message positions.
@@ -353,6 +360,13 @@ async def _replay_segment(
                 pending_tool_kinds[replay_id] = _tool_kind(content, resolver=tool_kind_resolver)
                 call_start_updates[coordinate] = _tool_call_start(content, replay_id, pending_tool_kinds[replay_id])
 
+    async def send_update(
+        update: AgentMessageChunk | AgentThoughtChunk | ToolCallProgress | ToolCallStart | UserMessageChunk,
+    ) -> None:
+        if check_active is not None:
+            check_active()
+        await client.session_update(session_id=session_id, update=update)
+
     async def emit_call_start(coordinate: tuple[int, int]) -> None:
         if coordinate in started_calls:
             return
@@ -362,7 +376,7 @@ async def _replay_segment(
         meta = replay_meta(coordinate[0])
         if meta:
             update.field_meta = with_chrys_metadata(update.field_meta, meta)
-        await client.session_update(session_id=session_id, update=update)
+        await send_update(update)
         started_calls.add(coordinate)
 
     for message_index, message in enumerate(raw_messages):
@@ -392,7 +406,7 @@ async def _replay_segment(
                 update.message_id = opening_user_message.get(visible_indices[message_index])
                 if user_meta:
                     update.field_meta = with_chrys_metadata(update.field_meta, user_meta)
-                await client.session_update(session_id=session_id, update=update)
+                await send_update(update)
             continue
         if role not in ("assistant", "tool"):
             continue
@@ -422,7 +436,7 @@ async def _replay_segment(
                     messageId=thought[1],
                 )
                 update.field_meta = with_chrys_metadata(update.field_meta, {"channel": channel, **turn_meta})
-                await client.session_update(session_id=session_id, update=update)
+                await send_update(update)
                 answer_message_id = None
                 emitted_text = False
                 continue
@@ -444,7 +458,7 @@ async def _replay_segment(
                     )
                     if turn_meta:
                         update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
-                    await client.session_update(session_id=session_id, update=update)
+                    await send_update(update)
                     emitted_text = True
                 continue
             coordinate = (message_index, content_index)
@@ -472,7 +486,7 @@ async def _replay_segment(
                     )
                     if turn_meta:
                         update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
-                    await client.session_update(session_id=session_id, update=update)
+                    await send_update(update)
                     open_replay_ids.pop(replay_id, None)
                     pending_hosted.pop(replay_id, None)
                     pending_tool_names.pop(replay_id, None)
@@ -493,7 +507,7 @@ async def _replay_segment(
                 update = _hosted_terminal_update(replay_id, view, status=status)
                 if turn_meta:
                     update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
-                await client.session_update(session_id=session_id, update=update)
+                await send_update(update)
                 continue
             replay_id = replay_id_by_call.get(call_coordinate)
             if replay_id is None:
@@ -513,10 +527,7 @@ async def _replay_segment(
             )
             if turn_meta:
                 update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
-            await client.session_update(
-                session_id=session_id,
-                update=update,
-            )
+            await send_update(update)
     for replay_id in open_replay_ids:
         # These calls get a synthesized terminal update instead of a persisted
         # one, but they are as much a part of their turn as any other record,
@@ -532,7 +543,7 @@ async def _replay_segment(
             update = _hosted_terminal_update(replay_id, view, status=status, fallback_text=text)
             if meta:
                 update.field_meta = with_chrys_metadata(update.field_meta, meta)
-            await client.session_update(session_id=session_id, update=update)
+            await send_update(update)
             continue
         update = update_tool_call(
             replay_id,
@@ -542,7 +553,7 @@ async def _replay_segment(
         )
         if meta:
             update.field_meta = with_chrys_metadata(update.field_meta, meta)
-        await client.session_update(session_id=session_id, update=update)
+        await send_update(update)
 
 
 def _answer_segment(content: dict[str, Any]) -> str | None:

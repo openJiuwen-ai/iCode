@@ -161,6 +161,9 @@ class _FakeEngine:
             system_overhead_tokens=self.usage.system_overhead_tokens,
         )
 
+    def tool_kind_for_name(self, name: str) -> str:
+        return name
+
     def available_rollback_turns(self) -> list[int]:
         return list(self.rollback_turns)
 
@@ -523,7 +526,8 @@ class _FakeLoadManager:
     def list_model_profiles(self) -> list[dict[str, object]]:
         return [{"id": "m1", "name": "Model", "modelId": "gpt"}]
 
-    async def close(self, session_id: str) -> None:
+    async def close(self, session_id: str, *, expected: _LoadedSession | None = None) -> None:
+        assert expected is None or expected is self.session
         self.closed.append(session_id)
 
 

@@ -20,7 +20,9 @@ from dataclasses import dataclass
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
 from chrys.foundation.net.route_probe import default_route_available, is_local_target
+from chrys.foundation.platform.files import surrogate_safe_text
 
 from .classify import ErrorClassification, classify_error, context_overflow_limit, is_blank_response
 from .kinds import NETWORK_KINDS, ErrorKind
@@ -135,6 +137,21 @@ _MAYBE_OFFLINE = msg(
 )
 DISPLAY_WITH_HINT = msg("error.display.with_hint", fallback="{message} {hint}")
 """Joins a rendered message and its rendered hint; zh-Hans joins without a space."""
+
+
+def with_display_hint(
+    message: str,
+    hint: str | None,
+    *,
+    render: Callable[[MessageRef], str] | None = None,
+) -> str:
+    """Join an already rendered message and hint, avoiding a repeated hint."""
+    if hint is None or hint in message:
+        return message
+    if "\n" in hint:
+        return sanitize_legacy_block(surrogate_safe_text(f"{message}\n\n{hint}"))
+    return (render or format_message)(DISPLAY_WITH_HINT.bind(message=message, hint=hint))
+
 
 # Messages that name the target host.  TLS keeps its own wording through a
 # proxy: an untrusted certificate is usually the proxy's own.

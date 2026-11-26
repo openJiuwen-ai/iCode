@@ -6,28 +6,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from chrys.app.tui.i18n import render_str
 from chrys.app.tui.screens.diff.rollback_modal import (
-    EXCLUSION_PREVIEW_ITEM,
     ROLLBACK_TITLE,
     RollbackLoadCancelled,
-    exclusion_reason_label,
     plan_for_target,
 )
 from chrys.app.tui.screens.main.engine_read_model import EngineReadModel, EngineSnapshotSource, RollbackReadState
 from chrys.app.tui.screens.main.state import MainScreenServices
 from chrys.app.tui.support.gc_freeze import GcReclaimReason, GcReclaimRequested
 from chrys.foundation.events.types import RollbackResult, UserRollback
-from chrys.foundation.i18n import DisplayPath, MessageRef, msg
+from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.util.async_tasks import await_task_quiescence
-from chrys.service.mutations.types import RollbackPlan
+from chrys.service.mutations.types import RollbackPlan, rollback_file_result_messages
 
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
@@ -89,19 +86,6 @@ _CONFIRM_LATEST_TURN = msg(
     "tui.rollback.confirm.latest_turn",
     fallback="Discard turn {turn}? It is the latest turn and has no files to restore. A discarded turn cannot be recovered.",
 )
-_FILES_RESTORED = msg(
-    "tui.rollback.result.files_restored",
-    fallback="{count} file restored",
-    plural_fallback="{count} files restored",
-)
-_ALREADY_MATCHED = msg("tui.rollback.result.already_matched", fallback="{matched_count} already matched")
-_FAILED_COUNT = msg("tui.rollback.result.failed_count", fallback="{failed_count} failed")
-_FAILED_PREVIEW = msg("tui.rollback.result.failed_preview", fallback="Failed: {preview}{suffix}")
-_FILES_EXCLUDED = msg(
-    "tui.rollback.result.files_excluded",
-    fallback="{count} file excluded from revert: {preview}{suffix}",
-    plural_fallback="{count} files excluded from revert: {preview}{suffix}",
-)
 _FILES_REVERTED = msg(
     "tui.rollback.result.files_reverted",
     fallback="{count} file reverted",
@@ -112,8 +96,6 @@ _WARNINGS_COUNT = msg(
     fallback="{count} warning",
     plural_fallback="{count} warnings",
 )
-_ERROR_REASON = msg("tui.rollback.result.error_reason", fallback="error")
-_MORE_SUFFIX = msg("tui.rollback.result.more_suffix", fallback=" (+{extra_count} more)")
 _TARGET_SESSION_START = msg("tui.rollback.debug_target.session_start", fallback="Session start")
 _TARGET_TURN = msg("tui.rollback.debug_target.turn", fallback="Turn {turn}")
 
@@ -797,67 +779,12 @@ class RollbackController:
             )
         )
         lines = [self._render_message(headline)]
-        severity = "information"
-        failed_count = 0
-        if event.restore_results:
-            results = event.restore_results
-            applied = event.files_reverted
-            noop = sum(1 for result in results if result.ok and not result.changed)
-            failed = [result for result in results if not result.ok]
-            failed_count = len(failed)
-            parts: list[str] = [self._render_message(_FILES_RESTORED.bind(count=applied))]
-            if noop:
-                parts.append(self._render_message(_ALREADY_MATCHED.bind(matched_count=noop)))
-            if failed:
-                parts.append(self._render_message(_FAILED_COUNT.bind(failed_count=failed_count)))
-                severity = "warning"
-            lines.append(", ".join(parts) + ".")
-            if failed:
-                preview = "; ".join(
-                    f"{os.path.basename(result.path)}: {result.reason or self._render_message(_ERROR_REASON.bind())}"
-                    for result in failed[:3]
-                )
-                suffix = (
-                    "" if len(failed) <= 3 else self._render_message(_MORE_SUFFIX.bind(extra_count=len(failed) - 3))
-                )
-                lines.append(self._render_message(_FAILED_PREVIEW.bind(preview=preview, suffix=suffix)))
-        # Exclusions/warnings surface independently of restore_results:
-        # a plan whose every file is excluded restores nothing, so the
-        # terminal result must still explain that outcome.
-        if event.exclusions:
-            severity = "warning"
-            excluded = event.exclusions
-            preview_parts: list[str] = []
-            for path, reason in excluded[:3]:
-                label = exclusion_reason_label(reason)
-                rendered_label = self._render_message(label) if isinstance(label, MessageRef) else label
-                preview_parts.append(
-                    self._render_message(
-                        EXCLUSION_PREVIEW_ITEM.bind(
-                            path=DisplayPath(os.path.basename(path)),
-                            reason=rendered_label,
-                        )
-                    )
-                )
-            preview = "; ".join(preview_parts)
-            suffix = (
-                "" if len(excluded) <= 3 else self._render_message(_MORE_SUFFIX.bind(extra_count=len(excluded) - 3))
-            )
-            lines.append(
-                self._render_message(
-                    _FILES_EXCLUDED.bind(
-                        count=len(excluded),
-                        preview=preview,
-                        suffix=suffix,
-                    )
-                )
-            )
-        if event.warnings:
-            severity = "warning"
-            warning_line = " ".join(event.warnings[:2])
-            if len(event.warnings) > 2:
-                warning_line += self._render_message(_MORE_SUFFIX.bind(extra_count=len(event.warnings) - 2))
-            lines.append(warning_line)
+        lines.extend(
+            self._render_message(line)
+            for line in rollback_file_result_messages(event, self._workspace_cwd() or safe_getcwd())
+        )
+        failed_count = sum(not result.ok for result in event.restore_results)
+        severity = "warning" if failed_count or event.exclusions or event.warnings else "information"
         self._view.notify("\n".join(lines), title=ROLLBACK_TITLE.bind(), severity=severity, timeout=4)
 
         detail = target_desc

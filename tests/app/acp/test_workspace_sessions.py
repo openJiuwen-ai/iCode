@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from collections.abc import AsyncIterator
@@ -13,19 +14,26 @@ from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
-from acp import RequestError
+from acp import RequestError, text_block
 
 from chrys.app.acp import session_manager
 from chrys.app.acp.server import ChrysAcpServer
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager
+from chrys.foundation.config.user_settings import user_settings_path
+from chrys.foundation.util.lock import FileLock
+from chrys.orchestration.engine.build import builder
 from chrys.orchestration.engine.loader import AgentLoader
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.llm.clients import create_client
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.workspaces.registry import WorkspaceRegistry
 from tests.app.acp._server_fakes import _FakeClient
-from tests.support.rollback_spec import PROFILE
+from tests.support.rollback_spec import PROFILE, SpecClient, answer, ask
 from tests.support.symlinks import symlink_or_skip
+from tests.support.waiting import ENGINE_TURN_TIMEOUT
 from tests.support.workspace_engine import (
+    WorkspaceBoundary,
+    before_await,
     mock_workspace_runtime,
     running_acp_manager,
     select_workspace,
@@ -131,6 +139,272 @@ async def test_acp_failed_restore_reports_error_and_keeps_checkpoint(
     assert checkpoint.read_bytes() == original
     await server.load_session("target", cwd=str(primary))
     await server.close_session("target")
+
+
+@pytest.mark.parametrize("target_turn", [0, 1])
+async def test_acp_rollback_build_failure_reports_error_without_waiting_for_timeout(
+    workspace_acp, connected_acp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_turn: int
+) -> None:
+    server, client = connected_acp
+    monkeypatch.setattr(
+        builder,
+        "create_client",
+        create_autospec(create_client, return_value=SpecClient([answer("one"), answer("two")])),
+    )
+    opened = await server.new_session(cwd=str(tmp_path))
+    sid = opened.session_id
+    engine = workspace_acp.get(sid).host.engine
+    await ask(engine, "first")
+    await ask(engine, "second")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            builder, "create_client", create_autospec(create_client, side_effect=RuntimeError("build failed"))
+        )
+        async with asyncio.timeout(10):
+            with pytest.raises(RequestError) as caught:
+                await server.ext_method("session/rollback", {"sessionId": sid, "targetTurn": target_turn})
+    assert caught.value.data["details"] == "build failed"
+    assert engine.session_id is None
+    assert engine.history_messages == []
+    assert all(method != "chrys/rollback_result" for method, _ in client.ext_notifications)
+
+    await server.close_session(sid)
+    if target_turn == 0:
+        assert not (workspace_acp.state_store.session_dir(sid) / "session.json").exists()
+    else:
+        await server.load_session(sid, cwd=str(tmp_path))
+        reopened = workspace_acp.get(sid).host.engine
+        assert [message.text for message in reopened.history_messages if message.role == "user"] == ["first"]
+
+
+@pytest.mark.parametrize("control", ["agent", "approval", "config"])
+async def test_acp_rejects_old_controls_then_reopens_committed_rollback_history(
+    workspace_acp, connected_acp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, control: str
+) -> None:
+    server, _ = connected_acp
+    workspace_acp._agent_registry.register(replace(PROFILE, name="Other"))
+    opened = await server.new_session(cwd=str(tmp_path))
+    sid = opened.session_id
+    outgoing = workspace_acp.get(sid)
+    await ask(outgoing.host.engine, "first")
+    await ask(outgoing.host.engine, "second")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            AgentLoader,
+            "finish_load",
+            create_autospec(AgentLoader.finish_load, side_effect=RuntimeError("restore build failed")),
+        )
+        with pytest.raises((RequestError, TimeoutError)) as rollback_error:
+            async with asyncio.timeout(2):
+                await server.ext_method("session/rollback", {"sessionId": sid, "targetTurn": 1})
+    assert outgoing.host.engine.current.loaded is None
+    settings = user_settings_path()
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("ui:\n  theme: textual-dark\n", encoding="utf-8")
+    before = settings.read_bytes()
+    rejection = None
+    try:
+        async with asyncio.timeout(2):
+            if control == "agent":
+                await server.ext_method("session/switch_agent", {"sessionId": sid, "agentProfile": "Other"})
+            elif control == "approval":
+                await server.set_session_mode("manual", sid)
+            else:
+                await server.ext_method(
+                    "session/set_config_option", {"sessionId": sid, "key": "rollback_snapshots_keep", "value": 7}
+                )
+    except (RequestError, TimeoutError) as exc:
+        rejection = exc
+
+    assert settings.read_bytes() == before
+    assert outgoing.host.engine.session_id is None
+    assert outgoing.host.engine.approval_mode is ApprovalMode.BYPASS
+    assert isinstance(rejection, RequestError)
+    assert rejection.data["details"] == f"ACP session is not active: {sid}"
+    assert isinstance(rollback_error.value, RequestError)
+    assert rollback_error.value.data["details"] == "restore build failed"
+    store = workspace_acp.state_store
+    with FileLock(store.active_lock_path(sid), timeout=0):
+        state = await store.load_session(sid)
+        assert state is not None and state["turn_counter"] == 1
+
+    await server.load_session(sid, cwd=str(tmp_path))
+    restored = workspace_acp.get(sid)
+    assert restored is not outgoing
+    async with asyncio.timeout(ENGINE_TURN_TIMEOUT):
+        result = await server.prompt([text_block("continue")], session_id=sid)
+    assert result.stop_reason == "end_turn"
+    assert [message.text for message in restored.host.engine.history_messages if message.role == "user"] == [
+        "first",
+        "continue",
+    ]
+
+
+@pytest.mark.parametrize("build_fails", [False, True], ids=["success", "failure"])
+async def test_acp_prompt_admission_waits_for_rollback(
+    workspace_acp, save_acp_chat, connected_acp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_fails: bool
+) -> None:
+    server, _ = connected_acp
+    sid = (await server.new_session(cwd=str(tmp_path))).session_id
+    outgoing = workspace_acp.get(sid)
+    engine = outgoing.host.engine
+    await ask(engine, "first")
+    await ask(engine, "second")
+    await save_acp_chat("saved-b", tmp_path)
+
+    boundary = WorkspaceBoundary()
+    build = engine.loader.build
+
+    async def blocked_build(*args, **kwargs):
+        await boundary.wait()
+        if build_fails:
+            raise RuntimeError("restore build failed")
+        return await build(*args, **kwargs)
+
+    monkeypatch.setattr(engine.loader, "build", blocked_build)
+    prompt_at_gate = asyncio.Event()
+
+    async def observe_prompt_gate():
+        prompt_at_gate.set()
+
+    before_await(monkeypatch, engine.permits, "wait_for_agent_load_idle", observe_prompt_gate)
+    load_started = asyncio.Event()
+
+    async def reload_a():
+        load_started.set()
+        return await workspace_acp.load_session(cwd=str(tmp_path), session_id=sid, mcp_servers=None)
+
+    rollback = asyncio.create_task(server.ext_method("session/rollback", {"sessionId": sid, "targetTurn": 1}))
+    tasks = [rollback]
+    try:
+        async with asyncio.timeout(ENGINE_TURN_TIMEOUT):
+            await boundary.entered.wait()
+            assert engine.current.loaded is None
+            prompt = asyncio.create_task(server.prompt([text_block("continue")], session_id=sid))
+            tasks.append(prompt)
+            await prompt_at_gate.wait()
+            assert not prompt.done()
+            if not build_fails:
+                reload = asyncio.create_task(reload_a())
+                tasks.append(reload)
+                await load_started.wait()
+                new_b, _ = await asyncio.gather(
+                    server.new_session(cwd=str(tmp_path)), server.load_session("saved-b", cwd=str(tmp_path))
+                )
+                assert new_b.session_id != sid
+                loaded = await reload
+                assert loaded.reused_existing and loaded.session is outgoing
+                assert not rollback.done() and not prompt.done()
+            boundary.open()
+            if build_fails:
+                with pytest.raises(RequestError) as prompt_error:
+                    await prompt
+                assert "turnId" not in prompt_error.value.data
+                assert engine.session_id is None
+                assert engine.current.loaded is None
+                state = await workspace_acp.state_store.load_session(sid)
+                assert state is not None and state["turn_counter"] == 1
+            else:
+                await rollback
+                assert (await prompt).stop_reason == "end_turn"
+                assert workspace_acp.get(sid) is outgoing
+                assert [message.text for message in engine.history_messages if message.role == "user"] == [
+                    "first",
+                    "continue",
+                ]
+    finally:
+        boundary.open()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_acp_concurrent_loads_install_one_host(
+    workspace_acp, save_acp_chat, connected_acp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await save_acp_chat("saved-a", tmp_path)
+    server, _ = connected_acp
+    start = WorkspaceBoundary()
+    before_await(monkeypatch, workspace_acp, "_start_host", start.wait)
+    watched = []
+    watch = server._watch_session_titles
+
+    async def record_watcher(session):
+        watched.append(session)
+        await watch(session)
+
+    monkeypatch.setattr(server, "_watch_session_titles", record_watcher)
+    second_started = asyncio.Event()
+
+    async def load_second():
+        second_started.set()
+        return await server.load_session("saved-a", cwd=str(tmp_path))
+
+    first = asyncio.create_task(server.load_session("saved-a", cwd=str(tmp_path)))
+    try:
+        async with asyncio.timeout(ENGINE_TURN_TIMEOUT):
+            await start.entered.wait()
+            second = asyncio.create_task(load_second())
+            try:
+                await second_started.wait()
+                assert not second.done()
+                start.open()
+                await asyncio.gather(first, second)
+            finally:
+                if not second.done():
+                    second.cancel()
+                    await asyncio.gather(second, return_exceptions=True)
+    finally:
+        start.open()
+        if not first.done():
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+    assert len(watched) == 1
+    assert watched[0] is workspace_acp.get("saved-a")
+
+
+async def test_acp_load_stops_replaying_when_its_host_is_replaced(
+    workspace_acp, connected_acp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, client = connected_acp
+    sid = (await server.new_session(cwd=str(tmp_path))).session_id
+    await ask(workspace_acp.get(sid).host.engine, "first")
+    await ask(workspace_acp.get(sid).host.engine, "second")
+    await server.close_session(sid)
+
+    replay = WorkspaceBoundary()
+    update = client.session_update
+
+    async def block_after_first_replay(*args, **kwargs):
+        await update(*args, **kwargs)
+        if kwargs["update"].session_update == "user_message_chunk":
+            await replay.wait()
+
+    monkeypatch.setattr(client, "session_update", block_after_first_replay)
+    old_load = asyncio.create_task(server.load_session(sid, cwd=str(tmp_path)))
+    try:
+        async with asyncio.timeout(ENGINE_TURN_TIMEOUT):
+            await replay.entered.wait()
+            old = workspace_acp.get(sid)
+            await server.close_session(sid)
+            await server.load_session(sid, cwd=str(tmp_path))
+            replacement = workspace_acp.get(sid)
+            assert replacement is not old
+            updates = len(client.updates)
+            replay.open()
+            with pytest.raises(RequestError) as error:
+                await old_load
+            assert error.value.data["details"] == f"ACP session is not active: {sid}"
+            assert len(client.updates) == updates
+            assert workspace_acp.get(sid) is replacement
+    finally:
+        replay.open()
+        if not old_load.done():
+            old_load.cancel()
+        await asyncio.gather(old_load, return_exceptions=True)
 
 
 @pytest.mark.parametrize("candidates", ["mixed", "workspace"])
@@ -555,3 +829,23 @@ async def test_workspace_acp_round_trip_when_a_reference_is_the_primary(
     for _ in range(2):
         loaded, _ = await request("session/load", **options, mcpServers=[])
         assert "result" in loaded, loaded
+
+
+async def test_acp_shows_a_missing_workspace_reference_at_load(registry, save_acp_chat, connected_acp, tmp_path):
+    primary, reference = make_workdirs(tmp_path, "primary", "reference")
+    workspace = registry.create("Project workspace", str(primary), [str(reference)])
+    await save_acp_chat("target", primary)
+    registry.set_session_workspace("target", workspace.id)
+    reference.rmdir()
+    server, client = connected_acp
+
+    await server.load_session("target", cwd=str(primary))
+
+    (notice,) = [
+        payload
+        for method, payload in client.ext_notifications
+        if method == "chrys/warning" and str(reference) in payload["message"]
+    ]
+    assert notice["sessionId"] == "target"
+    assert workspace.name in notice["message"]
+    await server.close_session("target")

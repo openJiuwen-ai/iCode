@@ -521,43 +521,50 @@ class ChrysAcpServer:
                     with contextlib.suppress(Exception):
                         await self._send_warning(warning.session_id or session_id, warning)
             raise _request_error(exc) from exc
+        session = result.session
+
+        def check_active() -> None:
+            if self._manager.get(session.session_id) is not session:
+                raise AcpSessionError(f"ACP session is not active: {session.session_id}")
+
         try:
-            session = result.session
-            # One cleanup scope for everything after the load: a session this
-            # request created must not stay in the active map when any of the
-            # follow-up sends — warnings included — loses the client, nor when
-            # the request task is cancelled mid-establishment.
-            try:
-                if not result.reused_existing:
-                    # A reused active session already has a title watcher from
-                    # the request that created it.
-                    await self._watch_session_titles(session)
-                    await self._watch_nested_wait_cancellations(session)
-                if self._client is not None:
-                    for warning in warnings:
-                        await self._send_warning(session.session_id, warning)
-                    await self._send_session_restored(session.session_id)
-                    # The client now shows the replayed ids, which a bare retry may withdraw.
-                    session.answer_message_ids = await replay_session_history(
-                        self._client,
-                        self._manager.state_store,
-                        session.session_id,
-                        prefer_recovery=result.recovered_from_sidecar,
-                        tool_kind_resolver=self._manager.tool_kind_resolver(session.session_id),
-                    )
-                    await self._send_runtime_update(session.session_id)
-                    await self._send_plan_update(session.session_id)
-            except BaseException:
-                if not result.reused_existing:
-                    with contextlib.suppress(Exception):
-                        await self._manager.close(session.session_id)
-                raise
-        except Exception as exc:
-            raise _request_error(exc) from exc
-        return acp_schema.LoadSessionResponse(
-            modes=self._session_mode_state(session.session_id),
-            models=self._session_model_state(session.session_id),
-        )
+            if not result.reused_existing:
+                check_active()
+                await self._watch_session_titles(session)
+                check_active()
+                await self._watch_nested_wait_cancellations(session)
+            if self._client is not None:
+                for warning in warnings:
+                    check_active()
+                    await self._send_warning(session.session_id, warning)
+                check_active()
+                await self._send_session_restored(session.session_id)
+                check_active()
+                answer_message_ids = await replay_session_history(
+                    self._client,
+                    self._manager.state_store,
+                    session.session_id,
+                    prefer_recovery=result.recovered_from_sidecar,
+                    tool_kind_resolver=session.host.engine.tool_kind_for_name,
+                    check_active=check_active,
+                )
+                check_active()
+                session.answer_message_ids = answer_message_ids
+                await self._send_runtime_update(session.session_id)
+                check_active()
+                await self._send_plan_update(session.session_id)
+            check_active()
+            return acp_schema.LoadSessionResponse(
+                modes=self._session_mode_state(session.session_id),
+                models=self._session_model_state(session.session_id),
+            )
+        except BaseException as exc:
+            if not result.reused_existing:
+                with contextlib.suppress(Exception):
+                    await self._manager.close(session.session_id, expected=session)
+            if isinstance(exc, Exception):
+                raise _request_error(exc) from exc
+            raise
 
     async def list_sessions(
         self,

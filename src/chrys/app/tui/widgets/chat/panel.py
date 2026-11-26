@@ -1218,6 +1218,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         return self._replay_mount.pending_widgets()
 
     def set_border_title(self, title: Text | None) -> None:
+        if title is None and self.border_title is None:
+            return
         self.border_title = title
 
     def set_border_subtitle(self, subtitle: Text | None) -> None:

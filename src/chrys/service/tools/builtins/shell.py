@@ -35,6 +35,7 @@ from contextlib import AsyncExitStack, suppress
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, cast
 
+from chrys.foundation.models.workspace import control_chars_as_spaces
 from chrys.foundation.platform.output_capture import BoundedCapture
 from chrys.foundation.platform.paths import resolve_workspace_path
 from chrys.foundation.platform.process import (
@@ -51,6 +52,7 @@ from chrys.foundation.platform.process import (
 from chrys.foundation.platform.pty_output import PtyOutputProtocol
 from chrys.foundation.platform.runtime_paths import build_shell_subprocess_env
 from chrys.foundation.platform.win_console import preserve_console_mode
+from chrys.foundation.text.model_json import model_path
 from chrys.foundation.text.tool_output import (
     process_carriage_returns as _process_carriage_returns,
 )
@@ -167,7 +169,7 @@ def _workdir_not_found(resolved: str, workdir: str) -> str:
     # does, not the argument: they stay what clients and saved sessions already read.
     return tool_error(
         "working_dir_not_found",
-        f"workdir not found — {resolved}",
+        f"workdir not found — {model_path(resolved)}",
         details={"working_dir": workdir, "resolved_path": resolved},
     )
 
@@ -1198,15 +1200,16 @@ class ShellTools:
         Returns directory paths with their labels and primary status.
         Useful for understanding the project structure across multiple repositories.
         """
+        cwd = model_path(self._runtime.cwd)
         if not (self._runtime.working_dirs or self._runtime.missing_working_dirs):
-            return f"No workspace active. Current directory: {self._runtime.cwd}"
-        lines = [f"Workspace directories (cwd: {self._runtime.cwd}):"]
+            return f"No workspace active. Current directory: {cwd}"
+        lines = [f"Workspace directories (cwd: {cwd}):"]
         for wd in self._runtime.working_dirs:
             marker = " (primary)" if wd.is_primary else ""
-            label = f" [{wd.label}]" if wd.label else ""
+            label = f" [{control_chars_as_spaces(wd.label)}]" if wd.label else ""
             exists = " ok" if wd.exists else " MISSING"
-            lines.append(f"  {wd.path}{label}{marker}{exists}")
-        lines.extend(f"  {path} MISSING" for path in self._runtime.missing_working_dirs)
+            lines.append(f"  {model_path(wd.path)}{label}{marker}{exists}")
+        lines.extend(f"  {model_path(path)} MISSING" for path in self._runtime.missing_working_dirs)
         return "\n".join(lines)
 
 

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from chrys.foundation.config.errors import ConfigError
 from chrys.foundation.events.types import Warning, WorkspaceOperation, WorkspaceUpdated
-from chrys.foundation.i18n import DisplayPath, msg
+from chrys.foundation.i18n import DisplayPath, DisplaySequence, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.workspace import (
     Workspace,
@@ -60,6 +60,13 @@ def _resolve_reference_dirs(workspace: Workspace) -> tuple[Workspace, tuple[str,
 _INHERITED_WORKSPACE_MISSING = msg(
     "workspaces.inherited_workspace_missing",
     fallback="Workspace “{name}” was deleted. The new session is Unspecified.",
+)
+
+WORKSPACE_REFERENCE_MISSING = "workspace_reference_missing"
+_REFERENCE_MISSING = msg(
+    "workspaces.reference_missing",
+    fallback="Workspace “{name}” has a missing reference folder: {paths}",
+    plural_fallback="Workspace “{name}” has {count} missing reference folders: {paths}",
 )
 
 NEW_MEMBERSHIP_WRITE_FAILED = msg(
@@ -260,6 +267,15 @@ class SessionWorkspaces:
     async def publish_unreadable(self, session_id: str | None, error: WorkspaceRegistryError) -> None:
         """Report an open attempt without changing the active session's warning state."""
         await self._bus.publish(registry_unreadable_warning(session_id, error))
+
+    async def warn_missing_references(self, session_id: str | None, plan: WorkspacePlan) -> None:
+        """Report missing references together when the workspace is opened."""
+        if plan.missing_working_dirs:
+            paths = DisplaySequence(DisplayPath(path) for path in plan.missing_working_dirs)
+            display = _REFERENCE_MISSING.bind(
+                name=plan.workspace.name, paths=paths, count=len(plan.missing_working_dirs)
+            )
+            await self._bus.publish(_workspace_warning(WORKSPACE_REFERENCE_MISSING, display, session_id))
 
     async def inherited_workspace(self, installed: Workspace, session_id: str | None) -> Workspace | None:
         snapshot = self.snapshot()

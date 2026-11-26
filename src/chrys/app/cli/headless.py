@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Final
 
@@ -22,6 +22,7 @@ from chrys.foundation.config.settings import (
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsWarning
 from chrys.foundation.config.spec import Source
 from chrys.foundation.config.warnings import settings_warning_events
+from chrys.foundation.errors.display import with_display_hint
 from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
@@ -164,15 +165,23 @@ def write_warning(message: str, *, as_json: bool, code: str = "warning") -> None
     sys.stderr.write(f"Warning: {sanitize_legacy_scalar(message)}\n")
 
 
+def warning_text(warning: Warning, render: Callable[[MessageRef], str] | None = None) -> str:
+    """Render a warning with its hint, or keep its English wire text for JSON."""
+    message = (
+        render(warning.display_message)
+        if render is not None and warning.display_message is not None
+        else warning.message
+    )
+    render = render or format_message
+    return with_display_hint(
+        message, render(warning.display_hint) if warning.display_hint is not None else None, render=render
+    )
+
+
 def write_warning_events(warnings: Iterable[Warning], localizer: Localizer, *, as_json: bool) -> None:
+    render = None if as_json else localizer.render
     for warning in warnings:
-        if as_json:
-            message = warning.message
-        elif warning.display_message is not None:
-            message = localizer.render(warning.display_message)
-        else:
-            message = warning.message
-        write_warning(message, code=warning.code, as_json=as_json)
+        write_warning(warning_text(warning, render), code=warning.code, as_json=as_json)
 
 
 def write_pending_warnings(runtime: PreparedRuntime, *, as_json: bool) -> None:

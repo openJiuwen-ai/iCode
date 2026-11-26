@@ -17,10 +17,14 @@ from chrys.foundation.events.types import (
     InvocationContentFinished,
     SessionRestore,
     SideQuestionRequested,
+    UserInterrupt,
+    UserMessage,
+    UserRollback,
     WorkspaceChange,
     WorkspaceChangeFinished,
     WorkspaceOperation,
 )
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace, WorkspaceConfirmation, session_workdirs
 from chrys.kernel import Message
 from chrys.service.llm import side_question
@@ -29,8 +33,9 @@ from chrys.service.state.store import JsonFileStateStore
 from chrys.service.workspaces.paths import MissingWorkspacePrimary
 from tests.support.components import plan_workspace
 from tests.support.event_capture import capture_event_sequence
-from tests.support.rollback_spec import PROFILE, ask
+from tests.support.rollback_spec import PROFILE, ask, drain
 from tests.support.symlinks import symlink_or_skip
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workspace_engine import side_answer_settled, start_workspace_engine, workspace_selection
 from tests.support.workspace_engine import workspace_case as workspace_case
 from tests.support.workspace_registry import (
@@ -348,6 +353,7 @@ async def test_failed_open_reports_that_implicit_departure_was_saved(workspace_c
     engine, workspace = await workspace_case.start_selected(primary)
     await ask(engine, "save the session")
     sid = engine.session_id
+    runtime = engine.current.require_loaded()
     confirmation = WorkspaceConfirmation.capture(workspace.id, str(destination))
 
     def fail_install(*args, **kwargs):
@@ -366,25 +372,139 @@ async def test_failed_open_reports_that_implicit_departure_was_saved(workspace_c
     assert "Workspace membership was cleared" in reported.message
     assert "The session reopens as Unspecified in its saved directory" in reported.message
     assert registry.snapshot().workspace_id_for_session(sid) is None
+    if entry == "chdir":
+        assert f"This run is at {primary}" in reported.message
+        assert engine.current.loaded is runtime
+        assert engine.session_id == sid
+        await ask(engine, "continue in the old workspace")
+        assert engine.session.turn_number == 2
+    else:
+        assert "There is no active session in this run" in reported.message
+        assert engine.current.loaded is None
+        assert engine.session_id is None
 
 
-async def test_a_departure_lasts_while_running_and_disappears_after_reopen(workspace_case, tmp_path):
-    registry = workspace_case.registry
-    workspace = registry.create("Team", str(tmp_path))
-    client = MockChatClient(responses=[MockResponse(text="answer")])
-    engine = await workspace_case(tmp_path, workspace_id=workspace.id, client=client)
+@pytest.mark.parametrize("name", ["Team", "Unspecified", 'Unspecified (left workspace "Team")'])
+async def test_a_recorded_workspace_departure_is_not_added_to_the_next_runtime_reminder(workspace_case, tmp_path, name):
+    primary, other = make_workdirs(tmp_path, "primary", "other")
+    workspace = workspace_case.registry.create(name, str(primary))
+    client = MockChatClient(
+        responses=[
+            MockResponse(text="first"),
+            MockResponse(tool_calls=[("sleep", "wait-1", {"seconds": 0})]),
+            MockResponse(text="answer"),
+        ]
+    )
+    engine = await workspace_case(primary, workspace_id=workspace.id, client=client)
     await ask(engine, "first turn")
     sid = engine.session_id
     await engine.event_bus.publish(
-        WorkspaceChange(workspace_operation=WorkspaceOperation.UNSPECIFY),
-        raise_handler_errors=True,
+        WorkspaceChange(workspace_operation=WorkspaceOperation.UNSPECIFY), raise_handler_errors=True
     )
-    await ask(engine, "after leaving")
-    assert 'left workspace "Team"' in _last_user_text(client)
-    assert registry.snapshot().workspace_id_for_session(sid) is None
-    await engine.shutdown()
 
-    reopened = await workspace_case(tmp_path, client=client)
+    notice = f'left workspace "{name}"'
+    await ask(engine, "after leaving")
+    assert _last_user_text(client).count(notice) == 1
+    await ask(engine, "same directory")
+    assert "[Runtime Environment]" not in _last_user_text(client)
+    await engine.event_bus.publish(WorkspaceChange(primary_cwd=str(other)), raise_handler_errors=True)
+    await ask(engine, "after changing directory")
+    assert "[Runtime Environment]" in _last_user_text(client)
+    assert notice not in _last_user_text(client)
+    messages, _ = client.call_history[-1]
+    assert sum(message.text.count(notice) for message in messages if message.role == "user") == 1
+
+    await engine.shutdown()
+    reopened = await workspace_case(other, client=client)
     await reopened.event_bus.publish(SessionRestore(session_id=sid), raise_handler_errors=True)
     await ask(reopened, "after reopen")
-    assert 'left workspace "Team"' not in _last_user_text(client)
+    assert notice not in _last_user_text(client)
+
+
+@pytest.mark.parametrize("recorded", [False, True], ids=["before-recording", "after-recording"])
+async def test_discarding_a_cancelled_turn_allows_the_workspace_departure_to_be_reported_again(
+    workspace_case, tmp_path, monkeypatch, recorded
+):
+    primary, other = make_workdirs(tmp_path, "primary", "other")
+    workspace = workspace_case.registry.create("Team", str(primary))
+    client = MockChatClient(
+        responses=[MockResponse(text="first"), MockResponse(text="answer", delay=30 if recorded else 0)]
+    )
+    engine = await workspace_case(primary, workspace_id=workspace.id, client=client)
+    await ask(engine, "first turn")
+    await engine.event_bus.publish(
+        WorkspaceChange(workspace_operation=WorkspaceOperation.UNSPECIFY), raise_handler_errors=True
+    )
+    prepared = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_before_request(prompt: str, *, keep: bool = False):
+        prepared.set()
+        await release.wait()
+        return ()
+
+    with monkeypatch.context() as patch:
+        if not recorded:
+            middleware = engine.current.require_loaded().reminder_middleware
+            patch.setattr(middleware, "refresh_extension_context", hold_before_request)
+        try:
+            await engine.event_bus.publish(UserMessage(text="cancel this turn"), raise_handler_errors=True)
+            if recorded:
+                await wait_for(lambda: client.call_count == 2, timeout=ENGINE_TURN_TIMEOUT, description="model call")
+                assert 'left workspace "Team"' in _last_user_text(client)
+            else:
+                await asyncio.wait_for(prepared.wait(), timeout=ENGINE_TURN_TIMEOUT)
+                assert client.call_count == 1
+            await engine.event_bus.publish(UserInterrupt(), raise_handler_errors=True)
+        finally:
+            release.set()
+        await drain(engine)
+
+    (cancelled,) = [message for message in engine.history_messages if message.text == "cancel this turn"]
+    items = cancelled.additional_properties.get(HistoryMarkerKind.SYSTEM_REMINDERS_KEY, [])
+    assert any('left workspace "Team"' in item["text"] for item in items) == recorded
+    await engine.event_bus.publish(WorkspaceChange(primary_cwd=str(other)), raise_handler_errors=True)
+    await ask(engine, "after cancelling")
+    assert all(message.text != "cancel this turn" for message in engine.history_messages)
+    assert 'left workspace "Team"' in _last_user_text(client)
+
+
+@pytest.mark.parametrize("transition", ["reopen", "rollback"])
+async def test_workspace_departure_follows_the_restored_runtime_reminder(workspace_case, tmp_path, transition):
+    workspace = workspace_case.registry.create("Team", str(tmp_path))
+    client = MockChatClient(responses=[MockResponse(text="answer")])
+    engine = await workspace_case(tmp_path, workspace_id=workspace.id, client=client)
+    await ask(engine, "show the workspace")
+    assert "  Workspace: Team" in _last_user_text(client).splitlines()
+
+    leave = WorkspaceChange(workspace_operation=WorkspaceOperation.UNSPECIFY)
+    await engine.event_bus.publish(leave, raise_handler_errors=True)
+    if transition == "reopen":
+        session_id = engine.session_id
+        await engine.shutdown()
+        engine = await workspace_case(tmp_path, client=client)
+        await engine.event_bus.publish(SessionRestore(session_id=session_id), raise_handler_errors=True)
+    else:
+        await ask(engine, "show the departure")
+        assert 'left workspace "Team"' in _last_user_text(client)
+        await engine.event_bus.publish(UserRollback(target_turn=1), raise_handler_errors=True)
+
+    assert engine.session.workspace_id is None
+    await ask(engine, "show the departure from the workspace still in view")
+    assert 'left workspace "Team"' in _last_user_text(client)
+
+
+async def test_workspace_departure_is_not_reported_for_a_workspace_the_model_never_saw(workspace_case, tmp_path):
+    workspace = workspace_case.registry.create("Team", str(tmp_path))
+    client = MockChatClient(responses=[MockResponse(text="answer")])
+    engine = await workspace_case(tmp_path, client=client)
+    await ask(engine, "show the unassigned environment")
+    assert "  Workspace: Team" not in _last_user_text(client)
+
+    await engine.event_bus.publish(workspace_selection(workspace.id), raise_handler_errors=True)
+    assert engine.session.workspace_id == workspace.id
+    await engine.event_bus.publish(
+        WorkspaceChange(workspace_operation=WorkspaceOperation.UNSPECIFY), raise_handler_errors=True
+    )
+    await ask(engine, "still unassigned")
+    assert "left workspace" not in _last_user_text(client)

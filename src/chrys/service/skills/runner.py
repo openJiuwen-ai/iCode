@@ -29,6 +29,7 @@ from chrys.foundation.platform.runtime_paths import (
 )
 from chrys.foundation.platform.script_commands import build_script_command
 from chrys.foundation.platform.win_console import preserve_console_mode
+from chrys.foundation.text.model_json import model_path
 from chrys.foundation.text.tool_output import process_carriage_returns, strip_ansi
 from chrys.foundation.tool_result_metadata import PARTIAL_OUTPUT_LABEL
 from chrys.service.skills.constants import DEFAULT_SCRIPT_RESULT_MAX_TOKENS
@@ -282,7 +283,9 @@ class SubprocessScriptRunner:
         except MissingWorkingDirectoryError as e:
             if cwd is None:
                 return working_dir_missing_error(e.path)
-            return tool_error("invalid_cwd", f"'cwd' is not an existing directory: {e.path}", details={"cwd": e.path})
+            return tool_error(
+                "invalid_cwd", f"'cwd' is not an existing directory: {model_path(e.path)}", details={"cwd": e.path}
+            )
         except FileNotFoundError:
             return _interpreter_not_found(skill, script)
         except OSError as e:
@@ -307,9 +310,13 @@ class SubprocessScriptRunner:
         """
         if cwd is not None:
             if not os.path.isabs(cwd):
-                return tool_error("invalid_cwd", f"'cwd' must be an absolute path, got: {cwd}", details={"cwd": cwd})
+                return tool_error(
+                    "invalid_cwd", f"'cwd' must be an absolute path, got: {model_path(cwd)}", details={"cwd": cwd}
+                )
             if not os.path.isdir(cwd):
-                return tool_error("invalid_cwd", f"'cwd' is not an existing directory: {cwd}", details={"cwd": cwd})
+                return tool_error(
+                    "invalid_cwd", f"'cwd' is not an existing directory: {model_path(cwd)}", details={"cwd": cwd}
+                )
             return cwd
         if self._runtime is not None:
             return self._runtime.cwd
