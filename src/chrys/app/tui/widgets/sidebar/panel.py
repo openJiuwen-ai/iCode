@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.events import MouseScrollDown, MouseScrollLeft, MouseScrollRight, MouseScrollUp
+    from textual.geometry import Size
 
     from chrys.app.tui.i18n import LocaleController
     from chrys.foundation.models.background_tasks import BackgroundTaskView
@@ -402,6 +403,10 @@ class SidebarPanel(Widget, can_focus=False):
     def _tab_page_width(self) -> int:
         """The width a tab can use even if the click brings both marks into view."""
         return self.content_region.width - 2 * _MARK_CELLS
+
+    def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
+        # The containing row placed the sidebar. Its Resize still updates the tab marks.
+        return super()._size_updated(size, virtual_size, container_size, layout=False)
 
     def on_resize(self, _event: events.Resize) -> None:
         # The strip keeps its content width across a resize; its container does

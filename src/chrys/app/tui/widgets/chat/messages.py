@@ -287,6 +287,10 @@ class MessageHeaderRow(Horizontal):
     }
     """
 
+    def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
+        # The fixed-height row has already placed the label and its actions.
+        return super()._size_updated(size, virtual_size, container_size, layout=False)
+
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         _ = selection
         return None
@@ -395,6 +399,8 @@ class UserMessage(Widget):
         height: auto;
         min-height: 1;
         background: transparent;
+        /* The transcript scrolls. A temporary scrollbar would change the wrap width as the body grows. */
+        overflow-y: hidden;
     }
     """
 
@@ -426,6 +432,10 @@ class UserMessage(Widget):
             self.add_class("-compressed")
         if is_injection:
             self.add_class("-injection")
+
+    def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
+        # The transcript measured this auto-height container during placement.
+        return super()._size_updated(size, virtual_size, container_size, layout=False)
 
     def compose(self) -> ComposeResult:
         with MessageHeaderRow():

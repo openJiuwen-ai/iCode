@@ -20,7 +20,7 @@ from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown, _text_height
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import ChatPanelApp
+from tests.support.tui_helpers import ChatPanelApp, resize_when_settled
 from tests.support.waiting import wait_for
 
 _DOCUMENT = "# Title\n\n" + "\n\n".join(
@@ -33,9 +33,9 @@ def _record_layout_widths(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Virtual
     layouts: list[tuple[VirtualizedMarkdown, int]] = []
     original = VirtualizedMarkdown._layout_blocks
 
-    def layout_spy(self: VirtualizedMarkdown, width: int | None = None) -> None:
+    def layout_spy(self: VirtualizedMarkdown, width: int | None = None, *, unchanged_prefix: int = 0) -> None:
         layouts.append((self, self.scrollable_content_region.width if width is None else width))
-        original(self, width)
+        original(self, width, unchanged_prefix=unchanged_prefix)
 
     monkeypatch.setattr(VirtualizedMarkdown, "_layout_blocks", layout_spy)
     return layouts
@@ -179,3 +179,68 @@ def test_text_height_matches_textual_on_repeated_rewrap(text: str) -> None:
     reference = Content(text, [Span(0, len(text), "bold")])
     for width in (1, 2, 3, 5, 12, 40, 80, 80, 1):
         assert _text_height(measured, width) == reference.get_height({}, width)
+
+
+async def test_streamed_layout_keeps_the_identical_prefix_and_remeasures_on_resize() -> None:
+    app = App[None]()
+    async with app.run_test(size=(70, 26)) as pilot:
+        streamed = VirtualizedMarkdown()
+        reference = VirtualizedMarkdown()
+        streamed.styles.overflow_y = reference.styles.overflow_y = "hidden"
+        await app.mount(streamed, reference)
+        await wait_for(lambda: streamed.scrollable_content_region.width > 0, pilot=pilot)
+        streamed.set_streaming(True)
+        first = """# Layout
+
+| Field | Value |
+| --- | --- |
+| First | very wide payload next to 中文和日本語 |
+
+```python
+print("stable fence")
+```
+
+```mermaid
+graph TD
+  A --> B
+```
+
+After the diagram.
+"""
+        second = first + "\nThe last paragraph changes and wraps. " * 8
+        await streamed.update(first)
+        initial_layout = tuple(streamed._block_line_info)
+        table_layout = next(iter(streamed._table_layouts.values()))
+
+        await streamed.update(second)
+        for before, after in zip(initial_layout, streamed._block_line_info, strict=False):
+            assert after is before
+        assert next(iter(streamed._table_layouts.values())) is table_layout
+
+        await reference.update(second)
+
+        def assert_matches_full_render() -> None:
+            assert streamed.virtual_size == reference.virtual_size
+            assert streamed._block_line_info == reference._block_line_info
+            assert streamed._diagram_action_lines == reference._diagram_action_lines
+            for line in range(streamed.virtual_size.height):
+                assert list(streamed.render_line(line)) == list(reference.render_line(line))
+
+        assert_matches_full_render()
+        old_width = streamed._width_at_last_layout
+        await resize_when_settled(pilot, 42, 26)
+        await wait_for(
+            lambda: all(
+                _laid_out_at_current_width(widget) and widget._width_at_last_layout != old_width
+                for widget in (streamed, reference)
+            ),
+            pilot=pilot,
+            description="both documents have wrapped at the new width",
+        )
+        assert_matches_full_render()
+        assert next(iter(streamed._table_layouts.values())) is not table_layout
+
+        # A replacement removes the cached action line and measured offset.
+        await streamed.update("Unrelated text")
+        assert streamed._diagram_action_lines == {}
+        assert len(streamed._block_line_info) == 1

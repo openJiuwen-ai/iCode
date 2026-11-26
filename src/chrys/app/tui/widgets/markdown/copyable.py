@@ -93,8 +93,8 @@ class CopyableMarkdown(VirtualizedMarkdown):
                 block.padding_bottom += 1
         return blocks
 
-    def _layout_blocks(self, width: int | None = None) -> None:
-        super()._layout_blocks(width)
+    def _layout_blocks(self, width: int | None = None, *, unchanged_prefix: int = 0) -> None:
+        super()._layout_blocks(width, unchanged_prefix=unchanged_prefix)
 
         # Build copy-button-line → block-index mapping.
         self._copy_button_lines.clear()
