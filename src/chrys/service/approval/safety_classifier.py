@@ -9,7 +9,7 @@ import os
 import re
 import shlex
 from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import Any, Literal
 
 _SENSITIVE_TARGET_RE = re.compile(
     r"""(?ix)
@@ -117,8 +117,33 @@ _SUDO_OPTIONS_WITH_VALUES = frozenset(
 _ENV_OPTIONS_WITH_VALUES = frozenset({"-u", "--unset", "-C", "--chdir"})
 _MAX_SHELL_INDIRECTION_ANALYSIS_CHARS = 8192
 _MAX_SHELL_SENSITIVE_RECURSION = 3
+_SHELL_BUILTIN_CARRIERS = frozenset({"builtin", "command", "exec"})
+_COMPOUND_HEADS = frozenset(
+    {
+        "!",
+        "{",
+        "}",
+        "if",
+        "then",
+        "elif",
+        "else",
+        "fi",
+        "do",
+        "done",
+        "while",
+        "until",
+        "for",
+        "case",
+        "esac",
+        "select",
+        "function",
+    }
+)
 _CARRIER_OPTIONS = {
+    "builtin": (set(), set()),
     "command": ({"-p", "-v", "-V"}, set()),
+    "exec": ({"-c", "-l"}, {"-a"}),
+    "time": ({"-p"}, set()),
     "env": ({"-i", "--ignore-environment", "-0", "--null"}, _ENV_OPTIONS_WITH_VALUES),
     "nice": (set(), {"-n", "--adjustment"}),
     "sudo": (
@@ -482,7 +507,7 @@ def _carrier_target_index(segment: Sequence[str], index: int, carrier: str) -> i
         index += 1
         if option == "--":
             break
-        if carrier != "command" and option in {"--help", "--version"}:
+        if carrier not in _SHELL_BUILTIN_CARRIERS | {"time"} and option in {"--help", "--version"}:
             return len(segment)
         if (carrier == "nice" and option[1:].isdecimal()) or (carrier == "env" and option == "-"):
             continue
@@ -538,14 +563,25 @@ def normalize_executable_name(word: str) -> str:
 
 
 def _is_potential_carrier(head: str) -> bool:
-    return head in _CARRIER_OPTIONS or head in POSIX_SHELL_NAMES or head in {"eval", "printenv"}
+    return head in _CARRIER_OPTIONS or head in POSIX_SHELL_NAMES or head in {"coproc", "eval", "printenv"}
 
 
 def _is_shell_builtin(segment: Sequence[str], index: int, name: str) -> bool:
-    """Require the exact builtin spelling in the shell or after its command builtin."""
-    return segment[index] == name and all(
-        word in {"command", "--"} or re.fullmatch(r"-p+", word) for word in segment[:index]
-    )
+    """Require the literal builtin at a shell position, not an external wrapper's operand."""
+    if segment[index] != name:
+        return False
+    prefix = 0
+    while prefix < index and _POSIX_ENV_ASSIGNMENT_RE.fullmatch(segment[prefix]):
+        prefix += 1
+    while prefix < index:
+        carrier = segment[prefix]
+        if carrier not in {"command", "builtin"} and not (prefix == 0 and carrier == "time"):
+            return False
+        target = _carrier_target_index(segment, prefix, carrier)
+        if target is None or target > index:
+            return False
+        prefix = target
+    return True
 
 
 def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: bool) -> int | None:
@@ -559,16 +595,31 @@ def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: 
 
         word = segment[index]
         wrapper_name = normalize_executable_name(word) if decoded_carriers else os.path.basename(word)
+        if decoded_carriers and wrapper_name == "coproc":
+            # A coprocess can contain a named compound command. Do not guess its operand.
+            return None
         if decoded_carriers and wrapper_name in _CARRIER_OPTIONS:
-            if wrapper_name == "command" and not _is_shell_builtin(segment, index, "command"):
+            if wrapper_name in _SHELL_BUILTIN_CARRIERS and not _is_shell_builtin(segment, index, wrapper_name):
                 return None
+            if wrapper_name == "time" and (index != 0 or word != "time"):
+                return None
+            if wrapper_name == "env" and all(_POSIX_ENV_ASSIGNMENT_RE.fullmatch(arg) for arg in segment[index + 1 :]):
+                # With no command operand, env prints the environment.
+                return index
             target = _carrier_target_index(segment, index, wrapper_name)
             if target is None:
                 return None
-            if target < len(segment) and segment[target].startswith(("$", "`")):
+            if target < len(segment) and segment[target].startswith(("$", "`", "<", ">")):
                 return None
-            # An external wrapper executes its command operand, even if it contains '='.
-            if target < len(segment) and _POSIX_ENV_ASSIGNMENT_RE.fullmatch(segment[target]):
+            # Bash's builtin dispatcher never invokes an external command.
+            if (
+                wrapper_name == "builtin"
+                and target < len(segment)
+                and segment[target] not in _SHELL_BUILTIN_CARRIERS | {"eval"}
+            ):
+                return len(segment)
+            # The time keyword allows assignments before the command it times.
+            if wrapper_name != "time" and target < len(segment) and _POSIX_ENV_ASSIGNMENT_RE.fullmatch(segment[target]):
                 return target
             index = target
             continue
@@ -585,11 +636,14 @@ def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: 
     return index
 
 
+type _SourcePayload = tuple[str, str] | Literal[True] | None
+
+
 def _posix_shell_payloads(
-    segments: Iterable[Sequence[str]], *, shell_name: str, decoded_carriers: bool
-) -> list[tuple[str, str] | None]:
-    """Extract arguments that a recognized command interprets as shell source."""
-    payloads: list[tuple[str, str] | None] = []
+    segments: Iterable[Sequence[str]], *, shell_name: str, decoded_carriers: bool, nested_source: bool = False
+) -> list[_SourcePayload]:
+    """Extract child source, confirmed environment dumps, or unresolved executable forms."""
+    payloads: list[_SourcePayload] = []
     for segment in segments:
         index = _posix_unwrapped_command_index(segment, decoded_carriers=decoded_carriers)
         if index is None:
@@ -600,6 +654,14 @@ def _posix_shell_payloads(
 
         word = segment[index]
         nested_shell = normalize_executable_name(word) if decoded_carriers else os.path.basename(word)
+        if decoded_carriers and nested_source and (word in _COMPOUND_HEADS or "(" in word or ")" in word):
+            # The coarse source lexer cannot establish command positions in compound syntax.
+            # At the top level the AST already supplies executable nodes; inside child source it does not.
+            payloads.append(None)
+            continue
+        if decoded_carriers and nested_shell in {"env", "printenv"}:
+            payloads.append(True)
+            continue
         if decoded_carriers and nested_shell == "eval":
             if not _is_shell_builtin(segment, index, "eval"):
                 payloads.append(None)
@@ -640,10 +702,12 @@ def _posix_shell_payloads(
 
 
 def _source_payloads_may_access_sensitive_data(
-    payloads: Iterable[tuple[str, str] | None], *, depth: int, decoded_carriers: bool
+    payloads: Iterable[_SourcePayload], *, depth: int, decoded_carriers: bool
 ) -> bool | None:
     unresolved = False
     for payload in payloads:
+        if payload is True:
+            return True
         if payload is None:
             unresolved = True
             continue
@@ -669,6 +733,10 @@ def _posix_command_indirection_may_access_sensitive_data(
     if decoded_carriers:
         segments: list[list[str]] = []
         for segment in source_segments:
+            if depth > 0 and re.match(r"\s*[A-Za-z_][A-Za-z0-9_]*\s+\(\s*\)", segment):
+                # A spaced function declaration also hides its command positions.
+                substitutions.append(None)
+                continue
             lexer = shlex.shlex(segment, posix=True, punctuation_chars="<>")
             lexer.whitespace_split = True
             lexer.commenters = ""
@@ -678,13 +746,15 @@ def _posix_command_indirection_may_access_sensitive_data(
             except ValueError:
                 # Keep the known prefix so a malformed carrier is still unresolved.
                 head = next((word for word in words if not _POSIX_ENV_ASSIGNMENT_RE.fullmatch(word)), "")
-                if _is_potential_carrier(normalize_executable_name(head)):
+                if depth > 0 or _is_potential_carrier(normalize_executable_name(head)):
                     substitutions.append(None)
             else:
                 segments.append(words)
     else:
         segments = _posix_command_segments(command)
-    payloads = _posix_shell_payloads(segments, shell_name=shell_name, decoded_carriers=decoded_carriers)
+    payloads = _posix_shell_payloads(
+        segments, shell_name=shell_name, decoded_carriers=decoded_carriers, nested_source=depth > 0
+    )
     payloads.extend(None if payload is None else (shell_name, payload) for payload in substitutions)
     return _source_payloads_may_access_sensitive_data(payloads, depth=depth + 1, decoded_carriers=decoded_carriers)
 
@@ -749,7 +819,7 @@ def shell_argv_may_access_sensitive_data(
                 return True
         return _source_payloads_may_access_sensitive_data(
             _posix_shell_payloads((argv,), shell_name=shell_name, decoded_carriers=True),
-            depth=0,
+            depth=1,
             decoded_carriers=True,
         )
     return False

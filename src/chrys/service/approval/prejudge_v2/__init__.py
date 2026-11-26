@@ -121,6 +121,7 @@ _OPAQUE = POSIX_SHELL_NAMES | frozenset(
         "cd",
         "chrt",
         "command",
+        "coproc",
         "doas",
         "declare",
         "enable",

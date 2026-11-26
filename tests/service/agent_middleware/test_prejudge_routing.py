@@ -517,6 +517,12 @@ async def test_literal_dollar_argv_preserves_readonly_approval(tmp_path, monkeyp
 @pytest.mark.parametrize(
     ("command", "head", "detected"),
     [
+        pytest.param("exec bash -c printenv", "exec", "source", id="followup-exec"),
+        pytest.param("exec -a x bash -c printenv", "exec", "source", id="followup-exec-argv0"),
+        pytest.param("time printenv", "time", "source", id="followup-time"),
+        pytest.param("builtin eval printenv", "builtin", "source", id="followup-builtin"),
+        pytest.param("command exec bash -c printenv", "command", "source", id="followup-command-exec"),
+        pytest.param("coproc bash -c printenv", "coproc", "unresolved", id="followup-coproc"),
         ("eval 'echo' '$DEMO_TOKEN'", "eval", "source"),
         ("timeout -s TERM 5 bash -c 'echo $DEMO_TOKEN'", "timeout", "source"),
         ("bash --noprofile -c 'echo $DEMO_TOKEN'", "bash", "legacy"),
@@ -546,6 +552,8 @@ async def test_literal_dollar_argv_preserves_readonly_approval(tmp_path, monkeyp
         ),
         pytest.param("xargs --version", "xargs", "clear", id="xargs-version"),
         pytest.param("xargs -0rn1 grep -F '$DEMO_TOKEN'", "xargs", "clear", id="xargs-literal"),
+        pytest.param("exec -a fixture bash -c 'printf fixture'", "exec", "clear", id="exec-benign"),
+        pytest.param("builtin printenv", "builtin", "clear", id="builtin-no-external-command"),
     ],
 )
 async def test_carrier_source_sensitivity_is_enforce_only(monkeypatch, caplog, mode, matches, command, head, detected):
@@ -565,10 +573,29 @@ async def test_carrier_source_sensitivity_is_enforce_only(monkeypatch, caplog, m
         pytest.param('echo "$(nice bash -c printenv)"', "echo", "source", id="nice"),
         pytest.param('echo "$(eval printenv)"', "echo", "source", id="eval"),
         pytest.param('echo "$(xargs -Z bash -c x)"', "echo", "unresolved", id="unresolved"),
+        pytest.param('echo "$( (bash -c printenv) )"', "echo", "unresolved", id="followup-subshell"),
+        pytest.param('echo "$({ printenv; })"', "echo", "unresolved", id="followup-braces"),
+        pytest.param('echo "$(if true; then bash -c printenv; fi)"', "echo", "unresolved", id="followup-if"),
+        pytest.param(
+            'echo "$(for i in 1; do xargs -0 bash -c printenv; done)"', "echo", "unresolved", id="followup-for"
+        ),
+        pytest.param('echo "$(! printenv)"', "echo", "unresolved", id="followup-negation"),
+        pytest.param('echo "$(time printenv)"', "echo", "source", id="followup-time"),
+        pytest.param('echo "$(x=1 printenv)"', "echo", "source", id="followup-assignment"),
+        pytest.param('echo "$( (cat .env) )"', "echo", "unresolved", id="followup-subshell-path"),
     ],
 )
 async def test_reported_substitution_enforces_approval(monkeypatch, caplog, mode, matches, command, head, detected):
     await _assert_carrier_sensitivity(monkeypatch, caplog, mode, matches, command, head, detected)
+
+
+@pytest.mark.parametrize("command", ["(printf fixture)", "{ printf fixture; }"])
+def test_top_level_compound_with_certified_commands_still_matches_policy(command):
+    require_grammars("tree_sitter", "tree_sitter_bash")
+    rules = (Rule("fixture", Route.ALLOW, Matcher("argv_exact", ("printf", "fixture"))),)
+    result = route(command, "bash", Policy("enforce", "fixture", rules))
+    assert result.route is Route.ALLOW
+    assert not result.unresolved_carrier
 
 
 def test_substitution_uncertainty_preserves_decoded_sensitive_target():
@@ -621,7 +648,7 @@ async def _assert_carrier_sensitivity(monkeypatch, caplog, mode, matches, comman
         with caplog.at_level(logging.INFO, logger=approval_module._prejudge_logger.name):
             await middleware.process(FunctionInvocationContext(tool, {"command": command}), execute)
         if detected == "legacy" or (mode == "enforce" and detected != "clear"):
-            assert len(requests) == 1
+            assert len(requests) == 1, (observed.reason_code, execute.await_count)
             (decision,) = middleware.drain_decisions()
             assert decision["status"] == "user_rejected"
             execute.assert_not_awaited()
