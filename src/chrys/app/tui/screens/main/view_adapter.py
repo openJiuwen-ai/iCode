@@ -96,6 +96,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.state import MainScreenState
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffFocus, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
+    from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
     from chrys.foundation.i18n import MessageRef
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
@@ -1535,6 +1536,14 @@ class MainScreenViewAdapter:
             return bool(self._screen.query_one(InputBar).suggestions_active)
         return False
 
+    def _suggestion_list_for_open(self) -> SuggestionList:
+        """Withdraw transcript actions before opening the input menu."""
+        from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
+
+        suggestions = self._screen.query_one(SuggestionList)
+        self._screen._hide_quote_popup()
+        return suggestions
+
     def show_suggestions(
         self,
         mode: str,
@@ -1544,20 +1553,14 @@ class MainScreenViewAdapter:
         initial: str | None = None,
         title: str = "",
     ) -> None:
-        from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
-
         with contextlib.suppress(NoMatches):
-            self._screen.query_one(SuggestionList).show(
-                mode, list(items), disabled=disabled, initial=initial, title=title
-            )
+            self._suggestion_list_for_open().show(mode, list(items), disabled=disabled, initial=initial, title=title)
             self._screen.query_one(InputBar).set_suggestions_active(True, mode=mode)
 
     def show_suggestions_loading(self, mode: str, *, title: str = "") -> None:
         """Open a suggestion popup immediately with only its loading indicator."""
-        from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
-
         with contextlib.suppress(NoMatches):
-            self._screen.query_one(SuggestionList).show_loading(mode, title=title)
+            self._suggestion_list_for_open().show_loading(mode, title=title)
             self._screen.query_one(InputBar).set_suggestions_active(True, mode=mode)
 
     def update_suggestions(
@@ -1641,9 +1644,7 @@ class MainScreenViewAdapter:
         *,
         initial: str | None = None,
     ) -> None:
-        from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
-
-        self._screen.query_one(SuggestionList).show("subcommands", list(items), initial=initial)
+        self._suggestion_list_for_open().show("subcommands", list(items), initial=initial)
 
     def input_value(self) -> str:
         return str(self._screen.query_one(InputBar).value)
