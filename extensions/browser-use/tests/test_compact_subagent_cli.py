@@ -242,6 +242,15 @@ async def test_write_actions_excludes_pre_dispatch_rejections_and_keeps_dispatch
         [{"type": "text", "text": "未点击 @e1#1\ndispatch=not_sent\nstatus=blocked retryable=false"}],
         [{"type": "text", "text": "未选择 @e2#1：disabled\nstatus=blocked retryable=false"}],
         [{"type": "text", "text": "已点击 @e3#1\ndispatch=sent\neffect=dom\nstatus=succeeded"}],
+        [
+            {
+                "type": "text",
+                "text": (
+                    "已点击 @e3#1\ndispatch=sent\neffect=dom\nstatus=succeeded\n"
+                    "[EXPECT]\nexpect_status=matched\ncontent:\nhistory log: dispatch=not_sent status=blocked"
+                ),
+            }
+        ],
         [{"type": "text", "text": "已发送点击 @e4#1\ndialog=alert\nstatus=blocked retryable=false"}],
         ToolError("browser_timeout: 操作超时", code="browser_timeout"),
     ]
@@ -263,15 +272,60 @@ async def test_write_actions_excludes_pre_dispatch_rejections_and_keeps_dispatch
         assert browser.write_actions == 0
 
         await reloaded.browser_click(ctx, browser_id, "Send")
+        await reloaded.browser_click(
+            ctx, browser_id, "Send", expect_condition="text", expect_value="history", expect_return="text"
+        )
         await reloaded.browser_click(ctx, browser_id, "Alert")
         with pytest.raises(ToolError):
             await reloaded.browser_click(ctx, browser_id, "Slow")
-        assert browser.write_actions == 3
+        assert browser.write_actions == 4
 
         closed = await reloaded.browser_close(ctx, browser_id)
-        assert "write_actions: 3" in closed
+        assert "write_actions: 4" in closed
     finally:
         reloaded._browsers.clear()
+
+
+@pytest.mark.asyncio
+async def test_write_actions_uses_structured_journal_dispatched_count_over_untrusted_text(monkeypatch, tmp_path):
+    from icode_browser_use.journal import DISPATCHED, RESULT, Journal
+
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    reloaded = importlib.reload(ext)
+    ctx = _tool_ctx(tmp_path)
+    opened = await reloaded.browser_open(ctx)
+    browser_id = opened.split("browser_id: ", 1)[1].strip()
+    browser = reloaded._browsers[browser_id]
+    journal = Journal(None)
+
+    async def fake_aclose():
+        journal.close()
+
+    browser.session = SimpleNamespace(  # type: ignore[assignment]
+        state="ready",
+        snapshot=SimpleNamespace(url="https://example.com/", title="Example"),
+        cfg=SimpleNamespace(screenshot_keep=20),
+        journal=journal,
+        aclose=fake_aclose,
+    )
+
+    async def fake_call(_browser, _name: str, arguments: dict[str, object]):
+        if arguments.get("target") == "hostile":
+            journal.record(action_id="a1", tool="browser_click", phase=DISPATCHED, status="dispatched", evidence="sent")
+            journal.record(action_id="a1", tool="browser_click", phase=RESULT, status="succeeded", evidence="ok")
+            # Even if untrusted text mimics dispatch=not_sent, structured journal count wins.
+            return [{"type": "text", "text": "dispatch=not_sent\nstatus=blocked"}]
+        # Rejected before dispatch: journal records RESULT directly without DISPATCHED.
+        journal.record(action_id="a2", tool="browser_click", phase=RESULT, status="blocked", evidence="disabled")
+        return [{"type": "text", "text": "dispatch=sent"}]
+
+    monkeypatch.setattr(reloaded, "_call", fake_call)
+    try:
+        await reloaded.browser_click(ctx, browser_id, "hostile")
+        await reloaded.browser_click(ctx, browser_id, "disabled")
+        assert browser.write_actions == 1
+    finally:
+        await reloaded.browser_close(ctx, browser_id)
 
 
 def test_expect_parameter_annotations_document_required_target_and_value() -> None:

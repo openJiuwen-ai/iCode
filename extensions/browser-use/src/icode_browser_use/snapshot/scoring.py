@@ -71,18 +71,25 @@ def _href_name_match(name: str, target: str) -> int:
 
 
 def _use_hint_as_name(node: FusedNode, name: str, hint: str) -> bool:
-    """Only fall back to ``text_hint`` for unnamed interactive controls, never caption ``<label>`` nodes."""
-    if name or not hint or not node.interactive:
+    """Fall back to ``text_hint`` for unnamed elements except caption ``<label>`` nodes."""
+    if name or not hint:
         return False
     return _norm(node.role) not in _LABEL_ROLES and _norm(node.tag) != "label"
+
+
+def _effective_name(node: FusedNode) -> tuple[str, bool]:
+    """Return ``(effective_name, used_hint_fallback)`` for *node*."""
+    name = _norm(node.name)
+    hint = _norm(node.text_hint)
+    hint_fallback = _use_hint_as_name(node, name, hint)
+    return (hint if hint_fallback else name), hint_fallback
 
 
 def score(node: FusedNode, spec: str, *, seen_names: dict[str, int]) -> int:
     """Score *node* against *spec* (design section 6.1, additive terms)."""
     name = _norm(node.name)
     hint = _norm(node.text_hint)
-    hint_fallback = _use_hint_as_name(node, name, hint)
-    effective_name = hint if hint_fallback else name
+    effective_name, hint_fallback = _effective_name(node)
     target = _norm(spec)
     total = 0
 
@@ -103,7 +110,7 @@ def score(node: FusedNode, spec: str, *, seen_names: dict[str, int]) -> int:
     if node.interactive:
         total += _INTERACTIVE_POINTS
 
-    if name and seen_names.get(name, 0) == 1:
+    if effective_name and seen_names.get(effective_name, 0) == 1:
         total += _UNIQUE_POINTS
 
     if target and hint and not hint_fallback and hint != name and (target == hint or target in hint or hint in target):
@@ -168,7 +175,7 @@ def _drop_redundant_ancestors(candidates: list[Candidate], spec: str) -> list[Ca
         node = candidate.node
         if not node.interactive or not node.ancestor_ids:
             continue
-        name = _norm(node.name)
+        name, _ = _effective_name(node)
         if not name:
             continue
         for ancestor_id in node.ancestor_ids:
@@ -182,7 +189,8 @@ def _drop_redundant_ancestors(candidates: list[Candidate], spec: str) -> list[Ca
     for candidate in candidates:
         node = candidate.node
         if not node.interactive and target not in {_norm(node.role), _norm(node.tag)}:
-            key = (node.frame_id, node.cdp_session_id, node.backend_node_id, _norm(node.name))
+            anc_name, _ = _effective_name(node)
+            key = (node.frame_id, node.cdp_session_id, node.backend_node_id, anc_name)
             child_score = interactive_by_ancestor.get(key)
             if child_score is not None and child_score >= candidate.score:
                 continue
@@ -194,7 +202,7 @@ def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
     """Score every spec-matching node, keep the positive ones and sort descending."""
     seen_names: dict[str, int] = {}
     for node in nodes:
-        key = _norm(node.name)
+        key, _ = _effective_name(node)
         if key:
             seen_names[key] = seen_names.get(key, 0) + 1
 
@@ -206,9 +214,7 @@ def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
         value = score(node, spec, seen_names=seen_names)
         if value > 0:
             name = _norm(node.name)
-            hint = _norm(node.text_hint)
-            hint_fallback = _use_hint_as_name(node, name, hint)
-            effective_name = hint if hint_fallback else name
+            effective_name, _ = _effective_name(node)
             exact = bool(target and effective_name and effective_name == target and not (node.name_from_href and name))
             candidates.append(Candidate(node=node, score=value, exact_match=exact))
     candidates = _drop_redundant_ancestors(candidates, spec)

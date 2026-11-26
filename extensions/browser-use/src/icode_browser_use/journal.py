@@ -92,6 +92,7 @@ class Journal:
         self.limit = max(1, limit)
         self._lock = threading.Lock()
         self._write_count = 0
+        self.dispatched_count = 0
         self._connection = self._connect(path)
 
     def _connect(self, path: Path | None) -> sqlite3.Connection | None:
@@ -151,6 +152,8 @@ class Journal:
         effect: str = "",
     ) -> None:
         with self._lock:
+            if phase == DISPATCHED:
+                self.dispatched_count += 1
             connection = self._connection
             if connection is None:
                 return

@@ -111,11 +111,26 @@ _PRE_DISPATCH_ERROR_CODES: Final[frozenset[str]] = frozenset(
 )
 
 
-def _was_dispatched_write(text: str) -> bool:
-    """Return False when a write tool explicitly reported it sent nothing before dispatch."""
-    if "dispatch=not_sent" in text:
+def _was_dispatched_write(name: str, text: str) -> bool:
+    """Fallback write-dispatch check when no local structured journal is available.
+
+    Inspects only the action's own header lines before any ``[EXPECT]`` section
+    (which carries untrusted page text), and never inspects ``browser_evaluate``
+    output.
+    """
+    if name == "browser_evaluate":
+        return True
+    header = text.split("\n[EXPECT]\n", 1)[0]
+    lines = [line.strip() for line in header.splitlines()]
+    if "dispatch=sent" in lines:
+        return True
+    if "dispatch=not_sent" in lines:
         return False
-    if "status=blocked" in text and "dialog=" not in text and "dispatch=sent" not in text:
+    has_dialog = any(line.startswith("dialog=") for line in lines)
+    has_blocked = any(
+        line.startswith("status=blocked") or line.endswith("；status=blocked retryable=false") for line in lines
+    )
+    if has_blocked and not has_dialog:
         return False
     return True
 
@@ -678,11 +693,24 @@ def _format_session_facts(browser: _Browser) -> str:
 
 async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> str:
     """Run one core tool and return its text blocks joined for the model."""
+    is_write = name in _WRITE_TOOL_NAMES
+    journal = (
+        getattr(browser.session, "journal", None)
+        if is_write and not isinstance(browser.session, BrokerSession)
+        else None
+    )
+    before_dispatched = getattr(journal, "dispatched_count", None)
+    if not isinstance(before_dispatched, int):
+        before_dispatched = None
     try:
         blocks = await _call(browser, name, arguments)
     except ToolError as exc:
-        if name in _WRITE_TOOL_NAMES and exc.code not in _PRE_DISPATCH_ERROR_CODES:
-            browser.write_actions += 1
+        if is_write:
+            after_dispatched = getattr(journal, "dispatched_count", None) if before_dispatched is not None else None
+            if (isinstance(after_dispatched, int) and after_dispatched > before_dispatched) or (
+                exc.code not in _PRE_DISPATCH_ERROR_CODES
+            ):
+                browser.write_actions += 1
         if (
             exc.code in {"browser_blocked", "browser_policy_denied"}
             or "site_blocked" in exc.message
@@ -701,8 +729,13 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
         raise
     else:
         rendered = _text(blocks)
-        if name in _WRITE_TOOL_NAMES and _was_dispatched_write(rendered):
-            browser.write_actions += 1
+        if is_write:
+            after_dispatched = getattr(journal, "dispatched_count", None) if before_dispatched is not None else None
+            if isinstance(after_dispatched, int) and before_dispatched is not None:
+                if after_dispatched > before_dispatched:
+                    browser.write_actions += 1
+            elif _was_dispatched_write(name, rendered):
+                browser.write_actions += 1
     finally:
         for origin in getattr(browser.session, "drain_blocked_origins", lambda: ())():
             _record_origin(browser.blocked_origins, origin)

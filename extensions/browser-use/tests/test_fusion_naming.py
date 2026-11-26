@@ -409,3 +409,59 @@ def test_single_hidden_exact_match_resolves_and_single_weak_match_does_not_claim
         resolve_ambiguity(weak_ranked)
     assert "目标不唯一" not in str(exc_info.value)
     assert "目标匹配度过低" in str(exc_info.value)
+
+
+def test_exact_text_generic_node_outranks_fuzzy_matches() -> None:
+    """An unnamed generic status div whose text_hint matches spec exactly must beat fuzzy matches."""
+    nodes = [
+        FusedNode(
+            backend_node_id=7,
+            frame_id="f",
+            target_id="t",
+            role="textbox",
+            name="Release Code",
+            tag="input",
+            nth=1,
+            bbox=(10.0, 40.0, 120.0, 24.0),
+            in_viewport=True,
+            visible=True,
+            interactive=True,
+            ref=7,
+            epoch=1,
+        ),
+        FusedNode(
+            backend_node_id=6,
+            frame_id="f",
+            target_id="t",
+            role="heading",
+            name="Release Gate",
+            tag="h1",
+            nth=1,
+            bbox=(10.0, 10.0, 120.0, 24.0),
+            in_viewport=True,
+            visible=True,
+            interactive=False,
+            ref=6,
+            epoch=1,
+        ),
+        FusedNode(
+            backend_node_id=9,
+            frame_id="f",
+            target_id="t",
+            role="generic",
+            name="",
+            tag="div",
+            nth=1,
+            bbox=(10.0, 80.0, 160.0, 20.0),
+            text_hint="RELEASE_APPROVED_OK",
+            in_viewport=True,
+            visible=True,
+            interactive=False,
+            ref=9,
+            epoch=1,
+        ),
+    ]
+    ranked = rank(nodes, "RELEASE_APPROVED_OK")
+    assert ranked[0].node.ref == 9
+    assert ranked[0].exact_match is True
+    assert resolve_ambiguity(ranked).node.ref == 9
