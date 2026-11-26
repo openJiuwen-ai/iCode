@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from ..errors import BadRequest, BrowserError, CDPTimeout, ConnectionClosed, StaleRef
 from ..journal import RESULT
@@ -136,6 +138,37 @@ def _owned_page_ids(session: Any) -> set[str]:
     if not callable(pages_fn):
         return set()
     return {str(page.target_id) for page in pages_fn() if getattr(page, "target_id", None)}
+
+
+def _http_url_or_empty(raw: Any) -> str:
+    candidate = str(raw or "").strip()
+    if not candidate:
+        return ""
+    if urlsplit(candidate).scheme.lower() in {"http", "https"}:
+        return candidate
+    return ""
+
+
+async def _resolve_new_tab_url(session: Any, new_tab_id: str, facts: dict[str, Any]) -> str:
+    """Return the best available http(s) URL for a newly opened tab, or ``""``."""
+    pages: list[Any] = []
+    list_pages = getattr(session, "list_pages", None)
+    if callable(list_pages):
+        with contextlib.suppress(Exception):
+            listed = await list_pages()
+            if isinstance(listed, list):
+                pages = listed
+    if not pages:
+        pages_fn = getattr(session, "pages", None)
+        if callable(pages_fn):
+            pages = list(pages_fn())
+    for page in pages:
+        if str(getattr(page, "target_id", "") or "") == new_tab_id:
+            url = _http_url_or_empty(getattr(page, "url", ""))
+            if url:
+                return url
+            break
+    return _http_url_or_empty(facts.get("href"))
 
 
 def _new_tab_since(session: Any, before_ids: set[str]) -> str | None:
@@ -894,23 +927,24 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     ]
     if effect == "new_tab" and new_tab_id is not None:
         lines.append(f"tab_id={new_tab_id}")
+        new_url = await _resolve_new_tab_url(session, new_tab_id, facts)
+        url_hint = f"，url={new_url}" if new_url else ""
         toolset = str(getattr(getattr(session, "cfg", None), "toolset", "full") or "full").strip().lower()
         if toolset == "compact":
-            new_url = ""
-            pages_fn = getattr(session, "pages", None)
-            if callable(pages_fn):
-                for page in pages_fn():
-                    if str(getattr(page, "target_id", "") or "") == new_tab_id:
-                        new_url = str(getattr(page, "url", "") or "")
-                        break
-            url_hint = f"，url={new_url}" if new_url else ""
-            lines.append(
-                f"已在新标签页打开（tab_id={new_tab_id}{url_hint}）；"
-                "当前 compact 工具集不包含标签切换工具，请勿调用 browser_tab_switch"
-                "（如需查看新页面可直接 browser_navigate 到目标 URL，或改用 full 工具集）"
-            )
+            if new_url:
+                lines.append(
+                    f"已在新标签页打开（tab_id={new_tab_id}{url_hint}）；"
+                    "当前 compact 工具集不包含标签切换工具，请勿调用 browser_tab_switch"
+                    f"（如需查看新页面可直接 browser_navigate 到 {new_url}，或改用 full 工具集）"
+                )
+            else:
+                lines.append(
+                    f"已在新标签页打开（tab_id={new_tab_id}）；"
+                    "当前 compact 工具集不包含标签切换工具，请勿调用 browser_tab_switch"
+                    "（未能获取新标签 URL，请改用 full 工具集切换查看）"
+                )
         else:
-            lines.append(f"已在新标签页打开（tab_id={new_tab_id}）；可用 browser_tab_switch 切换查看")
+            lines.append(f"已在新标签页打开（tab_id={new_tab_id}{url_hint}）；可用 browser_tab_switch 切换查看")
     if verified_control:
         lines.append("verified=control_state")
     if where == "corner":

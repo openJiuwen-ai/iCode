@@ -1399,4 +1399,60 @@ def test_click_new_tab_hint_respects_compact_toolset(monkeypatch) -> None:
     assert "tab_id=t-child-9" in text
     assert "可用 browser_tab_switch" not in text
     assert "compact 工具集不包含标签切换工具" in text
-    assert "https://example.com/tall" in text
+    assert "url=https://example.com/tall" in text
+    assert "browser_navigate 到 https://example.com/tall" in text
+
+    # When the newly opened tab's cached page.url is still blank/about:blank,
+    # fall back to the clicked link's resolved href; when neither has an http(s) URL,
+    # do not recommend browser_navigate without a URL.
+    pages2 = [SimpleNamespace(target_id="t", url="https://example.com/")]
+    session2 = FakeSession()
+    session2.cfg = SimpleNamespace(cdp_timeout=1.0, evaluate_timeout=1.0, toolset="compact")
+    session2.pages = lambda: list(pages2)  # type: ignore[attr-defined]
+
+    async def fake_call_value_href(_session, _object_id, function, **_kwargs):
+        if "submitLike" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "connected": True,
+                    "tag": "a",
+                    "name": "new tab",
+                    "href": "https://example.com/from-href",
+                    "submitLike": False,
+                },
+            }
+        return {}
+
+    async def fake_dispatch_blank(*_args, **_kwargs):
+        pages2.append(SimpleNamespace(target_id="t-child-10", url="about:blank"))
+
+    monkeypatch.setattr(click, "call_value", fake_call_value_href)
+    monkeypatch.setattr(click, "_dispatch_click", fake_dispatch_blank)
+    blocks2 = asyncio.run(click.run(session2, {"target": "new tab", "button": "left", "click_count": 1}))
+    text2 = blocks2[0]["text"]
+    assert "url=https://example.com/from-href" in text2
+    assert "browser_navigate 到 https://example.com/from-href" in text2
+
+    pages3 = [SimpleNamespace(target_id="t", url="https://example.com/")]
+    session3 = FakeSession()
+    session3.cfg = SimpleNamespace(cdp_timeout=1.0, evaluate_timeout=1.0, toolset="compact")
+    session3.pages = lambda: list(pages3)  # type: ignore[attr-defined]
+
+    async def fake_call_value_no_href(_session, _object_id, function, **_kwargs):
+        if "submitLike" in function:
+            return {
+                "type": "object",
+                "value": {"connected": True, "tag": "button", "name": "Popup", "submitLike": False},
+            }
+        return {}
+
+    async def fake_dispatch_empty(*_args, **_kwargs):
+        pages3.append(SimpleNamespace(target_id="t-child-11", url=""))
+
+    monkeypatch.setattr(click, "call_value", fake_call_value_no_href)
+    monkeypatch.setattr(click, "_dispatch_click", fake_dispatch_empty)
+    blocks3 = asyncio.run(click.run(session3, {"target": "Popup", "button": "left", "click_count": 1}))
+    text3 = blocks3[0]["text"]
+    assert "未能获取新标签 URL" in text3
+    assert "browser_navigate" not in text3

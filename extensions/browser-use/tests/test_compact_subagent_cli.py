@@ -215,3 +215,73 @@ def test_subagent_install_writes_least_privilege_profile(tmp_path, capsys):
 
     # --force overwrites cleanly.
     assert subagent.main(["--install", "--force", "--config-dir", str(tmp_path)]) == 0
+
+
+@pytest.mark.asyncio
+async def test_write_actions_excludes_pre_dispatch_rejections_and_keeps_dispatched_ones(monkeypatch, tmp_path):
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    reloaded = importlib.reload(ext)
+    ctx = _tool_ctx(tmp_path)
+    opened = await reloaded.browser_open(ctx)
+    browser_id = opened.split("browser_id: ", 1)[1].strip()
+    browser = reloaded._browsers[browser_id]
+
+    async def fake_aclose():
+        return None
+
+    browser.session = SimpleNamespace(  # type: ignore[assignment]
+        state="ready",
+        snapshot=SimpleNamespace(url="https://example.com/", title="Example"),
+        cfg=SimpleNamespace(screenshot_keep=20),
+        aclose=fake_aclose,
+    )
+
+    outcomes: list[object] = [
+        ToolError("browser_bad_request: visible 条件需要 target", code="browser_bad_request"),
+        ToolError("browser_stale_ref: stale", code="browser_stale_ref"),
+        [{"type": "text", "text": "未点击 @e1#1\ndispatch=not_sent\nstatus=blocked retryable=false"}],
+        [{"type": "text", "text": "未选择 @e2#1：disabled\nstatus=blocked retryable=false"}],
+        [{"type": "text", "text": "已点击 @e3#1\ndispatch=sent\neffect=dom\nstatus=succeeded"}],
+        [{"type": "text", "text": "已发送点击 @e4#1\ndialog=alert\nstatus=blocked retryable=false"}],
+        ToolError("browser_timeout: 操作超时", code="browser_timeout"),
+    ]
+
+    async def fake_call(_browser, _name: str, _arguments: dict[str, object]):
+        nxt = outcomes.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    monkeypatch.setattr(reloaded, "_call", fake_call)
+    try:
+        with pytest.raises(ToolError):
+            await reloaded.browser_click(ctx, browser_id, "Send", expect_condition="visible")
+        with pytest.raises(ToolError):
+            await reloaded.browser_click(ctx, browser_id, "@e1#1")
+        await reloaded.browser_click(ctx, browser_id, "Disabled")
+        await reloaded.browser_select_option(ctx, browser_id, "@e2#1", ["a"])
+        assert browser.write_actions == 0
+
+        await reloaded.browser_click(ctx, browser_id, "Send")
+        await reloaded.browser_click(ctx, browser_id, "Alert")
+        with pytest.raises(ToolError):
+            await reloaded.browser_click(ctx, browser_id, "Slow")
+        assert browser.write_actions == 3
+
+        closed = await reloaded.browser_close(ctx, browser_id)
+        assert "write_actions: 3" in closed
+    finally:
+        reloaded._browsers.clear()
+
+
+def test_expect_parameter_annotations_document_required_target_and_value() -> None:
+    import typing
+
+    for fn in (ext.browser_click, ext.browser_fill):
+        hints = typing.get_type_hints(fn, include_extras=True)
+        cond_meta = " ".join(str(m) for m in hints["expect_condition"].__metadata__)
+        target_meta = " ".join(str(m) for m in hints["expect_target"].__metadata__)
+        value_meta = " ".join(str(m) for m in hints["expect_value"].__metadata__)
+        assert "expect_target" in cond_meta and "expect_value" in cond_meta
+        assert "REQUIRED" in target_meta and "visible" in target_meta and "url" in target_meta
+        assert "REQUIRED" in value_meta and "text" in value_meta and "count" in value_meta

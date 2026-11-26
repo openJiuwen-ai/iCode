@@ -97,6 +97,28 @@ _WRITE_TOOL_NAMES: Final[frozenset[str]] = frozenset(
     }
 )
 
+_PRE_DISPATCH_ERROR_CODES: Final[frozenset[str]] = frozenset(
+    {
+        "browser_bad_request",
+        "browser_stale_ref",
+        "browser_target_not_found",
+        "browser_target_ambiguous",
+        "browser_blocked",
+        "browser_policy_denied",
+        "browser_busy",
+        "browser_dialog_open",
+    }
+)
+
+
+def _was_dispatched_write(text: str) -> bool:
+    """Return False when a write tool explicitly reported it sent nothing before dispatch."""
+    if "dispatch=not_sent" in text:
+        return False
+    if "status=blocked" in text and "dialog=" not in text and "dispatch=sent" not in text:
+        return False
+    return True
+
 
 def _active_toolset() -> str:
     raw = (BrowserEnv().get("TOOLSET") or "full").strip().lower()
@@ -656,11 +678,11 @@ def _format_session_facts(browser: _Browser) -> str:
 
 async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> str:
     """Run one core tool and return its text blocks joined for the model."""
-    if name in _WRITE_TOOL_NAMES:
-        browser.write_actions += 1
     try:
         blocks = await _call(browser, name, arguments)
     except ToolError as exc:
+        if name in _WRITE_TOOL_NAMES and exc.code not in _PRE_DISPATCH_ERROR_CODES:
+            browser.write_actions += 1
         if (
             exc.code in {"browser_blocked", "browser_policy_denied"}
             or "site_blocked" in exc.message
@@ -677,6 +699,10 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
                 )
                 _record_origin(browser.blocked_origins, target_url)
         raise
+    else:
+        rendered = _text(blocks)
+        if name in _WRITE_TOOL_NAMES and _was_dispatched_write(rendered):
+            browser.write_actions += 1
     finally:
         for origin in getattr(browser.session, "drain_blocked_origins", lambda: ())():
             _record_origin(browser.blocked_origins, origin)
@@ -688,7 +714,7 @@ async def _run(browser: _Browser, name: str, arguments: dict[str, object]) -> st
         browser.title = snapshot.title or browser.title
         _record_origin(browser.visited_origins, browser.url)
         await _apersist(browser)
-    return _text(blocks)
+    return rendered
 
 
 @_tool(requires_approval=True)
@@ -1078,10 +1104,19 @@ async def browser_click(
     ] = "mouse",
     expect_condition: Annotated[
         Literal["", "visible", "hidden", "editable", "text", "url", "text_changed", "stable", "count"],
-        "Optional bounded read-only condition to verify immediately after this single click (never retries the click)",
+        "Optional bounded read-only condition to verify immediately after this single click (never retries the click). "
+        "visible/hidden/editable/count require expect_target; text/url/count require expect_value; url forbids expect_target",
     ] = "",
-    expect_target: Annotated[str, "Optional target for expect_condition"] = "",
-    expect_value: Annotated[str, "Optional value for expect_condition"] = "",
+    expect_target: Annotated[
+        str,
+        "Target (@eN#epoch ref or free text) for expect_condition: REQUIRED when expect_condition is visible, hidden, "
+        "editable, or count (free-text query only for count); optional for text/text_changed/stable; MUST be empty for url",
+    ] = "",
+    expect_value: Annotated[
+        str,
+        "Value for expect_condition: REQUIRED when expect_condition is text, url, or count (e.g. '>3', '=2'); "
+        "optional quiet window ms (100-5000, default 1500) for stable",
+    ] = "",
     expect_timeout_ms: Annotated[int, "Read-only expect wait budget in ms (100-60000)"] = 5000,
     expect_return: Annotated[
         Literal["none", "ref", "snapshot", "text"],
@@ -1144,10 +1179,19 @@ async def browser_fill(
     keypress_fallback: Annotated[bool, "Type character by character if insertText fails"] = False,
     expect_condition: Annotated[
         Literal["", "visible", "hidden", "editable", "text", "url", "text_changed", "stable", "count"],
-        "Optional bounded read-only condition to verify immediately after this single fill/submit (never retries)",
+        "Optional bounded read-only condition to verify immediately after this single fill/submit (never retries). "
+        "visible/hidden/editable/count require expect_target; text/url/count require expect_value; url forbids expect_target",
     ] = "",
-    expect_target: Annotated[str, "Optional target for expect_condition"] = "",
-    expect_value: Annotated[str, "Optional value for expect_condition"] = "",
+    expect_target: Annotated[
+        str,
+        "Target (@eN#epoch ref or free text) for expect_condition: REQUIRED when expect_condition is visible, hidden, "
+        "editable, or count (free-text query only for count); optional for text/text_changed/stable; MUST be empty for url",
+    ] = "",
+    expect_value: Annotated[
+        str,
+        "Value for expect_condition: REQUIRED when expect_condition is text, url, or count (e.g. '>3', '=2'); "
+        "optional quiet window ms (100-5000, default 1500) for stable",
+    ] = "",
     expect_timeout_ms: Annotated[int, "Read-only expect wait budget in ms (100-60000)"] = 5000,
     expect_return: Annotated[
         Literal["none", "ref", "snapshot", "text"],
@@ -1224,8 +1268,8 @@ async def browser_wait_for(
     ],
     target: Annotated[
         str,
-        "An @eN#epoch ref or free text; required for visible/hidden/editable, optional for text/text_changed/stable "
-        "(page-wide when omitted); for count it is the browser_find query",
+        "An @eN#epoch ref or free text; REQUIRED for visible/hidden/editable/count (free-text browser_find query for count), "
+        "optional for text/text_changed/stable (page-wide when omitted); MUST be empty for url",
     ] = "",
     value: Annotated[
         str,

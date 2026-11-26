@@ -83,6 +83,7 @@ TARGET_FACTS_FN = (
     " return {connected:true, tag, role:this.getAttribute('role')||'', name,"
     "   type:rawType || (tag==='button' ? '' : effectiveType),"
     "   inForm, submitLike,"
+    "   href:String(this.href || (this.closest && this.closest('a[href]') && this.closest('a[href]').href) || ''),"
     "   clickable:typeof this['click']==='function',"
     "   inShadow, rootChildCount, rootTextHash,"
     "   readOnly:this.readOnly===true,"
