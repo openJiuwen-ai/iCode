@@ -39,6 +39,7 @@ from chrys.orchestration.engine.run.retry import RetryCoordinator
 from chrys.orchestration.engine.run.runtime_skills import RuntimeSkillRefresher
 from chrys.orchestration.engine.run.turn_hooks import PromptSubmitGate
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
+from chrys.service.agent_middleware.injection import QueuedInjection
 from chrys.service.agent_middleware.system_reminder import CurrentRunReminderScope, CurrentRunReminderTarget
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
@@ -152,11 +153,12 @@ class _Executor:
         self.injected_reminders: list[tuple[str, ...]] = []
         self.approval_context: list[str] = []
 
-    def inject(self, text: str, *, reminders: tuple[str, ...] = (), **_kwargs: object) -> None:
+    def inject(self, text: str, *, reminders: tuple[str, ...] = (), **_kwargs: object) -> QueuedInjection:
         self.injected.append(text)
         self.injected_reminders.append(reminders)
+        return QueuedInjection(text, reminders=reminders)
 
-    def append_user_message(self, text: str) -> None:
+    def append_user_message(self, text: str, **_metadata: object) -> None:
         self.approval_context.append(text)
 
     @property

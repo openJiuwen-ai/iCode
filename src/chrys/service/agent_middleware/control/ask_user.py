@@ -29,6 +29,7 @@ from chrys.foundation.tool_kinds import KIND_ASK_USER, get_tool_kind
 from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
 from chrys.foundation.trajectory.event_types import WaitCategory
 from chrys.foundation.util.once_close import finish_close
+from chrys.foundation.util.time import utc_iso
 from chrys.kernel.middleware import FunctionMiddleware
 from chrys.service.agent_middleware._metadata_keys import _SHORT_ID_LEN
 from chrys.service.agent_middleware.events.hook_dispatch import get_call_id
@@ -208,6 +209,7 @@ class AskUserMiddleware(FunctionMiddleware):
                         context.metadata.setdefault(TOOL_RESULT_METADATA_KEY, {})[ASK_USER_EVIDENCE_KEY] = {
                             "questions": [asdict(question) for question in questions],
                             "result": result,
+                            "answered_at": utc_iso(response.timestamp),
                         }
                 if wait is not None:
                     await wait.finished()

@@ -19,6 +19,9 @@ from chrys.foundation.models.ask_user import ASK_USER_EVIDENCE_KEY
 from chrys.foundation.models.history_markers import HistoryMarkerKind, LastWordsRecord
 from chrys.foundation.platform.files import secure_open_owner_only_binary
 from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
+from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
+from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY, build_trajectory_timing
 from chrys.foundation.util.sub_agent_context import DELEGATED_PROMPT_KEY
 from chrys.kernel import ChatResponse, Content, Message
 from chrys.kernel.compaction import GROUP_ANNOTATION_KEY, SUMMARY_OF_GROUP_IDS_KEY
@@ -33,6 +36,7 @@ from chrys.service.approval.predicate import (
     load_default_asset,
     parse_asset,
 )
+from chrys.service.approval.turn_context import TurnContextHolder, formal_user_inputs
 from tests.support.formal_approval import evaluate_judge as _evaluate
 from tests.support.formal_approval import judge_client as _judge
 from tests.support.formal_approval import predicate_values as _values
@@ -137,7 +141,7 @@ async def test_direct_strategy_uses_original_prompt_without_formal_audit(monkeyp
         messages = json.loads(calls[0].content)["messages"]
         assert messages[0]["content"] == _SYSTEM_PROMPT
         assert messages[1]["content"] == (
-            "Current time: fixed\n\nWorkspace directories: /workspace\n\n"
+            'Current time: fixed\n\nWorkspace directories: "/workspace"\n\n'
             "Current-turn user prompts:\n1. Inspect source\n\nLatest user prompt:\nInspect source\n\n"
             'Proposed action:\nTool: read_file (kind: filesystem.read)\nArguments:\n{\n  "path": "main.py"\n}'
         )
@@ -459,13 +463,235 @@ def test_formal_prompt_preserves_summary_and_adjacent_text(call_id):
         '{"summary": "Resume the check."}',
         '{"read_file": {"path": "other.txt"}}',
         '{"shell": {"commands": ["echo historical"]}}',
-        *(['{"assistant": "I will check the target."}'] if call_id == "pending" else []),
         '{"user": "Continue"}',
+        *(['{"assistant": "I will check the target."}'] if call_id == "pending" else []),
         "</context>",
         "",
         "<pending_action>",
         '{"read_file": {"path": "target.txt"}}',
         "</pending_action>",
+    ]
+
+
+@pytest.mark.parametrize("timestamp, before_call", [("02", True), ("04", False), (None, False)])
+def test_formal_prompt_keeps_queued_submission_order_in_later_review(timestamp, before_call):
+    def timing(start, end):
+        return {
+            TRAJECTORY_TIMING_KEY: build_trajectory_timing(
+                started_at=f"2026-11-26T09:06:{start}+00:00",
+                finished_at=f"2026-11-26T09:06:{end}+00:00",
+                duration_ms=0,
+            )
+        }
+
+    first_tool = Content.from_function_call("first", "read_file", arguments={"path": "target.txt"})
+    first_tool.additional_properties.update(timing("03", "05"))
+    queued_properties = {HistoryMarkerKind.INJECTED_KEY: True}
+    if timestamp is not None:
+        queued_properties.update(timing(timestamp, timestamp))
+    history = (
+        Message("user", ["Create target.txt."]),
+        Message(
+            "assistant",
+            [
+                "I propose a different action.",
+                Content.from_shell_tool_call(call_id="hosted", commands=["echo historical"]),
+                first_tool,
+            ],
+            additional_properties=timing("01", "03"),
+        ),
+        Message("tool", [Content.from_function_result("first", result="ordinary tool output")]),
+        Message("user", ["Do not create it."], additional_properties=queued_properties),
+        Message("assistant", ["Stopped."]),
+        Message("user", ["Continue creating it."]),
+    )
+    request = review_types_module.ApprovalJudgeInput(
+        tool_name="write_file",
+        tool_kind="filesystem.write",
+        args={"path": "target.txt"},
+        user_message="Continue creating it.",
+        user_messages=["Continue creating it."],
+        workspace_roots=[],
+    )
+
+    prompt = formal_module.build_formal_user_prompt(request, history=history)
+    queued = '{"user": "Do not create it."}'
+    call = '{"read_file": {"path": "target.txt"}}'
+    assert (prompt.index(queued) < prompt.index(call)) is before_call
+    proposal = '{"assistant": "I propose a different action."}'
+    assert (prompt.index(queued) < prompt.index(proposal)) is before_call
+    hosted = '{"shell": {"commands": ["echo historical"]}}'
+    assert (prompt.index(queued) < prompt.index(hosted)) is before_call
+    assert prompt.count(queued) == 1
+    assert prompt.index(queued) < prompt.index('{"assistant": "Stopped."}')
+    assert [msg.role for msg in history] == ["user", "assistant", "tool", "user", "assistant", "user"]
+
+
+@pytest.mark.parametrize(
+    ("has_answer_time", "queued_text", "answer", "queued_first"),
+    [
+        (True, "Yes", "User response: No", True),
+        (False, "Yes", "User response: No", False),
+        (True, "Do not write the file.", "User response: Yes", False),
+    ],
+)
+def test_formal_prompt_orders_queued_messages_against_authenticated_answers(
+    has_answer_time, queued_text, answer, queued_first
+):
+    def timing(start, end):
+        return {
+            TRAJECTORY_TIMING_KEY: build_trajectory_timing(
+                started_at=f"2026-11-26T09:06:{start}+00:00",
+                finished_at=f"2026-11-26T09:06:{end}+00:00",
+                duration_ms=0,
+            )
+        }
+
+    questions = [{"question": "May I do the later action?"}]
+    props = {TOOL_RESULT_METADATA_KEY: {ASK_USER_EVIDENCE_KEY: {"questions": questions, "result": answer}}}
+    queued_properties = {HistoryMarkerKind.INJECTED_KEY: True}
+    if queued_text == "Yes":
+        queued_properties.update(timing("02", "02"))
+    if has_answer_time:
+        props.update(timing("04", "05"))
+    history = (
+        Message("user", ["Check the workspace."]),
+        Message(
+            "assistant",
+            [
+                "I propose a new action.",
+                Content.from_function_call("question", "ask_user", arguments={"questions": questions}),
+            ],
+            additional_properties=timing("01", "03"),
+        ),
+        Message("tool", [Content.from_function_result("question", result=answer, additional_properties=props)]),
+        Message("user", [queued_text], additional_properties=queued_properties),
+    )
+    request = review_types_module.ApprovalJudgeInput(
+        tool_name="read_file",
+        tool_kind="filesystem.read",
+        args={"path": "target.txt"},
+        user_message=queued_text,
+        user_messages=["Check the workspace.", queued_text],
+        workspace_roots=[],
+    )
+    prompt = formal_module.build_formal_user_prompt(request, history=history)
+    rows = [json.loads(row) for row in prompt.splitlines()[1:5]]
+    proposal = {"assistant": "I propose a new action."}
+    reply = {"ask_user": {"questions": questions}, "result": answer}
+    queued = {"user": queued_text}
+    tail = [queued, proposal, reply] if queued_first else [proposal, reply, queued]
+    assert rows == [{"user": "Check the workspace."}, *tail]
+
+
+@pytest.mark.parametrize("drained", [0, 1, 2])
+def test_formal_prompt_keeps_queue_submission_order_before_and_after_drain(drained):
+    def at(second):
+        return f"2026-11-26T09:06:{second}+00:00"
+
+    def timing(stamp):
+        return {TRAJECTORY_TIMING_KEY: build_trajectory_timing(started_at=stamp, finished_at=stamp, duration_ms=0)}
+
+    origin = "Inspect only."
+    questions = [{"question": "May I write target.txt?"}]
+    refusal = "User response: No"
+    history = [
+        Message("user", [origin]),
+        Message(
+            "assistant",
+            [
+                "I propose writing target.txt.",
+                Content.from_function_call("question", "ask_user", arguments={"questions": questions}),
+            ],
+            additional_properties=timing(at("03")),
+        ),
+        Message(
+            "tool",
+            [
+                Content.from_function_result(
+                    "question",
+                    result=refusal,
+                    additional_properties={
+                        TOOL_RESULT_METADATA_KEY: {
+                            ASK_USER_EVIDENCE_KEY: {
+                                "questions": questions,
+                                "result": refusal,
+                                "answered_at": at("04"),
+                            }
+                        }
+                    },
+                )
+            ],
+        ),
+    ]
+
+    turn = TurnContextHolder()
+    turn.replace([origin])
+    submitted = [("Do not write.", at("05"), new_analytics_id()), ("Yes", at("02"), new_analytics_id())]
+    for text, timestamp, identity in submitted:
+        turn.append(text, created_at=timestamp, item_id=identity)
+    for text, timestamp, identity in submitted[:drained]:
+        history.append(
+            Message(
+                "user",
+                [text],
+                additional_properties={
+                    HistoryMarkerKind.INJECTED_KEY: True,
+                    ANALYTICS_ITEM_ID_KEY: identity,
+                    **timing(timestamp),
+                },
+            )
+        )
+    request = review_types_module.ApprovalJudgeInput(
+        tool_name="write_file",
+        tool_kind="filesystem.write",
+        args={"path": "target.txt"},
+        user_message=turn.user_message,
+        user_messages=turn.user_messages,
+        workspace_roots=[],
+    )
+    with formal_user_inputs.set(turn.user_inputs):
+        prompt = formal_module.build_formal_user_prompt(request, history=history)
+    rows = [json.loads(row) for row in prompt.split("<context>\n", 1)[1].split("\n</context>", 1)[0].splitlines()]
+    assert rows == [
+        {"user": origin},
+        {"user": "Yes"},
+        {"assistant": "I propose writing target.txt."},
+        {"ask_user": {"questions": questions}, "result": refusal},
+        {"user": "Do not write."},
+    ]
+
+
+def test_formal_prompt_orders_parallel_questions_by_actual_submission():
+    qa = [{"question": "Allow A?"}]
+    qb = [{"question": "Allow B?"}]
+    calls = Message(
+        "assistant",
+        [
+            Content.from_function_call("a", "ask_user", arguments={"questions": qa}),
+            Content.from_function_call("b", "ask_user", arguments={"questions": qb}),
+        ],
+    )
+
+    def answered(call_id, questions, answer, second):
+        return Content.from_function_result(
+            call_id,
+            result=answer,
+            additional_properties={
+                TOOL_RESULT_METADATA_KEY: {
+                    ASK_USER_EVIDENCE_KEY: {
+                        "questions": questions,
+                        "result": answer,
+                        "answered_at": f"2026-11-26T09:06:{second}+00:00",
+                    }
+                }
+            },
+        )
+
+    results = Message("tool", [answered("a", qa, "No", "05"), answered("b", qb, "Yes", "04")])
+    assert [entry.row for entry in formal_module._history_entries((calls, results))] == [
+        {"ask_user": {"questions": qb}, "result": "Yes"},
+        {"ask_user": {"questions": qa}, "result": "No"},
     ]
 
 
@@ -587,7 +813,13 @@ def test_formal_prompt_preserves_parent_origin_and_missed_live_instruction(monke
         workspace_roots=["/repo"],
     )
     history = (Message("user", ["Inspect the workspace."]),)
-    sub_history = (Message("user", ["Read target.txt."], additional_properties={DELEGATED_PROMPT_KEY: True}),)
+    sub_history = (
+        Message(
+            "user",
+            ["<system-reminder>\nAvailable skills.\n</system-reminder>", "Read target.txt."],
+            additional_properties={DELEGATED_PROMPT_KEY: True},
+        ),
+    )
     main_prompt = formal_module.build_formal_user_prompt(request, history=history)
     assert main_prompt.count('{"user": "Inspect the workspace."}') == 1
     assert '{"user": "Do not read target.txt."}' in main_prompt
@@ -607,6 +839,99 @@ def test_formal_prompt_preserves_parent_origin_and_missed_live_instruction(monke
         '{"parent_agent": "Read target.txt."}',
         '{"user": "Do not read target.txt.", "source": "parent_session"}',
     ]
+
+
+def test_formal_sub_agent_keeps_queued_assent_before_parent_proposal():
+    user = "Check the workspace."
+    request = review_types_module.ApprovalJudgeInput(
+        tool_name="read_file",
+        tool_kind="filesystem.read",
+        args={"path": "target.txt"},
+        user_message="Yes",
+        user_messages=[user, "Yes"],
+        workspace_roots=[],
+    )
+    history = (Message("user", [user]),)
+    response = (
+        Message(
+            "assistant",
+            [
+                "I propose a new operation.",
+                Content.from_function_call("delegate", "general_agent", arguments={"prompt": "Do the new operation."}),
+            ],
+        ),
+    )
+    child = Message("user", ["Do the new operation."], additional_properties={DELEGATED_PROMPT_KEY: True})
+    with (
+        active_tool_batch_messages.set((history, response)),
+        formal_module.formal_parent_context("delegate", request.user_messages),
+    ):
+        prompt = formal_module.build_formal_user_prompt(request, history=(child,))
+    assert [json.loads(row) for row in prompt.splitlines()[1:5]] == [
+        {"user": user},
+        {"user": "Yes", "source": "parent_session"},
+        {"assistant": "I propose a new operation."},
+        {"parent_agent": "Do the new operation."},
+    ]
+
+
+def test_sub_agent_approval_drops_withdrawn_parent_queue_input():
+    opener = "Check the workspace."
+    text = "You may write target.txt."
+    turn = TurnContextHolder()
+    turn.replace([opener])
+
+    committed_id = new_analytics_id()
+    committed = Message(
+        "user",
+        ["Only modify target.txt."],
+        additional_properties={
+            HistoryMarkerKind.INJECTED_KEY: True,
+            ANALYTICS_ITEM_ID_KEY: committed_id,
+        },
+    )
+    turn.append("Only modify target.txt.", item_id=committed_id)
+    withdrawn_id = new_analytics_id()
+    surviving_id = new_analytics_id()
+    turn.append(text, item_id=withdrawn_id)
+    turn.append("Keep the existing formatting.", item_id=surviving_id)
+    parent_history = (Message("user", [opener]), committed)
+    child_history = (Message("user", ["Continue checking."], additional_properties={DELEGATED_PROMPT_KEY: True}),)
+
+    def context():
+        request = review_types_module.ApprovalJudgeInput(
+            tool_name="write_file",
+            tool_kind="filesystem.write",
+            args={"path": "target.txt"},
+            user_message=turn.user_message,
+            user_messages=turn.user_messages,
+            workspace_roots=[],
+        )
+        with formal_user_inputs.set(turn.user_inputs):
+            prompt = formal_module.build_formal_user_prompt(request, history=child_history)
+        lines = prompt.splitlines()
+        return [json.loads(line) for line in lines[1 : lines.index("</context>")]]
+
+    with (
+        active_tool_batch_messages.set((parent_history, ())),
+        formal_module.formal_parent_context("delegate", turn.user_inputs),
+    ):
+        before = context()
+        turn.remove(text, item_id=withdrawn_id)
+        assert context() == [
+            {"user": opener},
+            {"user": "Only modify target.txt."},
+            {"user": "Keep the existing formatting.", "source": "parent_session"},
+            {"parent_agent": "Continue checking."},
+        ]
+        # A live empty snapshot means every queued item was withdrawn.
+        turn.reset()
+        assert context() == [
+            {"user": opener},
+            {"user": "Only modify target.txt."},
+            {"parent_agent": "Continue checking."},
+        ]
+    assert {"user": text, "source": "parent_session"} in before
 
 
 @pytest.mark.parametrize("timeout", [0, -1])

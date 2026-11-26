@@ -10,6 +10,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
@@ -83,7 +84,7 @@ if TYPE_CHECKING:
     from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
     from chrys.service.approval.policy import ApprovalPolicy
     from chrys.service.approval.reuse import Candidate
-    from chrys.service.approval.turn_context import TurnContextHolder
+    from chrys.service.approval.turn_context import ApprovalUserInput, TurnContextHolder
     from chrys.service.hooks.manager import HookManager
 
 
@@ -295,21 +296,23 @@ class ApprovalMiddleware(FunctionMiddleware):
         """Store the current user message for inclusion in approval requests."""
         self.set_user_messages([text] if text else [])
 
-    def set_user_messages(self, messages: list[str]) -> None:
+    def set_user_messages(self, messages: list[ApprovalUserInput]) -> None:
         """Store current-turn user messages for inclusion in approval judge context."""
         self._turn_context.replace(messages)
 
-    def append_user_message(self, text: str) -> None:
+    def append_user_message(
+        self, text: str, *, created_at: datetime | str | None = None, item_id: str | None = None
+    ) -> None:
         """Append a current-turn user message for later approval judge context."""
-        self._turn_context.append(text)
+        self._turn_context.append(text, created_at=created_at, item_id=item_id)
 
-    def remove_user_message(self, text: str) -> None:
+    def remove_user_message(self, text: str, *, item_id: str | None = None) -> None:
         """Remove the most recent occurrence of *text* from judge context.
 
         Used when a queued injection is cancelled after its text was already
         appended, so later approval requests do not cite withdrawn input.
         """
-        self._turn_context.remove(text)
+        self._turn_context.remove(text, item_id=item_id)
 
     @property
     def _user_message(self) -> str:
@@ -590,6 +593,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                                     judge_input=ApprovalJudgeInput(
                                         user_message=self._turn_context.user_message,
                                         user_messages=self._turn_context.user_messages,
+                                        user_inputs=self._turn_context.user_inputs,
                                         tool_name=tool_name,
                                         tool_kind=tool_kind,
                                         args=parsed_args,

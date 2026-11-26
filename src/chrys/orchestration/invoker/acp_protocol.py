@@ -987,6 +987,7 @@ class AcpPermissionBroker:
                                 args=raw_args,
                                 user_message=self._turn_context.user_message,
                                 user_messages=self._turn_context.user_messages,
+                                user_inputs=self._turn_context.user_inputs,
                                 workspace_roots=list(self._workspace_roots),
                             ),
                             decision_future=future,

@@ -13,6 +13,7 @@ from typing import Any
 
 from chrys.foundation.text.model_json import model_json, model_path
 from chrys.kernel import ChatResponse, Message
+from chrys.service.approval.turn_context import ApprovalUserInput
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -25,6 +26,7 @@ class ApprovalJudgeInput:
     user_message: str
     user_messages: list[str]
     workspace_roots: list[str]
+    user_inputs: tuple[ApprovalUserInput, ...] | None = None
 
 
 @dataclass

@@ -2106,7 +2106,7 @@ class SubAgentTools:
                 self._controllers[invocation_id] = controller
                 try:
                     with (
-                        formal_parent_context(parent_provider_call_id),
+                        formal_parent_context(parent_provider_call_id, self._turn_context.user_inputs),
                         trajectory_scope(sub_agent_trace.child_context)
                         if sub_agent_trace is not None
                         else contextlib.nullcontext(),

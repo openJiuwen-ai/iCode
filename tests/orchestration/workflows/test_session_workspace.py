@@ -24,6 +24,8 @@ from chrys.foundation.models.workflow_session import WorkflowIdentity, WorkflowS
 from chrys.foundation.models.workspace import WorkingDir, Workspace
 from chrys.orchestration.session_host import WorkflowRunRejectedError
 from chrys.orchestration.workflows.agent_node import WorkflowAgentShell
+from chrys.service.approval.formal import build_formal_user_prompt
+from chrys.service.approval.review_types import ApprovalJudgeInput
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.schema import AcpAgentConfig, AgentProfile
 from chrys.service.state.locks import ActiveSessionGuard
@@ -269,6 +271,7 @@ async def test_agent_build_uses_only_the_confirmed_workflow_scope(registry, tmp_
     host = make_host(tmp_path, project=primary, profiles=[make_profile(), external])
     tool_dirs = []
     approval_roots = []
+    approval_contexts = []
     acp_dirs = []
     broker = agent_node_build.AcpPermissionBroker
     resolve = agent_node_build.resolve_acp_spec
@@ -278,6 +281,7 @@ async def test_agent_build_uses_only_the_confirmed_workflow_scope(registry, tmp_
 
     def observe_approval(_result, _conversation, inputs):
         approval_roots.append(inputs["workspace_roots"])
+        approval_contexts.append(inputs["turn_context"])
 
     def acp_approval(**kwargs):
         approval_roots.append(kwargs["workspace_roots"])
@@ -321,6 +325,22 @@ async def test_agent_build_uses_only_the_confirmed_workflow_scope(registry, tmp_
             assert f"Working directory: {json.dumps(str(workflow_cwd), ensure_ascii=False)}" in prompt
             assert all(json.dumps(path, ensure_ascii=False) in prompt for path in confirmed_dirs)
             assert json.dumps(str(latest), ensure_ascii=False) not in prompt
+            (turn_context,) = approval_contexts
+            formal_prompt = build_formal_user_prompt(
+                ApprovalJudgeInput(
+                    tool_name="read_file",
+                    tool_kind="filesystem.read",
+                    args={"path": "target.txt"},
+                    user_message=turn_context.user_message,
+                    user_messages=turn_context.user_messages,
+                    workspace_roots=[],
+                ),
+                history=messages,
+            )
+            assert [json.loads(row) for row in formal_prompt.splitlines()[1:3]] == [
+                {"user": "Check scope."},
+                {"workflow_input": "Check scope."},
+            ]
             if own_cwd:
                 assert json.dumps(str(related), ensure_ascii=False) not in prompt
                 assert json.dumps(str(primary), ensure_ascii=False) not in prompt
