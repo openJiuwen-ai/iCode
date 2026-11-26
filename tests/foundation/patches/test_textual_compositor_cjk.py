@@ -36,7 +36,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
 
     ``tests/conftest.py`` imports tab selection before this module, so the global
     registry order differs from a fresh production bootstrap.  Build the order
-    explicitly: all 18 CJK patches, then the one tab-selection patch. The
+    explicitly: all 19 CJK patches, then the one tab-selection patch. The
     joined-text fallback builds on the earlier partial-update fragment.
     """
     tab_matches = [
@@ -46,7 +46,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
         and patch.module_file == "_compositor.py"
         and patch.old_fragment == textual_tab_selection._COMPOSITOR_GET_WIDGET_AND_OFFSET_AT_OLD
     ]
-    assert len(textual_compositor_cjk._PATCHES) == 18
+    assert len(textual_compositor_cjk._PATCHES) == 19
     assert len(tab_matches) == 1
     return (*textual_compositor_cjk._PATCHES, tab_matches[0])
 

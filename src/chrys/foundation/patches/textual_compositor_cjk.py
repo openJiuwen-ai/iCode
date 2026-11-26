@@ -50,8 +50,8 @@ cutting a strip containing joined glyphs or symbols with emoji presentation:
 terminals may assign them a different width even without a variation selector.
 
 Upgrade warning: ``_compositor.py`` is one all-or-nothing patch group containing
-these 18 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
-19 fragments aborts the entire file group. Textual is imported before
+these 19 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
+20 fragments aborts the entire file group. Textual is imported before
 ``bootstrap_runtime()`` on the TUI path, so the runtime patch stages the same CJK
 fragments in memory and installs all affected methods on the existing classes.
 It preserves imported class aliases and instances, and applies independently of
@@ -339,6 +339,47 @@ _DIRTY_SPAN_CROP_PATCH = FilePatch(
     old_fragment=_OLD_RENDER_SEGMENTS_CROP,
     new_fragment=_NEW_RENDER_SEGMENTS_CROP,
     description="Keep dirty-span crops on complete character boundaries",
+)
+
+
+# The first PR version appended a per-segment crop to a stock fragment
+# which later versions also matched. An environment upgraded in place can
+# therefore contain both crops. Once both current edges are staged, match
+# their adjacency to remove the obsolete block only when it is present.
+_LEGACY_SEGMENT_CROP = r"""
+                if x < x1:
+                    # A merged strip can start over cells whose widgets this
+                    # partial update did not render. Start at the span, or at
+                    # the double-width character that its edge divides. A
+                    # segment whose characters join (emoji sequences, flags,
+                    # combining marks) is written whole, as stock Textual does.
+                    crop_start = x1 - x
+                    position = 0
+                    for segment in strip:
+                        segment_end = position + cell_len(segment.text)
+                        if segment_end > crop_start:
+                            break
+                        position = segment_end
+                    text = segment.text
+                    if text.isascii() or all(
+                        cell_len(character) and not "\U0001f1e6" <= character <= "\U0001f1ff"
+                        for character in text
+                    ):
+                        for character in text:
+                            character_end = position + cell_len(character)
+                            if character_end > crop_start:
+                                break
+                            position = character_end
+                        strip = strip.crop(position)
+                        x += position
+"""
+_RIGHT_CROP_START = "                crop_end = min(end, x2) - x"
+_REMOVE_LEGACY_CROP = FilePatch(
+    package="textual",
+    module_file="_compositor.py",
+    old_fragment=_LEFT_WIDTH_UPGRADE.new_fragment + _LEGACY_SEGMENT_CROP + "\n" + _RIGHT_CROP_START,
+    new_fragment=_LEFT_WIDTH_UPGRADE.new_fragment + "\n" + _RIGHT_CROP_START,
+    description="Remove the obsolete per-segment crop from upgraded Textual installs",
 )
 
 
@@ -698,6 +739,7 @@ _PATCHES = (
     _DIRTY_SPAN_LEFT_EDGE_PATCH,
     _LEFT_WIDTH_UPGRADE,
     _DIRTY_SPAN_CROP_PATCH,
+    _REMOVE_LEGACY_CROP,
     *_PARTIAL_ROW_PATCHES,
     FilePatch(
         package="textual",
