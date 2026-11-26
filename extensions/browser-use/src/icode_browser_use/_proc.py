@@ -11,6 +11,8 @@ and corrupt the TUI.
 from __future__ import annotations
 
 import contextlib
+import csv
+import io
 import os
 import secrets
 import shutil
@@ -22,6 +24,9 @@ from typing import Any
 from .logging import log
 
 _CREATE_NEW_CONSOLE = 0x00000010
+_SYNCHRONIZE_ACCESS = 0x00100000
+_ERROR_ACCESS_DENIED = 5
+_WAIT_TIMEOUT = 0x00000102
 _CACHED_WIN_SID: str | None = None
 _CACHED_WIN_SID_TRIED = False
 
@@ -58,7 +63,7 @@ def windows_hidden_kwargs() -> dict[str, Any]:
 
 
 def current_user_sid() -> str | None:
-    """Return the current Windows process user's SID string (``S-1-...``), or ``None``."""
+    """Return the current Windows user's SID string (``S-1-...``), cached once per process."""
     global _CACHED_WIN_SID, _CACHED_WIN_SID_TRIED
     if sys.platform != "win32":
         return None
@@ -66,62 +71,26 @@ def current_user_sid() -> str | None:
         return _CACHED_WIN_SID
     _CACHED_WIN_SID_TRIED = True
     try:
-        import ctypes
-        from ctypes import wintypes
-
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-        kernel32.LocalFree.restype = ctypes.c_void_p
-
-        advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
-        advapi32.OpenProcessToken.restype = wintypes.BOOL
-        advapi32.GetTokenInformation.argtypes = [
-            wintypes.HANDLE,
-            wintypes.DWORD,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-            ctypes.POINTER(wintypes.DWORD),
-        ]
-        advapi32.GetTokenInformation.restype = wintypes.BOOL
-        advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
-        advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
-
-        TOKEN_QUERY = 0x0008
-        TOKEN_USER = 1
-
-        token = wintypes.HANDLE()
-        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)):
-            return None
-        try:
-            needed = wintypes.DWORD(0)
-            advapi32.GetTokenInformation(token, TOKEN_USER, None, 0, ctypes.byref(needed))
-            if needed.value <= 0:
-                return None
-            buf = ctypes.create_string_buffer(needed.value)
-            if not advapi32.GetTokenInformation(token, TOKEN_USER, buf, needed.value, ctypes.byref(needed)):
-                return None
-            # TOKEN_USER starts with SID_AND_ATTRIBUTES { PSID Sid; DWORD Attributes; }
-            sid_ptr = ctypes.c_void_p.from_buffer(buf).value
-            if not sid_ptr:
-                return None
-            sid_str = ctypes.c_wchar_p()
-            if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_str)):
-                return None
-            try:
-                _CACHED_WIN_SID = str(sid_str.value) if sid_str.value else None
-                return _CACHED_WIN_SID
-            finally:
-                if sid_str.value is not None:
-                    kernel32.LocalFree(ctypes.cast(sid_str, ctypes.c_void_p))
-        finally:
-            kernel32.CloseHandle(token)
-    except Exception:
+        completed = subprocess.run(
+            [_system32_exe("whoami.exe"), "/user", "/fo", "csv", "/nh"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+            **windows_hidden_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
         return None
+    if completed.returncode != 0 or not completed.stdout:
+        return None
+    row = next(csv.reader(io.StringIO(completed.stdout.strip())), [])
+    candidate = row[1].strip() if len(row) >= 2 else ""
+    if candidate.startswith("S-1-"):
+        _CACHED_WIN_SID = candidate
+    return _CACHED_WIN_SID
 
 
 def harden_private(path: Path, *, is_dir: bool = False, strict: bool = False) -> bool:
@@ -230,36 +199,45 @@ def rotate_log_if_needed(path: Path, *, max_bytes: int = 5 * 1024 * 1024) -> Non
         return
 
 
+def _win_pid_running(pid: int) -> bool:
+    """Non-blocking ``WaitForSingleObject`` probe against a Windows process handle."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    dll = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_proc = dll.OpenProcess
+    open_proc.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    open_proc.restype = wintypes.HANDLE
+    wait_one = dll.WaitForSingleObject
+    wait_one.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    wait_one.restype = wintypes.DWORD
+    close_handle = dll.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    proc_handle = open_proc(_SYNCHRONIZE_ACCESS, False, pid)
+    if not proc_handle:
+        return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+    try:
+        return int(wait_one(proc_handle, 0)) == _WAIT_TIMEOUT
+    finally:
+        close_handle(proc_handle)
+
+
 def pid_alive(pid: int) -> bool:
-    """Whether that process is running; a read-only probe that starts nothing."""
+    """Whether *pid* currently refers to a live OS process without spawning anything."""
     if pid <= 0:
         return False
     if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED => process exists
-        try:
-            exit_code = wintypes.DWORD(0)
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return False
-            return exit_code.value == 259  # STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
+        return _win_pid_running(pid)
     try:
         os.kill(pid, 0)
     except PermissionError:
         return True
+    except ProcessLookupError:
+        return False
     except OSError:
         return False
     return True
