@@ -14,7 +14,7 @@ from chrys.foundation.patches import textual_compositor_cjk
 from tests.support.installed_packages import copy_installed_package
 
 
-@pytest.mark.parametrize("patch_mode", ["startup", "runtime-only", "already-patched"])
+@pytest.mark.parametrize("patch_mode", ["startup", "runtime-only", "already-patched", "earlier-release"])
 def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode: str) -> None:
     package = copy_installed_package("textual", tmp_path)
     target = package / "_compositor.py"
@@ -26,9 +26,11 @@ def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode:
             source = source.replace(patch.new_fragment, patch.old_fragment, 1)
     assert textual_compositor_cjk._OLD_RENDER_CHOPS in source
     assert textual_compositor_cjk._NEW_RENDER_CHOPS not in source
-    if patch_mode == "already-patched":
+    if patch_mode in ("already-patched", "earlier-release"):
         for patch in textual_compositor_cjk._PATCHES:
-            source = source.replace(patch.old_fragment, patch.new_fragment, 1)
+            # A release before the left-edge fix patched every other fragment.
+            if patch_mode == "already-patched" or patch is not textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH:
+                source = source.replace(patch.old_fragment, patch.new_fragment, 1)
     target.write_text(source, encoding="utf-8")
 
     script = '''
@@ -55,7 +57,7 @@ Compositor = compositor_module.Compositor
 ChopsUpdate = compositor_module.ChopsUpdate
 assert screen_module.Compositor is Compositor
 sentinel_before = getattr(compositor_module, "_MERGED_STRIP", None)
-assert (sentinel_before is not None) == (sys.argv[2] == "already-patched")
+assert (sentinel_before is not None) == (sys.argv[2] in ("already-patched", "earlier-release"))
 original_render_chops = Compositor._render_chops
 original_selection = Compositor.get_widget_and_offset_at
 existing_compositor = Compositor()
@@ -64,9 +66,11 @@ existing_update = ChopsUpdate([], []) if sentinel_before is not None else ChopsU
 if sys.argv[2] != "runtime-only":
     results = apply_all()
     cjk_results = [r for r in results if r.patch in textual_compositor_cjk._PATCHES]
-    assert len(cjk_results) == 11
-    status = "skipped" if sys.argv[2] == "already-patched" else "applied"
-    assert all(r.status == status for r in cjk_results), cjk_results
+    assert len(cjk_results) == 12
+    status = "skipped" if sys.argv[2] != "startup" else "applied"
+    left_edge = textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH
+    left_edge_status = "applied" if sys.argv[2] == "earlier-release" else status
+    assert all(r.status == (left_edge_status if r.patch is left_edge else status) for r in cjk_results), cjk_results
 else:
     source_before = Path(compositor_module.__file__).read_bytes()
     textual_compositor_cjk.apply_runtime_patch()
@@ -114,6 +118,10 @@ async def main():
         assert Text.from_ansi(update.render_segments(console)).plain == "你好世界"
         rich_text = "".join(segment.text for segment in console.render(update) if not segment.control)
         assert rich_text == "你好世界", rich_text
+        # A span starting on a character boundary leaves the cells left of it alone.
+        compositor._dirty_regions.add(Region(2, 0, 6, 1))
+        update = compositor.render_partial_update()
+        assert Text.from_ansi(update.render_segments(console)).plain == "好世界"
 
 asyncio.run(main())
 assert Compositor._render_chops is not original_render_chops

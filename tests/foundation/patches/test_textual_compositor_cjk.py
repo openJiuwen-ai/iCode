@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 import textwrap
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -19,7 +20,12 @@ from rich.segment import Segment
 from rich.text import Text
 from textual._cells import cell_len
 from textual._compositor import ChopsUpdate
+from textual._context import visible_screen_stack
+from textual.app import App, ComposeResult
+from textual.containers import Vertical
+from textual.screen import ModalScreen
 from textual.strip import Strip
+from textual.widgets import Static
 
 from chrys.foundation.patches import patcher, textual_compositor_cjk, textual_tab_selection
 from chrys.foundation.patches.patcher import FilePatch, apply_patch_group
@@ -30,7 +36,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
 
     ``tests/conftest.py`` imports tab selection before this module, so the global
     registry order differs from a fresh production bootstrap.  Build the order
-    explicitly: all 11 CJK patches, then the one tab-selection patch.  The 12
+    explicitly: all 12 CJK patches, then the one tab-selection patch.  The 13
     fragments currently have no chained dependencies, but retaining production
     order keeps this drift guard correct if one is added later.
     """
@@ -41,7 +47,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
         and patch.module_file == "_compositor.py"
         and patch.old_fragment == textual_tab_selection._COMPOSITOR_GET_WIDGET_AND_OFFSET_AT_OLD
     ]
-    assert len(textual_compositor_cjk._PATCHES) == 11
+    assert len(textual_compositor_cjk._PATCHES) == 12
     assert len(tab_matches) == 1
     return (*textual_compositor_cjk._PATCHES, tab_matches[0])
 
@@ -223,3 +229,109 @@ def test_render_segments_crops_at_complete_character_boundaries(
     assert rendered == expected
     assert strip.text.startswith(rendered)
     assert 0 <= cell_len(rendered) - requested_end <= 1
+
+
+@pytest.mark.parametrize(
+    ("text", "chop_x", "x1", "x2", "expected_x", "expected"),
+    [
+        pytest.param("hello world", 0, 6, 40, 6, "world", id="ascii"),
+        pytest.param("点击查看", 10, 13, 40, 12, "击查看", id="cjk-mid-character"),
+        pytest.param("点击查看", 10, 14, 40, 14, "查看", id="cjk-aligned"),
+        pytest.param("点击查看详情", 10, 13, 18, 12, "击查看", id="cjk-both-edges"),
+        pytest.param("ok ❤️ done", 0, 4, 40, 0, "ok ❤️ done", id="emoji-variation-written-whole"),
+        pytest.param("ok 👩‍💻 done", 0, 6, 40, 0, "ok 👩‍💻 done", id="emoji-zwj-written-whole"),
+        pytest.param("ok 🇨🇳 done", 0, 4, 40, 0, "ok 🇨🇳 done", id="flag-written-whole"),
+    ],
+)
+def test_render_segments_starts_at_the_dirty_span(
+    _render_segments_implementation: str,
+    text: str,
+    chop_x: int,
+    x1: int,
+    x2: int,
+    expected_x: int,
+    expected: str,
+) -> None:
+    """Cells left of the span are not repainted, apart from a divided wide character.
+
+    A segment whose characters join is written whole, so no sequence is split.
+    """
+    update = object.__new__(ChopsUpdate)
+    update.chops = [{chop_x: Strip([Segment(text)])}]
+    update.spans = [(0, x1, x2)]
+
+    terminal_output = update.render_segments(Console(force_terminal=True, color_system=None))
+
+    assert terminal_output.startswith(Control.move_to(expected_x, 0).segment.text)
+    assert Text.from_ansi(terminal_output).plain == expected
+
+
+_CURSOR_MOVE = re.compile(r"\x1b\[(\d+);(\d+)H")
+_STYLE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _replay(screen: list[str], output: str) -> list[str]:
+    """Write a partial update's text, at its cursor moves, over ``screen``."""
+    rows = [[cell for character in line for cell in (character, *[""] * (cell_len(character) - 1))] for line in screen]
+    pieces = _CURSOR_MOVE.split(output)
+    for row, column, text in zip(pieces[1::3], pieces[2::3], pieces[3::3], strict=True):
+        y, x = int(row) - 1, int(column) - 1
+        for character in _STYLE.sub("", text).rstrip("\n"):
+            width = cell_len(character)
+            rows[y][x : x + width] = [character, *[""] * (width - 1)]
+            x += width
+    return ["".join(row) for row in rows]
+
+
+_BODY = "已创建工作区“p1”。\n可以随时切换到这个工作区。\n切换后新会话将在该工作区中开始。"
+
+
+class _WorkspaceCreated(ModalScreen[None]):
+    DEFAULT_CSS = """
+    _WorkspaceCreated { align: center middle; background: $background 50%; }
+    #dialog { width: 80; height: auto; border: round $primary; padding: 0 1; }
+    #body { width: 1fr; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static(_BODY, id="body")
+            yield Static("切换", id="switch")
+
+
+class _AppWithSidebar(App[None]):
+    CSS = "#sidebar { dock: right; width: 52; height: 1fr; }"
+
+    def compose(self) -> ComposeResult:
+        yield Static("对话", id="chat")
+        yield Static("工作区", id="sidebar")
+
+
+async def test_sidebar_repaint_under_a_dialog_keeps_its_body(_preserve_runtime_targets: None) -> None:
+    """A repaint of the sidebar beside a dialog leaves the dialog's body on screen.
+
+    The body ends at the sidebar's left edge; the dialog's border and padding
+    reach over the sidebar, so the sidebar's repaint also redraws those rows.
+    Nothing changed, so the partial update must leave the screen as it was.
+    """
+    textual_compositor_cjk.apply_runtime_patch()
+    app = _AppWithSidebar()
+    async with app.run_test(size=(180, 45)) as pilot:
+        await app.push_screen(_WorkspaceCreated())
+        await pilot.pause()
+        dialog = app.screen
+        assert isinstance(dialog, _WorkspaceCreated)
+        sidebar = app.screen_stack[0].query_one("#sidebar")
+        assert dialog.query_one("#body").region.right == sidebar.region.x
+
+        token = visible_screen_stack.set(app._background_screens)
+        try:
+            screen = [strip.text for strip in dialog._compositor.render_strips()]
+            # MainScreen forwards each region it repaints under a dialog this way.
+            dialog._compositor._dirty_regions.add(sidebar.region)
+            update = dialog._compositor.render_partial_update()
+        finally:
+            visible_screen_stack.reset(token)
+
+    assert update is not None
+    assert _replay(screen, update.render_segments(Console(force_terminal=True))) == screen

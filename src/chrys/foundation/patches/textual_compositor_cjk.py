@@ -17,6 +17,13 @@ Partial terminal updates have a second boundary: the right edge of a dirty span.
 double-width character.  The next cells are left from the previous frame, which
 makes the missing character appear to blink as the underlying widget refreshes.
 
+The left edge of a dirty span is a boundary too.  A partial update renders only
+the widgets that overlap the dirty region, so the effective cuts above can merge
+a strip across a cut whose other side belongs to an unrendered widget.  Such a
+merged strip starts left of the span, and writing it from its start paints the
+lower widget over the unrendered one: a dialog's body text becomes blank when
+the sidebar beside it repaints the dialog's backdrop.
+
 Solution
 --------
 Introduce "effective cuts" -- only divide strips at cuts where at least one
@@ -34,9 +41,17 @@ next complete character boundary.  This can overdraw at most one cell for the
 double-width characters covered here; ZWJ grapheme sequences and zero-width
 combining-mark boundaries remain outside this patch's scope.
 
+The raw terminal path therefore starts a strip that begins left of the span at
+the span's left edge, moved back to the start of a double-width character the
+edge divides.  The cells it no longer writes lie outside the dirty region, so
+the terminal already shows them.  A
+segment whose characters join (emoji sequences, flags, combining marks) is
+written whole, as stock Textual does, since Rich measures such sequences per
+code point and a crop could split one.
+
 Upgrade warning: ``_compositor.py`` is one all-or-nothing patch group containing
-these 11 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
-12 fragments aborts the entire file group. Textual is imported before
+these 12 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
+13 fragments aborts the entire file group. Textual is imported before
 ``bootstrap_runtime()`` on the TUI path, so the runtime patch stages the same CJK
 fragments in memory and installs all affected methods on the existing classes.
 It preserves imported class aliases and instances, and applies independently of
@@ -229,6 +244,59 @@ _NEW_RENDER_SEGMENTS_CROP = """\
                 strip = strip.crop(0, crop_end)
                 append(move_to(x, y).segment.text)
                 append(strip.render(console))"""
+
+# ---------------------------------------------------------------------------
+# Patch 6b: start strips that begin left of a dirty span at the span
+# ---------------------------------------------------------------------------
+# Anchored on stock code, not on patch 6's output, so it applies the same way to
+# a pristine install and to one already patched by an earlier release.
+_OLD_RENDER_SEGMENTS_LEFT_EDGE = """\
+                if x2 > x >= x1 and end <= x2:
+                    append(move_to(x, y).segment.text)
+                    append(strip.render(console))
+                    continue
+"""
+
+_NEW_RENDER_SEGMENTS_LEFT_EDGE = """\
+                if x2 > x >= x1 and end <= x2:
+                    append(move_to(x, y).segment.text)
+                    append(strip.render(console))
+                    continue
+
+                if x < x1:
+                    # A merged strip can start over cells whose widgets this
+                    # partial update did not render. Start at the span, or at
+                    # the double-width character that its edge divides. A
+                    # segment whose characters join (emoji sequences, flags,
+                    # combining marks) is written whole, as stock Textual does.
+                    crop_start = x1 - x
+                    position = 0
+                    for segment in strip:
+                        segment_end = position + cell_len(segment.text)
+                        if segment_end > crop_start:
+                            break
+                        position = segment_end
+                    text = segment.text
+                    if text.isascii() or all(
+                        cell_len(character) and not "\\U0001f1e6" <= character <= "\\U0001f1ff"
+                        for character in text
+                    ):
+                        for character in text:
+                            character_end = position + cell_len(character)
+                            if character_end > crop_start:
+                                break
+                            position = character_end
+                        strip = strip.crop(position)
+                        x += position
+"""
+
+_DIRTY_SPAN_LEFT_EDGE_PATCH = FilePatch(
+    package="textual",
+    module_file="_compositor.py",
+    old_fragment=_OLD_RENDER_SEGMENTS_LEFT_EDGE,
+    new_fragment=_NEW_RENDER_SEGMENTS_LEFT_EDGE,
+    description="Start partial-update strips at the dirty span's left edge",
+)
 
 _DIRTY_SPAN_CROP_PATCH = FilePatch(
     package="textual",
@@ -525,6 +593,7 @@ _PATCHES = (
         new_fragment=_NEW_RENDER_SEGMENTS,
         description="Update ChopsUpdate.render_segments for merged strips",
     ),
+    _DIRTY_SPAN_LEFT_EDGE_PATCH,
     _DIRTY_SPAN_CROP_PATCH,
     FilePatch(
         package="textual",
