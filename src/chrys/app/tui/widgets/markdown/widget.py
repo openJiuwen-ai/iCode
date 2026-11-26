@@ -59,6 +59,7 @@ from chrys.app.tui.widgets.markdown.math.markdown import MATH_ENABLED
 from chrys.app.tui.widgets.markdown.math.parser import MAX_SOURCE as MAX_MATH_SOURCE
 from chrys.app.tui.widgets.markdown.parser import (
     InlineCache,
+    StreamingBlockCache,
     _cell_min_width,
     _cell_natural_width,
     _cell_prefix_length,
@@ -508,6 +509,7 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         self._source_requested = False
         """``update()`` or ``append()`` set the source: newer than the text the widget was built with."""
         self._inline_cache: InlineCache | None = None
+        self._streaming_blocks: StreamingBlockCache | None = None
         self._parser_factory = parser_factory
         self._table_of_contents: TableOfContentsType | None = None
         self._open_links = open_links
@@ -785,11 +787,16 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         if not streaming:
             # Drop the owner. A build already running in the executor can only fill its local cache.
             self._inline_cache = None
+            self._streaming_blocks = None
         elif self._inline_cache is None and self._parser_factory is None:
             self._inline_cache = {}
+            # A subclass may decorate the returned blocks in place (for example,
+            # a copy footer adds padding to fences). It owns those blocks alone.
+            if type(self)._build_blocks is VirtualizedMarkdown._build_blocks:
+                self._streaming_blocks = StreamingBlockCache()
 
     def on_unmount(self) -> None:
-        self._inline_cache = None
+        self.set_streaming(False)
 
     def _build_blocks(self, markdown: str) -> list[MarkdownBlock]:
         """Parse markdown source into blocks.
@@ -807,6 +814,13 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         )
         cache = self._inline_cache
         tokens = parser.parse(markdown) if cache is None else _parse_streaming_markdown(parser, markdown, cache)
+        streaming = self._streaming_blocks
+        if streaming is not None:
+            context = (widget_localizer(self).effective_locale, self._open_links)
+            if streaming.context != context:
+                streaming.tokens = []
+                streaming.boundaries = []
+                streaming.context = context
         previous = self._fence_highlights
         highlights: dict[tuple[str, str], Content] = {}
 
@@ -828,7 +842,14 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             math_enabled=bool(parser.options.get(MATH_ENABLED, False)),
             math_compiler=self._compile_math_cached,
             highlight_closed_fence=highlight_closed_fence,
+            streaming=streaming,
         )
+        if streaming is not None:
+            for block in blocks[: streaming.reused]:
+                if block.block_type == "fence":
+                    key = (block.code_language, block.content.plain)
+                    if previous.get(key) is block.content:
+                        highlights[key] = block.content
         self._fence_highlights = highlights
         return blocks
 
@@ -862,33 +883,45 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             self._diagram_compile_cache.popitem(last=False)
         return diagram
 
-    def _layout_blocks(self, width: int | None = None) -> None:
-        """Compute the line layout for all blocks."""
+    def _layout_blocks(self, width: int | None = None, *, unchanged_prefix: int = 0) -> None:
+        """Measure the changed blocks, keeping same-width metadata for the identical prefix."""
         if width is None:
             width = self.scrollable_content_region.width
         if width <= 0:
             width = 80
 
+        if width != self._width_at_last_layout:
+            unchanged_prefix = 0
         self._width_at_last_layout = width
-        self._block_line_info.clear()
+        del self._block_line_info[unchanged_prefix:]
+        for layouts in (self._table_layouts, self._fence_layouts, self._diagram_layouts, self._math_rows):
+            if unchanged_prefix:
+                for index in tuple(layouts):
+                    if index >= unchanged_prefix:
+                        del layouts[index]
+            else:
+                layouts.clear()
+        self._diagram_action_lines = {
+            line: index for line, index in self._diagram_action_lines.items() if index < unchanged_prefix
+        }
         self._line_cache.clear()
-        self._table_layouts.clear()
         self._table_strips.clear()
-        self._fence_layouts.clear()
         self._fence_line_strips.clear()
         self._fence_source_line_strips.clear()
-        self._diagram_layouts.clear()
-        self._math_rows.clear()
-        self._diagram_action_lines.clear()
         self._diagram_action_widths.clear()
         self._block_strips.clear()
         self._block_style_cache.clear()
 
         current_line = 0
         last_bottom_margin = 0
+        if self._block_line_info:
+            last = self._block_line_info[-1]
+            current_line = last.start_line + last.height
+            last_bottom_margin = last.bottom_margin
         render_rules = self.styles.get_render_rules()
 
-        for index, block in enumerate(self._blocks):
+        for index in range(unchanged_prefix, len(self._blocks)):
+            block = self._blocks[index]
             top_margin = max(block.top_margin, last_bottom_margin) - last_bottom_margin
             if index == 0:
                 top_margin = 0
@@ -1904,12 +1937,20 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         a widget without blocks, so an empty document, zero lines at any
         width, is laid out at once.
         """
+        unchanged_prefix = 0
+        for old, new in zip(self._blocks, blocks, strict=False):
+            if old is not new:
+                break
+            unchanged_prefix += 1
         self._blocks = blocks
         self._table_of_contents = None
         if blocks and self.scrollable_content_region.width <= 0:
             self._defer_layout_until_arranged()
             return
-        self._layout_blocks()
+        if unchanged_prefix:
+            self._layout_blocks(unchanged_prefix=min(unchanged_prefix, len(self._block_line_info)))
+        else:
+            self._layout_blocks()
 
     def _defer_layout_until_arranged(self) -> None:
         """Drop the layout of replaced blocks and request a measuring pass.

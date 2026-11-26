@@ -8,6 +8,7 @@ import html
 import re
 import string
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
 
@@ -683,6 +684,25 @@ def _apply_containers(block: MarkdownBlock, stack: list[dict]) -> None:
     block.prefix = next((part.prefix for part in reversed(gutter) if part.prefix), "")
 
 
+@dataclass(slots=True)
+class StreamingBlockCache:
+    """The last streaming snapshot, indexed at independent top-level token boundaries."""
+
+    tokens: list[Token] = field(default_factory=list)
+    blocks: list[MarkdownBlock] = field(default_factory=list)
+    boundaries: list[tuple[int, int]] = field(default_factory=list)
+    reused: int = 0
+    context: tuple[str, bool] | None = None
+
+    def matching_boundary(self, tokens: list[Token]) -> tuple[int, int]:
+        matching = min(len(tokens), len(self.tokens))
+        for index, (old, new) in enumerate(zip(self.tokens, tokens, strict=False)):
+            if old != new:
+                matching = index
+                break
+        return next((boundary for boundary in reversed(self.boundaries) if boundary[0] <= matching), (0, 0))
+
+
 def _parse_tokens(
     tokens: Iterable[Token],
     unhandled_token: Callable[[Token], MarkdownBlock | None] | None = None,
@@ -692,6 +712,7 @@ def _parse_tokens(
     math_enabled: bool = True,
     math_compiler: Callable[[str], CompiledMath] = compile_math,
     highlight_closed_fence: Callable[[str, str], Content] = highlight_code,
+    streaming: StreamingBlockCache | None = None,
 ) -> list[MarkdownBlock]:
     """Parse markdown-it tokens into a flat list of MarkdownBlock objects.
 
@@ -706,6 +727,15 @@ def _parse_tokens(
         A list of MarkdownBlock data objects.
     """
     blocks: list[MarkdownBlock] = []
+    boundaries: list[tuple[int, int]] = []
+    start = 0
+    document: list[Token] = []
+    if streaming is not None:
+        document = tokens if isinstance(tokens, list) else list(tokens)
+        start, streaming.reused = streaming.matching_boundary(document)
+        blocks = streaming.blocks[: streaming.reused]
+        boundaries = [boundary for boundary in streaming.boundaries if boundary[0] < start]
+        tokens = document[start:]
 
     stack: list[dict] = []
     list_stack: list[dict] = []
@@ -714,7 +744,11 @@ def _parse_tokens(
         _apply_containers(block, stack)
         blocks.append(block)
 
-    for token_index, token in enumerate(tokens):
+    for token_index, token in enumerate(tokens, start):
+        if streaming is not None and not stack and (not blocks or blocks[-1].bottom_margin == 1):
+            # A later quote may give the preceding block a margin. Keep
+            # boundaries only where the prefix is already independent of it.
+            boundaries.append((token_index, len(blocks)))
         token_type = token.type
         source_range = (token.map[0], token.map[1]) if token.map is not None else (0, 0)
 
@@ -782,7 +816,7 @@ def _parse_tokens(
             if len(blocks) == stack[-1]["block_count_at_open"]:
                 append_block(MarkdownBlock("paragraph", Content(" "), bottom_margin=0))
             stack.pop()
-            if blocks:
+            if blocks and blocks[-1].bottom_margin != 1:
                 blocks[-1].bottom_margin = 1
 
         elif token_type == "bullet_list_open":
@@ -799,7 +833,7 @@ def _parse_tokens(
         elif token_type == "bullet_list_close":
             list_stack.pop()
             stack.pop()
-            if not list_stack and blocks:
+            if not list_stack and blocks and blocks[-1].bottom_margin != 1:
                 blocks[-1].bottom_margin = 1
 
         elif token_type == "ordered_list_open":
@@ -817,7 +851,7 @@ def _parse_tokens(
         elif token_type == "ordered_list_close":
             list_stack.pop()
             stack.pop()
-            if not list_stack and blocks:
+            if not list_stack and blocks and blocks[-1].bottom_margin != 1:
                 blocks[-1].bottom_margin = 1
 
         elif token_type == "list_item_open":
@@ -1003,6 +1037,12 @@ def _parse_tokens(
             if external is not None:
                 append_block(external)
 
+    if streaming is not None:
+        if not stack and (not blocks or blocks[-1].bottom_margin == 1):
+            boundaries.append((len(document), len(blocks)))
+        streaming.tokens = document
+        streaming.blocks = blocks
+        streaming.boundaries = boundaries
     return blocks
 
 

@@ -55,3 +55,77 @@ def test_streaming_with_a_custom_parser_always_runs_its_document_rules() -> None
         ["paragraph_open", "inline", "paragraph_close"],
         ["paragraph_open", "inline", "paragraph_close", "heading_open", "inline", "heading_close"],
     ]
+
+
+def test_streaming_reuses_only_identical_top_level_blocks() -> None:
+    from chrys.app.tui.widgets.markdown.parser import StreamingBlockCache, _parse_tokens
+
+    stable = "# 开头\n\nA **stable** [link](https://example.com/stable).\n\n"
+    source = (
+        stable
+        + """A [late] link and $x$.
+
+> A quote with a nested list
+> - One
+> - Two
+
+1. One
+   - Nested **bold**
+2. Two
+
+| Column | Value |
+| --- | --- |
+| One | 重音 |
+
+```python
+print("waiting")
+```
+
+```mermaid
+graph TD
+  A --> B
+```
+
+[late]: https://example.com/one
+"""
+    )
+    cache = StreamingBlockCache()
+    inline: InlineCache = {}
+
+    def content_state(content):
+        return content.plain, tuple(content._spans)
+
+    def block_state(block):
+        return (
+            block,
+            content_state(block.content),
+            [content_state(cell) for cell in block.table_headers or ()],
+            [[content_state(cell) for cell in row] for row in block.table_rows or ()],
+        )
+
+    sources = [stable, stable + "New text."]
+    sources.extend(source[:end] for end in range(len(stable) + 1, len(source), 11))
+    sources.extend((source, source.replace("/one", "/two"), source.replace("**stable**", "*stable*"), source[:25], ""))
+    previous = []
+    for index, current in enumerate(sources):
+        document = _parse_streaming_markdown(_create_markdown_parser(), current, inline)
+        blocks = _parse_tokens(document, streaming=cache)
+        expected = _parse_tokens(_create_markdown_parser().parse(current))
+        assert [block_state(b) for b in blocks] == [block_state(b) for b in expected], current
+        if index == 1:
+            assert cache.reused == 2
+            assert blocks[0] is previous[0]
+            assert blocks[1] is previous[1]
+        previous = blocks
+
+
+def test_streaming_copyable_fences_keep_one_copy_footer() -> None:
+    from chrys.app.tui.widgets.markdown.copyable import CopyableMarkdown
+
+    markdown = CopyableMarkdown()
+    markdown.set_streaming(True)
+    prefix = "```python\nprint('ready')\n```\n\n"
+    [before] = markdown._build_blocks(prefix)
+    after = markdown._build_blocks(prefix + "Next paragraph")[0]
+    assert before.padding_bottom == after.padding_bottom == 2
+    assert before is not after
