@@ -470,11 +470,12 @@ class SetApprovalMode(Event):
     The engine updates ``ApprovalMiddleware`` and echoes ``ApprovalModeUpdated``
     so the TUI can refresh the badge from the authoritative backend state.
     ``persist`` controls whether the mode is also written as the global default;
-    ACP standard session-mode changes are session-scoped and set this false.
+    ACP session-mode changes set this false. A frontend that owns an ordered
+    settings writer can request "frontend" and save the confirmed mode itself.
     """
 
     mode: str = ""  # "manual" | "auto" | "bypass"
-    persist: bool = True
+    persist: bool | Literal["frontend"] = True
 
 
 @dataclass
@@ -1001,6 +1002,10 @@ class ApprovalModeUpdated(Event):
     """
 
     mode: str = ""  # "manual" | "auto" | "bypass"
+    saved_as_default: bool = False
+    """This update also committed the global default for future launches."""
+    save_in_frontend: bool = False
+    """The requesting frontend owns the write for this confirmed choice."""
 
 
 @dataclass
@@ -1294,6 +1299,8 @@ class Error(Event):
     display_message: MessageRef | None = None
     display_hint: MessageRef | None = None
     """Shown after ``display_message``; never without it."""
+    session_owner_generation: str | None = None
+    """Public lock generation for a contested chat restore from a takeover-capable TUI."""
     facts: FailureFacts | None = None
     """What a failure that raised is (a turn's model or runtime failure); None for Chrys's own refusals and checks."""
     refused_input: RefusedInput | None = None
@@ -1717,6 +1724,9 @@ class RollbackResult(Event):
     """Advisory, repo-level notice strings attached to the rollback
     plan (e.g. another chrys session has an active command in this
     tree).  Per-path hazards are exclusions, never warnings."""
+
+    untouched_paths: list[str] = field(default_factory=list)
+    """Absolute plan paths the file restore never attempted."""
 
 
 @dataclass

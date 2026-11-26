@@ -703,6 +703,7 @@ class TrajectoryRecorder:
         self,
         *,
         origin_session_id: str,
+        forked_at_sequence: int,
         fork_session_id: str,
         fork_session_dir: Path,
         fork_write_lock_path: Path | None,
@@ -715,15 +716,13 @@ class TrajectoryRecorder:
         """
         from chrys.service.trajectory.fork import record_fork
 
-        trajectory = self._trajectory
-        forked_at = trajectory.last_assigned_sequence() if trajectory is not None else 0
         try:
             await record_fork(
                 fork_session_id=fork_session_id,
                 fork_session_dir=fork_session_dir,
                 fork_write_lock_path=fork_write_lock_path,
                 origin_session_id=origin_session_id,
-                forked_at_sequence=forked_at,
+                forked_at_sequence=forked_at_sequence,
                 session_start_info=session_start_info,
             )
         except Exception:

@@ -13,6 +13,8 @@
 
 升级前请退出所有正在运行的 iCode 实例。iCode 会一次性改写设置、审批文件和工作流记录中的旧名称，并将原文件保存在 `<config_dir>/backups/<version>/`。旧版无法使用改写后的数据或新版保存的数据，包括待执行的钩子任务和升级后继续运行的工作流。如可能退回旧版，请先备份整个配置目录，以及存放在其他位置的会话目录。还原时，将 `backups/<version>/` 中的文件复制回原位置。将 `backups/<version>/sessions/` 还原到实际会话目录，设置了 `storage.session_root_dir` 时即其下的 `sessions/`。带 `.<sha256>` 后缀的是同一文件之后又备份的另一份原件，默认使用不带后缀的那份。
 
+导入旧版通知偏好或更新旧版主题和伙伴模型设置时，iCode 也会在该目录中保留原始的 `settings.yaml`。如果无法写入备份，iCode 会保留原设置。
+
 iCode 仅在当前会话的工作目录下查找 `.chrys/settings.yaml`，不向父目录或子目录查找。
 
 设置文件建议使用 UTF-8。iCode 也会自动检测 GBK/GB18030 等常见旧编码，以及带 BOM 的 UTF-16/UTF-32。保存设置时一律使用 UTF-8。
@@ -80,7 +82,7 @@ llm:
 | `workdir.hooks_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.chrys/hooks` 中的 Hooks，必须在用户设置中启用，不影响用户级 Hooks |
 | `workdir.skills_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.agents/skills` 中的 Skills，必须在用户设置中启用；智能体自身的“从工作文件夹加载 Skills”选项也需保持开启 |
 
-手动在 YAML 或环境变量中将默认审批模式设为 `bypass`，下次按此默认值启动时就会跳过审批。在 TUI 中通过 `/approval` 切换到 `bypass` 时，iCode 会将默认模式保存为 `auto`；TUI 设置窗口不提供 `bypass`。
+使用 `/approval bypass` 可切换到绕过模式并将其保存为默认值。如果设置了 `CHRYS_DEFAULT_APPROVAL_MODE`，启动时优先使用该环境变量的值，设置面板会将其显示为只读。每次 TUI 以绕过模式启动时，都会提醒你工具调用将跳过审批。
 
 这三项是用户级开关，分别控制各会话主工作目录中的设置、Hooks 和 Skills 是否加载，默认均关闭。工作目录中有未开启的项时，iCode 会弹出提示，说明需要开启哪个设置。Hooks 是 iCode 在特定事件时运行的外部命令，编写与配置见[配置和编写 Hooks](../guides/extensions/hooks.md)；Skills 见[安装和使用 Skills](../guides/extensions/skills.md)。
 

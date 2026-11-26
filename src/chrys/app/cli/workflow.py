@@ -15,11 +15,10 @@ from pathlib import Path
 from typing import Any, Final
 
 from rich.cells import cell_len
-from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from chrys.app.cli import headless
+from chrys.app.cli import display, headless
 from chrys.app.cli.display import counted, one_line, shown_path
 from chrys.app.cli.headless import EXIT_INTERRUPTED, PreparedRuntime
 from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message
@@ -186,7 +185,7 @@ def _list_command(args: argparse.Namespace) -> int:
 
 
 def _print_workflows(rows: list[_WorkflowRow]) -> None:
-    console = Console(file=sys.stdout, highlight=False)
+    console = display.stdout_console()
     if not rows:
         console.print(Text("No workflows found."))
         return

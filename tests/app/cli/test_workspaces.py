@@ -127,7 +127,7 @@ def test_run_restore_preserves_trailing_space_in_validated_cwd(registry, store, 
     assert run_cli.main(["hello", "-a", "Headless", "-s", TARGET, "-C", str(primary), "--json"]) == 0
 
     messages, _ = client.call_history[0]
-    assert any(f"Working directory: {primary}\n" in message.text for message in messages)
+    assert any(f"Working directory: {json.dumps(str(primary), ensure_ascii=False)}\n" in m.text for m in messages)
     assert registry.snapshot().workspace_id_for_session(TARGET) == workspace_id
 
 
@@ -289,7 +289,7 @@ def test_startup_symlink_retarget_after_chdir_keeps_the_task_working_directory(r
     assert result == 0
     messages, _ = client.call_history[0]
     assert any("first task" in message.text for message in messages)
-    assert any(f"Working directory: {first.resolve()}" in message.text for message in messages)
+    assert any(f"Working directory: {json.dumps(str(first.resolve()), ensure_ascii=False)}" in m.text for m in messages)
     assert registry.snapshot().workspace_id_for_session(TARGET) == definition.id
 
 
@@ -394,3 +394,20 @@ def test_workspace_and_workdir_are_mutually_exclusive(entry, monkeypatch, tmp_pa
     assert capsys.readouterr().err.splitlines()[-1] == (
         f"{program}: error: argument -C: not allowed with argument --workspace"
     )
+
+
+def test_run_shows_a_missing_workspace_reference_once(registry, store, monkeypatch, tmp_path, capsys):
+    primary, reference = make_workdirs(tmp_path, "primary", "reference")
+    workspace = registry.create("Project workspace", str(primary), [str(reference)])
+    reference.rmdir()
+    mock_headless_workspace_restore(monkeypatch, store)
+    monkeypatch.chdir(tmp_path)
+
+    assert run_cli.main(["hello", "-a", "Headless", "--workspace", workspace.id, "--json"]) == 0
+
+    (notice,) = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if reference.name in line and workspace.name in line
+    ]
+    assert "missing" in notice["warning"]

@@ -19,6 +19,8 @@ from chrys.service.workspaces import registry as registry_module
 from tests.app.tui.behaviors.test_missing_working_dir_flows import _top_screen
 from tests.app.tui.screens.test_prompt_shortcut_send import running_session, send_plain, turn_finished, wait_ready
 from tests.support.async_tasks import wait_for_completion, wait_for_started
+from tests.support.event_capture import capture_events
+from tests.support.toasts import shown_toasts
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 from tests.support.workspace_engine import WorkspaceBoundary, select_workspace
@@ -203,3 +205,39 @@ async def test_empty_tui_same_directory_keeps_definition_until_reselected(
         assert [directory.path for directory in engine.workspace.working_dirs] == [str(second)]
         assert session.bar.value == "unsubmitted draft"
         assert engine.history_messages == []
+
+
+async def test_tui_shows_a_missing_workspace_reference_on_each_load(
+    workspace_case, agent_engine, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+        registry = workspace_case.attach(session.engine).registry
+        primary, available, missing, also_missing = make_workdirs(
+            tmp_path, "primary", "available", "missing", "also-missing"
+        )
+        workspace = registry.create(
+            "Project workspace", str(primary), [str(available), str(missing), str(also_missing)]
+        )
+        missing.rmdir()
+        also_missing.rmdir()
+        warnings = await capture_events(session.bus, ev.Warning)
+
+        for load_count in (1, 2):
+            await _select(session, workspace.id)
+            assert sum(event.code == "workspace_reference_missing" for event in warnings) == load_count
+            await session.pilot.pause()
+            notices = [
+                toast.message
+                for toast in shown_toasts(session.app)
+                if toast.severity == "warning" and workspace.name in toast.message and str(missing) in toast.message
+            ]
+            assert len(notices) == load_count
+            assert str(also_missing) in notices[-1]
+            assert [directory.path for directory in session.engine.workspace.working_dirs] == [str(available)]
+            if load_count == 1:
+                for text in ("first turn in the workspace", "second turn in the workspace"):
+                    await send_plain(session, text, typed=False)
+                    await turn_finished(session)
+                    assert sum(event.code == "workspace_reference_missing" for event in warnings) == 1
+                await _select(session, registry.create("Other workspace", str(primary)).id)

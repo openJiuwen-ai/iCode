@@ -747,6 +747,11 @@ async def test_save_failure_warns_and_keeps_answer_available_in_current_session(
         session.bar.submit_input()
         await wait_for(lambda: panel.display and shown_answer(panel) == side.answer, pilot=session.pilot)
         assert shown_question(panel) == "Keep this answer"
+        assert session.engine.side_questions_block_takeover
+        if rebuild == "none":
+            await session.bus.publish(ev.SessionNew())
+            assert session.session_id() != original
+            assert not session.engine.side_questions_block_takeover
 
 
 @pytest.mark.parametrize("card_action", ["close", "navigate"])
@@ -1011,6 +1016,9 @@ async def test_session_transition_preserves_pending_side_save(
             await wait_for(entered.is_set, pilot=session.pilot)
             commit = next(iter(session.engine._side_questions._commit_tasks))
             await asyncio.gather(*tuple(session.engine._side_questions._run_tasks))
+            assert not panel.running
+            assert session.engine.side_questions_block_takeover
+            assert not session.app._takeover_idle()
             event = (
                 ev.SetModelProfile(profile_id=FAST_MODEL)
                 if transition == "model"
@@ -1034,6 +1042,9 @@ async def test_session_transition_preserves_pending_side_save(
                 directory = session.engine.session.session_dir
                 assert directory is not None
                 assert [entry.answer for entry in load_side_questions(directory, session.session_id())] == [side.answer]
+            assert session.engine.side_questions_block_takeover is save_fails
+            if save_fails:
+                assert not session.app._takeover_idle()
             session.main._btw.close_question()
             session.chat.load_text("/btw")
             session.bar.submit_input()
@@ -1049,16 +1060,16 @@ async def test_session_transition_preserves_pending_side_save(
 async def test_rollback_only_cancels_side_question_on_success(
     agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rollback: str
 ) -> None:
-    import chrys.orchestration.engine.engine as rollback_module
+    from chrys.foundation.platform import files as platform_files
 
     side = SideAnswer()
     monkeypatch.setattr(side_questions, "answer_side_question", side)
-    original_copy = rollback_module.atomic_copy_file
+    original_replace = platform_files.replace_with_retry
 
     def fail_primary(source: Path, destination: Path) -> None:
         if destination.name == "session.json":
             raise OSError("simulated swap failure")
-        original_copy(source, destination)
+        original_replace(source, destination)
 
     async with running_session(agent_engine, tmp_path, monkeypatch) as session:
         for turn_number, prompt in enumerate(("one", "two", "three"), 1):
@@ -1082,9 +1093,12 @@ async def test_rollback_only_cancels_side_question_on_success(
             session.engine._permits.advance_session_generation()
         else:
             if rollback == "failure":
-                monkeypatch.setattr(rollback_module, "atomic_copy_file", fail_primary)
+                monkeypatch.setattr(platform_files, "replace_with_retry", fail_primary)
             await session.bus.publish(ev.UserRollback(target_turn=1, revert_changes=False))
-        assert session.engine._permits.session_generation > generation
+        if rollback == "failure":
+            assert session.engine._permits.session_generation == generation
+        else:
+            assert session.engine._permits.session_generation > generation
         if rollback == "success":
             await asyncio.gather(task, return_exceptions=True)
             assert task.cancelled() and side.cancelled.is_set()

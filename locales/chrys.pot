@@ -1036,6 +1036,54 @@ msgstr ""
 msgid "rollback.conversation_changed"
 msgstr ""
 
+#. English: Some file changes from the discarded turns could not be detected.
+#. chrys-meta={"fingerprint":"d90329dff1b642be0c6fca82372cf076d83f83c8f88f29302ccd22b30bd7c451","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.detection_incomplete"
+msgstr ""
+
+#. English: modified internally and externally
+#. chrys-meta={"fingerprint":"d5a1840fc9dccd439bbfc13c50e30c4a5336d3364ff3b9261ca3a2ff410397f4","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.contested"
+msgstr ""
+
+#. English: changed by another session
+#. chrys-meta={"fingerprint":"4f1bf4b224427cf1c7ac2daf3d396be75d081738012b3bff93c6936a483a7e04","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.foreign"
+msgstr ""
+
+#. English: move source unrecoverable
+#. chrys-meta={"fingerprint":"4e8476059f2019606105c04ddc5a46ce6291066bc23c747e8f959ece6d1c54fb","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.move_poisoned"
+msgstr ""
+
+#. English: changed by another session since
+#. chrys-meta={"fingerprint":"dd6c1cc6799b6770b44405e1f4f62daf064b96c8bdf4231bd915cb64bdbd9c80","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.peer_modified_since"
+msgstr ""
+
+#. English: {path} ({reason})
+#. chrys-meta={"fingerprint":"e9a5c1700ac36d13e81df6345d15ff901ae48ac27fbabe836e71af85c8ada4a8","multiline":false,"placeholders":["path","reason"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.preview_item"
+msgstr ""
+
+#. English: no restorable backup
+#. chrys-meta={"fingerprint":"c574ca2824f6a9e79147950803628134f6b466fd7e82b06930fbe5783b21d3cd","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.unrestorable"
+msgstr ""
+
+#. English: File restoration results: {detail}
+#. chrys-meta={"fingerprint":"a0a3d14c40179d2389efdaf41e774be2108ba72553762744dfe024941975835c","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/rollback.py
+msgid "rollback.file_results"
+msgstr ""
+
 #. English: No active session to discard turns from.
 #. chrys-meta={"fingerprint":"090b9592d82c0a0e393f5ed7a70d49de4fbe4daa2afc4b8a27263ccba6af0d7f","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
@@ -1058,6 +1106,72 @@ msgstr ""
 #. chrys-meta={"fingerprint":"7ff146bb55c680c5232e0b719f2b45cec69d4119e08cf627dc76be7fc54f21ad","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.reset_failed"
+msgstr ""
+
+#. English: {counts}.
+#. chrys-meta={"fingerprint":"ffa67d2a792f79aea9d7da2c471c9d7c7734be886ff40a65a59b0b9b74a60709","multiline":false,"placeholders":["counts"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.restore_counts"
+msgstr ""
+
+#. English: {path}: {reason}
+#. chrys-meta={"fingerprint":"bee3e1645915b1477744a90ad1b2b022a06a87066fe5a5df5ff00f538b9b7162","multiline":false,"placeholders":["path","reason"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.restore_failure_item"
+msgstr ""
+
+#. English: File restoration results are unknown. Check the working files.
+#. chrys-meta={"fingerprint":"5327e975cdf178717b7ce6587a7dcdbffcb842cbdbb63d31de0bad35f39599a6","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.restore_unknown"
+msgstr ""
+
+#. English: {matched_count} already matched
+#. chrys-meta={"fingerprint":"5d38d9719a84b82b2a4741e4a4b3dd7c0ae9492fe81bdd583a5d259802bf9168","multiline":false,"placeholders":["matched_count"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.already_matched"
+msgstr ""
+
+#. English: error
+#. chrys-meta={"fingerprint":"ef063f36525f2aee40bd79716475b9f33e4e3193143fd168e277f29d606e40ad","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.error_reason"
+msgstr ""
+
+#. English: {failed_count} failed
+#. chrys-meta={"fingerprint":"ef2d72b20c466356bc7fb6997722dd6840eadb031f6f86b981cfdbf880cc5a1a","multiline":false,"placeholders":["failed_count"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.failed_count"
+msgstr ""
+
+#. English: Failed: {preview}{suffix}
+#. chrys-meta={"fingerprint":"11e4ad0112c33b10a0d7307400309a556cd3e1aaefa2e99e543f7dde3c91678f","multiline":false,"placeholders":["preview","suffix"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.failed_preview"
+msgstr ""
+
+#. English: {count} file excluded from revert: {preview}{suffix}
+#. English-plural: {count} files excluded from revert: {preview}{suffix}
+#. chrys-meta={"fingerprint":"1a256831b7b093fbaca78adccb24ea00e2642a7091155e870d06ef20868505c5","multiline":false,"placeholders":["preview","suffix"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.files_excluded"
+msgid_plural "rollback.result.files_excluded#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} file restored
+#. English-plural: {count} files restored
+#. chrys-meta={"fingerprint":"f8353aec993ab566da7443792d785abdc47824359d98d3756dc0b311be694b02","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.files_restored"
+msgid_plural "rollback.result.files_restored#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English:  (+{extra_count} more)
+#. chrys-meta={"fingerprint":"73ab0b602d9031c557b7c6df327a75f38a401aada3feeb3966c35e83334b8615","multiline":false,"placeholders":["extra_count"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.more_suffix"
 msgstr ""
 
 #. English: Discard cancelled because the workspace or runtime changed after
@@ -1111,6 +1225,21 @@ msgstr ""
 msgid "rollback.turns_unavailable"
 msgstr ""
 
+#. English: {count} file left unchanged: {paths}{suffix}
+#. English-plural: {count} files left unchanged: {paths}{suffix}
+#. chrys-meta={"fingerprint":"0eacf4c6592563bf4aae9b118059375967ac644ace4b94a5a379e6dc081cd484","multiline":false,"placeholders":["paths","suffix"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.unselected_files"
+msgid_plural "rollback.unselected_files#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: ⚠ {message}
+#. chrys-meta={"fingerprint":"b059010a74d8ee28343b2c678857a20bda91e91e81865caff8f5390afd6d9433","multiline":false,"placeholders":["message"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.warning_note"
+msgstr ""
+
 #. English: Stopping {count} background command the run left running.
 #. English-plural: Stopping {count} background commands the run left running.
 #. chrys-meta={"fingerprint":"9bc636de543ae587a325b23a479276dd2b0f2e9684839a1ddccb0e7f5305264c","multiline":false,"placeholders":[]}
@@ -1149,6 +1278,18 @@ msgstr ""
 #. chrys-meta={"fingerprint":"cf403302bf53005778ba686af15e573154017a629880c6d102e3de389c674a5b","multiline":false,"placeholders":[]}
 #: src/chrys/app/cli/run.py
 msgid "run.session_cwd_missing_hint"
+msgstr ""
+
+#. English: Failed to reopen the session: {detail}
+#. chrys-meta={"fingerprint":"528b63792fbb184810c4b0ad40ea4acebae447b40edbe6755dd2b1c61f59bdf6","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "session.restart_failed"
+msgstr ""
+
+#. English: Could not run the session_restored hook: {detail}
+#. chrys-meta={"fingerprint":"e1dea48599b7281bd711e74d62e578fc7b2993902b4f941697a53e5cc8f7d9a2","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "session.restored_hook_failed"
 msgstr ""
 
 #. English: Agent profile not found: {name}
@@ -6019,6 +6160,12 @@ msgstr ""
 msgid "tui.config.agent.switched"
 msgstr ""
 
+#. English: Unknown approval mode. Choose manual, auto, or bypass.
+#. chrys-meta={"fingerprint":"844a5d2ff3ce633001be07f061daa8bb7d581aeccb7961248f57a78b05d5dfd6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/config_actions.py
+msgid "tui.config.approval.unknown_mode"
+msgstr ""
+
 #. English: Cannot open model config while agent is loading
 #. chrys-meta={"fingerprint":"2823e1f0f032aa6b9060a13a0d4fbb84c3ea8c554ec47a810d34f36ca9faf77a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/config_actions.py
@@ -8246,14 +8393,33 @@ msgstr ""
 
 #. English: OK
 #. chrys-meta={"fingerprint":"6df638960a5ede1f4a19b118e821e01478abe5fc851a4370ac9574784032e9f0","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/event_handlers.py
+#: src/chrys/app/tui/screens/dialogs/confirm.py
 msgid "tui.main.session_in_use.ok"
+msgstr ""
+
+#. English: Take Over
+#. chrys-meta={"fingerprint":"8b246e18245b6aa84d357caaa4bd1639728f09dcc2ced3b5fb1e7ee418c0b8ab","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_in_use.py
+msgid "tui.main.session_in_use.take"
+msgstr ""
+
+#. English: {message}  Take Over closes the other instance and opens this
+#. conversation here.
+#. chrys-meta={"fingerprint":"3b7e6cbde6da23de23bda32ec62ddbe637ae69573d62e0c79bb98655fe284d14","multiline":true,"placeholders":["message"]}
+#: src/chrys/app/tui/screens/dialogs/session_in_use.py
+msgid "tui.main.session_in_use.take_message"
 msgstr ""
 
 #. English: Session In Use
 #. chrys-meta={"fingerprint":"237cc6d792bf33e263a0532716afba37c9c73f30f36cc6936a08e358195d896e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/event_handlers.py
+#: src/chrys/app/tui/screens/dialogs/confirm.py
 msgid "tui.main.session_in_use.title"
+msgstr ""
+
+#. English: Waiting for the other instance to release this conversation…
+#. chrys-meta={"fingerprint":"c5e4a851f23440cbd69858463ac89ac2ca76077b22975bc24f65ae77826751e5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_in_use.py
+msgid "tui.main.session_in_use.waiting"
 msgstr ""
 
 #. English: No active session.
@@ -11025,42 +11191,6 @@ msgstr ""
 msgid "tui.rollback.diff.now"
 msgstr ""
 
-#. English: modified internally and externally
-#. chrys-meta={"fingerprint":"d5a1840fc9dccd439bbfc13c50e30c4a5336d3364ff3b9261ca3a2ff410397f4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.contested"
-msgstr ""
-
-#. English: changed by another session
-#. chrys-meta={"fingerprint":"4f1bf4b224427cf1c7ac2daf3d396be75d081738012b3bff93c6936a483a7e04","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.foreign"
-msgstr ""
-
-#. English: move source unrecoverable
-#. chrys-meta={"fingerprint":"4e8476059f2019606105c04ddc5a46ce6291066bc23c747e8f959ece6d1c54fb","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.move_poisoned"
-msgstr ""
-
-#. English: changed by another session since
-#. chrys-meta={"fingerprint":"dd6c1cc6799b6770b44405e1f4f62daf064b96c8bdf4231bd915cb64bdbd9c80","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.peer_modified_since"
-msgstr ""
-
-#. English: {path} ({reason})
-#. chrys-meta={"fingerprint":"e9a5c1700ac36d13e81df6345d15ff901ae48ac27fbabe836e71af85c8ada4a8","multiline":false,"placeholders":["path","reason"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.preview_item"
-msgstr ""
-
-#. English: no restorable backup
-#. chrys-meta={"fingerprint":"c574ca2824f6a9e79147950803628134f6b466fd7e82b06930fbe5783b21d3cd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.unrestorable"
-msgstr ""
-
 #. English: +{extra_count} more
 #. chrys-meta={"fingerprint":"d89c56e3e397065f267365d5a4cb76c0ca0a079dae362360ba01d417c457e964","multiline":false,"placeholders":["extra_count"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
@@ -11148,48 +11278,6 @@ msgstr ""
 msgid "tui.rollback.range.restore"
 msgstr ""
 
-#. English: {matched_count} already matched
-#. chrys-meta={"fingerprint":"5d38d9719a84b82b2a4741e4a4b3dd7c0ae9492fe81bdd583a5d259802bf9168","multiline":false,"placeholders":["matched_count"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.already_matched"
-msgstr ""
-
-#. English: error
-#. chrys-meta={"fingerprint":"ef063f36525f2aee40bd79716475b9f33e4e3193143fd168e277f29d606e40ad","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.error_reason"
-msgstr ""
-
-#. English: {failed_count} failed
-#. chrys-meta={"fingerprint":"ef2d72b20c466356bc7fb6997722dd6840eadb031f6f86b981cfdbf880cc5a1a","multiline":false,"placeholders":["failed_count"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.failed_count"
-msgstr ""
-
-#. English: Failed: {preview}{suffix}
-#. chrys-meta={"fingerprint":"11e4ad0112c33b10a0d7307400309a556cd3e1aaefa2e99e543f7dde3c91678f","multiline":false,"placeholders":["preview","suffix"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.failed_preview"
-msgstr ""
-
-#. English: {count} file excluded from revert: {preview}{suffix}
-#. English-plural: {count} files excluded from revert: {preview}{suffix}
-#. chrys-meta={"fingerprint":"1a256831b7b093fbaca78adccb24ea00e2642a7091155e870d06ef20868505c5","multiline":false,"placeholders":["preview","suffix"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.files_excluded"
-msgid_plural "tui.rollback.result.files_excluded#plural"
-msgstr[0] ""
-msgstr[1] ""
-
-#. English: {count} file restored
-#. English-plural: {count} files restored
-#. chrys-meta={"fingerprint":"f8353aec993ab566da7443792d785abdc47824359d98d3756dc0b311be694b02","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.files_restored"
-msgid_plural "tui.rollback.result.files_restored#plural"
-msgstr[0] ""
-msgstr[1] ""
-
 #. English: {count} file reverted
 #. English-plural: {count} files reverted
 #. chrys-meta={"fingerprint":"41ccf794613d707d98f5e13a36ffc3d5e5320b9776748b065f1358d9f8d8a919","multiline":false,"placeholders":[]}
@@ -11198,12 +11286,6 @@ msgid "tui.rollback.result.files_reverted"
 msgid_plural "tui.rollback.result.files_reverted#plural"
 msgstr[0] ""
 msgstr[1] ""
-
-#. English:  (+{extra_count} more)
-#. chrys-meta={"fingerprint":"73ab0b602d9031c557b7c6df327a75f38a401aada3feeb3966c35e83334b8615","multiline":false,"placeholders":["extra_count"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.more_suffix"
-msgstr ""
 
 #. English: Discarded all turns.
 #. chrys-meta={"fingerprint":"775aea7d30d4b742c1d07f591c63029a2bd51ead7cc74dca1e3fa4f266edb228","multiline":false,"placeholders":[]}
@@ -11275,12 +11357,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"008c856d921c09dc14bee662fffd4525089838ee322172a4db1d87c2c11fc183","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.usage"
-msgstr ""
-
-#. English: ⚠ {message}
-#. chrys-meta={"fingerprint":"b059010a74d8ee28343b2c678857a20bda91e91e81865caff8f5390afd6d9433","multiline":false,"placeholders":["message"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.warning_note"
 msgstr ""
 
 #. English: Chat Completions
@@ -12246,10 +12322,9 @@ msgstr ""
 msgid "tui.settings.hint.approval.auto_review"
 msgstr ""
 
-#. English: Approval mode at the next launch; /approval changes both the
-#. current session and this default. /approval bypass applies to the current
-#. launch only and saves auto.
-#. chrys-meta={"fingerprint":"3ef1c3ca6c4970c15e2fd564c9f4d92a04e52329f560cedba67db55c92ba2d87","multiline":false,"placeholders":[]}
+#. English: Approval mode for the next launch. Use /approval to change both the
+#. current mode and this default.
+#. chrys-meta={"fingerprint":"794626fdf8eca0973472d72f1ee7b7fd9535d7a46d5457d97bd613c127990a7f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.default_mode"
 msgstr ""
@@ -13328,6 +13403,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"997389a23bb77d18bc898490f75dd781e2f91effe2bdd38f95566f833ac9ef9e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
+msgstr ""
+
+#. English: Approval mode is bypass. Tool calls will run without asking for
+#. approval.
+#. chrys-meta={"fingerprint":"3baad6a4b258a12db0dc21ca9cc4887adddb70b9827239a5f03763d9e258ac37","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.startup.approval.bypass"
 msgstr ""
 
 #. English: Session {session_id} is open in another window or process.
@@ -18330,6 +18412,79 @@ msgstr ""
 #. chrys-meta={"fingerprint":"654b76c77173a002570571dd6d7560630523d9b4a12b57dbfea3ae8c8833d5a8","multiline":false,"placeholders":["path"]}
 #: src/chrys/service/workspaces/paths.py
 msgid "workspaces.primary_missing"
+msgstr ""
+
+#. English: Workspace “{name}” has a missing reference folder: {paths}
+#. English-plural: Workspace “{name}” has {count} missing reference folders:
+#. {paths}
+#. chrys-meta={"fingerprint":"107b7091c13acbedf4c6b802c580641e1f40896ca9730f671b6a20db9beb58d0","multiline":false,"placeholders":["name","paths"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.reference_missing"
+msgid_plural "workspaces.reference_missing#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Expected ws_ followed by 32 lowercase hexadecimal digits.
+#. chrys-meta={"fingerprint":"906618d6010c0259ecaaecdebded160d0c40b1a20a6eba96b1dbe1b4bc4f4fb4","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_expected_id"
+msgstr ""
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Expected a list.
+#. chrys-meta={"fingerprint":"3735596db0321cceaae8a61b854dd7a4ec503298e818becadea1c84f2e54e7ec","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_expected_list"
+msgstr ""
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Expected an object.
+#. chrys-meta={"fingerprint":"1a736d4718b7b7e4e5703e3e5bf4637f185bd39865dd5b1152557f57757dde46","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_expected_object"
+msgstr ""
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Expected a string.
+#. chrys-meta={"fingerprint":"123be5a921a07088e58a9e9cc6c70072b81ee259f3a9d66f64e207fdc3597f14","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_expected_string"
+msgstr ""
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Workspace folders must use absolute paths.
+#. chrys-meta={"fingerprint":"db740232dafa12d4aac986bc4ee219a1230ed5498b4fc8057987644309bde876","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_folder_invalid"
+msgstr ""
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: ID {id} already exists.
+#. chrys-meta={"fingerprint":"99d3c40931cb0853866906cb5865eb49e696ea691e15c58f67b05a5766732b7e","multiline":false,"placeholders":["field","id","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_id_exists"
+msgstr ""
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: A workspace name can't contain control characters.
+#. chrys-meta={"fingerprint":"9a9ca3ad8324e34bcc280ea08113f3d50013945484b78257c07389c2ff69d765","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_name_control_char"
+msgstr ""
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Enter a workspace name.
+#. chrys-meta={"fingerprint":"c01451e40f824616fc3666fd2fda35cd09d66747b7d4ef9575bce80757fb0965","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_name_empty"
+msgstr ""
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: A workspace with the name {name} already exists.
+#. chrys-meta={"fingerprint":"3ac0e1e04c45639296d8d1b9c9575fb6667297fd227f3599aad2f8ab993f0a17","multiline":false,"placeholders":["field","name","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_name_exists"
 msgstr ""
 
 #. English: The workspace list was written by a newer version of {app}: {path}

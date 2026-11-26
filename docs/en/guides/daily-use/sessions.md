@@ -71,6 +71,10 @@ When the agent is idle, enter `/resume` in the input field to resume the most re
 
 If you know the ID, enter `/sessions <session_id>` to open it directly. Use the 12-character short ID or the full UUID, with or without hyphens. A workflow ID opens its saved run history. If no session matches, a warning appears and your current chat stays open.
 
+When another iCode TUI running under the same local user account has the chat open, the dialog shows its process ID and parent process name when available. Once that window is idle, its latest turn and any completed `/btw` answers have been saved, and its background commands have finished, choose **Take Over** to close it and continue the same conversation here. If you opened the built-in `!` terminal in that window, finish your work and run `exit` in the shell to make the chat available for takeover. **OK** closes the initial dialog. If the other window takes time to exit, this window waits and opens the chat automatically. Choose **Cancel** to stay in your current chat while the other window finishes closing.
+
+If the agent fails to load after iCode has closed the current chat, iCode clears the chat and shows the error. If the session is still saved, reopen it from **Chat Sessions** to retry.
+
 To find and resume another session, press **F1**, click `f1 Sessions`, or enter `/sessions` in the input field to open the "Chat Sessions" window. It lists each session's ID, title, directory, last active time, number of conversation turns, and session data size. Each page shows up to 100 sessions, most recently active first.
 
 - **Filter by where a session was last used**: The "TUI", "CLI", and "ACP" checkboxes above the search field show sessions last used in the TUI, in [`icode run`](../running/icode-run.md), or in an editor or other client connected through [`icode acp`](../running/icode-acp.md). Only "TUI" is checked at first. Sessions from earlier iCode versions count as TUI. iCode remembers your choice until you quit it. Hover over a session to see where it was last used.

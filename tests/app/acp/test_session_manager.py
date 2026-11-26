@@ -381,7 +381,7 @@ async def test_load_session_returns_existing_active_session(tmp_path, monkeypatc
         primary_cwd=str(project),
     )
     manager = _manager(str(project), store)
-    existing_host = _CloseHost()
+    existing_host = _CloseHost("project-session")
     existing = ManagedSession(  # type: ignore[arg-type]
         session_id="project-session",
         cwd=str(project),
@@ -414,7 +414,7 @@ async def test_load_session_checks_active_sessions_before_persisted_list(tmp_pat
     active_lock = FileLock(store.active_lock_path("project-session"), timeout=1.0)
     active_lock.acquire()
     manager = _manager(str(project), store)
-    existing_host = _CloseHost()
+    existing_host = _CloseHost("project-session")
     existing_host.engine.recovered_from_sidecar = True
     existing = ManagedSession(  # type: ignore[arg-type]
         session_id="project-session",
@@ -478,7 +478,7 @@ async def test_session_history_uses_active_recovery_source(tmp_path) -> None:
     active_lock = FileLock(store.active_lock_path("project-session"), timeout=1.0)
     active_lock.acquire()
     manager = _manager(str(project), store)
-    existing_host = _CloseHost()
+    existing_host = _CloseHost("project-session")
     existing_host.engine.recovered_from_sidecar = True
     manager._sessions["project-session"] = ManagedSession(  # type: ignore[assignment]
         session_id="project-session",
@@ -599,7 +599,7 @@ async def test_delete_session_rejects_an_ambiguous_short_id_before_touching_acti
     saved = store.session_dir(active_id) / "session.json"
     before = (saved.read_bytes(), legacy.read_bytes())
     manager = _manager(str(tmp_path), store)
-    host = _CloseHost()
+    host = _CloseHost(active_id)
     managed = ManagedSession(  # type: ignore[arg-type]
         session_id=active_id,
         cwd=str(tmp_path),
@@ -632,7 +632,7 @@ async def test_begin_delete_session_marks_an_active_target_closing_but_not_on_re
         primary_cwd=str(project),
     )
     manager = _manager(str(project), store)
-    host = _CloseHost()
+    host = _CloseHost("saved-session")
     managed = ManagedSession(  # type: ignore[arg-type]
         session_id="saved-session",
         cwd=str(project),
@@ -683,7 +683,7 @@ async def test_load_session_rejects_a_closing_session_instead_of_reusing_or_relo
         session_id="project-session",
         cwd=str(project),
         profile_name="Code",
-        host=_CloseHost(),
+        host=_CloseHost("project-session"),
     )
     manager._sessions["project-session"] = existing  # type: ignore[assignment]
     await manager.begin_close("project-session")
@@ -746,7 +746,7 @@ async def test_delete_session_removes_saved_session_and_shuts_down_active_host(t
         primary_cwd=str(project),
     )
     manager = _manager(str(project), store)
-    host = _CloseHost()
+    host = _CloseHost("project-session")
     manager._sessions["project-session"] = ManagedSession(  # type: ignore[assignment]
         session_id="project-session",
         cwd=str(project),
@@ -989,7 +989,7 @@ async def test_load_session_rejects_additional_directories_for_active_session(tm
         session_id="project-session",
         cwd=str(project),
         profile_name="Code",
-        host=_CloseHost(),
+        host=_CloseHost("project-session"),
     )
 
     with pytest.raises(AcpSessionError, match="additional directories"):

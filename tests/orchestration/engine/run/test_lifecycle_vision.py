@@ -34,6 +34,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import DisplayBlock
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.kernel import Content, Message
@@ -176,6 +177,7 @@ class _Bus:
 class _Executor:
     def __init__(self) -> None:
         self.conversation = self
+        self.origin = InvocationOrigin("turn", "", "vision-turn", None)
         self.user_message = ""
         self.run_calls: list[tuple[list[Any], Any]] = []
         self.run_failed = False

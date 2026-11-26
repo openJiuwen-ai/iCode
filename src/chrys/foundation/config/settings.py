@@ -71,10 +71,7 @@ DEFAULT_APPROVAL_TIMEOUT_SECONDS = 0
 DEFAULT_APPROVAL_MODE = "manual"
 """Fallback approval mode when ``CHRYS_DEFAULT_APPROVAL_MODE`` is empty, missing, or invalid.
 
-Valid values are ``manual``, ``auto``, ``bypass``.  The persistence helper
-(:func:`persist_approval_mode`) deliberately downgrades ``bypass`` to ``auto``
-so that Chrys never launches in BYPASS mode — that mode is opt-in per launch:
-once chosen it stays in force for every session until the app exits.
+Valid values are ``manual``, ``auto``, and ``bypass``.
 """
 
 DEFAULT_AGENT_PROFILE = "Code"
@@ -1145,9 +1142,7 @@ class Settings:
     # ── Approval ──────────────────────────────────────────────────
     # Persisted default approval mode applied at engine startup.  One of
     # ``manual`` / ``auto`` / ``bypass``.  Invalid or missing values fall
-    # back to :data:`DEFAULT_APPROVAL_MODE`.  :func:`persist_approval_mode`
-    # maps ``bypass`` → ``auto`` on write so Chrys never boots directly
-    # into BYPASS mode.
+    # back to :data:`DEFAULT_APPROVAL_MODE`.
     default_approval_mode: str = field(
         default=DEFAULT_APPROVAL_MODE,
         metadata=spec(
@@ -2053,10 +2048,7 @@ def persist_locale(locale: str) -> Exception | None:
 def persist_approval_mode(mode: str) -> Exception | None:
     """Write ``approval.default_mode`` to the user settings document.
 
-    ``bypass`` never persists — :func:`chrys.foundation.config.settings_store.persist`
-    downgrades it to ``auto`` so the *next* app launch cannot start in BYPASS
-    mode; that mode must always be an explicit opt-in within a launch. Unknown
-    values are ignored (logged, not written).
+    Unknown values are logged and ignored.
     """
     return _persist_one("approval.default_mode", mode)
 

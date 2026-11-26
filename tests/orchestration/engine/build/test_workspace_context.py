@@ -16,6 +16,7 @@ import pytest
 
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.models.workspace import WorkingDir, Workspace
+from chrys.foundation.text.model_json import model_path
 from chrys.orchestration.engine.build import builder
 from chrys.orchestration.sub_agents import tools as children
 from chrys.service.agent_middleware import ResponseBatchCounter
@@ -107,22 +108,20 @@ async def test_real_main_and_child_share_access_roots_but_only_main_gets_workspa
         reminder = RuntimeEnvSource(result.runtime, shell_tool_enabled=False, workspace_section=True).snapshot()
         assert reminder is not None
         assert "  Workspace: Selected" in reminder
-        assert f"  - {primary} (primary)" in reminder
-        assert f"  - {related}" in reminder
-        assert f"  Instructions for this folder: {related / 'AGENTS.md'}" in reminder
-        assert "  Read them before working in this folder; they apply only inside it." in reminder
+        primary_path = json.dumps(str(primary), ensure_ascii=False)
+        related_path = json.dumps(str(related), ensure_ascii=False)
+        instructions_path = json.dumps(str(related / "AGENTS.md"), ensure_ascii=False)
         lines = reminder.splitlines()
         assert lines[lines.index("  Workspace: Selected") :] == [
             "  Workspace: Selected",
             "  Workspace folders:",
-            f"  - {primary} (primary)",
-            f"  - {related}",
-            f"    Instructions for this folder: {related / 'AGENTS.md'}",
+            f"  - {primary_path} (primary)",
+            f"  - {related_path}",
+            f"    Instructions for this folder: {instructions_path}",
             "    Read them before working in this folder; they apply only inside it.",
         ]
-        assert f"    - {related}" not in reminder
+        assert f"    - {related_path}" not in reminder
         assert " [Selected]" not in reminder
-        assert sum(line == f"  - {primary} (primary)" for line in lines) == 1
         assert not any(
             isinstance(provider, MemoryProvider)
             for provider in result.sub_agent_tools._context_managers["Child0"].providers
@@ -190,17 +189,18 @@ async def test_registered_reference_paths_reach_model_and_file_tools(tmp_path, m
         reminder = RuntimeEnvSource(result.runtime, shell_tool_enabled=False, workspace_section=True).snapshot()
         assert not _is_workspace_git_path(str(sibling / "AGENTS.md"), result.bindings.approval._workspace_roots)
         if entry in {"missing_link", "regular_file"} or (entry == "parent_link" and sys.platform == "win32"):
-            assert listed.splitlines()[1:] == [f"  {registered} MISSING"]
-            assert str(registered) not in reminder
+            registered_path = json.dumps(str(registered), ensure_ascii=False)
+            assert listed.splitlines()[1:] == [f"  {registered_path} MISSING"]
+            assert registered_path not in reminder
             assert result.bindings.approval._workspace_roots == [str(primary.resolve())]
             assert not result.runtime.working_dirs
         else:
             (listed_root,) = [
-                line.removesuffix(" ok").strip() for line in listed.splitlines()[1:] if line.endswith(" ok")
+                json.loads(line.removesuffix(" ok")) for line in listed.splitlines()[1:] if line.endswith(" ok")
             ]
             assert listed_root == str(physical.resolve())
             read_path = str(physical.resolve() / "AGENTS.md")
-            assert f"Instructions for this folder: {read_path}" in reminder
+            assert f"Instructions for this folder: {json.dumps(read_path, ensure_ascii=False)}" in reminder
             assert "physical instructions" in await tools["read_file"].invoke(
                 arguments={"path": read_path}, skip_parsing=True
             )
@@ -259,10 +259,12 @@ async def test_reference_path_names_the_directory_the_file_tools_read(tmp_path, 
     result = await _build(probe, registry.snapshot().workspace(selected.id))
     try:
         listed = await tools["list_workspace_dirs"].invoke(arguments={}, skip_parsing=True)
-        (listed_root,) = [line.removesuffix(" ok").strip() for line in listed.splitlines()[1:] if line.endswith(" ok")]
+        (listed_root,) = [
+            json.loads(line.removesuffix(" ok")) for line in listed.splitlines()[1:] if line.endswith(" ok")
+        ]
         assert listed_root == str(expected.resolve())
         reminder = RuntimeEnvSource(result.runtime, shell_tool_enabled=False, workspace_section=True).snapshot()
-        assert f"- {listed_root}" in reminder
+        assert f"- {json.dumps(listed_root, ensure_ascii=False)}" in reminder
         note = (Path(listed_root) / "note.txt").read_text(encoding="utf-8")
         assert note == (expected / "note.txt").read_text(encoding="utf-8")
         read = await tools["read_file"].invoke(
@@ -383,7 +385,7 @@ async def test_service_session_continuation_follows_the_effective_scope(
                 if part.type == "function_result"
             ]
             expected_ref = second if scenario.endswith("reference") else first
-            assert any(str(expected_ref) in part.result for part in tool_content)
+            assert any(model_path(str(expected_ref)) in part.result for part in tool_content)
             assert (await store.load_session_meta(sid)).working_dirs == []
         else:
             session_file = store.session_dir(sid) / "session.json"

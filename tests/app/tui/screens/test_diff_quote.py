@@ -23,6 +23,7 @@ from chrys.app.tui.widgets.diff_view.gutter import GutterColumn
 from chrys.app.tui.widgets.diff_view.rows import RowKind, Side
 from chrys.service.mutations.types import MutationOp
 from tests.support.diff_quote_text import diff_quote_text
+from tests.support.toasts import shown_toasts
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 
@@ -338,7 +339,7 @@ async def test_changed_comment_cannot_be_opened_or_overwritten(change) -> None:
         if change != "absent":
             await click_when_settled(pilot, left.gutters[0], offset=(1, 0))
             assert app.screen is app.diff
-            assert [str(n.message) for n in app._notifications] == [
+            assert [str(n.message) for n in shown_toasts(app)] == [
                 "Added to the message input: [Quote #1]",
                 "This comment has changed in the message input. Please edit it there.",
             ]
@@ -972,7 +973,7 @@ async def test_truncation_toast_and_hash_record_are_created_through_number_click
         assert shortened.endswith("…") and raw.startswith(shortened[:-1]) and len(shortened) > 100
         assert quote.content == diff_quote_text("a.py", "after", "turn 1", 1, [(1, "+", shortened)])
         assert not quote.context_omitted
-        notices = [n for n in app._notifications if n.title == "Quote truncated"]
+        notices = [n for n in shown_toasts(app) if n.title == "Quote truncated"]
         assert [(str(n.message), n.severity) for n in notices] == [
             (f"Quote truncated: {quote.original_tokens:,} tokens exceeds the 80-token limit.", "warning")
         ]
@@ -1221,7 +1222,7 @@ async def test_empty_session_diff_notifies_and_closes_even_with_repository_chang
     async with app.run_test() as pilot:
         await wait_for(lambda: not app.diff.is_attached, pilot=pilot, description="empty diff closes")
         assert not isinstance(app.screen, DiffScreen)
-        assert [(str(n.message), n.severity) for n in app._notifications] == [("No file changes to show", "warning")]
+        assert [(str(n.message), n.severity) for n in shown_toasts(app)] == [("No file changes to show", "warning")]
 
 
 async def test_comments_use_the_lines_split_while_the_diff_was_prepared(monkeypatch) -> None:
@@ -1307,7 +1308,7 @@ async def test_left_out_neighbours_are_told_once_and_the_quoted_line_is_whole(mo
         _left, right = await _ready(app, pilot)
         dialog = await _open(app, pilot, right)
         assert dialog._quote.content == diff_quote_text("a.py", "after", "turn 1", 1, [(1, "+", "\tnew")])
-        assert [(str(n.message), n.severity) for n in app._notifications] == [
+        assert [(str(n.message), n.severity) for n in shown_toasts(app)] == [
             ("The lines around this one are too long, so only this line is quoted.", "warning")
         ]
 

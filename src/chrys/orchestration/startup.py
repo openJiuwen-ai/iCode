@@ -8,6 +8,7 @@ import contextlib
 import logging
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -101,7 +102,7 @@ def _dangerous_setting_warnings(loaded: LoadedSettings) -> list[Warning]:
     ]
 
 
-def _migrate_legacy_settings() -> list[Warning]:
+def _migrate_legacy_settings(backup: Callable[[Path, bytes | None], None]) -> list[Warning]:
     """Import notification preferences and move retired theme names and keys at startup."""
     from chrys.foundation.config.migrations import (
         migrate_buddy_model_profile,
@@ -112,7 +113,7 @@ def _migrate_legacy_settings() -> list[Warning]:
 
     warnings: list[Warning] = []
     try:
-        migrate_notifications_v0()
+        migrate_notifications_v0(backup=backup)
     except Exception as error:
         display_message = _NOTIFICATIONS_MIGRATION_FAILED.bind(path=str(user_settings_path()), error=str(error))
         warnings.append(
@@ -126,11 +127,11 @@ def _migrate_legacy_settings() -> list[Warning]:
             )
         )
     try:
-        migrate_renamed_theme()
+        migrate_renamed_theme(backup=backup)
     except Exception:
         logger.info("Could not rename the saved theme in %s", user_settings_path(), exc_info=True)
     try:
-        migrate_buddy_model_profile(_buddy_model_profile)
+        migrate_buddy_model_profile(_buddy_model_profile, backup=backup)
     except Exception:
         logger.info("Could not move the saved buddy model in %s", user_settings_path(), exc_info=True)
     return warnings
@@ -248,7 +249,7 @@ def bootstrap_runtime(
 
     migration = WorkdirMigration(get_platform().config_dir)
     migration.migrate_global()
-    warnings.extend(_migrate_legacy_settings())
+    warnings.extend(_migrate_legacy_settings(migration.backup_config_original))
 
     if apply_patches:
         from chrys.foundation.patches import apply_all

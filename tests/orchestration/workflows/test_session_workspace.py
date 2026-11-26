@@ -318,12 +318,12 @@ async def test_agent_build_uses_only_the_confirmed_workflow_scope(registry, tmp_
             assert tool_dirs == [confirmed_dirs]
             messages, _ = client.call_history[0]
             prompt = "\n".join(message.text or "" for message in messages)
-            assert f"Working directory: {workflow_cwd}" in prompt
-            assert all(path in prompt for path in confirmed_dirs)
-            assert str(latest) not in prompt
+            assert f"Working directory: {json.dumps(str(workflow_cwd), ensure_ascii=False)}" in prompt
+            assert all(json.dumps(path, ensure_ascii=False) in prompt for path in confirmed_dirs)
+            assert json.dumps(str(latest), ensure_ascii=False) not in prompt
             if own_cwd:
-                assert str(related) not in prompt
-                assert str(primary) not in prompt
+                assert json.dumps(str(related), ensure_ascii=False) not in prompt
+                assert json.dumps(str(primary), ensure_ascii=False) not in prompt
         state = await JsonFileStateStore(tmp_path / "sessions").load_workflow_session(host.workflow_session_id)
         assert state.workspace == target.workspace
     finally:

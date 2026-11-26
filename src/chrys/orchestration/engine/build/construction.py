@@ -125,11 +125,6 @@ def stage_build(
     host one → stage a fresh candidate, which stays uninstalled until the
     build commits.
 
-    The departure line follows the same rule: entering a workspace clears it,
-    a plan that leaves or loses one names it, and any other rebuild keeps the
-    one the session already shows. A restore hands its plan's departure in,
-    computed before the previous runtime was torn down, so this never depends
-    on the order the restored session's fields were installed in.
     """
     target = restore_session or session
     coordinator = target.mutation_coordinator
@@ -324,7 +319,6 @@ async def build_agent(
             settings=staged.loaded.settings,
             model_registry=model_registry,
             workspace=runtime_workspace,
-            departed_workspace=staged.workspace_plan.departure,
             missing_working_dirs=staged.workspace_plan.missing_working_dirs,
             session_id=target.session_id,
             bus=bus,

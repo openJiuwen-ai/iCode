@@ -45,9 +45,38 @@ from tests.orchestration.engine._recovery_helpers import (
     stub_engine_shutdown,
 )
 from tests.support.components import plan_workspace
-from tests.support.event_capture import assert_display_message, collect_events
+from tests.support.event_capture import assert_display_message, capture_event_sequence, collect_events
 from tests.support.symlinks import symlink_or_skip
 from tests.support.workspace_engine import stub_workspace_start
+from tests.support.workspace_engine import workspace_case as workspace_case
+
+
+async def test_restore_clears_the_session_after_in_place_teardown_fails(workspace_case, tmp_path, monkeypatch):
+    from tests.support.rollback_spec import ask
+
+    engine = await workspace_case(tmp_path)
+    await ask(engine, "keep this conversation")
+    sid = engine.session_id
+    assert sid is not None
+    close = engine.lifecycle.close_session_in_place
+
+    async def close_then_fail(**kwargs):
+        await close(**kwargs)
+        raise RuntimeError("in-place teardown failed")
+
+    monkeypatch.setattr(engine.lifecycle, "close_session_in_place", close_then_fail)
+    async with capture_event_sequence(engine.event_bus, Error, SessionRestored) as events:
+        await engine.event_bus.publish(SessionRestore(session_id=sid))
+
+    (error,) = events
+    assert isinstance(error, Error)
+    assert (error.code, error.session_id) == ("session_restore_failed", sid)
+    assert engine.current.loaded is None
+    assert engine.session_id is None
+    assert not engine.session.guard.owns(sid)
+    saved = await workspace_case.store.load_session(sid)
+    assert saved is not None
+    assert [message.text for message in saved["messages"] if message.role == "user"] == ["keep this conversation"]
 
 
 async def test_restore_reports_busy_when_linked_recovery_is_claimed_after_lookup(tmp_path: Path) -> None:
@@ -746,7 +775,6 @@ async def test_new_session_uses_profile_after_transition_permit(monkeypatch: pyt
 
 
 async def test_new_session_keeps_the_approval_mode_chosen_this_launch(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Choosing bypass saves ``auto`` so the next launch is safe; within this launch the choice stands.
     profile = _profile()
     engine = assemble_agent_engine(EventBus(), settings=Settings(default_approval_mode="auto"))
     engine.session.agent_profile = profile

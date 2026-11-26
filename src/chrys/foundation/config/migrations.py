@@ -87,7 +87,7 @@ def _legacy_notifications_path() -> Path:
     return get_platform().config_dir / "notifications.yaml"
 
 
-def migrate_notifications_v0() -> MigrationResult:
+def migrate_notifications_v0(*, backup: Callable[[Path, bytes | None], None] | None = None) -> MigrationResult:
     """Fold ``notifications.yaml`` into the ``notifications.*`` settings keys.
 
     The legacy loader's reading was ``bool(value)`` per present field with
@@ -162,7 +162,7 @@ def migrate_notifications_v0() -> MigrationResult:
         return doc
 
     try:
-        update_yaml_doc(user_settings_path(), fold_in)
+        update_yaml_doc(user_settings_path(), fold_in, before_write=backup)
     except _AlreadyComplete:
         return MigrationResult(migrated={}, performed=False)
     except OSError:
@@ -176,8 +176,8 @@ def migrate_notifications_v0() -> MigrationResult:
 
     # Retire both files after import, preserving them for rollback. Recheck
     # the primary under its lock before retiring the bytes read in phase A.
-    backup = backup_path_for(legacy_path)
-    if legacy_path.is_file() or backup.is_file():
+    legacy_backup = backup_path_for(legacy_path)
+    if legacy_path.is_file() or legacy_backup.is_file():
         with FileLock(lock_path_for(legacy_path), timeout=LOCK_TIMEOUT_SECONDS):
             current = file_fingerprint(legacy_path)
             # A file that is present but cannot be digested has no identity to
@@ -191,8 +191,8 @@ def migrate_notifications_v0() -> MigrationResult:
                     legacy_path,
                 )
                 return result
-            if backup.is_file():
-                backup.replace(backup.with_name(backup.name + ".migrated"))
+            if legacy_backup.is_file():
+                legacy_backup.replace(legacy_backup.with_name(legacy_backup.name + ".migrated"))
             if legacy_path.is_file():
                 legacy_path.replace(legacy_path.with_name(legacy_path.name + ".migrated"))
 
@@ -200,7 +200,7 @@ def migrate_notifications_v0() -> MigrationResult:
     return result
 
 
-def migrate_renamed_theme() -> MigrationResult:
+def migrate_renamed_theme(*, backup: Callable[[Path, bytes | None], None] | None = None) -> MigrationResult:
     """Rewrite a saved ``ui.theme`` that names a built-in theme by a name it no longer has.
 
     Nothing draws wrong without this — the loader follows :data:`RENAMED_THEMES`
@@ -230,7 +230,7 @@ def migrate_renamed_theme() -> MigrationResult:
         return apply_settings_patch(doc, migrated)
 
     try:
-        update_yaml_doc(path, rename)
+        update_yaml_doc(path, rename, before_write=backup)
     except _AlreadyComplete:
         return done
     return MigrationResult(migrated=dict(migrated), performed=True)
@@ -244,7 +244,9 @@ def _renamed_theme(doc: dict[str, Any] | None, key: str) -> str | None:
     return RENAMED_THEMES.get(saved.strip()) if isinstance(saved, str) else None
 
 
-def migrate_buddy_model_profile(successor: Callable[[str], str | None]) -> MigrationResult:
+def migrate_buddy_model_profile(
+    successor: Callable[[str], str | None], *, backup: Callable[[Path, bytes | None], None] | None = None
+) -> MigrationResult:
     """Move a saved :data:`RETIRED_BUDDY_MODEL_KEY` to the buddy's model profile setting.
 
     The retired key held a bare model id, asked of the active profile's
@@ -288,7 +290,7 @@ def migrate_buddy_model_profile(successor: Callable[[str], str | None]) -> Migra
         return apply_settings_patch(doc, migrated, remove=(RETIRED_BUDDY_MODEL_KEY,))
 
     try:
-        update_yaml_doc(path, move)
+        update_yaml_doc(path, move, before_write=backup)
     except _AlreadyComplete:
         return done
     return MigrationResult(migrated=dict(migrated), performed=True)

@@ -15,7 +15,8 @@ from contextlib import nullcontext
 from fractions import Fraction
 from functools import partial
 from typing import TYPE_CHECKING, Any
-from weakref import WeakKeyDictionary, WeakSet
+from weakref import ReferenceType, WeakKeyDictionary, WeakSet
+from weakref import ref as weakref_ref
 
 from rich.text import Text
 from textual import events as textual_events
@@ -174,6 +175,11 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._rollback_targets: set[int] = {0}
         self._rollback_preview_borders: dict[Widget, tuple[object, Callable[[Task[None]], None]]] = {}
         self._rollback_preview_start: UserMessage | None = None
+        # The card captured when the user starts a retry; ``captured`` also
+        # records "there was no old card", so a later TurnStarted never re-reads
+        # the transcript after a new interrupt card has mounted.
+        self._retry_settled_status: ReferenceType[Widget] | None = None
+        self._retry_settled_status_captured = False
         self._tool_registry = ToolGroupRegistry(
             self,
             self,
@@ -1218,6 +1224,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         return self._replay_mount.pending_widgets()
 
     def set_border_title(self, title: Text | None) -> None:
+        if title is None and self.border_title is None:
+            return
         self.border_title = title
 
     def set_border_subtitle(self, subtitle: Text | None) -> None:
@@ -2050,6 +2058,41 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         last = self._find_trailing_status()
         if isinstance(last, (ErrorMessage, InterruptedMessage)):
             last.hide_action()
+
+    def capture_settled_status(self) -> None:
+        """Record the card a retry may dismiss, including that there is none.
+
+        Called when the user starts the retry, before any new card can mount.
+        A later ``TurnStarted`` must not re-read the transcript: an interrupt
+        card may have replaced the old one by then. The weak reference holds no
+        strong reference, so a replaced card dies with its widget.
+        """
+        status = self._find_trailing_status()
+        self._retry_settled_status = (
+            weakref_ref(status) if isinstance(status, (ErrorMessage, InterruptedMessage)) else None
+        )
+        self._retry_settled_status_captured = True
+
+    async def clear_settled_status(self) -> None:
+        """Remove exactly the card captured when the retry started, if still trailing.
+
+        A retry attempt or an interrupt may mount a newer card while the retry's
+        ``TurnStarted`` waits in the render gate. That card was not captured and
+        must stay.
+        """
+        if not self._retry_settled_status_captured:
+            return
+        status = self._retry_settled_status
+        self._retry_settled_status = None
+        self._retry_settled_status_captured = False
+        captured = status() if status is not None else None
+        if (
+            isinstance(captured, (ErrorMessage, InterruptedMessage))
+            and captured.is_mounted
+            and self._find_trailing_status() is captured
+        ):
+            await remove_shielded(captured)
+            self._sync_waiting_row()
 
     async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
         """Remove the answer text a Continue, Retry or steer dropped from history: the messages these segments showed.

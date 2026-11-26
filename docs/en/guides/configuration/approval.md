@@ -31,7 +31,7 @@ You can switch modes while a task is running. Approval requests that are already
 
 ### Set the default approval mode
 
-With the default settings unchanged, the TUI starts in manual approval mode on its first launch. Switching the current approval mode also updates the default for the next launch: choosing manual or automatic mode saves that mode as the default. Choosing bypass mode applies only to the current run; to avoid continuing to bypass approval protections after a restart, the default for the next launch is saved as automatic mode.
+The TUI starts in manual mode on first launch with the default settings. When you switch modes, iCode saves your choice for the next launch, including bypass. Each time the TUI starts in bypass mode, a warning reminds you that tools can run without approval.
 
 To change only the default for the next launch without changing the current approval mode, press **F10** to open **Settings** and change **Default approval mode** on the **Safety** tab. **Settings** does not offer bypass mode as a default that can be saved.
 

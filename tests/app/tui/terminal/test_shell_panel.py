@@ -305,6 +305,7 @@ async def test_panel_has_no_shell_until_shown_and_keeps_it_while_hidden(shells: 
         panel = app.panel
         assert not panel.is_visible
         assert shells.shells == []
+        assert not panel.has_live_shell
         assert panel.gc_freeze_block_reason() is None
 
         shell = await _shown(app, shells)
@@ -322,6 +323,7 @@ async def test_panel_has_no_shell_until_shown_and_keeps_it_while_hidden(shells: 
 
         assert not panel.is_visible
         assert panel.gc_freeze_block_reason() is None
+        assert panel.has_live_shell
         assert (shell.terminations, shell.closes, shell.is_finished) == (0, 0, False)
 
         await _shown(app, shells)
@@ -428,6 +430,7 @@ async def test_shell_that_exits_is_announced_and_replaced_where_it_last_reported
         assert app.leaked == []
         assert shells.only is first
 
+        assert not app.panel.has_live_shell
         second = await _shown(app, shells)
 
         assert second is not first

@@ -158,6 +158,7 @@ async def test_buddy_slash_pet_noops_while_response_is_in_flight(monkeypatch: py
 
     assert handler.dispatch_slash_command("/buddy pet")
     assert handler.dispatch_slash_command("/buddy pet")
+    assert handler.buddy_command.busy
     await wait_for(lambda: model.calls == 1, interval=0, description="first pet response started")
     count = handler.buddy_command.count_task
     task = handler.buddy_command.pet_task
@@ -169,6 +170,7 @@ async def test_buddy_slash_pet_noops_while_response_is_in_flight(monkeypatch: py
     # the thread that wrote it may still be on its way back. A pet given in between is dropped whole.
     await count
 
+    assert not handler.buddy_command.busy
     assert (model.calls, _pets(), handler.buddy_command.pet_task) == (1, 1, None)
     assert handler.dispatch_slash_command("/buddy pet")
     second_count = handler.buddy_command.count_task

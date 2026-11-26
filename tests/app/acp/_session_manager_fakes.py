@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -36,7 +37,9 @@ class _PinnableEngine:
 
     def __init__(self) -> None:
         self.workspace = None
-        self.session = SimpleNamespace(workspace_plan=None)
+        self.session = SimpleNamespace(workspace_plan=None, shutting_down=False)
+        self.current = SimpleNamespace(loaded=object())
+        self.permits = SimpleNamespace(gate_lock=asyncio.Lock())
         self.timeout_pinned = False
         self.snapshot: ProfileSwitched | None = None
         self.recovered_from_sidecar = False
@@ -50,7 +53,8 @@ class _PinnableEngine:
 
 
 class _CloseHost:
-    def __init__(self) -> None:
+    def __init__(self, session_id: str = "s1") -> None:
+        self.session_id = session_id
         self.shutdown_called = False
         self.engine = _PinnableEngine()
 
@@ -80,7 +84,7 @@ class _StartedHost:
     instances: ClassVar[list[_StartedHost]] = []
 
     def __init__(self, **kwargs) -> None:
-        self.session_id = f"started-session-{len(self.instances) + 1}"
+        self.session_id = kwargs.get("session_id") or f"started-session-{len(self.instances) + 1}"
         self.shutdown_called = False
         self.engine = _PinnableEngine()
         if "loaded_settings" in kwargs:
@@ -240,10 +244,13 @@ def _stored_setting(config_dir, dotted: str) -> object | None:
 class _SettingsScopeEngine:
     def __init__(self, loaded: LoadedSettings) -> None:
         self.loaded_settings = loaded
+        self.session = SimpleNamespace(shutting_down=False)
+        self.current = SimpleNamespace(loaded=object())
 
 
 class _SettingsScopeHost:
     def __init__(self, loaded: LoadedSettings) -> None:
+        self.session_id = "s1"
         self.engine = _SettingsScopeEngine(loaded)
 
 
@@ -251,6 +258,9 @@ class _EngineStub:
     def __init__(self, *, is_turn_active: bool) -> None:
         self.workspace = None
         self.is_turn_active = is_turn_active
+        self.session = SimpleNamespace(shutting_down=False)
+        self.current = SimpleNamespace(loaded=object())
+        self.permits = SimpleNamespace(gate_lock=asyncio.Lock())
 
 
 class _InjectHost:

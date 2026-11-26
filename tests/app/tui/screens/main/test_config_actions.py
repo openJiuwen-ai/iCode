@@ -664,14 +664,8 @@ def test_open_settings_pushes_the_dialog_on_the_requested_tab_and_attaches_it() 
     assert coordinator.attached == [dialog]
 
 
-@pytest.mark.parametrize(
-    ("requested", "noted"),
-    [("manual", "manual"), ("auto", "auto"), ("bypass", "auto")],
-)
-async def test_set_approval_mode_tells_the_settings_panel_what_the_engine_persists(
-    requested: str,
-    noted: str,
-) -> None:
+@pytest.mark.parametrize("requested", ["manual", "auto", "bypass"])
+async def test_set_approval_mode_waits_for_confirmation_before_updating_settings(requested: str) -> None:
     coordinator = _CoordinatorStub()
     controller = RuntimeConfigController(
         state=MainScreenState(),
@@ -684,11 +678,25 @@ async def test_set_approval_mode_tells_the_settings_panel_what_the_engine_persis
         await controller.set_approval_mode(requested)
     # The chat session carries the choice for the whole launch, so it is the one that is saved.
     assert len(events) == 1
-    assert (events[0].mode, events[0].session_id, events[0].persist) == (requested, None, True)
+    assert (events[0].mode, events[0].session_id, events[0].persist) == (requested, None, "frontend")
 
-    # Bypass is a per-launch posture: the engine writes ``auto`` to disk, so
-    # the panel is told ``auto`` too.
-    assert coordinator.external_writes == [("approval.default_mode", noted)]
+    assert coordinator.external_writes == []
+
+
+async def test_unknown_approval_mode_warns_without_switching_or_saving() -> None:
+    from chrys.service.approval.policy import ApprovalMode
+
+    state = MainScreenState()
+    state.runtime.approval_mode = ApprovalMode.AUTO
+    view = _View()
+    bus = EventBus()
+    controller = RuntimeConfigController(
+        state=state, services=MainScreenServices(bus=bus), view=cast(Any, view), callbacks=_callbacks()
+    )
+    async with capture_event_sequence(bus, SetApprovalMode) as events:
+        await controller.set_approval_mode("manuall")
+    assert not events
+    assert [severity for _, _, severity, _ in view.notifications] == ["warning"]
 
 
 # The close-adoption tests below, the profile-switch confirmation test, and the

@@ -295,6 +295,7 @@ class ChatPanelChrome:
 
     def _update_border_title(self) -> None:
         if not self._session_id:
+            self._host.set_border_title(None)
             return
         from chrys.foundation.util.session_ids import session_short_id
 

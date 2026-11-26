@@ -92,6 +92,9 @@ class _FakeInputFlowView:
     def hide_trailing_status_action(self) -> None:
         self.calls.append("hide_status_action")
 
+    def capture_settled_status(self) -> None:
+        self.calls.append("capture_settled")
+
     def set_retry_pending(self, pending: bool) -> None:
         self.calls.append(("retry_pending", pending))
 
@@ -375,7 +378,7 @@ async def test_retry_reserves_before_worker_start_and_releases_after_admission(o
     controller.request_retry("same-tick duplicate")
     assert state.submit.active
     assert state.submit.text == "first note"
-    assert view.calls == [("retry_pending", True)]
+    assert view.calls == ["capture_settled", ("retry_pending", True)]
     assert len(scheduled) == 1
     task = asyncio.create_task(scheduled.pop()())
     try:

@@ -1071,6 +1071,56 @@ msgstr "对话已从第 {expected_turn} 轮推进到第 {current_turn} 轮，撤
 msgid "rollback.conversation_changed"
 msgstr "选择器加载后对话已更改，撤回已取消。"
 
+#. English: Some file changes from the discarded turns could not be detected.
+#. chrys-meta={"fingerprint":"d90329dff1b642be0c6fca82372cf076d83f83c8f88f29302ccd22b30bd7c451","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.detection_incomplete"
+msgstr "未能检测到撤回轮次中的全部文件变更。"
+
+#. English: modified internally and externally
+#. chrys-meta={"fingerprint":"d5a1840fc9dccd439bbfc13c50e30c4a5336d3364ff3b9261ca3a2ff410397f4","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.contested"
+msgstr "内部和外部均有修改"
+
+#. English: changed by another session
+#. chrys-meta={"fingerprint":"4f1bf4b224427cf1c7ac2daf3d396be75d081738012b3bff93c6936a483a7e04","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.foreign"
+msgstr "已被另一会话更改"
+
+#. English: move source unrecoverable
+#. chrys-meta={"fingerprint":"4e8476059f2019606105c04ddc5a46ce6291066bc23c747e8f959ece6d1c54fb","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.move_poisoned"
+msgstr "移动源无法恢复"
+
+#. English: changed by another session since
+#. chrys-meta={"fingerprint":"dd6c1cc6799b6770b44405e1f4f62daf064b96c8bdf4231bd915cb64bdbd9c80","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.peer_modified_since"
+msgstr "此后已被另一会话更改"
+
+#. English: {path} ({reason})
+#. chrys-meta={"fingerprint":"e9a5c1700ac36d13e81df6345d15ff901ae48ac27fbabe836e71af85c8ada4a8","multiline":false,"placeholders":["path","reason"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.preview_item"
+msgstr "{path}（{reason}）"
+
+#. English: no restorable backup
+#. chrys-meta={"fingerprint":"c574ca2824f6a9e79147950803628134f6b466fd7e82b06930fbe5783b21d3cd","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.exclusion.unrestorable"
+msgstr "无可恢复的备份"
+
+#. English: File restoration results: {detail}
+#. chrys-meta={"fingerprint":"a0a3d14c40179d2389efdaf41e774be2108ba72553762744dfe024941975835c","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/rollback.py
+msgid "rollback.file_results"
+msgstr ""
+"文件恢复结果：\n"
+"{detail}"
+
 #. English: No active session to discard turns from.
 #. chrys-meta={"fingerprint":"090b9592d82c0a0e393f5ed7a70d49de4fbe4daa2afc4b8a27263ccba6af0d7f","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/rollback.py
@@ -1094,6 +1144,70 @@ msgstr "relative_turns 必须为正数。"
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.reset_failed"
 msgstr "撤回到欢迎页时无法重置会话，因为会话状态忙碌。"
+
+#. English: {counts}.
+#. chrys-meta={"fingerprint":"ffa67d2a792f79aea9d7da2c471c9d7c7734be886ff40a65a59b0b9b74a60709","multiline":false,"placeholders":["counts"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.restore_counts"
+msgstr "{counts}。"
+
+#. English: {path}: {reason}
+#. chrys-meta={"fingerprint":"bee3e1645915b1477744a90ad1b2b022a06a87066fe5a5df5ff00f538b9b7162","multiline":false,"placeholders":["path","reason"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.restore_failure_item"
+msgstr "{path}：{reason}"
+
+#. English: File restoration results are unknown. Check the working files.
+#. chrys-meta={"fingerprint":"5327e975cdf178717b7ce6587a7dcdbffcb842cbdbb63d31de0bad35f39599a6","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.restore_unknown"
+msgstr "文件还原结果未知。请检查工作文件。"
+
+#. English: {matched_count} already matched
+#. chrys-meta={"fingerprint":"5d38d9719a84b82b2a4741e4a4b3dd7c0ae9492fe81bdd583a5d259802bf9168","multiline":false,"placeholders":["matched_count"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.already_matched"
+msgstr "{matched_count} 个已匹配"
+
+#. English: error
+#. chrys-meta={"fingerprint":"ef063f36525f2aee40bd79716475b9f33e4e3193143fd168e277f29d606e40ad","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.error_reason"
+msgstr "错误"
+
+#. English: {failed_count} failed
+#. chrys-meta={"fingerprint":"ef2d72b20c466356bc7fb6997722dd6840eadb031f6f86b981cfdbf880cc5a1a","multiline":false,"placeholders":["failed_count"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.failed_count"
+msgstr "{failed_count} 个失败"
+
+#. English: Failed: {preview}{suffix}
+#. chrys-meta={"fingerprint":"11e4ad0112c33b10a0d7307400309a556cd3e1aaefa2e99e543f7dde3c91678f","multiline":false,"placeholders":["preview","suffix"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.failed_preview"
+msgstr "失败：{preview}{suffix}"
+
+#. English: {count} file excluded from revert: {preview}{suffix}
+#. English-plural: {count} files excluded from revert: {preview}{suffix}
+#. chrys-meta={"fingerprint":"1a256831b7b093fbaca78adccb24ea00e2642a7091155e870d06ef20868505c5","multiline":false,"placeholders":["preview","suffix"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.files_excluded"
+msgid_plural "rollback.result.files_excluded#plural"
+msgstr[0] "{count} 个文件已从还原中排除：{preview}{suffix}"
+
+#. English: {count} file restored
+#. English-plural: {count} files restored
+#. chrys-meta={"fingerprint":"f8353aec993ab566da7443792d785abdc47824359d98d3756dc0b311be694b02","multiline":false,"placeholders":[]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.files_restored"
+msgid_plural "rollback.result.files_restored#plural"
+msgstr[0] "已还原 {count} 个文件"
+
+#. English:  (+{extra_count} more)
+#. chrys-meta={"fingerprint":"73ab0b602d9031c557b7c6df327a75f38a401aada3feeb3966c35e83334b8615","multiline":false,"placeholders":["extra_count"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.result.more_suffix"
+msgstr "（另有 {extra_count} 个）"
 
 #. English: Discard cancelled because the workspace or runtime changed after
 #. the picker was loaded.
@@ -1146,6 +1260,20 @@ msgstr "无法撤回到第 {target_turn} 轮；可用轮次：{available}"
 msgid "rollback.turns_unavailable"
 msgstr "无法撤回 {requested_turns} 轮；会话当前有 {current_turns} 轮。"
 
+#. English: {count} file left unchanged: {paths}{suffix}
+#. English-plural: {count} files left unchanged: {paths}{suffix}
+#. chrys-meta={"fingerprint":"0eacf4c6592563bf4aae9b118059375967ac644ace4b94a5a379e6dc081cd484","multiline":false,"placeholders":["paths","suffix"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.unselected_files"
+msgid_plural "rollback.unselected_files#plural"
+msgstr[0] "{count} 个文件保持原样：{paths}{suffix}"
+
+#. English: ⚠ {message}
+#. chrys-meta={"fingerprint":"b059010a74d8ee28343b2c678857a20bda91e91e81865caff8f5390afd6d9433","multiline":false,"placeholders":["message"]}
+#: src/chrys/service/mutations/types.py
+msgid "rollback.warning_note"
+msgstr "⚠ {message}"
+
 #. English: Stopping {count} background command the run left running.
 #. English-plural: Stopping {count} background commands the run left running.
 #. chrys-meta={"fingerprint":"9bc636de543ae587a325b23a479276dd2b0f2e9684839a1ddccb0e7f5305264c","multiline":false,"placeholders":[]}
@@ -1184,6 +1312,18 @@ msgstr "未找到模型配置：{model}。可用模型配置：{available}"
 #: src/chrys/app/cli/run.py
 msgid "run.session_cwd_missing_hint"
 msgstr "使用 -C <dir> 在另一个目录中继续该会话。"
+
+#. English: Failed to reopen the session: {detail}
+#. chrys-meta={"fingerprint":"528b63792fbb184810c4b0ad40ea4acebae447b40edbe6755dd2b1c61f59bdf6","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "session.restart_failed"
+msgstr "无法重新打开会话：{detail}"
+
+#. English: Could not run the session_restored hook: {detail}
+#. chrys-meta={"fingerprint":"e1dea48599b7281bd711e74d62e578fc7b2993902b4f941697a53e5cc8f7d9a2","multiline":true,"placeholders":["detail"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "session.restored_hook_failed"
+msgstr "无法运行 session_restored 钩子：{detail}"
 
 #. English: Agent profile not found: {name}
 #. chrys-meta={"fingerprint":"ec893f5d09a72a0bc5334e2a6bbd62d2fa0fcd1a41f9aa7b97e2bbafc304ab63","multiline":false,"placeholders":["name"]}
@@ -6069,6 +6209,12 @@ msgstr "智能体运行时无法切换智能体"
 msgid "tui.config.agent.switched"
 msgstr "已切换到 {label}"
 
+#. English: Unknown approval mode. Choose manual, auto, or bypass.
+#. chrys-meta={"fingerprint":"844a5d2ff3ce633001be07f061daa8bb7d581aeccb7961248f57a78b05d5dfd6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/config_actions.py
+msgid "tui.config.approval.unknown_mode"
+msgstr "未知审批模式。请选择 manual、auto 或 bypass。"
+
 #. English: Cannot open model config while agent is loading
 #. chrys-meta={"fingerprint":"2823e1f0f032aa6b9060a13a0d4fbb84c3ea8c554ec47a810d34f36ca9faf77a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/config_actions.py
@@ -8291,15 +8437,37 @@ msgstr ""
 
 #. English: OK
 #. chrys-meta={"fingerprint":"6df638960a5ede1f4a19b118e821e01478abe5fc851a4370ac9574784032e9f0","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/event_handlers.py
+#: src/chrys/app/tui/screens/dialogs/confirm.py
 msgid "tui.main.session_in_use.ok"
 msgstr "确定"
 
+#. English: Take Over
+#. chrys-meta={"fingerprint":"8b246e18245b6aa84d357caaa4bd1639728f09dcc2ced3b5fb1e7ee418c0b8ab","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_in_use.py
+msgid "tui.main.session_in_use.take"
+msgstr "接管"
+
+#. English: {message}  Take Over closes the other instance and opens this
+#. conversation here.
+#. chrys-meta={"fingerprint":"3b7e6cbde6da23de23bda32ec62ddbe637ae69573d62e0c79bb98655fe284d14","multiline":true,"placeholders":["message"]}
+#: src/chrys/app/tui/screens/dialogs/session_in_use.py
+msgid "tui.main.session_in_use.take_message"
+msgstr ""
+"{message}\n"
+"\n"
+"接管将关闭占用此会话的实例，并在当前窗口继续对话。"
+
 #. English: Session In Use
 #. chrys-meta={"fingerprint":"237cc6d792bf33e263a0532716afba37c9c73f30f36cc6936a08e358195d896e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/event_handlers.py
+#: src/chrys/app/tui/screens/dialogs/confirm.py
 msgid "tui.main.session_in_use.title"
 msgstr "会话正在使用中"
+
+#. English: Waiting for the other instance to release this conversation…
+#. chrys-meta={"fingerprint":"c5e4a851f23440cbd69858463ac89ac2ca76077b22975bc24f65ae77826751e5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/session_in_use.py
+msgid "tui.main.session_in_use.waiting"
+msgstr "正在等待另一个实例释放此对话…"
 
 #. English: No active session.
 #. chrys-meta={"fingerprint":"38ae034f8f816fa68540bbc47beeb9d1767b24e5da9ae0eda8f7b3ad4d6094b5","multiline":false,"placeholders":[]}
@@ -11243,42 +11411,6 @@ msgstr "撤回后"
 msgid "tui.rollback.diff.now"
 msgstr "现在"
 
-#. English: modified internally and externally
-#. chrys-meta={"fingerprint":"d5a1840fc9dccd439bbfc13c50e30c4a5336d3364ff3b9261ca3a2ff410397f4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.contested"
-msgstr "内部和外部均有修改"
-
-#. English: changed by another session
-#. chrys-meta={"fingerprint":"4f1bf4b224427cf1c7ac2daf3d396be75d081738012b3bff93c6936a483a7e04","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.foreign"
-msgstr "已被另一会话更改"
-
-#. English: move source unrecoverable
-#. chrys-meta={"fingerprint":"4e8476059f2019606105c04ddc5a46ce6291066bc23c747e8f959ece6d1c54fb","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.move_poisoned"
-msgstr "移动源无法恢复"
-
-#. English: changed by another session since
-#. chrys-meta={"fingerprint":"dd6c1cc6799b6770b44405e1f4f62daf064b96c8bdf4231bd915cb64bdbd9c80","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.peer_modified_since"
-msgstr "此后已被另一会话更改"
-
-#. English: {path} ({reason})
-#. chrys-meta={"fingerprint":"e9a5c1700ac36d13e81df6345d15ff901ae48ac27fbabe836e71af85c8ada4a8","multiline":false,"placeholders":["path","reason"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.preview_item"
-msgstr "{path}（{reason}）"
-
-#. English: no restorable backup
-#. chrys-meta={"fingerprint":"c574ca2824f6a9e79147950803628134f6b466fd7e82b06930fbe5783b21d3cd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.exclusion.unrestorable"
-msgstr "无可恢复的备份"
-
 #. English: +{extra_count} more
 #. chrys-meta={"fingerprint":"d89c56e3e397065f267365d5a4cb76c0ca0a079dae362360ba01d417c457e964","multiline":false,"placeholders":["extra_count"]}
 #: src/chrys/app/tui/screens/diff/rollback_modal.py
@@ -11365,46 +11497,6 @@ msgstr "{range}，文件保持不变"
 msgid "tui.rollback.range.restore"
 msgstr "{range}，勾选的文件改回第 {turn} 轮之前的内容"
 
-#. English: {matched_count} already matched
-#. chrys-meta={"fingerprint":"5d38d9719a84b82b2a4741e4a4b3dd7c0ae9492fe81bdd583a5d259802bf9168","multiline":false,"placeholders":["matched_count"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.already_matched"
-msgstr "{matched_count} 个已匹配"
-
-#. English: error
-#. chrys-meta={"fingerprint":"ef063f36525f2aee40bd79716475b9f33e4e3193143fd168e277f29d606e40ad","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.error_reason"
-msgstr "错误"
-
-#. English: {failed_count} failed
-#. chrys-meta={"fingerprint":"ef2d72b20c466356bc7fb6997722dd6840eadb031f6f86b981cfdbf880cc5a1a","multiline":false,"placeholders":["failed_count"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.failed_count"
-msgstr "{failed_count} 个失败"
-
-#. English: Failed: {preview}{suffix}
-#. chrys-meta={"fingerprint":"11e4ad0112c33b10a0d7307400309a556cd3e1aaefa2e99e543f7dde3c91678f","multiline":false,"placeholders":["preview","suffix"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.failed_preview"
-msgstr "失败：{preview}{suffix}"
-
-#. English: {count} file excluded from revert: {preview}{suffix}
-#. English-plural: {count} files excluded from revert: {preview}{suffix}
-#. chrys-meta={"fingerprint":"1a256831b7b093fbaca78adccb24ea00e2642a7091155e870d06ef20868505c5","multiline":false,"placeholders":["preview","suffix"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.files_excluded"
-msgid_plural "tui.rollback.result.files_excluded#plural"
-msgstr[0] "{count} 个文件已从还原中排除：{preview}{suffix}"
-
-#. English: {count} file restored
-#. English-plural: {count} files restored
-#. chrys-meta={"fingerprint":"f8353aec993ab566da7443792d785abdc47824359d98d3756dc0b311be694b02","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.files_restored"
-msgid_plural "tui.rollback.result.files_restored#plural"
-msgstr[0] "已还原 {count} 个文件"
-
 #. English: {count} file reverted
 #. English-plural: {count} files reverted
 #. chrys-meta={"fingerprint":"41ccf794613d707d98f5e13a36ffc3d5e5320b9776748b065f1358d9f8d8a919","multiline":false,"placeholders":[]}
@@ -11412,12 +11504,6 @@ msgstr[0] "已还原 {count} 个文件"
 msgid "tui.rollback.result.files_reverted"
 msgid_plural "tui.rollback.result.files_reverted#plural"
 msgstr[0] "已还原 {count} 个文件更改"
-
-#. English:  (+{extra_count} more)
-#. chrys-meta={"fingerprint":"73ab0b602d9031c557b7c6df327a75f38a401aada3feeb3966c35e83334b8615","multiline":false,"placeholders":["extra_count"]}
-#: src/chrys/app/tui/screens/main/rollback_controller.py
-msgid "tui.rollback.result.more_suffix"
-msgstr "（另有 {extra_count} 个）"
 
 #. English: Discarded all turns.
 #. chrys-meta={"fingerprint":"775aea7d30d4b742c1d07f591c63029a2bd51ead7cc74dca1e3fa4f266edb228","multiline":false,"placeholders":[]}
@@ -11488,12 +11574,6 @@ msgstr "撤回不可用。"
 #: src/chrys/app/tui/screens/main/rollback_controller.py
 msgid "tui.rollback.usage"
 msgstr "用法：/rollback、/rollback N 或 /rollback to N。"
-
-#. English: ⚠ {message}
-#. chrys-meta={"fingerprint":"b059010a74d8ee28343b2c678857a20bda91e91e81865caff8f5390afd6d9433","multiline":false,"placeholders":["message"]}
-#: src/chrys/app/tui/screens/diff/rollback_modal.py
-msgid "tui.rollback.warning_note"
-msgstr "⚠ {message}"
 
 #. English: Chat Completions
 #. chrys-meta={"fingerprint":"a496f1445fcc52b30620f6f702fd977e237ae2322c5867b7d684af7a56fff68d","multiline":false,"placeholders":[]}
@@ -12459,13 +12539,12 @@ msgstr "每天启动时最多查询一次最新版本，并显示在欢迎页上
 msgid "tui.settings.hint.approval.auto_review"
 msgstr "只在自动模式下生效，默认直接审查。直接审查对操作作整体判断；逐项风险检查按固定清单检查风险，发现风险时请你确认。"
 
-#. English: Approval mode at the next launch; /approval changes both the
-#. current session and this default. /approval bypass applies to the current
-#. launch only and saves auto.
-#. chrys-meta={"fingerprint":"3ef1c3ca6c4970c15e2fd564c9f4d92a04e52329f560cedba67db55c92ba2d87","multiline":false,"placeholders":[]}
+#. English: Approval mode for the next launch. Use /approval to change both the
+#. current mode and this default.
+#. chrys-meta={"fingerprint":"794626fdf8eca0973472d72f1ee7b7fd9535d7a46d5457d97bd613c127990a7f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.default_mode"
-msgstr "下次启动时的审批模式；/approval 会同时更改当前会话和此默认值。/approval bypass 仅作用于本次启动，并保存为 auto。"
+msgstr "下次启动时使用的审批模式。使用 /approval 可同时更改当前模式和此默认值。"
 
 #. English: In auto mode, calls the approval judge approves run without a
 #. dialog; the dialog opens only when a call is flagged or cannot be evaluated.
@@ -13536,6 +13615,13 @@ msgstr "消息"
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.slash.reload_description"
 msgstr "重新加载设置、智能体与模型配置、记忆、Skills、钩子、MCP 服务器、主题和快捷指令"
+
+#. English: Approval mode is bypass. Tool calls will run without asking for
+#. approval.
+#. chrys-meta={"fingerprint":"3baad6a4b258a12db0dc21ca9cc4887adddb70b9827239a5f03763d9e258ac37","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.startup.approval.bypass"
+msgstr "当前审批模式为 bypass，工具调用将跳过审批。"
 
 #. English: Session {session_id} is open in another window or process.
 #. chrys-meta={"fingerprint":"daee48a4ab9abc7fe13f522d94575980593b174a8bd046657c75737ba30de091","multiline":false,"placeholders":["session_id"]}
@@ -18475,6 +18561,78 @@ msgstr "主文件夹不能修改。要使用其他主文件夹，请新建工作
 msgid "workspaces.primary_missing"
 msgstr "主文件夹不存在：{path}。"
 
+#. English: Workspace “{name}” has a missing reference folder: {paths}
+#. English-plural: Workspace “{name}” has {count} missing reference folders:
+#. {paths}
+#. chrys-meta={"fingerprint":"107b7091c13acbedf4c6b802c580641e1f40896ca9730f671b6a20db9beb58d0","multiline":false,"placeholders":["name","paths"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.reference_missing"
+msgid_plural "workspaces.reference_missing#plural"
+msgstr[0] "工作区“{name}”有 {count} 个参考文件夹不存在：{paths}"
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Expected ws_ followed by 32 lowercase hexadecimal digits.
+#. chrys-meta={"fingerprint":"906618d6010c0259ecaaecdebded160d0c40b1a20a6eba96b1dbe1b4bc4f4fb4","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_expected_id"
+msgstr "无法读取 {path} 中的工作区列表。第 {row} 项，字段 {field}：应为 ws_ 后跟 32 位小写十六进制数字。"
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Expected a list.
+#. chrys-meta={"fingerprint":"3735596db0321cceaae8a61b854dd7a4ec503298e818becadea1c84f2e54e7ec","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_expected_list"
+msgstr "无法读取 {path} 中的工作区列表。第 {row} 项，字段 {field}：应为列表。"
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Expected an object.
+#. chrys-meta={"fingerprint":"1a736d4718b7b7e4e5703e3e5bf4637f185bd39865dd5b1152557f57757dde46","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_expected_object"
+msgstr "无法读取 {path} 中的工作区列表。第 {row} 项，字段 {field}：应为对象。"
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Expected a string.
+#. chrys-meta={"fingerprint":"123be5a921a07088e58a9e9cc6c70072b81ee259f3a9d66f64e207fdc3597f14","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_expected_string"
+msgstr "无法读取 {path} 中的工作区列表。第 {row} 项，字段 {field}：应为字符串。"
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Workspace folders must use absolute paths.
+#. chrys-meta={"fingerprint":"db740232dafa12d4aac986bc4ee219a1230ed5498b4fc8057987644309bde876","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_folder_invalid"
+msgstr "无法读取 {path} 中的工作区列表。第 {row} 项，字段 {field}：工作区文件夹必须使用绝对路径。"
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: ID {id} already exists.
+#. chrys-meta={"fingerprint":"99d3c40931cb0853866906cb5865eb49e696ea691e15c58f67b05a5766732b7e","multiline":false,"placeholders":["field","id","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_id_exists"
+msgstr "无法读取 {path} 中的工作区列表。第 {row} 项，字段 {field}：ID {id} 已存在。"
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: A workspace name can't contain control characters.
+#. chrys-meta={"fingerprint":"9a9ca3ad8324e34bcc280ea08113f3d50013945484b78257c07389c2ff69d765","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_name_control_char"
+msgstr "无法读取 {path} 中的工作区列表。第 {row} 项，字段 {field}：工作区名称不能包含控制字符。"
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: Enter a workspace name.
+#. chrys-meta={"fingerprint":"c01451e40f824616fc3666fd2fda35cd09d66747b7d4ef9575bce80757fb0965","multiline":false,"placeholders":["field","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_name_empty"
+msgstr "无法读取 {path} 中的工作区列表。第 {row} 项，字段 {field}：请输入工作区名称。"
+
+#. English: Cannot read the workspace list at {path}. Entry {row}, field
+#. {field}: A workspace with the name {name} already exists.
+#. chrys-meta={"fingerprint":"3ac0e1e04c45639296d8d1b9c9575fb6667297fd227f3599aad2f8ab993f0a17","multiline":false,"placeholders":["field","name","path","row"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.registry_name_exists"
+msgstr "无法读取 {path} 中的工作区列表。第 {row} 项，字段 {field}：名为 {name} 的工作区已存在。"
+
 #. English: The workspace list was written by a newer version of {app}: {path}
 #. chrys-meta={"fingerprint":"16d5593b1d36f43a2bc3b65476e4c105d8b55d0237047c1414e6c16e6235c5dd","multiline":false,"placeholders":["app","path"]}
 #: src/chrys/service/workspaces/registry.py
@@ -19270,4 +19428,7 @@ msgstr "工作区列表无法保存：{reason}"
 
 #~ msgid "tui.workflow.toggle_layout"
 #~ msgstr "布局"
+
+#~ msgid "workspaces.registry_invalid_row"
+#~ msgstr "无法读取 {path} 中的工作区列表。第 {row} 条的 {field} 字段有误：{reason}"
 

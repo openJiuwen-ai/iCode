@@ -4,12 +4,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import InitVar, dataclass
 
 from chrys.foundation.i18n.formatting import (
+    format_message,
     format_template,
     has_visible_content,
     parse_placeholder_names,
@@ -76,7 +78,27 @@ class DisplaySequence:
                 raise ValueError("Every DisplaySequence element must have visible content.")
 
 
-type MessageArg = MessageScalar | DisplayPath | DisplaySequence | DisplayBlock
+@dataclass(frozen=True, slots=True)
+class DisplayJoined:
+    """Display fragments rendered in the surrounding message's locale."""
+
+    values: tuple[str | MessageRef | DisplayJoined, ...]
+    separator: str
+
+    def __post_init__(self) -> None:
+        if type(self.values) is not tuple or any(
+            type(value) not in {str, MessageRef, DisplayJoined} for value in self.values
+        ):
+            raise TypeError("DisplayJoined requires a tuple of display fragments.")
+        if type(self.separator) is not str:
+            raise TypeError("DisplayJoined requires a text separator.")
+
+    @property
+    def multiline(self) -> bool:
+        return "\n" in self.separator or any(_is_multiline_arg(value) for value in self.values)
+
+
+type MessageArg = MessageScalar | DisplayPath | DisplaySequence | DisplayBlock | DisplayJoined | MessageRef
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -183,7 +205,7 @@ def _validate_reference(reference: MessageRef) -> None:
         raise TypeError("MessageRef.args must be an immutable tuple.")
 
     names: list[str] = []
-    has_display_block = False
+    has_multiline_arg = False
     for item in reference.args:
         if type(item) is not tuple or len(item) != 2:
             raise TypeError("Every bound argument must be a name/value tuple.")
@@ -195,7 +217,7 @@ def _validate_reference(reference: MessageRef) -> None:
         if not _is_message_arg(value):
             raise TypeError(f"Message argument {name!r} has an unsupported type.")
         names.append(name)
-        has_display_block = has_display_block or type(value) is DisplayBlock
+        has_multiline_arg = has_multiline_arg or _is_multiline_arg(value)
     if names != sorted(set(names)):
         raise ValueError("Bound arguments must have unique names in deterministic order.")
 
@@ -207,8 +229,8 @@ def _validate_reference(reference: MessageRef) -> None:
         if reference.count is None:
             raise ValueError("count is required for a plural message definition.")
         raise TypeError("count must be exactly int.")
-    if has_display_block and not definition.multiline:
-        raise ValueError("DisplayBlock arguments require a multiline message definition.")
+    if has_multiline_arg and not definition.multiline:
+        raise ValueError("Multiline arguments require a multiline message definition.")
 
     expected_names = parse_placeholder_names(definition.fallback) - {"count"}
     if set(names) != expected_names:
@@ -227,7 +249,15 @@ def _is_sequence_item(value: object) -> bool:
 
 
 def _is_message_arg(value: object) -> bool:
-    return type(value) in {str, int, DisplayPath, DisplaySequence, DisplayBlock}
+    return type(value) in {str, int, DisplayPath, DisplaySequence, DisplayBlock, DisplayJoined, MessageRef}
+
+
+def _is_multiline_arg(value: MessageArg) -> bool:
+    if isinstance(value, MessageRef):
+        return value.definition.multiline
+    if isinstance(value, DisplayJoined):
+        return value.multiline
+    return isinstance(value, DisplayBlock)
 
 
 def _int_display(value: int) -> str:
@@ -239,21 +269,27 @@ def _int_display(value: int) -> str:
 
 def _render_sequence_item(value: _DisplaySequenceItem) -> str:
     if type(value) is DisplayPath:
-        return sanitize_legacy_scalar(surrogate_safe_text(value.value))
+        path = surrogate_safe_text(value.value)
+        return sanitize_legacy_scalar(path) if has_visible_content(path) else json.dumps(path)
     if type(value) is int:
         return sanitize_legacy_scalar(_int_display(value))
     return sanitize_legacy_scalar(surrogate_safe_text(str(value)))
 
 
-def _render_message_arg(value: MessageArg) -> str:
+def _render_message_arg(value: MessageArg, render_nested: Callable[[MessageRef], str]) -> str:
     # Every textual branch neutralizes lone surrogates, not just DisplayPath:
     # scalar and block arguments routinely carry filesystem-derived values
     # (profile names, path lists), and a surrogate that reaches a strict
     # encode crashes the render sink.
     if type(value) is DisplayPath:
-        return sanitize_legacy_scalar(surrogate_safe_text(value.value))
+        return _render_sequence_item(value)
     if type(value) is DisplaySequence:
         return ", ".join(_render_sequence_item(element) for element in value.values)
+    if type(value) is DisplayJoined:
+        separator = sanitize_legacy_block(surrogate_safe_text(value.separator))
+        return separator.join(_render_message_arg(part, render_nested) for part in value.values)
+    if type(value) is MessageRef:
+        return render_nested(value)
     if type(value) is DisplayBlock:
         return sanitize_legacy_block(surrogate_safe_text(value.value))
     if type(value) is int:
@@ -261,8 +297,10 @@ def _render_message_arg(value: MessageArg) -> str:
     return sanitize_legacy_scalar(surrogate_safe_text(str(value)))
 
 
-def _render_arguments(reference: MessageRef) -> dict[str, str]:
-    rendered = {name: _render_message_arg(value) for name, value in reference.args}
+def _render_arguments(
+    reference: MessageRef, render_nested: Callable[[MessageRef], str] = format_message
+) -> dict[str, str]:
+    rendered = {name: _render_message_arg(value, render_nested) for name, value in reference.args}
     if reference.count is not None:
         rendered["count"] = _int_display(reference.count)
     return rendered

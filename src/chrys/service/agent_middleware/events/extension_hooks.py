@@ -52,7 +52,7 @@ class ExtensionToolHooks:
             arguments = _json_form(operation.arguments())
             if arguments is None:
                 return _denied(hook, "its arguments are not JSON")
-            call = ToolCall(name=name, kind=kind, call_id=call_id, arguments=arguments, context=hook.context)
+            call = ToolCall(name=name, kind=kind, call_id=call_id, arguments=arguments, context=hook.tool_context())
             try:
                 replacement = await _run(hook, call)
             except ToolError as exc:
@@ -83,7 +83,7 @@ class ExtensionToolHooks:
             current = result.text if text is None else text
             # Each hook its own copy: one that edits it changes nothing for the next.
             shown = _json_form(arguments) or {}
-            call = ToolCall(name=name, kind=kind, call_id=call_id, arguments=shown, context=hook.context)
+            call = ToolCall(name=name, kind=kind, call_id=call_id, arguments=shown, context=hook.tool_context())
             seen = ToolResult(
                 text=current, failed=result.failed, rejected=result.rejected, duration_ms=result.duration_ms
             )

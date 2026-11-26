@@ -159,6 +159,18 @@ def read_session_envelope(path: Path, *, probe_legacy_source: bool = False) -> t
     return raw, envelope if isinstance(envelope, dict) else None
 
 
+def validated_checkpoint(envelope: object) -> dict[str, Any] | None:
+    """Accept only checkpoint envelopes with usable metadata and a state object."""
+    if not isinstance(envelope, dict):
+        return None
+    meta = envelope.get("meta")
+    if not isinstance(meta, dict) or not meta or not isinstance(envelope.get("state", {}), dict):
+        return None
+    if "session_id" in meta and (not isinstance(meta["session_id"], str) or not meta["session_id"]):
+        return None
+    return envelope
+
+
 def migrate_session_envelopes(session_dir: Path, *, backup: BackupOriginal, on_read_error: ReportReadError) -> bool:
     """Upgrade each saved envelope without touching the other checkpoint or recovery files."""
 

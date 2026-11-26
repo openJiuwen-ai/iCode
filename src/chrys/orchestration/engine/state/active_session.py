@@ -95,6 +95,8 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         # prompt shortcut's switch and a restored session's own agent change only
         # ``agent_profile``. Empty until the launch profile is known.
         self.new_session_agent: str = ""
+        # A newer turn or primary save supersedes an older in-flight snapshot.
+        self.pending_conversation_save: object | None = None
         self.shutting_down: bool = False
         self.turn_number: int = 0
         self.todo_tracker: TodoTracker | None = None
@@ -179,6 +181,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
     def reset(self, *, session_id: str | None) -> None:
         """Reset session identity and bookkeeping before a fresh start."""
         self.shutting_down = False
+        self.pending_conversation_save = None
         self.session_id = session_id
         self._restored_membership_id = None
         self._surface_mark = None
@@ -195,6 +198,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
     ) -> None:
         """Adopt the restore identity before hydrating its state."""
         self.shutting_down = False
+        self.pending_conversation_save = None
         self.session_id = session_id
         self._restored_membership_id = membership_session_id
         # Reopening is not a turn, even of the session last marked here:

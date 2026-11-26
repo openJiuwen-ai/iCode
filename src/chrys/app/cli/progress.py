@@ -30,6 +30,7 @@ from typing import IO, Any, Final
 from rich.console import Console
 from rich.text import Text
 
+from chrys.app.cli.headless import warning_text
 from chrys.app.cli.tool_summary import (
     ToolSummary,
     clamp,
@@ -40,7 +41,7 @@ from chrys.app.cli.tool_summary import (
     tool_failed,
 )
 from chrys.app.tui.util.context_pressure import context_pressure_message
-from chrys.foundation.errors.display import DISPLAY_WITH_HINT
+from chrys.foundation.errors.display import with_display_hint
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AGENT_LOAD_PHASE_MCP,
@@ -444,7 +445,7 @@ class InvocationActivity:
             return _scalar(fallback)
         message = self._render(reference)
         if hint is not None:
-            message = self._render(DISPLAY_WITH_HINT.bind(message=message, hint=self._render(hint)))
+            message = with_display_hint(message, self._render(hint), render=self._render)
         return _scalar(message)
 
     # -- tools -------------------------------------------------------------------------------
@@ -638,10 +639,6 @@ class RunContext:
     workdir: str = ""
 
 
-def _warning_text(warning: Warning, render: Render) -> str:
-    return render(warning.display_message) if warning.display_message is not None else warning.message
-
-
 def _todo_line(items: list[TodoItem]) -> str:
     if not items:
         return "Todo list cleared"
@@ -707,7 +704,7 @@ class TurnProgress:
 
     def warnings(self, warnings: Iterable[Warning]) -> None:
         for warning in self._writer.unreported(warnings):
-            self._writer.warning(_warning_text(warning, self._render))
+            self._writer.warning(warning_text(warning, self._render))
 
     def handle(self, event: Event) -> None:
         match event:
@@ -799,7 +796,7 @@ class WorkflowProgress:
 
     def warnings(self, warnings: Iterable[Warning]) -> None:
         for warning in self._writer.unreported(warnings):
-            self._writer.warning(_warning_text(warning, self._render))
+            self._writer.warning(warning_text(warning, self._render))
 
     def reported(self, code: str, message: str) -> None:
         """Record a warning the command printed itself, so the run's stream does not repeat it."""

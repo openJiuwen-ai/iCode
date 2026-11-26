@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import errno
-import json
 import logging
 import os
 import stat
@@ -19,6 +18,7 @@ from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, cast
 
 from chrys.foundation.platform.paths import display_relpath
+from chrys.foundation.text.model_json import model_path
 from chrys.service.mutations.git_state import (
     GIT_PATH_LIMIT,
     GitDeltaEntry,
@@ -1539,7 +1539,7 @@ def _serialized_strings(value: object) -> tuple[str, ...]:
 
 
 def _quoted_path(path: str, cwd: str) -> str:
-    return json.dumps(display_relpath(path, cwd), ensure_ascii=True)
+    return model_path(display_relpath(path, cwd))
 
 
 def _external_label(operation: ExternalOp) -> str:
@@ -1600,7 +1600,7 @@ def _resolve_safety_notice(chunk: _SafetyNotice) -> _SafetyNotice:
         canonical = canonical_path(chunk.cwd)
         return replace(chunk, canonical_cwd=canonical)
     except OSError, UnicodeError:
-        return _pin_safety_notice(chunk)
+        return _pin_safety_notice(chunk.text, chunk.cwd)
 
 
 def _notice_cwd(workspace: Workspace | None) -> tuple[str | None, str | None]:
@@ -1619,13 +1619,13 @@ def _rebase_safety_notice(chunk: _SafetyNotice, cwd: str | None, identity: str |
     """
     if chunk.cwd is None or cwd is None or chunk.canonical_cwd == identity:
         return chunk
-    return _pin_safety_notice(chunk)
+    return _pin_safety_notice(chunk.text, chunk.cwd)
 
 
-def _pin_safety_notice(chunk: _SafetyNotice) -> _SafetyNotice:
+def _pin_safety_notice(text: str, cwd: str) -> _SafetyNotice:
     """Annotate the original directory once while preserving all notice text."""
-    header = f"Note: relative paths below are against the previous workspace directory {json.dumps(chunk.cwd, ensure_ascii=True)}."
-    return _SafetyNotice(f"{header}\n{chunk.text}", cwd=None)
+    header = f"Note: relative paths below are against the previous workspace directory {model_path(cwd)}."
+    return _SafetyNotice(f"{header}\n{text}", cwd=None)
 
 
 def _join_notices(first: str | None, second: str | None) -> str | None:

@@ -11,9 +11,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import chrys.service.tools.background.crash as background_crash
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import UserRollback
+from chrys.foundation.i18n import MessageRef
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.service.mutations.snapshot_files import write_rollback_snapshot
 from chrys.service.state.store import JsonFileStateStore, session_write_lock_path
@@ -25,6 +27,11 @@ from tests.orchestration.engine._rollback_helpers import (
     seed_turns,
 )
 from tests.support.background_tasks import HeldProcess
+
+
+@pytest.fixture(autouse=True)
+def _skip_os_lookup_for_fake_processes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(background_crash, "_members", lambda _pid: ())
 
 
 def _adopt(tasks: BackgroundTasks, command: str) -> tuple[BackgroundTask, HeldProcess]:
@@ -81,8 +88,11 @@ async def test_rolling_back_every_turn_stops_every_command_before_the_session_re
         write_lock_held: bool = False,
         after_delete: Callable[[], Awaitable[None]] | None = None,
         before_restart: Callable[[], None] | None = None,
+        failure_hint: Callable[[], MessageRef | None] | None = None,
     ) -> bool:
-        _ = write_lock_held, after_delete, before_restart
+        _ = write_lock_held, before_restart, failure_hint
+        assert after_delete is not None
+        await after_delete()
         seen.append(running.outcome)
         return True
 

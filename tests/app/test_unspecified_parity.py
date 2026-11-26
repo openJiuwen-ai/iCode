@@ -27,8 +27,9 @@ from chrys.service.state.locks import ActiveSessionGuard
 from chrys.service.state.store import JsonFileStateStore
 from tests.app.acp._server_fakes import _FakeClient
 from tests.orchestration import _session_host_helpers as helpers
-from tests.support.tui_app_harness import make_chrys_app
-from tests.support.waiting import wait_for
+from tests.support.gc_isolation import earlier_tests_heap_frozen
+from tests.support.toasts import record_shown_toasts, shown_toasts
+from tests.support.tui_app_harness import await_engine_startup, make_chrys_app
 from tests.support.workspace_engine import patch_headless_host, running_acp_manager
 from tests.support.workspace_registry import corrupt_workspace_registry, make_workdirs, save_chat_session
 
@@ -132,6 +133,8 @@ async def test_unspecified_session_parity(
             meta = json.loads((store.session_dir(session_id) / "session.json").read_bytes())["meta"]
             assert (meta["primary_cwd"], meta["working_dirs"]) == (str(cwd), list(map(str, dirs)))
         elif surface == "tui":
+            stack.enter_context(earlier_tests_heap_frozen(collect_first=True))
+            record_shown_toasts(monkeypatch)
             engine = agent_engine(
                 EventBus(), loaded_settings=loaded, state_store=store, agent_registry=profiles, model_registry=models
             )
@@ -147,12 +150,9 @@ async def test_unspecified_session_parity(
                 startup_session_id=SAVED if restore else "",
             )
             pilot = await stack.enter_async_context(app.run_test())
-            await wait_for(
-                lambda: app._startup_task is not None and app._startup_task.done(),
-                pilot=pilot,
-                description="TUI startup finished",
-            )
-            notices = [str(notice.message) for notice in app._notifications]
+            await await_engine_startup(app)
+            await pilot.pause()  # Deliver notifications posted by startup before checking their count.
+            notices = [str(notice.message) for notice in shown_toasts(app)]
             assert sum("workspace list" in notice.lower() for notice in notices) == int(restore)
             session_id = engine.session_id
         else:

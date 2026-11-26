@@ -17,7 +17,7 @@ import pytest
 
 import chrys.orchestration.engine.build.builder as builder_module
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import RollbackResult, TurnStarted, UserMessage, UserRollback
+from chrys.foundation.events.types import Error, RollbackResult, TurnStarted, UserMessage, UserRollback
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.reader import read_trajectory
@@ -27,7 +27,7 @@ from chrys.service.state.store import JsonFileStateStore
 from chrys.service.trajectory.session import trajectory_events_path
 from chrys.service.trajectory.state import TRAJECTORY_STATE_KEY, turn_records
 from tests.orchestration.engine.run._engine_run_helpers import _PROFILE, _make_registry
-from tests.support.event_capture import collect_events
+from tests.support.event_capture import capture_event_sequence, collect_events
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
 from tests.support.waiting import await_run_task_chain
 
@@ -179,17 +179,9 @@ class TestRollbackOfLegacyDrift:
         assert rollback["target_turn_id"] == kept.turn_id
 
     @pytest.mark.asyncio
-    async def test_a_snapshot_that_names_nothing_does_not_decide_what_was_retired(
-        self, tmp_path: Path, agent_engine, engine_services, monkeypatch: pytest.MonkeyPatch
+    async def test_an_unreadable_snapshot_retires_no_turns_even_with_a_readable_fallback(
+        self, tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """What is reported retired is what the restored session lost, not what the snapshot named.
-
-        The snapshot a rollback reads can be unreadable, and the swap copies it
-        over the session file all the same; the store then falls back to an older
-        snapshot that does parse. Nothing the unreadable one could name is
-        evidence of a turn being retired, so the report has to come from the
-        session the restore came back with.
-        """
         store = JsonFileStateStore(tmp_path)
         engine, _ = await _start(agent_engine, tmp_path, monkeypatch, store, MockChatClient([]), session_id=_SESSION_ID)
 
@@ -201,9 +193,7 @@ class TestRollbackOfLegacyDrift:
         assert len(turns) == 3
 
         snap_dir = store.session_dir(_SESSION_ID) / "snapshots"
-        # The fallback the store reads once the swap leaves it nothing usable: a
-        # snapshot naming A and B that neither matches target 1 (its counter is 0)
-        # nor gets pruned as stale.
+        # An older readable checkpoint cannot stand in for the requested target.
         fallback = serialize_state(
             {
                 "messages": [],
@@ -225,20 +215,15 @@ class TestRollbackOfLegacyDrift:
         (snap_dir / "turn_3.json").unlink()
         (snap_dir / "turn_2.json").write_text("{ not json", encoding="utf-8")
 
-        results: list[RollbackResult] = []
-        await engine.event_bus.subscribe(RollbackResult, lambda event: collect_events(results, event))
+        async with capture_event_sequence(engine.event_bus, Error, RollbackResult) as events:
+            await engine._on_user_rollback(UserRollback(target_turn=1, revert_changes=False))
 
-        await engine._on_user_rollback(UserRollback(target_turn=1, revert_changes=False))
-
-        assert len(results) == 1
-        # The restore fell back to the snapshot naming A and B, so those two are
-        # the session that is live now and only C is gone.
-        assert [record.turn_id for record in engine.turn_records()] == [turns[0].turn_id, turns[1].turn_id]
-        assert results[0].superseded_turn_ids == [turns[2].turn_id]
-        # The audit record has to agree: the snapshot named no turn, so nothing
-        # can be shown to be superseded by it, and marking A and B retired would
-        # contradict the session the result just reported.
-        assert "superseded_from_sequence" not in _rollback_payload(engine)
+        (error,) = events
+        assert isinstance(error, Error)
+        assert error.code == "rollback_swap_failed"
+        assert engine.turn_records() == turns
+        saved = await store.load_session(_SESSION_ID)
+        assert saved is not None and turn_records(saved) == turns
 
     @pytest.mark.asyncio
     async def test_a_rollback_to_welcome_retires_every_registered_turn(

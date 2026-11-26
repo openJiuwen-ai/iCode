@@ -16,6 +16,7 @@ from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.util.session_ids import session_short_id
 from tests.orchestration.workflows._hosting import make_workdir, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_app_harness import make_chrys_app
@@ -180,7 +181,7 @@ async def test_session_pick_announces_fallback_to_the_newest_readable_run(
         await save_workflow_session(store, session_id, project)
         (directory / "workflows" / newest / ("run.json" if missing == "header" else "spec.json")).unlink()
         await switch_mode(main, pilot)
-        await main._workflow.session_view.restore_session(session_id)
+        await main._workflow.session_view.restore_session(session_short_id(session_id))
         await dismiss_workflow_notice(main, pilot, f"newest readable run: {older}")
         assert main._workflow_panel.run_id == older
         assert main._workflow.session_id == session_id

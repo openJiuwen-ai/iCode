@@ -131,6 +131,8 @@ Active  ID            Name           Provider  API   Model          Context  Fla
 
 ## 取得 JSON 输出
 
+警告附有原因时，进度输出、安静模式和 JSON 输出都会显示该原因。
+
 添加 `--json` 后，成功结果以 JSON 对象写入标准输出（`stdout`），错误和警告以 JSON 对象写入标准错误（`stderr`），不显示运行进度。例如：
 
 ```shell

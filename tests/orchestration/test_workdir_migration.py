@@ -156,31 +156,23 @@ def test_old_file_is_upgraded_backed_up_and_reported_once(tmp_path, name):
     assert path.stat().st_mtime_ns == written
 
 
-def test_settings_backup_failure_does_not_skip_existing_migrations():
+def test_settings_migrations_leave_originals_when_the_backup_is_unavailable():
     config = get_platform().config_dir
     path = config / "settings.yaml"
     legacy = config / "notifications.yaml"
     blocked = config / "backups"
-    atomic_write_owner_only_text(
-        path,
-        "project:\n  hooks_enabled: true\nui:\n  theme: chrys-dark\nmodel:\n  role:\n    buddy_model_id: ''\n",
-    )
+    original = "project:\n  hooks_enabled: true\nui:\n  theme: chrys-dark\nmodel:\n  role:\n    buddy_model_id: ''\n"
+    atomic_write_owner_only_text(path, original)
     atomic_write_owner_only_text(legacy, "enabled: false\n")
     atomic_write_owner_only_text(blocked, "Backup directory unavailable\n")
 
-    runtime, warnings = _start()
-    assert warnings == []
-    assert runtime.settings.notifications_enabled is False
+    runtime, _ = _start()
+
+    assert any(warning.code == "notifications_migration_failed" for warning in runtime.warnings)
     assert runtime.settings.theme == "chrys"
     assert runtime.settings.workdir_hooks_enabled
-    assert not legacy.exists()
-    assert legacy.with_suffix(".yaml.migrated").is_file()
-    preserved = _read(path)
-    assert preserved["notifications"]["enabled"] is False
-    assert preserved["ui"]["theme"] == "chrys"
-    assert "model" not in preserved
-    assert preserved["project"] == {"hooks_enabled": True}
-    assert "workdir" not in preserved
+    assert path.read_bytes() == original.encode("utf-8")
+    assert legacy.read_bytes() == b"enabled: false\n"
 
 
 @pytest.mark.parametrize("name", _GLOBAL_FILES)

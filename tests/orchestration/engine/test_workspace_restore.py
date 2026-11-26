@@ -655,6 +655,9 @@ async def test_only_workspace_selection_rejects_a_baseline_changed_at_install(
     primary.mkdir()
     workspace = workspace_case.registry.create("Team", str(primary))
     engine = await workspace_case(tmp_path)
+    await ask(engine, "save the session before selecting a workspace")
+    sid = engine.session_id
+    runtime = engine.current.loaded
     tracker = engine_services(engine).workspace_change_tracker
     build = engine.loader.build
 
@@ -676,4 +679,13 @@ async def test_only_workspace_selection_rejects_a_baseline_changed_at_install(
     assert error.code == "workspace_membership_saved_open_failed"
     assert "Reopening uses Team" in error.message
     assert engine.workspace.primary_cwd == str(tmp_path)
-    assert workspace_case.registry.snapshot().workspace_id_for_session(engine.session_id) == workspace.id
+    assert workspace_case.registry.snapshot().workspace_id_for_session(sid) == workspace.id
+    assert engine.current.loaded is runtime
+    assert engine.session_id == sid
+    await ask(engine, "continue in the original chat")
+    assert engine.session_id == sid
+    assert engine.session.turn_number == 2
+    assert [message.text for message in engine.history_messages if message.role == "user"] == [
+        "save the session before selecting a workspace",
+        "continue in the original chat",
+    ]

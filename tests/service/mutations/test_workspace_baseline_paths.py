@@ -208,3 +208,27 @@ def test_git_scope_expansion_drops_the_previous_comparison(tmp_path, git_repo_fa
     assert notice is not None and "no comparable previous baseline" in notice
     assert "external.txt" not in notice
     assert "comparable_scope" not in json.dumps(tracker.serialize())
+
+
+def test_scan_reopen_compares_an_empty_v1_snapshot(tmp_path: Path) -> None:
+    workspace = Workspace.from_cwd(str(tmp_path))
+    tracker = WorkspaceChangeTracker()
+    tracker.apply_retarget(tracker.resolve_retarget(workspace))
+    assert tracker.capture_baseline(1).degraded == {}
+    saved = tracker.serialize()
+    assert saved is not None and saved["version"] == 1
+
+    restored = WorkspaceChangeTracker()
+    restored.restore(saved, workspace)
+    notice = restored.compute_turn_notice(
+        turn_id=2, mutation_tracker=None, agent_turn_id=None, overlap_turn_id=None, cwd=str(tmp_path), max_entries=20
+    )
+    assert notice is None
+
+    (tmp_path / "new.txt").write_text("new file with a baseline", encoding="utf-8")
+    notice = restored.compute_turn_notice(
+        turn_id=2, mutation_tracker=None, agent_turn_id=None, overlap_turn_id=None, cwd=str(tmp_path), max_entries=20
+    )
+    assert notice is not None
+    assert [line for line in notice.splitlines() if line.startswith("- ")] == ['- created: "new.txt"']
+    assert "Workspace state unavailable" not in notice

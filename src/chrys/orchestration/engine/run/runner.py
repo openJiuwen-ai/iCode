@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import InvocationAnswerWithdrawn, RollbackSnapshotsChanged, TurnStarted
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.invocations import current_invocation_origin
 from chrys.foundation.models.turns import current_turn_start, is_continuation_message
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.util.once_close import finish_close
@@ -460,6 +461,7 @@ class TurnRunner:
         published with the pass's ``TurnStarted``.
         """
         self._turn_state.lease.advance_conversation_revision()
+        self._session.pending_conversation_save = object()
         # Fresh and retry turns alike make this launch's surface the session's last one.
         self._session.mark_surface()
         self._fire_turn_started()
@@ -701,8 +703,10 @@ class TurnRunner:
 
     async def _ask_extension_contexts(self, prompt: str, *, keep: bool = False) -> None:
         """Ask the prepared turn's extension contexts for their text; each failure is reported."""
-        reminder = self._current.require_loaded().reminder_middleware
-        for warning in await reminder.refresh_extension_context(prompt, keep=keep):
+        loaded = self._current.require_loaded()
+        with current_invocation_origin.set(loaded.bindings.inputs.origin):
+            warnings = await loaded.reminder_middleware.refresh_extension_context(prompt, keep=keep)
+        for warning in warnings:
             await self._bus.publish(warning)
 
     async def _refresh_runtime_skills(self, *, update_active_turn: bool = False) -> None:

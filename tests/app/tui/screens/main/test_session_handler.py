@@ -9,30 +9,128 @@ from collections.abc import Coroutine
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import create_autospec
 
 import pytest
 
+from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
+from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.screens.main.session_handlers import RestoreRequest
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotRef, file_snapshot_inline_char_limit
+from chrys.app.tui.widgets.chat.messages import ErrorMessage, UserMessage
+from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
     SessionFork,
     SessionForked,
+    SessionReady,
+    SessionRestored,
 )
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.util.session_ids import session_short_id
+from chrys.kernel import Message
+from chrys.orchestration.engine.build import builder
+from chrys.service.llm.clients import create_client
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource
 from chrys.service.state.store import JsonFileStateStore
-from chrys.service.workspaces.registry import RegistrySnapshot
+from chrys.service.workspaces.registry import RegistrySnapshot, WorkspaceRegistryError
+from tests.support.event_capture import capture_event_sequence
+from tests.support.rollback_spec import SpecClient, answer, ask, start_engine
+from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import (
     main_screen_state_at,
     make_session_handler,
     status_text,
 )
+from tests.support.waiting import wait_for
+
+
+@pytest.mark.parametrize("action", ["rollback", "resume", "new", "clear", "restore-workspace"])
+async def test_failed_session_load_after_close_clears_the_transcript_and_shows_the_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine, action: str
+) -> None:
+    store = JsonFileStateStore(tmp_path / "state")
+    engine = await start_engine(agent_engine, monkeypatch, tmp_path, store, SpecClient([answer("one"), answer("two")]))
+    engine.session.surface = SessionSurface.TUI
+    await ask(engine, "first")
+    await ask(engine, "second")
+    sid = engine.session_id
+    assert sid is not None
+    monkeypatch.setattr(
+        "chrys.app.tui.util.git_branch.GitBranchMonitor._start_observer", lambda _monitor, _target: None
+    )
+    app = make_chrys_app(tmp_path / "state", engine=engine, event_bus=engine.event_bus, state_store=store)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, MainScreen)
+        await screen._sessions.do_session_restore(sid)
+        assert [message.text for message in screen.query(UserMessage)] == ["first", "second"]
+        if action in {"resume", "restore-workspace"}:
+            await store.save_session("another-session", {"messages": [Message("user", ["resume target"])]})
+
+        build_failure = RuntimeError("build failed")
+        async with capture_event_sequence(engine.event_bus, Error, SessionReady, SessionRestored) as events:
+            with monkeypatch.context() as patch:
+                if action == "restore-workspace":
+                    workspace = store.workspace_registry.create("Team", str(tmp_path))
+                    patch.setattr(
+                        engine.loader, "install", create_autospec(engine.loader.install, side_effect=build_failure)
+                    )
+                    with pytest.raises(WorkspaceRegistryError, match="build failed"):
+                        await screen._sessions.do_session_restore("another-session", workspace_id=workspace.id)
+                    assert (
+                        store.workspace_registry.snapshot().workspace_id_for_session("another-session") == workspace.id
+                    )
+                else:
+                    patch.setattr(builder, "create_client", create_autospec(create_client, side_effect=build_failure))
+                    if action == "rollback":
+                        screen.action_show_rollback("to 1")
+                    elif action == "resume":
+                        await screen._resume_session("").wait()
+                    elif action == "new":
+                        await screen._sessions.create_new_session()
+                    else:
+                        await screen._sessions.delete_current_and_new(sid)
+                await wait_for(
+                    lambda: any(isinstance(event, Error) for event in events),
+                    pilot=pilot,
+                    description="terminal session load error",
+                )
+            (failure,) = events
+            assert isinstance(failure, Error)
+            assert (failure.code, failure.session_id) == (
+                "workspace_membership_saved_open_failed" if action == "restore-workspace" else "session_restore_failed",
+                "another-session" if action in {"resume", "restore-workspace"} else sid,
+            )
+
+        assert isinstance(app.screen, AgentLoadDialog)
+        await pilot.press("escape")
+        await wait_for(lambda: app.screen is screen, pilot=pilot, description="load failure dialog dismissed")
+        assert engine.session_id is None
+        assert screen.chat_session_id == ""
+        assert not screen.query(UserMessage)
+        error = screen.query_one(ErrorMessage)
+        if action == "restore-workspace":
+            expected = failure.message
+        elif action in {"new", "clear"}:
+            expected = "Could not start a new session: build failed"
+        else:
+            expected = "Failed to reopen the session: build failed"
+        assert error._text == expected
+        assert not error.query(".status-action-btn")
+        assert not screen.query_one(InputBar).retry_mode
+
+        if action == "clear":
+            assert not (store.session_dir(sid) / "session.json").exists()
+        else:
+            await screen._sessions.do_session_restore(sid)
+            expected = ["first"] if action == "rollback" else ["first", "second"]
+            assert [message.text for message in screen.query(UserMessage)] == expected
 
 
 def test_do_session_restore_ignores_running_agent() -> None:

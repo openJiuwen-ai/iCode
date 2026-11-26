@@ -309,14 +309,14 @@ def test_a_config_read_cannot_land_between_a_write_and_its_republish(monkeypatch
     assert (options["theme"]["value"], options["theme"]["baseValue"]) == ("dark", "dark")
 
 
-def test_set_config_option_downgrades_bypass_approval_mode(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_set_config_option_keeps_bypass_approval_mode(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     manager = _manager(None, _StaticListStore([]))
     _redirect_config_dir(monkeypatch, tmp_path)
 
     result = manager.set_config_option("default_approval_mode", "bypass")
 
-    assert _stored_setting(tmp_path, "approval.default_mode") == "auto"
-    assert result["value"] == "auto"
+    assert _stored_setting(tmp_path, "approval.default_mode") == "bypass"
+    assert result["value"] == "bypass"
     # No mirror: an environment copy would come back as the ENV layer and
     # outrank the document this just wrote.
     assert "CHRYS_DEFAULT_APPROVAL_MODE" not in os.environ

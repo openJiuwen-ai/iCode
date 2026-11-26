@@ -99,10 +99,7 @@ _HINT_LLM_CREDENTIAL_COMMAND_TTL_SECONDS = msg(
 )
 _HINT_APPROVAL_DEFAULT_MODE = msg(
     "tui.settings.hint.approval.default_mode",
-    fallback=(
-        "Approval mode at the next launch; /approval changes both the current session and this default. "
-        "/approval bypass applies to the current launch only and saves auto."
-    ),
+    fallback="Approval mode for the next launch. Use /approval to change both the current mode and this default.",
 )
 _HINT_APPROVAL_AUTO_REVIEW = msg(
     "tui.settings.hint.approval.auto_review",

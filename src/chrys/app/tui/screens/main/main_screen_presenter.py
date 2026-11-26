@@ -50,6 +50,9 @@ class MainScreenPresenter:
     def apply_retry_started(self, note_message_id: str | None, opening_item_id: str | None) -> None:
         self._view.apply_retry_started(note_message_id, opening_item_id)
 
+    async def clear_settled_status(self) -> None:
+        await self._view.clear_settled_status()
+
     def set_tool_info(self, trail: StatusTrail) -> None:
         self._view.set_tool_info(trail)
 

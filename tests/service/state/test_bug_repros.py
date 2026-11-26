@@ -86,8 +86,9 @@ def test_active_session_guard_writes_owner_and_releases_lock(
         assert "cwd" not in owner
 
         assert contender.ensure(long_session_id) is False
+        parent = f", parent={owner['parent_name']}" if owner.get("parent_name") else ""
         assert contender.conflict_message(long_session_id) == (
-            f"Session '40d9a0483e08' is already open in another {APP_DISPLAY_NAME} instance (pid={os.getpid()})."
+            f"Session '40d9a0483e08' is already open in another {APP_DISPLAY_NAME} instance (pid={os.getpid()}{parent})."
         )
 
         guard.release()

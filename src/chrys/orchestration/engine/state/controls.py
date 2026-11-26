@@ -289,17 +289,10 @@ class RuntimeControls:
         if self._current.loaded is not None and self._current.loaded.sub_agent_tools is not None:
             self._current.loaded.sub_agent_tools.set_approval_mode(mode)
         self._workflows.set_approval_mode(mode)
-        if event.persist:
-            # Persist the user's choice so it survives restart.  BYPASS is
-            # downgraded to AUTO inside ``persist_approval_mode`` to avoid
-            # booting into unattended auto-approval on next launch — mirror
-            # that same downgrade onto the in-memory Settings so a later
-            # ``SettingsReload`` stays consistent with what's on disk.
-            #
-            # Through the overlay rather than onto the field: this key is
-            # ``Risk.DANGEROUS``, so a rejected value seals it at ``manual``, and
-            # an in-place write would leave that seal on top of the mode the user
-            # just chose.
+        updated = ApprovalModeUpdated(mode=mode.value, session_id=self._session.session_id)
+        if event.persist == "frontend":
+            updated.save_in_frontend = True
+        elif event.persist:
             try:
                 self._settings_handle.persist_approval_default(mode.value, persist=persist_approval_mode_fn)
             except (OSError, ValueError) as exc:
@@ -311,7 +304,9 @@ class RuntimeControls:
                         session_id=self._session.session_id,
                     )
                 )
-        await self._bus.publish(ApprovalModeUpdated(mode=mode.value, session_id=self._session.session_id))
+            else:
+                updated.saved_as_default = True
+        await self._bus.publish(updated)
 
     async def on_profile_switch(self, event: AgentProfileSwitch) -> None:
         """Handle agent profile switch — preserves conversation history."""
@@ -1186,7 +1181,6 @@ class RuntimeControls:
                     Error(code="workspace_change_failed", message=str(exc), session_id=self._session.session_id)
                 )
                 raise
-            live_plan = self._session.workspace_plan
             await self._start_or_restart_with_permit(
                 permit,
                 self._session.agent_profile,
@@ -1194,7 +1188,6 @@ class RuntimeControls:
                 workspace_plan=self._lifecycle.workspaces.plan(
                     workspace=new_workspace,
                     snapshot=RegistrySnapshot(),
-                    live_plan=live_plan if live_plan is not None and live_plan.departure is not None else None,
                 ),
                 staged_loaded=staged_loaded,
             )
@@ -1356,6 +1349,7 @@ class RuntimeControls:
                 staged_loaded=staged_loaded,
                 commit_workspace=commit,
             )
+            await self._lifecycle.workspaces.warn_missing_references(self._session.session_id, plan)
             departure = plan.departure
             if plan.left_workspace and departure is not None and self._session.surface is SessionSurface.CLI:
                 await self._bus.publish(workspace_left_warning(self._session.session_id, departure.name))

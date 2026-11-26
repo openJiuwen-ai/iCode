@@ -16,6 +16,7 @@ from chrys.foundation.models.workspace import control_chars_as_spaces
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.platform.runtime_paths import normalize_path as _normalise_path
 from chrys.foundation.platform.runtime_paths import same_path, which_excluding_runtime
+from chrys.foundation.text.model_json import model_path
 
 if TYPE_CHECKING:
     from chrys.foundation.models.session_env import SessionEnvironment
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
 _PYTHON_EXECUTABLE_NAMES = ("python3", "python")
 _WINDOWS_PYTHON_EXECUTABLE_NAMES = ("python3", "python", "py")
 _PROCESS_SAFE_RUNTIME_PYTHON_BASENAMES = frozenset({"chrys-runtime", "chrys-runtime.exe", "chrys-runtimew.exe"})
+_WORKSPACE_PREFIX = "  Workspace: "
+_DEPARTURE_PREFIX = 'Unspecified (left workspace "'
 
 
 @dataclass(frozen=True)
@@ -65,7 +68,7 @@ class RuntimeEnvSource:
         shell_line = f"  Shell: {shell.name} {shell.version} ({shell.path})".rstrip()
         lines = [
             "[Runtime Environment]",
-            f"  Working directory: {rt.cwd}",
+            f"  Working directory: {model_path(rt.cwd)}",
             f"  OS: {rt.platform.os_name} ({rt.platform.arch})",
             shell_line,
         ]
@@ -80,22 +83,47 @@ class RuntimeEnvSource:
             lines.append("  Working directories:")
             for wd in working_dirs:
                 marker = " (primary)" if wd.is_primary else ""
-                label = f" [{wd.label}]" if wd.label else ""
-                lines.append(f"    - {wd.path}{label}{marker}")
+                label = f" [{control_chars_as_spaces(wd.label)}]" if wd.label else ""
+                lines.append(f"    - {model_path(wd.path)}{label}{marker}")
         return surrogate_safe_text("\n".join(lines))
 
+    def with_departure(self, hint: str | None, visible_runtime: str | None) -> str | None:
+        """Name the workspace just left only when the model saw that workspace."""
+        rt = self._runtime
+        if not hint or not visible_runtime or not self._workspace_section or rt is None or rt.workspace_name:
+            return hint
+        lines = hint.split("\n")
+        if any(line.startswith(_WORKSPACE_PREFIX) for line in lines):
+            return hint
+        visible_lines = visible_runtime.split("\n")
+        workspace_line = next((line for line in visible_lines if line.startswith(_WORKSPACE_PREFIX)), "")
+        name = workspace_line.removeprefix(_WORKSPACE_PREFIX)
+        if not name:
+            return hint
+        if "  Workspace folders:" not in visible_lines and _is_departure_line(workspace_line):
+            # Already delivered for this runtime: keep that exact catalog, or
+            # send the new directory without the stale departure notice.
+            without_departure = [line for line in visible_lines if line != workspace_line]
+            return visible_runtime if without_departure == lines else hint
+        insert_at = max(
+            (index + 1 for index, line in enumerate(lines) if line.startswith("  Shell: ")),
+            default=1,
+        )
+        lines.insert(insert_at, f'{_WORKSPACE_PREFIX}{_DEPARTURE_PREFIX}{name}")')
+        return "\n".join(lines)
+
     def _workspace_lines(self, rt: SessionEnvironment) -> list[str]:
-        """Workspace membership, its folder index once, or the line naming the workspace just left."""
+        """Workspace membership and its folder index once."""
         if not self._workspace_section:
             return []
         if rt.workspace_name:
             return [f"  Workspace: {rt.workspace_name}", *(f"  {line}" for line in rt.workspace_index)]
-        departed = rt.departed_workspace
-        if departed is None:
-            return []
-        name = control_chars_as_spaces(departed.name)
-        reason = f'left workspace "{name}"'
-        return [f"  Workspace: Unspecified ({reason})"]
+        return []
+
+
+def _is_departure_line(line: str) -> bool:
+    prefix = f"{_WORKSPACE_PREFIX}{_DEPARTURE_PREFIX}"
+    return line.startswith(prefix) and line.endswith('")') and len(line) > len(prefix) + 2
 
 
 def _format_python_execution_paths_hint() -> list[str]:

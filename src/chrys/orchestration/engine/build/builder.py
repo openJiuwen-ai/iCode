@@ -98,7 +98,7 @@ from chrys.service.tools.names import chrys_reserved_tool_names
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
-    from chrys.foundation.models.workspace import Workspace, WorkspaceDeparture
+    from chrys.foundation.models.workspace import Workspace
     from chrys.orchestration.sub_agents.tools import SubAgentTools
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.turn_context import TurnContextHolder
@@ -285,7 +285,6 @@ async def build_agent(
     on_usage: Callable[..., None],
     *,
     # -- optional -----------------------------------------------------
-    departed_workspace: WorkspaceDeparture | None = None,
     missing_working_dirs: tuple[str, ...] = (),
     model_registry: ModelProfileRegistry | None = None,
     on_sub_agent_usage: Callable[..., None] | None = None,
@@ -434,7 +433,6 @@ async def build_agent(
         runtime = SessionEnvironment.capture(
             workspace=workspace,
             workspace_index=workspace_index,
-            departed_workspace=departed_workspace,
             missing_working_dirs=missing_working_dirs,
         )
         memory_text = memory_content.text

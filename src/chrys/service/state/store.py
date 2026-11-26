@@ -57,7 +57,12 @@ from chrys.service.state._session_files import _ensure_lock_parent as _ensure_lo
 from chrys.service.state._session_files import _is_string_keyed_dict as _is_string_keyed_dict
 from chrys.service.state._session_files import _session_short_id as _session_short_id
 from chrys.service.state._session_files import atomic_copy_file as atomic_copy_file
-from chrys.service.state._session_files import dump_session_envelope, linked_recovery_active_lock, read_session_envelope
+from chrys.service.state._session_files import (
+    dump_session_envelope,
+    linked_recovery_active_lock,
+    read_session_envelope,
+    validated_checkpoint,
+)
 from chrys.service.state._session_files import legacy_session_files as legacy_session_files
 from chrys.service.state._session_files import make_junction_dropping_ignore as make_junction_dropping_ignore
 from chrys.service.state._session_files import parse_snapshot_turn as parse_snapshot_turn
@@ -278,6 +283,7 @@ class StateStore(Protocol):
     async def load_recovery_session(self, session_id: str) -> dict[str, Any] | None: ...
     async def load_recovery_session_meta(self, session_id: str) -> SessionMeta | None: ...
     def delete_recovery_session(self, session_id: str) -> None: ...
+    def discard_ignored_recovery_under_write_lock(self, session_id: str) -> None: ...
     async def recovery_session_wins(self, session_id: str) -> bool: ...
     async def load_workflow_session(self, session_id: str) -> WorkflowSessionState | None: ...
     async def load_session(
@@ -326,7 +332,13 @@ class StateStore(Protocol):
         custom_title: str | None = None,
         generated_title: str | None = None,
     ) -> SessionMeta | None: ...
-    def fork_session(self, parent_session_id: str, *, last_surface: SessionSurface | None = None) -> str: ...
+    def fork_session(
+        self,
+        parent_session_id: str,
+        *,
+        last_surface: SessionSurface | None = None,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> str: ...
     async def delete_session(self, session_id: str, *, allow_active: bool = False) -> None: ...
 
 
@@ -555,6 +567,9 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             return
         self._note_mru(lambda: self._mru.record(session_id, updated_at))
 
+    def _remove_mru(self, session_id: str) -> None:
+        self._note_mru(lambda: self._mru.remove(session_id))
+
     def _migrate_if_needed_unlocked(self, session_id: str, *, owns_active_lock: bool = False) -> Path | None:
         """Move a legacy flat into its folder, or return its path if another owner prevents migration."""
         legacy = self._legacy_path(session_id)
@@ -649,18 +664,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
     @classmethod
     def _read_checkpoint_file(cls, path: Path) -> dict[str, Any] | None:
         """Read a checkpoint candidate, ignoring objects with a damaged envelope shape."""
-        return cls._validated_checkpoint(cls._read_checkpoint_json(path))
-
-    @staticmethod
-    def _validated_checkpoint(envelope: object) -> dict[str, Any] | None:
-        if not isinstance(envelope, dict):
-            return None
-        meta = envelope.get("meta")
-        if not isinstance(meta, dict) or not meta or not isinstance(envelope.get("state", {}), dict):
-            return None
-        if "session_id" in meta and (not isinstance(meta["session_id"], str) or not meta["session_id"]):
-            return None
-        return envelope
+        return validated_checkpoint(cls._read_checkpoint_json(path))
 
     @staticmethod
     def _checkpoint_session_id(envelope: dict[str, Any] | None) -> str | None:
@@ -1452,7 +1456,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 if busy := self._busy_recovery_lock(owners):
                     return None, busy
                 payload = stream.read()
-            return self._validated_checkpoint(json.loads(payload.decode("utf-8"))), None
+            return validated_checkpoint(json.loads(payload.decode("utf-8"))), None
         except FileNotFoundError, NotADirectoryError, ValueError, RecursionError:
             return None, None
 
@@ -1630,7 +1634,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 raise StartupSessionInUseError(session_id, None)
             if checkpoint is None:
                 if ignore_recovery and repair:
-                    self._discard_ignored_recovery_unlocked(session_id)
+                    self.discard_ignored_recovery_under_write_lock(session_id)
                 return None
             envelope = checkpoint.envelope
             if not same_session_id(self._checkpoint_session_id(envelope), session_id):
@@ -1640,7 +1644,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             # Rollback has already swapped the primary. Retire its old sidecar
             # even if decoding the verified rollback checkpoint fails.
             if ignore_recovery and repair:
-                self._discard_ignored_recovery_unlocked(session_id)
+                self.discard_ignored_recovery_under_write_lock(session_id)
             try:
                 state = deserialize_state(envelope.get("state", {}))
             except KeyError:
@@ -1657,7 +1661,8 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                     self._delete_recovery_session_unlocked(session_id)
             return ChatRestoreData(state, meta, checkpoint.source == "recovery", envelope.get("state", {}))
 
-    def _discard_ignored_recovery_unlocked(self, session_id: str) -> None:
+    def discard_ignored_recovery_under_write_lock(self, session_id: str) -> None:
+        """Discard an ignored sidecar using the caller's session write lock and active ownership."""
         recovery, busy = self._read_startup_recovery(self._recovery_file(session_id), owns_active_lock=True)
         if busy is not None:
             return
@@ -2683,7 +2688,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 and not self._legacy_path(session_id).exists()
                 and self._legacy_meta_for_id(session_id, strict_io=True) is None
             ):
-                self._note_mru(lambda: self._mru.remove(session_id))
+                self._remove_mru(session_id)
         except OSError:
             # An unreadable flat may carry this ID even under an unrelated name.
             logger.debug("Skipping ghost prune of %s: archive unavailable", session_id, exc_info=True)
@@ -2933,7 +2938,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 # Still under the write lock: a same-id save recreating the
                 # session records before it can commit, so it cannot slip in
                 # between the deletion and this removal and lose its entry.
-                self._note_mru(lambda: self._mru.remove(session_id))
+                self._remove_mru(session_id)
                 # The catalog holds prompt excerpts: they go with the session.
                 self._forget_catalog_entry(session_id)
                 self._pending_custom_titles.pop(session_id_key(session_id), None)

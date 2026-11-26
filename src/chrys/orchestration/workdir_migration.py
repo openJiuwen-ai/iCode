@@ -82,8 +82,10 @@ class WorkdirMigration:
                 return
         atomic_write_owner_only_bytes(target, raw)
 
-    def _backup_config(self, path: Path, raw: bytes) -> None:
-        self._backup(path.relative_to(self.config_dir), raw)
+    def backup_config_original(self, path: Path, raw: bytes | None) -> None:
+        """Preserve the exact contents a configuration migration is about to replace."""
+        if raw is not None:
+            self._backup(path.relative_to(self.config_dir), raw)
 
     def _can_write_backups(self) -> bool:
         root = self.backup_dir.parent
@@ -116,14 +118,14 @@ class WorkdirMigration:
         marker = self.backup_dir.parent / ".workdir-global.done"
         if marker.exists() or not self._can_write_backups():
             return
-        changed, conflicts = migrate_trust_settings(self.config_dir / "settings.yaml", self._backup_config)
+        changed, conflicts = migrate_trust_settings(self.config_dir / "settings.yaml", self.backup_config_original)
         if changed:
             self._changed["settings.yaml"] = None
         if conflicts:
             self.warnings.append(trust_conflict_warning(conflicts))
-        self._grants(self.config_dir / GRANTS_FILE, self._backup_config, GRANTS_FILE)
+        self._grants(self.config_dir / GRANTS_FILE, self.backup_config_original, GRANTS_FILE)
         if migrate_ledger(
-            ledger_path(self.config_dir), backup=self._backup_config, on_read_error=self._record_read_error
+            ledger_path(self.config_dir), backup=self.backup_config_original, on_read_error=self._record_read_error
         ):
             self._changed["workflows/trusted.json"] = None
         with contextlib.suppress(OSError):

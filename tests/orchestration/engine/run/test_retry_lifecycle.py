@@ -25,6 +25,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetails, UserRetry
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.turns import UserMessageKind
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.text.images import LoadedImage
@@ -124,6 +125,7 @@ async def on_user_retry(host: object, event: UserRetry) -> None:
 class _Executor:
     def __init__(self) -> None:
         self.conversation = self
+        self.origin = InvocationOrigin("turn", "", "retry-turn", None)
         self.user_messages: list[str] = []
         self.resume_texts: list[str] = []
         self.run_failed = False

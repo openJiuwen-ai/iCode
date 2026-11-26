@@ -352,7 +352,7 @@ async def test_workspace_change_derives_settings_from_the_new_root(
     assert engine.settings is replacement_settings
 
 
-async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass_as_auto(
+async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[ApprovalModeUpdated] = []
@@ -389,8 +389,8 @@ async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass_as_
     assert live_approval.approval_mode is ApprovalMode.BYPASS
     workflow_nodes.assert_called_once_with(ApprovalMode.BYPASS)
     assert persisted == ["bypass"]
-    assert engine.settings.default_approval_mode == "auto"
-    assert [(event.mode, event.session_id) for event in events] == [("bypass", "sid")]
+    assert engine.settings.default_approval_mode == "bypass"
+    assert [(event.mode, event.session_id, event.saved_as_default) for event in events] == [("bypass", "sid", True)]
 
 
 async def test_setting_the_approval_mode_moves_its_provenance_with_the_value(
@@ -410,16 +410,9 @@ async def test_setting_the_approval_mode_moves_its_provenance_with_the_value(
     assert engine.loaded_settings.source_for("approval.default_mode").layer is Source.RUNTIME
 
 
-async def test_setting_the_approval_mode_breaks_the_seal_it_no_longer_describes(
+async def test_changing_the_active_mode_preserves_a_default_sealed_by_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``approval.default_mode`` is DANGEROUS, so a bad env value seals it.
-
-    The seal means "we refused every layer and fell back to the built-in
-    default". Once the user picks a mode at runtime that sentence is false,
-    and leaving the seal on reproduces the contradiction the freeze fix
-    removed: sealed, yet holding a value nobody defaulted to.
-    """
     monkeypatch.setenv("CHRYS_DEFAULT_APPROVAL_MODE", "garbage")
     loaded = load_settings()
     assert loaded.settings.default_approval_mode == "manual"
@@ -432,8 +425,9 @@ async def test_setting_the_approval_mode_breaks_the_seal_it_no_longer_describes(
 
     await engine._on_set_approval_mode(SetApprovalMode(mode="auto"))
 
-    assert engine.settings.default_approval_mode == "auto"
-    assert "approval.default_mode" not in engine.loaded_settings.sealed_keys
+    assert engine.session.approval_mode is ApprovalMode.AUTO
+    assert engine.settings.default_approval_mode == "manual"
+    assert "approval.default_mode" in engine.loaded_settings.sealed_keys
 
 
 async def test_set_approval_mode_can_skip_global_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -461,7 +455,7 @@ async def test_set_approval_mode_can_skip_global_persistence(monkeypatch: pytest
     assert sub_agents.modes == [ApprovalMode.BYPASS]
     assert persisted == []
     assert settings.default_approval_mode == "manual"
-    assert [(event.mode, event.session_id) for event in events] == [("bypass", "sid")]
+    assert [(event.mode, event.session_id, event.saved_as_default) for event in events] == [("bypass", "sid", False)]
 
 
 async def test_set_approval_mode_ignores_invalid_mode(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from chrys.foundation.i18n import DisplayPath, MessageRef, msg
 from chrys.foundation.models.workspace import path_identity
+from chrys.service.mutations.coordination import fold_case
 
 PRIMARY_MISSING = msg(
     "workspaces.primary_missing",
@@ -49,11 +50,22 @@ def contains(folder: str, directory: str) -> bool:
     original path. Missing tails still compare against existing ancestors.
     """
     identity = path_identity(folder)
-    if isinstance(identity, str):
-        candidate = os.path.normcase(os.path.realpath(directory))
-        try:
-            return os.path.commonpath((identity, candidate)) == identity
-        except ValueError:
-            return False
     candidate_path = Path(os.path.realpath(directory))
-    return any(path_identity(str(candidate)) == identity for candidate in (candidate_path, *candidate_path.parents))
+    if not isinstance(identity, str):
+        return any(path_identity(candidate) == identity for candidate in (candidate_path, *candidate_path.parents))
+
+    ancestor, missing = _split_missing_tail(Path(os.path.realpath(folder)))
+    candidate_ancestor, candidate_missing = _split_missing_tail(candidate_path)
+    return ancestor == candidate_ancestor and candidate_missing[: len(missing)] == missing
+
+
+def _split_missing_tail(path: Path) -> tuple[tuple[int, int] | str, tuple[str, ...]]:
+    """Return the existing ancestor's identity and the folded missing components."""
+    missing: list[str] = []
+    while True:
+        identity = path_identity(path)
+        parent = path.parent
+        if not isinstance(identity, str) or parent == path:
+            return identity, tuple(reversed(missing))
+        missing.append(fold_case(path.name))
+        path = parent
