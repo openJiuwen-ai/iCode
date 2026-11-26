@@ -50,6 +50,7 @@ from chrys.app.tui.widgets.chat.fold_rows import (
     FOLDED_ARROW,
     FOLDED_LABEL,
     OPEN_ARROW,
+    PREVIEW_SOURCE_CHARS,
     THINKING_LABEL,
     THOUGHT_LABEL,
     text_preview,
@@ -124,6 +125,7 @@ busy and the garbage collector behind it.
 _USER_MESSAGE_COPIED = msg("tui.copy.user_message", fallback="Copied your message")
 _USER_MESSAGE_COPY_TOOLTIP = msg("tui.chat.copy_user_message_tooltip", fallback="Copy your raw message")
 _THINKING_SUMMARY_LABEL = msg("tui.chat.thinking_summary_label", fallback="Thinking summary")
+_REPLYING_LABEL = msg("tui.chat.replying_label", fallback="Replying...")
 _THINKING_TOKENS = msg("tui.chat.thinking_tokens", fallback=" ({tokens} token)", plural_fallback=" ({tokens} tokens)")
 _THINKING_SPEED = msg(
     "tui.chat.thinking_speed",
@@ -626,9 +628,17 @@ class _FoldRowHeader(_AgentHeader):
 
     COMPONENT_CLASSES: ClassVar[set[str]] = {"fold-row-header--label", "fold-row-header--preview"}
 
-    def __init__(self, label: MessageRef, *, collapsed: bool, text: str, folded_label: bool = True) -> None:
+    def __init__(
+        self,
+        label: MessageRef,
+        *,
+        collapsed: bool,
+        text: str,
+        folded_label: bool = True,
+        detail: MessageRef | None = None,
+    ) -> None:
         self._label = label
-        self._detail: MessageRef | None = None
+        self._detail = detail
         self._folded_label = folded_label
         """Whether the folded row names its label before the text."""
         self._collapsed = collapsed
@@ -662,10 +672,7 @@ class _FoldRowHeader(_AgentHeader):
         """Show the folded row for *text* or the open header. Both are one row high."""
         relabelled = label is not None and label != self._label
         if not (
-            relabelled
-            or collapsed != self._collapsed
-            or detail != self._detail
-            or (collapsed and text is not self._text)
+            relabelled or collapsed != self._collapsed or detail != self._detail or (collapsed and text != self._text)
         ):
             return
         if label is not None:
@@ -716,8 +723,17 @@ class _AgentReplyHeader(_FoldRowHeader):
     Folded, that row is the agent's own words, with no label before them.
     """
 
-    def __init__(self, copy_label: str, reply: Text | None, *, collapsed: bool, text: str) -> None:
-        super().__init__(AGENT_LABEL.bind(), collapsed=collapsed, text=text, folded_label=False)
+    def __init__(
+        self,
+        copy_label: str,
+        reply: Text | None,
+        *,
+        collapsed: bool,
+        text: str,
+        label: MessageRef | None = None,
+        detail: MessageRef | None = None,
+    ) -> None:
+        super().__init__(label or AGENT_LABEL.bind(), collapsed=collapsed, text=text, folded_label=False, detail=detail)
         self._copy_label = copy_label
         self._reply = reply
         """The reply header shown, or None for the fold row."""
@@ -731,6 +747,7 @@ class _AgentReplyHeader(_FoldRowHeader):
         resized = self._reply is None or reply.cell_len != self._reply.cell_len
         self._copy_label = label
         self._reply = reply
+        self.remove_class("fold-row-header")
         self.refresh(layout=resized)
 
     def show(
@@ -808,7 +825,7 @@ class StreamedMarkdownMessage(GuideFoldMixin, FoldGap, ProcessMember):
 
     def render(self) -> RenderResult:
         # Its header and body cover the rest: only its gap shows its own content.
-        return self.gap_render() if self.gap_above or self.gap_below else super().render()
+        return self.gap_text() if self.gap_above else super().render()
 
     def _builds_body_on_opening(self) -> bool:
         """Whether its body waits for it to open: built folded, it composes none, and a folded body is handed no text.
@@ -909,9 +926,6 @@ class StreamedMarkdownMessage(GuideFoldMixin, FoldGap, ProcessMember):
         if crop.y < gap:
             gap_lines = Widget.render_lines(self, Region(crop.x, crop.y, crop.width, min(gap, crop.bottom) - crop.y))
             lines[: len(gap_lines)] = gap_lines
-        if self.gap_below and crop.y <= self.size.height - 1 < crop.bottom:
-            y = self.size.height - 1
-            lines[y - crop.y] = Widget.render_lines(self, Region(crop.x, y, crop.width, 1))[0]
         return lines
 
     def _can_reuse_chrome_strip(self) -> bool:
@@ -1109,9 +1123,7 @@ class StreamedMarkdownMessage(GuideFoldMixin, FoldGap, ProcessMember):
         line that then fits again. Noted as a fold, the shrink shows in the
         panel's arrangement measuring it; a view that follows the bottom would
         otherwise hold it a frame, in case the rows came back, and show the row
-        blank under the transcript's last line. The gap below it is not its
-        text's: it goes as an entry comes below it, whose rows the view then
-        follows down.
+        blank under the transcript's last line.
         """
         height = super()._content_rows(container, viewport, width)
         measured = self._measured_rows
@@ -1147,9 +1159,8 @@ class AgentMessage(StreamedMarkdownMessage):
         border-left: thick $tui-border-neutral-gray $border-opacity;
         color: $text-muted;
     }
-    /* Text between tool calls, as thinking and tool groups: its guide meets theirs, a blank row below it. While it
-       streams, it keeps an answer's spacing, so an answer it turns out to be does not move as it ends. */
-    AgentMessage.--intermediate {
+    /* Provisional text and text between tool calls share the process rows' spacing and guide. */
+    AgentMessage.--intermediate, AgentMessage.--provisional {
         margin: 0;
         border-left: solid $tui-border-neutral-gray $border-opacity;
     }
@@ -1171,6 +1182,10 @@ class AgentMessage(StreamedMarkdownMessage):
     }
     AgentMessage .fold-row-header > .fold-row-header--preview {
         color: $text;
+    }
+    AgentMessage.--provisional .fold-row-header > .fold-row-header--label,
+    AgentMessage.--provisional .fold-row-header > .fold-row-header--preview {
+        color: $text-muted;
     }
     AgentMessage.--compressed {
         border-left: thick $tui-border-neutral-100 $border-opacity;
@@ -1231,7 +1246,12 @@ class AgentMessage(StreamedMarkdownMessage):
         self._ts = timestamp
         self._duration_ms = duration_ms
         self._provisional = provisional
-        """Streamed while its turn's process folds: its header stays muted until the text is known to be the answer."""
+        """A single progress row while the main turn is still writing."""
+        self._reply_progress: StreamTokens | None = StreamTokens() if provisional else None
+        if self._reply_progress is not None:
+            self._reply_progress.note(text, time.monotonic())
+        self._reply_progress_timer: Timer | None = None
+        self._defer_body = provisional
         cls = ""
         if is_intermediate:
             cls = "--intermediate"
@@ -1242,10 +1262,10 @@ class AgentMessage(StreamedMarkdownMessage):
         if not is_final:
             # Muted until the text is known to be the answer, not text before tool calls.
             cls = f"{cls} --streaming".strip()
+        if provisional:
+            cls = f"{cls} --provisional".strip()
         super().__init__(text, is_final=is_final, classes=cls)
-        if collapsed and self.foldable:
-            # Built complete between tool calls, as the main chat's replay builds it: folded to its row, as replayed
-            # thinking. Before mount, and without the watcher.
+        if provisional or (collapsed and self.foldable):
             self.set_reactive(StreamedMarkdownMessage.collapsed, True)
 
     @property
@@ -1253,17 +1273,19 @@ class AgentMessage(StreamedMarkdownMessage):
         """Text between tool calls folds once complete; an answer never folds with its turn."""
         return self._is_final and self._is_intermediate
 
+    @property
+    def is_provisional(self) -> bool:
+        return self._provisional
+
     def takes_fold_gap(self) -> bool:
         # An answer keeps its margins instead.
-        return self._is_intermediate
+        return self._is_intermediate or self._provisional
 
     def ends_folded(self) -> bool:
-        return self._is_intermediate and not self._shows_body()
+        return self.takes_fold_gap() and not self._shows_body()
 
     def _builds_body_on_opening(self) -> bool:
-        # Text between tool calls, as thinking; an answer folded by hand keeps its body up to date. Folded as the turn
-        # goes on past it, the body it streamed in stays: removing it would lay the transcript out once more.
-        return self._is_intermediate
+        return self._is_intermediate or self._defer_body
 
     @property
     def profile_name(self) -> str:
@@ -1273,8 +1295,7 @@ class AgentMessage(StreamedMarkdownMessage):
     def _header_text(self) -> Text:
         label = self._copy_label()
         arrow = FOLDED_ARROW if self.collapsed else OPEN_ARROW
-        style = "bold dim" if self._provisional and not self._is_final else "bold green"
-        t = Text.assemble((f"{arrow} {label}", style))
+        t = Text.assemble((f"{arrow} {label}", "bold green"))
         if self._ts:
             t.append(f" {self._ts}", style="dim")
         if self._duration_ms is not None:
@@ -1291,9 +1312,11 @@ class AgentMessage(StreamedMarkdownMessage):
         with MessageHeaderRow():
             yield _AgentReplyHeader(
                 self._copy_label(),
-                None if self._is_intermediate else self._header_text(),
+                None if self.takes_fold_gap() else self._header_text(),
                 collapsed=self.collapsed,
-                text=self._source_text,
+                text=self._source_text[:PREVIEW_SOURCE_CHARS] if not self._provisional else "",
+                label=(_REPLYING_LABEL if self._provisional else AGENT_LABEL).bind(),
+                detail=_stream_progress_detail(self._reply_progress),
             )
             copy_button = MessageCopyButton(
                 tooltip=self._render_message(_AGENT_RESPONSE_COPY_TOOLTIP.bind()),
@@ -1309,8 +1332,17 @@ class AgentMessage(StreamedMarkdownMessage):
     def _refresh_header(self) -> None:
         with contextlib.suppress(NoMatches):
             header = self.query_one(_AgentReplyHeader)
-            if self._is_intermediate:
-                header.show(collapsed=self.collapsed, text=self._source_text)
+            if self._provisional:
+                header.show(
+                    collapsed=True,
+                    text="",
+                    label=_REPLYING_LABEL.bind(),
+                    detail=_stream_progress_detail(self._reply_progress),
+                )
+            elif self._is_intermediate:
+                header.show(
+                    collapsed=self.collapsed, text=self._source_text[:PREVIEW_SOURCE_CHARS], label=AGENT_LABEL.bind()
+                )
             else:
                 header.show_reply(self._header_text(), self._copy_label())
 
@@ -1320,9 +1352,29 @@ class AgentMessage(StreamedMarkdownMessage):
         _relabel_copy_buttons(self, _AGENT_RESPONSE_COPY_TOOLTIP)
 
     def _on_final(self) -> None:
-        if self._provisional:
-            self._refresh_header()
+        self._reply_progress = None
+        self._stop_reply_progress_timer()
         self._show_copy_button_if_ready()
+
+    def on_show(self) -> None:
+        if self._provisional and self._reply_progress_timer is None:
+            self._refresh_header()
+            self._reply_progress_timer = self.set_interval(1.0, self._tick_reply_progress)
+
+    def on_hide(self) -> None:
+        self._stop_reply_progress_timer()
+
+    def on_unmount(self) -> None:
+        self._stop_reply_progress_timer()
+
+    def _stop_reply_progress_timer(self) -> None:
+        if self._reply_progress_timer is not None:
+            self._reply_progress_timer.stop()
+            self._reply_progress_timer = None
+
+    def _tick_reply_progress(self) -> None:
+        if self._provisional and is_widget_shown_on_active_screen(self):
+            self._refresh_header()
 
     def set_timestamp(self, timestamp: str, *, duration_ms: int | None = None) -> None:
         """Update the header timestamp, and how long the turn took to this answer (*duration_ms*) when given."""
@@ -1376,12 +1428,31 @@ class AgentMessage(StreamedMarkdownMessage):
             return
         self.copy_agent_response()
 
+    def append_text(self, text: str) -> None:
+        if self._reply_progress is None:
+            super().append_text(text)
+            return
+        self._reply_progress.note(text, time.monotonic())
+        super().stream_update(self._source_text + text)
+
     def stream_update(
         self, text: str, is_final: bool = False, *, timestamp: str = "", duration_ms: int | None = None
     ) -> None:
         """Update the message text (for streaming); a *timestamp* and *duration_ms* go in the header first."""
         self.set_timestamp(timestamp, duration_ms=duration_ms)
+        was_provisional = self._provisional
+        if is_final and was_provisional:
+            self._provisional = False
+            self.remove_class("--provisional")
+            if not self._is_intermediate:
+                # On an interruption the visible partial answer stays and opens where it was.
+                self.collapsed = False
+        elif was_provisional:
+            self._reply_progress = StreamTokens()
+            self._reply_progress.note(text, time.monotonic())
         super().stream_update(text, is_final)
+        if was_provisional:
+            self._refresh_header()
 
     def settle_intermediate(self, *, folded: bool = False) -> None:
         """End streaming as text the agent wrote between tool calls: muted, under a fold row header, no copy button.
@@ -1541,16 +1612,6 @@ class ThinkingMessage(StreamedMarkdownMessage):
         if self._header is not None and is_widget_shown_on_active_screen(self._header):
             self._refresh_header()
 
-    @staticmethod
-    def _progress_detail(progress: StreamTokens | None) -> MessageRef | None:
-        if progress is None or not progress.tokens:
-            return None
-        tokens = format_token_count(progress.tokens)
-        speed = progress.speed(time.monotonic())
-        if speed is None:
-            return _THINKING_TOKENS.bind(count=progress.tokens, tokens=tokens)
-        return _THINKING_SPEED.bind(count=progress.tokens, tokens=tokens, speed=speed)
-
     def _sync_progress_timer(self) -> None:
         if self._composited and self.collapsed and self._progress is not None:
             if self._progress_timer is None:
@@ -1567,7 +1628,7 @@ class ThinkingMessage(StreamedMarkdownMessage):
             collapsed=self.collapsed,
             text=self._source_text if self._is_final else "",
             label=self._label_ref(),
-            detail=self._progress_detail(self._progress) if self._composited and self.collapsed else None,
+            detail=_stream_progress_detail(self._progress) if self._composited and self.collapsed else None,
         )
 
     def _on_final(self) -> None:
@@ -1581,14 +1642,14 @@ class ThinkingMessage(StreamedMarkdownMessage):
     def live_status(self) -> LiveStatus:
         label_ref = self._label_ref()
         progress = self._progress
-        frozen_detail = self._progress_detail(progress)
+        frozen_detail = _stream_progress_detail(progress)
         preview = text_preview(self._source_text) if self._is_final else ""
 
         def render(title: RunningTitle, _width: int, animated: bool) -> Text:
             localizer = widget_localizer(title)
             label = render_str(localizer, label_ref)
             style = title.text_style_of("liveprocessrow--thought")
-            detail = self._progress_detail(progress) if animated else frozen_detail
+            detail = _stream_progress_detail(progress) if animated else frozen_detail
             if detail is not None:
                 return Text.assemble((label, style), render_str(localizer, detail))
             if preview:
@@ -1597,6 +1658,16 @@ class ThinkingMessage(StreamedMarkdownMessage):
             return Text(label, style=style)
 
         return render
+
+
+def _stream_progress_detail(progress: StreamTokens | None) -> MessageRef | None:
+    if progress is None or not (count := progress.tokens):
+        return None
+    tokens = format_token_count(count)
+    speed = progress.speed(time.monotonic())
+    if speed is None:
+        return _THINKING_TOKENS.bind(count=count, tokens=tokens)
+    return _THINKING_SPEED.bind(count=count, tokens=tokens, speed=speed)
 
 
 def folds_with_turn(widget: Widget) -> TypeGuard[ThinkingMessage | AgentMessage]:

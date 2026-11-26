@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+from asyncio import Lock
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import nullcontext
 from fractions import Fraction
@@ -41,6 +42,7 @@ from chrys.foundation.patches.textual_precompose import precompose_tree
 if TYPE_CHECKING:
     from asyncio import Task
 
+    from textual.dom import DOMNode
     from textual.events import Click
     from textual.layout import Layout
 
@@ -92,7 +94,7 @@ from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
 from chrys.app.tui.widgets.chat.transcript_panel import ChatTranscriptPanelMarker
 from chrys.app.tui.widgets.chat.transcript_reader import TranscriptReader
-from chrys.app.tui.widgets.chat.waiting_row import WaitingRow, waits_after
+from chrys.app.tui.widgets.chat.waiting_row import waits_after
 from chrys.app.tui.widgets.sidebar.toc_types import TocItem
 from chrys.app.tui.widgets.welcome import WelcomeWidget
 
@@ -160,6 +162,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._transcript_occurrences: WeakKeyDictionary[Widget, int] = WeakKeyDictionary()
         self._guide_refresh_pending = False
         self._process_controller = ProcessController(self)
+        # Detached injection delivery can otherwise mount midway through the final process placement.
+        self._reply_completion_lock = Lock()
         self._replay_process_protect_last = False
         self._ask_user_tool_widgets: WeakSet[AskUserToolCall] = WeakSet()
         self._replay_progress_callback: Callable[[int, int], None] | None = None
@@ -550,8 +554,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             if occurrence > latest:
                 last, latest = row, occurrence
 
-        # A segment can move one answer after its activity. The latest occurrence
-        # is therefore among the last two entries that could decide whether we wait.
+        # Completed segments can reorder an answer after their activity. Check the last two candidates.
         remaining = 2
         for child in reversed(self.children):
             occurrence = self._transcript_occurrences.get(child)
@@ -697,7 +700,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self.process_members_changed()
 
     def process_guide_for(self, member: Widget) -> Widget | None:
-        owner = self._process_controller.owner_of(member)
+        owner = self._process_controller.guide_owner_of(member)
         if owner is None or owner.parent is not self or owner.collapsed:
             return None
         if isinstance(owner, ProcessBlock) and owner.blocked:
@@ -763,14 +766,11 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def pre_layout(self, layout: Layout) -> None:
         entries = self.displayed_children
-        show_fold_gaps(entries, end=self._transcript_end(entries))
-
-    def _transcript_end(self, entries: Sequence[Widget]) -> Widget | None:
-        """The last of the *entries* shown, or the waiting row below them: its last line ends the transcript."""
-        for entry in reversed(entries):
-            if isinstance(entry, WaitingRow) or not self.is_infrastructure(entry):
-                return entry
-        return None
+        waiting = self._chrome.waiting_row
+        tail = next(
+            (entry for entry in reversed(entries) if entry is waiting or not self.is_infrastructure(entry)), None
+        )
+        show_fold_gaps(entries, tail=tail)
 
     def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
         """Defuse Textual anchor pins while chat layout is settling.
@@ -1122,8 +1122,24 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     async def remove_transcript_widget(self, widget: Widget) -> None:
         """Remove a transcript widget if it is still mounted on this panel."""
         if widget.parent is self:
+            self._clear_selection_touching(lambda node: node is widget)
             await remove_shielded(widget)
             self._sync_waiting_row()
+
+    def _clear_selection_touching(self, removes: Callable[[DOMNode], bool]) -> None:
+        """Retire a selection and its quote offer before any of its widgets go away."""
+        if not self.is_attached:
+            return
+        screen = self.screen
+        leaves = list(screen.selections)
+        state = screen._select_state
+        if state is not None:
+            leaves.extend(point.content_widget or point.container for point in (state.start, state.end) if point)
+        if any(removes(node) for leaf in leaves for node in leaf.ancestors_with_self):
+            dragging = screen._selecting
+            screen.clear_selection()
+            if dragging:
+                cancel_textual_mouse_chain(screen)
 
     async def dismiss_welcome_for_content(self) -> None:
         """Dismiss the welcome widget before transcript content is mounted."""
@@ -1447,17 +1463,21 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     ) -> None:
         """Display a user message."""
         process = self._process_controller
-        with self.app.batch_update():
-            if not is_injection:
-                await process.end_live()
-            await self._live_renderer.add_user_message(
-                text,
-                is_injection=is_injection,
-                created_at=created_at,
-                contents=contents,
-                item_id=item_id,
-                client_message_id=client_message_id,
-            )
+        async with self._reply_completion_lock if is_injection else nullcontext():
+            with self.app.batch_update():
+                if not is_injection:
+                    await process.end_live()
+                await self._live_renderer.add_user_message(
+                    text,
+                    is_injection=is_injection,
+                    created_at=created_at,
+                    contents=contents,
+                    item_id=item_id,
+                    client_message_id=client_message_id,
+                )
+                if is_injection and not self.agent_running:
+                    # A detached delivery can finish after the turn's completion event.
+                    await process.complete_live()
 
     async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_item_ids: tuple[str, ...]) -> None:
         """Apply backend cleanup after replay so queued entries cannot reappear."""
@@ -1514,7 +1534,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         before a retry, the open tool group and answer close, so the next
         pass's output starts new ones.
         """
-        await self._live_renderer.prepare_retry()
+        await self._live_renderer.prepare_retry(steered=True)
         self._process_controller.seal_segment()
         if isinstance(status := self._find_trailing_status(), RetryMessage):
             await remove_shielded(status)
@@ -1525,18 +1545,21 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         text: str,
         *,
         structured_output_completed: bool = False,
+        answer_segment_id: str | None = None,
         created_at: Any = None,
         turn_started_at: Any = None,
     ) -> None:
         """Complete the turn's answer, whose text already streamed as deltas; it took from *turn_started_at*."""
-        with self.app.batch_update():
-            await self._live_renderer.add_agent_message(
-                text,
-                structured_output_completed=structured_output_completed,
-                created_at=created_at,
-                turn_started_at=turn_started_at,
-            )
-            await self._end_live_process()
+        async with self._reply_completion_lock:
+            with self.app.batch_update():
+                await self._live_renderer.add_agent_message(
+                    text,
+                    structured_output_completed=structured_output_completed,
+                    answer_segment_id=answer_segment_id,
+                    created_at=created_at,
+                    turn_started_at=turn_started_at,
+                )
+                await self._end_live_process()
         self._sync_waiting_row()
 
     async def _remove_released_process_rows(self) -> None:
@@ -2102,9 +2125,16 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """
         if self.replay_in_progress:
             await self.wait_replay_complete()
+        withdrawn = frozenset(segment_ids)
         with self.app.batch_update():
+            self._live_renderer.withdraw_answer(withdrawn)
+            self._clear_selection_touching(
+                lambda node: (
+                    isinstance(node, AgentMessage) and node.parent is self and bool(node.segment_ids & withdrawn)
+                )
+            )
             try:
-                await self._process_controller.withdraw_live_answers(frozenset(segment_ids))
+                await self._process_controller.withdraw_live_answers(withdrawn)
             finally:
                 await remove_withdrawn_answer(self, segment_ids)
         self._sync_waiting_row()

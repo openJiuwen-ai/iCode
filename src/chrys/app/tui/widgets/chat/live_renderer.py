@@ -144,20 +144,29 @@ class LiveTranscriptRenderer:
     def _finalize_current_agent_message(self) -> None:
         """Terminate and release the active streamed-message presentations: the answer's and the thinking's."""
         self._finalize_thinking()
-        if self._current_agent_msg is None:
-            return
-        self._current_agent_msg.stream_update(
-            self._current_agent_msg.format_agent_response_copy(),
-            is_final=True,
-        )
-        self._current_agent_msg = None
+        message, self._current_agent_msg = self._current_agent_msg, None
+        preview = self._streamed_answer
+        if message is None and preview is not None and preview.is_provisional:
+            message = preview
+        if message is not None and (not message.is_provisional or message.is_attached):
+            message.stream_update(message.text, is_final=True)
+
+    def _pause_answer_at_boundary(self) -> None:
+        """Keep the preview pending while ending its delta cursor at a transcript boundary."""
+        if self._process is None:
+            self._finalize_current_agent_message()
+        else:
+            self._finalize_thinking()
+            self._current_agent_msg = None
+            self._blank_segment_text = ""
 
     def stop_answer(self) -> None:
         """The run stopped before completing its answer: the text it streamed stays, final."""
-        self._streamed_answer = None
         self._segment_id = ""
         self._blank_segment_text = ""
         self._finalize_current_agent_message()
+        self._streamed_answer = None
+        self._answer_streamed = False
 
     def settle_answer_before_tools(self) -> AgentMessage | None:
         """The streamed answer text is followed by more of the turn (tool calls, another segment): show it as intermediate text.
@@ -165,13 +174,15 @@ class LiveTranscriptRenderer:
         Streamed thinking ends there too.
         """
         self._finalize_thinking()
-        self._streamed_answer = None
-        message = self._current_agent_msg
-        if message is None:
+        preview, self._streamed_answer = self._streamed_answer, None
+        message, self._current_agent_msg = self._current_agent_msg, None
+        if message is None or (message.is_provisional and not message.is_attached):
+            if preview is not None and preview.is_attached and preview.is_provisional:
+                # This text belongs above a boundary that already sealed its live process.
+                preview.settle_intermediate(folded=self._fold_passed_text)
             return None
         # What follows it starts now: it folds at once, as what it went past does.
         message.settle_intermediate(folded=self._fold_passed_text)
-        self._current_agent_msg = None
         return message
 
     async def _mount_segment_start(self, widget: Widget) -> None:
@@ -205,6 +216,7 @@ class LiveTranscriptRenderer:
                 status = self._status.failed_turn_status()
                 if isinstance(status, (ErrorMessage, InterruptedMessage, RetryMessage)):
                     await remove_shielded(status)
+            self._finalize_current_agent_message()
             self._answer_streamed = False
             self._streamed_answer = None
             self._thinking_to_fold = None
@@ -213,7 +225,8 @@ class LiveTranscriptRenderer:
             # The turn goes on below the message: what it went past folds once that starts, as with no message.
             self._group_to_fold = self._tools.current_tool_group
         self._tools.end_group(new_turn=not is_injection)
-        self._finalize_current_agent_message()
+        if is_injection:
+            self._pause_answer_at_boundary()
         timestamp = format_message_created_at(created_at, self._resolve_message)
 
         if is_injection and self._toc.has_items():
@@ -334,11 +347,13 @@ class LiveTranscriptRenderer:
 
     async def add_answer_delta(self, segment_id: str, text: str) -> None:
         """Stream new answer text into its segment's message, mounting it once the text is not blank."""
-        self._answer_streamed = True
         if segment_id != self._segment_id:
             self._segment_id = segment_id
             self._blank_segment_text = ""
         current = self._current_agent_msg
+        # An injected prompt can arrive while this same segment is still streaming.
+        if current is None and self._streamed_answer is not None and self._streamed_answer.is_provisional:
+            current = self._streamed_answer
         if current is not None and segment_id in current.segment_ids:
             current.append_text(text)
             self._ui.schedule_anchor_sync()
@@ -346,6 +361,9 @@ class LiveTranscriptRenderer:
         self._blank_segment_text += text
         if not self._blank_segment_text.strip():
             return
+        # A boundary can clear the whitespace buffer while the first row is being mounted.
+        segment_text, self._blank_segment_text = self._blank_segment_text, ""
+        self._answer_streamed = True
         await self._status.remove_trailing_status()
         # A failed segment was finalized when it closed: one still current completed, and the turn went on past
         # it. It settles as this text shows, in the same frame as the folds, and stays the answer if none does.
@@ -354,18 +372,17 @@ class LiveTranscriptRenderer:
             await self._process.add_intermediate(intermediate)
         self._fold_activity()
         message = AgentMessage(
-            self._blank_segment_text,
+            segment_text,
             is_final=False,
             profile_name=self._profile_name,
             segment_ids=(segment_id,),
             provisional=self._process is not None,
         )
-        self._blank_segment_text = ""
         self._current_agent_msg = message
         self._streamed_answer = message
-        if self._process is not None and intermediate is None:
-            self._process.answer_streaming(message)
         await self._mount.mount_transcript_widget(message)
+        if self._process is not None:
+            self._process.set_answer_preview(message, summarize=intermediate is None)
         self._ui.schedule_anchor_sync()
 
     def fold_before_tools(self) -> AgentMessage | None:
@@ -408,6 +425,17 @@ class LiveTranscriptRenderer:
             # A completed segment stays current: it is the final answer
             # unless tool calls follow it.
             self._finalize_current_agent_message()
+
+    def withdraw_answer(self, segment_ids: frozenset[str]) -> None:
+        """Forget a preview or partial answer that history withdrew."""
+        if self._current_agent_msg is not None and self._current_agent_msg.segment_ids & segment_ids:
+            self._current_agent_msg = None
+        if self._streamed_answer is not None and self._streamed_answer.segment_ids & segment_ids:
+            self._streamed_answer = None
+            self._answer_streamed = False
+        if self._segment_id in segment_ids:
+            self._segment_id = ""
+            self._blank_segment_text = ""
 
     def starts_thinking(self, segment_id: str) -> bool:
         """Whether a delta may mount a thinking row instead of only repainting one."""
@@ -497,19 +525,16 @@ class LiveTranscriptRenderer:
         *,
         streamed: bool = True,
         structured_output_completed: bool = False,
+        answer_segment_id: str | None = None,
         created_at: Any = None,
         turn_started_at: Any = None,
     ) -> None:
-        """Complete the agent's answer: its text already streamed, so only its message finalizes.
+        """Complete the agent's answer, replacing the main transcript's preview at the end of the turn.
 
-        The text is mounted only when no answer streamed (a transcript replayed
-        without its deltas) or when it is not the streamed answer (*streamed*
-        False: a failure result). Its header tells how long the turn took to it
-        from *turn_started_at*, when the pass began, as replay tells it.
+        The header tells how long the turn took, from *turn_started_at* when the pass began.
         """
         timestamp = format_message_created_at(created_at, self._resolve_message)
         duration_ms = turn_duration_ms(turn_started_at, created_at)
-        streamed_answer, self._streamed_answer = self._streamed_answer, None
         await self._status.remove_trailing_status()
         self._ui.on_final_response_started()
         if self._tools.current_tool_group is not None:
@@ -519,14 +544,42 @@ class LiveTranscriptRenderer:
         self._blank_segment_text = ""
         self._finalize_thinking()
         self.fold_passed_text()
-        if streamed and self._current_agent_msg is not None:
-            self._current_agent_msg.stream_update(
-                self._current_agent_msg.text, is_final=True, timestamp=timestamp, duration_ms=duration_ms
-            )
-            self._current_agent_msg = None
+        candidate = self._current_agent_msg
+        streamed_answer = self._streamed_answer
+        if streamed and streamed_answer is not None and streamed_answer.is_provisional:
+            completion_text = text.strip()
+            if answer_segment_id is not None:
+                matches_preview = answer_segment_id in streamed_answer.segment_ids
+            else:
+                matches_preview = candidate is not None or completion_text == streamed_answer.text
+            if (structured_output_completed and not completion_text) or not matches_preview:
+                intermediate = self.settle_answer_before_tools()
+                if intermediate is not None and self._process is not None:
+                    await self._process.add_intermediate(intermediate)
+                candidate = streamed_answer = None
+                self._answer_streamed = False
+            else:
+                candidate = streamed_answer
+        if streamed and candidate is not None and (not candidate.is_provisional or candidate.is_attached):
+            self._current_agent_msg = self._streamed_answer = None
+            if candidate.is_provisional and self._process is not None:
+                answer = AgentMessage(
+                    profile_name=candidate.profile_name,
+                    segment_ids=candidate.segment_ids,
+                    timestamp=timestamp,
+                    duration_ms=duration_ms,
+                )
+                # Mount the answer chrome first. Parsing the actual text must not hold up the turn's completion.
+                if await self._mount.mount_transcript_widget(answer):
+                    answer.stream_update(candidate.text, is_final=True)
+                    self._process.set_answer_preview(None)
+                    await self._mount.remove_transcript_widget(candidate)
+            else:
+                candidate.stream_update(candidate.text, is_final=True, timestamp=timestamp, duration_ms=duration_ms)
             self._ui.schedule_anchor_sync()
             return
         self._finalize_current_agent_message()
+        self._streamed_answer = None
         final_text = "" if (streamed and self._answer_streamed) or not text.strip() else text
         if not final_text and not structured_output_completed:
             if streamed and streamed_answer is not None and streamed_answer.is_attached:
@@ -553,12 +606,8 @@ class LiveTranscriptRenderer:
     ) -> None:
         """Display a context compression event as fresh run output."""
         await self._status.remove_trailing_status()
-        # A failed stream may leave this cursor pointing at its partial
-        # AgentMessage.  The fold is a presentation boundary: recovered text
-        # must mount below it instead of updating that stale widget in place.
-        # Finalize the visible partial first so its streaming cursor cannot
-        # outlive the owner reference discarded below.
-        self._finalize_current_agent_message()
+        # Recovered text mounts below the fold, with a fresh cursor.
+        self._pause_answer_at_boundary()
         self._tools.end_group()
         widget = ContextFoldWidget(
             compressed_context_id,
@@ -578,7 +627,7 @@ class LiveTranscriptRenderer:
         group below the card.
         """
         await self._status.remove_trailing_status()
-        self._finalize_current_agent_message()
+        self._pause_answer_at_boundary()
         if self._tools.current_tool_group is not None:
             self._tools.current_tool_group.collapsed = True
         self._tools.end_group()
@@ -742,10 +791,13 @@ class LiveTranscriptRenderer:
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 
-    async def prepare_retry(self, *, stopped_at: float | None = None) -> None:
+    async def prepare_retry(self, *, stopped_at: float | None = None, steered: bool = False) -> None:
         """Finalize pending widgets before a main-agent stream retry."""
         self._tools.cancel_running_and_end_group(stopped_at=stopped_at)
-        self._finalize_current_agent_message()
+        if steered:
+            self._pause_answer_at_boundary()
+        else:
+            self._finalize_current_agent_message()
 
     async def cancel_running_tools(self, *, stopped_at: float | None = None) -> None:
         """Cancel all in-progress tool calls, stopped at *stopped_at* (``time.monotonic()``), now if not given."""

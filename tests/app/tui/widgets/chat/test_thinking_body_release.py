@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""A folded thinking body goes by the same young/frozen removal contract as tool groups; text between tool calls keeps its hidden body unparsed."""
+"""Lifecycle and layout of lazily mounted Markdown bodies in thinking and intermediate text."""
 
 from __future__ import annotations
 
@@ -94,9 +94,7 @@ async def test_the_turn_ending_folds_its_thinking_and_fast_toggles_keep_one_body
         assert not message.collapsed
 
 
-async def test_text_a_tool_batch_follows_folds_as_it_starts_and_its_hidden_body_parses_its_final_text_only_if_it_opens(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_live_intermediate_text_only_builds_its_body_when_opened() -> None:
     app = GcMessageChatPanelApp(thinking_expanded=lambda: True)
     async with app.run_test() as pilot:
         panel = app.query_one(ChatPanel)
@@ -104,40 +102,31 @@ async def test_text_a_tool_batch_follows_folds_as_it_starts_and_its_hidden_body_
         await panel.add_answer_delta("a1", "Let me look at the file.")
         panel.finish_answer_segment("a1", completed=True)
         message = panel.query_one(AgentMessage)
-        await wait_for(
-            lambda: message.query_one(VirtualizedMarkdown).shown_source == message.text,
-            pilot=pilot,
-            description="the streamed text shows",
-        )
-        body = message.query_one(VirtualizedMarkdown)
-        handed: list[str] = []
-        update = body.update
-
-        def recording_update(markdown: str) -> object:
-            handed.append(markdown)
-            return update(markdown)
-
-        monkeypatch.setattr(body, "update", recording_update)
+        assert message.is_provisional and not message.query(VirtualizedMarkdown)
 
         await panel.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, args={"path": "x.py"})
         assert (message.foldable, message.collapsed) == (True, True)
         await panel.add_tool_result("c1", "read_file", "ok", 3)
         await panel.add_answer_delta("a2", "More text.")
-        # Removing the hidden body would lay the transcript out once more: it stays, handed nothing while folded.
-        assert list(message.query(VirtualizedMarkdown)) == [body]
-        assert (body.display, handed) == (False, [])
+        assert not message.query(VirtualizedMarkdown)
 
-        blocks = body._blocks
+        open_process_for(message)
         message.collapsed = False
         await wait_for(
-            lambda: body.display and screen_is_settled(app, panel.screen),
+            lambda: any(
+                body.display and body.shown_source == message.text for body in message.query(VirtualizedMarkdown)
+            ),
             pilot=pilot,
-            description="opened, it shows its body",
+            description="opening the intermediate row builds its complete Markdown body",
         )
-        # It showed its final text before it folded: opened, it shows the blocks it had, not new ones parsed from the
-        # same text that no GC absorb would take.
-        assert (body.shown_source, handed) == (message.text, [])
-        assert body._blocks is blocks
+
+
+async def _mount_streamed_markdown(panel: ChatPanel, text: str) -> AgentMessage:
+    """Set up an already-streaming Markdown body, as used by nested transcripts."""
+    message = AgentMessage(text, is_final=False, segment_ids=("a1",))
+    await panel.mount_transcript_widget(message)
+    panel._current_agent_msg = message
+    return message
 
 
 @pytest.mark.parametrize("parse", ["installs", "fails"])
@@ -167,8 +156,7 @@ async def test_text_opened_as_its_folded_body_parses_its_final_text_waits_for_th
         panel = app.query_one(ChatPanel)
         await panel.add_user_message("prompt")
         panel.agent_running = True
-        await panel.add_answer_delta("a1", "Let me look.")
-        message = panel.mounted_agent_messages()[-1]
+        message = await _mount_streamed_markdown(panel, "Let me look.")
         body = message.query_one(VirtualizedMarkdown)
         await wait_for(lambda: body.shown_source == message.text, pilot=pilot, description="the streamed text shows")
         monkeypatch.setattr(VirtualizedMarkdown, "_build_blocks", held_parse)
@@ -226,8 +214,7 @@ async def _text_folded_before_its_body_shows_its_final_text(
     await panel.add_user_message("prompt")
     panel.agent_running = True
     first, rest = shown.split("\n\n", 1)
-    await panel.add_answer_delta("a1", first)
-    message = panel.mounted_agent_messages()[-1]
+    message = await _mount_streamed_markdown(panel, first)
     body = message.query_one(VirtualizedMarkdown)
     # The body is built with the text it starts from, and handed the next parts at once.
     await panel.add_answer_delta("a1", f"\n\n{rest}")

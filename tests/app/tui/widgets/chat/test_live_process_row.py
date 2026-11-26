@@ -38,6 +38,7 @@ from chrys.app.tui.widgets.chat.messages import (
     SystemMessage,
     ThinkingMessage,
     UserMessage,
+    _FoldRowHeader,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.process_block import ProcessBlock
@@ -424,10 +425,12 @@ async def test_steering_after_the_answer_starts_restores_the_latest_step() -> No
         await _status_shows(pilot, panel, "1 tool call: 1 read")
         row = _row(panel)
 
+        preview = panel.query_one(AgentMessage)
+        await panel.end_steered_pass()
+        assert preview.is_provisional and not preview.query(VirtualizedMarkdown)
         await panel.withdraw_answer(("a1",))
         await _settled(pilot)
         withdrawn = _painted(row)
-        await panel.end_steered_pass()
         await panel.add_user_message("Try this instead", is_injection=True)
         await _settled(pilot)
 
@@ -484,17 +487,18 @@ async def test_a_process_title_stays_above_the_thinking_and_answer_on_every_surf
         assert _painted(title) == "▸ Activity"
         await click_when_settled(pilot, title)
         await _settled(pilot)
-        assert visible_entries() == [user, title, *thoughts, answer]
-        assert user.region.y < title.region.y < thoughts[0].region.y < thoughts[1].region.y < answer.region.y
+        ordered = [answer, *thoughts] if surface == "live" else [*thoughts, answer]
+        assert visible_entries() == [user, title, *ordered]
+        assert [entry.region.y for entry in ordered] == sorted(entry.region.y for entry in ordered)
         assert _painted(title) == "▾ Activity"
-        assert panel.transcript_entry_after(thoughts[-1]) is answer
+        assert panel.transcript_entry_after(ordered[-2]) is ordered[-1]
         assert panel.toggle_fold_all()
         await _settled(pilot)
         assert visible_entries() == [user, title, answer]
         assert _painted(title) == "▸ Activity"
 
 
-async def test_new_thinking_in_an_open_process_appears_above_the_streaming_answer() -> None:
+async def test_preview_keeps_its_place_until_the_final_reply_moves_below_later_activity() -> None:
     async with ChatPanelApp(thinking_expanded=_on).run_test(size=(100, 40)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         panel.agent_running = True
@@ -510,28 +514,38 @@ async def test_new_thinking_in_an_open_process_appears_above_the_streaming_answe
         selection = ChatSelectionController(pilot.app.screen)
         selection._panel = panel
         user_body = panel.query_one(UserMessage).query_one(VirtualizedMarkdown)
-        answer_body = answer.query_one(VirtualizedMarkdown)
+        preview = answer.query_one(_FoldRowHeader)
         start = selection._leaf_anchor(panel, user_body, None)
-        end = selection._leaf_anchor(panel, answer_body, None)
+        end = selection._leaf_anchor(panel, preview, None)
         assert start is not None and end is not None
         assert selection._commit_range(panel, start, end)
 
         await _think(panel, "r2", "Another thought.", finish=False)
         second = panel.query(ThinkingMessage).last()
-        await panel.add_answer_delta("a1", " It continues below.")
+        await panel.add_answer_delta("a1", " It keeps streaming.")
         await _settled(pilot)
         assert title.region.y == original_y
         assert [child for child in panel.displayed_children if child in (title, first, second, answer)] == [
             title,
             first,
-            second,
             answer,
+            second,
         ]
-        assert first.region.bottom <= second.region.y < answer.region.y
+        assert first.region.bottom <= answer.region.y < second.region.y
         assert panel.query_one(AgentMessage) is answer
-        assert answer_body.source == "The answer begins. It continues below."
-        assert "The answer begins. It continues below." in (selection.extract_text() or "")
+        assert preview.render().plain.startswith("▸ Replying...")
+        assert answer.text == "The answer begins. It keeps streaming."
+        assert "Replying..." in (selection.extract_text() or "")
         assert not panel.query_one(WaitingRow).display
+
+        panel.finish_answer_segment("a1", completed=True)
+        await panel.add_system("A notice after the preview")
+        await panel.add_agent_message("The answer begins. It keeps streaming.")
+        await _settled(pilot)
+        final = panel.query_one(AgentMessage)
+        assert not answer.is_attached
+        assert panel.current_turn_children()[-1] is final
+        assert final.query_one(VirtualizedMarkdown).shown_source == "The answer begins. It keeps streaming."
 
 
 async def test_text_followed_by_tools_keeps_arrival_order_without_scanning_the_turn(
@@ -599,19 +613,16 @@ async def test_the_segment_title_leaves_a_notice_where_it_appeared(finished: boo
         title = panel.query_one(ProcessBlock if finished else LiveProcessRow)
         await click_when_settled(pilot, title)
         await _settled(pilot)
+        activity = [panel.query_one(SystemMessage), *panel.query(ThinkingMessage)]
+        answer = panel.query_one(AgentMessage)
+        expected = [*activity, answer] if finished else [answer, *activity]
         assert [
             child
             for child in panel.displayed_children
             if isinstance(
                 child, (UserMessage, LiveProcessRow, ProcessBlock, SystemMessage, ThinkingMessage, AgentMessage)
             )
-        ] == [
-            panel.query_one(UserMessage),
-            title,
-            panel.query_one(SystemMessage),
-            *panel.query(ThinkingMessage),
-            panel.query_one(AgentMessage),
-        ]
+        ] == [panel.query_one(UserMessage), title, *expected]
 
 
 async def test_a_tool_call_keeps_the_title_in_place_when_the_answer_becomes_a_member() -> None:
@@ -775,7 +786,7 @@ def _label_style(message: AgentMessage) -> str:
     return str(header.spans[0].style) if header.spans else str(header.style)
 
 
-async def test_text_streaming_in_a_folding_turn_has_a_muted_header_until_it_is_the_answer() -> None:
+async def test_live_text_starts_muted_then_uses_the_intermediate_or_final_style() -> None:
     async with ChatPanelApp(
         thinking_expanded=_on,
     ).run_test() as pilot:
@@ -785,18 +796,31 @@ async def test_text_streaming_in_a_folding_turn_has_a_muted_header_until_it_is_t
         await panel.add_answer_delta("a1", "First I will look at the file.")
         await _settled(pilot)
         text = panel.query(AgentMessage).last()
-        assert "green" not in _label_style(text), "text that may sit between tool calls does not look like the answer"
+        header = text.query_one(_FoldRowHeader)
+        preview = header.render()
+        assert preview.plain.startswith("▸ Replying...")
+        assert text.collapsed and not text.query(VirtualizedMarkdown)
         assert not text.query_one("MessageCopyButton").display
         panel.finish_answer_segment("a1", completed=True)
         await _read(panel, "c1", "/tmp/a.py")
+        await click_when_settled(pilot, _row(panel))
+        await _settled(pilot)
+        assert panel.query_one(AgentMessage) is text
+        assert text.has_class("--intermediate") and not text.has_class("--provisional")
+        assert header.render().plain == "▸ First I will look at the file."
+        assert header.render().spans != preview.spans
         await panel.add_answer_delta("final", "Done.")
         await _settled(pilot)
-        answer = panel.query(AgentMessage).last()
-        assert answer is not text and "green" not in _label_style(answer)
+        pending = panel.query(AgentMessage).last()
+        assert pending.query_one(_FoldRowHeader).render().plain.startswith("▸ Replying...")
+        assert pending.styles.border_left[0] == "solid"
         panel.finish_answer_segment("final", completed=True)
         await panel.add_agent_message("Done.")
         await _settled(pilot)
-        assert "green" in _label_style(answer), "the answer takes the answer's header as the turn ends"
+        answer = panel.query(AgentMessage).last()
+        assert not pending.is_attached
+        assert answer.styles.border_left[0] == "thick"
+        assert "green" in _label_style(answer)
 
 
 async def test_a_new_intermediate_member_returns_the_summary_to_its_latest_text() -> None:
@@ -918,7 +942,7 @@ async def test_a_long_status_is_cut_to_the_width_and_a_new_one_repaints_only_the
         await panel.add_tool_start("c1", "zsh", KIND_SHELL, args={"command": "cat x", "reason": reason})
         await _status_shows(pilot, panel, "Print every")
         row = _row(panel)
-        assert row.gap_below and row.region.height == 2
+        assert row.region.height == 2
         painted = _painted(row)
         assert painted.endswith("…")
         assert len(painted) <= row.size.width
@@ -935,7 +959,7 @@ async def test_a_long_status_is_cut_to_the_width_and_a_new_one_repaints_only_the
         await panel.add_tool_start("c2", "zsh", KIND_SHELL, args={"command": "ls", "reason": "List the files"})
         await _status_shows(pilot, panel, "List the files")
         assert layouts and not any(layouts), "a new status repaints the row without laying out the transcript"
-        assert row.gap_below and row.region.height == 2
+        assert row.region.height == 2
 
 
 # ---------------------------------------------------------------------------
@@ -991,7 +1015,7 @@ async def test_dozens_of_calls_stay_one_row_and_open_row_by_row() -> None:
                 await _read(panel, f"c{step}-{call}", f"/tmp/{step}-{call}.py")
         await _settled(pilot)
         row = _row(panel)
-        assert row.gap_below and row.region.height == 2
+        assert row.region.height == 2
         assert not any(_shown(_members(panel)))
         await click_when_settled(pilot, row)
         await wait_for(lambda: not row.collapsed, pilot=pilot, description="the row opens")
@@ -1525,11 +1549,10 @@ async def test_continuing_after_an_interrupt_starts_a_new_folded_row_and_success
         assert again.collapsed, "every new row starts folded"
         assert before.display, "steps from before the interrupt are not this row's members"
         assert not panel.query(ToolGroup).last().display
-        assert again.gap_above and again.gap_below and again.region.height == 3
-        assert [line.text.rstrip() for line in again.render_lines(Region(0, 0, again.size.width, 3))] == [
+        assert again.gap_above and again.region.height == 3
+        assert [line.text.rstrip() for line in again.render_lines(Region(0, 0, again.size.width, 2))] == [
             "  │",
             "▸ Reading /tmp/b.py",
-            "",
         ]
 
         await panel.add_tool_result("c2", "read_file", "ok")

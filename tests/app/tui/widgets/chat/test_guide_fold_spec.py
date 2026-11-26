@@ -328,8 +328,6 @@ def _member_title(member: Widget) -> Widget:
 
 
 def _short_line(panel: ChatPanel, member: FoldGap) -> FoldGap:
-    if member.gap_below:
-        return member
     shown = panel.displayed_children
     following = shown[shown.index(member) + 1]
     assert isinstance(following, FoldGap) and following.gap_above
@@ -337,7 +335,24 @@ def _short_line(panel: ChatPanel, member: FoldGap) -> FoldGap:
 
 
 def _short_cell(gap: FoldGap) -> tuple[int, int]:
-    return gap.content_region.x, gap.content_region.y if gap.gap_above else gap.content_region.bottom - 1
+    return gap.content_region.x, gap.content_region.y
+
+
+async def test_a_visible_preview_shares_the_open_process_guide() -> None:
+    async with ChatPanelApp(thinking_expanded=_on).run_test(size=(100, 50)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        process = await _open_process(pilot, panel, "live")
+        await panel.add_answer_delta("preview", "While I am working.")
+        preview = panel.query(AgentMessage).last()
+        await _settled(pilot)
+        base = preview.styles.border_left
+        cell = (preview.region.x, preview.query_one(".fold-row-header").region.y)
+        await pilot.hover(offset=cell)
+        await _settled(pilot)
+        assert preview.styles.border_left != base
+        await _click_cell(pilot, *cell)
+        await wait_for(lambda: process.collapsed, pilot=pilot, description="the preview's outer rail folds the process")
+        assert preview.display and preview.is_provisional
 
 
 @pytest.mark.parametrize("container", ["live", "block"])
@@ -385,50 +400,46 @@ async def test_member_title_lights_only_its_own_short_or_inner_guide(
         if not collapsed:
             await wait_for(lambda: member.guide_surface() is not None, pilot=pilot, description="member body is shown")
         outer = [entry.styles.border_left for entry in process.members]
-        if collapsed and member_type is ToolGroup and container == "block":
-            # The final answer follows this row without a fold gap.
+        if collapsed and member_type is ToolGroup:
+            # The final tool group has no short guide below it.
             title = _member_title(member)
             await pilot.hover(offset=(title.region.x + 1, title.region.y))
             await _settled(pilot)
             assert [entry.styles.border_left for entry in process.members] == outer
-            assert member._gap_below_hover_color is None
+            assert member._guide_hover is None
             return
         painter = _short_line(panel, member) if collapsed else _inner_guide(member)
-        below = painter is member and collapsed
-        before = painter.gap_text(below=below).style if collapsed else painter.styles.border_left
+        before = painter.gap_text().style if collapsed else painter.styles.border_left
         title = _member_title(member)
         await pilot.hover(offset=(title.region.x + 1, title.region.y))
         await _settled(pilot)
-        after = painter.gap_text(below=below).style if collapsed else painter.styles.border_left
+        after = painter.gap_text().style if collapsed else painter.styles.border_left
         assert after != before
         assert [entry.styles.border_left for entry in process.members] == outer
         await pilot.hover(offset=(panel.region.right - 3, panel.region.bottom - 2))
         await _settled(pilot)
-        assert (painter.gap_text(below=below).style if collapsed else painter.styles.border_left) == before
+        assert (painter.gap_text().style if collapsed else painter.styles.border_left) == before
 
 
 @pytest.mark.parametrize("container", ["live", "block"])
-@pytest.mark.parametrize("trailing", [False, True], ids=["next-entry-gap", "trailing-gap"])
-async def test_short_guide_lights_and_opens_the_member_above_it(container: str, trailing: bool) -> None:
+async def test_short_guide_lights_and_opens_the_member_above_it(container: str) -> None:
     async with ChatPanelApp(thinking_expanded=_on).run_test(size=(100, 50)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
         process = await _open_process(pilot, panel, container)
-        member = panel.query_one(ToolGroup) if trailing else panel.query_one(ThinkingMessage)
-        if trailing and container == "block":
-            await panel.query(AgentMessage).last().remove()
+        member = panel.query_one(ThinkingMessage)
         member.collapsed = True
         await _settled(pilot)
         gap = _short_line(panel, member)
-        base = gap.gap_text(below=trailing).style
-        cell = (gap.content_region.x, gap.content_region.bottom - 1) if trailing else _short_cell(gap)
+        base = gap.gap_text().style
+        cell = _short_cell(gap)
         await pilot.hover(offset=cell)
         await _settled(pilot)
-        assert gap.gap_text(below=trailing).style != base
+        assert gap.gap_text().style != base
         assert gap.styles.pointer == "pointer"
         await _click_cell(pilot, *cell)
         await wait_for(lambda: not member.collapsed, pilot=pilot, description="short guide opens its member")
         assert not process.collapsed
-        assert gap.gap_text(below=trailing).style == base
+        assert gap.gap_text().style == base
 
 
 @pytest.mark.parametrize("container", ["live", "block"])
@@ -499,25 +510,31 @@ async def test_hover_stays_on_the_members_own_guide_as_its_title_toggles(member_
         member = panel.query_one(member_type)
         member.collapsed = True
         await _settled(pilot)
-        gap = _short_line(panel, member)
-        below = gap is member
-        base = gap.gap_text(below=below).style
+        gap = _short_line(panel, member) if isinstance(member, ThinkingMessage) else None
+        base = gap.gap_text().style if gap is not None else None
         title = _member_title(member)
         await pilot.hover(offset=(title.region.x + 1, title.region.y))
         await _settled(pilot)
-        assert gap.gap_text(below=below).style != base
+        if gap is not None:
+            assert gap.gap_text().style != base
+        else:
+            assert member._guide_hover is None
 
         await click_when_settled(pilot, title, offset=(1, 0))
         await _settled(pilot)
         assert not member.collapsed
-        assert gap.gap_text(below=below).style == base
+        if gap is not None:
+            assert gap.gap_text().style == base
         body = _inner_guide(member)
         assert body in member._guide_hover.painters
 
         await click_when_settled(pilot, title, offset=(1, 0))
         await _settled(pilot)
         assert member.collapsed
-        assert gap.gap_text(below=below).style != base
+        if gap is not None:
+            assert gap.gap_text().style != base
+        else:
+            assert member._guide_hover is None
 
 
 @pytest.mark.parametrize("container", ["live", "block"])

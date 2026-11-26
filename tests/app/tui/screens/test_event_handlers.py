@@ -1050,10 +1050,18 @@ def test_final_agent_message_tells_when_its_turn_began() -> None:
             text: str,
             *,
             structured_output_completed: bool = False,
+            answer_segment_id: str | None = None,
             created_at: datetime | None = None,
             turn_started_at: datetime | None = None,
         ) -> None:
-            rendered.append({"text": text, "created_at": created_at, "turn_started_at": turn_started_at})
+            rendered.append(
+                {
+                    "text": text,
+                    "answer_segment_id": answer_segment_id,
+                    "created_at": created_at,
+                    "turn_started_at": turn_started_at,
+                }
+            )
 
     status = _FakeStatusBar()
     panel = _FakeChatPanel()
@@ -1070,12 +1078,18 @@ def test_final_agent_message_tells_when_its_turn_began() -> None:
     asyncio.run(
         handler.on_agent_message(
             InvocationMessage(
-                text="done", is_final=True, origin=InvocationOrigin("turn", "", "turn-test", None), timestamp=finished
+                text="done",
+                is_final=True,
+                segment_id="answer",
+                origin=InvocationOrigin("turn", "", "turn-test", None),
+                timestamp=finished,
             )
         )
     )
 
-    assert rendered == [{"text": "done", "created_at": finished, "turn_started_at": began}]
+    assert rendered == [
+        {"text": "done", "answer_segment_id": "answer", "created_at": finished, "turn_started_at": began}
+    ]
 
 
 def test_final_agent_message_render_failure_releases_turn_without_absorb() -> None:

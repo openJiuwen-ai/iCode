@@ -504,6 +504,20 @@ async def test_default_test_notifications_are_recorded_without_native_delivery_o
     bell.assert_not_called()
 
 
+async def test_test_app_factory_keeps_notifications_local_without_the_pytest_driver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chrys.app.tui.notifications import service as notification_service
+    from tests.support.tui_app_harness import make_chrys_app
+
+    monkeypatch.setattr(
+        notification_service, "default_notification_driver", notification_drivers.default_notification_driver
+    )
+    app = make_chrys_app(tmp_path / "sessions")
+    assert isinstance(app.notification_service._driver, RecordingNotificationDriver)
+    assert await app.notification_service.test(NotificationSettings(desktop=True, sound=True))
+
+
 @pytest.mark.asyncio
 async def test_macos_sound_only_uses_system_sound_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     calls: list[list[str]] = []

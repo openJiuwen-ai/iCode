@@ -23,7 +23,7 @@ from chrys.app.tui.clipboard import ClipboardApp
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.theme import TuiVariableDefaultsMixin
 from chrys.app.tui.widgets.btw import BtwAnswer, BtwPage, BtwPanel, BtwQuestion
-from chrys.app.tui.widgets.chat.messages import AgentMessage, MessageCopyButton, UserMessage
+from chrys.app.tui.widgets.chat.messages import AgentMessage, MessageCopyButton, ThinkingMessage, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
@@ -830,6 +830,41 @@ async def test_a_side_card_quote_outlives_the_sidebar_text_its_drag_picked_up() 
         )
 
 
+@pytest.mark.parametrize("selection", ["preview", "across-messages", "dragging"])
+async def test_replacing_a_selected_preview_withdraws_its_selection_and_quote(selection: str) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        text = "Select this pending answer."
+        await panel.add_user_message("Prompt to select.")
+        await panel.add_answer_delta("a1", text)
+        preview = panel.query_one(AgentMessage)
+        header = preview.query_one(".fold-row-header")
+        user = panel.query_one(UserMessage).query_one(VirtualizedMarkdown)
+        await wait_for(lambda: bool(header.region and user.shown_source), pilot=pilot, description="selection targets")
+        start = user if selection == "across-messages" else header
+        end = (header.region.x + 17, header.region.y)
+        await pilot.mouse_down(start, offset=(2, 0))
+        await pilot.hover(offset=end)
+        await wait_for(lambda: header in screen.selections, pilot=pilot, description="the preview is selected")
+        popup = screen.query_one(QuoteSelectionPopup)
+        if selection != "dragging":
+            _post_mouse(app, MouseUp, *end)
+            await wait_for(lambda: popup.is_shown, pilot=pilot, description="the preview is offered as a quote")
+
+        panel.finish_answer_segment("a1", completed=True)
+        await panel.add_agent_message(text)
+        assert not preview.is_attached
+        assert not screen.selections and not popup.is_shown
+        assert not screen.get_selected_text()
+        if selection == "dragging":
+            await pilot.hover(offset=(user.region.x + 5, user.region.y))
+            _post_mouse(app, MouseUp, user.region.x + 5, user.region.y)
+            await pilot.pause()
+            assert not screen.selections and not popup.is_shown
+
+
 @pytest.mark.asyncio
 async def test_releasing_a_drag_after_activity_arrives_updates_highlight_copy_and_quote() -> None:
     app = _MainScreenApp()
@@ -842,9 +877,9 @@ async def test_releasing_a_drag_after_activity_arrives_updates_highlight_copy_an
         await panel.add_answer_delta("a1", "Select this answer.")
         await click_when_settled(pilot, panel.query_one("LiveProcessRow"))
         user = panel.query_one(UserMessage).query_one(VirtualizedMarkdown)
-        answer = panel.query_one(AgentMessage).query_one(VirtualizedMarkdown)
+        answer = panel.query_one(AgentMessage).query_one(".fold-row-header")
         await wait_for(
-            lambda: bool(answer.shown_source and user.shown_source), pilot=pilot, description="drag endpoints"
+            lambda: bool(answer.region.height and user.shown_source), pilot=pilot, description="drag endpoints"
         )
         end = (answer.region.x + 13, answer.region.y)
         await pilot.mouse_down(user, offset=(1, 0))
@@ -853,7 +888,13 @@ async def test_releasing_a_drag_after_activity_arrives_updates_highlight_copy_an
 
         await panel.add_thinking_delta("r2", "reasoning", "New thought while dragging.")
         panel.finish_thinking_segment("r2")
-        await pilot.pause()
+        thought = panel.query(ThinkingMessage).last().query_one(".fold-row-header")
+        await wait_for(lambda: bool(thought.region.height), pilot=pilot, description="new thought is laid out")
+        before_move = screen.get_selected_text()
+        assert before_move and "Replying..." in before_move and "New thought while dragging." not in before_move
+        end = (thought.region.x + len(thought.render().plain), thought.region.y)
+        await pilot.hover(offset=end)
+        await wait_for(lambda: thought in screen.selections, pilot=pilot, description="drag extends to the new thought")
         # Pilot.mouse_up also sends a MouseMove; release at the stationary pointer.
         _post_mouse(app, MouseUp, *end)
         popup = screen.query_one(QuoteSelectionPopup)

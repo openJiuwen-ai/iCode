@@ -1207,6 +1207,7 @@ class BackendEventHandler:
             await ui.add_agent_message(
                 event.text,
                 structured_output_completed=event.structured_output_completed,
+                answer_segment_id=event.segment_id,
                 created_at=event.timestamp,
                 # Sent, Continue or Retry: the backend keeps this instant on the turn, for replay to time it alike.
                 turn_started_at=self._state.run.started_at,

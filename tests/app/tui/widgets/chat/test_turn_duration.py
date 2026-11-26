@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from textual.geometry import Region
 
-from chrys.app.tui.widgets.chat.messages import AgentMessage, _AgentReplyHeader, turn_duration_ms
+from chrys.app.tui.widgets.chat.messages import AgentMessage, UserMessage, _AgentReplyHeader, turn_duration_ms
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.replay import (
     HistoryReplayPlanner,
@@ -157,6 +157,34 @@ def test_a_message_history_placed_after_the_answer_leaves_the_time_on_it() -> No
     assert _told(messages) == [40_000]
 
 
+@pytest.mark.parametrize("next_turn", [False, True], ids=["latest-turn", "older-turn"])
+async def test_replay_keeps_the_answer_after_late_injections_at_its_own_turn_end(next_turn: bool) -> None:
+    injected = {HistoryMarkerKind.INJECTED_KEY: True}
+    history = [
+        _user("Fix the tests", 0),
+        _answer("Fixed.", 40),
+        _user("Also the docs", 20, **injected),
+        _user("And the examples", 25, **injected),
+        _turn(1, started_at=0),
+    ]
+    expected = ["Fix the tests", "Also the docs", "And the examples", "Fixed."]
+    if next_turn:
+        history.extend([_user("Next turn", 60), _answer("Done.", 70), _turn(2, started_at=60)])
+        expected.extend(["Next turn", "Done."])
+
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(history)
+        await panel.wait_replay_complete()
+        messages = [
+            child for child in panel.transcript_content_children() if isinstance(child, UserMessage | AgentMessage)
+        ]
+        assert [message.text for message in messages] == expected
+        answer = messages[3]
+        assert isinstance(answer, AgentMessage) and answer.is_process_final
+        assert answer._header_text().plain.endswith("(40s)")
+
+
 def test_thinking_after_the_answer_leaves_the_time_on_it() -> None:
     thinking = {"type": "text_reasoning", "text": "All done."}
     messages = [_user("Fix", 0), _answer("Fixed.", 40), _assistant([thinking], 41, took_ms=500), _turn(1, started_at=0)]
@@ -287,14 +315,18 @@ async def test_the_streamed_answer_keeps_its_time_past_a_boundary_before_the_tur
         await panel.add_user_message("Fix the tests", created_at=_SENT)
         await panel.add_answer_delta("seg-1", "Fixed.")
         panel.finish_answer_segment("seg-1", completed=True)
+        preview = panel.query_one(AgentMessage)
         if boundary == "context-fold":
             await panel.add_context_fold("ctx-1", "Earlier work", freed_messages=3)
         else:
             await panel.add_user_message("Also the docs", is_injection=True, created_at=_SENT + timedelta(minutes=6))
+        assert preview.is_provisional
         await panel.add_agent_message("Fixed.", created_at=finished, turn_started_at=_SENT)
         await pilot.pause()
 
         answer = panel.query_one(AgentMessage)
+        assert not preview.is_attached
+        assert panel.current_turn_children()[-1] is answer
         assert answer._header_text().plain.endswith("(6m 5s)")
         assert answer.text == "Fixed."
 
@@ -311,7 +343,24 @@ async def test_text_tools_followed_tells_no_time_though_a_boundary_let_it_go() -
         await panel.add_agent_message("", created_at=_SENT + timedelta(minutes=1), turn_started_at=_SENT)
         await pilot.pause()
 
-        assert [message._duration_ms for message in panel.query(AgentMessage)] == [None]
+        note = panel.query_one(AgentMessage)
+        assert note._duration_ms is None
+        assert note.has_class("--intermediate")
+
+
+async def test_structured_completion_follows_the_compaction_and_keeps_the_earlier_preview_in_place() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("Prompt")
+        await panel.add_answer_delta("preview", "I will prepare the data.")
+        panel.finish_answer_segment("preview", completed=True)
+        preview = panel.query_one(AgentMessage)
+        await panel.add_compaction_start("ctx")
+        panel.complete_compaction("ctx", outcome="ok")
+        await panel.add_agent_message("", structured_output_completed=True)
+        assert list(panel.query(AgentMessage)) == [preview, panel.current_turn_children()[-1]]
+        assert preview.has_class("--intermediate")
+        assert panel.query(AgentMessage).last().text == "✓"
 
 
 async def test_a_streamed_answer_shows_its_time_as_the_turn_completes_it() -> None:

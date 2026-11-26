@@ -949,12 +949,14 @@ class MainScreenViewAdapter:
         text: str,
         *,
         structured_output_completed: bool = False,
+        answer_segment_id: str | None = None,
         created_at: datetime | None = None,
         turn_started_at: datetime | None = None,
     ) -> None:
         await self._screen.query_one(ChatPanel).add_agent_message(
             text,
             structured_output_completed=structured_output_completed,
+            answer_segment_id=answer_segment_id,
             created_at=created_at,
             turn_started_at=turn_started_at,
         )

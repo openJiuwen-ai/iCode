@@ -24,7 +24,6 @@ from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
-from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import ChatPanelApp, LocalizedWidgetApp, click_when_settled
@@ -78,17 +77,14 @@ async def test_rows_under_an_open_summary_stand_one_gap_apart_and_the_last_has_n
         assert rows[0].region.y == block.region.bottom
         for above, row in pairwise(rows):
             assert row.region.y == above.region.bottom
-        for i, row in enumerate(rows):
+        for row in rows:
             assert row.gap_above
             assert row.outer_size.height == FOLD_GAP_ROWS + 1
             assert _header(row).region.y == row.region.y + FOLD_GAP_ROWS
-            # The summary's arrow lines up with the outer guide. A member's
-            # arrow adds a short guide two columns in.
-            assert _top_row(row)[:3] == ("│  " if i == 0 else "│ │")
+            assert _top_row(row)[:3] == "│ │"
             assert _header(row).region.x == row.region.x + 2
         # Nothing follows the last row but the margin before the answer: it does not end the transcript.
         answer = panel.query(AgentMessage).last()
-        assert not rows[-1].gap_below
         assert answer.region.y == rows[-1].region.bottom + 1
         assert not answer.gap_above
 
@@ -146,7 +142,14 @@ async def test_a_live_turn_s_first_row_follows_its_prompt_with_no_gap() -> None:
         assert first.gap_above
         assert process.region.y == prompt.region.bottom + prompt.styles.margin.bottom
         assert first.region.y == process.region.bottom
+        assert _top_row(first)[:3] == "│ │"
         assert second.gap_above
+        leading_guide = (first.content_region.x, first.content_region.y)
+        await pilot.hover(offset=leading_guide)
+        await pilot.pause()
+        assert first.styles.pointer != "pointer"
+        await pilot.click(offset=leading_guide)
+        assert first.collapsed and not process.collapsed
 
 
 async def test_the_waiting_row_below_a_folded_row_keeps_its_gap_so_the_next_row_s_arrow_comes_in_at_its_dot() -> None:
@@ -186,11 +189,8 @@ def _painted_row(widget: Widget, y: int) -> str:
 @pytest.mark.parametrize(
     ("kind", "follows"), [("thinking", "tool call"), ("thinking", "waiting row"), ("tool group", "thinking")]
 )
-async def test_a_folded_row_that_ends_the_chat_keeps_a_blank_row_below_it_until_a_row_follows(
-    kind: str, follows: str
-) -> None:
-    """An open row ends with its own blank row; a folded row that ends the transcript keeps one below it as well.
-    Only its own guide runs on through it: no fold row follows for the guide under its arrow to lead to."""
+async def test_a_folded_row_only_draws_a_connector_once_a_row_follows(kind: str, follows: str) -> None:
+    """A folded tail has room below with only the outer guide. A following row draws the connector."""
     app = ChatPanelApp(thinking_expanded=lambda: False)
     async with app.run_test() as pilot:
         panel = app.query_one(ChatPanel)
@@ -204,14 +204,15 @@ async def test_a_folded_row_that_ends_the_chat_keeps_a_blank_row_below_it_until_
             row = panel.query_one(ToolGroup)
         await click_when_settled(pilot, panel.query_one(LiveProcessRow))
         await wait_for(
-            lambda: row.gap_below and screen_is_settled(app, panel.screen),
+            lambda: row.display and screen_is_settled(app, panel.screen),
             pilot=pilot,
-            description="the folded row laid out with a blank row below it",
+            description="the folded row laid out",
         )
         assert row.ends_folded() and row.gap_above
         assert row.outer_size.height == 1 + 2 * FOLD_GAP_ROWS
         assert _header(row).region.y == row.region.y + FOLD_GAP_ROWS
-        assert _painted_row(row, row.region.bottom - 1) == "│ │"
+        assert row.region.bottom == _header(row).region.bottom + FOLD_GAP_ROWS
+        assert _painted_row(row, row.region.bottom - 1) == "│"
 
         if follows == "tool call":
             await panel.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, args={"path": "b.py"})
@@ -227,12 +228,10 @@ async def test_a_folded_row_that_ends_the_chat_keeps_a_blank_row_below_it_until_
             pilot=pilot,
             description=f"a {follows} below the folded row",
         )
-        # The gap above the row that follows parts them; the one below the folded row went in the same layout.
-        assert not row.gap_below
+        assert below.gap_above_from is row
+        assert _painted_row(below, below.region.y) == "│ │"
         assert row.outer_size.height == 1 + FOLD_GAP_ROWS
         assert below.region.y == row.region.bottom
-        # A row that folds ends the transcript in its place, the waiting row as it is.
-        assert below.gap_below is (follows != "waiting row")
 
 
 async def test_an_open_row_that_ends_the_chat_shows_its_own_blank_row_and_no_gap_below_it() -> None:
@@ -249,7 +248,6 @@ async def test_an_open_row_that_ends_the_chat_shows_its_own_blank_row_and_no_gap
             pilot=pilot,
             description="the open thinking laid out",
         )
-        assert not thinking.gap_below
         # Its own guide, and its body's, run through its own blank row.
         assert _painted_row(thinking, thinking.region.bottom - 1) == "│ │"
 
@@ -270,15 +268,11 @@ async def test_text_below_a_folded_row_folds_with_its_gap_and_parts_the_tool_cal
         group = panel.query_one(ToolGroup)
         note = panel.query(AgentMessage).last()
         await wait_for(
-            lambda: (
-                group.collapsed
-                and note.query_one(VirtualizedMarkdown).source == text
-                and screen_is_settled(app, panel.screen)
-            ),
+            lambda: group.collapsed and note.text == text and note.collapsed and screen_is_settled(app, panel.screen),
             pilot=pilot,
             description="the note laid out below the folded group",
         )
-        assert not note.gap_above
+        assert note.gap_above_from is group
 
         await panel.add_tool_start("c2", "read_file", KIND_FILESYSTEM_READ, args={"path": "b.py"})
         following = panel.query(ToolGroup).last()
@@ -313,6 +307,5 @@ async def test_a_nested_transcript_parts_text_from_the_folded_tool_group_above_i
         assert text.region.y == above.region.bottom
         # Open text ends with its own blank row.
         assert not text.collapsed and not below.gap_above
-        # Only the chat keeps a blank row below the folded row that ends it.
-        assert below.ends_folded() and not below.gap_below
+        assert below.ends_folded()
         assert below.outer_size.height == 1

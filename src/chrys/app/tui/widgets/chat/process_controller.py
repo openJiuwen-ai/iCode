@@ -56,7 +56,7 @@ def _display_order(
     headers: dict[Widget, Widget] | None = None,
     answers: dict[Widget, Widget] | None = None,
 ) -> list[Widget]:
-    """Keep occurrence order except for process titles and provisional or final answers."""
+    """Keep occurrence order except for process titles and final answers."""
     if not headers and not answers:
         return occurrences
     headers = headers or {}
@@ -146,7 +146,7 @@ class ProcessController:
         return await self._host.mount_transcript_widget(row)
 
     async def mount_live_member(self, member: LiveProcessMember, *, answer: AgentMessage | None = None) -> bool:
-        """Keep the current answer below newly mounted activity in its segment."""
+        """Mount activity in occurrence order while keeping the pending preview visible."""
         if answer is not None and not answer.is_attached:
             answer = None
         row, new = self._register_live_member(member, answer=answer)
@@ -157,8 +157,6 @@ class ProcessController:
         if not mounted:
             await self.remove_live_members((member,))
         elif self._active_row is row:
-            if new or answer is not None:
-                self._arrange_live_segment(row)
             self._host.process_members_changed()
         return mounted
 
@@ -172,35 +170,6 @@ class ProcessController:
             key=lambda entry: self._host.transcript_occurrence(entry) or 0,
         )
 
-    def _arrange_live_segment(self, row: LiveProcessRow) -> None:
-        """Project the active segment from arrival order, including intervening notices."""
-        answer, latest = row.answering, row.latest
-        anchor = self._segment_start
-        starts = [
-            stamp
-            for entry in (anchor, row.members[0] if row.members else None, answer)
-            if entry is not None and (stamp := self._host.transcript_occurrence(entry)) is not None
-        ]
-        if not starts:
-            return
-        start = min(starts)
-        entries: list[Widget] = []
-        for entry in self._turn_occurrences():
-            if (self._host.transcript_occurrence(entry) or 0) < start:
-                continue
-            if entry is not anchor and isinstance(entry, (UserMessage, CompactionCard, ContextFoldWidget)):
-                break
-            entries.append(entry)
-        self._host.apply_transcript_order(
-            _display_order(
-                entries,
-                headers={anchor: row} if anchor in entries and anchor is not None else None,
-                answers={answer: latest}
-                if answer is not None and latest is not None and answer in entries and latest in entries
-                else None,
-            )
-        )
-
     async def add_intermediate(self, message: AgentMessage) -> None:
         """An already mounted answer became part of this segment."""
         if not message.is_attached:
@@ -209,9 +178,6 @@ class ProcessController:
         if new and not await self._mount_live_header(row, before=message):
             await self.remove_live_members((message,))
             return
-        # Later thinking may have moved the provisional answer below it.
-        if row.latest is not message:
-            self._arrange_live_segment(row)
         self._host.process_members_changed()
 
     def _register_live_member(
@@ -225,6 +191,7 @@ class ProcessController:
         if self.owner_of(member) is row:
             return row, False
         row.answering = answer
+        row.summarize_answer_preview = True
         if member.live_status_animates:
             row.running_members.add(member)
         # A streamed answer can settle after a later member has already mounted.
@@ -315,8 +282,6 @@ class ProcessController:
                 member.set_process_hidden(False)
         emptied: list[LiveProcessRow] = []
         for row, old_latest in changed.items():
-            if row is self._active_row and row.answering is not None:
-                self._arrange_live_segment(row)
             if row.members:
                 if row.settled:
                     row.update_status(resample=row.latest is not old_latest)
@@ -339,8 +304,7 @@ class ProcessController:
         """Drop ownership and stop summarizing before the transcript removes a withdrawn answer."""
         row = self._active_row
         if row is not None and row.answering is not None and row.answering.segment_ids & segment_ids:
-            row.answering = None
-            self._update_live_row(row)
+            self.set_answer_preview(None)
         await self.remove_live_members(
             [
                 member
@@ -353,6 +317,12 @@ class ProcessController:
     def owner_of(self, member: Widget) -> ProcessBlock | LiveProcessRow | None:
         reference = self._owners.get(member) if isinstance(member, ProcessMember) else None
         return reference() if reference is not None else None
+
+    def guide_owner_of(self, member: Widget) -> ProcessBlock | LiveProcessRow | None:
+        row = self._active_row
+        if isinstance(member, AgentMessage) and member.is_provisional and row is not None and row.answering is member:
+            return row
+        return self.owner_of(member)
 
     def live_status_changed(self, member: ProcessMember) -> None:
         row = self._active_row
@@ -369,16 +339,20 @@ class ProcessController:
             if row.latest is member or row.summarized != was_summarized:
                 row.update_status()
 
-    def answer_streaming(self, answer: AgentMessage) -> None:
-        """Summarize a folded segment once its work ends under the answer."""
+    def set_answer_preview(self, answer: AgentMessage | None, *, summarize: bool = True) -> None:
+        """Attach the preview to the process guide and allow the folded status to summarize."""
         row = self._active_row
         if row is not None:
             row.answering = answer
+            row.summarize_answer_preview = summarize
             self._update_live_row(row)
+            self._host.process_members_changed()
 
     @staticmethod
     def _sync_live_summary(row: LiveProcessRow) -> None:
-        row.summarized = row.collapsed and row.answering is not None and not row.running_members
+        row.summarized = (
+            row.collapsed and row.answering is not None and row.summarize_answer_preview and not row.running_members
+        )
 
     def refresh_localization(self) -> None:
         for row in self._live_rows:
@@ -460,8 +434,9 @@ class ProcessController:
             if not segment.fold:
                 continue
             anchor = widgets[segment.anchor]
-            if segment.answer is not None and segment.members:
-                answers[anchor] = (widgets[segment.answer], widgets[segment.members[-1]])
+            if segment.answer is not None:
+                tail = segment.members[-1] if segment.members else segment.anchor
+                answers[anchor] = (widgets[segment.answer], widgets[tail])
             if anchor in self._completed:
                 continue
             if not segment.members:

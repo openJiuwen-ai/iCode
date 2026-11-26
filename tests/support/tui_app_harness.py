@@ -5,14 +5,19 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 from chrys.app.tui.app import ChrysApp
+from chrys.app.tui.notifications import service as notification_service
+from chrys.app.tui.notifications.drivers import default_notification_driver
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.notifications import RecordingNotificationDriver
 from tests.support.waiting import ENGINE_TURN_TIMEOUT
 
 if TYPE_CHECKING:
@@ -87,16 +92,23 @@ def make_chrys_app(
 ) -> ChrysApp:
     """Build a ``ChrysApp`` over inert doubles with its state store under *state_root*.
 
+    Record notifications even when a test launches this harness in its own interpreter.
     GC freezing is off by default because almost every app test wants an inert
     coordinator; pass ``gc_freeze_enabled=None`` to defer to the module default
     exactly as ``ChrysApp`` does when the argument is omitted.
     """
-    return ChrysApp(
-        event_bus if event_bus is not None else EventBus(),
-        engine if engine is not None else ShutdownOnlyEngine(),  # type: ignore[arg-type]
-        settings=settings if settings is not None else Settings(),
-        state_store=state_store if state_store is not None else JsonFileStateStore(state_root),
-        agent_registry=agent_registry if agent_registry is not None else EmptyAgentRegistry(),  # type: ignore[arg-type]
-        gc_freeze_enabled=gc_freeze_enabled,
-        **kwargs,  # type: ignore[misc]
+    delivery = (
+        patch.object(notification_service, "default_notification_driver", RecordingNotificationDriver)
+        if notification_service.default_notification_driver is default_notification_driver
+        else nullcontext()
     )
+    with delivery:
+        return ChrysApp(
+            event_bus if event_bus is not None else EventBus(),
+            engine if engine is not None else ShutdownOnlyEngine(),  # type: ignore[arg-type]
+            settings=settings if settings is not None else Settings(),
+            state_store=state_store if state_store is not None else JsonFileStateStore(state_root),
+            agent_registry=agent_registry if agent_registry is not None else EmptyAgentRegistry(),  # type: ignore[arg-type]
+            gc_freeze_enabled=gc_freeze_enabled,
+            **kwargs,  # type: ignore[misc]
+        )

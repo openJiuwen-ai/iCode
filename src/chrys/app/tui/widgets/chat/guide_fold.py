@@ -56,7 +56,6 @@ class _Guide:
     member: GuideFoldMixin
     process: bool = False
     gap: FoldGap | None = None
-    gap_below: bool = False
     clickable: bool = True
 
 
@@ -67,7 +66,7 @@ class _Lit:
 
 
 _LIT: WeakKeyDictionary[Widget, _Lit] = WeakKeyDictionary()
-_GAP_LIT: WeakKeyDictionary[FoldGap, dict[bool, set[int]]] = WeakKeyDictionary()
+_GAP_LIT: WeakKeyDictionary[FoldGap, set[int]] = WeakKeyDictionary()
 
 
 def _light(painter: Widget, holder: object, color: Color, *, resample: bool) -> None:
@@ -108,9 +107,9 @@ def _light_guide(guide: _Guide, holder: object, *, resample: bool = False) -> No
     if color is None:
         return
     if (gap := guide.gap) is not None:
-        holders = _GAP_LIT.setdefault(gap, {}).setdefault(guide.gap_below, set())
+        holders = _GAP_LIT.setdefault(gap, set())
         if resample or not holders:
-            gap.set_gap_hover(guide.gap_below, color)
+            gap.set_gap_hover(color)
         holders.add(id(holder))
     else:
         for painter in guide.painters:
@@ -119,15 +118,12 @@ def _light_guide(guide: _Guide, holder: object, *, resample: bool = False) -> No
 
 def _unlight_guide(guide: _Guide, holder: object) -> None:
     if (gap := guide.gap) is not None:
-        sides = _GAP_LIT.get(gap, {})
-        holders = sides.get(guide.gap_below)
+        holders = _GAP_LIT.get(gap)
         if holders is not None:
             holders.discard(id(holder))
             if not holders:
-                del sides[guide.gap_below]
-                if not sides:
-                    del _GAP_LIT[gap]
-                gap.set_gap_hover(guide.gap_below, None)
+                del _GAP_LIT[gap]
+                gap.set_gap_hover(None)
     else:
         for painter in guide.painters:
             _unlight(painter, holder)
@@ -144,17 +140,15 @@ def _member_guide(member: GuideFoldMixin, *, clickable: bool) -> _Guide | None:
         return _Guide((body,), title, member, clickable=clickable)
     if not isinstance(member, FoldGap) or not member.ends_folded() or member.parent is None:
         return None
-    gap = member if member.gap_below else None
-    if gap is None:
-        entries = member.parent.displayed_children
-        index = entries.index(member)
-        following = entries[index + 1] if index + 1 < len(entries) else None
-        if isinstance(following, FoldGap) and following.gap_above:
-            gap = following
-    return _Guide((), title, member, gap=gap, gap_below=gap is member, clickable=clickable) if gap is not None else None
+    entries = member.parent.displayed_children
+    index = entries.index(member)
+    following = entries[index + 1] if index + 1 < len(entries) else None
+    if isinstance(following, FoldGap) and following.gap_above_from is member:
+        return _Guide((), title, member, gap=following, clickable=clickable)
+    return None
 
 
-type _GuideKey = Literal["process", "process_title", "member_title", "member_body"] | tuple[GuideFoldMixin, bool]
+type _GuideKey = Literal["process", "process_title", "member_title", "member_body"] | GuideFoldMixin
 
 
 class GuideHoverMixin(SameCellClick):
@@ -170,27 +164,19 @@ class GuideHoverMixin(SameCellClick):
         if not isinstance(self, FoldGap) or not self.display or cell not in self.region:
             return None
         content = self.content_region
-        below = self.gap_below and cell.y == content.bottom - 1
-        if below:
-            member = self
-        elif self.gap_above and cell.y == content.y:
-            member = self.gap_above_from
-        else:
-            return None
+        member = self.gap_above_from if cell.y == content.y else None
         if isinstance(member, GuideFoldMixin):
-            gap_x = content.x + self.gap_guide_offset(below=below)
+            gap_x = content.x + self.gap_guide_offset()
             if gap_x <= cell.x < gap_x + 2:
-                return member, below
+                return member
         return None
 
     def _guide_for_key(self, key: _GuideKey) -> _Guide | None:
-        if isinstance(key, tuple):
-            member, below = key
-            if member.display and member.can_toggle_from_guide():
-                from chrys.app.tui.widgets.chat.fold_gap import FoldGap
+        if isinstance(key, GuideFoldMixin) and key.display and key.can_toggle_from_guide():
+            from chrys.app.tui.widgets.chat.fold_gap import FoldGap
 
-                if isinstance(self, FoldGap):
-                    return _Guide((), member.guide_title(), member, gap=self, gap_below=below)
+            if isinstance(self, FoldGap):
+                return _Guide((), key.guide_title(), key, gap=self)
         return None
 
     def _guide_at(self, cell: Offset) -> _Guide | None:
@@ -259,7 +245,7 @@ class GuideHoverMixin(SameCellClick):
         if old is not None:
             # The same holder can light overlapping guides. Release only the pieces it left.
             if old.gap is not None:
-                if guide is None or old.gap is not guide.gap or old.gap_below != guide.gap_below:
+                if guide is None or old.gap is not guide.gap:
                     _unlight_guide(old, self)
             else:
                 next_painters = set(guide.painters) if guide is not None else set()

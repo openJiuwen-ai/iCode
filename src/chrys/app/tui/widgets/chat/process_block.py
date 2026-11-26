@@ -68,7 +68,7 @@ class ProcessBlock(ProcessGuideMixin, FoldGap, Static, can_focus=False):
 
     DEFAULT_CSS = """
     ProcessBlock {
-        height: 1;
+        height: auto;
         padding: 0 1 0 0;
         color: $text-muted;
         overflow: hidden;
@@ -107,6 +107,9 @@ class ProcessBlock(ProcessGuideMixin, FoldGap, Static, can_focus=False):
     def ends_folded(self) -> bool:
         # Its one row heads the rows it opens to: a gap parts the first of them from it.
         return True
+
+    def _content_rows(self, container: Size, viewport: Size, width: int) -> int:
+        return 1
 
     @property
     def tool_count(self) -> int:

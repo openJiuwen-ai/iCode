@@ -55,6 +55,15 @@ def plan_process_segments(entries: list[ProcessEntry], *, protect_last_turn: boo
         )
         success = final is not None
         protected = protect_last_turn and turn == len(openers) - 1
+        # Late injections belong before the reply. Keep an archived reply above its context divider.
+        answer_stop = next(
+            (
+                anchor
+                for anchor in anchors
+                if final is not None and anchor > final and entries[anchor].kind == "compaction"
+            ),
+            end,
+        )
         for segment, anchor in enumerate(anchors):
             stop = anchors[segment + 1] if segment + 1 < len(anchors) else end
             members = tuple(
@@ -63,7 +72,7 @@ def plan_process_segments(entries: list[ProcessEntry], *, protect_last_turn: boo
                 if index != final
                 and entries[index].kind in {"answer", "thinking", "intermediate", "tool", "failure", "retry"}
             )
-            answer = final if final is not None and anchor < final < stop else None
+            answer = final if stop == answer_stop else None
             result.append(
                 ProcessSegment(
                     opener,
