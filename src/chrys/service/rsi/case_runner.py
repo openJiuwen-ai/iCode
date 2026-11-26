@@ -8,14 +8,17 @@ does not import orchestration.
 
 from __future__ import annotations
 
+import itertools
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
 from chrys.service.profiles.agents.schema import AgentProfile
-from chrys.service.rsi.dataset import RsiCase
+from chrys.service.rsi.dataset import RsiCase, ScriptExpect
 from chrys.service.rsi.mutations import case_marker
 from chrys.service.rsi.paths import safe_relpath_under
+from chrys.service.rsi.script_judge import response_findings
 
 CaseErrorCause = Literal["environment", "timeout", "agent"]
 """What ended a case run with an error.
@@ -125,7 +128,16 @@ def _inline_skill_text(profile: AgentProfile) -> str:
 
 
 def _synthesize_passing_case(case: RsiCase, workdir: Path) -> CaseRunResult:
-    """Write files / response that satisfy declarative expect checks."""
+    """Write files / response that satisfy declarative expect checks.
+
+    The response is chosen by ``_synthesize_response``: the legacy construction
+    (``response_contains``, else ``ok``, plus every regex literal that does not
+    match yet) is preferred, so a case that already passed keeps byte-identical
+    text.  When that text trips ``response_not_contains`` or a later append
+    invalidates an earlier match, orderings of the contains/regex segments are
+    validated against the full response checks; if none passes, the legacy text
+    is returned unchanged.
+    """
     expect = case.expect
     try:
         for rel, content in expect.file_equals.items():
@@ -152,9 +164,67 @@ def _synthesize_passing_case(case: RsiCase, workdir: Path) -> CaseRunResult:
             workdir=workdir,
             error=f"expect path escapes workdir: {exc}",
         )
-    response_parts = list(expect.response_contains) or ["ok"]
+    response_text = _synthesize_response(expect)
     return CaseRunResult(
         case_id=case.case_id,
-        response_text=" ".join(response_parts),
+        response_text=response_text,
         workdir=workdir,
     )
+
+
+def _response_satisfies(expect: ScriptExpect, text: str) -> bool:
+    """True when ``text`` passes every declarative response check."""
+    return not response_findings(expect, response_text=text)
+
+
+def _synthesize_response(expect: ScriptExpect) -> str:
+    """Pick a response text that satisfies the declarative response checks.
+
+    The legacy construction is tried first so previously passing cases keep their
+    exact output.  Two regressions it had are worked around by trying other
+    orderings after that: the ``ok`` fallback can itself contain a forbidden
+    substring, and appending a literal can invalidate a regex that matched
+    earlier text.  Segment orderings are tried last because a literal that one
+    regex needs can break another (e.g. a negative lookahead before a digit).
+    """
+    contains = list(expect.response_contains)
+    patterns = list(expect.response_regex)
+
+    legacy = " ".join(contains) or "ok"
+    for pattern in patterns:
+        if re.search(pattern, legacy) is None:
+            legacy = f"{legacy} {pattern}"
+
+    candidates = [legacy]
+    if patterns:
+        candidates.append(" ".join(patterns))
+        candidates.append(" ".join(reversed(patterns)))
+    if contains:
+        candidates.append(" ".join(contains))
+        if patterns:
+            candidates.append(" ".join([*contains, *patterns]))
+            candidates.append(" ".join([*patterns, *contains]))
+    else:
+        candidates.append("")
+    candidates.extend(_segment_orderings([*contains, *patterns]))
+
+    for candidate in candidates:
+        if _response_satisfies(expect, candidate):
+            return candidate
+    return legacy
+
+
+def _segment_orderings(segments: list[str]) -> list[str]:
+    """Return the joined orderings of ``segments``, or two heuristics when long.
+
+    Order matters because a literal appended for one regex can invalidate
+    another: a negative lookahead followed by a digit literal only passes when
+    the digit comes first.  The caller re-validates every ordering against all
+    response checks, so only orders that actually satisfy the case are kept.
+    """
+    unique = list(dict.fromkeys(segment for segment in segments if segment))
+    if not unique:
+        return []
+    if len(unique) > 6:
+        return [" ".join(unique), " ".join(reversed(unique))]
+    return [" ".join(order) for order in itertools.permutations(unique)]
