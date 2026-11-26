@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import AsyncMock, create_autospec
 
@@ -523,6 +525,15 @@ async def test_literal_dollar_argv_preserves_readonly_approval(tmp_path, monkeyp
         pytest.param("xargs -0 -r -n 1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="xargs-separate"),
         pytest.param("xargs -0rn 1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="xargs-grouped"),
         pytest.param("xargs -0rn1 bash -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="xargs-attached"),
+        pytest.param(
+            "/usr/bin/xargs -0 -n 1 /bin/bash -c 'echo $DEMO_TOKEN'", "/usr/bin/xargs", "decoded", id="absolute-xargs"
+        ),
+        pytest.param(
+            "/usr/bin/XaRgS -0n1 /bin/BaSh -c 'echo $DEMO_TOKEN'", "/usr/bin/XaRgS", "decoded", id="absolute-alias"
+        ),
+        pytest.param("xargs -0n1 BASH -c 'echo $DEMO_TOKEN'", "xargs", "decoded", id="nested-shell-alias"),
+        pytest.param("XARGS \"$GROUP_FLAGS\" BASH -c 'echo $DEMO_TOKEN'", "XARGS", "unresolved", id="dynamic-alias"),
+        pytest.param("TIMEOUT 5 XARGS '-I{}' BASH -c 'echo $DEMO_TOKEN'", "TIMEOUT", "unresolved", id="nested-alias"),
         pytest.param("xargs '--replace={}' bash -c 'echo $DEMO_TOKEN'", "xargs", "unresolved", id="xargs-unresolved"),
         pytest.param(
             "xargs \"$GROUP_FLAGS\" bash -c 'echo $DEMO_TOKEN'", "xargs", "unresolved", id="xargs-dynamic-options"
@@ -538,6 +549,25 @@ async def test_literal_dollar_argv_preserves_readonly_approval(tmp_path, monkeyp
     ],
 )
 async def test_carrier_source_sensitivity_is_enforce_only(monkeypatch, caplog, mode, matches, command, head, detected):
+    await _assert_carrier_sensitivity(monkeypatch, caplog, mode, matches, command, head, detected)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires the native macOS system xargs filesystem")
+@pytest.mark.parametrize("case_alias", [False, True], ids=["canonical", "case-alias"])
+async def test_macos_xargs_case_alias_requires_approval(monkeypatch, caplog, case_alias):
+    canonical = Path("/usr/bin/xargs")
+    alias = canonical.with_name("XARGS")
+    assert await asyncio.to_thread(canonical.is_file)
+    if not await asyncio.to_thread(alias.exists):
+        pytest.skip("The macOS system xargs volume does not resolve a differently cased filename")
+    assert await asyncio.to_thread(canonical.samefile, alias)
+    head = str(alias if case_alias else canonical)
+    await _assert_carrier_sensitivity(
+        monkeypatch, caplog, "enforce", False, f"{head} -0n1 /bin/bash -c 'echo $DEMO_TOKEN'", head, "decoded"
+    )
+
+
+async def _assert_carrier_sensitivity(monkeypatch, caplog, mode, matches, command, head, detected):
     require_grammars("tree_sitter", "tree_sitter_bash")
     rules = (Rule("carrier", Route.ALLOW, Matcher("argv_first", (head,))),) if matches else ()
     policy = Policy(mode, "carrier-policy", rules)

@@ -11,6 +11,21 @@ from tests.support.prejudge import require_grammars
 require_grammars("tree_sitter", "tree_sitter_bash")
 
 
+@pytest.mark.parametrize(
+    ("field", "tokens"), [("argv_exact", ("fixture-tool", "status")), ("argv_first", ("fixture-tool",))]
+)
+@pytest.mark.parametrize(
+    ("executable", "allowed"), [("fixture-tool", True), ("FIXTURE-TOOL", False), ("/usr/bin/fixture-tool", False)]
+)
+def test_yaml_authorization_matches_the_literal_executable(field, tokens, executable, allowed):
+    policy = Policy("enforce", "fixture", (Rule("fixture", Route.ALLOW, Matcher(field, tokens)),))
+    command = f"{executable} status"
+    analysis = analyze(command, dialect="bash")
+    assert analysis.coverage_complete
+    assert analysis.executable_nodes[0].argv == (executable, "status")
+    assert route(command, "bash", policy).route is (Route.ALLOW if allowed else Route.DEFER)
+
+
 @pytest.mark.parametrize("dialect", ["bash", "git_bash"])
 @pytest.mark.parametrize("source", ["printf -v label sample", "printf -vlabel sample", "printf '%n' label"])
 def test_bash_stateful_printf_defers_even_with_a_matching_rule(dialect, source):

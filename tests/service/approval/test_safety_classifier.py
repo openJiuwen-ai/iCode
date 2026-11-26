@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from chrys.service.approval.safety_classifier import (
@@ -22,7 +20,9 @@ from chrys.service.approval.safety_classifier import (
     [
         (("grep", "-F", "$DEMO_TOKEN", "README.md"), False),
         (("printenv", "DEMO_TOKEN"), True),
+        ((r"C:\Tools\PrInTeNv.EXE", "DEMO_TOKEN"), True),
         (("env", "A=1", "printenv"), True),
+        ((r"C:\Tools\ENV.EXE", "A=1", "/usr/bin/PrintEnv.EXE"), True),
         (("bash", "-c", "echo '$DEMO_TOKEN'"), False),
         (("bash", "-c", 'echo "$DEMO_TOKEN"'), True),
         (("eval", "echo", "$DEMO_TOKEN"), True),
@@ -30,6 +30,12 @@ from chrys.service.approval.safety_classifier import (
         (("command", "-v", "eval", "echo $DEMO_TOKEN"), False),
         (("command", "-pv", "eval", "echo $DEMO_TOKEN"), False),
         (("command", "-pp", "eval", "echo $DEMO_TOKEN"), True),
+        (("COMMAND", "-pv", "echo"), None),
+        (("/tmp/command", "-pv", "echo"), None),
+        (("xargs", "command", "-pv", "echo"), None),
+        (("EvAl", "echo '$DEMO_TOKEN'"), None),
+        (("/tmp/EVAL.EXE", "echo '$DEMO_TOKEN'"), None),
+        (("env", "eval", "echo '$DEMO_TOKEN'"), None),
         (("timeout", "5", "bash", "-c", "echo $DEMO_TOKEN"), True),
         (("timeout", "--signal=TERM", "--", "5m", "/bin/bash", "-lc", "echo $DEMO_TOKEN"), True),
         (("nice", "-n", "5", "timeout", "5", "bash", "-c", "echo $DEMO_TOKEN"), True),
@@ -37,7 +43,15 @@ from chrys.service.approval.safety_classifier import (
         (("xargs", "-0", "-r", "-n", "1", "bash", "-c", "echo $DEMO_TOKEN"), True),
         (("xargs", "-0rn", "1", "bash", "-c", "echo $DEMO_TOKEN"), True),
         (("xargs", "-0rn1", "bash", "-c", "echo $DEMO_TOKEN"), True),
-        (("XARGS.EXE", "-0rn1", "BASH.EXE", "-c", "echo $DEMO_TOKEN"), os.name == "nt"),
+        (("XARGS.EXE", "-0rn1", "BASH.EXE", "-c", "echo $DEMO_TOKEN"), True),
+        (("xargs.exe", "-0rn1", "bash.exe", "-c", "echo $DEMO_TOKEN"), True),
+        (("/usr/bin/XaRgS", "-0rn1", "/bin/BaSh", "-c", "echo $DEMO_TOKEN"), True),
+        ((r"C:\tools\XaRgS.EXE", "-0rn1", r"C:\tools\BaSh.EXE", "-c", "echo $DEMO_TOKEN"), True),
+        (("TIMEOUT", "5", "Nice", "-n1", "XARGS", "-0rn1", "BASH", "-c", "echo $DEMO_TOKEN"), True),
+        (("TIMEOUT", "5", "XaRgS", "-I{}", "BASH", "-c", "echo $DEMO_TOKEN"), None),
+        (("XaRgS", "--version"), False),
+        (("XARGS", "-0rn1", "BASH", "-c", "echo '$DEMO_TOKEN'"), False),
+        (("echo", "XARGS", "BASH", "-c", "$DEMO_TOKEN"), False),
         (("xargs", "-0r", "--max-args=1", "--", "bash", "-c", "echo $DEMO_TOKEN"), True),
         (("xargs", "--null", "--max-args", "1", "bash", "-c", "echo $DEMO_TOKEN"), True),
         (("xargs", "-0rn", "1", "grep", "-F", "bash", "-c", "$DEMO_TOKEN"), False),
@@ -70,6 +84,12 @@ from chrys.service.approval.safety_classifier import (
 )
 def test_certified_argv_keeps_literal_tokens_and_explicit_child_source_distinct(argv, sensitive):
     assert shell_argv_may_access_sensitive_data(argv, shell_name="bash") is sensitive
+
+
+@pytest.mark.parametrize("shell_name", ["bash", "git_bash"])
+@pytest.mark.parametrize("head", ["xargs", "/usr/bin/XARGS", r"C:\tools\XaRgS.EXE", "/bin/BaSh", "COMMAND", "EvAl"])
+def test_incomplete_argv_preserves_potential_carrier_identity(shell_name, head):
+    assert shell_argv_may_access_sensitive_data((head, "-c"), shell_name=shell_name, complete=False) is None
 
 
 def test_shell_sensitive_analysis_caps_pathological_unclosed_substitutions() -> None:

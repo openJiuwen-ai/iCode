@@ -500,8 +500,16 @@ def _carrier_target_index(segment: Sequence[str], index: int, carrier: str) -> i
     return index
 
 
-def _decoded_executable_name(word: str) -> str:
-    return os.path.normcase(os.path.basename(word)).removesuffix(".exe")
+def normalize_executable_name(word: str) -> str:
+    """Group potential carriers across filesystems, including case-sensitive ones."""
+    return word.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+
+
+def _is_shell_builtin(segment: Sequence[str], index: int, name: str) -> bool:
+    """Require the exact builtin spelling in the shell or after its command builtin."""
+    return segment[index] == name and all(
+        word in {"command", "--"} or re.fullmatch(r"-p+", word) for word in segment[:index]
+    )
 
 
 def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: bool) -> int | None:
@@ -514,8 +522,10 @@ def _posix_unwrapped_command_index(segment: Sequence[str], *, decoded_carriers: 
             return index
 
         word = segment[index]
-        wrapper_name = _decoded_executable_name(word) if decoded_carriers else os.path.basename(word)
+        wrapper_name = normalize_executable_name(word) if decoded_carriers else os.path.basename(word)
         if decoded_carriers and wrapper_name in _CARRIER_OPTIONS:
+            if wrapper_name == "command" and not _is_shell_builtin(segment, index, "command"):
+                return None
             target = _carrier_target_index(segment, index, wrapper_name)
             if target is None:
                 return None
@@ -550,11 +560,12 @@ def _posix_shell_payloads(
         if index >= len(segment):
             continue
 
-        if (
-            decoded_carriers
-            and segment[index] == "eval"
-            and all(word in {"command", "--"} or re.fullmatch(r"-p+", word) for word in segment[:index])
-        ):
+        word = segment[index]
+        nested_shell = normalize_executable_name(word) if decoded_carriers else os.path.basename(word)
+        if decoded_carriers and nested_shell == "eval":
+            if not _is_shell_builtin(segment, index, "eval"):
+                payloads.append(None)
+                continue
             args = segment[index + 1 :]
             if args and args[0] == "--":
                 args = args[1:]
@@ -563,8 +574,6 @@ def _posix_shell_payloads(
                 payloads.append((shell_name, " ".join(args)))
             continue
 
-        word = segment[index]
-        nested_shell = _decoded_executable_name(word) if decoded_carriers else os.path.basename(word)
         if nested_shell not in POSIX_SHELL_NAMES:
             continue
 
@@ -656,8 +665,9 @@ def shell_argv_may_access_sensitive_data(
     argv: tuple[str, ...], *, shell_name: str, complete: bool = True
 ) -> bool | None:
     """Inspect decoded argv, returning None when a carrier's command cannot be located."""
+    head = normalize_executable_name(argv[0]) if argv and shell_name in {"bash", "git_bash"} else ""
     if not complete:
-        if argv and shell_name in {"bash", "git_bash"} and _decoded_executable_name(argv[0]) in _CARRIER_OPTIONS:
+        if head in _CARRIER_OPTIONS or head in POSIX_SHELL_NAMES or head in {"eval", "printenv"}:
             return None
         return False
     for token in argv:
@@ -668,13 +678,12 @@ def shell_argv_may_access_sensitive_data(
             normalized = "/".join(part.rstrip(" .") for part in re.split(r"[/:\\]", token))
             if target_may_access_sensitive_data(normalized):
                 return True
-    if argv and shell_name in {"bash", "git_bash"}:
-        head = os.path.basename(argv[0]).lower().removesuffix(".exe")
+    if head:
         if head == "printenv":
             return True
         if head == "env":
             target = next((arg for arg in argv[1:] if not _POSIX_ENV_ASSIGNMENT_RE.fullmatch(arg)), "")
-            if not target or target.startswith("-") or target in {"env", "printenv"}:
+            if not target or target.startswith("-") or normalize_executable_name(target) in {"env", "printenv"}:
                 return True
         return _source_payloads_may_access_sensitive_data(
             _posix_shell_payloads((argv,), shell_name=shell_name, decoded_carriers=True),

@@ -86,6 +86,8 @@ Bash expansions are checked in the original source. For example, `grep -F '$DEMO
 
 If Pre-Judge cannot tell which command a recognized wrapper may run, diagnostics record `reason=unresolved_carrier`. In enforce mode the call still requires approval, even with `shell: auto` or an empty ruleset. Shadow logs the same finding and leaves approval behavior unchanged.
 
+Security checks group executable-name spellings by basename and ignore case and an `.exe` suffix. This covers case aliases and can require extra approval for distinct programs on case-sensitive filesystems. YAML rules still match the exact decoded tokens, including case and path.
+
 ### Compatibility and limitations
 
 DEFER delegates to the existing read-only checker; it does not reimplement that checker as a second YAML engine. Its existing capabilities and limitations are retained, including shell-specific handling. This shortcut remains separate from the `shell_filter: read_only` preset, which has different semantics. The AST layer does not certify a glob as a fully resolved `argv_exact` vector, even when the legacy shortcut independently approves the command. Compatibility tests cover representative cases; they are not a proof of safety for every possible command.

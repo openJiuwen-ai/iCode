@@ -21,6 +21,7 @@ from yaml.resolver import BaseResolver
 
 from chrys.service.approval.safety_classifier import (
     POSIX_SHELL_NAMES,
+    normalize_executable_name,
     shell_argv_may_access_sensitive_data,
     shell_command_may_access_sensitive_data,
 )
@@ -555,7 +556,7 @@ def load_policy(path: Path, *, report_shadow_failure: bool = False) -> Policy:
 def _opaque(argv: tuple[str, ...]) -> bool:
     if not argv:
         return False
-    head = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    head = normalize_executable_name(argv[0])
     return head in _OPAQUE or (
         head == "printf"
         and (
