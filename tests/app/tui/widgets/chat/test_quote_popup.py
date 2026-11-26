@@ -1,16 +1,17 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The Quote pill at a drag's end in the chat or the side question card, the label it puts in the draft, and quotes in a sent bubble."""
+"""The drag-selection actions for copying text or quoting it in a message."""
 
 from __future__ import annotations
 
+from asyncio import Event
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 from textual.app import App, ComposeResult
 from textual.events import MouseDown, MouseUp
-from textual.geometry import Offset
+from textual.geometry import Offset, Region
 from textual.pilot import Pilot
 from textual.selection import SELECT_ALL, SelectEnd, Selection, SelectStart, SelectState
 from textual.widgets import Static
@@ -18,6 +19,7 @@ from textual.widgets import Static
 import chrys.app.tui as tui_module
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.app import ChrysApp
+from chrys.app.tui.clipboard import ClipboardApp
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.theme import TuiVariableDefaultsMixin
 from chrys.app.tui.widgets.btw import BtwAnswer, BtwPage, BtwPanel, BtwQuestion
@@ -25,6 +27,7 @@ from chrys.app.tui.widgets.chat.messages import AgentMessage, MessageCopyButton,
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
+from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.side_questions import SideQuestionEntry
@@ -126,8 +129,11 @@ def _post_mouse(
     app.post_message(event)
 
 
-async def _click_pill(app: _MainScreenApp, pilot: Pilot[None], popup: QuoteSelectionPopup) -> None:
-    click_x = popup.region.x + 1
+async def _click_pill(
+    app: _MainScreenApp, pilot: Pilot[None], popup: QuoteSelectionPopup, *, action: str = "quote"
+) -> None:
+    button = popup.query_one(f".-{action}")
+    click_x = button.region.x + 1
     click_y = popup.region.y
     _post_mouse(app, MouseDown, click_x, click_y)
     await pilot.pause()
@@ -153,6 +159,43 @@ async def test_clicking_the_pill_puts_a_quote_label_for_the_selection_into_the_d
         assert input_bar.draft().references.get("quote", 1) == DraftReference("quote", 1, text)
         assert input_bar.draft_has_focus
         assert app.main_screen.get_selected_text() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["chat", "card"])
+async def test_copy_preserves_the_selected_text_and_draft(source: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    copied: list[str] = []
+
+    def record_copy(_app: ClipboardApp, text: str) -> bool:
+        copied.append(text)
+        return True
+
+    monkeypatch.setattr("chrys.app.tui.screens.main.view_adapter.copy_text_to_clipboards", record_copy)
+    monkeypatch.setattr("chrys.app.tui.clipboard.uses_native_windows_clipboard", lambda: False)
+    app = _MainScreenApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        screen = app.main_screen
+        text = "Before copy this after"
+        if source == "chat":
+            body = await _panel_with_agent_message(app, pilot, text)
+        else:
+            body = _side_body(await _side_card(app, pilot, "Question", text), "answer")
+        input_bar = screen.query_one(InputBar)
+        input_bar.value = "queued note"
+        input_bar.lock_with_text()
+        screen._watch__select_state(_chat_drag_state(body, body, start_offset=Offset(6, 0), end_offset=Offset(16, 0)))
+        screen._watch__selecting(False)
+        popup = screen.query_one(QuoteSelectionPopup)
+        await wait_for(lambda: popup.is_shown and popup.region == popup.target_region, pilot=pilot)
+        assert screen.get_selected_text() == " copy this "
+
+        await _click_pill(app, pilot, popup, action="copy")
+        await wait_for(lambda: any(toast.message == "Copied" for toast in shown_toasts(app)), pilot=pilot)
+
+        assert copied == [" copy this "]
+        assert screen.get_selected_text() is None
+        assert input_bar.value == "queued note"
+        assert not input_bar.draft().references
 
 
 @pytest.mark.asyncio
@@ -247,8 +290,151 @@ async def test_a_locked_draft_refuses_the_quote_and_says_so() -> None:
         assert len(shown_toasts(app)) == notifications_before + 1
 
 
-def test_the_pill_reads_quote_alone() -> None:
-    assert rich_plain(QuoteSelectionPopup()._render_label(None)) == "Quote"
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [10, 18])
+async def test_the_pill_keeps_both_labels_and_separate_hit_areas(width: int) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(100, 24)) as pilot:
+        popup = app.main_screen.query_one(QuoteSelectionPopup)
+        await wait_for(lambda: screen_is_settled(app, app.main_screen), pilot=pilot)
+        assert str(popup.styles.height) == "1"
+        area = Region(1, 4, width, 3)
+        popup.place_near(Offset(area.right - 1, area.bottom - 1), within=area)
+        await wait_for(lambda: popup.is_shown and popup.region == popup.target_region, pilot=pilot)
+        assert popup.region == Region(area.x, area.bottom - 2, width, 1)
+
+        quote, divider, copy = popup.query(Static)
+        assert tuple(rich_plain(widget.render()) for widget in (quote, divider, copy)) == ("Quote", "│", "Copy")
+        assert tuple(widget.region.width for widget in (quote, divider, copy)) == (
+            (5, 1, 4) if width == 10 else (9, 1, 8)
+        )
+        for widget in (quote, divider, copy):
+            assert app.main_screen.get_widget_at(*widget.region.offset)[0] is widget
+            assert not widget.allow_select
+
+        await pilot.hover(offset=tuple(copy.region.offset))
+        assert copy.mouse_hover
+        assert not quote.mouse_hover
+        assert copy.styles.color != quote.styles.color
+        assert copy.styles.background != quote.styles.background
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("width", "source", "popup_width"), [(9, "chat", 0), (12, "chat", 10), (15, "card", 13)])
+async def test_selection_actions_fit_the_terminal_viewport(width: int, source: str, popup_width: int) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(width, 18)) as pilot:
+        screen = app.main_screen
+        text = "select this text"
+        if source == "chat":
+            body = await _panel_with_agent_message(app, pilot, text)
+        else:
+            body = _side_body(await _side_card(app, pilot, "Question", text), "answer")
+        start = tuple(body.region.offset)
+        end = (start[0] + 3, start[1])
+        await pilot.mouse_down(offset=start)
+        await pilot.hover(offset=end)
+        await pilot.mouse_up(offset=end)
+        await wait_for(lambda: screen.get_selected_text() == "sele" and not screen._selecting, pilot=pilot)
+
+        popup = screen.query_one(QuoteSelectionPopup)
+        if popup_width == 0:
+            assert not popup.is_shown
+        else:
+            assert popup.is_shown
+            assert popup.region.width == popup_width
+            assert Region(0, 0, *screen.size).contains_region(popup.region)
+            copy = popup.query_one(".-copy")
+            assert screen.get_widget_at(copy.region.right - 1, copy.region.y)[0] is copy
+
+
+@pytest.mark.asyncio
+async def test_ctrl_r_hides_selection_actions_before_history_loads(monkeypatch: pytest.MonkeyPatch) -> None:
+    release_history = Event()
+    prompts = [f"Previously entered prompt {index} for this test." for index in range(20)]
+
+    async def load_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
+        await release_history.wait()
+        return prompts
+
+    copied: list[str] = []
+
+    def record_copy(_app: ClipboardApp, text: str) -> bool:
+        copied.append(text)
+        return True
+
+    monkeypatch.setattr(InputBar, "load_prompt_history", load_history)
+    monkeypatch.setattr("chrys.app.tui.screens.main.view_adapter.copy_text_to_clipboards", record_copy)
+    app = _MainScreenApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        screen = app.main_screen
+        message = "\n\n".join(f"Select some transcript text on line {index}." for index in range(18))
+        body = await _panel_with_agent_message(app, pilot, message)
+        input_bar = screen.query_one(InputBar)
+        await wait_for(lambda: screen_is_settled(app, screen), pilot=pilot)
+        x = body.region.x + 1
+        y = next(
+            row
+            for row in range(input_bar.region.y - 9, input_bar.region.y - 5)
+            if screen.get_widget_and_offset_at(x, row)[1] is not None
+        )
+        await pilot.mouse_down(offset=(x, y))
+        await pilot.hover(offset=(x + 5, y))
+        await pilot.mouse_up(offset=(x + 5, y))
+        popup = screen.query_one(QuoteSelectionPopup)
+        await wait_for(lambda: popup.is_shown and popup.region == popup.target_region, pilot=pilot)
+        selected_text = screen.get_selected_text()
+        assert selected_text
+        selection = dict(screen.selections)
+        former_copy_cell = popup.query_one(".-copy").region.offset
+
+        suggestions = screen.query_one(SuggestionList)
+        try:
+            await pilot.press("ctrl+r")
+            await wait_for(lambda: suggestions.is_visible and suggestions.is_loading, pilot=pilot)
+            assert not popup.is_shown
+            assert screen.get_selected_text() == selected_text
+            assert screen.selections == selection
+        finally:
+            release_history.set()
+        await wait_for(
+            lambda: suggestions.is_visible and not suggestions.is_loading and suggestions._values, pilot=pilot
+        )
+        assert former_copy_cell in suggestions.content_region
+        assert screen.get_widget_at(*former_copy_cell)[0] is suggestions
+        assert screen.get_selected_text() == selected_text
+
+        await click_when_settled(pilot, suggestions, offset=tuple(former_copy_cell - suggestions.region.offset))
+        await wait_for(lambda: input_bar.value in prompts, pilot=pilot)
+        assert copied == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("menu", ["suggestions", "subcommands"])
+async def test_input_menus_hide_selection_actions_and_keep_them_hidden(menu: str) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        screen = app.main_screen
+        text = "selected transcript text"
+        body = await _panel_with_agent_message(app, pilot, text)
+        popup = await _finish_drag_over(app, body, text)
+
+        if menu == "subcommands":
+            screen._view_adapter.show_subcommand_suggestions([("show", "Show")])
+        else:
+            screen._view_adapter.show_suggestions("commands", [("help", "Help")])
+
+        assert not popup.is_shown
+        assert screen.get_selected_text() == text
+
+        screen._watch__select_state(_chat_drag_state(body, body, end_offset=Offset(3, 0)))
+        screen._watch__selecting(False)
+
+        assert not popup.is_shown
+        assert screen.get_selected_text() == "sele"
+
+        screen._view_adapter.hide_suggestions()
+        await _finish_drag_over(app, body, text)
 
 
 @pytest.mark.asyncio
@@ -567,6 +753,8 @@ async def test_side_card_messages_follow_a_language_switch(tmp_path: Path, monke
         assert app.screen.selections == selection
         assert panel.query_one(BtwQuestion) is question
         assert panel.query_one(BtwAnswer) is reply
+        popup = app.screen.query_one(QuoteSelectionPopup)
+        assert tuple(rich_plain(w.render()) for w in popup.query(Static)) == ("引用", "│", "复制")
         for message, label in [(question, "问题"), (reply, "回答")]:
             header = message.query_one(".message-header", Static)
             assert rich_plain(header.render()) == label
@@ -678,6 +866,16 @@ async def test_releasing_a_drag_after_activity_arrives_updates_highlight_copy_an
             if (picked := widget.get_selection(selection)) is not None
         )
         assert "New thought while dragging." in highlighted
+        selection = dict(screen.selections)
+        divider = popup.query_one(".selection-divider")
+        _post_mouse(app, MouseDown, *divider.region.offset)
+        _post_mouse(app, MouseUp, *divider.region.offset)
+        await pilot.pause()
+        assert popup.is_shown
+        assert screen._chat_selection.active
+        assert screen.get_selected_text() == copied
+        assert screen.selections == selection
+
         await _click_pill(app, pilot, popup)
         assert screen.query_one(InputBar).draft().references.get("quote", 1) == DraftReference(
             "quote", 1, copied.strip()

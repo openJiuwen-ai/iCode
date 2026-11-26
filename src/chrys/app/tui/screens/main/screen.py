@@ -22,7 +22,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.css.query import NoMatches
-from textual.events import DescendantFocus, Key, Paste, Resize, ScreenResume, ScreenSuspend
+from textual.events import DescendantFocus, Event, Key, MouseDown, Paste, Resize, ScreenResume, ScreenSuspend
 from textual.geometry import Offset, Region, Size
 from textual.reactive import reactive
 from textual.screen import Screen
@@ -31,8 +31,9 @@ from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets.text_area import Document
 
-from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
+from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin, cancel_textual_mouse_chain
 from chrys.app.tui.binding_display import BACK_BINDING, QUIT_BINDING, localized_binding
+from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_content, render_str, widget_localizer
 from chrys.app.tui.language import LANGUAGE_OPTIONS, LANGUAGE_UNKNOWN_LOCALE
 from chrys.app.tui.screens.dialogs.background_task import ROLLBACK_NOTE, BackgroundTaskModal, confirm_stopping
@@ -1306,7 +1307,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # popup adjacent to input and paints over the reserved status row
         # without changing transcript geometry while suggestions are filtered.
         yield PromptCard()
-        yield SuggestionList(locale_controller=self._locale_controller)
+        yield SuggestionList(locale_controller=self._locale_controller, before_open=self._hide_quote_popup)
         input_bar = InputBar(locale_controller=self._locale_controller)
         input_bar.submit_router = self._route_submit
         input_bar.draft_place = self._input_flow.place
@@ -1414,6 +1415,23 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def _reactive_state_ready(self) -> bool:
         return isinstance(self, MainScreen) and self._reactive_state_initialized
+
+    def _forward_event(self, event: Event) -> None:
+        if (
+            isinstance(event, MouseDown)
+            and event.button == 1
+            and not event.is_forwarded
+            and self.app.mouse_captured is None
+        ):
+            popup = self._quote_popup()
+            if popup is not None and popup.is_divider_at(event.screen_offset):
+                # Textual resets the selection anchor before forwarding a press to a widget.
+                # Keep it intact and discard the click chain for this decorative cell.
+                cancel_textual_mouse_chain(self)
+                event.prevent_default()
+                event.stop()
+                return
+        super()._forward_event(event)
 
     def get_widget_and_offset_at(self, x: int, y: int) -> tuple[Widget | None, Offset | None]:
         """Return no selectable target for tool-renderer UI.
@@ -1525,7 +1543,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _offer_quote_for_finished_selection(self) -> None:
         """Show the pill for a finished drag over transcript text."""
         pointer, area = self._quote_pointer, self._quote_area
-        if pointer is None or area is None:
+        popup = self._quote_popup()
+        if pointer is None or area is None or popup is None:
+            return
+        suggestions = self.query_one_optional(SuggestionList)
+        if suggestions is not None and suggestions.is_visible:
             return
         # Never text of both transcripts: a drag from the card onto its counter or into the chat mixes theirs in.
         # Text the sidebar adds is let through, as before the card could be quoted.
@@ -1540,22 +1562,19 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         text = self.get_selected_text()
         if text is None or not text.strip():
             return
-        popup = self._quote_popup()
-        if popup is None:
-            return
-        # The selected words, not the blank lines a drag across messages picks up around them. The card's
-        # messages it came from are kept too: a repeated completion replaces the answer within the same page.
+        # Copy uses the same text as the keyboard shortcut. Keep the card's source widgets too:
+        # a repeated completion replaces the answer within the same page.
         if isinstance(area, BtwPage):
             # Only the card's own: the sidebar beside it rebuilds, and its widgets going must not void the quote.
             sources = tuple(widget for widget in self.selections if area in widget.ancestors_with_self)
-            self._pending_quote_pick = (text.strip(), area, area.content_generation, sources)
+            self._pending_quote_pick = (text, area, area.content_generation, sources)
         else:
-            self._pending_quote_pick = (text.strip(), area, None, ())
-        # Inside the transcript it quotes from, never over its border or the sidebar.
+            self._pending_quote_pick = (text, area, None, ())
+        # Keep the overlay inside the transcript where the drag ended.
         popup.place_near(pointer, within=area.content_region)
 
     def on_quote_selection_popup_requested(self, event: QuoteSelectionPopup.Requested) -> None:
-        """Put the selection the pill offered into the draft as a ``[Quote #n]`` label."""
+        """Copy the offered text or put a quote label into the draft."""
         event.stop()
         pick, self._pending_quote_pick = self._pending_quote_pick, None
         self.clear_selection()
@@ -1570,7 +1589,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             or not area.parent.display
         ):
             return
-        if not self.query_one(InputBar).insert_reference("quote", text):
+        if event.action == "copy":
+            self._view_adapter.copy_text(text, message=COPIED_TITLE.bind(), title="")
+        elif not self.query_one(InputBar).insert_reference("quote", text.strip()):
             self.notify(
                 render_str(self._language_localizer(), QUOTE_INPUT_UNAVAILABLE.bind()),
                 severity="warning",
