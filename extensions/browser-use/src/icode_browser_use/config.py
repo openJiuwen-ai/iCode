@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Final
 from urllib.parse import urlsplit
 
+from .logging import log
+
 # --- numeric constants (single source; design A.4) --------------------------
 SNAPSHOT_CHAR_BUDGET: Final = 7000
 MAX_STAGE_NODES: Final = 120
@@ -61,9 +63,6 @@ VALID_TOOLSETS: Final = frozenset({"full", "compact"})
 #: Allowlist entries are a bare domain or a leading-dot subdomain-only entry.
 #: IP literals are rejected (they cannot be expressed as an allowlist entry).
 _DOMAIN_RE = re.compile(r"^\.?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
-
-
-from .logging import log
 
 
 class ConfigError(RuntimeError):
