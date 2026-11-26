@@ -125,6 +125,50 @@ async def test_custom_kind_shell_tools_are_not_treated_as_renamed_executors() ->
     assert requests == []
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo $OPENAI_API_KEY",
+        "Get-Content Env:OPENAI_API_KEY",
+        "echo %OPENAI_API_KEY%",
+    ],
+)
+async def test_custom_shell_tools_check_every_dialect_for_sensitive_env(command: str) -> None:
+    """An unknown dialect must not disable POSIX, PowerShell, or cmd sensitive checks."""
+    bus = EventBus()
+    requests = await _record_requests(bus)
+    middleware = _middleware(bus, default="skip")
+    called = AsyncMock()
+    tool = _custom_shell_tool("fake_bash", _fake_custom_bash)
+
+    task = asyncio.create_task(middleware.process(FunctionInvocationContext(tool, {"command": command}), called))
+    await wait_for(lambda: len(requests) == 1, description="custom shell sensitive request")
+    assert called.await_count == 0
+
+    await bus.publish(ApprovalResponse(request_id=requests[0].request_id, approved=False, reason="test"))
+    await task
+
+    assert called.await_count == 0
+
+
+async def test_custom_shell_tools_use_simple_parser_for_sensitive_paths() -> None:
+    """An unknown dialect still gets the simple-command argv sensitive scan."""
+    bus = EventBus()
+    requests = await _record_requests(bus)
+    middleware = _middleware(bus, default="skip")
+    called = AsyncMock()
+    tool = _custom_shell_tool("fake_bash", _fake_custom_bash)
+
+    task = asyncio.create_task(middleware.process(FunctionInvocationContext(tool, {"command": "cat .en''v"}), called))
+    await wait_for(lambda: len(requests) == 1, description="custom shell parsed sensitive request")
+    assert called.await_count == 0
+
+    await bus.publish(ApprovalResponse(request_id=requests[0].request_id, approved=False, reason="test"))
+    await task
+
+    assert called.await_count == 0
+
+
 async def test_kind_shell_tool_without_a_command_skips_shell_identity_checks() -> None:
     """``list_workspace_dirs`` shares KIND_SHELL but has no command to approve."""
     bus = EventBus()
@@ -139,7 +183,10 @@ async def test_kind_shell_tool_without_a_command_skips_shell_identity_checks() -
     assert requests == []
 
 
-@pytest.mark.parametrize("command", ["cat .en''v", "rg secret .en''v", "env A=", "'env'", "cat café.txt .en''v"])
+@pytest.mark.parametrize(
+    "command",
+    ["cat .en''v", "rg secret .en''v", "env A=", "'env'", "cat café.txt .en''v", "rg secret café.txt .en''v"],
+)
 async def test_permissive_policy_still_requires_approval_for_normalized_sensitive_targets(
     command: str,
 ) -> None:

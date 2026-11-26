@@ -143,6 +143,23 @@ def _git_option_present(args: list[str], names: frozenset[str]) -> bool:
     return False
 
 
+def simple_command_argv(command: str, *, shell_name: str = "") -> tuple[str, ...] | None:
+    """Return a simple command's argv, independent of whether it can be auto-approved.
+
+    Sensitive-target checks need the executor's words even when the command name
+    is not on the approval-safe allowlist. Only the shell syntax and quoting
+    rules are applied here; command policy is the classifier's next step.
+    """
+    if shell_name not in _POSIX_SHELLS:
+        return None
+    argv = _simple_posix_argv(command)
+    if argv is None:
+        return None
+    if shell_name == "zsh" and any(arg.startswith("=") for arg in argv):
+        return None
+    return argv
+
+
 def classify_shell_for_approval(command: str, *, shell_name: str = "") -> ApprovalShellDecision:
     """Classify *command* for the approval auto-approval boundary.
 
@@ -295,4 +312,5 @@ __all__ = [
     "ExecutionMode",
     "SafeShellCommand",
     "classify_shell_for_approval",
+    "simple_command_argv",
 ]

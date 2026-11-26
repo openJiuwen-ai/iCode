@@ -351,7 +351,7 @@ class ApprovalMiddleware(FunctionMiddleware):
         shell_identity_unknown = False
         if tool_kind == KIND_SHELL:
             from chrys.service.tools.builtins.shell import shell_identity_is_renamed, shell_name_for_tool
-            from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval
+            from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval, simple_command_argv
 
             raw = context.arguments
             shell_command = raw.get("command", "") if isinstance(raw, dict) else ""
@@ -359,14 +359,16 @@ class ApprovalMiddleware(FunctionMiddleware):
                 shell_name = shell_name_for_tool(context.function, fallback=tool_name)
                 shell_identity_unknown = shell_identity_is_renamed(context.function)
                 approval_safe = classify_shell_for_approval(shell_command, shell_name=shell_name)
-        # The classifier returns the exact argv execution will use; check those
-        # tokens as well, since the raw-text regex and the session-reuse
-        # normalizer do not accept every character the classifier does.
-        argv_sensitive = (
-            approval_safe is not None
-            and approval_safe.command is not None
-            and any(target_may_access_sensitive_data(arg) for arg in approval_safe.command.argv)
-        )
+        # The simple-command parser returns the executor's tokens even for a
+        # command that is not eligible for auto-approval. Check those tokens
+        # directly, since neither the raw-text regex nor the session-reuse
+        # normalizer accepts every character the parser does.
+        parsed_argv = simple_command_argv(shell_command, shell_name=shell_name) if shell_command else None
+        if parsed_argv is None and shell_command:
+            # Unknown or unmodeled dialect: a POSIX simple-command parse is a
+            # conservative extra sensitivity check (it can only require approval).
+            parsed_argv = simple_command_argv(shell_command, shell_name="bash")
+        argv_sensitive = parsed_argv is not None and any(target_may_access_sensitive_data(arg) for arg in parsed_argv)
         # Sensitive targets run before the policy fast path and the reuse offer:
         # both must see the normalized argv the command will actually execute,
         # not only the raw text.

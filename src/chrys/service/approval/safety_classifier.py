@@ -88,6 +88,7 @@ _WINDOWS_ENV_REFERENCE_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
 _POSIX_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _POSIX_COMMAND_OPERATORS = frozenset({";", "&", "&&", "|", "|&", "||", "\n"})
 _POSIX_SHELL_NAMES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "tcsh", "csh"})
+_KNOWN_SHELL_NAMES = _POSIX_SHELL_NAMES | frozenset({"", "git_bash", "cmd", "powershell", "pwsh"})
 _POSIX_SHELL_LONG_OPTIONS_WITH_VALUES = frozenset({"--init-file", "--rcfile"})
 _POSIX_SHELL_SHORT_OPTIONS_WITH_VALUES = frozenset({"-O", "-o", "+O", "+o"})
 _SUDO_OPTIONS_WITH_VALUES = frozenset(
@@ -488,9 +489,25 @@ def _posix_command_indirection_may_access_sensitive_data(command: str, *, shell_
 
 def _shell_command_may_access_sensitive_data(command: str, *, shell_name: str, depth: int) -> bool:
     """Recursive implementation for shell sensitive-data classification."""
-    powershell_env_access = shell_name in ("pwsh", "powershell") and _POWERSHELL_ENV_ACCESS_RE.search(command)
-    posix_env_access = shell_name in ("", "bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "git_bash")
-    windows_env_access = shell_name in ("", "cmd")
+    # An executor whose dialect is unknown (for example an extension's custom
+    # KIND_SHELL tool) still gets every dialect's sensitive-access checks.
+    unknown_shell = shell_name not in _KNOWN_SHELL_NAMES
+    powershell_env_access = (unknown_shell or shell_name in ("pwsh", "powershell")) and (
+        _POWERSHELL_ENV_ACCESS_RE.search(command)
+    )
+    posix_env_access = unknown_shell or shell_name in (
+        "",
+        "bash",
+        "zsh",
+        "fish",
+        "sh",
+        "dash",
+        "ksh",
+        "tcsh",
+        "csh",
+        "git_bash",
+    )
+    windows_env_access = unknown_shell or shell_name in ("", "cmd")
     return bool(
         _ENV_DUMP_RE.search(command)
         or powershell_env_access

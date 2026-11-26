@@ -88,6 +88,20 @@ _GIT_LOG_FLAGS = (
         }
     )
 )
+_GIT_DESCRIBE_FLAGS = frozenset(
+    {
+        "--always",
+        "--all",
+        "--contains",
+        "--debug",
+        "--exact-match",
+        "--first-parent",
+        "--long",
+        "--tags",
+    }
+)
+_GIT_DESCRIBE_OPTIONS_WITH_VALUE = frozenset({"--abbrev", "--candidates", "--exclude", "--match"})
+_GIT_DESCRIBE_OPTION_PREFIXES = ("--abbrev=", "--candidates=", "--exclude=", "--match=")
 _GIT_GREP_FLAGS = frozenset(
     {
         "-n",
@@ -112,7 +126,6 @@ _GIT_NO_EXEC_READONLY_SUBCOMMANDS = frozenset(
         "check-attr",
         "check-ignore",
         "check-mailmap",
-        "describe",
         "for-each-ref",
         "ls-files",
         "ls-tree",
@@ -352,6 +365,16 @@ def _is_safe_git_stash(args: list[str]) -> bool:
     return False
 
 
+def _is_safe_git_describe(args: list[str]) -> bool:
+    """Accept only object queries; ``--dirty``/``--broken`` refresh the worktree."""
+    return _git_args_use_only_allowed_options(
+        args,
+        flags=_GIT_DESCRIBE_FLAGS,
+        options_with_value=_GIT_DESCRIBE_OPTIONS_WITH_VALUE,
+        option_prefixes=_GIT_DESCRIBE_OPTION_PREFIXES,
+    )
+
+
 def _is_safe_git(args: list[str]) -> bool:
     no_optional_locks = "--no-optional-locks" in args
     args = _strip_git_global_options(args) or []
@@ -391,6 +414,8 @@ def _is_safe_git(args: list[str]) -> bool:
         )
     if subcommand == "cat-file":
         return _git_args_use_only_allowed_options(sub_args, flags=_GIT_CAT_FILE_FLAGS)
+    if subcommand == "describe":
+        return _is_safe_git_describe(sub_args)
     if subcommand in _GIT_NO_EXEC_READONLY_SUBCOMMANDS:
         return True
     if subcommand == "remote":

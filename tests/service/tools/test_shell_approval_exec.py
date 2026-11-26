@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 
 import pytest
 
@@ -127,6 +128,7 @@ def test_approval_safe_env_removes_startup_hooks(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.pager")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "evil")
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.pager'='evil'")
     monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/evil-lib")
 
     env = shell_module._approval_safe_env()
@@ -140,6 +142,7 @@ def test_approval_safe_env_removes_startup_hooks(monkeypatch: pytest.MonkeyPatch
     assert env["GIT_PAGER"] == "cat"
     assert env["GIT_CONFIG_GLOBAL"] == "/tmp/evil-global"
     assert env["GIT_CONFIG_SYSTEM"] == "/tmp/evil-system"
+    assert "GIT_CONFIG_PARAMETERS" not in env
     assert env["GIT_CONFIG_COUNT"] == "7"
     assert env["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
     assert env["GIT_CONFIG_VALUE_0"] == "false"
@@ -153,3 +156,21 @@ def test_approval_safe_env_removes_startup_hooks(monkeypatch: pytest.MonkeyPatch
         assert env[f"GIT_CONFIG_KEY_{index}"] == key
         assert env[f"GIT_CONFIG_VALUE_{index}"] == os.devnull
     assert "LD_LIBRARY_PATH" not in env
+
+
+def test_approval_safe_env_pins_beat_inherited_git_config_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An inherited GIT_CONFIG_PARAMETERS channel cannot override the pinned pager."""
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.pager'='evil'")
+    env = shell_module._approval_safe_env()
+
+    completed = subprocess.run(
+        ["git", "config", "--get", "core.pager"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.stdout.strip() == "cat"

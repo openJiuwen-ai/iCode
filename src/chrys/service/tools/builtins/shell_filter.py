@@ -12,6 +12,7 @@ from chrys.service.tools.builtins.shell_command_filtering.approval_safe import (
     ApprovalShellDecision,
     SafeShellCommand,
     classify_shell_for_approval,
+    simple_command_argv,
 )
 from chrys.service.tools.builtins.shell_command_filtering.policy import FilterResult, ShellCommandFilter
 from chrys.service.tools.builtins.shell_command_filtering.presets import (
@@ -35,4 +36,5 @@ __all__ = [
     "is_safe_readonly_command",
     "parse_commands",
     "preset_names",
+    "simple_command_argv",
 ]

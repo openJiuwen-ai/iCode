@@ -334,6 +334,7 @@ _APPROVAL_SAFE_ENV_DROP = frozenset(
         # Tool configuration that can turn a read-only command into an exec.
         "GIT_ASKPASS",
         "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
         "GIT_EXTERNAL_DIFF",
         "LESS",
         "LESSCLOSE",
@@ -384,8 +385,10 @@ def _approval_safe_env() -> dict[str, str]:
     env["GIT_PAGER"] = "cat"
     # Keep Git's global/system config for read-only semantics (core.excludesFile,
     # safe.directory), including the user's GIT_CONFIG_GLOBAL/SYSTEM/NOSYSTEM,
-    # but pin every key that can execute another program. The environment config
-    # below wins over every file scope, including a repository's own .git/config.
+    # but pin every key that can execute another program. The inherited
+    # GIT_CONFIG_PARAMETERS channel is removed above so it cannot override these
+    # pins. The environment config below wins over every file scope, including a
+    # repository's own .git/config.
     env["GIT_CONFIG_COUNT"] = "7"
     env["GIT_CONFIG_KEY_0"] = "core.fsmonitor"
     env["GIT_CONFIG_VALUE_0"] = "false"
