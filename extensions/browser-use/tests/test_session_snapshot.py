@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from icode_browser_use.config import BrowserConfig
@@ -10,10 +12,17 @@ from icode_browser_use.session import BrowserSession
 from icode_browser_use.snapshot.fusion import FusedNode
 
 
-def node(*, name: str, backend: int, cdp_session_id: str | None = None) -> FusedNode:
+def node(
+    *,
+    name: str,
+    backend: int,
+    frame_id: str = "frame",
+    cdp_session_id: str | None = None,
+    main_document: bool = False,
+) -> FusedNode:
     return FusedNode(
         backend_node_id=backend,
-        frame_id="frame",
+        frame_id=frame_id,
         target_id="target",
         role="button",
         name=name,
@@ -24,6 +33,7 @@ def node(*, name: str, backend: int, cdp_session_id: str | None = None) -> Fused
         visible=True,
         interactive=True,
         cdp_session_id=cdp_session_id,
+        main_document=main_document,
     )
 
 
@@ -89,9 +99,66 @@ def test_text_resolution_can_target_child_nodes() -> None:
     assert entry.cdp_session_id == "child-session"
 
 
-def test_oopif_sessions_are_tracked_and_removed() -> None:
-    import asyncio
+def test_child_navigation_preserves_main_refs_without_reusing_stale_child_tokens() -> None:
+    session = make_session()
+    session._session_id = "main-session"
+    root = node(name="Main button", backend=1, main_document=True)
+    child = node(name="Child button", backend=2, frame_id="child")
+    session.register_snapshot([root, child])
+    epoch = session.page_epoch
+    revision = session.snapshot_generation
+    main_token = f"@e{root.ref}#{epoch}"
+    child_token = f"@e{child.ref}#{epoch}"
 
+    asyncio.run(session._on_frame_navigated({"frame": {"id": "child", "parentId": "frame"}}, "main-session"))
+    assert session.snapshot_generation != revision
+    assert session.page_epoch == epoch
+    assert session.snapshot_dirty and session.snapshot.subframes_invalidated
+    assert session.resolve_target(main_token).backend_node_id == 1
+    with pytest.raises(StaleRef) as caught:
+        session.resolve_target(child_token)
+    assert "reason=subframe_changed" in caught.value.render()
+
+    replacement = node(name="Child replacement", backend=2, frame_id="child")
+    session.register_snapshot([root, replacement])
+    assert replacement.ref != child.ref
+    assert not session.snapshot.subframes_invalidated
+    with pytest.raises(StaleRef):
+        session.resolve_target(child_token)
+    asyncio.run(session._on_frame_navigated({"frame": {"id": "new-root"}}, "main-session"))
+    with pytest.raises(StaleRef) as caught:
+        session.resolve_target(main_token)
+    assert "reason=main_frame_navigated" in caught.value.render()
+
+
+def test_oopif_document_update_preserves_main_refs_and_ignores_background_tabs() -> None:
+    session = make_session()
+    session._target_id = "target"
+    session._session_id = "main-session"
+    session.register_oopif("child-session", page_target_id="target")
+    session.register_oopif("other-tab-child", page_target_id="background")
+    root = node(name="Main button", backend=1, main_document=True)
+    child = node(name="Child button", backend=2, cdp_session_id="child-session")
+    session.register_snapshot([root, child])
+    main_token = f"@e{root.ref}#{session.page_epoch}"
+    child_token = f"@e{child.ref}#{session.page_epoch}"
+
+    asyncio.run(session._on_document_updated({}, "other-tab-child"))
+    assert session.resolve_target(child_token).backend_node_id == 2
+    asyncio.run(session._on_document_updated({}, "child-session"))
+    assert session.resolve_target(main_token).backend_node_id == 1
+    with pytest.raises(StaleRef) as caught:
+        session.resolve_target(child_token)
+    assert "reason=subframe_changed" in caught.value.render()
+
+    # A second subframe change must not overwrite earlier invalidated ref reasons.
+    session._invalidate_subframe_refs()
+    with pytest.raises(StaleRef) as caught_again:
+        session.resolve_target(child_token)
+    assert "reason=subframe_changed" in caught_again.value.render()
+
+
+def test_oopif_sessions_are_tracked_and_removed() -> None:
     session = make_session()
     params = {"targetInfo": {"type": "iframe", "targetId": "target-1"}, "sessionId": "child-session"}
 
@@ -103,8 +170,6 @@ def test_oopif_sessions_are_tracked_and_removed() -> None:
 
 
 def test_nested_oopif_parent_tracking_and_detach_cascade() -> None:
-    import asyncio
-
     session = make_session()
     root = {"targetInfo": {"type": "iframe", "targetId": "t1"}, "sessionId": "child-1"}
     nested = {"targetInfo": {"type": "iframe", "targetId": "t2"}, "sessionId": "child-2"}

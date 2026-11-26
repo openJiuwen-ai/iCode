@@ -67,11 +67,13 @@ _ORDERED_EVENT_METHODS = frozenset(
         "Browser.downloadWillBegin",
         "Browser.downloadProgress",
         "Page.frameNavigated",
+        "Page.frameDetached",
         "Page.navigatedWithinDocument",
         "Page.lifecycleEvent",
         "Page.frameStoppedLoading",
         "Page.javascriptDialogOpening",
         "Page.javascriptDialogClosed",
+        "DOM.documentUpdated",
         "Inspector.detached",
         "Bridge.siteBlocked",
     }

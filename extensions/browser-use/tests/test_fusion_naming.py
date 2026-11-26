@@ -527,3 +527,321 @@ def test_scoring_resolves_same_name_label_and_slider_to_slider() -> None:
     best = resolve_ambiguity(rank([label, slider], "Priority Level"))
     assert best.node.ref == 2
     assert best.node.role == "slider"
+
+
+def test_scoring_blocks_short_substring_hijacking_and_collapses_wrapper_descendants() -> None:
+    # 1. Short noise labels ("0", "EN", "p") must never hijack long multi-word queries.
+    noise_zero = FusedNode(
+        1, "f", "t", "generic", "0", "span", 0, (0, 0, 10, 10), ref=1, epoch=1, visible=True, in_viewport=True
+    )
+    noise_en = FusedNode(
+        2, "f", "t", "generic", "EN", "span", 0, (0, 0, 20, 10), ref=2, epoch=1, visible=True, in_viewport=True
+    )
+    card_link = FusedNode(
+        10,
+        "f",
+        "t",
+        "link",
+        "Women's Carina 3.0 Suede Shoes",
+        "a",
+        0,
+        (0, 20, 200, 40),
+        ref=10,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+    )
+    card_heading = FusedNode(
+        11,
+        "f",
+        "t",
+        "heading",
+        "Women's Carina 3.0 Suede Shoes",
+        "h3",
+        0,
+        (0, 20, 200, 40),
+        ref=11,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=True,  # Chrome inherits cursor: pointer from <a>
+        ancestor_ids=(10,),
+    )
+    card_span = FusedNode(
+        12,
+        "f",
+        "t",
+        "generic",
+        "Women's Carina 3.0 Suede Shoes",
+        "span",
+        0,
+        (0, 20, 200, 40),
+        ref=12,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=True,  # Chrome inherits cursor: pointer from <a>
+        ancestor_ids=(10, 11),
+    )
+    ranked_shoes = rank([noise_zero, noise_en, card_link, card_heading, card_span], "Carina 3.0 Suede Shoes")
+    assert [c.node.ref for c in ranked_shoes] == [10]
+
+    # 2. <button><span>Filters</span></button> resolves cleanly to button without ambiguity.
+    btn = FusedNode(
+        20,
+        "f",
+        "t",
+        "button",
+        "Filters",
+        "button",
+        0,
+        (0, 80, 80, 30),
+        ref=20,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+    )
+    btn_span = FusedNode(
+        21,
+        "f",
+        "t",
+        "generic",
+        "Filters",
+        "span",
+        0,
+        (0, 80, 80, 30),
+        ref=21,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=False,
+        ancestor_ids=(20,),
+    )
+    assert resolve_ambiguity(rank([btn, btn_span], "Filters")).node.ref == 20
+
+    # 3. <dialog aria-label="Price details"><h2>Price details</h2></dialog> collapses to dialog.
+    dlg = FusedNode(
+        30,
+        "f",
+        "t",
+        "dialog",
+        "Price details",
+        "div",
+        0,
+        (0, 0, 300, 200),
+        ref=30,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=False,
+    )
+    dlg_h2 = FusedNode(
+        31,
+        "f",
+        "t",
+        "heading",
+        "Price details",
+        "h2",
+        0,
+        (10, 10, 200, 24),
+        ref=31,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=False,
+        ancestor_ids=(30,),
+    )
+    assert resolve_ambiguity(rank([dlg, dlg_h2], "Price details")).node.ref == 30
+
+    # 4. HTML entities and snapshot-copied `role "name"` specs resolve cleanly.
+    care_heading = FusedNode(
+        40,
+        "f",
+        "t",
+        "heading",
+        "Materials & Care",
+        "h2",
+        0,
+        (0, 120, 200, 24),
+        ref=40,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=False,
+    )
+    assert resolve_ambiguity(rank([care_heading], "Materials &amp; Care")).node.ref == 40
+    assert resolve_ambiguity(rank([care_heading], 'heading "Materials & Care"')).node.ref == 40
+
+    # 5. Ambiguous candidates include visibility and landmark region breadcrumbs.
+    main_el = FusedNode(
+        50, "f", "t", "main", "", "main", 0, (0, 0, 800, 600), ref=50, epoch=1, visible=True, in_viewport=True
+    )
+    nav_el = FusedNode(
+        51, "f", "t", "navigation", "", "nav", 0, (0, 0, 800, 50), ref=51, epoch=1, visible=True, in_viewport=True
+    )
+    dup_a = FusedNode(
+        52,
+        "f",
+        "t",
+        "link",
+        "Pricing",
+        "a",
+        0,
+        (10, 10, 60, 20),
+        ref=52,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+        ancestor_ids=(51,),
+    )
+    dup_b = FusedNode(
+        53,
+        "f",
+        "t",
+        "link",
+        "Pricing",
+        "a",
+        1,
+        (10, 900, 60, 20),
+        ref=53,
+        epoch=1,
+        visible=True,
+        in_viewport=False,
+        interactive=True,
+        ancestor_ids=(50,),
+    )
+    all_nodes = [main_el, nav_el, dup_a, dup_b]
+    with pytest.raises(TargetAmbiguous) as caught:
+        resolve_ambiguity(rank(all_nodes, "Pricing"), all_nodes=all_nodes)
+    rendered = caught.value.render()
+    assert "[in-view] in nav" in rendered
+    assert "[off-screen] in main" in rendered
+
+
+def test_scoring_excludes_head_meta_css_hidden_and_short_tag_fuzzy_matches() -> None:
+    # 1. <head><title> and css_hidden clones must never compete with visible body nodes.
+    head_title = FusedNode(
+        1,
+        "f",
+        "t",
+        "title",
+        "Change language and currency",
+        "title",
+        0,
+        (0, 0, 0, 0),
+        ref=1,
+        epoch=1,
+        visible=False,
+        css_hidden=True,
+    )
+    hidden_clone = FusedNode(
+        2,
+        "f",
+        "t",
+        "heading",
+        "Currency settings",
+        "h2",
+        0,
+        (0, 0, 0, 0),
+        ref=2,
+        epoch=1,
+        visible=False,
+        css_hidden=True,
+    )
+    visible_h2 = FusedNode(
+        3,
+        "f",
+        "t",
+        "heading",
+        "Currency settings",
+        "h2",
+        1,
+        (0, 10, 200, 30),
+        ref=3,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+    )
+    assert [c.node.ref for c in rank([head_title, hidden_clone, visible_h2], "Currency settings")] == [3]
+    assert rank([head_title], "Change language and currency") == []
+
+    # 2. Short tag queries like "h1" must not fuzzy-match button "1"; structural tags like "main"/"aside"
+    # must not fuzzy-match unrelated words ("Menu", "Tasmin").
+    page_h1 = FusedNode(
+        10,
+        "f",
+        "t",
+        "heading",
+        "Outside IR35 Jobs",
+        "h1",
+        0,
+        (0, 10, 400, 40),
+        ref=10,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+    )
+    btn_one = FusedNode(
+        11,
+        "f",
+        "t",
+        "button",
+        "1",
+        "button",
+        0,
+        (0, 60, 30, 30),
+        ref=11,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+    )
+    menu_btn = FusedNode(
+        12,
+        "f",
+        "t",
+        "button",
+        "Menu",
+        "button",
+        0,
+        (0, 0, 60, 30),
+        ref=12,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+    )
+    tasmin = FusedNode(
+        13,
+        "f",
+        "t",
+        "heading",
+        "Tasmin",
+        "h2",
+        0,
+        (0, 100, 100, 30),
+        ref=13,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+    )
+    aside_el = FusedNode(
+        14,
+        "f",
+        "t",
+        "complementary",
+        "Booking Information",
+        "aside",
+        0,
+        (400, 10, 300, 400),
+        ref=14,
+        epoch=1,
+        visible=True,
+        in_viewport=True,
+    )
+    assert [c.node.ref for c in rank([page_h1, btn_one], "h1")] == [10]
+    assert rank([menu_btn], "main") == []
+    assert [c.node.ref for c in rank([aside_el, tasmin], "aside")] == [14]

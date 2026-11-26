@@ -404,6 +404,8 @@ class BrokerServer:
             raise Unavailable(f"unknown broker operation: {op}")
         except BrowserError as exc:
             payload: dict[str, Any] = {"id": request_id, "ok": False, "error": exc.message, "code": exc.code}
+            if exc.details:
+                payload["details"] = exc.details
             if exc.blocked_origin:
                 payload["blocked_origin"] = exc.blocked_origin
             if exc.pre_dispatch:

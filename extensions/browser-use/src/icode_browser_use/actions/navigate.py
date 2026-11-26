@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from urllib.parse import SplitResult, urljoin, urlsplit
 
@@ -12,7 +13,6 @@ from ..types import ToolBlock, text_block
 from ._shared import (
     capture_and_register,
     detect_login,
-    eval_value,
     login_hint,
     render_snapshot,
     send_watching_dialog,
@@ -74,11 +74,6 @@ def _precheck_url(session: Any, url: str) -> str:
     return text
 
 
-async def _page_title(session: Any) -> str:
-    value = await eval_value(session, "document.title")
-    return "" if value is None else str(value)
-
-
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     from ..policy import canonical_origin
 
@@ -93,12 +88,16 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         policy.last_blocked_document_origin = ""
         policy.last_blocked_origin = ""
 
+    t_start = time.monotonic()
+    nav_timeout = float(session.cfg.nav_load_timeout)
+    deadline = t_start + nav_timeout
+
     async def _send_nav() -> dict[str, Any]:
         return await client.send(
             "Page.navigate",
             {"url": url},
             session_id=session.session_id,
-            timeout=session.cfg.nav_load_timeout,
+            timeout=nav_timeout,
         )
 
     if callable(getattr(session, "dialog_since", None)):
@@ -118,6 +117,7 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
             ]
     else:
         response = await _send_nav()
+    t_nav = time.monotonic()
     response = response or {}
     error_text = str(response.get("errorText") or "")
     if error_text:
@@ -132,36 +132,62 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         raise Unavailable(error_text)
 
     loader_id = str(response.get("loaderId") or "")
+    wait_ready = getattr(session, "wait_for_ready", None)
     if loader_id:
-        await session.wait_for_load(loader_id, timeout=session.cfg.nav_load_timeout)
+        if callable(wait_ready):
+            remaining = max(0.1, deadline - time.monotonic())
+            ready_state = str(await wait_ready(loader_id, timeout=remaining))
+            completed = ready_state in {"load", "domcontentloaded", "committed"}
+        else:
+            loaded = bool(await session.wait_for_load(loader_id, timeout=nav_timeout))
+            ready_state = "load" if loaded else "timeout"
+            completed = loaded
     else:
         # Same-document (soft) navigation: no new loader id is issued.
-        await session.wait_for_navigation(after=nav_seq, timeout=session.cfg.nav_load_timeout)
+        remaining = max(0.1, deadline - time.monotonic()) if callable(wait_ready) else nav_timeout
+        commit = await session.wait_for_navigation(after=nav_seq, timeout=remaining)
+        completed = commit is not None
+        ready_state = "load" if completed else "timeout"
+    t_ready = time.monotonic()
 
-    title = await _page_title(session)
-    # A navigation is a new generation: ``Page.frameNavigated`` already bumped the
-    # epoch, so we must NOT ask ``register_snapshot`` to bump again (dom_changed=False).
-    # Never let an initial ``about:blank`` mask the live URL read by frame metrics or
-    # the requested navigation target.
-    nav_url = session.snapshot.url or ""
-    if nav_url.strip().lower() == "about:blank":
-        nav_url = ""
-    nodes, frame = await capture_and_register(session, url=nav_url, title=title, dom_changed=False)
+    # Capture the observed URL and title together with the DOM. An unconfirmed
+    # navigation may still be on the previous page.
+    nodes, frame = await capture_and_register(session)
+    t_snap = time.monotonic()
     live_url = str(getattr(frame, "url", "") or "")
     if live_url.strip().lower() == "about:blank":
         live_url = ""
     snap_url = session.snapshot.url or ""
     if snap_url.strip().lower() == "about:blank":
         snap_url = ""
-    page_url = live_url or snap_url or url
+    page_url = live_url or snap_url or (url if completed else "")
     if (session.snapshot.url or "").strip().lower() in {"", "about:blank"} and page_url:
         session.snapshot.url = page_url
     login_error = detect_login(session, nodes)
     if login_error is not None:
         raise login_error
 
-    text = render_snapshot(session, nodes, url=page_url, title=title)
+    text = render_snapshot(session, nodes, url=page_url, title=str(getattr(frame, "title", "") or ""))
+    nav_ms = max(0, round((t_nav - t_start) * 1000))
+    ready_ms = max(0, round((t_ready - t_nav) * 1000))
+    snapshot_ms = max(0, round((t_snap - t_ready) * 1000))
+    status_label = {
+        "load": "loaded",
+        "domcontentloaded": "domcontentloaded",
+        "committed": "committed",
+    }.get(ready_state, "unconfirmed")
     text = f"{text}\n{stats_line(session, nodes)}"
+    timing = f"navigation_status={status_label} nav_ms={nav_ms} ready_ms={ready_ms} snapshot_ms={snapshot_ms}"
+    if ready_state == "domcontentloaded":
+        text += f"\n{timing}（主文档已就绪可读，部分图片/异步资源可能仍在加载；如需等待动态内容请用 browser_wait_for）"
+    elif ready_state == "committed":
+        text += (
+            f"\n{timing}（主文档已提交但 load 事件超时；以上是当前观测的页面，如需等待动态内容请用 browser_wait_for）"
+        )
+    elif not completed:
+        text += f"\n{timing}：等待导航完成信号超时。以上是当前观测的页面，请先确认页面状态再操作。"
+    else:
+        text += f"\n{timing}"
     hint = login_hint(page_url)
     if hint:
         text = f"{text}\n{hint}"

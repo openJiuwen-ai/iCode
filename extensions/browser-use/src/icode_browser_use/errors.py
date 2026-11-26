@@ -50,6 +50,9 @@ class StaleRef(BrowserError):
 
     code = "browser_stale_ref"
 
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message, details=f"reason={reason}" if reason else "")
+
 
 class TargetNotFound(BrowserError):
     """No element matched the target specification."""
@@ -77,6 +80,12 @@ class Unavailable(BrowserError):
     """No browser could be found, launched or handshaken."""
 
     code = "browser_unavailable"
+
+
+class ActionBudgetExhausted(Unavailable):
+    """A browser handle has reached its rolling or lifetime action limit."""
+
+    code = "browser_action_budget_exhausted"
 
 
 # Name used by the launcher / WebSocket handshake path in the design document.
@@ -118,6 +127,7 @@ PRE_DISPATCH_ERROR_CODES: frozenset[str] = frozenset(
     {
         BadRequest.code,
         StaleRef.code,
+        ActionBudgetExhausted.code,
         TargetNotFound.code,
         TargetAmbiguous.code,
         Blocked.code,

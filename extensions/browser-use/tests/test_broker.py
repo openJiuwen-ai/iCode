@@ -14,7 +14,7 @@ import icode_browser_use.broker as broker_module
 from icode_browser_use.bridge.protocol import encode_message
 from icode_browser_use.broker import BrokerServer
 from icode_browser_use.broker_client import BrokerClient, BrokerSession
-from icode_browser_use.config import BrowserConfig
+from icode_browser_use.config import LIFETIME_MAX_ACTIONS, BrowserConfig
 
 
 @pytest.mark.parametrize("chosen", ["chosen", ""])
@@ -892,8 +892,9 @@ def test_compact_client_connected_to_full_broker_gets_compact_popup_hint(tmp_pat
     asyncio.run(scenario())
 
 
-def test_broker_press_key_missing_executable_returns_unavailable_and_counts_zero_writes(tmp_path, monkeypatch) -> None:
-    """Broker issue 3: missing Chrome binary (ENOENT) via online Broker must count write_actions: 0."""
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_broker_press_key_pre_dispatch_failures_count_zero_writes(tmp_path, monkeypatch, exhausted) -> None:
+    """The online Broker preserves the error and zero write count for pre-dispatch failures."""
     import importlib
 
     from chrys.extensions import ToolContext, ToolError
@@ -924,6 +925,7 @@ def test_broker_press_key_missing_executable_returns_unavailable_and_counts_zero
             allowed_domains=("example.com",),
             state_dir=tmp_path / "state",
             executable=missing_exe,
+            lifetime_max_actions=0 if exhausted else LIFETIME_MAX_ACTIONS,
         )
         broker = BrokerServer(broker_cfg)
         await broker.start()
@@ -931,7 +933,12 @@ def test_broker_press_key_missing_executable_returns_unavailable_and_counts_zero
             bid = (await reloaded.browser_open(context)).removeprefix("browser_id: ").strip()
             with pytest.raises(ToolError) as exc_info:
                 await reloaded.browser_press_key(context, bid, "Enter")
-            assert exc_info.value.code == "browser_unavailable"
+            if exhausted:
+                assert exc_info.value.code == "browser_action_budget_exhausted"
+                assert "budget=lifetime" in exc_info.value.message
+                assert "dispatch=not_sent" in exc_info.value.message
+            else:
+                assert exc_info.value.code == "browser_unavailable"
             closed = await reloaded.browser_close(context, bid)
             assert "write_actions: 0" in closed, closed
         finally:

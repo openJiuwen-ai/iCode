@@ -175,3 +175,28 @@ def test_closing_a_tab_never_starts_the_browser(monkeypatch: pytest.MonkeyPatch)
     asyncio.run(runtime.call_tool(session, tool, {"tab_id": "t-old"}))
     assert ("ensure_started",) not in session.calls
     assert ("note_action",) in session.calls
+
+
+def test_runtime_routes_observe_tools_to_observe_pool_and_appends_budget_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PoolSession(FakeSession):
+        def note_observe_action(self) -> None:
+            self.calls.append(("note_observe_action",))
+
+        def action_budget_warning(self, *, observe: bool = False) -> str:
+            return f"action_budget_warning: pool={'observe' if observe else 'action'} remaining_window=1"
+
+    session = PoolSession()
+    tool = ToolDef(name="browser_extract", description="", params={}, schema={})
+
+    async def dispatch(_session, name, arguments):
+        _session.calls.append(("dispatch", name, arguments))
+        return [{"type": "text", "text": "page body"}]
+
+    monkeypatch.setattr(runtime, "dispatch", dispatch)
+    blocks = asyncio.run(runtime.call_tool(session, tool, {}))
+    assert ("note_observe_action",) in session.calls
+    assert ("note_action",) not in session.calls
+    assert "page body" in blocks[0]["text"]
+    assert "action_budget_warning: pool=observe" in blocks[0]["text"]

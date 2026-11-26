@@ -69,6 +69,31 @@ def test_snapshot_since_returns_only_changed_nodes(monkeypatch) -> None:
     assert "Old" not in text
 
 
+def test_snapshot_delta_returns_reissued_child_ref_even_when_the_label_is_identical(monkeypatch) -> None:
+    old = _node("Child control", 1)
+    session = _session([old])
+    session._invalidate_subframe_refs()
+    replacement = _node("Child control", 1)
+
+    async def capture(_session, **_kwargs):
+        _session.register_snapshot([replacement])
+        return [replacement], None
+
+    async def mutation_count(_session):
+        return 0
+
+    async def title(_session):
+        return ""
+
+    monkeypatch.setattr(snapshot, "capture_and_register", capture)
+    monkeypatch.setattr(snapshot, "_read_mutation_count", mutation_count)
+    monkeypatch.setattr(snapshot, "_page_title", title)
+    monkeypatch.setattr(snapshot, "detect_login", lambda *_args: None)
+    blocks = asyncio.run(snapshot.run(session, {"scope": "viewport", "interactive_only": False, "since": 1}))
+    assert replacement.ref != old.ref
+    assert f"@e{replacement.ref}#{session.page_epoch}" in blocks[0]["text"]
+
+
 def test_snapshot_since_unknown_returns_full(monkeypatch) -> None:
     session = _session([_node("Old", 1)])
 

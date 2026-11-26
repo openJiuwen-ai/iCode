@@ -147,6 +147,8 @@ class FusedNode:
     input_type: str = ""
     css_hidden: bool = False
     """True for CSS-hidden (``display:none``/``visibility:hidden``/``opacity:0``/``hidden``) or head metadata nodes."""
+    main_document: bool = False
+    """True only for nodes captured from the active page's root document."""
 
     def fingerprint(self) -> dict[str, str]:
         """Coarse identity used to detect a stale reference within an epoch."""
@@ -879,15 +881,17 @@ def fuse(
                 dpr=frame.dpr,
                 viewport_clip=frame.viewport_clip,
             )
-        result.extend(
-            _fuse_document(
-                nodes_section,
-                layout_section,
-                strings,
-                ax_index,
-                doc_frame,
-                target_id,
-                cdp_session_id,
-            )
+        nodes = _fuse_document(
+            nodes_section,
+            layout_section,
+            strings,
+            ax_index,
+            doc_frame,
+            target_id,
+            cdp_session_id,
         )
+        if doc_index == 0 and cdp_session_id is None:
+            for node in nodes:
+                node.main_document = True
+        result.extend(nodes)
     return result

@@ -20,8 +20,8 @@ def make_session(base="https://example.com/dir/page?old=1"):
         session_id="main",
         target_id="target",
         require_client=Mock(return_value=client),
-        wait_for_load=AsyncMock(),
-        wait_for_navigation=AsyncMock(),
+        wait_for_load=AsyncMock(return_value=True),
+        wait_for_navigation=AsyncMock(return_value=""),
         nav_seq=0,
         note_success=Mock(),
     )
@@ -29,7 +29,6 @@ def make_session(base="https://example.com/dir/page?old=1"):
 
 @pytest.fixture(autouse=True)
 def snapshot_stubs(monkeypatch):
-    monkeypatch.setattr(navigate, "_page_title", AsyncMock(return_value="Title"))
     monkeypatch.setattr(navigate, "capture_and_register", AsyncMock(return_value=([], None)))
     monkeypatch.setattr(navigate, "detect_login", lambda *_: None)
     monkeypatch.setattr(navigate, "render_snapshot", lambda *a, **kw: kw["url"])
@@ -111,6 +110,20 @@ def test_absolute_url_does_not_require_base(snapshot_stubs):
     assert "https://example.com/next" in blocks[0]["text"]
 
 
+@pytest.mark.parametrize("has_loader", [False, True])
+def test_unconfirmed_navigation_reports_only_the_observed_page(has_loader):
+    session = make_session("about:blank")
+    session.require_client().send.return_value = {"loaderId": "loader"} if has_loader else {}
+    session.wait_for_load.return_value = False
+    session.wait_for_navigation.return_value = None
+    destination = "https://example.com/new"
+    blocks = asyncio.run(navigate.run(session, {"url": destination}))
+    assert "navigation_status=unconfirmed" in blocks[0]["text"]
+    assert destination not in blocks[0]["text"]
+    assert session.snapshot.url == "about:blank"
+    session.require_client().send.assert_awaited_once()
+
+
 @pytest.mark.parametrize("failure", ["send", "response", "load", "soft"])
 def test_navigation_failures_are_never_retried(failure):
     session = make_session()
@@ -143,3 +156,14 @@ def test_navigate_from_about_blank_updates_url_and_allows_relative_followup(snap
     # Follow-up relative navigation immediately succeeds instead of failing on about:blank.
     asyncio.run(navigate.run(session, {"url": "/tall"}))
     assert session.require_client().send.await_args_list[-1].args[1] == {"url": "https://example.com/tall"}
+
+
+def test_navigate_reports_phase_timing_and_domcontentloaded_early_ready(snapshot_stubs):
+    session = make_session("about:blank")
+    session.wait_for_ready = AsyncMock(return_value="domcontentloaded")
+    blocks = asyncio.run(navigate.run(session, {"url": "https://example.com/slow-img"}))
+    text = blocks[0]["text"]
+    assert "navigation_status=domcontentloaded" in text
+    assert "nav_ms=" in text and "ready_ms=" in text and "snapshot_ms=" in text
+    assert "https://example.com/slow-img" in text
+    assert session.snapshot.url == "https://example.com/slow-img"

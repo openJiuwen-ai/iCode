@@ -205,3 +205,46 @@ def test_find_ranks_interactive_form_control_ahead_of_same_name_label_and_shows_
 
     canvas_text = asyncio.run(find.run(session, {"query": "canvas", "role": "", "limit": 20}))[0]["text"]
     assert "size=320x120" in canvas_text
+
+
+def test_find_supports_role_only_query_img_alias_and_region_context() -> None:
+    main_el = FusedNode(
+        10, "f", "t", "main", "", "main", 0, (0, 0, 800, 600), ref=10, epoch=7, visible=True, in_viewport=True
+    )
+    pic = FusedNode(
+        11,
+        "f",
+        "t",
+        "image",
+        "Hero Banner",
+        "img",
+        0,
+        (10, 10, 200, 100),
+        ref=11,
+        epoch=7,
+        visible=True,
+        in_viewport=True,
+        ancestor_ids=(10,),
+    )
+    btn = FusedNode(
+        12,
+        "f",
+        "t",
+        "button",
+        "Buy Now",
+        "button",
+        0,
+        (10, 120, 80, 30),
+        ref=12,
+        epoch=7,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+        ancestor_ids=(10,),
+    )
+    session = SimpleNamespace(page_epoch=7, snapshot=SimpleNamespace(nodes=[main_el, pic, btn]))
+    text = asyncio.run(find.run(session, {"query": "", "role": "img", "limit": 20}))[0]["text"]
+    assert "@e11#7" in text
+    assert "Hero Banner" in text
+    assert "in main" in text
+    assert "@e12#7" not in text

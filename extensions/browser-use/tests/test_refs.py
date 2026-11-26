@@ -158,3 +158,21 @@ def test_a_replaced_tag_is_stale() -> None:
     session, entry = live_session({"ok": True, "tag": "div", "name": ""}, {"tag": "button", "name": ""})
     with pytest.raises(StaleRef):
         asyncio.run(session.resolve_object_id(entry))
+
+
+def test_cdp_missing_node_error_maps_to_stale_ref_not_unavailable() -> None:
+    from icode_browser_use.errors import Unavailable
+
+    class MissingNodeClient:
+        closed = False
+
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            raise Unavailable("CDP 错误 -32000: No node with given id found")
+
+    session = make_session()
+    session._client = MissingNodeClient()
+    session._session_id = "main"
+    entry = make_entry()
+    with pytest.raises(StaleRef) as caught:
+        asyncio.run(session.resolve_object_id(entry))
+    assert "reason=node_unresolved" in caught.value.render()

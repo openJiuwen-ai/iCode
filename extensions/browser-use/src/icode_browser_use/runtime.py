@@ -17,6 +17,16 @@ from .errors import PRE_DISPATCH_ERROR_CODES, BrowserError, CDPTimeout, PageHung
 from .types import ToolBlock, ToolDef
 from .validation import validate
 
+_OBSERVE_TOOLS = frozenset(
+    {
+        "browser_snapshot",
+        "browser_find",
+        "browser_extract",
+        "browser_screenshot",
+        "browser_tabs",
+    }
+)
+
 _WRITE_TOOLS = frozenset(
     {
         "browser_click",
@@ -56,12 +66,15 @@ async def call_tool(session: Any, tool: ToolDef, arguments: Any) -> list[ToolBlo
     turned into :class:`PageHung` after the page is recycled.
     """
     args = validate(tool.params, arguments)
+    is_observe = tool.name in _OBSERVE_TOOLS
+    budget_checked = False
     async with session.action_lock(tool.name):
         try:
             if tool.name in {"browser_download_cancel", "browser_tab_close"}:
                 # Cancelling a tracked transfer or closing an owned tab never needs a
                 # browser start: an idle handle has no download and no tab to act on.
                 session.note_action()
+                budget_checked = True
             elif tool.name not in {
                 "browser_close",
                 "browser_action_status",
@@ -69,7 +82,12 @@ async def call_tool(session: Any, tool: ToolDef, arguments: Any) -> list[ToolBlo
                 "browser_logs",
                 "browser_network_body",
             }:
-                session.note_action()
+                note_observe = getattr(session, "note_observe_action", None)
+                if is_observe and callable(note_observe):
+                    note_observe()
+                else:
+                    session.note_action()
+                budget_checked = True
                 await session.ensure_started()
         except BrowserError as exc:
             # Any error raised before dispatch (budget exhausted, missing Chrome,
@@ -79,7 +97,7 @@ async def call_tool(session: Any, tool: ToolDef, arguments: Any) -> list[ToolBlo
         before_journal = getattr(session, "_journal", None)
         before_dispatched = getattr(before_journal, "dispatched_count", 0) if before_journal is not None else 0
         try:
-            return await dispatch(session, tool.name, args)
+            blocks = await dispatch(session, tool.name, args)
         except CDPTimeout as exc:
             if tool.name in _WRITE_TOOLS:
                 after_journal = getattr(session, "_journal", None)
@@ -103,3 +121,14 @@ async def call_tool(session: Any, tool: ToolDef, arguments: Any) -> list[ToolBlo
                     if callable(note):
                         note()
             raise
+        if budget_checked and blocks:
+            warn_fn = getattr(session, "action_budget_warning", None)
+            if callable(warn_fn):
+                warning = warn_fn(observe=is_observe)
+                if warning:
+                    for block in reversed(blocks):
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            existing = str(block.get("text") or "")
+                            block["text"] = f"{existing}\n{warning}" if existing else warning
+                            break
+        return blocks

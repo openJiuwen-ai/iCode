@@ -191,6 +191,7 @@ class BrokerClient:
             message = str(response.get("error") or "broker call failed")
             error = BrowserError(
                 message,
+                details=str(response.get("details") or ""),
                 blocked_origin=str(response.get("blocked_origin") or ""),
                 pre_dispatch=bool(response.get("pre_dispatch", False)),
             )

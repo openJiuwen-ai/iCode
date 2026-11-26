@@ -198,3 +198,106 @@ def test_extract_supports_hash_id_lookup_and_single_candidate_fallback(monkeypat
     )
     blocks2 = asyncio.run(extract.run(session2, {"query": "SLIDER", "format": "text", "max_chars": 2000, "offset": 0}))
     assert blocks2[0]["text"] == "SLIDER:25"
+
+
+def test_extract_unique_main_landmark_and_batch_max_matches(monkeypatch) -> None:
+    from icode_browser_use.snapshot.fusion import FusedNode
+
+    skip_link = FusedNode(
+        1,
+        "f",
+        "t",
+        "link",
+        "Skip to Main Content",
+        "a",
+        0,
+        (0, 0, 100, 20),
+        ref=1,
+        epoch=5,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+    )
+    main_el = FusedNode(
+        2,
+        "f",
+        "t",
+        "main",
+        "",
+        "main",
+        0,
+        (0, 30, 800, 600),
+        ref=2,
+        epoch=5,
+        visible=True,
+        in_viewport=True,
+    )
+    card1 = FusedNode(
+        3,
+        "f",
+        "t",
+        "link",
+        "Product Card Alpha",
+        "a",
+        0,
+        (10, 40, 200, 30),
+        ref=3,
+        epoch=5,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+        ancestor_ids=(2,),
+    )
+    card2 = FusedNode(
+        4,
+        "f",
+        "t",
+        "link",
+        "Product Card Beta",
+        "a",
+        1,
+        (10, 80, 200, 30),
+        ref=4,
+        epoch=5,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+        ancestor_ids=(2,),
+    )
+    entries = {
+        "@e2#5": SimpleNamespace(token="@e2#5", backend_node_id=2, frame_id="f", cdp_session_id=None),
+        "@e3#5": SimpleNamespace(token="@e3#5", backend_node_id=3, frame_id="f", cdp_session_id=None),
+        "@e4#5": SimpleNamespace(token="@e4#5", backend_node_id=4, frame_id="f", cdp_session_id=None),
+    }
+    bodies = {"oid-2": "MAIN BODY TEXT", "oid-3": "Alpha $10", "oid-4": "Beta $20"}
+
+    async def fake_resolve_oid(entry):
+        return f"oid-{entry.backend_node_id}"
+
+    async def fake_call(_session, oid, _fn, **_kwargs):
+        text = bodies[oid]
+        return {"value": {"len": len(text), "chunk": text}}
+
+    monkeypatch.setattr(extract, "call_value", fake_call)
+    session = SimpleNamespace(
+        target_id="t",
+        page_epoch=5,
+        snapshot_dirty=False,
+        snapshot=SimpleNamespace(nodes=[skip_link, main_el, card1, card2]),
+        note_success=lambda _t: None,
+        resolve_target=lambda tok: entries[tok],
+        resolve_object_id=fake_resolve_oid,
+    )
+
+    main_blocks = asyncio.run(extract.run(session, {"query": "main", "format": "text", "max_chars": 80, "offset": 0}))
+    assert main_blocks[0]["text"] == "MAIN BODY TEXT"
+
+    batch_blocks = asyncio.run(
+        extract.run(
+            session,
+            {"query": "Product Card", "format": "text", "max_chars": 2000, "offset": 0, "max_matches": 3},
+        )
+    )
+    batch_text = batch_blocks[0]["text"]
+    assert "[match 1/2] @e3#5" in batch_text and "in main" in batch_text and "Alpha $10" in batch_text
+    assert "[match 2/2] @e4#5" in batch_text and "Beta $20" in batch_text

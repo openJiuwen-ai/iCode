@@ -20,6 +20,7 @@ import time
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from .config import (
 from .dialog import DialogInfo, redact_message
 from .downloads import DownloadInfo, display_url, file_size, remove_quiet, reserve_path, sanitize_filename
 from .errors import (
+    ActionBudgetExhausted,
     BadRequest,
     BrowserError,
     Busy,
@@ -148,6 +150,7 @@ class RefEntry:
     text_hint: str
     cdp_session_id: str | None = None
     """Child CDP session for an OOPIF entry; None for the main frame."""
+    main_document: bool = False
 
     @property
     def token(self) -> str:
@@ -164,6 +167,7 @@ class SnapshotState:
     version: int = 0
     url: str = ""
     title: str = ""
+    subframes_invalidated: bool = False
 
 
 @dataclass
@@ -283,6 +287,9 @@ class BrowserSession:
         self._last_site_blocked_origin: str = ""
 
         self._page_epoch: int = secrets.randbits(32)
+        self._page_change_reason = "page_changed"
+        self._subframe_revision = 0
+        self._invalidated_subframe_refs: frozenset[int] = frozenset()
         self._ref_map: dict[int, RefEntry] = {}
         self._next_index = 1
         self._snapshot = SnapshotState()
@@ -293,6 +300,8 @@ class BrowserSession:
         self._timeouts: dict[str, int] = {}
         self._actions: deque[float] = deque()
         self._lifetime_actions = 0
+        self._observe_actions: deque[float] = deque()
+        self._lifetime_observe_actions = 0
 
         self._login_pending_since: float | None = None
         self._document_status: dict[tuple[str, str, str], int] = {}
@@ -318,6 +327,9 @@ class BrowserSession:
 
         self._load_done: dict[str, None] = {}  # insertion-ordered, oldest evicted first
         self._load_events: dict[str, asyncio.Event] = {}
+        self._dcl_done: dict[str, None] = {}
+        self._dcl_events: dict[str, asyncio.Event] = {}
+        self._committed_loaders: dict[str, None] = {}
         self._frame_loader: dict[str, str] = {}
         self._nav_seq = 0
         #: Recent current-page navigations as (seq, loader id, main-frame url, child frame?);
@@ -1172,6 +1184,8 @@ class BrowserSession:
         self._foreign_targets.clear()
         self._frame_loader.clear()
         self._load_done.clear()
+        self._dcl_done.clear()
+        self._committed_loaders.clear()
         self._document_status.clear()
         self._opening_page = False
         self._cancel_dialog_task()
@@ -1341,10 +1355,14 @@ class BrowserSession:
 
     # --------------------------------------------------------------- budgets
 
+    _OBSERVE_BUDGET_MULTIPLIER = 3
+
     def _reset_budgets(self) -> None:
         """A fresh browser gets a fresh rolling window and lifetime budget."""
         self._actions.clear()
         self._lifetime_actions = 0
+        self._observe_actions.clear()
+        self._lifetime_observe_actions = 0
 
     def reset_action_budget(self) -> None:
         """Give a reacquired Broker lease a fresh lifetime budget."""
@@ -1354,23 +1372,86 @@ class BrowserSession:
         """Close the current browser but keep this session restartable."""
         window = list(self._actions)
         lifetime = self._lifetime_actions
+        obs_window = list(self._observe_actions)
+        obs_lifetime = self._lifetime_observe_actions
         await self._shutdown_idle()
         self._actions = type(self._actions)(window)
         self._lifetime_actions = lifetime
+        self._observe_actions = type(self._observe_actions)(obs_window)
+        self._lifetime_observe_actions = obs_lifetime
 
-    def note_action(self) -> None:
-        """Account one action against the rolling window and the lifetime cap."""
+    def _budget_pool(self, *, observe: bool) -> tuple[deque[float], int, int, int, str]:
+        if observe:
+            mult = self._OBSERVE_BUDGET_MULTIPLIER
+            return (
+                self._observe_actions,
+                self._lifetime_observe_actions,
+                self.cfg.max_actions_per_window * mult,
+                self.cfg.lifetime_max_actions * mult,
+                "observe",
+            )
+        return (
+            self._actions,
+            self._lifetime_actions,
+            self.cfg.max_actions_per_window,
+            self.cfg.lifetime_max_actions,
+            "action",
+        )
+
+    def _note_budget(self, *, observe: bool) -> None:
         now = time.monotonic()
         self._last_active = now
-        while self._actions and now - self._actions[0] > ACTION_WINDOW_SECONDS:
-            self._actions.popleft()
-        if (
-            len(self._actions) >= self.cfg.max_actions_per_window
-            or self._lifetime_actions >= self.cfg.lifetime_max_actions
-        ):
-            raise Unavailable("动作预算已用尽（10 分钟滚动窗 / 生命周期上限），请稍后重试或重启插件")
-        self._actions.append(now)
-        self._lifetime_actions += 1
+        bucket, lifetime, max_window, max_lifetime, pool = self._budget_pool(observe=observe)
+        while bucket and now - bucket[0] >= ACTION_WINDOW_SECONDS:
+            bucket.popleft()
+        if lifetime >= max_lifetime:
+            raise ActionBudgetExhausted(
+                "当前浏览器的生命周期动作预算已用尽，请根据已有证据收尾",
+                details=f"budget=lifetime remaining=0 retryable=false dispatch=not_sent pool={pool}",
+                pre_dispatch=True,
+            )
+        if len(bucket) >= max_window:
+            retry_after = ceil(bucket[0] + ACTION_WINDOW_SECONDS - now) if bucket else None
+            details = f"budget=rolling_window remaining=0 dispatch=not_sent pool={pool}"
+            if retry_after is not None:
+                details += f" retry_after_seconds={retry_after} retryable=true"
+            else:
+                details += " retryable=false"
+            raise ActionBudgetExhausted(
+                "当前浏览器的滚动动作预算已用尽，请勿立即重试",
+                details=details,
+                pre_dispatch=True,
+            )
+        bucket.append(now)
+        if observe:
+            self._lifetime_observe_actions += 1
+        else:
+            self._lifetime_actions += 1
+
+    def note_action(self) -> None:
+        """Account one navigation/write/interaction action against the rolling window and lifetime cap."""
+        self._note_budget(observe=False)
+
+    def note_observe_action(self) -> None:
+        """Account one local read/observation call against the dedicated observation budget pool."""
+        self._note_budget(observe=True)
+
+    def action_budget_warning(self, *, observe: bool = False) -> str:
+        """Return a wrap-up warning when the pool approaches its rolling or lifetime limit."""
+        now = time.monotonic()
+        bucket, lifetime, max_window, max_lifetime, pool = self._budget_pool(observe=observe)
+        while bucket and now - bucket[0] >= ACTION_WINDOW_SECONDS:
+            bucket.popleft()
+        rem_window = max(0, max_window - len(bucket))
+        rem_lifetime = max(0, max_lifetime - lifetime)
+        warn_window = max_window > 1 and rem_window <= max(1, min(10, max_window // 10))
+        warn_lifetime = max_lifetime > 1 and rem_lifetime <= max(1, min(20, max_lifetime // 10))
+        if not (warn_window or warn_lifetime):
+            return ""
+        return (
+            f"action_budget_warning: pool={pool} remaining_window={rem_window} "
+            f"remaining_lifetime={rem_lifetime}; 接近额度上限，请优先取证并准备收尾。"
+        )
 
     def note_timeout_and_should_recycle(self, target_id: str | None) -> bool:
         """Count a timeout for a target; return True once the recycle threshold is hit."""
@@ -1394,13 +1475,33 @@ class BrowserSession:
 
     # ------------------------------------------------------------------ epoch
 
-    def _bump_epoch(self) -> None:
+    @property
+    def snapshot_generation(self) -> tuple[int, int]:
+        """The document generation and the subframe revision sampled during capture."""
+        return self._page_epoch, self._subframe_revision
+
+    def _bump_epoch(self, reason: str = "page_changed") -> None:
         """Advance the page generation; every existing reference becomes stale."""
         self._page_epoch += 1
+        self._page_change_reason = reason
+        self._subframe_revision = 0
+        self._invalidated_subframe_refs = frozenset()
         self._ref_map.clear()
         self._next_index = 1
         self._dirty = False
         self._probe_seen = None
+        self._snapshot.subframes_invalidated = False
+
+    def _invalidate_subframe_refs(self) -> None:
+        """Preserve proven main-document refs while any embedded document is changing."""
+        self._subframe_revision += 1
+        removed = frozenset(index for index, entry in self._ref_map.items() if not entry.main_document)
+        for index in removed:
+            del self._ref_map[index]
+        if removed:
+            self._invalidated_subframe_refs = self._invalidated_subframe_refs | removed
+        self._snapshot.subframes_invalidated = True
+        self._dirty = True
 
     def mark_dirty(self) -> None:
         """Note that a mutating action ran; the next snapshot judges the DOM."""
@@ -1421,13 +1522,16 @@ class BrowserSession:
     ) -> None:
         """Store a fresh snapshot and reuse refs for unchanged nodes."""
         self._snapshot.previous_nodes = list(self._snapshot.nodes)
-        old_by_key = {(entry.frame_id, entry.backend_node_id): entry.index for entry in self._ref_map.values()}
+        old_by_key = {
+            (entry.cdp_session_id, entry.frame_id, entry.backend_node_id): entry.index
+            for entry in self._ref_map.values()
+        }
         self._ref_map.clear()
         # Indices are never reused within an epoch: a token must not come to name a different node.
         self._next_index = max(self._next_index, max(old_by_key.values(), default=0) + 1)
         self._dirty = False
         for node in nodes:
-            key = (node.frame_id, node.backend_node_id)
+            key = (node.cdp_session_id, node.frame_id, node.backend_node_id)
             index = old_by_key.pop(key, None)
             if index is None:
                 index = self._next_index
@@ -1444,8 +1548,10 @@ class BrowserSession:
                 bbox=node.bbox,
                 text_hint=node.name or node.text_hint,
                 cdp_session_id=node.cdp_session_id,
+                main_document=node.main_document and node.cdp_session_id is None,
             )
         self._snapshot.nodes = list(nodes)
+        self._snapshot.subframes_invalidated = False
         self._snapshot.version += 1
         if url:
             self._snapshot.url = url
@@ -1475,16 +1581,27 @@ class BrowserSession:
                     raise BadRequest(f"引用缺少世代：请写成 {current}（当前快照里的完整 token）")
                 raise BadRequest(f"引用 {text} 不在当前快照（页面可能已变化），请重新 browser_snapshot 取 ref")
             epoch = int(match.group(2))
+            if epoch != self._page_epoch:
+                reason = self._page_change_reason if epoch == self._page_epoch - 1 else "page_generation_changed"
+                raise StaleRef("引用已失效（页面已变化），请重新 browser_snapshot", reason=reason)
             entry = self._ref_map.get(index)
-            if entry is None or entry.epoch != epoch or entry.epoch != self._page_epoch:
-                raise StaleRef("引用已失效（页面已变化），请重新 snapshot")
+            if entry is None or entry.epoch != epoch:
+                reason = "subframe_changed" if index in self._invalidated_subframe_refs else "reference_not_in_snapshot"
+                raise StaleRef("引用已失效，请重新 browser_snapshot", reason=reason)
             return entry
         candidates = rank(self._snapshot.nodes, text)
-        best = resolve_ambiguity(candidates)
+        best = resolve_ambiguity(candidates, all_nodes=self._snapshot.nodes)
         entry = self._ref_map.get(best.node.ref or 0)
         if entry is None:
-            raise StaleRef("引用已失效（页面已变化），请重新 snapshot")
+            raise StaleRef("引用已失效，请重新 browser_snapshot", reason="reference_not_in_snapshot")
         return entry
+
+    _MISSING_NODE_CDP_RE = re.compile(
+        r"no node with given id|could not find node with given id|"
+        r"node with given id does not belong|cannot find context with specified id|"
+        r"could not find object with given id",
+        re.IGNORECASE,
+    )
 
     async def resolve_object_id(self, entry: RefEntry) -> str:
         """Resolve a backend node id to an objectId and verify it is still live.
@@ -1492,35 +1609,50 @@ class BrowserSession:
         A node that is gone, or whose coarse fingerprint (tag/name) no longer
         matches, fails closed with :class:`StaleRef`.
         """
+        generation = self.snapshot_generation
         client = self.require_client()
         cdp_session_id = entry.cdp_session_id or self._session_id
-        resolved = await client.send(
-            "DOM.resolveNode",
-            {"backendNodeId": entry.backend_node_id},
-            session_id=cdp_session_id,
-            timeout=self.cfg.cdp_timeout,
-        )
+        try:
+            resolved = await client.send(
+                "DOM.resolveNode",
+                {"backendNodeId": entry.backend_node_id},
+                session_id=cdp_session_id,
+                timeout=self.cfg.cdp_timeout,
+            )
+        except (ConnectionClosed, CDPTimeout):
+            raise
+        except BrowserError as exc:
+            if self._MISSING_NODE_CDP_RE.search(str(exc)):
+                raise StaleRef("引用已失效，请重新 browser_snapshot", reason="node_unresolved") from exc
+            raise
         obj = resolved.get("object", {})
         object_id = str(obj.get("objectId", ""))
         if not object_id:
-            raise StaleRef("引用已失效（页面已变化），请重新 snapshot")
-        checked = await client.send(
-            "Runtime.callFunctionOn",
-            {
-                "objectId": object_id,
-                "functionDeclaration": _LIVE_CHECK_FN,
-                "returnByValue": True,
-            },
-            session_id=cdp_session_id,
-            timeout=self.cfg.evaluate_timeout,
-        )
+            raise StaleRef("引用已失效，请重新 browser_snapshot", reason="node_unresolved")
+        try:
+            checked = await client.send(
+                "Runtime.callFunctionOn",
+                {
+                    "objectId": object_id,
+                    "functionDeclaration": _LIVE_CHECK_FN,
+                    "returnByValue": True,
+                },
+                session_id=cdp_session_id,
+                timeout=self.cfg.evaluate_timeout,
+            )
+        except (ConnectionClosed, CDPTimeout):
+            raise
+        except BrowserError as exc:
+            if self._MISSING_NODE_CDP_RE.search(str(exc)):
+                raise StaleRef("引用已失效，请重新 browser_snapshot", reason="node_detached") from exc
+            raise
         value = checked.get("result", {}).get("value") or {}
         if not value.get("ok"):
-            raise StaleRef("引用已失效（页面已变化），请重新 snapshot")
+            raise StaleRef("引用已失效，请重新 browser_snapshot", reason="node_detached")
         expected_tag = (entry.fingerprint.get("tag") or "").lower()
         actual_tag = str(value.get("tag", "")).lower()
         if expected_tag and actual_tag and expected_tag != actual_tag:
-            raise StaleRef("引用已失效（元素已被替换），请重新 snapshot")
+            raise StaleRef("引用已失效（元素已被替换），请重新 browser_snapshot", reason="node_replaced")
         expected_name = _fp_name(entry.fingerprint.get("name") or "")
         actual_name = _fp_name(str(value.get("name", "")))
         name_source = entry.fingerprint.get("name_source")
@@ -1535,7 +1667,11 @@ class BrowserSession:
             and not _matches_live_ref_name(entry.fingerprint.get("role", ""), expected_name, actual_name)
             and (name_source != "ax" or not await self._ax_name_matches(entry, cdp_session_id, expected_name))
         ):
-            raise StaleRef("引用已失效（元素内容已变化），请重新 snapshot")
+            raise StaleRef("引用已失效（元素内容已变化），请重新 browser_snapshot", reason="fingerprint_changed")
+        if generation[0] != self._page_epoch:
+            raise StaleRef("定位元素时页面已变化，请重新 browser_snapshot", reason="page_generation_changed")
+        if not entry.main_document and generation[1] != self._subframe_revision:
+            raise StaleRef("定位元素时子框架已变化，请重新 browser_snapshot", reason="subframe_changed")
         return object_id
 
     async def _ax_name_matches(self, entry: RefEntry, cdp_session_id: str, expected: str) -> bool:
@@ -1571,7 +1707,7 @@ class BrowserSession:
         session_id = cdp_session_id or self._session_id
         frame_id = self._main_frame_id
         url = self._snapshot.url
-        title = self._snapshot.title
+        page_epoch = self._page_epoch
         if cdp_session_id:
             tree = await client.send(
                 "Page.getFrameTree",
@@ -1590,16 +1726,16 @@ class BrowserSession:
             timeout=self.cfg.evaluate_timeout,
         )
         value = response.get("result", {}).get("value") or {}
-        if cdp_session_id:
-            title = str(value.get("title", ""))
-        else:
+        title = str(value.get("title", "") or "")
+        if not cdp_session_id:
             live_href = str(value.get("href") or "")
             if live_href and (live_href.lower() != "about:blank" or not url):
                 url = live_href
-                self._snapshot.url = live_href
-                page = self._pages.get(self._target_id)
-                if page is not None:
-                    page.url = live_href
+                if page_epoch == self._page_epoch:
+                    self._snapshot.url = live_href
+                    page = self._pages.get(self._target_id)
+                    if page is not None:
+                        page.url = live_href
         return FrameInfo(
             frame_id=frame_id,
             url=url,
@@ -1623,7 +1759,68 @@ class BrowserSession:
         except asyncio.TimeoutError:
             return False
         finally:
-            self._load_events.pop(loader_id, None)
+            if self._load_events.get(loader_id) is event:
+                self._load_events.pop(loader_id, None)
+
+    async def wait_for_ready(
+        self,
+        loader_id: str | None,
+        *,
+        timeout: float,
+        load_grace: float = 1.5,
+    ) -> str:
+        """Wait for a navigation to become readable: ``load``, ``domcontentloaded``, ``committed``, or ``timeout``.
+
+        Fast pages complete ``load`` within *load_grace* and return ``"load"``. Pages whose
+        ``load`` event is stalled by slow images or trackers return ``"domcontentloaded"``
+        once the main document is parsed and *load_grace* elapses, preventing 20s stalls.
+        """
+        if not loader_id:
+            return "timeout"
+        if loader_id in self._load_done:
+            return "load"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        load_event = self._load_events.setdefault(loader_id, asyncio.Event())
+        dcl_event = self._dcl_events.setdefault(loader_id, asyncio.Event())
+        try:
+            if loader_id not in self._dcl_done:
+                remaining = deadline - loop.time()
+                if remaining > 0:
+                    load_task = asyncio.create_task(load_event.wait())
+                    dcl_task = asyncio.create_task(dcl_event.wait())
+                    try:
+                        await asyncio.wait(
+                            {load_task, dcl_task},
+                            timeout=remaining,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        for task in (load_task, dcl_task):
+                            if not task.done():
+                                task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.gather(load_task, dcl_task, return_exceptions=True)
+                    if loader_id in self._load_done or load_event.is_set():
+                        return "load"
+            if loader_id in self._load_done or load_event.is_set():
+                return "load"
+            if loader_id in self._dcl_done or dcl_event.is_set():
+                grace = min(max(0.0, load_grace), max(0.0, deadline - loop.time()))
+                if grace > 0:
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(load_event.wait(), grace)
+                if loader_id in self._load_done or load_event.is_set():
+                    return "load"
+                return "domcontentloaded"
+            if loader_id in self._committed_loaders:
+                return "committed"
+            return "timeout"
+        finally:
+            if self._load_events.get(loader_id) is load_event:
+                self._load_events.pop(loader_id, None)
+            if self._dcl_events.get(loader_id) is dcl_event:
+                self._dcl_events.pop(loader_id, None)
 
     @property
     def nav_seq(self) -> int:
@@ -1740,6 +1937,7 @@ class BrowserSession:
             return _wrapper
 
         client.on("Page.frameNavigated", _guarded(self._on_frame_navigated))
+        client.on("Page.frameDetached", _guarded(self._on_frame_detached))
         client.on("Page.navigatedWithinDocument", _guarded(self._on_navigated_within_document))
         client.on("Page.lifecycleEvent", _guarded(self._on_lifecycle_event))
         client.on("Page.frameStoppedLoading", _guarded(self._on_frame_stopped_loading))
@@ -1789,9 +1987,14 @@ class BrowserSession:
         return self._page_log
 
     async def _on_document_updated(self, params: dict[str, Any], session_id: str | None) -> None:
-        if session_id != self._session_id:
-            return
-        self._bump_epoch()
+        if session_id == self._session_id:
+            self._bump_epoch("document_updated")
+        elif self._is_current_oopif(session_id):
+            self._invalidate_subframe_refs()
+
+    def _is_current_oopif(self, session_id: str | None) -> bool:
+        state = self._oopifs.get(session_id or "")
+        return state is not None and bool(self._target_id) and state.page_target_id == self._target_id
 
     def consume_site_blocked_origin(self) -> str:
         """Return and clear the most recent Bridge.siteBlocked origin, if any."""
@@ -1852,6 +2055,9 @@ class BrowserSession:
     async def _on_frame_navigated(self, params: dict[str, Any], session_id: str | None) -> None:
         frame = params.get("frame", {})
         if session_id != self._session_id:
+            if self._is_current_oopif(session_id):
+                self._invalidate_subframe_refs()
+                return
             # A background tab keeps its cached url/title for the next listing.
             page = self._page_by_session(session_id)
             if page is not None and frame.get("parentId") is None:
@@ -1860,29 +2066,49 @@ class BrowserSession:
         loader_id = str(frame.get("loaderId", ""))
         frame_id = str(frame.get("id", ""))
         if frame.get("parentId") is not None:
-            self._bump_epoch()  # child-frame navigation also invalidates fused refs
+            self._invalidate_subframe_refs()
             self._note_navigation("", self._snapshot.url, child=True)
             return
         self._main_frame_id = frame_id
         self._frame_loader = {frame_id: loader_id} if (frame_id and loader_id) else {}
+        if loader_id:
+            self._signal_committed(loader_id)
         self._snapshot.url = str(frame.get("url", ""))
         page = self._page_by_session(session_id)
         if page is not None:
             page.url = self._snapshot.url
-        self._bump_epoch()
+        self._bump_epoch("main_frame_navigated")
         self._note_navigation(loader_id, self._snapshot.url)
 
     async def _on_navigated_within_document(self, params: dict[str, Any], session_id: str | None) -> None:
-        if session_id != self._session_id or params.get("frameId") != self._main_frame_id:
+        if session_id != self._session_id:
+            if self._is_current_oopif(session_id):
+                self._invalidate_subframe_refs()
+            return
+        if params.get("frameId") != self._main_frame_id:
+            if self._main_frame_id and params.get("frameId"):
+                self._invalidate_subframe_refs()
             return
         self._snapshot.url = str(params.get("url", "")) or self._snapshot.url
-        self._bump_epoch()
+        self._bump_epoch("main_frame_route_changed")
         self._note_navigation("", str(params.get("url", "")))
 
+    async def _on_frame_detached(self, params: dict[str, Any], session_id: str | None) -> None:
+        frame_id = params.get("frameId")
+        if self._is_current_oopif(session_id) or (
+            session_id == self._session_id and self._main_frame_id and frame_id and frame_id != self._main_frame_id
+        ):
+            self._invalidate_subframe_refs()
+
     async def _on_lifecycle_event(self, params: dict[str, Any], session_id: str | None) -> None:
-        if session_id != self._session_id or params.get("name") != "load":
+        if session_id != self._session_id:
             return
-        self._signal_loaded(str(params.get("loaderId", "")))
+        name = params.get("name")
+        loader_id = str(params.get("loaderId", ""))
+        if name == "load":
+            self._signal_loaded(loader_id)
+        elif name == "DOMContentLoaded":
+            self._signal_dcl(loader_id)
 
     async def _on_frame_stopped_loading(self, params: dict[str, Any], session_id: str | None) -> None:
         if session_id != self._session_id:
@@ -1890,6 +2116,23 @@ class BrowserSession:
         loader_id = self._frame_loader.get(str(params.get("frameId", "")))
         if loader_id:
             self._signal_loaded(loader_id)
+
+    def _signal_committed(self, loader_id: str) -> None:
+        if not loader_id:
+            return
+        self._committed_loaders[loader_id] = None
+        if len(self._committed_loaders) > _MAX_REMEMBERED_LOADS:
+            del self._committed_loaders[next(iter(self._committed_loaders))]
+
+    def _signal_dcl(self, loader_id: str) -> None:
+        if not loader_id:
+            return
+        self._dcl_done[loader_id] = None
+        if len(self._dcl_done) > _MAX_REMEMBERED_LOADS:
+            del self._dcl_done[next(iter(self._dcl_done))]
+        event = self._dcl_events.get(loader_id)
+        if event is not None:
+            event.set()
 
     def _signal_loaded(self, loader_id: str) -> None:
         if not loader_id:
@@ -2403,6 +2646,8 @@ class BrowserSession:
             await self._drop_page(page.target_id)
 
     def _forget_oopif(self, child_session: str) -> None:
+        if self._is_current_oopif(child_session):
+            self._invalidate_subframe_refs()
         self._oopifs.pop(child_session, None)
         for descendant in self.oopif_children(child_session):
             self._forget_oopif(descendant)

@@ -1833,8 +1833,12 @@ async def browser_extract(
         "Optional @eN#epoch ref, #element-id, or visible text to extract; omit for the whole page (complex CSS selectors not supported)",
     ] = None,
     format: Annotated[Literal["text", "markdown", "html"], "Output format"] = "text",
-    max_chars: Annotated[int, "Maximum characters (200-7000)"] = 7000,
+    max_chars: Annotated[int, "Maximum characters (50-7000)"] = 7000,
     offset: Annotated[int, "Start at this character; use the 'next offset' of a cut result"] = 0,
+    max_matches: Annotated[
+        int,
+        "Max matching elements to read in one call when query matches several items (1-5); default 1 requires a unique target",
+    ] = 1,
 ) -> str:
     """Extract text, markdown or HTML from the live DOM; long content pages by offset."""
     browser = _get(ctx, browser_id)
@@ -1843,6 +1847,8 @@ async def browser_extract(
         # Only paged reads carry it: a Broker started by an older plugin still serves
         # the first page (its validator rejects keys it does not know).
         arguments["offset"] = offset
+    if max_matches != 1:
+        arguments["max_matches"] = max_matches
     if query:
         arguments["query"] = query
     return await _run(browser, "browser_extract", arguments)

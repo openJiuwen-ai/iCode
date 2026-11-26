@@ -192,8 +192,8 @@ def test_native_invoke_parses_and_projects_defaults(native, monkeypatch):
                 if name == "browser_screenshot":
                     assert calls[-1][2] == expected | {"annotate": True}
                 elif name == "browser_extract":
-                    # offset is only forwarded for paged reads; the core still defaults it to 0.
-                    assert calls[-1][2] == {"offset": 0} | expected
+                    # offset and max_matches=1 are omitted unless non-default; core defaults both.
+                    assert calls[-1][2] == {"offset": 0, "max_matches": 1} | expected
                 elif name == "browser_click":
                     assert calls[-1][2] == expected | {
                         "expect_condition": "",

@@ -167,23 +167,34 @@ _sleep = asyncio.sleep
 
 
 def _split_key_spec(text: str) -> list[str]:
-    """Split a key spec on ``+`` while supporting ``+`` itself and ``Ctrl++``."""
+    """Split a key spec on ``+`` while supporting ``+`` itself, ``Ctrl++``, and literal space."""
+    if text == " ":
+        return [" "]
     if text == "+":
         return ["+"]
     if text.endswith("++"):
         head = [part.strip() for part in text[:-2].split("+")]
         return [*head, "+"]
+    if text.endswith("+ ") and text[:-2].strip():
+        head = [part.strip() for part in text[:-2].split("+")]
+        return [*head, " "]
     return [part.strip() for part in text.split("+")]
 
 
 def parse_key(spec: str) -> tuple[str, str, int | None, str | None, int]:
-    """Parse ``Ctrl+A`` / ``Shift+Tab`` / ``Enter`` / ``Shift+1`` / ``!`` / ``Ctrl++`` into CDP key event fields.
+    """Parse ``Ctrl+A`` / ``Shift+Tab`` / ``Enter`` / ``Shift+1`` / ``!`` / ``Ctrl++`` / ``" "`` into CDP key event fields.
 
     Returns ``(key, code, virtual_key, text, modifiers)``; *text* is the
     character a no-modifier (or Shift-only) key inserts, or ``None`` for keys
     that insert nothing.
     """
-    text = (spec or "").strip()
+    raw = spec or ""
+    if raw == " ":
+        text = " "
+    elif raw.endswith("+ ") and raw[:-2].strip():
+        text = raw.lstrip()
+    else:
+        text = raw.strip()
     if not text:
         raise BadRequest("key 不能为空")
     parts = _split_key_spec(text)
@@ -196,7 +207,7 @@ def parse_key(spec: str) -> tuple[str, str, int | None, str | None, int]:
         if bit is None:
             raise BadRequest(f"未知修饰键：{part}（支持 Ctrl/Alt/Shift/Meta）")
         mask |= bit
-    named = _NAMED_KEYS.get(base.lower())
+    named = _NAMED_KEYS.get("space" if base == " " else base.lower())
     if named is not None:
         key, code, virtual_key, inserted = named
     elif len(base) == 1:

@@ -413,8 +413,10 @@ def _evidence(session: Any) -> str:
 
 
 def _snapshot_matches_epoch(session: Any) -> bool:
-    """Whether no registered node belongs to an older document (an empty snapshot is not stale)."""
-    return all(node.epoch == session.page_epoch for node in session.snapshot.nodes)
+    """Whether a snapshot is usable for conditions that consider the entire page."""
+    return not getattr(session.snapshot, "subframes_invalidated", False) and all(
+        node.epoch == session.page_epoch for node in session.snapshot.nodes
+    )
 
 
 def _quiet_window_ms(value: str) -> int:
@@ -598,7 +600,7 @@ def _resolve_editable_free_text(session: Any, spec: str) -> Any | None:
     candidates = rank(editable_nodes, spec)
     if not candidates:
         return None
-    best = resolve_ambiguity(candidates)
+    best = resolve_ambiguity(candidates, all_nodes=session.snapshot.nodes)
     ref_map = getattr(session, "_ref_map", None)
     if isinstance(ref_map, dict) and best.node.ref in ref_map:
         return ref_map[best.node.ref]

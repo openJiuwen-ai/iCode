@@ -514,3 +514,12 @@ def test_press_key_backspace_preserves_existing_contenteditable_selection(monkey
     assert "effect=dom" in text
     assert "status=succeeded" in text
     assert [event["key"] for event in session.client.keys()] == ["Backspace", "Backspace"]
+
+
+def test_parse_key_accepts_literal_space_and_modified_space() -> None:
+    assert press_key.parse_key(" ") == (" ", "Space", 32, " ", 0)
+    assert press_key.parse_key("Shift+ ") == (" ", "Space", 32, " ", 8)
+    with pytest.raises(BadRequest):
+        press_key.parse_key("")
+    with pytest.raises(BadRequest):
+        press_key.parse_key("   ")

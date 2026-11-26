@@ -8,7 +8,7 @@ import time
 import pytest
 
 from icode_browser_use.config import BrowserConfig
-from icode_browser_use.errors import Unavailable
+from icode_browser_use.errors import ActionBudgetExhausted, Unavailable
 from icode_browser_use.session import BrowserSession
 
 
@@ -81,11 +81,31 @@ def test_timeout_threshold_counts_per_target() -> None:
     assert session.note_timeout_and_should_recycle("t1") is False
 
 
-def test_action_budget_exhausts() -> None:
+def test_rolling_action_budget_exhausts_and_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = 100.0
+    monkeypatch.setattr("icode_browser_use.session.time.monotonic", lambda: clock)
     session = BrowserSession(config(max_actions_per_window=1, lifetime_max_actions=10))
     session.note_action()
-    with pytest.raises(Unavailable):
+    clock += 1.25
+    with pytest.raises(ActionBudgetExhausted) as caught:
         session.note_action()
+    assert caught.value.pre_dispatch
+    assert "budget=rolling_window" in caught.value.render()
+    assert "retry_after_seconds=599" in caught.value.render()
+    assert "dispatch=not_sent" in caught.value.render()
+    clock = 700.0
+    session.note_action()
+    assert session._lifetime_actions == 2
+
+
+def test_lifetime_budget_takes_precedence_over_a_full_window() -> None:
+    session = BrowserSession(config(max_actions_per_window=1, lifetime_max_actions=1))
+    session.note_action()
+    with pytest.raises(ActionBudgetExhausted) as caught:
+        session.note_action()
+    result = caught.value.render()
+    assert "budget=lifetime remaining=0 retryable=false dispatch=not_sent" in result
+    assert "retry_after_seconds" not in result
 
 
 def test_mark_disconnected_sets_failed() -> None:
@@ -125,10 +145,38 @@ def test_close_current_keeps_the_lifetime_budget() -> None:
     session = BrowserSession(config())
     session._actions.append(time.monotonic())
     session._lifetime_actions = 5
+    session._observe_actions.append(time.monotonic())
+    session._lifetime_observe_actions = 12
     asyncio.run(session.close_current())
     assert session.state == "idle"
     assert session._lifetime_actions == 5
     assert len(session._actions) == 1
+    assert session._lifetime_observe_actions == 12
+    assert len(session._observe_actions) == 1
+
+
+def test_observation_budget_pool_is_separate_and_warns_near_limit() -> None:
+    session = BrowserSession(config(max_actions_per_window=2, lifetime_max_actions=10))
+    session.note_action()
+    warning = session.action_budget_warning(observe=False)
+    assert "action_budget_warning:" in warning and "pool=action" in warning and "remaining_window=1" in warning
+    session.note_action()
+    with pytest.raises(ActionBudgetExhausted) as caught:
+        session.note_action()
+    assert "pool=action" in caught.value.render()
+
+    # Observation pool still has its own bounded capacity (3x = 6 per window).
+    for _ in range(6):
+        session.note_observe_action()
+    assert "pool=observe" in session.action_budget_warning(observe=True)
+    with pytest.raises(ActionBudgetExhausted) as obs_caught:
+        session.note_observe_action()
+    assert "pool=observe" in obs_caught.value.render()
+
+    # Zero lifetime budget still fails immediately on observation calls too.
+    zero = BrowserSession(config(max_actions_per_window=10, lifetime_max_actions=0))
+    with pytest.raises(ActionBudgetExhausted):
+        zero.note_observe_action()
 
 
 def test_ensure_started_refuses_after_close() -> None:

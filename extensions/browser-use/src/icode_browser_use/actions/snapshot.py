@@ -83,6 +83,7 @@ def _node_delta_state(node: Any) -> tuple[Any, ...]:
     no_layout = not getattr(node, "has_layout", True) and (bbox[2] <= 0 or bbox[3] <= 0)
     return (
         node.fingerprint(),
+        getattr(node, "ref", None),
         bool(getattr(node, "visible", False)),
         bool(getattr(node, "in_viewport", False)),
         bool(getattr(node, "interactive", False)),

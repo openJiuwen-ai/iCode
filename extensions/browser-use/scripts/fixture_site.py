@@ -496,6 +496,20 @@ document.getElementById('offset-btn').addEventListener('click', () => {
 </body></html>"""
 
 
+_IFRAME_RELOAD_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Iframe reload</title></head>
+<body>
+<button type="button" onclick="document.querySelector('output').textContent='Main action done'">
+  Stable main control
+</button>
+<button type="button" onclick="document.querySelector('iframe').src='/iframe-reload-replacement'">
+  Replace embedded document
+</button>
+<output></output>
+<iframe src="/iframe-offset-child" title="Embedded control"></iframe>
+</body></html>"""
+
+
 _IFRAME_BELOW_FOLD_PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><title>fixture-iframe-below-fold</title></head>
 <body style="margin:0;padding:0;">
@@ -751,6 +765,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, _IFRAME_OFFSET_PAGE.encode())
         elif path == "/iframe-offset-child":
             self._send(200, _IFRAME_OFFSET_CHILD_PAGE.encode())
+        elif path == "/iframe-reload":
+            self._send(200, _IFRAME_RELOAD_PAGE.encode())
+        elif path == "/iframe-reload-replacement":
+            self._send(200, b"<!doctype html><button>Replacement child control</button>")
         elif path == "/iframe-below-fold":
             self._send(200, _IFRAME_BELOW_FOLD_PAGE.encode())
         elif path == "/small-scroller":
@@ -791,6 +809,51 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/slow":
             time.sleep(self._clamp(query, "ms", 100) / 1000)
             self._send(200, b"<!doctype html><title>fixture-slow</title><h1>fixture-slow</h1>")
+        elif path == "/slow-image":
+            self._send(
+                200,
+                (
+                    b'<!doctype html><html><head><meta charset="utf-8"><title>Slow Image Ready</title></head>'
+                    b'<body><main><h1>Readable Before Image</h1><p id="ready-body">Main copy ready now.</p>'
+                    b'<img src="/hang-image?ms=9000" alt="Slow Banner" width="40" height="20"></main></body></html>'
+                ),
+            )
+        elif path == "/hang-image":
+            time.sleep(self._clamp(query, "ms", 9000) / 1000)
+            self._send(200, b"", content_type="image/gif")
+        elif path == "/redirect-nav":
+            self.send_response(302)
+            self.send_header("Location", "/spa-delayed")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif path == "/spa-delayed":
+            self._send(
+                200,
+                (
+                    b'<!doctype html><html><head><meta charset="utf-8"><title>SPA Delayed</title></head>'
+                    b'<body><main><div id="spa-out">Loading...</div></main>'
+                    b"<script>setTimeout(()=>{document.getElementById('spa-out').textContent='SPA HYDRATED OK';},150);</script>"
+                    b"</body></html>"
+                ),
+            )
+        elif path == "/extract-cards":
+            self._send(
+                200,
+                (
+                    b'<!doctype html><html><head><meta charset="utf-8"><title>Extract Cards</title></head>'
+                    b'<body><nav><a href="#content">Skip to Main Content</a><span>EN</span><span>0</span></nav>'
+                    b'<main id="content">'
+                    b"<button type=\"button\" onclick=\"document.getElementById('flt').textContent='FILTERS_OPEN'\">"
+                    b"<span>Filters</span></button>"
+                    b'<div id="flt">CLOSED</div>'
+                    b'<input id="space-box" type="checkbox" aria-label="Accept Terms" />'
+                    b'<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="Catalog Hero" width="40" height="20">'
+                    b'<a href="#p1"><h3><span>Product Card Alpha</span></h3></a>'
+                    b'<a href="#p2"><h3><span>Product Card Beta</span></h3></a>'
+                    b'<a href="#p3"><h3><span>Product Card Gamma</span></h3></a>'
+                    b"</main></body></html>"
+                ),
+            )
         elif path == "/tall":
             # A document taller than any test viewport: full_page screenshots must grow.
             self._send(200, _TALL_PAGE.encode())

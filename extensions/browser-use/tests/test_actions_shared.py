@@ -14,7 +14,7 @@ from icode_browser_use.actions._shared import (
     send_watching_dialog,
 )
 from icode_browser_use.dialog import DialogInfo
-from icode_browser_use.errors import CDPTimeout, ConnectionClosed
+from icode_browser_use.errors import CDPTimeout, ConnectionClosed, StaleRef
 from icode_browser_use.snapshot.fusion import FrameInfo
 
 
@@ -163,6 +163,84 @@ def test_capture_survives_an_ax_failure_but_not_a_dom_failure() -> None:
     session = _capture_session(SlowClient(failing={"DOMSnapshot.captureSnapshot"}))
     with pytest.raises(CDPTimeout):
         asyncio.run(capture_sources(session))
+
+
+@pytest.mark.parametrize("changes", [1, 2])
+def test_capture_does_not_register_nodes_from_an_invalidated_generation(changes: int) -> None:
+    session = _capture_session(SlowClient())
+    session.target_id = "target"
+    session.snapshot = SimpleNamespace(url="https://example.com/old")
+    session.snapshot_generation = (1, 0)
+    registered: list[tuple[str, str]] = []
+    capture_count = 0
+
+    async def read_frame_metrics():
+        nonlocal capture_count
+        capture_count += 1
+        if capture_count <= changes:
+            session.snapshot_generation = (1 + capture_count, 0)
+        return FrameInfo(frame_id="main", url="https://example.com/new", title="New document")
+
+    def register_snapshot(_nodes, *, url, title, dom_changed):
+        registered.append((url, title))
+
+    session.read_frame_metrics = read_frame_metrics
+    session.register_snapshot = register_snapshot
+    session.oopif_children = lambda _parent: []
+    capture = capture_and_register(session, url=session.snapshot.url, title="Old document")
+    if changes == 2:
+        with pytest.raises(StaleRef) as caught:
+            asyncio.run(capture)
+        assert "reason=snapshot_changed" in caught.value.render()
+        assert registered == []
+    else:
+        asyncio.run(capture)
+        assert registered == [("https://example.com/new", "New document")]
+    assert capture_count == 2
+
+
+def test_capture_preserves_main_document_when_only_subframe_keeps_changing() -> None:
+    from icode_browser_use.snapshot.fusion import FusedNode
+
+    session = _capture_session(SlowClient())
+    session.target_id = "target"
+    session.snapshot = SimpleNamespace(url="https://example.com/page", subframes_invalidated=False)
+    session.snapshot_generation = (5, 0)
+    registered_nodes: list[list[FusedNode]] = []
+    capture_count = 0
+
+    async def read_frame_metrics():
+        nonlocal capture_count
+        capture_count += 1
+        # Main epoch stays 5 while a noisy iframe increments subframe revision on every capture.
+        session.snapshot_generation = (5, capture_count)
+        return FrameInfo(frame_id="main", url="https://example.com/page", title="Stable Main")
+
+    def register_snapshot(nodes, *, url, title, dom_changed):
+        registered_nodes.append(list(nodes))
+
+    main_node = FusedNode(1, "main", "target", "button", "Keep Me", "button", 0, (0, 0, 50, 20), main_document=True)
+    child_node = FusedNode(
+        2, "iframe-1", "target", "button", "Noisy Ad", "button", 0, (0, 0, 50, 20), main_document=False
+    )
+
+    session.read_frame_metrics = read_frame_metrics
+    session.register_snapshot = register_snapshot
+    session.oopif_children = lambda _parent: []
+
+    import icode_browser_use.snapshot.fusion as fusion_mod
+
+    orig_fuse = fusion_mod.fuse
+    fusion_mod.fuse = lambda *a, **kw: [main_node, child_node]
+    try:
+        nodes, _frame = asyncio.run(capture_and_register(session))
+    finally:
+        fusion_mod.fuse = orig_fuse
+
+    assert capture_count == 2
+    assert nodes == [main_node]
+    assert registered_nodes == [[main_node]]
+    assert session.snapshot.subframes_invalidated is True
 
 
 def test_gather_in_order_leaves_nothing_running_and_keeps_serial_error_priority() -> None:

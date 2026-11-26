@@ -10,9 +10,11 @@ from html import unescape
 from html.parser import HTMLParser
 from typing import Any
 
-from ..errors import TargetAmbiguous, TargetNotFound
+from ..errors import StaleRef, TargetAmbiguous, TargetNotFound
+from ..snapshot.scoring import build_node_index, describe_region, rank
+from ..snapshot.serializer import escape_label
 from ..types import ToolBlock, text_block
-from ._shared import call_value, eval_value, resolve_target
+from ._shared import call_value, eval_value, resolve_target, snapshot_needs_refresh
 
 NAME = "browser_extract"
 
@@ -20,19 +22,22 @@ DESCRIPTION = (
     "Extract content from the live DOM (no screenshot / no OCR). Without query "
     "the whole page is read (preferred for reading page text); with query, pass "
     "an @eN#epoch ref, a #element-id, or visible target text (complex CSS selectors "
-    "are not supported). format=text returns visible text, format=html the raw "
-    "outerHTML, and format=markdown a lightweight HTML->markdown rendering (headings, "
-    "links, lists, tables, fenced code). Output is limited to max_chars characters "
-    "starting at offset; a cut is marked '… (+N more chars; next offset=M)', so pass "
-    "offset=M to read the next page of a long document (offsets count characters of "
-    "the same query/format and shift if the page changes in between)."
+    "are not supported). Pass max_matches (2-5) with a text query to read multiple "
+    "matching elements in one call within the shared max_chars budget. format=text "
+    "returns visible text, format=html the raw outerHTML, and format=markdown a "
+    "lightweight HTML->markdown rendering (headings, links, lists, tables, fenced code). "
+    "Output is limited to max_chars characters starting at offset; a cut is marked "
+    "'… (+N more chars; next offset=M)', so pass offset=M to read the next page of a "
+    "long document (offsets count characters of the same query/format and shift if the "
+    "page changes in between)."
 )
 
 PARAMS: dict[str, Any] = {
     "query": {"type": "string"},
     "format": {"enum": ["text", "markdown", "html"], "default": "text"},
-    "max_chars": {"type": "integer", "min": 200, "max": 7000, "default": 7000},
+    "max_chars": {"type": "integer", "min": 50, "max": 7000, "default": 7000},
     "offset": {"type": "integer", "min": 0, "default": 0},
+    "max_matches": {"type": "integer", "min": 1, "max": 5, "default": 1},
 }
 
 _DEEP_TEXT_JS = (
@@ -422,44 +427,18 @@ async def _extract_by_element_id(
     return as_text(res.get("text"))
 
 
-async def _extract_element(
+_EXTRACT_LANDMARKS = frozenset({"main", "article", "dialog"})
+_REF_SPEC_RE = re.compile(r"^@e\d+#\d+$")
+
+
+async def _extract_entry(
     session: Any,
-    query: str,
+    entry: Any,
     fmt: str,
     *,
     offset: int = 0,
     max_chars: int | None = None,
 ) -> str:
-    id_match = _SIMPLE_ID_RE.match(query)
-    if id_match is not None:
-        direct = await _extract_by_element_id(session, id_match.group(1), fmt, offset=offset, max_chars=max_chars)
-        if direct is not None:
-            return direct
-    try:
-        entry = await resolve_target(session, query)
-    except TargetAmbiguous as exc:
-        # Read-only extract is safe to proceed when scoring found a single unambiguous element.
-        if len(exc.candidates) == 1:
-            sole = exc.candidates[0].node
-            if sole.ref is not None and sole.epoch is not None:
-                entry = session.resolve_target(f"@e{sole.ref}#{sole.epoch}")
-            else:
-                raise
-        elif _CSS_LIKE_RE.match(query):
-            hint = "提示：browser_extract 不支持复杂 CSS 选择器；请省略 query 读整页，或传入 @eN#epoch / #element-id"
-            raise TargetAmbiguous(
-                f"{exc.message}；{hint}",
-                candidates=exc.candidates,
-                details=f"{exc.details}\n{hint}" if exc.details else hint,
-            ) from exc
-        else:
-            raise
-    except TargetNotFound as exc:
-        if _CSS_LIKE_RE.match(query):
-            raise TargetNotFound(
-                f"{exc}（提示：browser_extract 不支持复杂 CSS 选择器；请省略 query 读整页，或传入 @eN#epoch / #element-id）"
-            ) from exc
-        raise
     object_id = await session.resolve_object_id(entry)
     cdp_session_id = entry.cdp_session_id
     if fmt == "markdown":
@@ -502,6 +481,137 @@ async def _extract_element(
     return as_text(result.get("value"))
 
 
+async def _try_unique_landmark(session: Any, query: str) -> Any | None:
+    """Resolve a bare landmark name (``main`` / ``article`` / ``dialog``) to its unique visible landmark."""
+    wanted = query.strip().lower()
+    if wanted not in _EXTRACT_LANDMARKS:
+        return None
+    if snapshot_needs_refresh(session):
+        from . import snapshot
+
+        await snapshot.run(session, {"scope": "viewport", "interactive_only": False})
+    nodes = list(getattr(getattr(session, "snapshot", None), "nodes", ()) or ())
+    matches = [
+        node
+        for node in nodes
+        if getattr(node, "visible", False)
+        and not getattr(node, "css_hidden", False)
+        and getattr(node, "ref", None) is not None
+        and getattr(node, "epoch", None) is not None
+        and wanted in {str(getattr(node, "role", "")).lower(), str(getattr(node, "tag", "")).lower()}
+    ]
+    if len(matches) == 1:
+        sole = matches[0]
+        return session.resolve_target(f"@e{sole.ref}#{sole.epoch}")
+    return None
+
+
+async def _extract_multiple(
+    session: Any,
+    query: str,
+    fmt: str,
+    *,
+    max_matches: int,
+    offset: int = 0,
+    max_chars: int = 7000,
+) -> str:
+    """Read up to *max_matches* ranked candidates for *query* in one call within *max_chars*."""
+    if snapshot_needs_refresh(session):
+        from . import snapshot
+
+        await snapshot.run(session, {"scope": "viewport", "interactive_only": False})
+    nodes = list(getattr(getattr(session, "snapshot", None), "nodes", ()) or ())
+    candidates = [
+        cand
+        for cand in rank(nodes, query)
+        if getattr(cand.node, "ref", None) is not None and getattr(cand.node, "epoch", None) is not None
+    ]
+    if not candidates:
+        raise TargetNotFound("未找到匹配的元素，请重新 snapshot 后重试")
+    picked = candidates[: max(1, min(5, int(max_matches)))]
+    nodes_by_key = build_node_index(nodes)
+    per_item_limit = max(200, min(max_chars, (max_chars + offset) // max(1, len(picked)) + 200))
+    sections: list[str] = []
+    for idx, cand in enumerate(picked, 1):
+        node = cand.node
+        token = f"@e{node.ref}#{node.epoch}"
+        try:
+            entry = session.resolve_target(token)
+            body = await _extract_entry(session, entry, fmt, offset=0, max_chars=per_item_limit)
+        except StaleRef:
+            if len(picked) == 1:
+                raise
+            continue
+        label = escape_label(node.name or node.text_hint, limit=80)
+        vis = "in-view" if node.in_viewport else "off-screen"
+        region = describe_region(node, nodes_by_key)
+        where = f" in {region}" if region else ""
+        sections.append(f'[match {idx}/{len(picked)}] {token} {node.role} "{label}" [{vis}]{where}\n{body}')
+    if not sections:
+        raise StaleRef("所选元素均已失效，请重新 browser_snapshot", reason="node_detached")
+    combined = "\n\n".join(sections)
+    return page_of(combined, offset, max_chars)
+
+
+async def _extract_element(
+    session: Any,
+    query: str,
+    fmt: str,
+    *,
+    offset: int = 0,
+    max_chars: int | None = None,
+    max_matches: int = 1,
+) -> str:
+    id_match = _SIMPLE_ID_RE.match(query)
+    if id_match is not None:
+        direct = await _extract_by_element_id(session, id_match.group(1), fmt, offset=offset, max_chars=max_chars)
+        if direct is not None:
+            return direct
+    if max_matches > 1 and not _REF_SPEC_RE.match(query):
+        return await _extract_multiple(
+            session,
+            query,
+            fmt,
+            max_matches=max_matches,
+            offset=offset,
+            max_chars=max_chars if max_chars is not None else 7000,
+        )
+    landmark = await _try_unique_landmark(session, query)
+    if landmark is not None:
+        return await _extract_entry(session, landmark, fmt, offset=offset, max_chars=max_chars)
+    try:
+        entry = await resolve_target(session, query)
+    except TargetAmbiguous as exc:
+        # Read-only extract is safe to proceed when scoring found a single unambiguous element.
+        if len(exc.candidates) == 1:
+            sole = exc.candidates[0].node
+            if sole.ref is not None and sole.epoch is not None:
+                entry = session.resolve_target(f"@e{sole.ref}#{sole.epoch}")
+            else:
+                raise
+        elif _CSS_LIKE_RE.match(query):
+            hint = "提示：browser_extract 不支持复杂 CSS 选择器；请省略 query 读整页，或传入 @eN#epoch / #element-id"
+            raise TargetAmbiguous(
+                f"{exc.message}；{hint}",
+                candidates=exc.candidates,
+                details=f"{exc.details}\n{hint}" if exc.details else hint,
+            ) from exc
+        else:
+            batch_hint = "提示：若需一次读取前多个匹配项，可传入 max_matches=3（上限 5）"
+            raise TargetAmbiguous(
+                exc.message,
+                candidates=exc.candidates,
+                details=f"{exc.details}\n{batch_hint}" if exc.details else batch_hint,
+            ) from exc
+    except TargetNotFound as exc:
+        if _CSS_LIKE_RE.match(query):
+            raise TargetNotFound(
+                f"{exc}（提示：browser_extract 不支持复杂 CSS 选择器；请省略 query 读整页，或传入 @eN#epoch / #element-id）"
+            ) from exc
+        raise
+    return await _extract_entry(session, entry, fmt, offset=offset, max_chars=max_chars)
+
+
 async def _extract_page(
     session: Any,
     fmt: str,
@@ -541,9 +651,12 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     fmt = arguments["format"]
     max_chars = arguments["max_chars"]
     offset = arguments["offset"]
+    max_matches = int(arguments.get("max_matches", 1))
 
     if query:
-        content = await _extract_element(session, query, fmt, offset=offset, max_chars=max_chars)
+        content = await _extract_element(
+            session, query, fmt, offset=offset, max_chars=max_chars, max_matches=max_matches
+        )
     else:
         content = await _extract_page(session, fmt, offset=offset, max_chars=max_chars)
     session.note_success(session.target_id)

@@ -27,7 +27,7 @@ from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..errors import BrowserError, CDPTimeout, ConnectionClosed, LoginRequired
+from ..errors import BrowserError, CDPTimeout, ConnectionClosed, LoginRequired, StaleRef
 from ..logging import log
 
 #: Optional per-call toolset override (set by BrokerServer from the calling client's toolset).
@@ -855,19 +855,48 @@ async def capture_and_register(
     """Capture three sources, fuse them, register a snapshot; return nodes+frame."""
     from ..snapshot.fusion import fuse
 
-    (snapshot, ax), frame = await gather_in_order(capture_sources(session), session.read_frame_metrics())
-    nodes = fuse(snapshot, ax, frame=frame, target_id=session.target_id)
-    oopif_nodes, offsets = await _capture_oopif_nodes(session, nodes)
-    nodes.extend(oopif_nodes)
-    session.register_snapshot(
-        nodes,
-        url=url or frame.url or session.snapshot.url,
-        title=title or frame.title,
-        dom_changed=dom_changed,
-    )
-    for cdp_session_id, offset in offsets.items():
-        session.set_oopif_offset(cdp_session_id, offset)
-    return nodes, frame
+    for attempt in range(2):
+        generation = getattr(session, "snapshot_generation", None)
+        (snapshot, ax), frame = await gather_in_order(capture_sources(session), session.read_frame_metrics())
+        nodes = fuse(snapshot, ax, frame=frame, target_id=session.target_id)
+        oopif_nodes, offsets = await _capture_oopif_nodes(session, nodes)
+        current = getattr(session, "snapshot_generation", None)
+        if generation != current:
+            subframe_only = (
+                attempt == 1
+                and isinstance(generation, tuple)
+                and isinstance(current, tuple)
+                and len(generation) >= 2
+                and len(current) >= 2
+                and generation[0] == current[0]
+            )
+            if subframe_only:
+                # A continuously refreshing subframe must not make the stable main document
+                # unsnapshottable: keep only proven main-document nodes and mark subframes stale.
+                main_nodes = [node for node in nodes if getattr(node, "main_document", False)]
+                session.register_snapshot(
+                    main_nodes,
+                    url=frame.url or session.snapshot.url,
+                    title=frame.title,
+                    dom_changed=dom_changed,
+                )
+                if hasattr(session.snapshot, "subframes_invalidated"):
+                    session.snapshot.subframes_invalidated = True
+                return main_nodes, frame
+            # URL and title hints sampled before this capture may describe the old document.
+            url = title = ""
+            continue
+        nodes.extend(oopif_nodes)
+        session.register_snapshot(
+            nodes,
+            url=url or frame.url or session.snapshot.url,
+            title=title or frame.title,
+            dom_changed=dom_changed,
+        )
+        for cdp_session_id, offset in offsets.items():
+            session.set_oopif_offset(cdp_session_id, offset)
+        return nodes, frame
+    raise StaleRef("采集快照时页面持续变化，请等待目标内容稳定后重新 browser_snapshot", reason="snapshot_changed")
 
 
 def render_snapshot(session: Any, nodes: list[Any], *, url: str, title: str, focus: str = "") -> str:

@@ -100,6 +100,35 @@ def test_real_chrome_offset_iframe_click(monkeypatch: pytest.MonkeyPatch) -> Non
     asyncio.run(scenario())
 
 
+def test_real_chrome_iframe_reload_preserves_main_frame_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from chrys.extensions import ToolError
+
+    import icode_browser_use.extension as ext
+
+    async def scenario() -> None:
+        async with _chrome_session(monkeypatch) as (origin, _state, ctx, bid):
+            await ext.browser_navigate(ctx, f"{origin}/iframe-reload", bid)
+            main = _REF_RE.search(await ext.browser_find(ctx, bid, "Stable main control", role="button"))
+            child = _REF_RE.search(await ext.browser_find(ctx, bid, "Offset Frame Click", role="button"))
+            trigger = _REF_RE.search(await ext.browser_find(ctx, bid, "Replace embedded document", role="button"))
+            assert main and child and trigger
+            session = ext._browsers[bid].session
+            baseline = session.nav_seq
+            main_url = session.snapshot.url
+            await ext.browser_click(ctx, bid, trigger.group(0))
+            assert await session.wait_for_navigation(after=baseline, timeout=3, url=main_url) == ""
+            with pytest.raises(ToolError) as caught:
+                await ext.browser_click(ctx, bid, child.group(0))
+            assert caught.value.code == "browser_stale_ref"
+            clicked = await ext.browser_click(ctx, bid, main.group(0))
+            assert "dispatch=sent" in clicked, clicked
+            assert "Main action done" in await ext.browser_extract(ctx, bid)
+            closed = await ext.browser_close(ctx, bid)
+            assert "write_actions: 2" in closed, closed
+
+    asyncio.run(scenario())
+
+
 def test_real_chrome_small_scroller_marker_and_step(monkeypatch: pytest.MonkeyPatch) -> None:
     import icode_browser_use.extension as ext
 
@@ -870,6 +899,7 @@ def test_real_chrome_double_click_guard_native_date_clear_false_and_hidden_cross
     finally:
         srv.shutdown()
         srv.server_close()
+
         cross_srv.shutdown()
         cross_srv.server_close()
 
@@ -1148,6 +1178,7 @@ def test_real_chrome_pr325_takeover_oopif_rollback_and_broker_compact(
     finally:
         srv.shutdown()
         srv.server_close()
+
         cross_srv.shutdown()
         cross_srv.server_close()
 
@@ -1314,3 +1345,54 @@ def test_real_chrome_reopen_dual_host_drag_guard_and_markdown_opacity(
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_real_chrome_fast_ready_nav_and_disambiguated_extract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real Chrome E2E for P0-2 fast-ready nav and P1 disambiguation / batch extract / find / space key."""
+    import time
+
+    import icode_browser_use.extension as ext
+
+    async def scenario() -> None:
+        async with _chrome_session(monkeypatch) as (origin, _state, ctx, bid):
+            # 1. Slow image blocking `load` returns readable content via DOMContentLoaded in <5s (not 9s/20s).
+            t0 = time.monotonic()
+            slow_nav = await ext.browser_navigate(ctx, f"{origin}/slow-image", bid)
+            elapsed = time.monotonic() - t0
+            assert "navigation_status=domcontentloaded" in slow_nav, slow_nav
+            assert "nav_ms=" in slow_nav and "ready_ms=" in slow_nav and "snapshot_ms=" in slow_nav, slow_nav
+            assert "Readable Before Image" in slow_nav, slow_nav
+            assert elapsed < 5.5, f"slow-image navigation stalled for {elapsed:.2f}s"
+
+            # 2. HTTP 302 redirect lands on final SPA URL and browser_wait_for reads async hydrated content.
+            redir = await ext.browser_navigate(ctx, f"{origin}/redirect-nav", bid)
+            assert "/spa-delayed" in redir, redir
+            waited = await ext.browser_wait_for(
+                ctx, bid, "text", value="SPA HYDRATED OK", timeout_ms=4000, return_mode="text"
+            )
+            assert "SPA HYDRATED OK" in waited, waited
+
+            # 3. Disambiguation, unique <main> extract, batch max_matches, role-only find, and literal Space key.
+            await ext.browser_navigate(ctx, f"{origin}/extract-cards", bid)
+            main_text = await ext.browser_extract(ctx, bid, query="main", max_chars=200)
+            assert "Filters" in main_text and "Product Card Alpha" in main_text, main_text
+
+            # <button><span>Filters</span></button> resolves unambiguously without manual ref lookup.
+            clicked = await ext.browser_click(ctx, bid, "Filters")
+            assert "dispatch=sent" in clicked, clicked
+            assert "FILTERS_OPEN" in await ext.browser_extract(ctx, bid, query="#flt", max_chars=80)
+
+            # Bounded batch extract reads multiple ranked cards in one call with region context.
+            batch = await ext.browser_extract(ctx, bid, query="Product Card", max_matches=3, max_chars=2000)
+            assert "[match 1/3]" in batch and "[match 3/3]" in batch and "in main" in batch, batch
+            assert "Product Card Alpha" in batch and "Product Card Gamma" in batch, batch
+
+            # Role-only browser_find with empty query + img alias finds the image in main.
+            imgs = await ext.browser_find(ctx, bid, "", role="img", limit=10)
+            assert "Catalog Hero" in imgs and "in main" in imgs, imgs
+
+            # Literal Space toggles checkbox instead of raising BadRequest("key 不能为空").
+            spaced = await ext.browser_press_key(ctx, bid, " ", target="Accept Terms")
+            assert "status=succeeded" in spaced, spaced
+
+    asyncio.run(scenario())

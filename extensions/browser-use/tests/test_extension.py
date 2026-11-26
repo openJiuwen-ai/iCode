@@ -736,6 +736,7 @@ def test_tool_signatures_match_core_contracts() -> None:
         "format",
         "max_chars",
         "offset",
+        "max_matches",
     ]
 
 
