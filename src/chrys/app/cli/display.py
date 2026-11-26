@@ -1,14 +1,41 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Values from the user's files, shown on one line of command-line output."""
+"""How the CLI shows things: values from the user's files on one line, and the consoles that render them."""
 
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+from rich.console import Console
 
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
+
+_UNUSABLE_TABLE_WIDTH = 61
+"""Smallest width that still keeps every listing column; on legacy Windows
+this is COLUMNS=62 minus one. Narrower terminals fall back to the full width."""
+
+_FALLBACK_TABLE_WIDTH = 120
+"""Wide enough for all current columns, including a 35-character profile ID."""
+
+
+def stdout_console() -> Console:
+    """A stdout console for human-readable tables, with a usable width floor.
+
+    ``rich`` reads its width from ``COLUMNS``; a degenerate value either makes
+    the table render as the empty string or leaves too little room for every
+    column, so the listing exits zero while silently hiding data. Below the
+    usable width we substitute a width that fits all current columns. The width
+    is read once at construction and then frozen by the unconditional assignment,
+    so Rich cannot re-probe the terminal between the two reads and print at a
+    different width from the one that was checked.
+    """
+    console = Console(file=sys.stdout, highlight=False)
+    width = console.width
+    console.width = _FALLBACK_TABLE_WIDTH if width < _UNUSABLE_TABLE_WIDTH else width
+    return console
 
 
 def one_line(text: str) -> str:
