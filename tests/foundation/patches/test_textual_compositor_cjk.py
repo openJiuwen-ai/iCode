@@ -7,7 +7,6 @@ from __future__ import annotations
 import ast
 import importlib.util
 import re
-import textwrap
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -37,7 +36,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
 
     ``tests/conftest.py`` imports tab selection before this module, so the global
     registry order differs from a fresh production bootstrap.  Build the order
-    explicitly: all 15 CJK patches, then the one tab-selection patch. The
+    explicitly: all 18 CJK patches, then the one tab-selection patch. The
     joined-text fallback builds on the earlier partial-update fragment.
     """
     tab_matches = [
@@ -47,7 +46,7 @@ def _compositor_patch_group_in_production_order() -> tuple[FilePatch, ...]:
         and patch.module_file == "_compositor.py"
         and patch.old_fragment == textual_tab_selection._COMPOSITOR_GET_WIDGET_AND_OFFSET_AT_OLD
     ]
-    assert len(textual_compositor_cjk._PATCHES) == 15
+    assert len(textual_compositor_cjk._PATCHES) == 18
     assert len(tab_matches) == 1
     return (*textual_compositor_cjk._PATCHES, tab_matches[0])
 
@@ -75,8 +74,9 @@ def _compile_staged_render_segments() -> Callable[[Any, Console], str]:
     render_segments = next(
         node for node in chops_update.body if isinstance(node, ast.FunctionDef) and node.name == "render_segments"
     )
-    method_source = ast.get_source_segment(source, render_segments)
-    assert method_source is not None
+    width_helper = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_has_stable_crop_widths"
+    )
 
     namespace: dict[str, Any] = {
         "Console": Console,
@@ -84,7 +84,12 @@ def _compile_staged_render_segments() -> Callable[[Any, Console], str]:
         "_MERGED_STRIP": object(),
         "cell_len": cell_len,
     }
-    exec(compile(textwrap.dedent(method_source), "<staged textual._compositor>", "exec"), namespace)
+    exec(
+        compile(
+            ast.Module(body=[width_helper, render_segments], type_ignores=[]), "<staged textual._compositor>", "exec"
+        ),
+        namespace,
+    )
     implementation = namespace["render_segments"]
     assert callable(implementation)
     return implementation
@@ -138,7 +143,7 @@ def _preserve_runtime_targets(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]
         for name in names:
             monkeypatch.setattr(cls, name, getattr(cls, name))
     absent_globals: list[str] = []
-    for name in ("bisect_left", "bisect_right", "_MERGED_STRIP", "_ALWAYS_TRUE"):
+    for name in ("bisect_left", "bisect_right", "_MERGED_STRIP", "_ALWAYS_TRUE", "_has_stable_crop_widths"):
         if hasattr(compositor_mod, name):
             monkeypatch.setattr(compositor_mod, name, getattr(compositor_mod, name))
         else:
@@ -238,6 +243,9 @@ def test_render_segments_crops_at_complete_character_boundaries(
         pytest.param("点击查看", 10, 13, 40, 12, "击查看", id="cjk-mid-character"),
         pytest.param("点击查看", 10, 14, 40, 14, "查看", id="cjk-aligned"),
         pytest.param("点击查看详情", 10, 13, 18, 12, "击查看", id="cjk-both-edges"),
+        pytest.param("#1中*2", 0, 4, 20, 4, "*2", id="cjk-with-ascii-keycap-bases"),
+        pytest.param("✍ repaint", 0, 4, 20, 0, "✍ repaint", id="bare-writing-hand"),
+        pytest.param("🕵 repaint", 0, 4, 20, 0, "🕵 repaint", id="bare-detective"),
         pytest.param("ok ❤️ done", 0, 4, 40, 0, "ok ❤️ done", id="emoji-variation"),
         pytest.param("ok 👩‍💻 done", 0, 6, 40, 0, "ok 👩‍💻 done", id="after-emoji-zwj"),
         pytest.param("ok 🇨🇳 done", 0, 4, 40, 0, "ok 🇨🇳 done", id="flag"),
@@ -270,13 +278,16 @@ def test_render_segments_starts_at_the_dirty_span(
 @pytest.mark.parametrize(
     ("prefix", "styled", "suffix", "terminal_width", "dirty"),
     [
+        # Without VS16, Rich measures these as one cell and tmux 3.8 uses two.
+        ("✍ ", "repaint", " regression", 24, (4, 14)),
+        ("🕵 ", "repaint", " regression", 24, (4, 14)),
         ("A👩‍", "💻", "notes", 8, (4, 7)),
         ("A❤", "️", "notes", 8, (1, 2)),
         ("", "🏃🏽‍♀️", "abcdefghijklmnopqr", 20, (19, 20)),
         ("🫱🏽‍", "🫲🏾", "abcdefghijklmnop", 20, (16, 17)),
     ],
 )
-async def test_partial_update_with_joined_text_replays_the_full_frame(
+async def test_partial_update_with_terminal_dependent_width_replays_the_full_frame(
     _preserve_runtime_targets: None, prefix: str, styled: str, suffix: str, terminal_width: int, dirty: tuple[int, int]
 ) -> None:
     # The cursor can split a glyph across styles. Terminals may also advance

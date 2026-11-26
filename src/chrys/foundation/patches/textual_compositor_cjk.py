@@ -45,13 +45,13 @@ The raw terminal path therefore starts a strip that begins left of the span at
 the span's left edge, moved back to the start of a double-width character the
 edge divides.  The cells it no longer writes lie outside the dirty region, so
 the terminal already shows them. Widgets outside the dirty rectangle reserve their
-usual space on those rows without rendering. When a span would cut a joined glyph's
-strip, use the normal full-frame row origins: terminals can disagree with Rich about
-the width of an emoji, particularly across cursor styles.
+usual space on those rows without rendering. Use full-frame row origins when
+cutting a strip containing joined glyphs or symbols with emoji presentation:
+terminals may assign them a different width even without a variation selector.
 
 Upgrade warning: ``_compositor.py`` is one all-or-nothing patch group containing
-these 15 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
-16 fragments aborts the entire file group. Textual is imported before
+these 18 CJK fragments plus one tab-selection fragment.  A mismatch in any of the
+19 fragments aborts the entire file group. Textual is imported before
 ``bootstrap_runtime()`` on the TUI path, so the runtime patch stages the same CJK
 fragments in memory and installs all affected methods on the existing classes.
 It preserves imported class aliases and instances, and applies independently of
@@ -273,7 +273,7 @@ _NEW_RENDER_SEGMENTS_LEFT_EDGE = """\
                         if crop_start >= len(text):
                             continue
                         position = crop_start
-                    elif all(cell_len(c) and not 0x1F1E6 <= ord(c) <= 0x1F1FF for c in text):
+                    elif _has_stable_crop_widths(text):
                         for character in text:
                             next_position = position + cell_len(character)
                             if next_position > crop_start:
@@ -287,9 +287,47 @@ _NEW_RENDER_SEGMENTS_LEFT_EDGE = """\
                         x += position
 """
 
-_DIRTY_SPAN_LEFT_EDGE_PATCH = FilePatch(
+# Rich's table includes ASCII keycap bases (#, *, digits). On their own
+# these stay one cell even in terminals that widen bare pictographs.
+_CROP_WIDTH_HELPER = """\
+def _has_stable_crop_widths(text: str) -> bool:
+    from rich.cells import load_cell_table
+
+    narrow_to_wide = load_cell_table("auto").narrow_to_wide
+    return all(
+        cell_len(c)
+        and not 0x1F1E6 <= ord(c) <= 0x1F1FF
+        and (c.isascii() or c not in narrow_to_wide)
+        for c in text
+    )
+"""
+
+_CROP_WIDTH_HELPER_PATCH = FilePatch(
     package="textual",
     module_file="_compositor.py",
+    old_fragment="class ReflowResult(NamedTuple):",
+    new_fragment=_CROP_WIDTH_HELPER + "\n\nclass ReflowResult(NamedTuple):",
+    description="Share the terminal width check between crop and repaint paths",
+)
+
+
+def _crop_width_patches(*, old_fragment: str, new_fragment: str, description: str) -> tuple[FilePatch, FilePatch]:
+    """Stage the earlier implementation, then upgrade it on new and existing installs."""
+    previous = new_fragment.replace(
+        "_has_stable_crop_widths(text)",
+        "all(cell_len(c) and not 0x1F1E6 <= ord(c) <= 0x1F1FF for c in text)",
+    )
+    return (
+        FilePatch(
+            "textual", "_compositor.py", old_fragment, previous, description, equivalent_fragments=(new_fragment,)
+        ),
+        FilePatch(
+            "textual", "_compositor.py", previous, new_fragment, "Recognize bare emoji when checking crop widths"
+        ),
+    )
+
+
+_DIRTY_SPAN_LEFT_EDGE_PATCH, _LEFT_WIDTH_UPGRADE = _crop_width_patches(
     old_fragment=_OLD_RENDER_SEGMENTS_LEFT_EDGE,
     new_fragment=_NEW_RENDER_SEGMENTS_LEFT_EDGE,
     description="Start partial-update strips at the dirty span's left edge",
@@ -339,7 +377,10 @@ def apply_runtime_patch() -> None:
 
     tree = ast.parse(source)
     classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
-    methods: list[ast.stmt] = []
+    width_helper = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_has_stable_crop_widths"
+    )
+    methods: list[ast.stmt] = [width_helper]
     for class_name, names in _RUNTIME_TARGETS.items():
         definitions = {node.name: node for node in classes[class_name].body if isinstance(node, ast.FunctionDef)}
         for name in names:
@@ -369,6 +410,7 @@ def apply_runtime_patch() -> None:
     merged_strip = getattr(compositor_mod, "_MERGED_STRIP", None)
     if merged_strip is None:
         merged_strip = compositor_mod.Strip([], 0)
+    compositor_mod._has_stable_crop_widths = namespace["_has_stable_crop_widths"]
     compositor_mod.bisect_left = bisect_left
     compositor_mod.bisect_right = bisect_right
     compositor_mod._MERGED_STRIP = merged_strip
@@ -469,9 +511,7 @@ _NEW_PARTIAL_UPDATE = """\
 # glyphs differently from Rich. Neither an absolute cursor move after it nor a
 # replay up to a guessed right column is safe. Preserve ChopsUpdate's contract
 # while emitting the same rows, at the same origins, as a full terminal frame.
-_FULL_FRAME_FOR_JOINED_TEXT = FilePatch(
-    package="textual",
-    module_file="_compositor.py",
+_FULL_FRAME_FOR_JOINED_TEXT, _FRAME_WIDTH_UPGRADE = _crop_width_patches(
     old_fragment=_NEW_PARTIAL_UPDATE,
     new_fragment="""\
         background_screens = visible_screen_stack.get([]).copy()
@@ -483,7 +523,7 @@ _FULL_FRAME_FOR_JOINED_TEXT = FilePatch(
                 if strip is None or not x < left < x + strip.cell_length:
                     continue
                 text = strip.text
-                if text.isascii() or all(cell_len(c) and not 0x1F1E6 <= ord(c) <= 0x1F1FF for c in text):
+                if text.isascii() or _has_stable_crop_widths(text):
                     continue
                 # Rendering a modal may consume its background screen stack.
                 token = visible_screen_stack.set(background_screens)
@@ -619,6 +659,7 @@ _NEW_RENDER_CHOPS = """\
 _TARGET = "_compositor.py"
 
 _PATCHES = (
+    _CROP_WIDTH_HELPER_PATCH,
     FilePatch(
         package="textual",
         module_file=_TARGET,
@@ -655,6 +696,7 @@ _PATCHES = (
         description="Update ChopsUpdate.render_segments for merged strips",
     ),
     _DIRTY_SPAN_LEFT_EDGE_PATCH,
+    _LEFT_WIDTH_UPGRADE,
     _DIRTY_SPAN_CROP_PATCH,
     *_PARTIAL_ROW_PATCHES,
     FilePatch(
@@ -677,9 +719,10 @@ _PATCHES = (
         old_fragment=_OLD_PARTIAL_UPDATE,
         new_fragment=_NEW_PARTIAL_UPDATE,
         description="Remove chop_ends from render_partial_update",
-        equivalent_fragments=(_FULL_FRAME_FOR_JOINED_TEXT.new_fragment,),
+        equivalent_fragments=(_FULL_FRAME_FOR_JOINED_TEXT.new_fragment, _FRAME_WIDTH_UPGRADE.new_fragment),
     ),
     _FULL_FRAME_FOR_JOINED_TEXT,
+    _FRAME_WIDTH_UPGRADE,
     FilePatch(
         package="textual",
         module_file=_TARGET,

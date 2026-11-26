@@ -14,7 +14,7 @@ from chrys.foundation.patches import textual_compositor_cjk
 from tests.support.installed_packages import copy_installed_package
 
 
-@pytest.mark.parametrize("patch_mode", ["startup", "runtime-only", "already-patched", "earlier-release"])
+@pytest.mark.parametrize("patch_mode", ["startup", "runtime-only", "already-patched", "earlier-release", "previous-pr"])
 def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode: str) -> None:
     package = copy_installed_package("textual", tmp_path)
     target = package / "_compositor.py"
@@ -26,15 +26,28 @@ def test_first_launch_repairs_preimported_compositor(tmp_path: Path, patch_mode:
             source = source.replace(patch.new_fragment, patch.old_fragment, 1)
     assert textual_compositor_cjk._OLD_RENDER_CHOPS in source
     assert textual_compositor_cjk._NEW_RENDER_CHOPS not in source
-    if patch_mode in ("already-patched", "earlier-release"):
-        for patch in textual_compositor_cjk._PATCHES:
-            # Earlier releases already installed the original eleven fragments.
-            if patch_mode == "already-patched" or patch not in (
-                textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH,
-                *textual_compositor_cjk._PARTIAL_ROW_PATCHES,
-                textual_compositor_cjk._FULL_FRAME_FOR_JOINED_TEXT,
-            ):
-                source = source.replace(patch.old_fragment, patch.new_fragment, 1)
+    # These are the fragments present in each upgrade source.
+    width_upgrades = (
+        textual_compositor_cjk._CROP_WIDTH_HELPER_PATCH,
+        textual_compositor_cjk._LEFT_WIDTH_UPGRADE,
+        textual_compositor_cjk._FRAME_WIDTH_UPGRADE,
+    )
+    previous_pr = [patch for patch in textual_compositor_cjk._PATCHES if patch not in width_upgrades]
+    sidebar_fixes = (
+        textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH,
+        *textual_compositor_cjk._PARTIAL_ROW_PATCHES,
+        textual_compositor_cjk._FULL_FRAME_FOR_JOINED_TEXT,
+    )
+    earlier_release = [patch for patch in previous_pr if patch not in sidebar_fixes]
+    assert len(previous_pr) == 15 and len(earlier_release) == 11
+    installed = {
+        "already-patched": textual_compositor_cjk._PATCHES,
+        "previous-pr": previous_pr,
+        "earlier-release": earlier_release,
+    }.get(patch_mode, ())
+    for patch in installed:
+        assert patch.old_fragment in source
+        source = source.replace(patch.old_fragment, patch.new_fragment, 1)
     target.write_text(source, encoding="utf-8")
 
     script = '''
@@ -61,7 +74,7 @@ Compositor = compositor_module.Compositor
 ChopsUpdate = compositor_module.ChopsUpdate
 assert screen_module.Compositor is Compositor
 sentinel_before = getattr(compositor_module, "_MERGED_STRIP", None)
-assert (sentinel_before is not None) == (sys.argv[2] in ("already-patched", "earlier-release"))
+assert (sentinel_before is not None) == (sys.argv[2] in ("already-patched", "earlier-release", "previous-pr"))
 original_render_chops = Compositor._render_chops
 original_selection = Compositor.get_widget_and_offset_at
 existing_compositor = Compositor()
@@ -70,11 +83,7 @@ existing_update = ChopsUpdate([], []) if sentinel_before is not None else ChopsU
 if sys.argv[2] != "runtime-only":
     results = apply_all()
     cjk_results = [r for r in results if r.patch in textual_compositor_cjk._PATCHES]
-    assert len(cjk_results) == 15
-    status = "skipped" if sys.argv[2] != "startup" else "applied"
-    partial = (textual_compositor_cjk._DIRTY_SPAN_LEFT_EDGE_PATCH, *textual_compositor_cjk._PARTIAL_ROW_PATCHES, textual_compositor_cjk._FULL_FRAME_FOR_JOINED_TEXT)
-    partial_status = "applied" if sys.argv[2] == "earlier-release" else status
-    assert all(r.status == (partial_status if r.patch in partial else status) for r in cjk_results), cjk_results
+    assert [r.status for r in cjk_results] == sys.argv[3].split(","), cjk_results
 else:
     source_before = Path(compositor_module.__file__).read_bytes()
     textual_compositor_cjk.apply_runtime_patch()
@@ -104,7 +113,7 @@ class ProbeApp(App):
 
 async def main():
     app = ProbeApp()
-    async with app.run_test(size=(8, 2)):
+    async with app.run_test(size=(8, 2)) as pilot:
         compositor = app.screen._compositor
         # The obscured widget contributes a cut inside the first wide character.
         assert 1 in compositor.cuts[0], compositor.cuts
@@ -126,6 +135,13 @@ async def main():
         compositor._dirty_regions.add(Region(2, 0, 6, 1))
         update = compositor.render_partial_update()
         assert Text.from_ansi(update.render_segments(console)).plain == "好世界"
+        # Exercise the updated predicate on this pre-imported compositor.
+        front = app.query_one("#front", Static)
+        front.update("✍ repaint")
+        await pilot.pause()
+        full = compositor.render_full_update().render_segments(console)
+        compositor._dirty_regions.add(Region(3, 0, 2, 1))
+        assert compositor.render_partial_update().render_segments(console) == full
 
 asyncio.run(main())
 assert Compositor._render_chops is not original_render_chops
@@ -137,8 +153,9 @@ installed = [
 textual_compositor_cjk.apply_runtime_patch()
 assert all(getattr(cls, name) is implementation for cls, name, implementation in installed)
 '''
+    expected = ",".join("skipped" if patch in installed else "applied" for patch in textual_compositor_cjk._PATCHES)
     result = subprocess.run(
-        [sys.executable, "-B", "-X", "utf8", "-c", script, str(tmp_path), patch_mode],
+        [sys.executable, "-B", "-X", "utf8", "-c", script, str(tmp_path), patch_mode, expected],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         encoding="utf-8",
