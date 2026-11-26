@@ -715,3 +715,42 @@ test("attach enables focus emulation and adopts allowed popups opened by owned t
     chrome.tabs.get = origGet;
   }
 });
+
+test("Page.captureScreenshot refuses background tab before calling chrome.debugger and succeeds once foreground", async () => {
+  const handle = port.onMessage.listeners[0];
+  const origSend = chrome.debugger.sendCommand;
+  const origGet = chrome.tabs.get;
+  let active = false;
+  const sent = [];
+  chrome.tabs.get = async (tabId) => ({
+    id: tabId,
+    windowId: 2,
+    url: "https://example.com/shot",
+    title: "Shot",
+    active,
+  });
+  chrome.debugger.sendCommand = async (target, method, params) => {
+    sent.push(method);
+    if (method === "Page.captureScreenshot") return { data: "iVBORw0KGgo=" };
+    return origSend(target, method, params);
+  };
+  try {
+    port.messages.length = 0;
+    handle({ id: 210, method: "Page.captureScreenshot", sessionId: "88", params: { format: "png" }, leaseId: "lease-tab" });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const bgReply = port.messages.find((m) => m.id === 210);
+    assert.match(bgReply.error, /background_tab_throttled/);
+    assert.deepEqual(sent, []);
+
+    active = true;
+    port.messages.length = 0;
+    handle({ id: 211, method: "Page.captureScreenshot", sessionId: "88", params: { format: "png" }, leaseId: "lease-tab" });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const fgReply = port.messages.find((m) => m.id === 211);
+    assert.equal(fgReply.result.data, "iVBORw0KGgo=");
+    assert.deepEqual(sent, ["Page.captureScreenshot"]);
+  } finally {
+    chrome.debugger.sendCommand = origSend;
+    chrome.tabs.get = origGet;
+  }
+});

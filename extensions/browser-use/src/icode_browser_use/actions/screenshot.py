@@ -187,12 +187,26 @@ async def _target_clip(session: Any, entry: Any, object_id: str) -> tuple[dict[s
 
 
 _BG_SCREENSHOT_TIMEOUT = 2.5
+_BG_SCREENSHOT_MSG = (
+    "截图超时（reason=background_tab_throttled）：当前标签页处于后台，Chromium 渲染节流导致无法出图；"
+    "请优先使用 browser_snapshot/browser_extract，或在需要视觉确认时先 browser_tab_switch 切到前台标签后重试"
+)
+
+
+def _is_bridge_session(session: Any) -> bool:
+    transport = getattr(session, "_transport", None)
+    return transport is not None and getattr(transport, "browser_commands", True) is False
 
 
 async def _capture(session: Any, params: dict[str, Any], fmt: str) -> tuple[str, str]:
     client = session.require_client()
     probe_fn = getattr(session, "current_page_foreground", None)
     pre_foreground = await probe_fn() if callable(probe_fn) else None
+    if pre_foreground is False and _is_bridge_session(session):
+        # Never send Page.captureScreenshot to a known background Bridge tab: Chromium's
+        # PageHandler queues an unresolved CopyOutputRequest on hidden chrome.debugger
+        # tabs, which can stall even a subsequent foreground capture after tab_switch.
+        raise Unavailable(_BG_SCREENSHOT_MSG)
     full_timeout = float(getattr(session.cfg, "cdp_timeout", 20.0))
     timeout = min(_BG_SCREENSHOT_TIMEOUT, full_timeout) if pre_foreground is False else full_timeout
     try:
@@ -207,10 +221,11 @@ async def _capture(session: Any, params: dict[str, Any], fmt: str) -> tuple[str,
         if foreground is not False and callable(probe_fn):
             foreground = await probe_fn()
         if foreground is False:
-            raise Unavailable(
-                "截图超时（reason=background_tab_throttled）：当前标签页处于后台，Chromium 渲染节流导致无法出图；"
-                "请优先使用 browser_snapshot/browser_extract，或在需要视觉确认时先 browser_tab_switch 切到前台标签后重试"
-            ) from exc
+            raise Unavailable(_BG_SCREENSHOT_MSG) from exc
+        raise
+    except BrowserError as exc:
+        if "background_tab_throttled" in str(exc):
+            raise Unavailable(_BG_SCREENSHOT_MSG) from exc
         raise
     data = str(response.get("data") or "")
     if not data:

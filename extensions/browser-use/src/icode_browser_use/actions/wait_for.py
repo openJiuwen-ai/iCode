@@ -38,7 +38,7 @@ from ..errors import (
 )
 from ..snapshot.serializer import sanitize_text
 from ..types import ToolBlock, text_block
-from ._shared import capture_and_register, release_object_group, snapshot_needs_refresh
+from ._shared import capture_and_register, is_oopif_visible, release_object_group, snapshot_needs_refresh
 from ._shared import capture_and_register as _shared_capture
 from .actionability import WriteOutcome
 from .extract import _DEEP_TEXT_JS
@@ -164,7 +164,7 @@ def _page_text_expr(needle: str = "", *, child_frame: bool = False) -> str:
         "   try{"
         "    const win=(cur.ownerDocument && cur.ownerDocument.defaultView) || window;"
         "    const st=win && typeof win.getComputedStyle==='function' ? win.getComputedStyle(cur) : null;"
-        "    if(st && (st.display==='none' || st.visibility==='hidden' || st.visibility==='collapse' || st.opacity==='0')) return false;"
+        "    if(st && (st.display==='none' || st.visibility==='hidden' || st.visibility==='collapse' || (st.opacity!=='' && parseFloat(st.opacity)<=0))) return false;"
         "   }catch(_){}"
         "   if(cur.parentElement){ cur=cur.parentElement; continue; }"
         "   const root=cur.getRootNode ? cur.getRootNode() : null;"
@@ -471,6 +471,8 @@ async def _read_page_text(session: Any, deadline: float, *, needle: str = "") ->
     for oopif_sid in oopifs:
         if _remaining(deadline) <= 0:
             break
+        if not await is_oopif_visible(session, oopif_sid, timeout=_probe_timeout(session, deadline)):
+            continue
         try:
             child_raw = await _evaluate(session, child_expr, deadline, cdp_session_id=oopif_sid)
         except ConnectionClosed:

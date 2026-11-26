@@ -823,3 +823,74 @@ def test_page_text_changed_and_text_observe_same_origin_and_oopif_iframes(determ
     assert "isRendered" in wait_for._PAGE_TEXT_EXPR
     assert "getBoundingClientRect" in wait_for._PAGE_TEXT_EXPR
     assert "window.innerWidth" in wait_for._page_text_expr(child_frame=True)
+
+
+def test_wait_for_skips_css_hidden_cross_origin_oopif_for_text_and_text_changed() -> None:
+    """A visibility:hidden cross-origin iframe (innerWidth > 0) must not trigger page text / text_changed."""
+    child_text = "BACKGROUND-IDLE"
+
+    class HiddenOopifClient(FakeClient):
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            params = dict(params or {})
+            if method == "Page.getFrameTree" and session_id == "oopif-hidden":
+                return {"frameTree": {"frame": {"id": "frame-hidden"}}}
+            if method == "DOM.getFrameOwner" and params.get("frameId") == "frame-hidden":
+                return {"backendNodeId": 77}
+            if method == "DOM.resolveNode" and params.get("backendNodeId") == 77:
+                return {"object": {"objectId": "obj-iframe-hidden"}}
+            if method == "Runtime.callFunctionOn" and params.get("objectId") == "obj-iframe-hidden":
+                return {"result": {"value": False}}  # owner <iframe> has visibility:hidden
+            if method == "Runtime.evaluate":
+                if session_id == "oopif-hidden":
+                    return {
+                        "result": {
+                            "value": {
+                                "text": child_text,
+                                "text_digest": f"d:{child_text}",
+                                "text_hit": "BACKGROUND-READY-934" in child_text,
+                            }
+                        }
+                    }
+                return {
+                    "result": {
+                        "value": {
+                            "text": "Visible dashboard",
+                            "text_digest": "d:outer",
+                            "text_hit": False,
+                        }
+                    }
+                }
+            return await super().send(method, params, session_id=session_id, timeout=timeout)
+
+    client = HiddenOopifClient()
+    session = FakeSession(client=client)
+    session.current_page_oopif_sessions = lambda: ["oopif-hidden"]  # type: ignore[attr-defined]
+    baseline = asyncio.run(wait_for.read_text_baseline(session, ""))
+    assert baseline == "d:outer"
+
+    # Hidden cross-origin iframe updates while main page visible text stays unchanged.
+    child_text = "BACKGROUND-READY-934"
+    res_changed = asyncio.run(
+        wait_for.run_with_baseline(
+            session,
+            {"condition": "text_changed", "target": "", "value": "", "timeout_ms": 200, "return_mode": "text"},
+            baseline=baseline,
+        )
+    )[0]["text"]
+    assert "status=timeout" in res_changed
+    assert "BACKGROUND-READY-934" not in res_changed
+
+    res_text = asyncio.run(
+        wait_for.run(
+            session,
+            {
+                "condition": "text",
+                "target": "",
+                "value": "BACKGROUND-READY-934",
+                "timeout_ms": 200,
+                "return_mode": "text",
+            },
+        )
+    )[0]["text"]
+    assert "status=timeout" in res_text
+    assert "BACKGROUND-READY-934" not in res_text or "value='BACKGROUND-READY-934'" in res_text

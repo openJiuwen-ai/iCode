@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -20,6 +21,7 @@ from ._shared import (
     eval_value,
     flush_pending_input_releases,
     note_pending_input_release,
+    resolve_oopif_offset,
     resolve_target,
     scroll_into_view_and_offset,
     send_watching_dialog,
@@ -676,8 +678,63 @@ async def _hit_test(
     return value if isinstance(value, dict) else None
 
 
-async def _dispatch_click(session: Any, x: float, y: float, button: str, count: int) -> None:
-    """Emit mouseMoved followed by *count* press/release pairs with incrementing clickCount."""
+async def _verify_multi_click_target(
+    session: Any,
+    object_id: str,
+    x: float,
+    y: float,
+    cdp_session_id: str | None,
+    offset: tuple[float, float],
+    *,
+    entry: Any,
+    dialog_seq: int,
+    baseline_epoch: int,
+) -> str | None:
+    """Confirm the original target is still live and hit-tested at ``(x, y)`` before click N > 1.
+
+    Returns ``None`` when sending the next click is safe, or a short stop reason
+    when a prior click detached, replaced, disabled, moved, or covered the target
+    (or opened a dialog / started navigation).
+    """
+    if session.dialog_since(dialog_seq) is not None:
+        return "dialog"
+    if getattr(session, "page_epoch", baseline_epoch) != baseline_epoch:
+        return "navigation"
+    live_offset = offset
+    if cdp_session_id:
+        try:
+            live_offset = await resolve_oopif_offset(session, cdp_session_id)
+        except ConnectionClosed:
+            raise
+        except BrowserError:
+            live_offset = offset
+    hit = await _safe_hit_test(session, object_id, x, y, cdp_session_id, live_offset, entry=entry)
+    if hit is None:
+        return "hit_test_failed"
+    if hit.get("connected") is False:
+        return "target_detached"
+    if hit.get("disabled") is True:
+        return "target_disabled"
+    if not _confirmed(hit):
+        return "target_moved_or_covered"
+    return None
+
+
+async def _dispatch_click(
+    session: Any,
+    x: float,
+    y: float,
+    button: str,
+    count: int,
+    *,
+    guard_next: Callable[[], Awaitable[str | None]] | None = None,
+) -> tuple[int, str | None]:
+    """Emit mouseMoved followed by *count* press/release pairs with incrementing clickCount.
+
+    When *guard_next* is provided for multi-clicks (``count > 1``), it runs
+    between consecutive clicks so a replacement control that appeared at ``(x, y)``
+    after click 1 never receives click 2.
+    """
     await flush_pending_input_releases(session)
     client = session.require_client()
     clicks = max(1, int(count))
@@ -691,6 +748,11 @@ async def _dispatch_click(session: Any, x: float, y: float, button: str, count: 
     )
     note_pending_input_release(session, "Input.dispatchMouseEvent", release_params, session.session_id)
     for step in range(1, clicks + 1):
+        if step > 1 and guard_next is not None:
+            stop_reason = await guard_next()
+            if stop_reason is not None:
+                clear_pending_input_releases(session)
+                return step - 1, stop_reason
         await client.send(
             "Input.dispatchMouseEvent",
             {**base, "clickCount": step, "type": "mousePressed", "buttons": _BUTTON_MASK[button]},
@@ -704,6 +766,7 @@ async def _dispatch_click(session: Any, x: float, y: float, button: str, count: 
             timeout=session.cfg.cdp_timeout,
         )
     clear_pending_input_releases(session)
+    return clicks, None
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
@@ -867,20 +930,43 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         dispatch=dispatch,
     )
     dialog_seq = session.dialog_seq
+    baseline_epoch = getattr(session, "page_epoch", 0)
     pages_before = _owned_page_ids(session)
     if dispatch == "dom":
 
-        async def send_click() -> None:
+        async def send_click() -> tuple[int, str | None]:
             await _dom_click(session, object_id, cdp_session_id)
+            return 1, None
 
     else:
+        multi_guard: Callable[[], Awaitable[str | None]] | None = None
+        if count > 1:
 
-        async def send_click() -> None:
-            await _dispatch_click(session, x, y, button, count)
+            async def _guard_next() -> str | None:
+                return await _verify_multi_click_target(
+                    session,
+                    object_id,
+                    x,
+                    y,
+                    cdp_session_id,
+                    offset,
+                    entry=entry,
+                    dialog_seq=dialog_seq,
+                    baseline_epoch=baseline_epoch,
+                )
+
+            multi_guard = _guard_next
+
+        async def send_click() -> tuple[int, str | None]:
+            if multi_guard is not None:
+                return await _dispatch_click(session, x, y, button, count, guard_next=multi_guard)
+            return await _dispatch_click(session, x, y, button, count)
 
     session.mark_dirty()
+    sent_clicks = count
+    stop_reason: str | None = None
     try:
-        _, dialog = await send_watching_dialog(session, dialog_seq, send_click)
+        dispatch_result, dialog = await send_watching_dialog(session, dialog_seq, send_click)
     except ConnectionClosed:
         raise
     except (CDPTimeout, BrowserError) as exc:
@@ -904,6 +990,10 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         return WriteOutcome(
             status="uncertain", dispatched=True, blocks=[text_block(text)], effect="unknown", action_id=action_id
         )
+    if isinstance(dispatch_result, tuple) and len(dispatch_result) == 2:
+        sent_clicks, stop_reason = int(dispatch_result[0]), dispatch_result[1]
+    if dialog is None and stop_reason == "dialog":
+        dialog = session.dialog_since(dialog_seq)
     if dialog is not None:
         await amark_dispatched(
             session,
@@ -1064,6 +1154,40 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
         if late_tab is not None:
             new_tab_id = late_tab
             effect = "new_tab"
+
+    multi_click_aborted = stop_reason is not None and sent_clicks < count
+    if multi_click_aborted:
+        status = "uncertain"
+        lines = [
+            f"已部分点击 {entry.token}（{label}，实际发送 {sent_clicks}/{count} 次）",
+            "dispatch=sent",
+            f"effect={effect}",
+            f"dispatched_clicks={sent_clicks}/{count}",
+            f"stop_reason={stop_reason}",
+            f"status={status} retryable=false",
+            evidence_line(session, action_id),
+        ]
+        if effect == "new_tab" and new_tab_id is not None:
+            lines.append(f"tab_id={new_tab_id}")
+        lines.append(
+            f"第 {sent_clicks} 次点击后目标已移除、禁用、移动或被其他控件覆盖（{stop_reason}），"
+            "已中止后续点击以避免误触其他元素；请用 browser_find(fresh=true) 或 browser_snapshot 核对页面状态，不要重复点击"
+        )
+        text = "\n".join(lines)
+        await arecord_action(
+            session,
+            action_id,
+            "browser_click",
+            status,
+            text,
+            target_ref=entry.token,
+            dispatch=dispatch,
+            reason=f"multi_click_aborted:{stop_reason}",
+            effect=effect,
+        )
+        return WriteOutcome(
+            status=status, dispatched=True, blocks=[text_block(text)], effect=effect, action_id=action_id
+        )
 
     if effect in ("navigation", "new_tab", "dom", "target_detached"):
         session.note_success(session.target_id)

@@ -378,6 +378,36 @@ _IFRAME_ORIGIN_FN = (
     "}"
 )
 
+_IFRAME_VISIBLE_FN = (
+    "function(){"
+    " let frameEl=this;"
+    " while(frameEl){"
+    "   if(!frameEl.isConnected) return false;"
+    "   if(typeof frameEl.getBoundingClientRect==='function'){"
+    "     const r=frameEl.getBoundingClientRect();"
+    "     if(r.width<=0 || r.height<=0) return false;"
+    "   }"
+    "   let cur=frameEl;"
+    "   while(cur && cur.nodeType===1){"
+    "     if(cur.hidden===true) return false;"
+    "     try{"
+    "       const win=(cur.ownerDocument && cur.ownerDocument.defaultView) || window;"
+    "       const cs=win && typeof win.getComputedStyle==='function' ? win.getComputedStyle(cur) : null;"
+    "       if(cs && (cs.display==='none'"
+    "           || (cur===frameEl && (cs.visibility==='hidden' || cs.visibility==='collapse'))"
+    "           || (cs.opacity!=='' && parseFloat(cs.opacity)<=0))) return false;"
+    "     }catch(_){}"
+    "     if(cur.parentElement){ cur=cur.parentElement; continue; }"
+    "     const root=cur.getRootNode ? cur.getRootNode() : null;"
+    "     cur=(root && root.host) ? root.host : null;"
+    "   }"
+    "   const win=frameEl.ownerDocument && frameEl.ownerDocument.defaultView;"
+    "   frameEl=(win && win.frameElement) ? win.frameElement : null;"
+    " }"
+    " return true;"
+    "}"
+)
+
 
 async def ensure_oopif_domains(session: Any, child_session: str) -> None:
     """Enable CDP domains on *child_session* once per attached session."""
@@ -484,6 +514,94 @@ async def _frame_owner_viewport_origin(
     return None
 
 
+async def is_oopif_visible(
+    session: Any,
+    cdp_session_id: str | None,
+    *,
+    timeout: float | None = None,
+) -> bool:
+    """Return False when any ancestor ``<iframe>`` owning *cdp_session_id* is CSS-hidden or zero-sized.
+
+    Walks the OOPIF parent chain up to the main frame, inspecting each owner
+    ``<iframe>`` element and its ancestor chain in its parent document (catching
+    ``visibility:hidden``, ``opacity:0``, ``display:none``, ``hidden``, and 0×0
+    frames whose child ``window.innerWidth``/``innerHeight`` may still be > 0).
+    Defaults to ``True`` on minimal test doubles that do not implement
+    ``DOM.getFrameOwner``.
+    """
+    if not cdp_session_id:
+        return True
+    client = session.require_client()
+    parent_fn = getattr(session, "oopif_parent", None)
+    frame_id_fn = getattr(session, "oopif_frame_id", None)
+    set_frame_id = getattr(session, "set_oopif_frame_id", None)
+    cdp_timeout = float(timeout) if timeout is not None else float(getattr(session.cfg, "cdp_timeout", 5.0))
+    eval_timeout = float(timeout) if timeout is not None else float(getattr(session.cfg, "evaluate_timeout", 5.0))
+    seen: set[str] = set()
+    current: str | None = cdp_session_id
+    while current and current not in seen and len(seen) < 8:
+        seen.add(current)
+        parent = parent_fn(current) if callable(parent_fn) else None
+        parent_sid = parent or session.session_id
+        frame_id = frame_id_fn(current) if callable(frame_id_fn) else ""
+        if not frame_id:
+            try:
+                tree = await client.send("Page.getFrameTree", session_id=current, timeout=cdp_timeout)
+            except ConnectionClosed:
+                raise
+            except (CDPTimeout, BrowserError):
+                return True
+            frame = (tree or {}).get("frameTree", {}).get("frame", {}) if isinstance(tree, dict) else {}
+            frame_id = str(frame.get("id", "")) if isinstance(frame, dict) else ""
+            if frame_id and callable(set_frame_id):
+                set_frame_id(current, frame_id)
+        if not frame_id:
+            current = parent
+            continue
+        try:
+            owner = await client.send(
+                "DOM.getFrameOwner",
+                {"frameId": frame_id},
+                session_id=parent_sid,
+                timeout=cdp_timeout,
+            )
+            owner_backend = int((owner or {}).get("backendNodeId", 0) or 0) if isinstance(owner, dict) else 0
+            if not owner_backend:
+                current = parent
+                continue
+            resolved = await client.send(
+                "DOM.resolveNode",
+                {"backendNodeId": owner_backend},
+                session_id=parent_sid,
+                timeout=cdp_timeout,
+            )
+            owner_object_id = (
+                str(((resolved or {}).get("object") or {}).get("objectId", "")) if isinstance(resolved, dict) else ""
+            )
+            if not owner_object_id:
+                current = parent
+                continue
+            vis_res = await client.send(
+                "Runtime.callFunctionOn",
+                {
+                    "objectId": owner_object_id,
+                    "functionDeclaration": _IFRAME_VISIBLE_FN,
+                    "returnByValue": True,
+                },
+                session_id=parent_sid,
+                timeout=eval_timeout,
+            )
+        except ConnectionClosed:
+            raise
+        except (CDPTimeout, BrowserError):
+            return True
+        val = ((vis_res or {}).get("result") or {}).get("value") if isinstance(vis_res, dict) else None
+        if val is False:
+            return False
+        current = parent
+    return True
+
+
 async def resolve_oopif_offset(session: Any, cdp_session_id: str | None) -> tuple[float, float]:
     """Read *cdp_session_id*'s live content-box origin in main-frame viewport coordinates.
 
@@ -579,7 +697,13 @@ async def _capture_oopif_tree(
         )
         owner_backend = int(owner.get("backendNodeId", 0) or 0)
         owner_node = next((node for node in parent_nodes if node.backend_node_id == owner_backend), None)
-        if owner_node is None or owner_node.bbox[2] <= 0 or owner_node.bbox[3] <= 0:
+        if (
+            owner_node is None
+            or not owner_node.visible
+            or getattr(owner_node, "css_hidden", False)
+            or owner_node.bbox[2] <= 0
+            or owner_node.bbox[3] <= 0
+        ):
             return []
         snapshot, ax = await capture_sources(session, cdp_session_id=child_session)
         # Prefer live content-box origin (consistent with resolve_oopif_offset); fall back to owner bbox.

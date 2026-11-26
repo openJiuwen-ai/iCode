@@ -636,3 +636,239 @@ def test_real_chrome_network_body_capture_and_redaction(monkeypatch: pytest.Monk
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_real_chrome_double_click_guard_native_date_clear_false_and_hidden_cross_oopif(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real-Chrome regression for reload-409a0893 findings:
+    1) double-click stops before click 2 when click 1 replaces the button (0 archive POSTs),
+       while regular double-click still fires click-1;click-2;dblclick-2;
+    2) browser_fill(text="", clear=False) on native date refuses and preserves existing date;
+    3) visibility:hidden cross-origin iframe updates trigger neither page text_changed nor text
+       and stay omitted from snapshot, while a visible cross-origin iframe still matches.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from chrys.extensions import ToolContext, ToolError
+    from smoke_common import chrome_executable
+    import icode_browser_use.extension as ext
+
+    archive_posts: list[str] = []
+    cross_port = [0]
+
+    class _CrossHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path == "/worker":
+                body = (
+                    "<!doctype html><html><head><title>Worker</title></head><body>"
+                    '<p id="w">BACKGROUND-IDLE</p>'
+                    "<script>window.addEventListener('message', e => {"
+                    " if (e.data === 'refresh') setTimeout(() => { document.getElementById('w').textContent = 'BACKGROUND-READY-934'; }, 50);"
+                    "});</script></body></html>"
+                )
+            elif path == "/visible-worker":
+                body = (
+                    "<!doctype html><html><head><title>Visible Worker</title></head><body>"
+                    '<p id="vw">VISIBLE-IDLE</p>'
+                    "<script>window.addEventListener('message', e => {"
+                    " if (e.data === 'refresh') setTimeout(() => { document.getElementById('vw').textContent = 'VISIBLE-READY-555'; }, 50);"
+                    "});</script></body></html>"
+                )
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    cross_srv = ThreadingHTTPServer(("127.0.0.1", 0), _CrossHandler)
+    cross_port[0] = cross_srv.server_address[1]
+    cross_origin = f"http://localhost:{cross_port[0]}"
+    threading.Thread(target=cross_srv.serve_forever, daemon=True).start()
+
+    class _PrimaryHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def _html(self, body: str) -> None:
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self) -> None:
+            n = int(self.headers.get("Content-Length") or 0)
+            payload = self.rfile.read(n).decode("utf-8", errors="replace") if n > 0 else ""
+            if self.path == "/api/archive-row":
+                archive_posts.append(payload)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path == "/moving-double-click":
+                self._html(
+                    "<!doctype html><html><head><title>Document row</title></head><body>"
+                    '<h1>Document row</h1><div id="slot"><button id="open" type="button" style="width:160px;height:40px">Open record</button></div>'
+                    '<p id="msg">Waiting</p><script>'
+                    "document.getElementById('open').addEventListener('click', () => {"
+                    "  const slot = document.getElementById('slot');"
+                    '  slot.innerHTML = \'<button id="arch" type="button" style="width:160px;height:40px">Archive record</button>\';'
+                    "  document.getElementById('arch').addEventListener('click', () => {"
+                    "    fetch('/api/archive-row', {method:'POST', body:'item-42'});"
+                    "    document.getElementById('msg').textContent = 'ARCHIVE-UNEXPECTED';"
+                    "  });"
+                    "});</script></body></html>"
+                )
+            elif path == "/regular-double-click":
+                self._html(
+                    "<!doctype html><html><head><title>Regular dblclick</title></head><body>"
+                    '<button id="open" type="button">Open record</button><p id="ev">EVENTS:</p><script>'
+                    "const ev = document.getElementById('ev'), b = document.getElementById('open');"
+                    "b.addEventListener('click', e => { ev.textContent += 'click-' + e.detail + ';'; });"
+                    "b.addEventListener('dblclick', e => { ev.textContent += 'dblclick-' + e.detail + ';'; });"
+                    "</script></body></html>"
+                )
+            elif path == "/date-contract":
+                self._html(
+                    "<!doctype html><html><head><title>Date contract</title></head><body>"
+                    '<label for="d">Travel date</label><input id="d" type="date" value="2027-05-01" aria-label="Travel date" />'
+                    '<p id="out">DATE:2027-05-01; EVENTS:0</p><script>'
+                    "let n=0; const d=document.getElementById('d'), out=document.getElementById('out');"
+                    "d.addEventListener('input', () => { n++; out.textContent='DATE:'+d.value+'; EVENTS:'+n; });"
+                    "</script></body></html>"
+                )
+            elif path == "/hidden-cross":
+                self._html(
+                    "<!doctype html><html><head><title>Visible dashboard</title></head><body>"
+                    '<h1>Visible dashboard</h1><button id="go" type="button">Refresh background data</button>'
+                    f'<iframe id="bg" title="Background worker" src="{cross_origin}/worker" style="visibility:hidden;width:200px;height:80px"></iframe>'
+                    "<script>document.getElementById('go').addEventListener('click', () => {"
+                    "  document.getElementById('bg').contentWindow.postMessage('refresh', '*');"
+                    "});</script></body></html>"
+                )
+            elif path == "/visible-cross":
+                self._html(
+                    "<!doctype html><html><head><title>Visible cross</title></head><body>"
+                    '<h1>Visible cross</h1><button id="go" type="button">Refresh visible frame</button>'
+                    f'<iframe id="vis" title="Visible worker" src="{cross_origin}/visible-worker" style="width:200px;height:80px"></iframe>'
+                    "<script>document.getElementById('go').addEventListener('click', () => {"
+                    "  document.getElementById('vis').contentWindow.postMessage('refresh', '*');"
+                    "});</script></body></html>"
+                )
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _PrimaryHandler)
+    origin = f"http://127.0.0.1:{srv.server_address[1]}"
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory(prefix="browser-use-409a-e2e-", ignore_cleanup_errors=True) as td:
+            root = Path(td).resolve()
+            (root / "ws").mkdir()
+            if _ORIG_USERPROFILE is not None:
+                monkeypatch.setenv("USERPROFILE", _ORIG_USERPROFILE)
+            if _ORIG_HOME is not None:
+                monkeypatch.setenv("HOME", _ORIG_HOME)
+            if _ORIG_APPDATA is not None:
+                monkeypatch.setenv("APPDATA", _ORIG_APPDATA)
+            if _ORIG_LOCALAPPDATA is not None:
+                monkeypatch.setenv("LOCALAPPDATA", _ORIG_LOCALAPPDATA)
+            monkeypatch.setenv("ICODE_BROWSER_ALLOWED_ORIGINS", f"{origin},{cross_origin}")
+            monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(root / "state"))
+            monkeypatch.setenv("ICODE_BROWSER_HEADLESS", "1")
+            monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0")
+            monkeypatch.setenv("ICODE_BROWSER_EXECUTABLE", str(chrome_executable()))
+            ctx = ToolContext.for_testing(
+                root / "ws",
+                data_dir=root / "data",
+                session_data_dir=root / "session",
+                agent_name="e2e-409a",
+                session_id="e2e-409a",
+            )
+            nav = await ext.browser_navigate(ctx, f"{origin}/moving-double-click")
+            bid = nav.splitlines()[0].split("browser_id: ", 1)[1].strip()
+            try:
+                # 1a. Double-click on self-replacing button aborts click 2 -> 0 archive POSTs
+                dbl_replaced = await ext.browser_click(ctx, bid, "Open record", click_count=2)
+                assert "dispatched_clicks=1/2" in dbl_replaced, dbl_replaced
+                assert "stop_reason=target_detached" in dbl_replaced, dbl_replaced
+                assert "status=uncertain" in dbl_replaced and "status=succeeded" not in dbl_replaced, dbl_replaced
+                await asyncio.sleep(0.15)
+                assert archive_posts == [], archive_posts
+                assert "ARCHIVE-UNEXPECTED" not in await ext.browser_extract(ctx, bid)
+
+                # 1b. Regular double-click still fires click-1;click-2;dblclick-2;
+                await ext.browser_navigate(ctx, f"{origin}/regular-double-click", bid)
+                await ext.browser_click(ctx, bid, "Open record", click_count=2)
+                assert "EVENTS:click-1;click-2;dblclick-2;" in await ext.browser_extract(ctx, bid, query="#ev")
+
+                # 2. Native date clear=False with empty string refuses and keeps prior date
+                await ext.browser_navigate(ctx, f"{origin}/date-contract", bid)
+                await ext.browser_fill(ctx, bid, "Travel date", "2027-05-19", clear=False)
+                assert "DATE:2027-05-19; EVENTS:1" in await ext.browser_extract(ctx, bid, query="#out")
+                with pytest.raises(ToolError) as exc_info:
+                    await ext.browser_fill(ctx, bid, "Travel date", "", clear=False)
+                assert exc_info.value.code == "browser_bad_request"
+                assert "DATE:2027-05-19; EVENTS:1" in await ext.browser_extract(ctx, bid, query="#out")
+                await ext.browser_fill(ctx, bid, "Travel date", "", clear=True)
+                assert "DATE:; EVENTS:2" in await ext.browser_extract(ctx, bid, query="#out")
+
+                # 3a. visibility:hidden cross-origin iframe does not trigger text_changed/text or leak to snapshot
+                snap_hc = await ext.browser_navigate(ctx, f"{origin}/hidden-cross", bid)
+                await asyncio.sleep(0.25)
+                assert "BACKGROUND-IDLE" not in snap_hc, snap_hc
+                click_hc = await ext.browser_click(
+                    ctx,
+                    bid,
+                    "Refresh background data",
+                    expect_condition="text_changed",
+                    expect_timeout_ms=600,
+                    expect_return="text",
+                )
+                assert "expect_status=timeout" in click_hc, click_hc
+                wait_hc = await ext.browser_wait_for(
+                    ctx, bid, condition="text", value="BACKGROUND-READY-934", timeout_ms=400, return_mode="text"
+                )
+                assert "status=timeout" in wait_hc, wait_hc
+                snap_hc2 = await ext.browser_snapshot(ctx, bid)
+                assert "BACKGROUND-READY-934" not in snap_hc2, snap_hc2
+
+                # 3b. Visible cross-origin iframe still triggers text_changed and text
+                await ext.browser_navigate(ctx, f"{origin}/visible-cross", bid)
+                await asyncio.sleep(0.25)
+                click_vc = await ext.browser_click(
+                    ctx,
+                    bid,
+                    "Refresh visible frame",
+                    expect_condition="text_changed",
+                    expect_timeout_ms=1500,
+                    expect_return="text",
+                )
+                assert "expect_status=matched" in click_vc and "VISIBLE-READY-555" in click_vc, click_vc
+            finally:
+                if bid in ext._browsers:
+                    await ext.browser_close(ctx, bid)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        cross_srv.shutdown()
+        cross_srv.server_close()

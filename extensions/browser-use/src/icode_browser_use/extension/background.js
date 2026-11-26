@@ -778,6 +778,12 @@ async function handle(message, sourcePort = port) {
       result = (await chrome.debugger.sendCommand(target, method, params || {})) || {};
     } else if (policy === METHOD_SITE) {
       if (needsPermission(method)) await assertSessionPermission(target);
+      if (method === "Page.captureScreenshot") {
+        const tab = await chrome.tabs.get(target.tabId);
+        if (!tab || !tab.active) {
+          throw new Error("background_tab_throttled: tab is in background");
+        }
+      }
       result = (await chrome.debugger.sendCommand(target, method, params || {})) || {};
     } else {
       throw new Error(`${method} is not allowed in bridge mode`);

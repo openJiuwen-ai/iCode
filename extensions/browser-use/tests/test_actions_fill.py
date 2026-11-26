@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from icode_browser_use.actions import _shared, actionability, fill
-from icode_browser_use.errors import CDPTimeout, StaleRef
+from icode_browser_use.errors import BadRequest, CDPTimeout, StaleRef
 from icode_browser_use.journal import Journal
 from icode_browser_use.snapshot.fusion import FusedNode
 
@@ -1741,3 +1741,60 @@ def test_fill_supports_native_range_and_color_inputs(
                 {"target": "Control", "text": bad_val, "clear": True, "submit": False, "keypress_fallback": False},
             )
         )
+
+
+def test_fill_native_date_empty_with_clear_false_refuses_and_preserves_value(monkeypatch) -> None:
+    session = FakeSession()
+    session.state = {"tag": "input", "editable": False, "focused": True, "text": "2027-05-19"}
+    session.client.state = session.state
+    writes = 0
+
+    async def fake_call_value(_session, _oid, function, **_kwargs):
+        nonlocal writes
+        if "this.focus" in function:
+            return {
+                "type": "object",
+                "value": {
+                    "focused": True,
+                    "editable": False,
+                    "tag": "input",
+                    "type": "date",
+                    "readOnly": False,
+                    "disabled": False,
+                    "text": session.state["text"],
+                },
+            }
+        if "HTMLInputElement.prototype" in function and "accepted" in function:
+            writes += 1
+            session.state["text"] = "" if '""' in function else "2027-06-01"
+            return {
+                "type": "object",
+                "value": {"accepted": True, "value": session.state["text"], "expected": session.state["text"]},
+            }
+        if "this.isContentEditable" in function:
+            return {"type": "object", "value": dict(session.state)}
+        return {}
+
+    monkeypatch.setattr(fill, "call_value", fake_call_value)
+
+    # Empty string with clear=False must fail fast without touching the DOM value.
+    with pytest.raises(BadRequest, match="clear=false"):
+        asyncio.run(
+            fill.run(
+                session,
+                {"target": "Travel date", "text": "", "clear": False, "submit": False, "keypress_fallback": False},
+            )
+        )
+    assert writes == 0
+    assert session.state["text"] == "2027-05-19"
+
+    # Explicit clear=True with empty string clears the native date input.
+    blocks = asyncio.run(
+        fill.run(
+            session,
+            {"target": "Travel date", "text": "", "clear": True, "submit": False, "keypress_fallback": False},
+        )
+    )
+    assert "status=succeeded" in blocks[0]["text"]
+    assert writes == 1
+    assert session.state["text"] == ""

@@ -547,6 +547,11 @@ async def _run_fill(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     focus_type = str(focus_info.get("type") or "").lower()
     native_value = focus_tag in {"input", "textarea"}
     direct_value_input = focus_tag == "input" and focus_type in _DIRECT_VALUE_INPUT_TYPES
+    if direct_value_input and text == "" and not clear:
+        raise BadRequest(
+            f"未修改 {focus_type} 控件：传入空字符串且 clear=false 时不会清空已有值；"
+            f"如需清空请传 clear=true，或传入有效的 {focus_type} 值"
+        )
     before_text: str | None = None
     before_selection: tuple[int, int] | None = None
     before_selection_text = ""

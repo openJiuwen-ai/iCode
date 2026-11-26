@@ -1703,3 +1703,96 @@ def test_click_new_tab_skips_post_write_expect_without_waiting(monkeypatch) -> N
     text = blocks[0]["text"]
     assert "effect=new_tab" in text
     assert "expect_status=skipped reason=new_tab_opened" in text
+
+
+def test_double_click_aborts_second_click_when_first_replaces_target(monkeypatch) -> None:
+    session = FakeSession()
+    attached = True
+    mouse_events: list[tuple[str, int]] = []
+
+    async def fake_call_value(_session, _oid, fn, **_kwargs):
+        if "submitLike" in fn:
+            return {
+                "type": "object",
+                "value": {"connected": attached, "tag": "button", "name": "Open record", "submitLike": False},
+            }
+        return {}
+
+    async def fake_eval(*_args, **_kwargs):
+        return {
+            "href": "https://example.com/row",
+            "mutations": 0 if attached else 1,
+            "expanded": 0,
+            "dialogs": 0,
+            "active": "button",
+        }
+
+    async def fake_hit_test(_s, _oid, _x, _y, _sid, _off, *, entry=None):
+        if attached:
+            return {"connected": True, "disabled": False, "inside": True}
+        return {"connected": False, "disabled": False, "inside": False}
+
+    orig_send = session.client.send
+
+    async def send_detaching(method, params=None, session_id=None, timeout=None):
+        nonlocal attached
+        if method == "Input.dispatchMouseEvent":
+            mouse_events.append((str((params or {}).get("type")), int((params or {}).get("clickCount") or 0)))
+            if (params or {}).get("type") == "mouseReleased" and (params or {}).get("clickCount") == 1:
+                attached = False  # click 1 replaced Open record with Archive record at same coords
+        return await orig_send(method, params=params, session_id=session_id, timeout=timeout)
+
+    session.client.send = send_detaching  # type: ignore[method-assign]
+    monkeypatch.setattr(click, "call_value", fake_call_value)
+    monkeypatch.setattr(click, "eval_value", fake_eval)
+    monkeypatch.setattr(click, "_hit_point", lambda *_a, **_kw: asyncio.sleep(0, result=(50.0, 20.0)))
+    monkeypatch.setattr(click, "_safe_hit_test", fake_hit_test)
+    monkeypatch.setattr(click, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(click.run(session, {"target": "Open record", "button": "left", "click_count": 2}))
+    text = blocks[0]["text"]
+    # Second click must NEVER be dispatched after click 1 detached the target.
+    assert ("mousePressed", 1) in mouse_events and ("mouseReleased", 1) in mouse_events
+    assert ("mousePressed", 2) not in mouse_events and ("mouseReleased", 2) not in mouse_events
+    assert "dispatched_clicks=1/2" in text
+    assert "stop_reason=target_detached" in text
+    assert "status=uncertain retryable=false" in text
+    assert "status=succeeded" not in text
+
+
+def test_double_click_sends_both_clicks_when_target_stays_at_point(monkeypatch) -> None:
+    session = FakeSession()
+    mouse_events: list[tuple[str, int]] = []
+
+    async def fake_call_value(_session, _oid, fn, **_kwargs):
+        if "submitLike" in fn:
+            return {
+                "type": "object",
+                "value": {"connected": True, "tag": "button", "name": "Open", "submitLike": False},
+            }
+        return {}
+
+    async def fake_eval(*_args, **_kwargs):
+        return {"href": "https://example.com/row", "mutations": 0, "expanded": 0, "dialogs": 0, "active": "button"}
+
+    async def fake_hit_test(_s, _oid, _x, _y, _sid, _off, *, entry=None):
+        return {"connected": True, "disabled": False, "inside": True}
+
+    orig_send = session.client.send
+
+    async def record_send(method, params=None, session_id=None, timeout=None):
+        if method == "Input.dispatchMouseEvent":
+            mouse_events.append((str((params or {}).get("type")), int((params or {}).get("clickCount") or 0)))
+        return await orig_send(method, params=params, session_id=session_id, timeout=timeout)
+
+    session.client.send = record_send  # type: ignore[method-assign]
+    monkeypatch.setattr(click, "call_value", fake_call_value)
+    monkeypatch.setattr(click, "eval_value", fake_eval)
+    monkeypatch.setattr(click, "_hit_point", lambda *_a, **_kw: asyncio.sleep(0, result=(50.0, 20.0)))
+    monkeypatch.setattr(click, "_safe_hit_test", fake_hit_test)
+    monkeypatch.setattr(click, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(click.run(session, {"target": "Open", "button": "left", "click_count": 2}))
+    assert ("mousePressed", 1) in mouse_events and ("mouseReleased", 1) in mouse_events
+    assert ("mousePressed", 2) in mouse_events and ("mouseReleased", 2) in mouse_events
+    assert "dispatched_clicks=" not in blocks[0]["text"]

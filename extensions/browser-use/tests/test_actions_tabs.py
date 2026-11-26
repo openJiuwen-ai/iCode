@@ -218,3 +218,52 @@ def test_bridge_switch_page_activates_even_current_background_tab(tmp_path) -> N
     info = asyncio.run(session.switch_page("101"))
     assert ("Target.activateTarget", {"targetId": "101"}) in client.calls
     assert info.active is True
+
+
+def test_bridge_background_screenshot_fails_fast_without_wedging_subsequent_foreground_capture() -> None:
+    import base64
+    from types import SimpleNamespace
+
+    from icode_browser_use.actions import screenshot
+    from icode_browser_use.errors import Unavailable
+
+    class BridgeShotClient:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            self.sent.append(method)
+            if method == "Page.captureScreenshot":
+                return {"data": base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii")}
+            return {}
+
+    class BridgeShotSession:
+        session_id = "101"
+        target_id = "101"
+        cfg = SimpleNamespace(cdp_timeout=20.0)
+        _transport = SimpleNamespace(browser_commands=False)
+
+        def __init__(self) -> None:
+            self.client = BridgeShotClient()
+            self.foreground = False
+
+        def require_client(self):
+            return self.client
+
+        async def current_page_foreground(self):
+            return self.foreground
+
+        def note_success(self, target_id=None) -> None:
+            return None
+
+    session = BridgeShotSession()
+    # Background Bridge tab fails fast without sending Page.captureScreenshot to Chromium.
+    with pytest.raises(Unavailable, match="background_tab_throttled"):
+        asyncio.run(screenshot.run(session, {"full_page": False, "target": "", "annotate": False}))
+    assert session.client.sent == []
+
+    # After switching tab to foreground, screenshot succeeds immediately with a clean PageHandler.
+    session.foreground = True
+    blocks = asyncio.run(screenshot.run(session, {"full_page": False, "target": "", "annotate": False}))
+    assert blocks[0]["type"] == "image"
+    assert session.client.sent == ["Page.captureScreenshot"]
