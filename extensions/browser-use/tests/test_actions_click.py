@@ -1364,3 +1364,39 @@ def test_click_keeps_settle_window_on_focus_change_to_catch_async_new_tab(monkey
     assert "tab_id=t-async-2" in text
     assert "status=succeeded" in text
     assert session.successes == 1
+
+
+def test_click_new_tab_hint_respects_compact_toolset(monkeypatch) -> None:
+    session = FakeSession()
+    session.cfg = SimpleNamespace(cdp_timeout=1.0, evaluate_timeout=1.0, toolset="compact")
+    pages = [SimpleNamespace(target_id="t", url="https://example.com/")]
+    session.pages = lambda: list(pages)  # type: ignore[attr-defined]
+    page = {"href": "https://example.com/", "mutations": 0, "expanded": 0, "dialogs": 0, "active": "a", "toasts": []}
+
+    async def fake_call_value(_session, _object_id, function, **_kwargs):
+        if "submitLike" in function:
+            return {"type": "object", "value": {"connected": True, "tag": "a", "name": "new tab", "submitLike": False}}
+        return {}
+
+    async def fake_eval_value(*_args, **_kwargs):
+        return page
+
+    async def fake_hit_point(*_args, **_kwargs):
+        return 10.0, 10.0
+
+    async def fake_dispatch(*_args, **_kwargs):
+        pages.append(SimpleNamespace(target_id="t-child-9", url="https://example.com/tall"))
+
+    monkeypatch.setattr(click, "call_value", fake_call_value)
+    monkeypatch.setattr(click, "eval_value", fake_eval_value)
+    monkeypatch.setattr(click, "_hit_point", fake_hit_point)
+    monkeypatch.setattr(click, "_dispatch_click", fake_dispatch)
+    monkeypatch.setattr(click, "_sleep", lambda _s: asyncio.sleep(0))
+
+    blocks = asyncio.run(click.run(session, {"target": "new tab", "button": "left", "click_count": 1}))
+    text = blocks[0]["text"]
+    assert "effect=new_tab" in text
+    assert "tab_id=t-child-9" in text
+    assert "可用 browser_tab_switch" not in text
+    assert "compact 工具集不包含标签切换工具" in text
+    assert "https://example.com/tall" in text

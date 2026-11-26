@@ -363,3 +363,49 @@ def test_unnamed_form_control_falls_back_to_readable_name_or_id_only() -> None:
 
     best = resolve_ambiguity(rank(nodes, "dropdown"))
     assert best.node.tag == "select"
+
+
+def test_single_hidden_exact_match_resolves_and_single_weak_match_does_not_claim_ambiguity() -> None:
+    # A hidden exact-name button ("Stop generating") scores 50 (< MIN_TOP_SCORE=55),
+    # yet is the sole exact candidate: wait_for(hidden, "Stop generating") must resolve it.
+    hidden_stop = FusedNode(
+        backend_node_id=10,
+        frame_id="f",
+        target_id="t",
+        role="button",
+        name="Stop generating",
+        tag="button",
+        nth=1,
+        bbox=(0.0, 0.0, 0.0, 0.0),
+        in_viewport=False,
+        visible=False,
+        interactive=True,
+        ref=1,
+        epoch=1,
+    )
+    ranked = rank([hidden_stop], "Stop generating")
+    assert len(ranked) == 1 and ranked[0].score < 55 and ranked[0].exact_match is True
+    assert resolve_ambiguity(ranked).node is hidden_stop
+
+    # A single weak non-exact candidate still refuses blind selection, without claiming "目标不唯一".
+    weak = FusedNode(
+        backend_node_id=11,
+        frame_id="f",
+        target_id="t",
+        role="generic",
+        name="Long unrelated report footer",
+        tag="div",
+        nth=1,
+        bbox=(0.0, 1200.0, 100.0, 20.0),
+        in_viewport=False,
+        visible=True,
+        interactive=False,
+        ref=2,
+        epoch=1,
+    )
+    weak_ranked = rank([weak], "report")
+    assert len(weak_ranked) == 1 and weak_ranked[0].score < 55 and weak_ranked[0].exact_match is False
+    with pytest.raises(TargetAmbiguous) as exc_info:
+        resolve_ambiguity(weak_ranked)
+    assert "目标不唯一" not in str(exc_info.value)
+    assert "目标匹配度过低" in str(exc_info.value)

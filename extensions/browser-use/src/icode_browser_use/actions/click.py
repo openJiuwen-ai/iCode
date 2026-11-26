@@ -894,7 +894,23 @@ async def _run_click(session: Any, arguments: dict[str, Any]) -> WriteOutcome:
     ]
     if effect == "new_tab" and new_tab_id is not None:
         lines.append(f"tab_id={new_tab_id}")
-        lines.append(f"已在新标签页打开（tab_id={new_tab_id}）；可用 browser_tab_switch 切换查看")
+        toolset = str(getattr(getattr(session, "cfg", None), "toolset", "full") or "full").strip().lower()
+        if toolset == "compact":
+            new_url = ""
+            pages_fn = getattr(session, "pages", None)
+            if callable(pages_fn):
+                for page in pages_fn():
+                    if str(getattr(page, "target_id", "") or "") == new_tab_id:
+                        new_url = str(getattr(page, "url", "") or "")
+                        break
+            url_hint = f"，url={new_url}" if new_url else ""
+            lines.append(
+                f"已在新标签页打开（tab_id={new_tab_id}{url_hint}）；"
+                "当前 compact 工具集不包含标签切换工具，请勿调用 browser_tab_switch"
+                "（如需查看新页面可直接 browser_navigate 到目标 URL，或改用 full 工具集）"
+            )
+        else:
+            lines.append(f"已在新标签页打开（tab_id={new_tab_id}）；可用 browser_tab_switch 切换查看")
     if verified_control:
         lines.append("verified=control_state")
     if where == "corner":

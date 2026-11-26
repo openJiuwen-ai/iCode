@@ -13,17 +13,31 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import secrets
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 from .._proc import atomic_write_private
-from ..errors import BrowserError, CDPTimeout, ConnectionClosed, Unavailable
+from ..errors import Blocked, BrowserError, CDPTimeout, ConnectionClosed, Unavailable
+from ..policy import canonical_origin
 from .host import compute_server_hmac, write_bridge_pointer
 from .protocol import MAX_TCP_MESSAGE_BYTES, ProtocolError, encode_message, read_async_frame
 
 EventHandler = Callable[[dict[str, Any], str | None], Awaitable[None] | None]
+
+
+_BRIDGE_BLOCKED_RE = re.compile(r"^(?:site_permission_required|site_blocked):\s*([^\s()]+)")
+
+
+def _bridge_error_exception(raw: Any) -> BrowserError:
+    """Map structured Bridge extension errors to typed :class:`BrowserError` subclasses."""
+    text = str(raw)
+    match = _BRIDGE_BLOCKED_RE.match(text)
+    if match is not None:
+        return Blocked(text, blocked_origin=canonical_origin(match.group(1)))
+    return Unavailable(text)
 
 
 async def _read_frame(reader: asyncio.StreamReader) -> dict[str, Any] | None:
@@ -195,7 +209,7 @@ class BridgeClient:
             return
         error = message.get("error")
         if error:
-            future.set_exception(Unavailable(str(error)))
+            future.set_exception(_bridge_error_exception(error))
             return
         result = message.get("result")
         future.set_result(result if isinstance(result, dict) else {})

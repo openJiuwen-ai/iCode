@@ -127,3 +127,19 @@ def test_navigation_failures_are_never_retried(failure):
     with pytest.raises((TimeoutError, Unavailable)):
         asyncio.run(navigate.run(session, {"url": "https://example.com/next"}))
     assert client.send.await_count == 1
+
+
+def test_navigate_from_about_blank_updates_url_and_allows_relative_followup(snapshot_stubs):
+    from icode_browser_use.cdp.client import _ORDERED_EVENT_METHODS
+
+    assert {"Page.frameNavigated", "Page.lifecycleEvent", "Page.frameStoppedLoading"}.issubset(_ORDERED_EVENT_METHODS)
+
+    session = make_session("about:blank")
+    blocks = asyncio.run(navigate.run(session, {"url": "https://example.com/controls"}))
+    assert "about:blank" not in blocks[0]["text"]
+    assert "https://example.com/controls" in blocks[0]["text"]
+    assert session.snapshot.url == "https://example.com/controls"
+
+    # Follow-up relative navigation immediately succeeds instead of failing on about:blank.
+    asyncio.run(navigate.run(session, {"url": "/tall"}))
+    assert session.require_client().send.await_args_list[-1].args[1] == {"url": "https://example.com/tall"}

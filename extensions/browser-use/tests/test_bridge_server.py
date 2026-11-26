@@ -13,7 +13,7 @@ from icode_browser_use.bridge.protocol import PROTOCOL_VERSION, encode_message
 from icode_browser_use.bridge.server import BridgeServer
 from icode_browser_use.bridge.transport import BridgeTransport
 from icode_browser_use.config import BrowserConfig
-from icode_browser_use.errors import CDPTimeout, ConnectionClosed, Unavailable
+from icode_browser_use.errors import Blocked, CDPTimeout, ConnectionClosed, Unavailable
 from icode_browser_use.session import BrowserSession
 
 
@@ -519,3 +519,42 @@ def test_bridge_transport_hands_the_extension_capabilities_to_the_client(tmp_pat
     new.client = GatingClient()
     client, _ = asyncio.run(BridgeTransport(config, server_factory=lambda _cfg: new).start())
     assert "page_log_gated" in client.capabilities
+
+
+def test_bridge_site_permission_errors_raise_blocked_with_origin(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        server = BridgeServer(tmp_path / "bridge.json")
+        await server.start()
+        waiter = asyncio.create_task(server.wait_for_client(timeout=2))
+        reader, writer = await _connect(server)
+        client = await waiter
+
+        for error_msg, expected_origin in (
+            (
+                "site_permission_required: http://127.0.0.1:18765 (open the iCode Browser Bridge extension and allow this site)",
+                "http://127.0.0.1:18765",
+            ),
+            ("site_blocked: https://blocked.example", "https://blocked.example"),
+        ):
+            call = asyncio.create_task(client.send("Page.navigate", {"url": expected_origin}))
+            req = await _recv(reader)
+            await _send(writer, {"id": req["id"], "error": error_msg})
+            with pytest.raises(Blocked) as exc_info:
+                await call
+            assert exc_info.value.code == "browser_blocked"
+            assert exc_info.value.blocked_origin == expected_origin
+            assert error_msg in str(exc_info.value)
+
+        # Unrelated extension failures still map to Unavailable.
+        other = asyncio.create_task(client.send("Page.reload", {}))
+        req = await _recv(reader)
+        await _send(writer, {"id": req["id"], "error": "tab 1 is not owned by this bridge"})
+        with pytest.raises(Unavailable):
+            await other
+
+        await client.aclose()
+        writer.close()
+        await writer.wait_closed()
+        await server.aclose()
+
+    asyncio.run(scenario())

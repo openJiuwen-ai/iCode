@@ -42,6 +42,7 @@ class Candidate:
 
     node: FusedNode
     score: int
+    exact_match: bool = False
 
 
 def _norm(text: str) -> str:
@@ -197,13 +198,19 @@ def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
         if key:
             seen_names[key] = seen_names.get(key, 0) + 1
 
+    target = _norm(spec)
     candidates: list[Candidate] = []
     for node in nodes:
         if not _matches_spec(node, spec):
             continue
         value = score(node, spec, seen_names=seen_names)
         if value > 0:
-            candidates.append(Candidate(node=node, score=value))
+            name = _norm(node.name)
+            hint = _norm(node.text_hint)
+            hint_fallback = _use_hint_as_name(node, name, hint)
+            effective_name = hint if hint_fallback else name
+            exact = bool(target and effective_name and effective_name == target and not (node.name_from_href and name))
+            candidates.append(Candidate(node=node, score=value, exact_match=exact))
     candidates = _drop_redundant_ancestors(candidates, spec)
     candidates.sort(key=lambda candidate: candidate.score, reverse=True)
     return candidates
@@ -238,10 +245,15 @@ def resolve_ambiguity(candidates: list[Candidate]) -> Candidate:
     details += "\n用上面某个候选的完整 @eN#epoch ref 作为 target；landmark 名称（navigation/main）不适合当目标"
     if any(not candidate.node.in_viewport for candidate in top):
         details += "\n部分候选不在当前视口，可先 scroll 后重拍快照"
-    message = f"目标不唯一，候选：{_summary(top)}"
+    if len(ordered) == 1:
+        if ordered[0].score >= MIN_TOP_SCORE or ordered[0].exact_match:
+            return ordered[0]
+        message = f"目标匹配度过低（仅找到 1 个弱匹配候选）：{_summary(top)}"
+        raise TargetAmbiguous(message, candidates=top, details=details)
 
+    message = f"目标不唯一，候选：{_summary(top)}"
     if ordered[0].score < MIN_TOP_SCORE:
         raise TargetAmbiguous(message, candidates=top, details=details)
-    if len(ordered) == 1 or ordered[0].score - ordered[1].score >= AMBIGUITY_GAP:
+    if ordered[0].score - ordered[1].score >= AMBIGUITY_GAP:
         return ordered[0]
     raise TargetAmbiguous(message, candidates=top, details=details)

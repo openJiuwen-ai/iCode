@@ -98,7 +98,8 @@ _MAX_PAGES = 8
 #: Reads viewport/scroll/DPR in one shot for coordinate conversion.
 _METRICS_EXPR = (
     "(() => ({w: window.innerWidth, h: window.innerHeight, x: window.scrollX,"
-    " y: window.scrollY, dpr: window.devicePixelRatio || 1, title: document.title}))()"
+    " y: window.scrollY, dpr: window.devicePixelRatio || 1, title: document.title,"
+    " href: location.href}))()"
 )
 
 #: Confirms a resolved node is still connected and its coarse fingerprint holds.
@@ -1545,6 +1546,14 @@ class BrowserSession:
         value = response.get("result", {}).get("value") or {}
         if cdp_session_id:
             title = str(value.get("title", ""))
+        else:
+            live_href = str(value.get("href") or "")
+            if live_href and (live_href.lower() != "about:blank" or not url):
+                url = live_href
+                self._snapshot.url = live_href
+                page = self._pages.get(self._target_id)
+                if page is not None:
+                    page.url = live_href
         return FrameInfo(
             frame_id=frame_id,
             url=url,

@@ -141,12 +141,25 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     title = await _page_title(session)
     # A navigation is a new generation: ``Page.frameNavigated`` already bumped the
     # epoch, so we must NOT ask ``register_snapshot`` to bump again (dom_changed=False).
-    nodes, _frame = await capture_and_register(session, url=session.snapshot.url or url, title=title, dom_changed=False)
+    # Never let an initial ``about:blank`` mask the live URL read by frame metrics or
+    # the requested navigation target.
+    nav_url = session.snapshot.url or ""
+    if nav_url.strip().lower() == "about:blank":
+        nav_url = ""
+    nodes, frame = await capture_and_register(session, url=nav_url, title=title, dom_changed=False)
+    live_url = str(getattr(frame, "url", "") or "")
+    if live_url.strip().lower() == "about:blank":
+        live_url = ""
+    snap_url = session.snapshot.url or ""
+    if snap_url.strip().lower() == "about:blank":
+        snap_url = ""
+    page_url = live_url or snap_url or url
+    if (session.snapshot.url or "").strip().lower() in {"", "about:blank"} and page_url:
+        session.snapshot.url = page_url
     login_error = detect_login(session, nodes)
     if login_error is not None:
         raise login_error
 
-    page_url = session.snapshot.url or url
     text = render_snapshot(session, nodes, url=page_url, title=title)
     text = f"{text}\n{stats_line(session, nodes)}"
     hint = login_hint(page_url)
