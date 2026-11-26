@@ -587,6 +587,7 @@ async def test_unmount_drains_title_updater_after_engine_shutdown(
 
     class _Host:
         _clipboard = "queued"
+        _takeover_listener = None
         _startup_task = None
         _update_check_task = None
         _left_behind_task = None

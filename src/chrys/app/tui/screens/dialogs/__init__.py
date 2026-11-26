@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.dialogs.file_picker import FilePickerMode as FilePickerMode
     from chrys.app.tui.screens.dialogs.image_compression import ImageCompressionDialog as ImageCompressionDialog
     from chrys.app.tui.screens.dialogs.man_page import ManPageDialog as ManPageDialog
+    from chrys.app.tui.screens.dialogs.session_in_use import SessionInUseDialog as SessionInUseDialog
     from chrys.app.tui.screens.dialogs.session_title import SessionTitleDialog as SessionTitleDialog
     from chrys.app.tui.screens.dialogs.vision_unsupported import VisionUnsupportedDialog as VisionUnsupportedDialog
 
@@ -38,6 +39,7 @@ _EXPORTS = {
     "FilePickerMode": "file_picker",
     "ImageCompressionDialog": "image_compression",
     "ManPageDialog": "man_page",
+    "SessionInUseDialog": "session_in_use",
     "SessionTitleDialog": "session_title",
     "VisionUnsupportedDialog": "vision_unsupported",
 }

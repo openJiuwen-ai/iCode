@@ -1815,7 +1815,7 @@
         ["awaitable", "await self._bus.publish(Error(code='no_state_store', message='State store not configured', session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._permits.prepare_session_transition('restore')", "unresolved"],
         ["awaitable", "await self._session.guard.acquire_for_restore_async(event.session_id, timeout=SESSION_RESTORE_ACTIVE_LOCK_TIMEOUT_SECONDS)", "unresolved"],
-        ["awaitable", "await reject_restore(Error(code='session_in_use', message=self._session.guard.conflict_message(event.session_id), session_id=event.session_id))", "unresolved"],
+        ["awaitable", "await reject_restore(Error(code='session_in_use', message=message, session_owner_generation=generation, session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._persistence.load_chat_for_restore(event.session_id, prefer_recovery=prefer_recovery, ignore_recovery=event.ignore_recovery, repair=not defer_file_repairs)", "unresolved"],
         ["awaitable", "await reject_restore(Error(code='session_in_use', message=str(exc), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await reject_restore(Error(code='session_kind_mismatch', message=str(exc), session_id=event.session_id))", "unresolved"],

@@ -37,6 +37,9 @@ _CONFIRM_MESSAGE = msg("tui.confirm.message", fallback="Are you sure?")
 _CONFIRM_LABEL = msg("tui.confirm.button.confirm", fallback="Confirm")
 _CANCEL_LABEL = msg("tui.confirm.button.cancel", fallback="Cancel")
 
+SESSION_IN_USE_TITLE = msg("tui.main.session_in_use.title", fallback="Session In Use")
+SESSION_IN_USE_OK = msg("tui.main.session_in_use.ok", fallback="OK")
+
 _DEFAULT_CONFIRM_TITLE = _CONFIRM_TITLE.bind()
 _DEFAULT_CONFIRM_MESSAGE = _CONFIRM_MESSAGE.bind()
 _DEFAULT_CONFIRM_LABEL = _CONFIRM_LABEL.bind()
@@ -191,7 +194,7 @@ class ConfirmDialog(BaseDialog[bool]):
         width = self._dialog_width(viewport.width)
         container = self.query_one("#confirm-container")
         container.styles.width = width
-        buttons = list(self.query_one("#confirm-buttons").query(Button))
+        buttons = [button for button in self.query_one("#confirm-buttons").query(Button) if button.display]
         stacked = sum(max(16, cell_len(str(button.label)) + 4) + 2 for button in buttons) + 2 > width - 2
         row = self.query_one("#confirm-buttons")
         row.styles.layout = "vertical" if stacked else "horizontal"

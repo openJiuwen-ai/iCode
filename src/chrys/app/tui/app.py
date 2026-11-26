@@ -57,6 +57,7 @@ from chrys.app.tui.graphics.detect import ask_terminal
 from chrys.app.tui.i18n import LocaleController, render_str
 from chrys.app.tui.notifications import NotificationService, NotificationSettings
 from chrys.app.tui.session_lookup import SESSION_IN_USE, SESSION_NOT_FOUND, lookup_session
+from chrys.app.tui.session_takeover import TakeoverListener
 from chrys.app.tui.support.gc_freeze import (
     GC_FREEZE_ENABLED,
     GC_FREEZE_WATCHDOG_PERIOD_SECONDS,
@@ -307,6 +308,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         self._startup_loading_indicator: ChrysLoadingIndicator | None = None
         self._bus = event_bus
         self._engine = engine
+        self._takeover_listener: TakeoverListener | None = None
         if settings_handle is not None and settings is not None and settings is not settings_handle.settings:
             error_message = "Pass either settings or settings_handle, not two different ones."
             raise ValueError(error_message)
@@ -1085,8 +1087,45 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                     yield Static(Text(TUI_LOGO.strip("\n")), id="startup-logo")
                 yield self._startup_loading_indicator
 
+    def enable_session_takeover(self) -> None:
+        """Only the native CLI owns its entire process; embedded apps never opt in."""
+        self._takeover_listener = TakeoverListener(
+            lambda: self._engine.session.guard.takeover_owner, self._takeover_idle, self._finish_takeover
+        )
+
+    def _takeover_idle(self) -> bool:
+        screen = self._main_screen
+        engine = self._engine
+        tasks = engine.session.background_tasks
+        return (
+            not self._exit
+            and not self._closing
+            and screen is not None
+            and self.screen is screen
+            and screen.idle_for_takeover()
+            and engine.session_id is not None
+            and engine.session.guard.owns(engine.session_id)
+            and not engine.session.shutting_down
+            and engine.session.pending_conversation_save is None
+            and not engine.permits.agent_loading
+            and not engine.side_questions_block_takeover
+            and not engine.execution_busy()
+            and engine.turns.turn_state.lease.workflow_start_refusal() is None
+            and not (tasks and tasks.running)
+        )
+
+    def _finish_takeover(self) -> None:
+        """Commit the native process exit before another input or session transition can run."""
+        self._engine.session.mark_closing()
+        self.exit()  # Unmount drains engine children, saves, and releases the active lock.
+
     async def on_mount(self) -> None:
         """Start the main screen after the optional loading shell paints."""
+        if self._takeover_listener is not None:
+            try:
+                self._engine.session.guard.takeover_port = await self._takeover_listener.start()
+            except OSError:
+                logger.debug("Session takeover unavailable", exc_info=True)
         open_clipboard(self)
         await self._program_status_reporter.subscribe()
         self._set_terminal_title_for_cwd()
@@ -1393,6 +1432,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def on_unmount(self) -> None:
         """Shutdown engine on exit."""
+        if self._takeover_listener is not None:
+            self._takeover_listener.close()
         stop_clipboard(self)
         try:
             # While the terminal can still be written (Unmount precedes the
@@ -1679,6 +1720,8 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             # On Windows, the ProactorEventLoop shutdown can raise KeyboardInterrupt
             # from GetQueuedCompletionStatus when a pending signal races with asyncio
             # runner cleanup.  The app has already exited at this point — safe to suppress.
+            if isinstance(app, ChrysApp) and not running_under_textual_web_driver():
+                app.enable_session_takeover()
             with contextlib.suppress(KeyboardInterrupt):
                 app.run()
             if selected is not None and app.return_code:

@@ -1299,6 +1299,8 @@ class Error(Event):
     display_message: MessageRef | None = None
     display_hint: MessageRef | None = None
     """Shown after ``display_message``; never without it."""
+    session_owner_generation: str | None = None
+    """Public lock generation for a contested chat restore from a takeover-capable TUI."""
     facts: FailureFacts | None = None
     """What a failure that raised is (a turn's model or runtime failure); None for Chrys's own refusals and checks."""
     refused_input: RefusedInput | None = None

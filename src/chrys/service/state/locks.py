@@ -8,12 +8,14 @@ import asyncio
 import contextlib
 import json
 import os
+import secrets
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.platform.files import atomic_write_text
 from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.once_close import finish_close
@@ -23,6 +25,7 @@ from chrys.service.state.store import (
     session_active_lock_path,
     session_active_owner_path,
 )
+from chrys.service.state.takeover import TakeoverOwner, credential_path, read_owner_record
 
 if TYPE_CHECKING:
     from chrys.service.state.store import StateStore
@@ -36,6 +39,9 @@ class ActiveSessionGuard:
     """Owns the long-lived lock that marks a Chrys session active."""
 
     def __init__(self, state_store: StateStore | None) -> None:
+        self._takeover_file: Path | None = None
+        self.takeover_port: int | None = None
+        self.takeover_owner: TakeoverOwner | None = None
         self._state_store = state_store
         self._lock: FileLock | None = None
 
@@ -111,6 +117,11 @@ class ActiveSessionGuard:
         lock = self._lock
         if lock is None:
             return
+        self.takeover_owner = None
+        if self._takeover_file is not None:
+            with contextlib.suppress(OSError):
+                self._takeover_file.unlink(missing_ok=True)
+            self._takeover_file = None
         with contextlib.suppress(OSError):
             lock.path.with_suffix(".json").unlink()
         self._lock = None
@@ -118,9 +129,15 @@ class ActiveSessionGuard:
 
     def conflict_message(self, session_id: str) -> str:
         """Return a user-facing message for an active-session conflict."""
-        detail = self._format_owner(self._read_owner(session_id))
+        return self.conflict_details(session_id)[0]
+
+    def conflict_details(self, session_id: str) -> tuple[str, str | None]:
+        owner = self._read_owner(session_id)
+        generation = owner.get("takeover_generation") if owner.get("session_id") == session_id else None
+        detail = self._format_owner(owner)
         return (
-            f"Session '{session_short_id(session_id)}' is already open in another {APP_DISPLAY_NAME} instance{detail}."
+            f"Session '{session_short_id(session_id)}' is already open in another {APP_DISPLAY_NAME} instance{detail}.",
+            generation if isinstance(generation, str) and len(generation) == 64 else None,
         )
 
     def _sessions_root_dir(self, session_id: str) -> Path | None:
@@ -145,25 +162,35 @@ class ActiveSessionGuard:
         return path
 
     def _write_owner(self, session_id: str, path: Path) -> None:
-        owner = {
+        owner: dict[str, object] = {
             "session_id": session_id,
             "pid": os.getpid(),
             "started_at": datetime.now(UTC).isoformat(),
         }
+        import psutil
+
+        with contextlib.suppress(psutil.Error, OSError):
+            if (parent := psutil.Process().parent()) is not None:
+                owner["parent_name"] = sanitize_legacy_scalar(parent.name())[:128]
+        if self.takeover_port is not None:
+            with contextlib.suppress(OSError, ValueError, RuntimeError):
+                generation = secrets.token_hex(32)
+                self._takeover_file = credential_path(path, session_id, generation)
+                self.takeover_owner = TakeoverOwner.advertise(self.takeover_port, path, session_id, generation)
+                owner["takeover_generation"] = generation
         with contextlib.suppress(OSError):
-            atomic_write_text(path, json.dumps(owner, indent=2, ensure_ascii=False))
+            atomic_write_text(path, json.dumps(owner))
 
     def _read_owner(self, session_id: str) -> dict[str, object]:
         path = self._owner_path(session_id)
-        if path is None or not path.exists():
-            return {}
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError, OSError:
-            return {}
-        return data if isinstance(data, dict) else {}
+        return read_owner_record(path) if path is not None else {}
 
     @staticmethod
     def _format_owner(owner: dict[str, object]) -> str:
         pid = owner.get("pid")
-        return f" (pid={pid})" if pid else ""
+        if type(pid) is not int or pid <= 0:
+            return ""
+        parent = owner.get("parent_name")
+        if isinstance(parent, str) and parent:
+            return f" (pid={pid}, parent={sanitize_legacy_scalar(parent)[:128]})"
+        return f" (pid={pid})"

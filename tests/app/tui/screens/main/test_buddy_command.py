@@ -125,6 +125,7 @@ async def test_pet_is_judged_once_the_commands_given_before_it_have_landed(monke
     hold = HeldSaveFile(monkeypatch)
 
     controller.handle("mute")
+    assert controller.busy
     controller.handle("pet")
 
     await wait_for(hold.entered.is_set, description="the mute has reached the save file")

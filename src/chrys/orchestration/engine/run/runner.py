@@ -461,6 +461,7 @@ class TurnRunner:
         published with the pass's ``TurnStarted``.
         """
         self._turn_state.lease.advance_conversation_revision()
+        self._session.pending_conversation_save = object()
         # Fresh and retry turns alike make this launch's surface the session's last one.
         self._session.mark_surface()
         self._fire_turn_started()
