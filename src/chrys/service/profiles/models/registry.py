@@ -91,7 +91,21 @@ class ModelProfileRegistry:
         # (avoids the user creating two profiles that only differ in
         # case and then being unable to tell them apart in listings).
         seen_names: dict[str, str] = {}
+        # Duplicate ids collapse into a single registry entry (the later file
+        # wins), silently hiding the earlier profile.  Warn so the user knows a
+        # file is shadowed instead of losing it on the next delete.
+        seen_ids: dict[str, Path] = {}
         for path, profile in profiles.loaded:
+            if profile.id in seen_ids:
+                logger.warning(
+                    "Duplicate model profile id %r found (files: %s, %s) — "
+                    "the later file overrides the earlier one; rename or delete one to avoid losing it.",
+                    profile.id,
+                    seen_ids[profile.id],
+                    path,
+                )
+            else:
+                seen_ids[profile.id] = path
             key = profile.name.casefold()
             if key in seen_names:
                 logger.warning(
