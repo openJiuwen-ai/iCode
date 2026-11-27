@@ -40,8 +40,11 @@ set differs from the cached one (a directory added or removed) gets a new
 sandbox, which supersedes the cached one for that root. A cwd outside that
 set does not add a bind and does not get a sandbox of its own. The command
 reuses the writable sandbox built from the workspace mounts, and the
-outside directory is only the process cwd. Binding ``/`` is not special:
-the base policy remounts ``/`` read-only.
+outside directory is only the process cwd. A mount of the filesystem root
+``/`` raises ``SandboxError`` before any sandbox is created: the sandbox
+builds its own directories at its root, which a bind of the host root
+would make host directories. A workspace root of ``/`` is refused before
+the bundled server is started.
 
 A physical cwd that is outside every workspace mount and lies under a
 protected tree is rejected with ``SandboxError`` before a sandbox is
@@ -202,6 +205,7 @@ _UNENCODABLE_PATH = "Sandbox path could not be encoded for the sandbox request."
 _HIDDEN_WORKDIR = (
     "Sandbox command working directory is inside the iCode config or session directory, which the sandbox hides."
 )
+_ROOT_MOUNT = "The sandbox cannot mount the filesystem root (/). Use a project directory as the workspace instead."
 _HIDDEN_HOST_PATHS_FEATURE = "hidden_host_paths"
 _SERVER_CANNOT_HIDE = (
     "The sandbox service at sandbox.url cannot hide the iCode config and session directories, and this "
@@ -410,6 +414,8 @@ async def run_shell(
     """
     if not linux:
         raise SandboxError("Sandbox execution is supported only on Linux.")
+    if workspace_root is not None:
+        _reject_root_mounts(_workspace_mounts(workspace_root, workspace_dirs))
 
     # Imported here so a non-Linux call does not touch the client, and so this
     # module can define SandboxError before the client imports it back.
@@ -1024,6 +1030,7 @@ def _bind_body(mounts: Sequence[str], mode: str) -> dict[str, Any]:
     are left as the caller passed them. Either mode names the directories the
     server must hide wherever a bind would show them.
     """
+    _reject_root_mounts(mounts)
     binds: list[dict[str, str]] = [{"host_path": path, "sandbox_path": path, "mode": mode} for path in mounts]
     if mode == _READ_WRITE:
         binds.extend(_sensitive_readonly_binds(mounts))
@@ -1036,6 +1043,18 @@ def _bind_body(mounts: Sequence[str], mode: str) -> dict[str, Any]:
             }
         },
     }
+
+
+def _reject_root_mounts(mounts: Sequence[str]) -> None:
+    """Raise when a mount is the filesystem root.
+
+    The sandbox creates its own directory at its root after the binds.
+    Under a bind of the host root that is a directory on the host: an
+    ordinary account cannot create it, so the sandbox would never start,
+    and an account that can would leave it on the host.
+    """
+    if any(posixpath.normpath(path).strip("/") == "" for path in mounts):
+        raise SandboxError(_ROOT_MOUNT)
 
 
 def _hidden_host_paths() -> tuple[str, ...]:

@@ -8,6 +8,7 @@ HTTP is mocked; nothing listens and nothing is spawned.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from tests.service.sandbox.test_backend import (
     _forbid_host_spawn,
     _install,
     _mount_body,
+    _paths,
     _run_workspace,
     _Script,
     _Settings,
@@ -29,6 +31,8 @@ from tests.service.sandbox.test_backend import (
 from tests.support.symlinks import symlink_or_skip
 
 _OUTSIDE_WORKDIR = "Sandbox command working directory is outside the workspace and was not mounted."
+_POSIX_ROOT = pytest.mark.skipif(sys.platform == "win32", reason="the sandbox runs on Linux only; / is not a root here")
+_ROOT_MOUNT = "The sandbox cannot mount the filesystem root (/). Use a project directory as the workspace instead."
 
 
 @pytest.fixture(autouse=True)
@@ -251,3 +255,75 @@ async def test_symlink_into_a_protected_tree_is_rejected(tmp_path: Path, monkeyp
     assert str(caught.value) == _OUTSIDE_WORKDIR
     assert "chrys-sandbox-secret" not in str(caught.value)
     assert _create_bodies(script) == []
+
+
+@_POSIX_ROOT
+@pytest.mark.parametrize("root", ["/", "//", "/.", "/opt/.."])
+async def test_the_filesystem_root_as_the_workspace_is_refused_before_the_server_starts(
+    monkeypatch: pytest.MonkeyPatch,
+    root: str,
+):
+    script = _Script()
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError) as caught:
+        await _run_workspace(_Settings(sandbox_url=""), cwd=root, workspace_root=root)
+    assert str(caught.value) == _ROOT_MOUNT
+    assert _SPAWN_CALLS == []
+    assert _paths(script) == []
+
+
+@_POSIX_ROOT
+async def test_a_symlink_to_the_filesystem_root_as_the_workspace_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    link = tmp_path / "everything"
+    symlink_or_skip(link, Path("/"), target_is_directory=True)
+    script = _Script()
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError) as caught:
+        await _run_workspace(_Settings(), cwd=str(link), workspace_root=str(link))
+    assert str(caught.value) == _ROOT_MOUNT
+    assert _paths(script) == []
+
+
+@_POSIX_ROOT
+async def test_the_filesystem_root_as_an_extra_workspace_dir_is_refused(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError) as caught:
+        await _run_workspace(
+            _Settings(), cwd="/opt/chrys-sandbox-work", workspace_root="/opt/chrys-sandbox-work", workspace_dirs=("/",)
+        )
+    assert str(caught.value) == _ROOT_MOUNT
+    assert _paths(script) == []
+
+
+@_POSIX_ROOT
+async def test_the_filesystem_root_outside_the_workspace_is_only_the_process_cwd(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    _install(monkeypatch, script)
+    result = await _run_workspace(_Settings(), cwd="/", workspace_root="/opt/chrys-sandbox-work")
+    assert result.exit_code == 0
+    assert _create_bodies(script) == [_mount_body(os.path.realpath("/opt/chrys-sandbox-work"), "rw")]
+    assert _exec_workdirs(script) == ["/"]
+
+
+@_POSIX_ROOT
+async def test_a_legacy_first_cwd_at_the_filesystem_root_creates_no_sandbox(monkeypatch: pytest.MonkeyPatch):
+    script = _Script()
+    _install(monkeypatch, script)
+    settings = _Settings()
+    with pytest.raises(SandboxError) as caught:
+        await run_shell(settings, argv=("echo", "one"), cwd="/", timeout_seconds=12, linux=True)
+    assert str(caught.value) == _ROOT_MOUNT
+    assert _create_bodies(script) == []
+    assert backend._writable_root is None
+    first = await run_shell(
+        settings, argv=("echo", "two"), cwd="/opt/chrys-sandbox-project", timeout_seconds=12, linux=True
+    )
+    reused = await run_shell(settings, argv=("echo", "three"), cwd="/", timeout_seconds=12, linux=True)
+    assert first.exit_code == 0
+    assert reused.exit_code == 0
+    assert _create_bodies(script) == [_mount_body("/opt/chrys-sandbox-project", "rw")]
+    assert _exec_workdirs(script) == ["/opt/chrys-sandbox-project", "/"]

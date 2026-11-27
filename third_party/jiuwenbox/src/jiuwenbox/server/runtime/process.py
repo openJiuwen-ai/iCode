@@ -329,6 +329,15 @@ def _reject_binds_onto_private_tmpfs(policy: SecurityPolicy) -> None:
             )
 
 
+def _last_printable_line(text: str) -> str:
+    """The last non-blank line of ``text`` with non-printable characters dropped."""
+    for line in reversed(text.splitlines()):
+        printable = "".join(char for char in line if char.isprintable()).strip()
+        if printable:
+            return printable
+    return ""
+
+
 def _rebind_under_private_tmpfs(config: BwrapConfig) -> None:
     """Restore binds that the private ``/tmp``, ``/run``, and ``/var/run`` hide.
 
@@ -2923,8 +2932,13 @@ class ProcessRuntime(RuntimeAdapter):
         log_excerpt = self._read_daemon_startup_log(startup_log_file)
         message = f"Sandbox daemon exited during startup with code {proc.returncode}."
         if log_excerpt:
+            # Clients that show one line show the first; the daemon's last
+            # line (bwrap's refusal, a traceback's exception) is the reason.
+            reason = _last_printable_line(log_excerpt)
+            if reason:
+                message = f"{message[:-1]}: {reason}"
             message = (
-                f"{message} Captured daemon stdout/stderr (truncated to "
+                f"{message}\nCaptured daemon stdout/stderr (truncated to "
                 f"{DAEMON_STARTUP_LOG_MAX_BYTES} bytes):\n{log_excerpt}"
             )
         else:

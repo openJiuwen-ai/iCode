@@ -67,6 +67,8 @@ Other working directories you add to the session are writable in the same way. A
 
 A workspace or working directory that is exactly `/tmp`, `/run` or `/var/run` cannot be used. The sandbox gives each command its own empty, private version of those directories, so the Shell command fails with an error. Start iCode in a folder inside one of them instead, such as `/tmp/project`.
 
+The filesystem root `/` cannot be the workspace or one of its working directories either. The Shell command fails with an error before any sandbox starts. Start iCode in a project folder instead. A command can still run with `/` as its directory when the workspace is somewhere else.
+
 The sandbox limits the command's process. It is not a restore point for the workspace.
 
 ## Network access
