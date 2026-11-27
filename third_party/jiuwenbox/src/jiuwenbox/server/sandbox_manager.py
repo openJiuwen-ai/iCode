@@ -62,6 +62,14 @@ class CreateDelivery:
         self.registered: SandboxRef | None = None
 
 
+_StartEpoch = tuple[int | None, datetime | None]
+
+
+def _start_epoch(ref: SandboxRef) -> _StartEpoch:
+    """Which start of the sandbox ``ref`` describes; every start sets a new pid and time."""
+    return ref.pid, ref.started_at
+
+
 def _exec_failed_before_dispatch(result: ExecResult) -> bool:
     """True only when this exec cannot have reached the daemon.
 
@@ -803,10 +811,23 @@ class SandboxManager:
         self.audit.log(AuditEventType.SANDBOX_STOPPED, sandbox_id)
         return ref
 
-    async def restart_sandbox(self, sandbox_id: str) -> SandboxRef:
+    async def restart_sandbox(
+        self,
+        sandbox_id: str,
+        *,
+        only_from: _StartEpoch | None = None,
+    ) -> SandboxRef:
+        """Stop and start the sandbox again.
+
+        With ``only_from``, a process sandbox that is no longer on that start
+        is returned as it is: another caller already restarted the daemon
+        that failed, and stopping again would kill the one it started.
+        """
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
             if ref.runtime != RUNTIME_CONCH:
+                if only_from is not None and _start_epoch(ref) != only_from:
+                    return ref
                 await self._stop_sandbox_unlocked(sandbox_id)
                 return await self._start_sandbox_unlocked(sandbox_id)
             runtime = self._runtime_for(ref)
@@ -916,6 +937,7 @@ class SandboxManager:
             self._mark_active(ref)
             runtime = self._runtime_for(ref)
             runtime_name = ref.runtime
+            epoch = _start_epoch(ref)
 
         # One audit row per exec, emitted **after** the runtime returns so
         # the payload covers both intent (command/workdir) and outcome
@@ -942,7 +964,13 @@ class SandboxManager:
                     sandbox_id,
                     result.exit_code,
                 )
-                await self.restart_sandbox(sandbox_id)
+                restarted = await self.restart_sandbox(sandbox_id, only_from=epoch)
+                if restarted.phase != SandboxPhase.READY:
+                    detail = restarted.error_message or "no detail"
+                    raise SandboxStateError(
+                        f"Cannot exec in sandbox '{sandbox_id}': restart left it "
+                        f"{restarted.phase.value}: {detail}"
+                    )
                 result = await runtime.exec(sandbox_id, runtime_request)
         except asyncio.CancelledError:
             # The HTTP client dropped, or this exec task was cancelled.

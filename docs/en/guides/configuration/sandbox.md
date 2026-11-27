@@ -49,6 +49,8 @@ Approval still applies before the command runs. If the command needs approval, i
 
 Sandbox mode does not stream terminal output live. The tool result shows the command's output and exit code when the command has finished.
 
+The sandbox keeps the first 16 MiB of the command's standard output and the first 16 MiB of its standard error. The command keeps running after it passes that size, but the rest of that output is dropped, and the output ends with a note that it was truncated.
+
 Sandbox mode does not move a command to the background. A command that reaches its time limit ends in the sandbox. It does not become a background task, **Ctrl+T** does not move it to the background, and it does not appear under **Background Tasks**.
 
 Stopping the command, or the command reaching its time limit, stops that command only. That includes a process the command started in its own session. Other commands still running in the same sandbox keep going. When the command finishes, a process it started that is still running is stopped too. This holds even when the sandbox cannot create a cgroup (see [Memory and processes](#memory-and-processes)).
@@ -62,6 +64,8 @@ The writable area is the workspace of this session: the directory where iCode wa
 Commands in the sandbox cannot see iCode's own settings folder (`~/.chrys`) or the folder where your sessions are saved. When the workspace contains them, for example because you started iCode in your home directory, they look empty and read-only inside the sandbox. A Shell command whose directory is inside one of them is refused with an error. Starting iCode in a folder inside `~/.chrys` still works, and that folder is visible as usual.
 
 Other working directories you add to the session are writable in the same way. Adding or removing one takes effect at the next Shell command: a directory you removed is no longer writable there. When a command's directory is reached through a symbolic link, the command runs in the real directory the link points to.
+
+A workspace or working directory that is exactly `/tmp`, `/run` or `/var/run` cannot be used. The sandbox gives each command its own empty, private version of those directories, so the Shell command fails with an error. Start iCode in a folder inside one of them instead, such as `/tmp/project`.
 
 The sandbox limits the command's process. It is not a restore point for the workspace.
 
@@ -92,6 +96,8 @@ Changing these settings takes effect the next time the agent is reloaded, not in
 Save the user settings file, then quit iCode and start it again so the agent reloads. Shell commands after that reload use the new settings. A turn that is already running keeps the previous settings: iCode does not move a command into or out of the sandbox partway through that turn.
 
 When `sandbox.network` changes, iCode starts a new sandbox with the new network for the next Shell command. A command already running in the old sandbox is not stopped: it finishes there, and iCode closes the old sandbox once no command is using it.
+
+When you set `sandbox.url` or turn the sandbox off, iCode closes the sandbox it started itself at the next Shell command. A command still running there finishes first. If you later switch `sandbox.url` back to a service iCode already used, it continues in the sandbox it had on that service.
 
 ## Windows and macOS
 

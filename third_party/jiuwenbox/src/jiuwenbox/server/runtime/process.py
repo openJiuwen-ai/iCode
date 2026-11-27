@@ -311,6 +311,23 @@ def _hidden_host_dirs(policy: SecurityPolicy) -> list[str]:
     return found
 
 
+def _reject_binds_onto_private_tmpfs(policy: SecurityPolicy) -> None:
+    """Refuse a host bind whose sandbox path is ``/tmp``, ``/run`` or ``/var/run`` itself.
+
+    The private tmpfs is mounted on that directory after every bind, so the
+    host directory would be hidden and writes would never reach it. A bind
+    below one of them is re-bound on top of the tmpfs and stays usable.
+    """
+    private = set(_PRIVATE_RUNTIME_DIRS)
+    for mount in policy.filesystem_policy.bind_mounts:
+        destination = os.path.normpath(mount.sandbox_path)
+        if destination in private:
+            raise RuntimeError(
+                f"Host path {mount.host_path!r} cannot be mounted at {destination}: the sandbox "
+                f"replaces {destination} with a private directory; use a directory inside it"
+            )
+
+
 def _rebind_under_private_tmpfs(config: BwrapConfig) -> None:
     """Restore binds that the private ``/tmp``, ``/run``, and ``/var/run`` hide.
 
@@ -809,6 +826,27 @@ class _ExecIpcSlot:
             self._sock = None
 
 
+class _FdOwnerClaim:
+    """Who closes a call's cgroup fds: the worker thread once it runs, else its cancel.
+
+    A cancelled executor future whose work item had not started never runs
+    it, so the worker cannot be the only closer. Each side claims before
+    touching the fds; only the first claim owns them, so they are closed
+    exactly once and never after their numbers could be reused.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._claimed = False
+
+    def claim(self) -> bool:
+        with self._lock:
+            if self._claimed:
+                return False
+            self._claimed = True
+            return True
+
+
 @dataclasses.dataclass(frozen=True)
 class _DaemonExecCall:
     """Inputs to one IPC ``exec`` request.
@@ -827,6 +865,7 @@ class _DaemonExecCall:
     timeout: float | None
     ipc: _ExecIpcSlot
     cgroup_fds: tuple[int, ...] = ()
+    fd_owner: _FdOwnerClaim = dataclasses.field(default_factory=_FdOwnerClaim)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -852,6 +891,7 @@ class _DaemonBgExecCall:
     workdir: str | None
     stdin_bytes: bytes | None
     cgroup_fds: tuple[int, ...] = ()
+    fd_owner: _FdOwnerClaim = dataclasses.field(default_factory=_FdOwnerClaim)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1664,6 +1704,7 @@ class ProcessRuntime(RuntimeAdapter):
             ]
 
         config.seccomp_fd = seccomp_fd
+        _reject_binds_onto_private_tmpfs(policy)
         _cover_host_runtime_directories(config)
         _rebind_under_private_tmpfs(config)
         # The command cgroup is not mounted. The host passes only that
@@ -2622,8 +2663,8 @@ class ProcessRuntime(RuntimeAdapter):
         self._ensure_launcher_dir(sandbox_id)
         self._prepare_cgroup(sandbox_id, policy)
         if policy.network.mode == NetworkMode.GUARDED:
-            # The forwarder connects to this socket. Landlock anchors a file
-            # rule on its parent, so /run (a private tmpfs) is writable.
+            # The forwarder connects to this socket. Landlock anchors the rule
+            # on the socket itself; the rest of /run stays read-only.
             socket_path = "/run/guarded-proxy.sock"
             if socket_path not in policy.filesystem_policy.read_write:
                 policy.filesystem_policy.read_write.append(socket_path)
@@ -3378,6 +3419,9 @@ class ProcessRuntime(RuntimeAdapter):
         call's socket before the command could start, or while the read was
         in flight. The daemon is still healthy in that case.
         """
+        if not call.fd_owner.claim():
+            # The cancel came first and closed the cgroup fds.
+            return None
         request_payload: dict[str, Any] = {
             "command": list(call.command),
             "stdin_size": len(call.stdin_bytes or b""),
@@ -3451,6 +3495,8 @@ class ProcessRuntime(RuntimeAdapter):
         self,
         call: _DaemonBgExecCall,
     ) -> dict[str, Any]:
+        if not call.fd_owner.claim():
+            return {"ok": False, "started": False, "stderr": "background exec was cancelled"}
         request_payload: dict[str, Any] = {
             "job_id": call.job_id,
             "command": list(call.command),
@@ -3585,21 +3631,18 @@ class ProcessRuntime(RuntimeAdapter):
         if failure is not None:
             return failure
         slot = _ExecIpcSlot()
-        worker = loop.run_in_executor(
-            None,
-            self._run_daemon_exec,
-            _DaemonExecCall(
-                socket_path=socket_path,
-                sandbox_id=sandbox_id,
-                command=list(request.command),
-                env=dict(request.env) if request.env else None,
-                workdir=request.workdir,
-                stdin_bytes=request.stdin_data,
-                timeout=request.timeout,
-                ipc=slot,
-                cgroup_fds=tuple(cgroup_fds),
-            ),
+        call = _DaemonExecCall(
+            socket_path=socket_path,
+            sandbox_id=sandbox_id,
+            command=list(request.command),
+            env=dict(request.env) if request.env else None,
+            workdir=request.workdir,
+            stdin_bytes=request.stdin_data,
+            timeout=request.timeout,
+            ipc=slot,
+            cgroup_fds=tuple(cgroup_fds),
         )
+        worker = loop.run_in_executor(None, self._run_daemon_exec, call)
         try:
             try:
                 result = await worker
@@ -3610,6 +3653,8 @@ class ProcessRuntime(RuntimeAdapter):
                 # clear ``_daemon_socket_ready``: the daemon is still healthy,
                 # and the worker's EBADF must not reach the transport handlers.
                 slot.cancel_and_close()
+                if call.fd_owner.claim():
+                    _close_cgroup_fds(call.cgroup_fds)
                 self._release_command_cgroup(command_cgroup)
                 command_cgroup = None
                 _consume_abandoned_worker(worker)
@@ -4094,20 +4139,26 @@ class ProcessRuntime(RuntimeAdapter):
                 error_message=failure.stderr,
             )
         loop = asyncio.get_running_loop()
+        call = _DaemonBgExecCall(
+            socket_path=socket_path,
+            job_id=request.job_id,
+            command=list(request.command),
+            env=dict(request.env) if request.env else None,
+            workdir=request.workdir,
+            stdin_bytes=request.stdin_data,
+            cgroup_fds=tuple(cgroup_fds),
+        )
         try:
             response = await loop.run_in_executor(
-                None,
-                self._exec_background_via_daemon_blocking,
-                _DaemonBgExecCall(
-                    socket_path=socket_path,
-                    job_id=request.job_id,
-                    command=list(request.command),
-                    env=dict(request.env) if request.env else None,
-                    workdir=request.workdir,
-                    stdin_bytes=request.stdin_data,
-                    cgroup_fds=tuple(cgroup_fds),
-                ),
+                None, self._exec_background_via_daemon_blocking, call
             )
+        except asyncio.CancelledError:
+            # Nobody gets this job's id, so its cgroup is released: a job the
+            # worker still starts is killed and cannot join it.
+            if call.fd_owner.claim():
+                _close_cgroup_fds(call.cgroup_fds)
+            self._release_command_cgroup(command_cgroup)
+            raise
         except (ConnectionError, ValueError) as exc:
             self._release_command_cgroup(command_cgroup)
             self._daemon_socket_ready[sandbox_id] = False

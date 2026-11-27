@@ -70,7 +70,7 @@ def _flag_args(args: list[str], flag: str, arity: int) -> list[tuple[str, ...]]:
     return found
 
 
-def test_explicit_read_write_bind_suppresses_same_destination_read_only(
+def test_explicit_read_write_bind_suppresses_same_destination_enumerated_read_only(
     jiuwenbox_importable: None,
 ) -> None:
     from jiuwenbox.supervisor.bwrap import BwrapConfig
@@ -83,11 +83,12 @@ def test_explicit_read_write_bind_suppresses_same_destination_read_only(
             ("/host/home", "/home/user"),
         ],
         ro_binds=[
-            ("/host/opt-ro", "/opt"),
+            ("/opt", "/opt"),
             ("/host/workspace-ro", "/workspace"),
             ("/host/secret", "/opt/secret"),
             ("/host/ssh", "/home/user/.ssh"),
         ],
+        enumerated_ro_binds=[("/opt", "/opt")],
         remount_ro=["/opt", "/opt/secret", "/workspace", "/home/user", "/home/user/.ssh", "/tmp"],
         tmpfs_mounts=["/tmp"],
     )
@@ -100,11 +101,18 @@ def test_explicit_read_write_bind_suppresses_same_destination_read_only(
     assert "/workspace" in bind_destinations
     assert "/home/user" in bind_destinations
     assert "/opt" not in ro_destinations
-    assert "/workspace" not in ro_destinations
     assert "/home/user" not in ro_destinations
     assert "/opt" not in remounts
-    assert "/workspace" not in remounts
     assert "/home/user" not in remounts
+    # A read-only bind the policy named itself protects the path: it is
+    # mounted over the read-write bind and stays remounted read-only.
+    workspace_binds = [
+        (args[index], args[index + 1])
+        for index in range(len(args) - 2)
+        if args[index] in {"--bind", "--ro-bind"} and args[index + 2] == "/workspace"
+    ]
+    assert workspace_binds == [("--bind", "/host/workspace"), ("--ro-bind", "/host/workspace-ro")]
+    assert "/workspace" in remounts
     assert "/opt/secret" in ro_destinations
     assert "/opt/secret" in remounts
     assert "/home/user/.ssh" in ro_destinations
@@ -927,3 +935,110 @@ async def test_served_create_cancel_does_not_leave_ready_sandboxes(
         with contextlib.suppress(Exception):
             await asyncio.wait_for(serving, 15)
         listener.close()
+
+
+def test_policy_read_only_cover_wins_over_a_read_write_bind_of_the_same_path(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+) -> None:
+    from jiuwenbox.models.policy import BindMount, BindRootEntries, FilesystemPolicy, SecurityPolicy
+    from jiuwenbox.supervisor.bwrap import BwrapConfig
+
+    root = tmp_path / "root"
+    (root / "opt").mkdir(parents=True)
+    (root / "srv").mkdir()
+    opt, srv = str(root / "opt"), str(root / "srv")
+    policy = SecurityPolicy(
+        filesystem_policy=FilesystemPolicy(
+            bind_root_entries=[BindRootEntries(host_root=str(root), sandbox_path="/", mode="ro")],
+            bind_mounts=[
+                BindMount(host_path=opt, sandbox_path="/opt", mode="rw"),
+                BindMount(host_path=srv, sandbox_path="/srv", mode="rw"),
+                BindMount(host_path=srv, sandbox_path="/srv", mode="ro"),
+            ],
+        ),
+    )
+    args = BwrapConfig.from_policy(policy, ["true"]).to_args()
+    binds = [
+        (args[index], args[index + 2])
+        for index in range(len(args) - 2)
+        if args[index] in {"--bind", "--ro-bind"} and args[index + 2] in {"/opt", "/srv"}
+    ]
+    assert binds == [("--bind", "/opt"), ("--bind", "/srv"), ("--ro-bind", "/srv")]
+
+
+def _run_bpf(program: bytes, *, arch: int, nr: int, args: tuple[int, ...] = ()) -> int:
+    """Evaluate the classic-BPF subset the seccomp builder emits against one syscall."""
+    values = (*args, 0, 0, 0, 0, 0, 0)[:6]
+    data = struct.pack("<iIQ", nr, arch, 0) + b"".join(struct.pack("<Q", value & (2**64 - 1)) for value in values)
+    instructions = [struct.unpack_from("<HBBI", program, offset) for offset in range(0, len(program), 8)]
+    accumulator = 0
+    pc = 0
+    while True:
+        code, jump_true, jump_false, k = instructions[pc]
+        if code == 0x20:
+            (accumulator,) = struct.unpack_from("<I", data, k)
+            pc += 1
+        elif code == 0x15:
+            pc += 1 + (jump_true if accumulator == k else jump_false)
+        elif code == 0x05:
+            pc += 1 + k
+        elif code == 0x06:
+            return k
+        else:
+            raise AssertionError(f"unexpected BPF opcode {code:#x}")
+
+
+def test_the_signal_guard_protects_the_daemon_and_spares_the_own_process_group(
+    jiuwenbox_importable: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenbox.supervisor import seccomp
+
+    monkeypatch.setattr(seccomp, "_machine", lambda: "x86_64")
+    monkeypatch.setattr(seccomp, "_get_syscall_numbers", seccomp._fallback_syscall_numbers)
+    table = seccomp._fallback_syscall_numbers()
+    program = seccomp._assemble_bpf([])
+    arch = seccomp._audit_arch()
+    allow = seccomp.SECCOMP_RET_ALLOW
+    eperm = seccomp.SECCOMP_RET_ERRNO | seccomp.ERRNO_EPERM
+    enosys = seccomp.SECCOMP_RET_ERRNO | seccomp.ERRNO_ENOSYS
+
+    def verdict(name: str, *args: int) -> int:
+        return _run_bpf(program, arch=arch, nr=table[name], args=args)
+
+    assert verdict("kill", 0, 15) == allow
+    assert verdict("kill", 18, 9) == allow
+    assert verdict("kill", 2, 9) == eperm
+    assert verdict("kill", -1, 9) == eperm
+    assert verdict("kill", -2, 9) == eperm
+    assert verdict("tgkill", 18, 2, 9) == eperm
+    assert verdict("tgkill", 18, 19, 9) == allow
+    for name in ("rt_sigqueueinfo", "rt_tgsigqueueinfo", "pidfd_open"):
+        assert verdict(name, 2) == eperm, name
+        assert verdict(name, 1) == eperm, name
+        assert verdict(name, 18) == allow, name
+    assert verdict("pidfd_send_signal", 3, 9) == enosys
+    assert verdict("getpid") == allow
+
+
+def test_a_landlock_rule_for_a_file_grants_only_that_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A read-write rule for ``/run/guarded-proxy.sock`` must not make all of ``/run`` writable."""
+    import ctypes
+    import importlib.util
+
+    stub_libc = types.SimpleNamespace(syscall=lambda *_args: 0, prctl=lambda *_args: 0)
+    monkeypatch.setattr(ctypes, "CDLL", lambda *_args, **_kwargs: stub_libc)
+    source = Path(__file__).resolve().parents[3] / "third_party/jiuwenbox/src/jiuwenbox/supervisor/landlock_launcher.py"
+    spec = importlib.util.spec_from_file_location("landlock_launcher_under_test", source)
+    assert spec is not None and spec.loader is not None
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+
+    _read_only, read_write = launcher._access_masks(3)
+    socket_file = tmp_path / "guarded-proxy.sock"
+    socket_file.write_bytes(b"")
+    file_rights = launcher._rule_access(str(socket_file), read_write)
+    assert file_rights == read_write & launcher.FILE_ACCESS
+    assert not file_rights & (launcher.MAKE_REG | launcher.MAKE_DIR | launcher.REMOVE_FILE | launcher.MAKE_SOCK)
+    assert launcher._rule_access(str(tmp_path), read_write) == read_write

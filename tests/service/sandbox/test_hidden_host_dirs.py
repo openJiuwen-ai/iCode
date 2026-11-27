@@ -123,6 +123,7 @@ def test_a_bind_dropped_for_an_explicit_writable_destination_hides_nothing(tmp_p
         command=["true"],
         rw_binds=[(str(work), "/w")],
         ro_binds=[(home, "/w")],
+        enumerated_ro_binds=[(home, "/w")],
         hidden_host_dirs=[chrys],
     )
     assert _masks(config.to_args()) == []

@@ -93,7 +93,8 @@ async def _exec(manager: object, runtime: _Runtime) -> tuple[object, list[str]]:
 
     restarted: list[str] = []
 
-    async def _restart(sandbox_id: str) -> object:
+    async def _restart(sandbox_id: str, *, only_from: object = None) -> object:
+        del only_from
         restarted.append(sandbox_id)
         return manager._sandboxes[sandbox_id]  # type: ignore[attr-defined]
 
@@ -181,3 +182,115 @@ def test_client_read_is_strictly_longer_than_post_kill_drain(jiuwenbox_importabl
     assert drain < sandbox_daemon._IPC_CLIENT_MARGIN_SECONDS
     assert drain < process.EXEC_IPC_READ_MARGIN_SECONDS
     assert process.DEFAULT_EXEC_IPC_READ_TIMEOUT_SECONDS == 300.0 + process.EXEC_IPC_READ_MARGIN_SECONDS
+
+
+class _RestartingRuntime:
+    """A process runtime whose first ``failing`` execs fail before dispatch.
+
+    Those execs wait until all of them are in flight, so each saw the same
+    daemon fail. ``create`` raises when ``create_error`` is set.
+    """
+
+    def __init__(self, failing: int) -> None:
+        import asyncio
+
+        self._failing = failing
+        self._entered = 0
+        self._all_in = asyncio.Event()
+        self.execs = 0
+        self.stops = 0
+        self.creates = 0
+        self.create_error: Exception | None = None
+
+    async def exec(self, sandbox_id: str, request: object) -> object:
+        from jiuwenbox.models.sandbox import ExecResult
+
+        del sandbox_id, request
+        self.execs += 1
+        if self._entered < self._failing:
+            self._entered += 1
+            if self._entered == self._failing:
+                self._all_in.set()
+            await self._all_in.wait()
+            return ExecResult(exit_code=1, stderr="daemon IPC channel unavailable", failed_before_dispatch=True)
+        return ExecResult(exit_code=0, stdout="ok", stderr="")
+
+    async def stop(self, sandbox_id: str, timeout: float = 10.0) -> None:
+        del sandbox_id, timeout
+        self.stops += 1
+
+    async def create(self, *, sandbox_id: str, policy_path: object, env: object) -> int:
+        del sandbox_id, policy_path, env
+        self.creates += 1
+        if self.create_error is not None:
+            raise self.create_error
+        return 100 + self.creates
+
+    async def is_running(self, sandbox_id: str) -> bool:
+        del sandbox_id
+        return True
+
+    async def get_sandbox_ip_address(self, sandbox_id: str) -> None:
+        del sandbox_id
+        return
+
+
+def _restartable_manager(tmp_path: Path, runtime: _RestartingRuntime) -> object:
+    from datetime import UTC, datetime
+
+    from jiuwenbox.models.policy import SecurityPolicy
+
+    manager = _manager(tmp_path, runtime)  # type: ignore[arg-type]
+    ref = manager._sandboxes[_SANDBOX_ID]  # type: ignore[attr-defined]
+    ref.pid = 7
+    ref.started_at = datetime.now(UTC)
+    manager._policies[_SANDBOX_ID] = SecurityPolicy()  # type: ignore[attr-defined]
+    return manager
+
+
+async def test_concurrent_undispatched_execs_restart_the_daemon_once(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+) -> None:
+    """The second exec does not stop the daemon the first one's restart started."""
+    import asyncio
+
+    from jiuwenbox.server.sandbox_manager import SandboxExecRequest
+
+    runtime = _RestartingRuntime(failing=2)
+    manager = _restartable_manager(tmp_path, runtime)
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            *(
+                manager.exec_in_sandbox(_SANDBOX_ID, SandboxExecRequest(command=list(_COMMAND), timeout=30))  # type: ignore[attr-defined]
+                for _ in range(2)
+            )
+        ),
+        timeout=10,
+    )
+
+    assert [result.stdout for result in results] == ["ok", "ok"]
+    assert runtime.stops == 1
+    assert runtime.creates == 1
+    assert runtime.execs == 4
+    assert manager._sandboxes[_SANDBOX_ID].pid == 101  # type: ignore[attr-defined]
+
+
+async def test_failed_restart_is_reported_instead_of_a_second_exec(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+) -> None:
+    from jiuwenbox.server.runtime.errors import SandboxStateError
+    from jiuwenbox.server.sandbox_manager import SandboxExecRequest
+
+    runtime = _RestartingRuntime(failing=1)
+    runtime.create_error = RuntimeError("bubblewrap is missing")
+    manager = _restartable_manager(tmp_path, runtime)
+
+    with pytest.raises(SandboxStateError, match="restart left it error: bubblewrap is missing"):
+        await manager.exec_in_sandbox(  # type: ignore[attr-defined]
+            _SANDBOX_ID,
+            SandboxExecRequest(command=list(_COMMAND), timeout=30),
+        )
+    assert runtime.execs == 1
+    assert runtime.creates == 1

@@ -561,3 +561,39 @@ def test_workspace_under_private_tmp_is_rebound_after_the_tmpfs(
     assert tmpfs < workspace < cover
     assert _effective_mount(argv, "/tmp") == ("--tmpfs", "/tmp")
     assert argv.count("/home/dev/ws") == 2
+
+
+@pytest.mark.parametrize("destination", ["/tmp", "/tmp/", "/run", "/var/run"])
+def test_host_bind_onto_a_private_directory_is_refused(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    destination: str,
+) -> None:
+    """The private tmpfs would hide a workspace mounted at ``/tmp`` itself, so the start fails instead."""
+    from jiuwenbox.models.policy import BindMount, FilesystemPolicy, SecurityPolicy
+    from jiuwenbox.server.runtime import process as process_module
+    from jiuwenbox.server.runtime.process import ProcessRuntime
+
+    monkeypatch.setattr(process_module, "JIUWENBOX_HOME", tmp_path / "missing-home")
+
+    def build(sandbox_path: str) -> list[str]:
+        policy = SecurityPolicy(
+            filesystem_policy=FilesystemPolicy(
+                bind_mounts=[BindMount(host_path=str(tmp_path), sandbox_path=sandbox_path, mode="rw")],
+            ),
+        )
+        return ProcessRuntime()._build_sandbox_bwrap_args(
+            "box",
+            policy,
+            ["true"],
+            workdir=None,
+            sandbox_env=None,
+            netns_attached=False,
+            seccomp_fd=None,
+        )
+
+    with pytest.raises(RuntimeError, match="use a directory inside it"):
+        build(destination)
+    argv = build(destination.rstrip("/") + "/work")
+    assert argv[argv.index(str(tmp_path)) - 1] == "--bind"

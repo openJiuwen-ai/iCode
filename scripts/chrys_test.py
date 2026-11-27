@@ -312,7 +312,10 @@ REGULAR_RULES = (
     ),
     TestRule(
         "tests/service/sandbox/test_exec_cancel_closes_ipc.py",
-        ("third_party/jiuwenbox/src/jiuwenbox/server/runtime/process.py",),
+        (
+            "third_party/jiuwenbox/src/jiuwenbox/server/runtime/process.py",
+            "third_party/jiuwenbox/src/jiuwenbox/supervisor/sandbox_daemon.py",
+        ),
     ),
     TestRule(
         "tests/service/sandbox/test_daemon_cancel_and_timeout.py",

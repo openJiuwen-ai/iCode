@@ -15,12 +15,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import types
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -316,8 +319,8 @@ def _route_to_harness(harness: _Harness, tmp_path: Path, monkeypatch: pytest.Mon
         runtime="process",
     )
 
-    async def _restart(sandbox_id: str) -> object:
-        raise AssertionError(f"cancel restarted {sandbox_id}")
+    async def _restart(sandbox_id: str, *, only_from: object = None) -> object:
+        raise AssertionError(f"cancel restarted {sandbox_id} from {only_from!r}")
 
     monkeypatch.setattr(manager, "restart_sandbox", _restart)
     monkeypatch.setattr(sandbox_routes, "_mgr", lambda: manager)
@@ -464,3 +467,113 @@ async def test_client_drop_through_the_served_app_closes_the_exec_socket(
                 lambda: _ROUTE in harness.finished_commands(),
                 description="served exec worker finished",
             )
+
+
+def _write_end_closed(read_fd: int) -> bool:
+    """Whether every write end of the pipe is closed: the read end then sees EOF."""
+    try:
+        return os.read(read_fd, 1) == b""
+    except BlockingIOError:
+        return False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="cgroup fds are passed on POSIX hosts")
+@pytest.mark.parametrize("kind", ["exec", "background"])
+async def test_a_call_cancelled_while_queued_closes_its_cgroup_fds(
+    jiuwenbox_importable: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    """A cancelled executor future never runs its work item, so the worker cannot close the fds."""
+    from jiuwenbox.server.runtime.base import RuntimeBackgroundExecRequest, RuntimeExecRequest
+    from jiuwenbox.server.runtime.process import ProcessRuntime
+
+    runtime = ProcessRuntime()
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    command_cgroup = object()
+    released: list[object] = []
+    ran: list[str] = []
+    monkeypatch.setattr(runtime, "_disk_floor_result", lambda _sandbox_id: None)
+    monkeypatch.setattr(runtime, "_writable_binds_are_low", lambda _sandbox_id: False)
+    monkeypatch.setattr(runtime, "_reap_background_processes", lambda _sandbox_id: None)
+    monkeypatch.setattr(runtime, "_control_socket_host_path", lambda _sandbox_id: tmp_path / "control.sock")
+    monkeypatch.setattr(runtime, "_daemon_ipc_available", lambda _sandbox_id: True)
+    monkeypatch.setattr(runtime, "_take_command_cgroup_fds", lambda _sandbox_id: (command_cgroup, [write_fd], None))
+    monkeypatch.setattr(runtime, "_release_command_cgroup", released.append)
+    monkeypatch.setattr(runtime, "_run_daemon_exec", lambda _call: ran.append("exec"))
+    monkeypatch.setattr(runtime, "_exec_background_via_daemon_blocking", lambda _call: ran.append("background"))
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    unblock = threading.Event()
+    pool.submit(unblock.wait)
+    loop = asyncio.get_running_loop()
+    queued: list[object] = []
+    submit = loop.run_in_executor
+    workers = (runtime._run_daemon_exec, runtime._exec_background_via_daemon_blocking)
+
+    def run_in_pool(executor: Executor | None, func: Callable[..., object], *args: object) -> asyncio.Future[object]:
+        if func not in workers:
+            return submit(executor, func, *args)
+        queued.append(func)
+        return submit(pool, func, *args)
+
+    monkeypatch.setattr(loop, "run_in_executor", run_in_pool)
+    if kind == "exec":
+        call = runtime._exec_via_daemon(_SANDBOX_ID, RuntimeExecRequest(command=["true"]))
+    else:
+        call = runtime.exec_background(_SANDBOX_ID, RuntimeBackgroundExecRequest(command=["true"], job_id="job"))
+    task = asyncio.ensure_future(call)
+    try:
+        await wait_for(lambda: bool(queued) or task.done(), description="call is queued behind the busy worker")
+        if task.done():
+            await task
+        assert not _write_end_closed(read_fd)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert _write_end_closed(read_fd)
+        assert [command for command in released if command is not None] == [command_cgroup]
+    finally:
+        unblock.set()
+        await asyncio.to_thread(pool.shutdown, wait=True)
+        os.close(read_fd)
+    assert ran == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the sandbox daemon runs on POSIX hosts")
+def test_a_failed_pipe_closes_the_command_cgroup_fds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The handler already dropped its copies, so ``_start_command`` is their last owner."""
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    pipes: list[int] = []
+
+    def pipe() -> tuple[int, int]:
+        if pipes:
+            raise OSError(24, "Too many open files")
+        pair = os.pipe()
+        pipes.extend(pair)
+        return pair
+
+    shadow = types.ModuleType("os")
+    shadow.__dict__.update(os.__dict__)
+    shadow.pipe = pipe  # type: ignore[attr-defined]
+    monkeypatch.setattr(sandbox_daemon, "os", shadow)
+    token = sandbox_daemon._COMMAND_CGROUP_FDS.set((write_fd,))
+    try:
+        with pytest.raises(OSError, match="Too many open files"):
+            sandbox_daemon._start_command(
+                ["true"], env={}, workdir=None, stdin=subprocess.DEVNULL, output=subprocess.DEVNULL, cgroup_procs=[]
+            )
+    finally:
+        sandbox_daemon._COMMAND_CGROUP_FDS.reset(token)
+    try:
+        assert _write_end_closed(read_fd)
+        for fd in pipes:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+    finally:
+        os.close(read_fd)

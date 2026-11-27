@@ -299,6 +299,11 @@ class DaemonState:
 # slice must block (on the output pipes or the shim) instead of spinning.
 _EXEC_POLL_SECONDS = 0.05
 _PIPE_READ_BYTES = 65536
+# Bytes of stdout and of stderr an exec keeps. JSON can spell one byte in six
+# (``\u0000``), so both streams at this cap still fit the box-server's
+# 256 MiB response frame (``DAEMON_MAX_RESPONSE_BYTES``).
+_EXEC_STREAM_LIMIT_BYTES = 16 * 1024 * 1024
+_OUTPUT_TRUNCATED_NOTE = b"\n[output truncated: the command wrote more than 16 MiB]\n"
 
 
 def _kill_command_group(pid: int) -> None:
@@ -1115,8 +1120,16 @@ def _start_command(
     shim_env = dict(os.environ)
     shim_env.pop(LISTENER_FD_ENV, None)
     cgroup_fds = list(_COMMAND_CGROUP_FDS.get())
-    spec_r, spec_w = os.pipe()
-    status_r, status_w = os.pipe()
+    opened: list[int] = []
+    try:
+        spec_r, spec_w = os.pipe()
+        opened.extend((spec_r, spec_w))
+        status_r, status_w = os.pipe()
+    except BaseException:
+        # The caller dropped its copies of the cgroup fds; this is their last owner.
+        _close_fds(opened)
+        _close_fds(cgroup_fds)
+        raise
     try:
         shim = subprocess.Popen(
             [
@@ -1180,8 +1193,14 @@ def _pump_pipe(
     chunks: list[bytes],
     lock: threading.Lock,
     finished: threading.Event,
+    limit: int = _EXEC_STREAM_LIMIT_BYTES,
 ) -> None:
-    """Append bytes from ``stream`` until EOF. Never clears ``chunks``."""
+    """Append bytes from ``stream`` until EOF. Never clears ``chunks``.
+
+    Past ``limit`` bytes the rest is read and dropped, so the command never
+    blocks on a full pipe, and ``_OUTPUT_TRUNCATED_NOTE`` is appended once.
+    """
+    kept = 0
     try:
         while True:
             try:
@@ -1194,8 +1213,17 @@ def _pump_pipe(
                 break
             if not chunk:
                 break
+            room = limit - kept
+            if room < 0:
+                continue
             with lock:
-                chunks.append(chunk)
+                if len(chunk) <= room:
+                    chunks.append(chunk)
+                    kept += len(chunk)
+                    continue
+                chunks.append(chunk[:room])
+                chunks.append(_OUTPUT_TRUNCATED_NOTE)
+            kept = limit + 1
     finally:
         finished.set()
         try:
@@ -1379,7 +1407,9 @@ def _collect_exec_output(
         if remaining <= 0:
             proc.poll()
             break
-        stdout_done.wait(min(_EXEC_POLL_SECONDS, remaining))
+        # Wait on a pipe that is still open: a set event returns at once and would spin.
+        still_open = stderr_done if stdout_done.is_set() else stdout_done
+        still_open.wait(min(_EXEC_POLL_SECONDS, remaining))
 
     proc.poll()
     return (
@@ -2104,6 +2134,19 @@ MARKER = "JIWENBOX_FORK_WORKER"
 # Mirrors the daemon's ``_POST_KILL_DRAIN_SECONDS`` and tree-kill budget.
 POST_KILL_DRAIN_SECONDS = 5.0
 TREE_KILL_SECONDS = 2.0
+# Mirrors the daemon's ``_EXEC_STREAM_LIMIT_BYTES`` and its note.
+STREAM_LIMIT_BYTES = 16 * 1024 * 1024
+TRUNCATED_NOTE = b"\n[output truncated: the command wrote more than 16 MiB]\n"
+
+
+def _keep(buf, chunk):
+    """``buf`` plus as much of ``chunk`` as the stream limit leaves room for."""
+    room = STREAM_LIMIT_BYTES - len(buf)
+    if room < 0:
+        return buf
+    if len(chunk) <= room:
+        return buf + chunk
+    return buf + chunk[:room] + TRUNCATED_NOTE
 
 
 def _become_subreaper():
@@ -2326,8 +2369,10 @@ def _run_child(code, stdin_bytes, workdir, env_overrides, timeout, control_fd,
             if workdir:
                 try:
                     os.chdir(workdir)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    # Never run the code somewhere else; report it as a failed start.
+                    os.write(2, f"failed to spawn command: {exc}\n".encode())
+                    os._exit(127)
             if env_overrides:
                 os.environ.update(env_overrides)
             if plan:
@@ -2422,9 +2467,9 @@ def _run_child(code, stdin_bytes, workdir, env_overrides, timeout, control_fd,
                     else:
                         stderr_fd = -1
                 elif fd == stdout_fd:
-                    out += chunk
+                    out = _keep(out, chunk)
                 else:
-                    err += chunk
+                    err = _keep(err, chunk)
         if deadline is not None and time.monotonic() >= deadline and not timed_out:
             timed_out = True
             _kill_descendants()
@@ -2475,12 +2520,12 @@ def _run_child(code, stdin_bytes, workdir, env_overrides, timeout, control_fd,
                 # rather than from a script that chose to exit(124) itself.
                 marker = b"Command timed out"
                 err = err + b"\n" + marker if err else marker
-                return 124, out, err
+                return 124, out, err, True
             if child_status is None:
-                return 0, out, err
+                return 0, out, err, False
             if os.WIFEXITED(child_status):
-                return os.WEXITSTATUS(child_status), out, err
-            return -os.WTERMSIG(child_status), out, err
+                return os.WEXITSTATUS(child_status), out, err, False
+            return -os.WTERMSIG(child_status), out, err, False
         if not fds and not child_done:
             # No pipe activity and child still running; let the loop re-check
             # the deadline without busy-spinning.
@@ -2507,7 +2552,7 @@ def _worker_main(fd_str):
         # stays aligned across requests.
         stdin_bytes = _recv_frame(sock, 64 * 1024 * 1024)
         try:
-            exit_code, out, err = _run_child(
+            exit_code, out, err, timed_out = _run_child(
                 code,
                 stdin_bytes,
                 header.get("workdir"),
@@ -2520,6 +2565,7 @@ def _worker_main(fd_str):
                 "exit_code": exit_code,
                 "stdout": out.decode("utf-8", errors="replace"),
                 "stderr": err.decode("utf-8", errors="replace"),
+                "timed_out": timed_out,
             })
         except Exception as exc:  # defensive
             _send_response(sock, {"error": f"worker error: {exc}"})
@@ -2548,7 +2594,7 @@ class FastPathStats:
       ``exit_code`` response (``"error" not in response``).
     * ``fallbacks`` -- judged requests that did not hit, broken down by
       ``fallback_reasons``: ``not_eligible`` / ``nonempty_stdin`` /
-      ``breaker_open`` / ``capacity_busy`` / ``worker_unavailable`` /
+      ``missing_workdir`` / ``breaker_open`` / ``capacity_busy`` / ``worker_unavailable`` /
       ``spawn_failed`` / ``worker_error`` / ``exec_uncertain``.
       ``exec_uncertain`` is a *post-dispatch* failure: the
       request was sent to a worker and the code may have run, so the daemon
@@ -3186,6 +3232,11 @@ def _try_fastpath_exec(
     if plan is None:
         _FORK_POOL.stats.record_fallback("not_eligible")
         return False
+    # The Popen path reports a missing workdir as ``spawn_failed``; let it.
+    workdir = plan.get("cwd") or header.get("workdir")
+    if workdir and not os.path.isdir(workdir):
+        _FORK_POOL.stats.record_fallback("missing_workdir")
+        return False
 
     if plan["mode"] == "code":
         source, script_plan = plan["code"], None
@@ -3249,6 +3300,8 @@ def _try_fastpath_exec(
             exit_code=int(response.get("exit_code", 1)),
             stdout=response.get("stdout", ""),
             stderr=response.get("stderr", ""),
+            # Like the Popen path, so the host reports ``timed_out``.
+            error="timeout" if response.get("timed_out") is True else None,
         ),
     )
     return True

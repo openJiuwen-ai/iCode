@@ -62,14 +62,15 @@ SECCOMP_DATA_ARG0_OFFSET = 16
 SECCOMP_DATA_ARG1_OFFSET = 24
 
 # kill(2) pid arguments compared via BPF_W (lower 32 bits of seccomp args[0]).
+# ``0`` is not here: every command runs in its own session, so ``kill(0, sig)``
+# reaches only the command's own process group.
 _DAEMON_PROTECTED_KILL_TARGETS = (
-    0,
     1,
     2,
     0xFFFFFFFE,  # -2, kill process group 2
     0xFFFFFFFF,  # -1, broadcast to same-UID processes
 )
-_DAEMON_PROTECTED_TGKILL_TARGETS = (1, 2)
+_DAEMON_PROTECTED_PIDS = (1, 2)
 
 
 def _machine() -> str:
@@ -111,6 +112,8 @@ def _fallback_syscall_numbers() -> dict[str, int]:
             "kill": 129,
             "tkill": 130,
             "tgkill": 131,
+            "rt_sigqueueinfo": 138,
+            "rt_tgsigqueueinfo": 240,
             "getpid": 172,
             "getppid": 173,
             "add_key": 217,
@@ -129,6 +132,8 @@ def _fallback_syscall_numbers() -> dict[str, int]:
             "io_uring_setup": 425,
             "io_uring_enter": 426,
             "io_uring_register": 427,
+            "pidfd_send_signal": 424,
+            "pidfd_open": 434,
             "clone3": 435,
         }
 
@@ -142,6 +147,9 @@ def _fallback_syscall_numbers() -> dict[str, int]:
         "sendto": 44, "recvfrom": 45, "bind": 49, "listen": 50,
         "clone": 56, "fork": 57, "vfork": 58, "execve": 59, "exit": 60,
         "wait4": 61, "kill": 62, "uname": 63, "fcntl": 72,
+        "tkill": 200, "tgkill": 234,
+        "rt_sigqueueinfo": 129, "rt_tgsigqueueinfo": 297,
+        "pidfd_send_signal": 424, "pidfd_open": 434,
         "flock": 73, "fsync": 74, "getcwd": 79, "chdir": 80,
         "mkdir": 83, "rmdir": 84, "link": 86, "unlink": 87,
         "chmod": 90, "chown": 92, "getuid": 102, "getgid": 104,
@@ -237,12 +245,24 @@ def _append_daemon_signal_guard(prog: bytearray, syscall_table: dict[str, int]) 
     Appended after policy-driven syscall blocks and before the default
     ALLOW.  Each guarded syscall uses an inline EPERM return so this
     section does not share tail-jump offsets with the policy blocklist.
+    ``pidfd_open`` of a protected PID is refused too, and
+    ``pidfd_send_signal`` answers ENOSYS: its target is an fd (a ``/proc``
+    directory works as well), which a filter cannot inspect, and callers
+    fall back to ``kill``, which this guard does inspect.
     """
     guarded = (
         ("kill", _DAEMON_PROTECTED_KILL_TARGETS, ()),
         ("tkill", _DAEMON_PROTECTED_KILL_TARGETS, ()),
-        ("tgkill", _DAEMON_PROTECTED_KILL_TARGETS, _DAEMON_PROTECTED_TGKILL_TARGETS),
+        ("tgkill", _DAEMON_PROTECTED_KILL_TARGETS, _DAEMON_PROTECTED_PIDS),
+        ("rt_sigqueueinfo", _DAEMON_PROTECTED_PIDS, ()),
+        ("rt_tgsigqueueinfo", _DAEMON_PROTECTED_PIDS, ()),
+        ("pidfd_open", _DAEMON_PROTECTED_PIDS, ()),
     )
+    pidfd_send_signal = syscall_table.get("pidfd_send_signal")
+    if pidfd_send_signal is not None:
+        prog += _bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFFSET)
+        prog += _bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, pidfd_send_signal, 0, 1)
+        prog += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ERRNO_ENOSYS)
     for name, arg0_targets, arg1_targets in guarded:
         nr = syscall_table.get(name)
         if nr is None:
@@ -307,7 +327,7 @@ def _assemble_bpf(blocked_nrs: list[int]) -> bytes:
       1. Validate arch == current process architecture
       2. Load syscall number
       3. For each blocked nr: if match -> inline return errno
-      4. Deny kill/tkill/tgkill that target sandbox infrastructure PIDs
+      4. Deny signals and pidfds that target sandbox infrastructure PIDs
       5. Default: ALLOW
 
     Policy blocks use inline RET actions instead of tail jumps so adding

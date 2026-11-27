@@ -14,6 +14,7 @@ import logging
 import os
 import posixpath
 import stat as stat_module
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -168,6 +169,10 @@ class BwrapConfig:
     dir_mounts: list[tuple[str, str | None]] = field(default_factory=list)
     tmpfs_mounts: list[str] = field(default_factory=list)
     remount_ro: list[str] = field(default_factory=list)
+    # The entries of ``ro_binds`` that ``bind_root_entries`` enumerated. Only
+    # these give way to a read-write bind of the same destination; any other
+    # read-only bind of that destination protects it and wins.
+    enumerated_ro_binds: list[tuple[str, str]] = field(default_factory=list)
     # Real host directories. Each place a path bind shows one gets an empty
     # read-only tmpfs, mounted after everything else.
     hidden_host_dirs: list[str] = field(default_factory=list)
@@ -303,6 +308,7 @@ class BwrapConfig:
             source = str(child)
             if spec.mode == "ro":
                 cfg.ro_binds.append((source, target))
+                cfg.enumerated_ro_binds.append((source, target))
             else:
                 cfg.rw_binds.append((source, target))
 
@@ -390,9 +396,11 @@ class BwrapConfig:
 
         Non-root binds are emitted shallowest destination first, so a parent
         mount cannot hide a deeper bind. Read-only follows read-write at the
-        same depth. An explicit read-write bind of one exact destination
-        suppresses the read-only bind and ``--remount-ro`` of that same
-        path; a deeper read-only child still applies. Root binds stay
+        same depth. A read-write bind of one exact destination suppresses
+        the enumerated read-only bind and the ``--remount-ro`` of that same
+        path; a deeper read-only child still applies. Any other read-only
+        bind of that destination is a protective cover: it is kept, follows
+        the read-write bind, and keeps its ``--remount-ro``. Root binds stay
         before ``--proc`` and ``--dev``. Device binds stay after the path
         binds. The tmpfs covers of ``hidden_host_dirs`` follow ``extra_args``.
         """
@@ -480,9 +488,19 @@ class BwrapConfig:
         root_ro_binds = [
             (src, dst) for src, dst in root_ro_binds if _exact_destination(dst) not in explicit_rw
         ]
-        ro_binds = [
-            (src, dst) for src, dst in ro_binds if _exact_destination(dst) not in explicit_rw
-        ]
+        enumerated = Counter(self.enumerated_ro_binds)
+        protective: list[tuple[str, str]] = []
+        kept_ro_binds: list[tuple[str, str]] = []
+        for bind in ro_binds:
+            if enumerated[bind] > 0:
+                enumerated[bind] -= 1
+                if _exact_destination(bind[1]) not in explicit_rw:
+                    kept_ro_binds.append(bind)
+            else:
+                protective.append(bind)
+                kept_ro_binds.append(bind)
+        ro_binds = kept_ro_binds
+        explicit_rw.difference_update(_exact_destination(dst) for _src, dst in protective)
 
         # A root bind must be applied before more specific mounts. Otherwise a
         # policy entry for "/" hides bwrap-created /proc, /dev, /tmp, /run, etc.

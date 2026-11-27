@@ -127,29 +127,29 @@ def _fail_or_continue(payload: dict, message: str) -> bool:
     return False
 
 
-def _rule_anchor_path(path: str) -> str:
-    """Landlock path-beneath rules must be anchored on a directory fd.
+# The rights a rule anchored on a non-directory may carry.
+FILE_ACCESS = EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE
 
-    For file mounts such as /etc/resolv.conf, fall back to the parent
-    directory (e.g. /etc) so rule installation remains valid.
+
+def _rule_access(path: str, access: int) -> int:
+    """The rights of a rule for ``path``.
+
+    A rule on a file, such as /etc/resolv.conf or /run/guarded-proxy.sock,
+    is anchored on that file with its file rights only. Anchoring it on the
+    parent instead would grant the whole directory, e.g. write access to
+    all of /run. Connecting to a socket is not an access Landlock handles.
     """
     if os.path.isdir(path):
-        return path
-
-    normalized = path.rstrip("/") or "/"
-    parent = os.path.dirname(normalized) or "/"
-    return parent
+        return access
+    return access & FILE_ACCESS
 
 
 def _add_rule(ruleset_fd: int, path: str, access: int) -> None:
     if not os.path.exists(path):
         return
 
-    anchor_path = _rule_anchor_path(path)
-    if not os.path.exists(anchor_path):
-        return
-
-    fd = os.open(anchor_path, os.O_PATH | os.O_CLOEXEC, 0o600)
+    access = _rule_access(path, access)
+    fd = os.open(path, os.O_PATH | os.O_CLOEXEC, 0o600)
     try:
         rule = LandlockPathBeneathAttr()
         rule.allowed_access = access
@@ -162,7 +162,7 @@ def _add_rule(ruleset_fd: int, path: str, access: int) -> None:
             0,
         )
         if ret < 0:
-            raise OSError(ctypes.get_errno(), f"landlock_add_rule failed for {anchor_path}")
+            raise OSError(ctypes.get_errno(), f"landlock_add_rule failed for {path}")
     finally:
         os.close(fd)
 
