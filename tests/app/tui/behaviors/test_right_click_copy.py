@@ -30,6 +30,8 @@ class _CopyApp(App[None]):
 async def test_right_click_copies_a_drag_that_starts_on_a_trailing_blank_row(monkeypatch: pytest.MonkeyPatch) -> None:
     copied: list[str] = []
     monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
+    # The drag's own copy (macOS) is covered by test_copy_on_select.py.
+    monkeypatch.setattr("chrys.app.tui.behaviors.right_click_copy.copies_on_select", lambda: False)
 
     app = _CopyApp()
     async with app.run_test(size=(40, 10)) as pilot:

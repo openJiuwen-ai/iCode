@@ -1509,12 +1509,16 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._chat_selection.schedule_reproject(panel)
 
     def _watch__selecting(self, selecting: bool) -> None:
-        """Offer to quote a transcript selection the moment its drag ends."""
+        """Withdraw the quote offer when a new drag starts."""
         super()._watch__selecting(selecting)
         if selecting:
             self._hide_quote_popup()
-            return
+
+    def _on_selection_drag_finished(self) -> None:
+        """Offer to quote a transcript selection the moment its drag ends."""
+        # First: both the copy and the quote read the refreshed range.
         self._chat_selection.finish_drag()
+        super()._on_selection_drag_finished()
         self._offer_quote_for_finished_selection()
 
     # -- quoting the conversation ---------------------------------------------

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Shared right-click copy helpers for selectable TUI surfaces."""
+"""Shared right-click and drag-to-copy helpers for selectable TUI surfaces."""
 
 from __future__ import annotations
 
@@ -11,7 +11,11 @@ from textual.events import Event, MouseDown, MouseMove
 from textual.screen import Screen
 from textual.widgets import TextArea
 
-from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.clipboard import copy_text_to_clipboards, uses_host_clipboard
+from chrys.foundation.platform import get_platform
+
+if TYPE_CHECKING:
+    from textual.app import App
 
 _RightClickScreenCopyBase = Screen[Any] if TYPE_CHECKING else object
 
@@ -25,6 +29,23 @@ def copy_screen_selection(screen: Screen, *, clear: bool = False) -> bool:
     if clear:
         screen.clear_selection()
     return True
+
+
+def copies_on_select() -> bool:
+    """Whether finishing a mouse drag copies the selected text.
+
+    A macOS terminal may keep Cmd+C for itself, and while the TUI owns mouse
+    reporting it has no selection of its own to copy, so the text has to be on
+    the clipboard already. Browser sessions are left to their own copy.
+    """
+    return get_platform().is_macos and uses_host_clipboard()
+
+
+def _copy_dragged_text(app: App[Any], selected: str | None) -> None:
+    # Unlike a right-click, a drag is not a request to copy: a slip over blank
+    # cells must not wipe the clipboard.
+    if selected and selected.strip():
+        copy_text_to_clipboards(app, selected)
 
 
 def cancel_textual_mouse_chain(screen: Screen) -> None:
@@ -82,9 +103,23 @@ class RightClickScreenCopyMixin(_RightClickScreenCopyBase):
 
     Windows Terminal's native right-click copy is unavailable while Textual
     owns mouse reporting, so Chrys mirrors that workflow for selectable UI.
+    Where :func:`copies_on_select` holds, finishing a drag copies it as well.
+
     Put this mixin before ``Screen`` / ``ModalScreen`` in the class bases so
     ``super()._forward_event`` resolves to Textual's screen implementation.
     """
+
+    def _watch__selecting(self, selecting: bool) -> None:
+        super()._watch__selecting(selecting)
+        if not selecting:
+            self._on_selection_drag_finished()
+
+    def _on_selection_drag_finished(self) -> None:
+        """Copy a just-finished drag; a click has cleared its selection by now."""
+        screen = cast(Screen, self)
+        # Most releases end a plain click: ask about the platform only with something to copy.
+        if screen.selections and copies_on_select():
+            _copy_dragged_text(screen.app, screen.get_selected_text())
 
     def on_mouse_down(self, event: MouseDown) -> None:
         """Copy selected screen text on right-click."""
@@ -144,6 +179,13 @@ def copy_text_area_or_screen_selection(text_area: TextArea, *, clear: bool = Fal
     if clear:
         text_area.screen.clear_selection()
     return True
+
+
+def copy_finished_text_area_drag(text_area: TextArea) -> None:
+    """Copy a text editor's mouse selection; call it before ``TextArea`` ends the drag."""
+    # Textual internals: ``_selecting`` is True only while a mouse drag is in progress.
+    if text_area._selecting and (selected := text_area.selected_text) and copies_on_select():
+        _copy_dragged_text(text_area.app, selected)
 
 
 def handle_text_area_right_click_copy(text_area: TextArea, event: MouseDown) -> bool:

@@ -42,7 +42,10 @@ from textual.actions import SkipAction
 from textual.strip import Strip
 from textual.widgets import TextArea
 
-from chrys.app.tui.behaviors.right_click_copy import handle_text_area_right_click_copy
+from chrys.app.tui.behaviors.right_click_copy import (
+    copy_finished_text_area_drag,
+    handle_text_area_right_click_copy,
+)
 from chrys.app.tui.binding_display import COPY_BINDING, PASTE_BINDING, localized_binding
 from chrys.app.tui.clipboard import copy_text_to_clipboards, paste_text_from_clipboards, uses_native_windows_clipboard
 from chrys.app.tui.i18n import render_str, widget_localizer
@@ -299,6 +302,10 @@ class EnhancedTextArea(TextArea):
             return
         # Let Textual's MRO dispatch run TextArea._on_mouse_down once; a
         # same-name super() here would run the base mouse handler twice.
+
+    async def _on_mouse_up(self, event: events.MouseUp) -> None:
+        # Runs ahead of TextArea._on_mouse_up (MRO dispatch), which ends the drag.
+        copy_finished_text_area_drag(self)
 
     def action_cut(self) -> None:
         if self.read_only:
