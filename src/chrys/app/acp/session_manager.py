@@ -553,8 +553,11 @@ class AcpSessionManager:
         self.load_registries()
         profile_id = _safe_profile_file_stem(profile_id, field_name="model profile id")
         deleted = delete_model_profile(profile_id)
-        if deleted:
-            self._model_registry.remove(profile_id)
+        # Always drop the in-memory entry.  The file may already be gone (deleted
+        # externally, or stored under a non-canonical name the delete helper does
+        # not address), and leaving a stale entry keeps the profile selectable
+        # until the next process restart.
+        self._model_registry.remove(profile_id)
         return {"id": profile_id, "deleted": deleted}
 
     def set_config_option(self, key: str, value: object) -> dict[str, object]:
