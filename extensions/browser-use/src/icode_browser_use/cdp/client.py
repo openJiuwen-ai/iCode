@@ -94,6 +94,7 @@ class CDPClient:
         self._reader_task: asyncio.Task[None] | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
         self._close_lock = asyncio.Lock()
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._closed = False
         self._browser_timeouts = 0
 
@@ -122,18 +123,36 @@ class CDPClient:
 
     async def _shutdown(self, reason: ConnectionClosed | None) -> None:
         async with self._close_lock:
-            if self._closed:
-                return
-            self._closed = True
-        await self._fail_all(reason or ConnectionClosed("CDP 连接已关闭"))
+            if self._shutdown_task is None:
+                self._closed = True
+                self._shutdown_task = asyncio.create_task(
+                    self._run_shutdown(
+                        reason or ConnectionClosed("CDP 连接已关闭"),
+                        caller=asyncio.current_task(),
+                    ),
+                    name="cdp-shutdown",
+                )
+            task = self._shutdown_task
+        if asyncio.current_task() is task:
+            return
+        await asyncio.shield(task)
+
+    async def _run_shutdown(
+        self,
+        reason: ConnectionClosed,
+        *,
+        caller: asyncio.Task[Any] | None,
+    ) -> None:
+        await self._fail_all(reason)
         current = asyncio.current_task()
+        skip = {current, caller}
         tasks_to_stop: list[asyncio.Task[None]] = []
         for task in (self._reader_task, self._keepalive_task, self._event_worker_task):
-            if task is not None and task is not current:
+            if task is not None and task not in skip:
                 task.cancel()
                 tasks_to_stop.append(task)
         for task in list(self._event_tasks):
-            if task is not current:
+            if task not in skip:
                 task.cancel()
                 tasks_to_stop.append(task)
         self._event_tasks.clear()

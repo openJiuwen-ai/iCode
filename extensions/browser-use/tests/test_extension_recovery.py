@@ -826,3 +826,133 @@ def test_dual_host_concurrent_browser_open_blocks_b_and_keeps_a_active(
         await ext.browser_close(turn_ctx, bid_b)
 
     asyncio.run(scenario())
+
+
+def test_manifest_lock_creates_cross_process_lock_and_commit_skips_when_busy_or_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave 3 P1-14 #1 & #3: manifest uses cross-process lock; _commit_pending_record aborts if busy or closing."""
+    configure(monkeypatch, tmp_path)
+    ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Main",
+        session_id="s-lock-commit",
+    )
+    manifest = registry.manifest_path(ctx)
+    with ext._manifest_lock(manifest, create_dir=True):
+        assert manifest.with_name(f".{manifest.name}.lock").exists()
+
+    async def scenario() -> None:
+        base = ext._config()
+        browser = ext._allocate(ctx, base, 0, persist=False)
+        browser.record_pending = True
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        assert browser.slot_state_dir is not None
+
+        # 1) When slot lifecycle lock is unavailable (None), _commit_pending_record must skip without writing.
+        async def busy_lock(_path: Path, *, wait: float = 5.0):
+            return None
+
+        monkeypatch.setattr(ext, "acquire_file_lock", busy_lock)
+        await ext._commit_pending_record(browser)
+        assert browser.record_pending is True
+        assert records_for(ctx) == []
+
+        # 2) When close_task is already set, _commit_pending_record must not resurrect the record.
+        browser.close_task = asyncio.create_task(asyncio.sleep(0))
+        await ext._commit_pending_record(browser)
+        assert browser.record_pending is True
+        assert records_for(ctx) == []
+        await browser.close_task
+        ext._browsers.pop(browser.id, None)
+
+    asyncio.run(scenario())
+
+
+def test_browser_guard_prunes_closed_and_guards_session_none_cross_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave 3 P2-5: browser_guard prunes closed sessions and guards other agents when session_id is None."""
+    from types import SimpleNamespace
+
+    from chrys.extensions import ToolCall
+
+    monkeypatch.setenv("ICODE_BROWSER_GUARD", "strict")
+    ctx_a = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        session_id="sess-prune",
+        agent_name="Main",
+    )
+    closed_browser = ext._Browser(
+        id="b-closed-guard",
+        session=SimpleNamespace(state="closed"),  # type: ignore[arg-type]
+        owner_session="sess-prune",
+        owner_agent="Main",
+    )
+    ext._browsers[closed_browser.id] = closed_browser
+    try:
+        call_ok = ToolCall(name="run_command", kind="shell", call_id="c1", arguments={}, context=ctx_a)
+        asyncio.run(ext.browser_guard(call_ok))
+        assert closed_browser.id not in ext._browsers
+    finally:
+        ext._browsers.pop(closed_browser.id, None)
+
+    # When session_id is None (single-shot / ephemeral), another agent's live handle must still trigger guard.
+    ctx_none_other = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        session_id=None,
+        agent_name="Helper",
+    )
+    live_none = ext._Browser(
+        id="b-none-live",
+        session=SimpleNamespace(state="ready"),  # type: ignore[arg-type]
+        owner_session=None,
+        owner_agent="Main",
+    )
+    ext._browsers[live_none.id] = live_none
+    try:
+        call_blocked = ToolCall(name="run_command", kind="shell", call_id="c2", arguments={}, context=ctx_none_other)
+        with pytest.raises(ToolError) as exc_info:
+            asyncio.run(ext.browser_guard(call_blocked))
+        assert exc_info.value.code == "browser_guard"
+    finally:
+        ext._browsers.pop(live_none.id, None)
+
+
+def test_windows_stage_ephemeral_dir_fallback_hands_off_external_lifecycle_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave 3 P1-14 #5: when Windows rename fails, fallback keeps external lifecycle lock & releases instance.lock."""
+    state_dir = tmp_path / "agents" / "owner" / "slot-0"
+    state_dir.mkdir(parents=True)
+    (state_dir / "Preferences").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(ext.os, "name", "nt")
+    original_rename = Path.rename
+
+    def fail_slot_rename(self: Path, target: Path):
+        if self == state_dir:
+            raise PermissionError("simulated locked rename")
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", fail_slot_rename)
+
+    cleanup_target, slot_free, held_lock, record_dropped = ext._stage_ephemeral_dir(state_dir)
+    assert cleanup_target == state_dir
+    assert slot_free is False
+    assert record_dropped is False
+    assert held_lock is not None
+    try:
+        # External lifecycle lock stays held (so concurrent open/resume cannot steal the slot)...
+        assert ext.try_acquire_file_lock(ext._slot_lifecycle_lock_path(state_dir)) is None
+        # ...while instance.lock inside state_dir is released so rmtree can remove state_dir cleanly on Windows!
+        ext._cleanup_ephemeral_dir(state_dir)
+        assert not state_dir.exists()
+    finally:
+        held_lock.release()

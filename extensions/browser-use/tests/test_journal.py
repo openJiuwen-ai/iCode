@@ -266,3 +266,59 @@ def test_dom_click_allowed_uses_structured_fields_not_evidence_prose(tmp_path: P
     legacy_session = SimpleNamespace(journal=migrated, page_epoch=7)
     assert _dom_click_allowed(legacy_session, entry, facts, submit_like=False) is not None
     migrated.close()
+
+
+def test_journal_connect_closes_on_error_and_record_rolls_back(tmp_path: Path, monkeypatch) -> None:
+    """Wave 3 P2-6: _connect closes SQLite handle on init error and record() rolls back on sqlite3.Error."""
+    import sqlite3
+
+    from icode_browser_use import journal as journal_mod
+
+    events: list[str] = []
+
+    class FakeConn:
+        row_factory = None
+
+        def execute(self, _sql: str, *_args):
+            raise sqlite3.OperationalError("simulated pragma error")
+
+        def executescript(self, _sql: str):
+            raise sqlite3.OperationalError("simulated schema error")
+
+        def rollback(self) -> None:
+            events.append("rollback")
+
+        def close(self) -> None:
+            events.append("close")
+
+    monkeypatch.setattr(journal_mod.sqlite3, "connect", lambda *_a, **_kw: FakeConn())
+    j1 = Journal(tmp_path / "broken.sqlite3", owner="o", logical_session="s")
+    assert j1._connect(tmp_path / "broken.sqlite3") is None
+    assert "close" in events
+
+    # Restore real connect and verify record() rolls back on sqlite3.Error.
+    monkeypatch.undo()
+    j2 = journal(tmp_path)
+    conn = j2._connect(tmp_path / "journal.sqlite3")
+    assert conn is not None
+
+    class FailingWriteConn:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def execute(self, *_args, **_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        def commit(self) -> None:
+            pass
+
+        def rollback(self) -> None:
+            events.append("record_rollback")
+
+        def close(self) -> None:
+            self._inner.close()
+
+    j2._connection = FailingWriteConn(conn)  # type: ignore[assignment]
+    record(j2, action_id="fail-1")
+    assert "record_rollback" in events
+    j2.close()

@@ -69,3 +69,19 @@ def test_the_read_timeout_outlasts_a_tool_wait_budget() -> None:
         assert _requested_wait_seconds(fields) == 0.0
     assert _requested_wait_seconds({"arguments": {"timeout_ms": True}}) == 0.0
     assert _requested_wait_seconds({"arguments": {"timeout_ms": -5}}) == 0.0
+    assert _requested_wait_seconds({"arguments": {"timeout_ms": 10_000, "expect_timeout_ms": 5_000}}) == 15.0
+
+
+def test_spawn_passes_bridge_file(tmp_path, monkeypatch):
+    """Wave 3 P2-3: BrokerClient._spawn forwards ICODE_BROWSER_BRIDGE_FILE when configured."""
+    captured = {}
+
+    def popen(*args, **kwargs):
+        captured.update(kwargs["env"])
+
+    monkeypatch.setattr("icode_browser_use.broker_client.harden_private", lambda *_a, **_kw: True)
+    monkeypatch.setattr("icode_browser_use.broker_client.subprocess.Popen", popen)
+    bridge_path = tmp_path / "custom-bridge.json"
+    cfg = BrowserConfig(state_dir=tmp_path, allowed_domains=("example.com",), bridge_file=bridge_path)
+    BrokerClient(cfg)._spawn()
+    assert captured.get("ICODE_BROWSER_BRIDGE_FILE") == str(bridge_path)

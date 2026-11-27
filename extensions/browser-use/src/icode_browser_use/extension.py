@@ -468,12 +468,27 @@ def _manifest_path(ctx: ToolContext) -> Path | None:
         return None
 
 
+def _load_manifest(path: Path | None) -> tuple[list[registry.ManifestRecord], str | None]:
+    """Read *path* under the cross-process manifest lock."""
+    if path is None:
+        return [], None
+    try:
+        with _manifest_lock(path):
+            return registry.load(path)
+    except OSError:
+        return [], "unreadable"
+
+
+async def _aload_manifest(path: Path | None) -> tuple[list[registry.ManifestRecord], str | None]:
+    return await asyncio.to_thread(_load_manifest, path)
+
+
 def _save_record(path: Path | None, record: registry.ManifestRecord) -> bool:
     """Persist one record, superseding older generations of its slot; never breaks a call."""
     if path is None:
         return False
     try:
-        with _manifest_lock(path):
+        with _manifest_lock(path, create_dir=True):
             records, problem = registry.load(path)
             if problem in {"unreadable", "unexpected shape"}:
                 logger.warning("browser manifest %s; skipping write to avoid wiping records", problem)
@@ -543,12 +558,24 @@ _MANIFEST_LOCKS: dict[str, threading.Lock] = {}
 _MANIFEST_LOCKS_GUARD = threading.Lock()
 
 
-def _manifest_lock(path: Path) -> threading.Lock:
-    """One lock per manifest file: its load-modify-save runs in worker threads, and an
-    atomic replace alone lets the later writer silently discard the earlier change."""
+@contextlib.contextmanager
+def _manifest_lock(path: Path, *, create_dir: bool = False):
+    """Thread + cross-process lock per manifest file so concurrent hosts never lose updates."""
+    from .locking import acquire_file_lock_sync
+
     key = os.path.normcase(os.path.abspath(path))
     with _MANIFEST_LOCKS_GUARD:
-        return _MANIFEST_LOCKS.setdefault(key, threading.Lock())
+        thread_lock = _MANIFEST_LOCKS.setdefault(key, threading.Lock())
+    with thread_lock:
+        file_lock: InstanceLock | None = None
+        if create_dir or path.parent.exists():
+            lock_path = path.with_name(f".{path.name}.lock")
+            file_lock = acquire_file_lock_sync(lock_path, wait=5.0)
+        try:
+            yield
+        finally:
+            if file_lock is not None:
+                file_lock.release()
 
 
 async def _asave_record(path: Path | None, record: registry.ManifestRecord) -> bool:
@@ -1031,6 +1058,11 @@ async def browser_open(ctx: ToolContext) -> str:
                     code="browser_open_blocked",
                 )
             try:
+                if any(b.slot == slot for b in _mine(ctx)):
+                    raise ToolError(
+                        f"Slot {slot} already has a live browser; retry browser_open to allocate a free slot.",
+                        code="browser_open_blocked",
+                    )
                 if state_dir.exists():
                     try:
                         probe = await acquire_instance_lock(state_dir, wait=0)
@@ -1041,23 +1073,35 @@ async def browser_open(ctx: ToolContext) -> str:
                         ) from exc
                     try:
                         browser = _allocate_via_open(ctx, base, slot)
-                        if browser.record is not None:
-                            if await _asave_record(browser.manifest, browser.record):
-                                browser.manifest_committed = True
-                            _write_slot_generation(state_dir, browser.record.resume_id)
-                            browser.slot_generation_stamped = True
+                        try:
+                            if browser.record is not None:
+                                if await _asave_record(browser.manifest, browser.record):
+                                    browser.manifest_committed = True
+                                await asyncio.to_thread(_write_slot_generation, state_dir, browser.record.resume_id)
+                                browser.slot_generation_stamped = True
+                        except BaseException:
+                            _browsers.pop(browser.id, None)
+                            raise
                     finally:
                         probe.release()
                 else:
                     browser = _allocate_via_open(ctx, base, slot)
-                    if browser.record is not None and await _asave_record(browser.manifest, browser.record):
-                        browser.manifest_committed = True
+                    try:
+                        if browser.record is not None and await _asave_record(browser.manifest, browser.record):
+                            browser.manifest_committed = True
+                    except BaseException:
+                        _browsers.pop(browser.id, None)
+                        raise
             finally:
                 slot_lock.release()
         else:
             browser = _allocate_via_open(ctx, base, slot)
-            if browser.record is not None and await _asave_record(browser.manifest, browser.record):
-                browser.manifest_committed = True
+            try:
+                if browser.record is not None and await _asave_record(browser.manifest, browser.record):
+                    browser.manifest_committed = True
+            except BaseException:
+                _browsers.pop(browser.id, None)
+                raise
     finally:
         _allocating_slots.discard(slot_key)
     if _is_reclaimable_on_idle(ctx):
@@ -1127,7 +1171,7 @@ async def browser_list(ctx: ToolContext) -> str:
     records: list[registry.ManifestRecord] = []
     problem: str | None = None
     if path is not None:
-        records, problem = registry.load(path)
+        records, problem = await _aload_manifest(path)
     owner_key = _owner_key(ctx)
     own = [
         record
@@ -1159,7 +1203,8 @@ async def browser_list(ctx: ToolContext) -> str:
             pages_fn = getattr(browser.session, "pages", None)
             owned_pages = list(pages_fn()) if callable(pages_fn) else []
             action_lock = getattr(browser.session, "_action_lock", None)
-            busy = bool(callable(getattr(action_lock, "locked", None)) and action_lock.locked())
+            locked_fn = getattr(action_lock, "locked", None)
+            busy = bool(callable(locked_fn) and locked_fn())
             if len(owned_pages) > 1 and not busy:
                 list_pages_fn = getattr(browser.session, "list_pages", None)
                 if callable(list_pages_fn):
@@ -1254,7 +1299,7 @@ async def browser_resume(
     """Reopen a recorded browser by resume_id; never navigates or replays an action."""
     base = _config()
     path = _manifest_path(ctx)
-    records, _problem = registry.load(path) if path is not None else ([], None)
+    records, _problem = await _aload_manifest(path) if path is not None else ([], None)
     record = next((item for item in records if item.resume_id == resume_id), None)
     if record is None:
         raise ToolError(
@@ -1282,53 +1327,71 @@ async def browser_resume(
             code="browser_resume_backend_mismatch",
         )
     slot = record.slot
+    slot_key = _ctx_slot_key(ctx, slot)
     if (
         any(browser.slot == slot for browser in _mine(ctx))
-        or _ctx_slot_key(ctx, slot) in _reclaiming_slots
-        or _ctx_slot_key(ctx, slot) in _allocating_slots
+        or slot_key in _reclaiming_slots
+        or slot_key in _allocating_slots
     ):
         raise ToolError(
             f"Slot {slot} already has a live browser; use its browser_id, close it first, or call browser_open.",
             code="browser_resume_conflict",
         )
-    if backend == "owned":
-        state_dir = base.state_dir / "agents" / _owner_key(ctx) / f"slot-{slot}"
-        slot_lock = await acquire_file_lock(_slot_lifecycle_lock_path(state_dir), wait=5.0)
-        if slot_lock is None:
-            raise ToolError(
-                "That profile is busy with another plugin instance; retry after it finishes.",
-                code="browser_resume_blocked",
-            )
-        try:
-            if path is not None:
-                fresh_records, _ = registry.load(path)
-                if not any(item.resume_id == resume_id for item in fresh_records):
-                    raise ToolError(
-                        f"Unknown resume_id {resume_id!r}; call browser_list to see this session's recorded browsers.",
-                        code="unknown_resume",
-                    )
-            try:
-                probe = await acquire_instance_lock(state_dir, wait=0)
-            except Unavailable as exc:
+    _allocating_slots.add(slot_key)
+    try:
+        if backend == "owned":
+            state_dir = base.state_dir / "agents" / _owner_key(ctx) / f"slot-{slot}"
+            slot_lock = await acquire_file_lock(_slot_lifecycle_lock_path(state_dir), wait=5.0)
+            if slot_lock is None:
                 raise ToolError(
-                    f"That profile is in use by another plugin instance ({exc}); close it before resuming.",
+                    "That profile is busy with another plugin instance; retry after it finishes.",
                     code="browser_resume_blocked",
-                ) from exc
+                )
             try:
-                browser = _allocate(ctx, base, slot, persist=False)
-                if browser.record is not None:
-                    if await _asave_record(browser.manifest, browser.record):
-                        browser.manifest_committed = True
-                    _write_slot_generation(state_dir, browser.record.resume_id)
-                    browser.slot_generation_stamped = True
+                if any(b.slot == slot for b in _mine(ctx)):
+                    raise ToolError(
+                        f"Slot {slot} already has a live browser; use its browser_id, close it first, or call browser_open.",
+                        code="browser_resume_conflict",
+                    )
+                if path is not None:
+                    fresh_records, _ = await _aload_manifest(path)
+                    if not any(item.resume_id == resume_id for item in fresh_records):
+                        raise ToolError(
+                            f"Unknown resume_id {resume_id!r}; call browser_list to see this session's recorded browsers.",
+                            code="unknown_resume",
+                        )
+                try:
+                    probe = await acquire_instance_lock(state_dir, wait=0)
+                except Unavailable as exc:
+                    raise ToolError(
+                        f"That profile is in use by another plugin instance ({exc}); close it before resuming.",
+                        code="browser_resume_blocked",
+                    ) from exc
+                try:
+                    browser = _allocate(ctx, base, slot, persist=False)
+                    try:
+                        if browser.record is not None:
+                            if await _asave_record(browser.manifest, browser.record):
+                                browser.manifest_committed = True
+                            await asyncio.to_thread(_write_slot_generation, state_dir, browser.record.resume_id)
+                            browser.slot_generation_stamped = True
+                    except BaseException:
+                        _browsers.pop(browser.id, None)
+                        raise
+                finally:
+                    probe.release()
             finally:
-                probe.release()
-        finally:
-            slot_lock.release()
-    else:
-        browser = _allocate(ctx, base, slot, persist=False)
-        if browser.record is not None and await _asave_record(browser.manifest, browser.record):
-            browser.manifest_committed = True
+                slot_lock.release()
+        else:
+            browser = _allocate(ctx, base, slot, persist=False)
+            try:
+                if browser.record is not None and await _asave_record(browser.manifest, browser.record):
+                    browser.manifest_committed = True
+            except BaseException:
+                _browsers.pop(browser.id, None)
+                raise
+    finally:
+        _allocating_slots.discard(slot_key)
     if backend == "broker":
         note = (
             "reacquired the Broker session for this slot; the Broker may still hold the original page. "
@@ -1392,13 +1455,19 @@ async def browser_navigate(
                 raise ToolError(f"browser_id: {browser.id}\n{exc.message}", code=exc.code) from exc
             raise
         if allocated:
+            close_task = _ensure_close_task(browser)
             with contextlib.suppress(Exception):
-                await _ensure_close_task(browser)
+                await asyncio.shield(close_task)
         raise
     except BaseException:
         if allocated:
-            with contextlib.suppress(Exception):
-                await _ensure_close_task(browser)
+            close_task = _ensure_close_task(browser)
+            try:
+                await asyncio.shield(close_task)
+            except asyncio.CancelledError:
+                close_task.add_done_callback(_log_late_close_failure)
+            except Exception:
+                pass
         raise
     await _commit_pending_record(browser)
     return f"browser_id: {browser.id}\n{text}"
@@ -1406,25 +1475,42 @@ async def browser_navigate(
 
 async def _commit_pending_record(browser: _Browser) -> None:
     """Write an implicit navigate's record once its browser is up (see ``record_pending``)."""
-    if not browser.record_pending:
+    if (
+        not browser.record_pending
+        or browser.superseded
+        or browser.record is None
+        or browser.close_task is not None
+        or browser.id not in _browsers
+    ):
         return
-    browser.record_pending = False
-    if browser.superseded or browser.record is None:
-        return
-    browser.record = dataclasses.replace(browser.record, origin=_browser_origin(browser), updated_at=time.time())
+    updated = dataclasses.replace(browser.record, origin=_browser_origin(browser), updated_at=time.time())
     slot_dir = browser.slot_state_dir
     if slot_dir is not None and bool(getattr(browser.session, "owns_state_dir", False)):
         slot_lock = await acquire_file_lock(_slot_lifecycle_lock_path(slot_dir), wait=5.0)
+        if slot_lock is None:
+            logger.warning("browser manifest commit skipped: slot %d lifecycle lock busy", browser.slot)
+            return
         try:
+            if (
+                not browser.record_pending
+                or browser.superseded
+                or browser.record is None
+                or browser.close_task is not None
+                or browser.id not in _browsers
+            ):
+                return
+            browser.record = updated
+            browser.record_pending = False
             if await _asave_record(browser.manifest, browser.record):
                 browser.manifest_committed = True
             if slot_dir.is_dir():
-                _write_slot_generation(slot_dir, browser.record.resume_id)
+                await asyncio.to_thread(_write_slot_generation, slot_dir, browser.record.resume_id)
                 browser.slot_generation_stamped = True
         finally:
-            if slot_lock is not None:
-                slot_lock.release()
+            slot_lock.release()
     else:
+        browser.record = updated
+        browser.record_pending = False
         if await _asave_record(browser.manifest, browser.record):
             browser.manifest_committed = True
 
@@ -2155,13 +2241,16 @@ def _stage_ephemeral_dir(
                 dropped = True
             return staged, True, None, dropped
         if attempts > 1:
-            lock = try_acquire_instance_lock(state_dir)
-            if lock is None:
-                logger.warning("ephemeral state dir %s is held by another instance; leaving it in place", state_dir)
-                return None, True, None, False
+            # Keep external lifecycle_lock held (and instance.lock released) so Windows
+            # shutil.rmtree can remove slot-N without an open handle inside state_dir
+            # while blocking concurrent browser_open/browser_resume on this slot.
+            hand_off = lifecycle_lock
+            lifecycle_lock = None
+            return state_dir, False, hand_off, False
         return state_dir, False, lock, False
     finally:
-        lifecycle_lock.release()
+        if lifecycle_lock is not None:
+            lifecycle_lock.release()
 
 
 def _cleanup_ephemeral_dir(state_dir: Path) -> None:
@@ -2407,13 +2496,14 @@ async def browser_guard(call: ToolCall) -> None:
     )
     if not is_blocked_tool:
         return
+    _prune_closed()
     session_id = call.context.session_id
     if session_id is not None:
         has_open = any(
             browser.owner_session == session_id for browser in _browsers.values() if browser.close_task is None
         )
     else:
-        has_open = bool(_mine(call.context))
+        has_open = any(browser.owner_session is None for browser in _browsers.values() if browser.close_task is None)
     if has_open:
         raise ToolError(
             "A browser is open; shell, file writes, and skill scripts are blocked while ICODE_BROWSER_GUARD=strict.",

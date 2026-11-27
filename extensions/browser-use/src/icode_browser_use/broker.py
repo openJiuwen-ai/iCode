@@ -26,7 +26,7 @@ from .actions import build_tool_defs
 from .actions._shared import override_call_toolset
 from .bridge.protocol import MAX_TCP_MESSAGE_BYTES, ProtocolError, encode_message, read_async_frame
 from .config import BrowserConfig, BrowserEnv, ConfigError
-from .errors import BrowserError, Unavailable
+from .errors import BrowserError, ConnectionClosed, Unavailable
 from .locking import InstanceLock, acquire_instance_lock
 from .logging import log
 from .runtime import call_tool
@@ -62,6 +62,7 @@ _CANCELLABLE_READ_TOOLS = frozenset(
         "browser_snapshot",
         "browser_find",
         "browser_extract",
+        "browser_query",
         "browser_screenshot",
         "browser_tabs",
         "browser_downloads",
@@ -114,6 +115,9 @@ class BrokerServer:
         self._server: asyncio.AbstractServer | None = None
         self._lock: InstanceLock | None = None
         self._clients: set[asyncio.StreamWriter] = set()
+        self._client_tasks: set[asyncio.Task[None]] = set()
+        self._client_last_seen: dict[asyncio.StreamWriter, float] = {}
+        self._client_in_flight: dict[asyncio.StreamWriter, int] = {}
         self.stop_event = asyncio.Event()
         self._sweep_task: asyncio.Task[None] | None = None
         self._last_activity = time.monotonic()
@@ -138,6 +142,7 @@ class BrokerServer:
                 "allowed_origins": list(self.cfg.allowed_origins),
                 "headless": self.cfg.headless,
                 "bridge": self.cfg.bridge,
+                "bridge_file": str(self.cfg.bridge_file) if self.cfg.bridge_file else "",
                 "evaluate": self.cfg.evaluate_enabled,
                 "save_state": self.cfg.save_state_enabled,
                 "chrome_devtools": self.cfg.chrome_devtools,
@@ -160,10 +165,20 @@ class BrokerServer:
             raise
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        current = asyncio.current_task()
+        if current is not None:
+            self._client_tasks.add(current)
         self._clients.add(writer)
-        self._last_activity = time.monotonic()
+        now = time.monotonic()
+        self._last_activity = now
+        self._client_last_seen[writer] = now
+        self._client_in_flight[writer] = 0
         if len(self._clients) > 32:
             self._clients.discard(writer)
+            self._client_last_seen.pop(writer, None)
+            self._client_in_flight.pop(writer, None)
+            if current is not None:
+                self._client_tasks.discard(current)
             writer.close()
             return
         try:
@@ -174,18 +189,29 @@ class BrokerServer:
             token = auth.get("token") if isinstance(auth, dict) else None
             if not isinstance(token, str) or not secrets.compare_digest(token, self.token):
                 return
+            self._client_last_seen[writer] = time.monotonic()
             while True:
                 message = await read_async_frame(reader, limit=MAX_TCP_MESSAGE_BYTES)
                 if message is None:
                     return
-                if message.get("op") == "call" and str(message.get("tool") or "") in _CANCELLABLE_READ_TOOLS:
-                    response = await self._dispatch_cancellable_read(message, reader, writer)
-                    if response is None:
-                        return
-                else:
-                    response = await self._dispatch(message, writer)
+                self._client_last_seen[writer] = time.monotonic()
+                self._client_in_flight[writer] = self._client_in_flight.get(writer, 0) + 1
+                try:
+                    if message.get("op") == "call" and str(message.get("tool") or "") in _CANCELLABLE_READ_TOOLS:
+                        response = await self._dispatch_cancellable_read(message, reader, writer)
+                        if response is None:
+                            return
+                    else:
+                        response = await self._dispatch(message, writer)
+                finally:
+                    self._client_in_flight[writer] = max(0, self._client_in_flight.get(writer, 1) - 1)
+                    self._client_last_seen[writer] = time.monotonic()
+                trigger_shutdown = bool(response.pop("_trigger_shutdown", False))
                 writer.write(encode_message(response, limit=MAX_TCP_MESSAGE_BYTES))
                 await writer.drain()
+                if trigger_shutdown:
+                    self.stop_event.set()
+                    return
         except (
             ConnectionError,
             OSError,
@@ -197,9 +223,13 @@ class BrokerServer:
         finally:
             self._release_for_connection(writer)
             self._clients.discard(writer)
+            self._client_last_seen.pop(writer, None)
+            self._client_in_flight.pop(writer, None)
+            if current is not None:
+                self._client_tasks.discard(current)
             writer.close()
             with contextlib.suppress(Exception):
-                await writer.wait_closed()
+                await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
             await self._evict_idle_sessions()
 
     async def _watch_client_eof(self, reader: asyncio.StreamReader) -> bool:
@@ -238,6 +268,10 @@ class BrokerServer:
                 raise ProtocolError("unexpected pipelined data during broker read call")
             return dispatch_task.result()
         finally:
+            if not dispatch_task.done():
+                dispatch_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await dispatch_task
             if not eof_task.done():
                 eof_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -316,27 +350,39 @@ class BrokerServer:
             await asyncio.shield(task)
         return bool(tasks)
 
+    async def _sweep_once(self) -> bool:
+        """Run one expiry/eviction pass; return True if idle-exit was triggered."""
+        now = time.monotonic()
+        if self.cfg.broker_lease_ttl > 0:
+            for lease_id, lease in list(self.leases.items()):
+                if lease.in_flight > 0:
+                    continue
+                if now - lease.last_seen > self.cfg.broker_lease_ttl:
+                    self.leases.pop(lease_id, None)
+            for client_writer in list(self._clients):
+                if self._client_in_flight.get(client_writer, 0) > 0:
+                    continue
+                last_seen = self._client_last_seen.get(client_writer, now)
+                if now - last_seen > self.cfg.broker_lease_ttl:
+                    client_writer.close()
+        await self._evict_idle_sessions()
+        if (
+            self.cfg.broker_idle_exit > 0
+            and not self._clients
+            and not self.leases
+            and not self.sessions
+            and not self._closing_tasks
+            and now - self._last_activity > self.cfg.broker_idle_exit
+        ):
+            self.stop_event.set()
+            return True
+        return False
+
     async def _sweep(self) -> None:
         interval = 1.0 if self.cfg.broker_lease_ttl < 30 else 30.0
         while not self.stop_event.is_set():
             await asyncio.sleep(interval)
-            now = time.monotonic()
-            if self.cfg.broker_lease_ttl > 0:
-                for lease_id, lease in list(self.leases.items()):
-                    if lease.in_flight > 0:
-                        continue
-                    if now - lease.last_seen > self.cfg.broker_lease_ttl:
-                        self.leases.pop(lease_id, None)
-            await self._evict_idle_sessions()
-            if (
-                self.cfg.broker_idle_exit > 0
-                and not self._clients
-                and not self.leases
-                and not self.sessions
-                and not self._closing_tasks
-                and now - self._last_activity > self.cfg.broker_idle_exit
-            ):
-                self.stop_event.set()
+            if await self._sweep_once():
                 return
 
     async def _dispatch(self, message: dict[str, Any], writer: asyncio.StreamWriter) -> dict[str, Any]:
@@ -357,14 +403,24 @@ class BrokerServer:
                     "generation": lease.generation,
                 }
             if op == "call":
-                blocks, url, title, pages = await self._call(
+                blocks, url, title, pages, blocked_origins = await self._call(
                     str(message.get("lease_id", "")),
                     str(message.get("generation", "")),
                     str(message.get("tool", "")),
                     message.get("arguments"),
                     toolset=str(message.get("toolset") or ""),
                 )
-                return {"id": request_id, "ok": True, "blocks": blocks, "url": url, "title": title, "pages": pages}
+                reply: dict[str, Any] = {
+                    "id": request_id,
+                    "ok": True,
+                    "blocks": blocks,
+                    "url": url,
+                    "title": title,
+                    "pages": pages,
+                }
+                if blocked_origins:
+                    reply["blocked_origins"] = blocked_origins
+                return reply
             if op == "tabs":
                 pages = await self._list_pages(
                     str(message.get("lease_id", "")),
@@ -402,8 +458,7 @@ class BrokerServer:
                 await self._close_session(session_id, log_errors=False)
                 return {"id": request_id, "ok": True}
             if op == "shutdown":
-                self.stop_event.set()
-                return {"id": request_id, "ok": True}
+                return {"id": request_id, "ok": True, "_trigger_shutdown": True}
             if op == "status":
                 return {
                     "id": request_id,
@@ -439,7 +494,7 @@ class BrokerServer:
             for lease in list(self.leases.values()):
                 if lease.session_id != session_id:
                     continue
-                if lease.connection is connection:
+                if lease.connection is connection and lease.owner == owner:
                     if session_id in self.sessions:
                         return lease
                     self.leases.pop(lease.lease_id, None)
@@ -472,9 +527,6 @@ class BrokerServer:
                     if self.sessions:
                         raise Unavailable("bridge mode supports one Broker session per state dir")
                     session_cfg = self.cfg
-                elif session_id == "default" and (self.cfg.state_dir / "chrome").is_dir():
-                    # Preserve the pre-multi-session profile/login for the default id.
-                    session_cfg = self.cfg
                 else:
                     if len(self.sessions) + len(self._closing_tasks) >= MAX_BROKER_SESSIONS:
                         if self._closing_tasks:
@@ -499,10 +551,14 @@ class BrokerServer:
                         raise Unavailable(
                             f"at most {MAX_BROKER_SESSIONS_PER_OWNER} Broker sessions per owner are supported"
                         )
-                    session_cfg = replace(
-                        self.cfg,
-                        state_dir=_session_state_dir(self.cfg.state_dir, session_id),
-                    )
+                    if session_id == "default" and (self.cfg.state_dir / "chrome").is_dir():
+                        # Preserve the pre-multi-session profile/login for the default id.
+                        session_cfg = self.cfg
+                    else:
+                        session_cfg = replace(
+                            self.cfg,
+                            state_dir=_session_state_dir(self.cfg.state_dir, session_id),
+                        )
                 if self._session_factory is BrowserSession:
                     session = BrowserSession(session_cfg, journal_owner=owner, journal_session=session_id)
                 else:
@@ -549,7 +605,7 @@ class BrokerServer:
         arguments: Any,
         *,
         toolset: str = "",
-    ) -> tuple[list[dict[str, Any]], str, str, list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], str, str, list[dict[str, Any]], list[str]]:
         lease = self.leases.get(lease_id)
         if lease is None or lease.generation != generation:
             raise Unavailable("broker lease is not active", pre_dispatch=True)
@@ -568,6 +624,19 @@ class BrokerServer:
         try:
             with override_call_toolset(toolset):
                 result = await self._tool_caller(session, tool, arguments)
+        except ConnectionClosed as exc:
+            mark_disc = getattr(session, "mark_disconnected", None)
+            if callable(mark_disc):
+                mark_disc()
+            site_blocked = getattr(session, "consume_site_blocked_origin", lambda: "")()
+            if site_blocked and not exc.blocked_origin:
+                exc.blocked_origin = site_blocked
+            raise
+        except BrowserError as exc:
+            site_blocked = getattr(session, "consume_site_blocked_origin", lambda: "")()
+            if site_blocked and not exc.blocked_origin:
+                exc.blocked_origin = site_blocked
+            raise
         finally:
             lease.in_flight = max(0, lease.in_flight - 1)
             lease.last_seen = time.monotonic()
@@ -575,11 +644,17 @@ class BrokerServer:
         if not isinstance(result, list) or not all(isinstance(block, dict) for block in result):
             raise Unavailable("broker tool returned an invalid result")
         snapshot = getattr(session, "snapshot", None)
+        drain_fn = getattr(session, "drain_blocked_origins", None)
+        drained: list[str] = [str(item) for item in drain_fn() if item] if callable(drain_fn) else []
+        site_blocked = str(getattr(session, "consume_site_blocked_origin", lambda: "")() or "")
+        if site_blocked and site_blocked not in drained:
+            drained.append(site_blocked)
         return (
             result,
             str(getattr(snapshot, "url", "") or ""),
             str(getattr(snapshot, "title", "") or ""),
             self._cached_pages_payload(session),
+            drained,
         )
 
     async def _list_pages(self, lease_id: str, generation: str) -> list[dict[str, Any]]:
@@ -593,7 +668,8 @@ class BrokerServer:
         if session is None or getattr(session, "state", None) != "ready":
             return []
         action_lock = getattr(session, "_action_lock", None)
-        busy = lease.in_flight > 0 or bool(callable(getattr(action_lock, "locked", None)) and action_lock.locked())
+        locked_fn = getattr(action_lock, "locked", None)
+        busy = lease.in_flight > 0 or bool(callable(locked_fn) and locked_fn())
         if busy:
             return self._cached_pages_payload(session)
         list_pages_fn = getattr(session, "list_pages", None)
@@ -606,23 +682,33 @@ class BrokerServer:
         return self._cached_pages_payload(session)
 
     async def aclose(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            # Close accepted clients first: wait_closed waits for their handlers.
-            for writer in list(self._clients):
-                writer.close()
-            with contextlib.suppress(Exception):
-                await self._server.wait_closed()
-            self._server = None
-        for writer in list(self._clients):
-            with contextlib.suppress(Exception):
-                await writer.wait_closed()
-        self._clients.clear()
         if self._sweep_task is not None:
             self._sweep_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._sweep_task
             self._sweep_task = None
+        if self._server is not None:
+            self._server.close()
+        for writer in list(self._clients):
+            writer.close()
+        current = asyncio.current_task()
+        active_tasks = [t for t in list(self._client_tasks) if t is not current and not t.done()]
+        for task in active_tasks:
+            task.cancel()
+        if active_tasks:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.gather(*active_tasks, return_exceptions=True), timeout=2.0)
+        if self._server is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._server.wait_closed(), timeout=2.0)
+            self._server = None
+        for writer in list(self._clients):
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
+        self._clients.clear()
+        self._client_tasks.clear()
+        self._client_last_seen.clear()
+        self._client_in_flight.clear()
         for session_id in list(self.sessions):
             self._begin_close_session(session_id, log_errors=True)
         for task in list(self._closing_tasks.values()):

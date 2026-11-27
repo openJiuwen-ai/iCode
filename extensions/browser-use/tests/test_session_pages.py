@@ -396,3 +396,168 @@ def test_list_pages_refreshes_urls_from_the_browser(tmp_path: Path) -> None:
     assert pages[1].url == "https://example.com/final"
     assert pages[1].title == "Final title"
     assert any(method == "Target.getTargets" for method in client.methods())
+
+
+def test_event_worker_detach_last_page_reopens_without_deadlocking(tmp_path: Path) -> None:
+    """Wave 3 P1-13 Path A: detaching the last page inside CDPClient._event_worker must not self-deadlock."""
+    import json
+
+    from icode_browser_use.cdp.client import CDPClient
+
+    class LoopbackSocket:
+        def __init__(self) -> None:
+            self.incoming: asyncio.Queue[str] = asyncio.Queue()
+            self.sent: list[dict] = []
+            self.closed = False
+            self.pong_event = asyncio.Event()
+
+        async def send(self, payload: str) -> None:
+            msg = json.loads(payload)
+            self.sent.append(msg)
+            req_id = msg["id"]
+            method = msg["method"]
+            if method == "Target.createTarget":
+                # Emit an early auto-attach event BEFORE responding to createTarget:
+                # if _drop_page ran inline on _event_worker, this queued event could never run.
+                await self.incoming.put(
+                    json.dumps(
+                        {
+                            "method": "Target.attachedToTarget",
+                            "params": {
+                                "targetInfo": {"type": "page", "targetId": "t-reopened"},
+                                "sessionId": "s-auto-dup",
+                                "waitingForDebugger": True,
+                            },
+                        }
+                    )
+                )
+                await self.incoming.put(json.dumps({"id": req_id, "result": {"targetId": "t-reopened"}}))
+            elif method == "Target.attachToTarget":
+                await self.incoming.put(json.dumps({"id": req_id, "result": {"sessionId": "s-reopened"}}))
+            elif method == "Page.getFrameTree":
+                await self.incoming.put(
+                    json.dumps(
+                        {"id": req_id, "result": {"frameTree": {"frame": {"id": "f-new", "url": "about:blank"}}}}
+                    )
+                )
+            elif method == "Page.addScriptToEvaluateOnNewDocument":
+                await self.incoming.put(json.dumps({"id": req_id, "result": {"identifier": "p1"}}))
+            else:
+                await self.incoming.put(json.dumps({"id": req_id, "result": {}}))
+
+        async def recv(self) -> str:
+            return await self.incoming.get()
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    async def scenario() -> None:
+        sock = LoopbackSocket()
+        client = CDPClient(sock)  # type: ignore[arg-type]
+        client._start()
+        session = BrowserSession(BrowserConfig(allowed_domains=("example.com",), state_dir=tmp_path / "state"))
+        session._client = client
+        session._targets = TargetManager(client)
+        session._state = "ready"
+        session._started_once = True
+        session._target_id = "t-root"
+        session._session_id = "s-root"
+        session._main_frame_id = "f-root"
+        session._record_page("t-root", "s-root", opener_id=None, url="https://example.com/", title="Root")
+        session._register_handlers()
+        try:
+            await sock.incoming.put(
+                json.dumps({"method": "Target.detachedFromTarget", "params": {"sessionId": "s-root"}})
+            )
+            # Recovery must run off _event_worker and finish well below the 20s CDP timeout.
+            for _ in range(100):
+                if session.target_id == "t-reopened" and session._page_recovery_task is None:
+                    break
+                await asyncio.sleep(0.02)
+            assert session.target_id == "t-reopened"
+            assert session.state == "ready"
+            assert any(
+                m.get("method") == "Target.detachFromTarget" and m.get("params") == {"sessionId": "s-auto-dup"}
+                for m in sock.sent
+            )
+        finally:
+            await client.aclose()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5.0))
+
+
+def test_opening_page_early_auto_attach_detaches_duplicate_session(tmp_path: Path) -> None:
+    """Wave 3 P1-13 Path B: early waitingForDebugger attach during _opening_page with empty _target_id is detached."""
+    session, client = make_session(tmp_path)
+    session._opening_page = True
+    session._target_id = ""
+    session._session_id = ""
+
+    asyncio.run(
+        session._on_attached_to_target(
+            {
+                "targetInfo": {"type": "page", "targetId": "t-early"},
+                "sessionId": "s-early-dup",
+                "waitingForDebugger": True,
+            },
+            None,
+        )
+    )
+    assert ("Target.detachFromTarget", {"sessionId": "s-early-dup"}, None) in client.calls
+    assert session._duplicate_sessions.get("s-early-dup") == "t-early"
+
+
+def test_foreign_tab_iframe_not_registered_and_failed_oopif_arm_is_dropped(tmp_path: Path) -> None:
+    """Wave 3 P1-18 & P2-10: foreign iframes never enter _oopifs; fail-closed OOPIFs are dropped from _oopifs."""
+    session, _client = make_session(tmp_path)
+    routed: list[str] = []
+
+    class FakePolicy:
+        def __init__(self, arm_ok: bool) -> None:
+            self.arm_ok = arm_ok
+
+        async def handle_attached_to_target(self, params, _session_id):
+            routed.append(str(params.get("sessionId") or ""))
+            return self.arm_ok
+
+    session._policy = FakePolicy(arm_ok=True)
+    # Foreign tab's iframe: policy still sees it, but _oopifs stays clean.
+    asyncio.run(
+        session._on_attached_to_target(
+            {"targetInfo": {"type": "iframe", "targetId": "if-foreign"}, "sessionId": "s-if-foreign"},
+            "s-foreign-page",
+        )
+    )
+    assert routed == ["s-if-foreign"]
+    assert session.oopif_sessions == []
+    assert session.current_page_oopif_sessions() == []
+
+    # Owned tab's iframe whose Fetch arm fails (returns False) must be removed from _oopifs.
+    session._policy = FakePolicy(arm_ok=False)
+    asyncio.run(
+        session._on_attached_to_target(
+            {"targetInfo": {"type": "iframe", "targetId": "if-failed"}, "sessionId": "s-if-failed"},
+            "s-root",
+        )
+    )
+    assert "s-if-failed" in routed
+    assert session.oopif_sessions == []
+
+
+def test_enable_page_deduplicates_mutation_probe_and_activate_resets_title_and_loader(tmp_path: Path) -> None:
+    """Wave 3 P2-11: switching tabs installs MUTATION_PROBE_SCRIPT once per session and resets loader/title."""
+    session, client = make_session(tmp_path)
+    client.frames["s-popup"] = "https://example.com/t-popup"
+    session._frame_loader["frame-s-root"] = "old-loader"
+    asyncio.run(session._on_attached_to_target(popup_attach(), None))
+
+    asyncio.run(session.switch_page("t-popup"))
+    assert session.snapshot.title == "t-popup"
+    assert session._frame_loader == {}
+
+    asyncio.run(session.switch_page("t-root"))
+    asyncio.run(session.switch_page("t-popup"))
+    probe_calls_for_popup = [
+        c for c in client.calls if c[0] == "Page.addScriptToEvaluateOnNewDocument" and c[2] == "s-popup"
+    ]
+    assert len(probe_calls_for_popup) == 1

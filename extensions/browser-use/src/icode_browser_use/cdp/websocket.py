@@ -40,7 +40,7 @@ _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #: Hard ceiling on a single frame and on a reassembled message (32 MiB).
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
-_ID_HEAD_RE = re.compile(rb'^\s*\{\s*"id"\s*:\s*(\d+)')
+_ID_HEAD_RE = re.compile(rb'^\s*\{\s*(?:"sessionId"\s*:\s*"[^"]*"\s*,\s*)?"id"\s*:\s*(\d+)')
 _DRAIN_CHUNK = 65536
 
 
@@ -173,6 +173,8 @@ def _decode_frame(buf: bytes) -> tuple[bool, int, bytes, int] | None:
         if len(buf) < offset + 8:
             return None
         length = struct.unpack_from("!Q", buf, offset)[0]
+        if length & (1 << 63):
+            raise Unavailable("WebSocket 64 位帧长度最高位非法")
         offset += 8
     if length > MAX_MESSAGE_BYTES:
         raise Unavailable("WebSocket 帧长度超过上限")
@@ -268,9 +270,12 @@ class WSClient:
         except Unavailable:
             await _abort(writer)
             raise
-        except OSError as exc:
+        except (OSError, asyncio.LimitOverrunError, ValueError) as exc:
             await _abort(writer)
             raise Unavailable(f"CDP 握手失败：{exc}") from exc
+        except BaseException:
+            await _abort(writer)
+            raise
 
         if status != 101:
             await _abort(writer)
@@ -284,6 +289,8 @@ class WSClient:
         """Best-effort send of a control frame (Pong / Close) from the reader."""
         try:
             async with self._write_lock:
+                if self._closed and opcode != OP_CLOSE:
+                    return
                 self._writer.write(_encode_frame(opcode, payload, mask=True))
                 await asyncio.wait_for(self._writer.drain(), self._open_timeout)
         except Exception:  # control frames must never mask a failure
@@ -299,6 +306,8 @@ class WSClient:
         frame = _encode_frame(OP_TEXT, text.encode("utf-8"), mask=True)
         try:
             async with self._write_lock:
+                if self._closed:
+                    raise ConnectionClosed("WebSocket 已关闭，无法发送")
                 self._writer.write(frame)
                 await asyncio.wait_for(self._writer.drain(), self._open_timeout)
         except asyncio.TimeoutError as exc:
@@ -310,6 +319,8 @@ class WSClient:
             raise ConnectionClosed("WebSocket 已关闭，无法发送 ping")
         frame = _encode_frame(OP_PING, payload, mask=True)
         async with self._write_lock:
+            if self._closed:
+                raise ConnectionClosed("WebSocket 已关闭，无法发送 ping")
             self._writer.write(frame)
             await asyncio.wait_for(self._writer.drain(), self._open_timeout)
 
@@ -337,6 +348,8 @@ class WSClient:
             length = struct.unpack("!H", await reader.readexactly(2))[0]
         elif length == 127:
             length = struct.unpack("!Q", await reader.readexactly(8))[0]
+            if length & (1 << 63):
+                raise Unavailable("WebSocket 64 位帧长度最高位非法")
         mask_key = await reader.readexactly(4) if masked else b""
         if length > MAX_MESSAGE_BYTES:
             head_len = min(256, length)
@@ -345,7 +358,7 @@ class WSClient:
                 head = _xor_mask(head, mask_key)
             req_id = _extract_request_id(head)
             await self._drain_bytes(length - head_len)
-            return fin, opcode, b"", True, req_id, length
+            return fin, opcode, head, True, req_id, length
         payload = await reader.readexactly(length)
         if masked:
             payload = _xor_mask(payload, mask_key)
@@ -358,6 +371,7 @@ class WSClient:
         and raise non-fatal :class:`FrameTooLarge` so the connection stays open.
         """
         message = bytearray()
+        head_buf = bytearray()
         message_opcode: int | None = None
         oversized = False
         oversized_req_id: int | None = None
@@ -376,8 +390,9 @@ class WSClient:
                 continue
             if opcode == OP_CLOSE:
                 await self._write_control(OP_CLOSE, payload[:2])
-                self._closed = True
-                await self._close_writer()
+                async with self._write_lock:
+                    self._closed = True
+                    await self._close_writer()
                 return None
             if opcode == OP_CONTINUATION:
                 if message_opcode is None:
@@ -390,18 +405,21 @@ class WSClient:
                 raise Unavailable(f"不支持的 WebSocket opcode：{opcode}")
 
             self.pong_event.set()
+            if len(head_buf) < 256 and payload:
+                need = 256 - len(head_buf)
+                head_buf.extend(payload[:need])
             if oversized or frame_oversized or len(message) + len(payload) > MAX_MESSAGE_BYTES:
                 if not oversized:
                     oversized = True
                     oversized_bytes = len(message) + raw_len
-                    if frame_req_id is not None and not message:
+                    oversized_req_id = _extract_request_id(bytes(head_buf))
+                    if oversized_req_id is None and frame_req_id is not None and not message:
                         oversized_req_id = frame_req_id
-                    else:
-                        head = bytes(message[:256]) if message else payload[:256]
-                        oversized_req_id = _extract_request_id(head)
                     message.clear()
                 else:
                     oversized_bytes += raw_len
+                    if oversized_req_id is None and head_buf:
+                        oversized_req_id = _extract_request_id(bytes(head_buf))
                 if fin:
                     raise FrameTooLarge(request_id=oversized_req_id, size=oversized_bytes)
                 continue
@@ -415,8 +433,13 @@ class WSClient:
 
     async def aclose(self) -> None:
         """Send a close frame and tear the socket down; idempotent."""
-        if self._closed:
-            return
-        self._closed = True
-        await self._write_control(OP_CLOSE, b"")
-        await self._close_writer()
+        async with self._write_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._writer.write(_encode_frame(OP_CLOSE, b"", mask=True))
+                await asyncio.wait_for(self._writer.drain(), min(2.0, self._open_timeout))
+            except Exception:
+                pass
+            await self._close_writer()

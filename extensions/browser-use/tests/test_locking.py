@@ -96,3 +96,31 @@ def test_playbook_forbids_lock_loop_and_credential_probing() -> None:
     assert "state_dir_locked" in BROWSER_PLAYBOOK
     assert "bridge.json" in BROWSER_PLAYBOOK
     assert "Cookie" in BROWSER_PLAYBOOK
+
+
+def test_fd_matches_path_detects_replaced_inode_and_sync_file_lock_round_trips(tmp_path: Path, monkeypatch) -> None:
+    """Wave 3 P1-14 #4 & #1: inode verification detects replaced files; acquire_file_lock_sync acquires/releases."""
+    from types import SimpleNamespace
+
+    from icode_browser_use import locking
+
+    lock_path = tmp_path / ".browsers.json.lock"
+    sync_lock = locking.acquire_file_lock_sync(lock_path, wait=0.5)
+    assert sync_lock is not None
+    try:
+        # Contention from another caller with wait=0 must fail immediately.
+        assert locking.acquire_file_lock_sync(lock_path, wait=0.0) is None
+    finally:
+        sync_lock.release()
+    # Once released, re-acquiring succeeds.
+    reacquired = locking.acquire_file_lock_sync(lock_path, wait=0.5)
+    assert reacquired is not None
+    reacquired.release()
+
+    # Verify POSIX inode mismatch detection deterministically on all platforms.
+    monkeypatch.setattr(locking, "fcntl", object())
+    monkeypatch.setattr(locking.os, "fstat", lambda _fd: SimpleNamespace(st_dev=1, st_ino=100))
+    monkeypatch.setattr(locking.os, "stat", lambda _p: SimpleNamespace(st_dev=1, st_ino=200))
+    assert locking._fd_matches_path(1, lock_path) is False
+    monkeypatch.setattr(locking.os, "stat", lambda _p: SimpleNamespace(st_dev=1, st_ino=100))
+    assert locking._fd_matches_path(1, lock_path) is True

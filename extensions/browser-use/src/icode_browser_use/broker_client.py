@@ -16,6 +16,7 @@ from .bridge.protocol import MAX_TCP_MESSAGE_BYTES, encode_message, read_async_f
 from .config import BrowserConfig
 from .distribution import broker_command
 from .errors import BrowserError, ConnectionClosed, Unavailable
+from .locking import probe_instance_lock
 
 
 def _requested_wait_seconds(fields: dict[str, Any]) -> float:
@@ -58,19 +59,40 @@ class BrokerSession:
         self.cfg = cfg
         self.state = "ready"
         self.snapshot = SimpleNamespace(url="", title="")
+        self._blocked_origins: list[str] = []
+        self._last_site_blocked_origin = ""
 
     async def call_tool(self, tool: str, arguments: Any) -> list[dict[str, Any]]:
         blocks = await self.client.call(tool, arguments)
         self.snapshot.url = self.client.last_url
         self.snapshot.title = self.client.last_title
+        for origin in getattr(self.client, "last_blocked_origins", ()):
+            if origin and origin not in self._blocked_origins:
+                self._blocked_origins.append(origin)
+            if origin:
+                self._last_site_blocked_origin = origin
         return blocks
 
     async def list_pages(self) -> list[SimpleNamespace]:
         """Refresh owned tab metadata from the Broker without spawning or launching Chrome."""
         return await self.client.list_pages()
 
+    def drain_blocked_origins(self) -> tuple[str, ...]:
+        if not self._blocked_origins:
+            return ()
+        items = tuple(self._blocked_origins)
+        self._blocked_origins.clear()
+        return items
+
+    def consume_site_blocked_origin(self) -> str:
+        origin = self._last_site_blocked_origin
+        self._last_site_blocked_origin = ""
+        return origin
+
     def mark_disconnected(self) -> None:
-        return None
+        drop = getattr(self.client, "_drop_connection", None)
+        if callable(drop):
+            drop()
 
     @property
     def connected(self) -> bool:
@@ -100,6 +122,7 @@ class BrokerClient:
         self.lease_generation = ""
         self.last_url = ""
         self.last_title = ""
+        self.last_blocked_origins: list[str] = []
         self._last_pages: list[SimpleNamespace] = []
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -185,6 +208,12 @@ class BrokerClient:
                     raise Unavailable("broker returned an invalid result")
                 self.last_url = str(response.get("url", "") or "")
                 self.last_title = str(response.get("title", "") or "")
+                raw_blocked = response.get("blocked_origins")
+                self.last_blocked_origins = (
+                    [str(item) for item in raw_blocked if isinstance(item, str) and item]
+                    if isinstance(raw_blocked, list)
+                    else []
+                )
                 if "pages" in response:
                     self._last_pages = self._parse_pages(response.get("pages"))
                 return blocks
@@ -226,8 +255,6 @@ class BrokerClient:
     async def close_session(self) -> None:
         """Close the Broker-side BrowserSession (used by extension browser_close)."""
         try:
-            if self._writer is None:
-                await self._connect(allow_spawn=False)
             response = await self._request(
                 "close",
                 lease_id=self.lease_id,
@@ -266,16 +293,14 @@ class BrokerClient:
                     self._writer.write(encode_message(request, limit=MAX_TCP_MESSAGE_BYTES))
                     await self._writer.drain()
                     sent = True
+                    base_timeout = max(
+                        30.0,
+                        self.cfg.bridge_wait + 10.0,
+                        self.cfg.ready_timeout + 10.0,
+                        self.cfg.nav_load_timeout + 2 * self.cfg.cdp_timeout + 10.0,
+                    )
                     read_timeout = (
-                        float(timeout)
-                        if timeout is not None
-                        else max(
-                            30.0,
-                            self.cfg.bridge_wait + 10.0,
-                            self.cfg.ready_timeout + 10.0,
-                            self.cfg.nav_load_timeout + 2 * self.cfg.cdp_timeout + 10.0,
-                            _requested_wait_seconds(fields) + 10.0,
-                        )
+                        float(timeout) if timeout is not None else (base_timeout + _requested_wait_seconds(fields))
                     )
                     response = (
                         await asyncio.wait_for(
@@ -312,16 +337,33 @@ class BrokerClient:
                     raise ConnectionClosed("broker unavailable") from exc
             raise ConnectionClosed("broker unavailable")
 
+    def _is_broker_alive(self, payload: dict[str, Any]) -> bool:
+        """Check Broker liveness via its instance lock when present (immune to PID reuse)."""
+        lock_file = self.file.parent / "instance.lock"
+        if lock_file.exists():
+            return probe_instance_lock(self.file.parent).locked
+        return self._pid_alive(payload)
+
+    def _unlink_stale_discovery(self, expected_generation: str | None = None) -> None:
+        """Remove a stale discovery file only when no live Broker holds the broker lock."""
+        lock_file = self.file.parent / "instance.lock"
+        if lock_file.exists() and probe_instance_lock(self.file.parent).locked:
+            return
+        if expected_generation is not None:
+            current = self._read_discovery()
+            if current is not None and current.get("generation") != expected_generation:
+                return
+        with contextlib.suppress(OSError):
+            self.file.unlink()
+
     async def _connect(self, *, allow_spawn: bool = True) -> None:
         if self._writer is not None:
             return
         payload = self._read_discovery()
-        if payload is None:
-            with contextlib.suppress(OSError):
-                self.file.unlink()
-        if payload is not None and not self._pid_alive(payload):
-            with contextlib.suppress(OSError):
-                self.file.unlink()
+        if payload is None and self.file.exists():
+            self._unlink_stale_discovery()
+        if payload is not None and not self._is_broker_alive(payload):
+            self._unlink_stale_discovery(str(payload.get("generation") or "") or None)
             payload = None
         if payload is None:
             if not self.cfg.broker_autostart or not allow_spawn:
@@ -335,6 +377,7 @@ class BrokerClient:
             raise ConnectionClosed("cannot connect to the browser broker", pre_dispatch=True)
         if payload.get("protocol_version") != 1:
             raise Unavailable("browser broker protocol mismatch; stop the old broker and retry", pre_dispatch=True)
+        expected_bridge_file = str(self.cfg.bridge_file) if self.cfg.bridge_file else ""
         if (
             payload.get("allowed_domains") != list(self.cfg.allowed_domains)
             or payload.get("allowed_origins") != list(self.cfg.allowed_origins)
@@ -344,15 +387,11 @@ class BrokerClient:
                     ("headless", self.cfg.headless),
                     ("bridge", self.cfg.bridge),
                     ("evaluate", self.cfg.evaluate_enabled),
-                )
-            )
-            or any(
-                key in payload and payload.get(key) != expected
-                for key, expected in (
                     ("save_state", self.cfg.save_state_enabled),
                     ("chrome_devtools", self.cfg.chrome_devtools),
                     ("cdp_url", self.cfg.cdp_url or ""),
                     ("upload_roots", [str(p) for p in self.cfg.upload_roots]),
+                    ("bridge_file", expected_bridge_file),
                 )
             )
         ):
@@ -423,6 +462,7 @@ class BrokerClient:
             "ICODE_BROWSER_SAVE_STATE": "allow" if self.cfg.save_state_enabled else "",
             "ICODE_BROWSER_CDP_URL": self.cfg.cdp_url or "",
             "ICODE_BROWSER_UPLOAD_ROOTS": os.pathsep.join(str(p) for p in self.cfg.upload_roots),
+            **({"ICODE_BROWSER_BRIDGE_FILE": str(self.cfg.bridge_file)} if self.cfg.bridge_file else {}),
         }
         log = log_path.open("ab")
         harden_private(log_path, is_dir=False, strict=False)

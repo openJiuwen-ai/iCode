@@ -84,20 +84,43 @@ class OwnedTransport:
 
     async def stop(self, client: Any | None, child: Any | None, *, target_id: str | None) -> None:
         graceful_sent = False
+        cancelled: asyncio.CancelledError | None = None
         if client is not None:
-            with contextlib.suppress(Exception):
+            try:
                 await client.send("Browser.close", timeout=2.0)
                 graceful_sent = True
-            with contextlib.suppress(Exception):
-                await client.aclose()
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(asyncio.shield(client.aclose()), timeout=3.0)
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+            except Exception:
+                pass
         if child is not None:
-            if graceful_sent:
+            if graceful_sent and cancelled is None:
                 wait_for_exit = getattr(child, "wait_for_exit", None)
                 if callable(wait_for_exit):
-                    with contextlib.suppress(Exception):
+                    try:
                         await wait_for_exit()
-            with contextlib.suppress(Exception):
-                await child.terminate_tree()
+                    except asyncio.CancelledError as exc:
+                        cancelled = exc
+                    except Exception:
+                        pass
+            try:
+                await asyncio.wait_for(asyncio.shield(child.terminate_tree()), timeout=5.0)
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+                sync_term = getattr(child, "terminate_tree_sync", None)
+                if callable(sync_term):
+                    with contextlib.suppress(Exception):
+                        sync_term()
+            except Exception:
+                pass
+        if cancelled is not None:
+            raise cancelled
 
 
 class AttachedTransport:
@@ -146,10 +169,21 @@ class AttachedTransport:
 
     async def stop(self, client: Any | None, child: Any | None, *, target_id: str | None) -> None:
         if client is not None:
+            cancelled: asyncio.CancelledError | None = None
             if target_id:
                 # Close only the tab this session created, never the user's other tabs
                 # or the browser itself.
-                with contextlib.suppress(Exception):
+                try:
                     await client.send("Target.closeTarget", {"targetId": target_id}, timeout=5.0)
-            with contextlib.suppress(Exception):
-                await client.aclose()
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+                except Exception:
+                    pass
+            try:
+                await asyncio.wait_for(asyncio.shield(client.aclose()), timeout=3.0)
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+            except Exception:
+                pass
+            if cancelled is not None:
+                raise cancelled

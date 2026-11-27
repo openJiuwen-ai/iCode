@@ -24,9 +24,12 @@ journal must not break a page action.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -97,12 +100,19 @@ class Journal:
         self._connection = self._connect(path)
 
     def _connect(self, path: Path | None) -> sqlite3.Connection | None:
+        connection: sqlite3.Connection | None = None
         try:
             if path is None:
                 connection = sqlite3.connect(":memory:", check_same_thread=False)
             else:
-                path.parent.mkdir(parents=True, exist_ok=True)
+                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if sys.platform != "win32":
+                    with contextlib.suppress(OSError):
+                        os.chmod(path.parent, 0o700)
                 connection = sqlite3.connect(path, timeout=5.0, check_same_thread=False)
+                if sys.platform != "win32":
+                    with contextlib.suppress(OSError):
+                        os.chmod(path, 0o600)
                 connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS actions ("
@@ -126,6 +136,9 @@ class Journal:
             connection.commit()
             return connection
         except (sqlite3.Error, OSError) as exc:
+            if connection is not None:
+                with contextlib.suppress(Exception):
+                    connection.close()
             logger.warning("browser journal unavailable: %s", exc)
             return None
 
@@ -193,6 +206,8 @@ class Journal:
                     self._prune_global(connection)
                 connection.commit()
             except sqlite3.Error as exc:
+                with contextlib.suppress(sqlite3.Error):
+                    connection.rollback()
                 logger.warning("browser journal write failed: %s", exc)
 
     async def arecord(self, **kwargs: Any) -> None:

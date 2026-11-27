@@ -967,3 +967,143 @@ def test_broker_start_closes_server_and_uses_strict_private_write_on_error(tmp_p
         assert seen_kwargs == [{"strict": True, "reject_symlink": True}]
 
     asyncio.run(scenario())
+
+
+def test_broker_aclose_unblocks_inflight_call_and_shutdown_replies_cleanly(tmp_path) -> None:
+    """Wave 3 P1-15: aclose() finishes promptly despite in-flight calls; shutdown RPC drains reply before stopping."""
+    import time
+
+    started = asyncio.Event()
+
+    async def slow_tool_caller(_session, _tool, _arguments):
+        started.set()
+        await asyncio.sleep(30.0)
+        return [{"type": "text", "text": "never"}]
+
+    async def scenario() -> None:
+        # Part A: aclose() must not deadlock behind an active client call.
+        broker1 = BrokerServer(
+            _cfg(tmp_path / "b1"),
+            session_factory=lambda _cfg: SimpleNamespace(state="ready", snapshot=SimpleNamespace(url="", title="")),
+            tool_caller=slow_tool_caller,
+        )
+        await broker1.start()
+        client1 = BrokerClient(_cfg(tmp_path / "b1"), owner="owner-a", session_id="s1")
+        call_task = asyncio.create_task(client1.call("browser_wait_for", {"condition": "stable", "timeout_ms": 30000}))
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        t0 = time.monotonic()
+        await asyncio.wait_for(broker1.aclose(), timeout=5.0)
+        assert time.monotonic() - t0 < 3.0
+        from icode_browser_use.errors import BrowserError
+
+        with pytest.raises((BrowserError, OSError)):
+            await asyncio.wait_for(call_task, timeout=2.0)
+        await client1.aclose()
+
+        # Part B: shutdown RPC receives {"ok": True} before stop_event fires.
+        broker2 = BrokerServer(
+            _cfg(tmp_path / "b2"),
+            session_factory=lambda _cfg: SimpleNamespace(state="ready", snapshot=SimpleNamespace(url="", title="")),
+            tool_caller=lambda *_a: [],
+        )
+        await broker2.start()
+        try:
+            client2 = BrokerClient(_cfg(tmp_path / "b2"), owner="owner-a", session_id="s2")
+            resp = await client2._request("shutdown")
+            assert resp.get("ok") is True
+            assert broker2.stop_event.is_set()
+            await client2.aclose()
+        finally:
+            await broker2.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_broker_evicts_idle_clients_marks_disconnected_propagates_blocked_and_caps_default(tmp_path) -> None:
+    """Wave 3 P1-15, P2-2, P2-3: idle client eviction, browser_query cancelable, blocked_origins & default cap."""
+    from icode_browser_use.broker_client import BrokerSession
+    from icode_browser_use.errors import ConnectionClosed
+
+    assert "browser_query" in broker_module._CANCELLABLE_READ_TOOLS
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.state = "ready"
+            self.snapshot = SimpleNamespace(url="https://example.com", title="Ex")
+            self.disconnected = 0
+            self._blocked = ["https://evil.example"]
+
+        def mark_disconnected(self) -> None:
+            self.disconnected += 1
+            self.state = "failed"
+
+        def drain_blocked_origins(self) -> tuple[str, ...]:
+            items = tuple(self._blocked)
+            self._blocked.clear()
+            return items
+
+        def consume_site_blocked_origin(self) -> str:
+            return ""
+
+        async def aclose(self) -> None:
+            self.state = "closed"
+
+    async def scenario() -> None:
+        created: list[FakeSession] = []
+
+        async def caller(session: FakeSession, tool, _arguments):
+            if tool.name == "browser_reload":
+                raise ConnectionClosed("socket died")
+            return [{"type": "text", "text": "ok"}]
+
+        cfg = BrowserConfig(
+            allowed_domains=("example.com",),
+            state_dir=tmp_path,
+            broker_lease_ttl=0.05,
+        )
+        broker = BrokerServer(
+            cfg,
+            session_factory=lambda _cfg: created.append(FakeSession()) or created[-1],
+            tool_caller=caller,
+        )
+        await broker.start()
+        try:
+            # 1) blocked_origins propagate through BrokerSession and mark_disconnected runs on ConnectionClosed.
+            from icode_browser_use.errors import BrowserError
+
+            bs = BrokerSession(cfg, owner="owner-a", session_id="s-obs")
+            await bs.call_tool("browser_snapshot", {})
+            assert bs.drain_blocked_origins() == ("https://evil.example",)
+            with pytest.raises(BrowserError) as disc_exc:
+                await bs.call_tool("browser_reload", {})
+            assert disc_exc.value.code == "browser_disconnected"
+            assert created[0].disconnected == 1
+            bs.mark_disconnected()
+            assert bs.connected is False
+
+            # 2) Idle authenticated client connection is evicted by _sweep_once().
+            idle_client = BrokerClient(cfg, owner="owner-idle", session_id="s-idle")
+            await idle_client.acquire()
+            assert len(broker._client_tasks) >= 1
+            await asyncio.sleep(0.08)
+            await broker._sweep_once()
+            await asyncio.sleep(0.05)
+            assert idle_client._reader is not None
+            assert await asyncio.wait_for(idle_client._reader.read(1), timeout=2.0) == b""
+            await idle_client.aclose()
+
+            # 3) "default" session respects MAX_BROKER_SESSIONS_PER_OWNER (cannot bypass cap).
+            cap = broker_module.MAX_BROKER_SESSIONS_PER_OWNER
+            for idx in range(cap):
+                sid = f"cap-{idx}"
+                broker.sessions[sid] = FakeSession()
+                broker.owners[sid] = "owner-capped"
+            capped = BrokerClient(cfg, owner="owner-capped", session_id="default")
+            with pytest.raises(BrowserError, match="per owner"):
+                await capped.acquire()
+            await capped.aclose()
+        finally:
+            await broker.aclose()
+
+    asyncio.run(scenario())

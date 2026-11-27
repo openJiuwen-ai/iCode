@@ -91,3 +91,33 @@ def test_wait_for_ready_returns_load_within_grace_and_committed_on_timeout():
         assert await s.wait_for_ready("L-none", timeout=0.03, load_grace=0.01) == "timeout"
 
     asyncio.run(run())
+
+
+def test_disconnect_wakes_navigation_and_load_waits_immediately():
+    """Wave 3 P2-12: wait_for_load, wait_for_ready, and wait_for_navigation wake immediately on disconnect."""
+    import time
+
+    async def run():
+        s = session()
+
+        async def disconnect_soon():
+            await asyncio.sleep(0.03)
+            s.mark_disconnected()
+
+        started = time.monotonic()
+        trigger = asyncio.create_task(disconnect_soon())
+        try:
+            load_res, ready_res, nav_res = await asyncio.gather(
+                s.wait_for_load("L-never", timeout=10.0),
+                s.wait_for_ready("L-never", timeout=10.0, load_grace=2.0),
+                s.wait_for_navigation(after=s.nav_seq, timeout=10.0),
+            )
+        finally:
+            await trigger
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0, f"waits did not wake on disconnect ({elapsed:.2f}s)"
+        assert load_res is False
+        assert ready_res == "timeout"
+        assert nav_res is None
+
+    asyncio.run(run())

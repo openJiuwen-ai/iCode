@@ -217,3 +217,48 @@ def test_aclose_tears_down_transport() -> None:
     assert client.closed is True
     assert child.terminated is True
     assert session.state == "closed"
+
+
+def test_mark_disconnected_closes_stale_client_and_clears_transient_state() -> None:
+    """Wave 3 P1-16b & P2-11: stale client saved by mark_disconnected() is closed on teardown and caches cleared."""
+    session = BrowserSession(config())
+    client = FakeClient()
+    session._client = client
+    session._timeouts["t1"] = 2
+    session._site_blocked_origins.append("https://evil.example")
+    session._last_site_blocked_origin = "https://evil.example"
+
+    session.mark_disconnected()
+    assert session._client is None
+    assert client in session._stale_clients
+    assert session._disconnect_event.is_set()
+
+    asyncio.run(session._teardown_transport())
+    assert client.closed is True
+    assert session._stale_clients == []
+    assert session._timeouts == {}
+    assert session._site_blocked_origins == []
+    assert session._last_site_blocked_origin == ""
+
+
+def test_cold_start_and_failed_start_preserve_action_budget(tmp_path) -> None:
+    """Wave 3 P2-1: cold start and repeated startup failures must not wipe action budgets."""
+    from icode_browser_use.actions import build_tool_defs
+    from icode_browser_use.runtime import call_tool
+
+    async def failing_launcher(_cfg, _state_dir):
+        raise Unavailable("chrome missing")
+
+    session = BrowserSession(
+        config(state_dir=tmp_path / "state", max_actions_per_window=2, lifetime_max_actions=2),
+        launcher_factory=failing_launcher,
+    )
+    tool = next(t for t in build_tool_defs() if t.name == "browser_navigate")
+
+    for _ in range(2):
+        with pytest.raises(Unavailable):
+            asyncio.run(call_tool(session, tool, {"url": "https://example.com"}))
+    assert session._lifetime_actions == 2
+
+    with pytest.raises(ActionBudgetExhausted):
+        asyncio.run(call_tool(session, tool, {"url": "https://example.com"}))

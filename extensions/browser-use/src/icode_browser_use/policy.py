@@ -420,7 +420,7 @@ class NetworkPolicy:
                 session_id,
             )
 
-    async def _arm_child(self, child_session: str, *, page: bool = False, target_id: str = "") -> None:
+    async def _arm_child(self, child_session: str, *, page: bool = False, target_id: str = "") -> bool:
         """Cover a child session with Fetch, then release it from the debugger.
 
         A failed install fails closed (the child stays paused and is never
@@ -437,16 +437,17 @@ class NetworkPolicy:
         """
         if page:
             await self._arm_page(child_session, target_id)
-            return
+            return True
         if await self._install_child(child_session):
             await self._send_quiet("Runtime.runIfWaitingForDebugger", None, child_session)
-            return
+            return True
         client = self._client
         if client is not None and not client.closed and await self._install_child(child_session):
             await self._send_quiet("Runtime.runIfWaitingForDebugger", None, child_session)
-            return
+            return True
         self.arm_failures += 1
         log(f"子框架拦截安装失败，保持暂停（fail-closed）：{child_session}")
+        return False
 
     async def _arm_page(self, child_session: str, target_id: str) -> None:
         """Arm a page target: Fetch first, resume, then best-effort hardening."""
@@ -512,36 +513,39 @@ class NetworkPolicy:
                 return False
         return True
 
-    async def handle_attached_to_target(self, params: dict[str, Any], session_id: str | None) -> None:
+    async def handle_attached_to_target(self, params: dict[str, Any], session_id: str | None) -> bool:
         """Serialised entry point for ``Target.attachedToTarget`` (skips already-armed sessions)."""
         async with self._arm_lock:
-            await self._on_attached_to_target_unlocked(params, session_id)
+            return await self._on_attached_to_target_unlocked(params, session_id)
 
     async def _on_attached_to_target(self, params: dict[str, Any], session_id: str | None) -> None:
         await self.handle_attached_to_target(params, session_id)
 
-    async def _on_attached_to_target_unlocked(self, params: dict[str, Any], session_id: str | None) -> None:
+    async def _on_attached_to_target_unlocked(self, params: dict[str, Any], session_id: str | None) -> bool:
         info = params.get("targetInfo") or {}
         target_type = str(info.get("type", ""))
         child_session = str(params.get("sessionId", ""))
         if not child_session:
-            return
+            return True
         if child_session in self._armed_sessions:
-            return
+            return True
         if str(info.get("url", "")).startswith("chrome-extension://"):
             # Another extension's frame/worker: never intercept or pause it.
             self.detached_workers += 1
             await self._reply("Target.detachFromTarget", {"sessionId": child_session}, None)
-            return
+            return True
         if target_type in {"page", "iframe"}:
             self._armed_sessions.add(child_session)
-            await self._arm_child(child_session, page=target_type == "page", target_id=str(info.get("targetId", "")))
+            return await self._arm_child(
+                child_session, page=target_type == "page", target_id=str(info.get("targetId", ""))
+            )
         elif target_type in {"service_worker", "shared_worker"}:
             # chrome.debugger worker targets reject Fetch.enable; detach them
             # rather than leave them paused. Dedicated worker requests are still
             # covered by the page's Fetch session.
             self.detached_workers += 1
             await self._reply("Target.detachFromTarget", {"sessionId": child_session}, None)
+        return True
 
     async def _on_detached_from_target(self, params: dict[str, Any], session_id: str | None) -> None:
         child_session = str(params.get("sessionId", ""))

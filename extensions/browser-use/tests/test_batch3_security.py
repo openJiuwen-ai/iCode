@@ -46,7 +46,7 @@ async def test_s8_browser_guard_blocks_skill_scripts_and_cross_subagent_in_same_
     )
     browser = ext._Browser(
         id="b-s8",
-        session=SimpleNamespace(),  # type: ignore[arg-type]
+        session=SimpleNamespace(state="ready"),  # type: ignore[arg-type]
         owner_session="sess-s8",
         owner_agent="Code",
     )

@@ -312,3 +312,63 @@ def test_a_new_dialog_supersedes_the_previous_one() -> None:
         assert session.last_dialog() is info
 
     asyncio.run(scenario())
+
+
+def test_auto_dismiss_and_handle_dialog_are_serialized_never_double_sending() -> None:
+    """Wave 3 P1-19: concurrent timeout auto-dismiss and handle_dialog must never send twice."""
+    session = make_session(headless=True, dialog_timeout=0.02)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingClient(FakeClient):
+        async def send(self, method, params=None, session_id=None, timeout=None):
+            self.calls.append((method, dict(params or {}), session_id))
+            entered.set()
+            await release.wait()
+            return {}
+
+    client = BlockingClient()
+    session._client = client
+    session._session_id = "s-main"
+
+    async def scenario() -> None:
+        await session._on_dialog({"type": "confirm", "message": "Pay now?"}, "s-main")
+        # Wait until _auto_dismiss_dialog enters _send_dialog_close while holding _dialog_lock.
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        handle_task = asyncio.create_task(session.handle_dialog(accept=True))
+        await asyncio.sleep(0.02)
+        assert not handle_task.done(), "handle_dialog must wait on _dialog_lock"
+        release.set()
+        with pytest.raises(BadRequest, match="当前没有打开的 JavaScript 对话框"):
+            await handle_task
+        assert len(client.calls) == 1
+        assert client.calls[0][1] == {"accept": False}
+
+    asyncio.run(scenario())
+
+
+def test_oopif_dialog_is_treated_as_current_page_and_epoch_resets_orphans() -> None:
+    """Wave 3 P1-19: current-page OOPIF dialog is recorded (not auto-dismissed); _bump_epoch resets _dialog_orphans."""
+    session = make_session(dialog_timeout=30)
+    client = attach(session)
+    session._target_id = "t-main"
+    session._record_page("t-main", "s-main", opener_id=None)
+    session.register_oopif("s-oopif", "t-oopif", page_target_id="t-main")
+
+    async def scenario() -> None:
+        await session._on_dialog({"type": "confirm", "message": "From OOPIF"}, "s-oopif")
+        pending = session.pending_dialog()
+        assert pending is not None
+        assert pending.session == "s-oopif"
+        assert pending.message == "From OOPIF"
+        assert client.calls == [], "OOPIF dialog on current page must not be silently dismissed"
+
+        await session._on_dialog_closed({"result": True}, "s-oopif")
+        assert session.pending_dialog() is None
+
+        # Simulate orphaned dialog counter before navigation/epoch bump.
+        session._dialog_orphans = 2
+        session._bump_epoch("main_frame_navigated")
+        assert session._dialog_orphans == 0
+
+    asyncio.run(scenario())

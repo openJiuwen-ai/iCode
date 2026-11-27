@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import __version__
 from .bridge.protocol import PROTOCOL_VERSION
@@ -17,15 +19,37 @@ from .config import CHROME_DEVTOOLS_PREFERENCE, CHROME_LOGIN_PREFERENCE, Browser
 _REMOTE_DEBUGGING = "chrome://inspect/#remote-debugging"
 
 
+async def _devtools_port_open(ws_url: str, *, timeout: float = 0.5) -> bool:
+    """True when the local TCP port parsed from *ws_url* accepts a connection."""
+    parsed = urlparse(ws_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port
+    if port is None:
+        return False
+    try:
+        _reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(writer.wait_closed(), timeout=0.5)
+    return True
+
+
+async def _devtools_ready(resolve_ws: Callable[[], str]) -> bool:
+    try:
+        ws_url = resolve_ws()
+    except RuntimeError:
+        return False
+    return await _devtools_port_open(ws_url)
+
+
 async def _prepare_devtools(on_wait: Callable[[], None] | None = None) -> None:
     """Open Chrome's own opt-in screen and wait for its local endpoint to appear."""
     from .bridge.install import _launch, chrome_devtools_ws, default_chrome_executable
 
-    try:
-        chrome_devtools_ws()
+    if await _devtools_ready(chrome_devtools_ws):
         return
-    except RuntimeError:
-        pass
     chrome = default_chrome_executable()
     if chrome is None:
         raise RuntimeError("Install Chrome 144 or newer to use Chrome login reuse without an extension.")
@@ -35,11 +59,9 @@ async def _prepare_devtools(on_wait: Callable[[], None] | None = None) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 60
     while loop.time() < deadline:
-        try:
-            chrome_devtools_ws()
+        if await _devtools_ready(chrome_devtools_ws):
             return
-        except RuntimeError:
-            await asyncio.sleep(0.4)
+        await asyncio.sleep(0.4)
     raise RuntimeError(f"Chrome did not enable remote debugging. Check {_REMOTE_DEBUGGING} and try again.")
 
 
@@ -54,8 +76,15 @@ async def remember_native_login(on_wait: Callable[[], None] | None = None, *, ke
     cfg = BrowserConfig.from_env()
     if keep_bridge and cfg.bridge and not cfg.broker:
         return
-    if cfg.broker or cfg.cdp_url or source.get("BRIDGE") is not None:
-        raise RuntimeError("Clear the Browser Use backend environment override before connecting Chrome.")
+    if cfg.broker or cfg.cdp_url or source.get("BRIDGE") is not None or source.get("CHROME_DEVTOOLS") is not None:
+        if not (
+            source.get("CHROME_DEVTOOLS") is not None
+            and cfg.chrome_devtools
+            and not cfg.broker
+            and not cfg.cdp_url
+            and source.get("BRIDGE") is None
+        ):
+            raise RuntimeError("Clear the Browser Use backend environment override before connecting Chrome.")
     await _prepare_devtools(on_wait)
     state_dir = source.state_dir()
     _save_preference(state_dir / CHROME_DEVTOOLS_PREFERENCE, state_dir / CHROME_LOGIN_PREFERENCE)

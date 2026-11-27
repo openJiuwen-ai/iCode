@@ -160,6 +160,9 @@ def test_oopif_document_update_preserves_main_refs_and_ignores_background_tabs()
 
 def test_oopif_sessions_are_tracked_and_removed() -> None:
     session = make_session()
+    session._target_id = "t-main"
+    session._session_id = "main"
+    session._record_page("t-main", "main", opener_id=None)
     params = {"targetInfo": {"type": "iframe", "targetId": "target-1"}, "sessionId": "child-session"}
 
     asyncio.run(session._on_attached_to_target(params, None))
@@ -171,6 +174,9 @@ def test_oopif_sessions_are_tracked_and_removed() -> None:
 
 def test_nested_oopif_parent_tracking_and_detach_cascade() -> None:
     session = make_session()
+    session._target_id = "t-main"
+    session._session_id = "main"
+    session._record_page("t-main", "main", opener_id=None)
     root = {"targetInfo": {"type": "iframe", "targetId": "t1"}, "sessionId": "child-1"}
     nested = {"targetInfo": {"type": "iframe", "targetId": "t2"}, "sessionId": "child-2"}
 

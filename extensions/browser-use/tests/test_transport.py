@@ -216,3 +216,26 @@ def test_owned_transport_stop_waits_for_graceful_exit_before_force_kill() -> Non
 
     asyncio.run(transport.stop(client, child, target_id="t1"))
     assert events == ["send:Browser.close", "client:aclose", "child:wait_for_exit", "child:terminate_tree"]
+
+
+def test_owned_and_attached_transport_stop_are_cancel_safe() -> None:
+    """Wave 3 P2-4: cancelling stop() mid-RPC still closes the client and terminates the child."""
+
+    class CancellingClient(FakeClient):
+        async def send(self, method: str, params=None, session_id=None, timeout=None):
+            await super().send(method, params, session_id=session_id, timeout=timeout)
+            raise asyncio.CancelledError
+
+    owned_client = CancellingClient()
+    owned_child = FakeChild()
+    owned = OwnedTransport(config(), lambda _ws: owned_client, lambda _cfg, _dir: None)  # type: ignore[arg-type]
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(owned.stop(owned_client, owned_child, target_id="t1"))
+    assert owned_client.closed == 1
+    assert owned_child.terminated == 1
+
+    attached_client = CancellingClient()
+    attached = AttachedTransport(config(cdp_url="ws://existing"), lambda _ws: attached_client)  # type: ignore[arg-type]
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(attached.stop(attached_client, None, target_id="t1"))
+    assert attached_client.closed == 1

@@ -179,15 +179,29 @@ def probe_instance_lock(state_dir: Path) -> LockProbe:
     lock_path = state_dir / "instance.lock"
     if not lock_path.exists():
         return LockProbe(locked=False, state="free")
+    if fcntl is not None:  # pragma: no cover - POSIX
+        # Use a shared non-blocking lock on POSIX so read-only probes never
+        # transiently reject concurrent wait=0 exclusive acquisitions.
+        try:
+            fd = os.open(lock_path, os.O_RDONLY)
+        except OSError:
+            return inspect_lock_owner(state_dir)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            return LockProbe(locked=False, state="free")
+        except OSError:
+            return inspect_lock_owner(state_dir)
+        finally:
+            os.close(fd)
     try:
         fd = os.open(lock_path, os.O_RDWR)
     except OSError:
         return inspect_lock_owner(state_dir)
     if _try_acquire(fd):
         try:
-            if fcntl is not None:  # pragma: no cover - POSIX
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            elif msvcrt is not None:  # pragma: no cover - Windows
+            if msvcrt is not None:  # pragma: no cover - Windows
                 msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         except OSError:
             pass
@@ -241,24 +255,64 @@ def _try_acquire(fd: int) -> bool:
     return True
 
 
+def _unlock_fd(fd: int) -> None:
+    try:
+        if fcntl is not None:  # pragma: no cover - POSIX
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        elif msvcrt is not None:  # pragma: no cover - Windows
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
+def _fd_matches_path(fd: int, path: Path) -> bool:
+    """Verify *fd* still refers to the current inode at *path* (POSIX rename/unlink guard)."""
+    if fcntl is None:  # Windows prevents unlinking/renaming an open lock file
+        return True
+    try:
+        fd_stat = os.fstat(fd)
+        path_stat = os.stat(path)
+    except OSError:
+        return False
+    return fd_stat.st_ino == path_stat.st_ino and fd_stat.st_dev == path_stat.st_dev
+
+
 def try_acquire_file_lock(path: Path) -> InstanceLock | None:
     """Acquire an advisory lock on *path* without blocking or creating owner metadata."""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    except OSError:
-        return None
-    if sys.platform != "win32":
-        with contextlib.suppress(OSError):
-            os.chmod(path, 0o600)
-    try:
-        if _try_acquire(fd):
-            return InstanceLock(path=path, _fd=fd, owner_path=None, pid=os.getpid())
-    except BaseException:
+    for _ in range(3):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            return None
+        if sys.platform != "win32":
+            with contextlib.suppress(OSError):
+                os.chmod(path, 0o600)
+        try:
+            if _try_acquire(fd):
+                if _fd_matches_path(fd, path):
+                    return InstanceLock(path=path, _fd=fd, owner_path=None, pid=os.getpid())
+                _unlock_fd(fd)
+                os.close(fd)
+                continue
+        except BaseException:
+            os.close(fd)
+            raise
         os.close(fd)
-        raise
-    os.close(fd)
+        return None
     return None
+
+
+def acquire_file_lock_sync(path: Path, *, wait: float = 5.0) -> InstanceLock | None:
+    """Synchronously acquire an advisory lock on *path*, waiting up to *wait* seconds."""
+    deadline = time.monotonic() + max(0.0, wait)
+    while True:
+        lock = try_acquire_file_lock(path)
+        if lock is not None:
+            return lock
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.02)
 
 
 async def acquire_file_lock(path: Path, *, wait: float = 5.0) -> InstanceLock | None:
@@ -281,17 +335,23 @@ def try_acquire_instance_lock(state_dir: Path) -> InstanceLock | None:
     instance has since taken over.
     """
     path = state_dir / "instance.lock"
-    try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    except OSError:
-        return None
-    try:
-        if _try_acquire(fd):
-            return InstanceLock(path=path, _fd=fd, owner_path=_write_owner(path, fd), pid=os.getpid())
-    except BaseException:
+    for _ in range(3):
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            return None
+        try:
+            if _try_acquire(fd):
+                if _fd_matches_path(fd, path):
+                    return InstanceLock(path=path, _fd=fd, owner_path=_write_owner(path, fd), pid=os.getpid())
+                _unlock_fd(fd)
+                os.close(fd)
+                continue
+        except BaseException:
+            os.close(fd)
+            raise
         os.close(fd)
-        raise
-    os.close(fd)
+        return None
     return None
 
 
@@ -301,23 +361,30 @@ async def acquire_instance_lock(state_dir: Path, *, wait: float = LOCK_WAIT) -> 
     Raises :class:`Unavailable` on timeout so the model sees ``browser_unavailable``
     rather than two browsers fighting over one profile.
     """
-    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = state_dir / "instance.lock"
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    if sys.platform != "win32":
-        with contextlib.suppress(OSError):
-            os.chmod(path, 0o600)
     deadline = time.monotonic() + max(0.0, wait)
-    try:
-        while True:
+    while True:
+        state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        if sys.platform != "win32":
+            with contextlib.suppress(OSError):
+                os.chmod(path, 0o600)
+        try:
             if _try_acquire(fd):
-                owner_path = _write_owner(path, fd)
-                return InstanceLock(path=path, _fd=fd, owner_path=owner_path, pid=os.getpid())
-            if time.monotonic() >= deadline:
-                probe = inspect_lock_owner(state_dir)
-                raise Unavailable(_format_lock_error(state_dir, wait, probe))
-            await asyncio.sleep(0.1)
-    except BaseException:
+                if _fd_matches_path(fd, path):
+                    owner_path = _write_owner(path, fd)
+                    return InstanceLock(path=path, _fd=fd, owner_path=owner_path, pid=os.getpid())
+                # Directory was replaced/reclaimed while opening: release and reopen the live path.
+                _unlock_fd(fd)
+                os.close(fd)
+                continue
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise
         with contextlib.suppress(OSError):
             os.close(fd)
-        raise
+        if time.monotonic() >= deadline:
+            probe = inspect_lock_owner(state_dir)
+            raise Unavailable(_format_lock_error(state_dir, wait, probe))
+        await asyncio.sleep(0.1)

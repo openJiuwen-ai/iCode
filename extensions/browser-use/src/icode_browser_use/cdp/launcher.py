@@ -150,6 +150,7 @@ class ChildProcess:
     _pid_file: Path | None = field(default=None, compare=False, repr=False)
     _browser_ws: str = field(default="", compare=False, repr=False)
     _watchdog_fd: int | None = field(default=None, compare=False, repr=False)
+    _watchdog_proc: subprocess.Popen | None = field(default=None, compare=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
 
     @property
@@ -172,10 +173,19 @@ class ChildProcess:
     def _close_watchdog(self) -> None:
         with self._lock:
             fd = self._watchdog_fd
+            proc = self._watchdog_proc
             self._watchdog_fd = None
+            self._watchdog_proc = None
         if fd is not None:
+            # Signal clean shutdown before closing so the watchdog exits without
+            # sending SIGKILL to a possibly reused PGID.
+            with contextlib.suppress(OSError):
+                os.write(fd, b"0")
             with contextlib.suppress(OSError):
                 os.close(fd)
+        if proc is not None:
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=0.5)
 
     async def wait_for_exit(self, *, timeout: float = _GRACEFUL_CLOSE_TIMEOUT) -> bool:
         """Wait up to *timeout* seconds for the browser to exit cleanly after ``Browser.close``."""
@@ -239,7 +249,7 @@ class ChildProcess:
             if popen.poll() is not None:
                 return
             if sys.platform == "win32":
-                _terminate_windows(self.pid, self._take_job())
+                await asyncio.to_thread(_terminate_windows, self.pid, self._take_job())
             else:
                 _posix_kill_group(self.pid)
             exited = await asyncio.to_thread(_wait_popen_bounded, popen, timeout)
@@ -494,7 +504,7 @@ _WIN_RESUME_FAILED: Final = 0xFFFFFFFF
 
 
 def _win_resume_main_thread(pid: int) -> bool:
-    """Locate the first thread owned by *pid* via Toolhelp32 and resume it; return whether it resumed."""
+    """Locate the suspended main thread owned by *pid* via Toolhelp32 and resume it."""
     dll = _kernel32()
     snap_handle = dll.CreateToolhelp32Snapshot(0x00000004, 0)
     if not snap_handle or int(snap_handle) in (_WIN_INVALID_HANDLE, -1):
@@ -507,13 +517,15 @@ def _win_resume_main_thread(pid: int) -> bool:
             tid, owner_pid = struct.unpack_from("<II", raw_entry, 8)
             if owner_pid == pid:
                 thread_handle = dll.OpenThread(0x0002, False, tid)
-                if not thread_handle:
-                    return False
-                try:
-                    previous_count = dll.ResumeThread(thread_handle)
-                    return int(previous_count) != _WIN_RESUME_FAILED
-                finally:
-                    dll.CloseHandle(thread_handle)
+                if thread_handle:
+                    try:
+                        previous_count = int(dll.ResumeThread(thread_handle))
+                        # A suspend count of 0 means the thread was not suspended (e.g.
+                        # an injected EDR/AV thread); keep scanning for the suspended main thread.
+                        if previous_count != _WIN_RESUME_FAILED and previous_count >= 1:
+                            return True
+                    finally:
+                        dll.CloseHandle(thread_handle)
             has_entry = bool(dll.Thread32Next(snap_handle, raw_entry))
     finally:
         dll.CloseHandle(snap_handle)
@@ -529,8 +541,8 @@ def _terminate_windows(pid: int, job: int | None) -> None:
     """Kill the tree: prefer the Job object, else ``taskkill /F /T`` with ``TerminateProcess`` fallback."""
     kernel32 = _kernel32()
     if job is not None:
-        kernel32.TerminateJobObject(job, 1)
-        return
+        if kernel32.TerminateJobObject(job, 1):
+            return
     try:
         result = subprocess.run(
             [_system32_exe("taskkill.exe"), "/F", "/T", "/PID", str(int(pid))],
@@ -601,24 +613,31 @@ def _preexec_pdeathsig(parent_pid: int | None = None) -> None:  # pragma: no cov
         os._exit(1)
 
 
-def _start_macos_watchdog(child_pid: int) -> int | None:  # pragma: no cover - macOS only
-    """Spawn a tiny watchdog that kills *child_pid*'s process group on parent EOF."""
+_CREATE_NEW_PROCESS_GROUP: Final = 0x00000200
+_DETACHED_PROCESS: Final = 0x00000008
+
+
+def _start_macos_watchdog(child_pid: int) -> tuple[int, subprocess.Popen] | None:  # pragma: no cover - macOS only
+    """Spawn a tiny watchdog that kills *child_pid*'s process group on unexpected parent EOF."""
     if sys.platform != "darwin":
         return None
     try:
         read_fd, write_fd = os.pipe()
         script = (
             "import os, signal, sys\n"
+            "data = b''\n"
             "try:\n"
-            "    os.read(int(sys.argv[1]), 1)\n"
+            "    data = os.read(int(sys.argv[1]), 1)\n"
             "except OSError:\n"
             "    pass\n"
+            "if data == b'0':\n"
+            "    sys.exit(0)\n"
             "try:\n"
             "    os.killpg(int(sys.argv[2]), signal.SIGKILL)\n"
             "except OSError:\n"
             "    pass\n"
         )
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, "-c", script, str(read_fd), str(int(child_pid))],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -627,19 +646,29 @@ def _start_macos_watchdog(child_pid: int) -> int | None:  # pragma: no cover - m
             start_new_session=True,
         )
         os.close(read_fd)
-        return write_fd
+        return write_fd, proc
     except Exception:
         return None
 
 
-def _spawn_windows(argv: list[str], log_file: BinaryIO) -> ChildProcess:
+def _spawn_windows(argv: list[str], log_file: BinaryIO, *, headless: bool = True) -> ChildProcess:
+    # Isolate Chrome from the parent console & process group (never CREATE_NO_WINDOW).
+    extra_kwargs: dict[str, Any] = {}
+    if headless:
+        hidden = windows_hidden_kwargs()
+        creationflags = _CREATE_SUSPENDED | _CREATE_NEW_PROCESS_GROUP | int(hidden.get("creationflags", 0))
+        if "startupinfo" in hidden:
+            extra_kwargs["startupinfo"] = hidden["startupinfo"]
+    else:
+        creationflags = _CREATE_SUSPENDED | _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS
     popen = subprocess.Popen(
         argv,
         stdin=subprocess.DEVNULL,
         stdout=log_file,
         stderr=log_file,
         close_fds=True,
-        creationflags=_CREATE_SUSPENDED,
+        creationflags=creationflags,
+        **extra_kwargs,
     )
     job: int | None = None
     try:
@@ -681,17 +710,30 @@ def _spawn_posix(argv: list[str], log_file: BinaryIO) -> ChildProcess:
         start_new_session=True,
         preexec_fn=preexec,
     )
-    watchdog_fd = _start_macos_watchdog(popen.pid) if sys.platform == "darwin" else None
-    return ChildProcess(pid=popen.pid, start_time=time.time(), _popen=popen, _job=None, _watchdog_fd=watchdog_fd)
+    watchdog = _start_macos_watchdog(popen.pid) if sys.platform == "darwin" else None
+    watchdog_fd = watchdog[0] if watchdog is not None else None
+    watchdog_proc = watchdog[1] if watchdog is not None else None
+    return ChildProcess(
+        pid=popen.pid,
+        start_time=time.time(),
+        _popen=popen,
+        _job=None,
+        _watchdog_fd=watchdog_fd,
+        _watchdog_proc=watchdog_proc,
+    )
 
 
-def _spawn(argv: list[str], *, log_path: Path) -> ChildProcess:
+def _spawn(argv: list[str], *, log_path: Path, headless: bool = True) -> ChildProcess:
     """Start the browser: ``stdin=DEVNULL``, stdout/stderr into a file (no pipe)."""
     log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     rotate_log_if_needed(log_path)
     try:
         with open(log_path, "ab", buffering=0) as log_file:
-            child = _spawn_windows(argv, log_file) if sys.platform == "win32" else _spawn_posix(argv, log_file)
+            child = (
+                _spawn_windows(argv, log_file, headless=headless)
+                if sys.platform == "win32"
+                else _spawn_posix(argv, log_file)
+            )
     except OSError as exc:
         raise Unavailable(f"无法启动浏览器可执行文件（{argv[0]}）：{exc}", pre_dispatch=True) from exc
     _register_live_child(child)
@@ -750,7 +792,7 @@ async def _fetch_browser_ws(host: str, port: int) -> str:
     finally:
         with contextlib.suppress(Exception):
             writer.close()
-            await writer.wait_closed()
+            await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
     payload = json.loads(body.decode("utf-8"))
     url = str(payload.get("webSocketDebuggerUrl", ""))
     if not url:
@@ -758,14 +800,20 @@ async def _fetch_browser_ws(host: str, port: int) -> str:
     return url
 
 
-async def _browser_ws_endpoint(port: int) -> str:
+async def _browser_ws_endpoint(port: int, *, retry_seconds: float = 0.0) -> str:
     """Probe IPv4 then IPv6 loopback for the browser-level WebSocket URL."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, retry_seconds)
     last_error = "未知错误"
-    for host in ("127.0.0.1", "::1"):
-        try:
-            return await _fetch_browser_ws(host, port)
-        except Exception as exc:  # try the next loopback address
-            last_error = f"{host}: {exc!r}"
+    while True:
+        for host in ("127.0.0.1", "::1"):
+            try:
+                return await _fetch_browser_ws(host, port)
+            except Exception as exc:  # try the next loopback address
+                last_error = f"{host}: {exc!r}"
+        if loop.time() >= deadline:
+            break
+        await asyncio.sleep(_POLL_INTERVAL)
     raise Unavailable(f"无法从 /json/version 获取浏览器级端点（{last_error}）")
 
 
@@ -788,13 +836,17 @@ def _read_port_file(port_file: Path) -> int | None:
         text = port_file.read_text(encoding="utf-8")
     except OSError:
         return None
+    if "\n" not in text:
+        # Require a newline terminator so a half-written port line is never parsed.
+        return None
     first = text.splitlines()[0].strip() if text.strip() else ""
     if not first:
         return None
     try:
-        return int(first)
+        port = int(first)
     except ValueError:
         return None
+    return port if 1 <= port <= 65535 else None
 
 
 def _write_pid_file(path: Path, child: ChildProcess) -> None:
@@ -1019,7 +1071,7 @@ async def _reclaim_orphans(state_dir: Path) -> None:
     if not await _wait_until_gone(pid, timeout=_KILL_TIMEOUT):
         log(f"pid={pid} 未在 {int(_KILL_TIMEOUT)}s 内退出，强制杀进程树")
         if sys.platform == "win32":
-            _terminate_windows(pid, None)
+            await asyncio.to_thread(_terminate_windows, pid, None)
         else:
             _posix_kill_group(pid)
         await _wait_until_gone(pid, timeout=2.0)
@@ -1056,13 +1108,16 @@ async def launch_chrome(
     _remove(port_file)
 
     argv = chrome_argv(exe, profile, headless=cfg.headless)
-    child = _spawn(argv, log_path=state_dir / "chrome.log")
+    child = _spawn(argv, log_path=state_dir / "chrome.log", headless=cfg.headless)
     pid_file = state_dir / "chrome.pid"
     child._pid_file = pid_file
     try:
         _write_pid_file(pid_file, child)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + ready_timeout
         port = await _await_devtools_port(port_file, child, ready_timeout)
-        browser_ws = await _browser_ws_endpoint(port)
+        remaining = max(0.0, min(5.0, deadline - loop.time()))
+        browser_ws = await _browser_ws_endpoint(port, retry_seconds=remaining)
         child._browser_ws = browser_ws
     except BaseException:
         await child.terminate_tree()
