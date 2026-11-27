@@ -463,14 +463,15 @@ class InputFlowController:
 
     async def publish_interrupt(self) -> None:
         """Publish an interrupt and update local UI state after the backend sees it."""
-        if not self._state.run.agent_running:
+        run = self._state.run
+        if not run.agent_running or run.final_reply_received:
             return
 
-        generation = self._state.run.generation
+        generation = run.generation
         place = self.place()
 
         def owns_run() -> bool:
-            return self._state.run.generation == generation and self.place() == place
+            return run.generation == generation and self.place() == place and not run.final_reply_received
 
         await self._bus.publish(UserInterrupt())
         if not owns_run():

@@ -947,7 +947,7 @@ def test_matching_consumed_injection_result_unlocks_and_clears_pending() -> None
 
 
 def test_backend_handler_defers_agent_message_while_user_bubble_is_rendering() -> None:
-    state = MainScreenState()
+    state = MainScreenState(run=RunState(agent_running=True))
     state.render_gate.begin()
 
     def query_one(_cls: object) -> object:
@@ -961,6 +961,7 @@ def test_backend_handler_defers_agent_message_while_user_bubble_is_rendering() -
     event = InvocationMessage(text="fast", is_final=True, origin=InvocationOrigin("turn", "", "turn-test", None))
 
     asyncio.run(handler.on_agent_message(event))
+    assert state.run.final_reply_received
 
     replayed: list[object] = []
 
@@ -1165,6 +1166,7 @@ def test_prior_run_terminal_message_cannot_stop_new_retry() -> None:
 
     assert state.run.agent_running is True
     assert state.run.generation == 2
+    assert not state.run.final_reply_received
 
 
 async def test_terminal_render_completion_cannot_stop_successor_generation() -> None:
@@ -1217,7 +1219,9 @@ async def test_terminal_render_completion_cannot_stop_successor_generation() -> 
         )
     )
     await render_started.wait()
+    assert state.run.final_reply_received
     state.run.generation = 2
+    assert not state.run.final_reply_received
     state.run.agent_running = True
     release_render.set()
     await terminal

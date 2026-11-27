@@ -1156,6 +1156,10 @@ class BackendEventHandler:
         if self._predates_active_run(event):
             self.debug(name, "ignored stale prior-run event")
             return False
+        if isinstance(event, InvocationMessage) and self.agent_running:
+            # A final reply ends the interrupt window even while its rendering is deferred.
+            run = self._state.run
+            run.final_reply_generation = run.generation
         if self.defers_turn_event(event):
             self.defer_agent_message(event)
             return False

@@ -29,7 +29,10 @@ from chrys.foundation.events.types import (
     InvocationRetryAttempt,
     InvocationSteered,
     InvocationToolCallStart,
+    SessionNew,
+    SessionRestore,
     UserInjectResult,
+    UserInterrupt,
     UserMessage,
 )
 from chrys.foundation.models.invocations import InvocationOrigin
@@ -37,14 +40,17 @@ from chrys.kernel import AgentResponse, AgentSession, ChatResponse, ChatResponse
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.content_projection import ContentProjector
 from chrys.orchestration.invoker.origin import BoundEmitter
+from tests.app.tui.screens.test_prompt_shortcut_send import running_session, send_plain, turn_finished
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, click_when_settled
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from textual.widget import Widget
+
+    from tests.support.engines import AgentEngineFactory
 
 _ORIGIN = InvocationOrigin("turn", "s1", "turn-1", None)
 
@@ -108,6 +114,63 @@ async def test_streamed_answer_text_shows_before_the_final_message_and_once_afte
         assert answer.styles.border_left[0] == "thick"
         assert answer.query_one(VirtualizedMarkdown).source == "Streaming answer"
         assert _shown(panel) == ["Streaming answer"]
+
+
+async def test_stop_during_final_reply_mount_keeps_one_successful_reply_after_reopen(
+    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+        panel = session.main.query_one(ChatPanel)
+        final_mount = session.hold()
+        stop_checked = asyncio.Event()
+        mount_widget = panel.mount_transcript_widget
+        publish_interrupt = session.main._input_flow.publish_interrupt
+
+        async def hold_final_mount(widget: Widget) -> bool:
+            attached = await mount_widget(widget)
+            if isinstance(widget, AgentMessage) and not widget.is_provisional:
+                await final_mount.pass_through()
+            return attached
+
+        async def observe_stop() -> None:
+            try:
+                await publish_interrupt()
+            finally:
+                stop_checked.set()
+
+        def assert_reply_at_turn_end() -> None:
+            (answer,) = panel.query(AgentMessage)
+            assert answer.text == "Done."
+            assert panel.current_turn_children()[-1] is answer
+            assert not panel.query(InterruptedMessage)
+
+        monkeypatch.setattr(panel, "mount_transcript_widget", hold_final_mount)
+        monkeypatch.setattr(session.main._input_flow, "publish_interrupt", observe_stop)
+        await send_plain(session, "Finish the turn", typed=False)
+        await wait_for(
+            final_mount.entered.is_set,
+            pilot=session.pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="accepted final reply still mounting",
+        )
+        assert session.bar.agent_running
+        try:
+            await click_when_settled(session.pilot, "#send-btn")
+            await wait_for(stop_checked.is_set, pilot=session.pilot, description="Stop checked while the reply mounts")
+        finally:
+            final_mount.release()
+        await turn_finished(session)
+        assert_reply_at_turn_end()
+        assert session.seen.of(UserInterrupt) == []
+
+        original = session.session_id()
+        await session.bus.publish(SessionNew(), raise_handler_errors=True)
+        assert session.engine.session.session_id != original
+        assert not panel.query(AgentMessage)
+        await session.bus.publish(SessionRestore(session_id=original), raise_handler_errors=True)
+        assert session.engine.session.session_id == original
+        await panel.wait_replay_complete()
+        assert_reply_at_turn_end()
 
 
 async def test_a_late_context_fold_keeps_only_the_last_streamed_segment_as_the_final_reply(tmp_path: Path) -> None:
