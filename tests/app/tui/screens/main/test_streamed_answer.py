@@ -92,6 +92,37 @@ async def test_streamed_answer_text_shows_before_the_final_message_and_once_afte
         assert streaming.has_class("--provisional")
         assert main.agent_running_state is True
 
+        await click_when_settled(pilot, preview)
+        await wait_for(
+            lambda: any(
+                body.display and body.shown_source == "Streaming answer"
+                for body in streaming.query(VirtualizedMarkdown)
+            ),
+            pilot=pilot,
+            description="clicking reply progress opens the streamed Markdown",
+        )
+        assert preview.render().plain.startswith("▾ Replying...")
+        body = streaming.query_one(VirtualizedMarkdown)
+        await bus.publish(_delta("seg-1", " **keeps growing**"), raise_handler_errors=True)
+        expanded_text = "Streaming answer **keeps growing**"
+        await wait_for(
+            lambda: body.display and body.shown_source == expanded_text,
+            pilot=pilot,
+            description="the open reply updates while new text arrives",
+        )
+
+        await click_when_settled(pilot, preview)
+        assert streaming.collapsed and not body.display
+        final_text = expanded_text + " while folded."
+        await bus.publish(_delta("seg-1", " while folded."), raise_handler_errors=True)
+        assert body.source == expanded_text
+        await click_when_settled(pilot, preview)
+        await wait_for(
+            lambda: body.display and body.shown_source == final_text,
+            pilot=pilot,
+            description="reopening the reply shows the text received while folded",
+        )
+
         await bus.publish(
             InvocationContentFinished(
                 origin=_ORIGIN, session_id="s1", segment_id="seg-1", channel="answer", status="completed"
@@ -100,7 +131,7 @@ async def test_streamed_answer_text_shows_before_the_final_message_and_once_afte
         )
         assert streaming.has_class("--provisional"), "a closed segment may still be intermediate"
         await bus.publish(
-            InvocationMessage(origin=_ORIGIN, session_id="s1", text="Streaming answer", is_final=True),
+            InvocationMessage(origin=_ORIGIN, session_id="s1", text=final_text, is_final=True),
             raise_handler_errors=True,
         )
         await wait_for(
@@ -112,8 +143,9 @@ async def test_streamed_answer_text_shows_before_the_final_message_and_once_afte
         assert answer.segment_ids == {"seg-1"}
         assert not answer.collapsed and not answer.has_class("--provisional")
         assert answer.styles.border_left[0] == "thick"
-        assert answer.query_one(VirtualizedMarkdown).source == "Streaming answer"
-        assert _shown(panel) == ["Streaming answer"]
+        assert answer.query_one(VirtualizedMarkdown).source == final_text
+        assert _shown(panel) == [final_text]
+        assert panel.current_turn_children()[-1] is answer
 
 
 async def test_stop_during_final_reply_mount_keeps_one_successful_reply_after_reopen(

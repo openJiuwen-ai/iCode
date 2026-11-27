@@ -687,15 +687,15 @@ class _FoldRowHeader(_AgentHeader):
             return self._row
         localizer = widget_localizer(self)
         label = render_str(localizer, self._label)
+        arrow = FOLDED_ARROW if self._collapsed else OPEN_ARROW
         if self._detail is not None:
             shown = label + render_str(localizer, self._detail)
-            self._row = _ShownRow(shown, f"{FOLDED_ARROW} {shown}", _ROW_LABEL_START + len(label), "")
+            self._row = _ShownRow(shown, f"{arrow} {shown}", _ROW_LABEL_START + len(label), "")
             return self._row
         if self._collapsed and self._preview_source is not self._text:
             self._preview_source = self._text
             self._preview = text_preview(self._text)
         if not self._collapsed or not self._preview:
-            arrow = FOLDED_ARROW if self._collapsed else OPEN_ARROW
             self._row = _ShownRow(label, f"{arrow} {label}", _ROW_LABEL_START + len(label), "")
         elif self._folded_label:
             shown = render_str(localizer, FOLDED_LABEL.bind(label=label))
@@ -858,7 +858,7 @@ class StreamedMarkdownMessage(GuideFoldMixin, FoldGap, ProcessMember):
         return self._md_widget
 
     def guide_surface(self) -> Widget | None:
-        return self._md_widget if folds_with_turn(self) and self._shows_body() else None
+        return self._md_widget if self.takes_fold_gap() and self._shows_body() else None
 
     def guide_title(self) -> Widget:
         return self.query_one(_AgentHeader)
@@ -1065,6 +1065,7 @@ class StreamedMarkdownMessage(GuideFoldMixin, FoldGap, ProcessMember):
                 body.display = False
                 await self.mount(body)
                 self._md_widget = body
+                body.set_streaming(not self._is_final)
                 self._body_freeze_epoch = epoch
                 self._body_stale = True
                 if self.collapsed or self._closing or self._pruning:
@@ -1171,7 +1172,8 @@ class AgentMessage(StreamedMarkdownMessage):
        the label, and a blank row under it, as under an open tool group's calls. The guide is the body's, so the
        message keeps no vertical gutter and its chrome rows stay one shared strip. An answer's text stays under
        its arrow. */
-    AgentMessage.--intermediate > VirtualizedMarkdown {
+    AgentMessage.--intermediate > VirtualizedMarkdown,
+    AgentMessage.--provisional > VirtualizedMarkdown {
         padding: 0 0 1 3;
         border-left: solid $tui-border-neutral-gray $border-opacity;
     }
@@ -1287,6 +1289,9 @@ class AgentMessage(StreamedMarkdownMessage):
     def _builds_body_on_opening(self) -> bool:
         return self._is_intermediate or self._defer_body
 
+    def can_toggle_from_guide(self) -> bool:
+        return self._provisional or super().can_toggle_from_guide()
+
     @property
     def profile_name(self) -> str:
         """The name of the agent that wrote this message; empty when none was given."""
@@ -1334,7 +1339,7 @@ class AgentMessage(StreamedMarkdownMessage):
             header = self.query_one(_AgentReplyHeader)
             if self._provisional:
                 header.show(
-                    collapsed=True,
+                    collapsed=self.collapsed,
                     text="",
                     label=_REPLYING_LABEL.bind(),
                     detail=_stream_progress_detail(self._reply_progress),
