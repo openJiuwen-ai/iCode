@@ -6,9 +6,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from rich.cells import cell_len
+from rich.cells import cell_len, split_graphemes
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from rich.text import Text
 
 
@@ -122,6 +124,54 @@ def format_elapsed(seconds: float) -> str:
         f"{value:02d}{unit}" if index else f"{value}{unit}"
         for index, (value, unit) in enumerate(elapsed_parts(seconds))
     )
+
+
+def iter_cell_graphemes(value: str) -> Iterator[tuple[str, int]]:
+    """Use the renderer's graphemes, keeping regional-indicator flag pairs together."""
+    spans, _ = split_graphemes(value)
+    index = 0
+    while index < len(spans):
+        start, end, cells = spans[index]
+        if end == start + 1 and 0x1F1E6 <= ord(value[start]) <= 0x1F1FF and index + 1 < len(spans):
+            next_start, next_end, next_cells = spans[index + 1]
+            if next_end == next_start + 1 and 0x1F1E6 <= ord(value[next_start]) <= 0x1F1FF:
+                end, cells = next_end, cells + next_cells
+                index += 1
+        yield value[start:end], cells
+        index += 1
+
+
+def take_cells(value: str, width: int, *, tail: bool = False) -> str:
+    """Take whole renderer graphemes within a cell budget, from either end."""
+    if value.isascii() and value.isprintable():
+        # One cell per character: slice without splitting into graphemes.
+        width = max(width, 0)
+        return value[max(len(value) - width, 0) :] if tail else value[:width]
+    graphemes = list(iter_cell_graphemes(value))
+    selected = []
+    used = 0
+    for cluster, cells in reversed(graphemes) if tail else graphemes:
+        if used + cells > width:
+            break
+        selected.append(cluster)
+        used += cells
+    return "".join(reversed(selected) if tail else selected)
+
+
+def elide_end(text: str, max_width: int) -> str:
+    """Cap *text* at *max_width* terminal cells, eliding the END.
+
+    The head survives: for names that differ by their start, a short column
+    keeps the distinguishing prefix readable.  Widths are measured in cells
+    so CJK names don't overflow the cap.
+    """
+    if cell_len(text) <= max_width:
+        return text
+    if max_width <= 0:
+        # Not even the ellipsis fits.
+        return ""
+    budget = max_width - 1  # the ellipsis cell
+    return f"{take_cells(text, budget)}…"
 
 
 def elide_middle(text: str, max_width: int) -> str:

@@ -45,6 +45,7 @@ _SELECTOR_AMBIGUOUS = msg("workspaces.selector_ambiguous", fallback="Workspace s
 _NAME_EMPTY = msg("workspaces.name_empty", fallback="Enter a workspace name.")
 _NAME_EXISTS = msg("workspaces.name_exists", fallback="A workspace with the name {name} already exists.")
 _NAME_CONTROL_CHAR = msg("workspaces.name_control_char", fallback="A workspace name can't contain control characters.")
+UNSPECIFIED = msg("workspaces.unspecified", fallback="Unspecified")
 _OVERLAP = msg("workspaces.overlap", fallback="Overlaps with {path}")
 _FOLDER_INVALID = msg("workspaces.folder_invalid", fallback="Workspace folders must use absolute paths.")
 _EXPECTED_OBJECT = msg(

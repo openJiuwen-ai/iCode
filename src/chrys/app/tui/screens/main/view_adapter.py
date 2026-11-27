@@ -662,6 +662,10 @@ class MainScreenViewAdapter:
                 workflow_mode=workflow_mode,
                 surfaces=self._session_surfaces.get(workflow_mode),
                 on_surfaces_changed=remember,
+                workspaces=state_store.workspace_registry,
+                current_workspace_name=self._state.workspace.workspace_name
+                if self._state.workspace.workspace_id is not None
+                else None,
             ),
             on_result,
         )

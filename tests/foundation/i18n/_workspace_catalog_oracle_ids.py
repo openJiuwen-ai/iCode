@@ -17,6 +17,9 @@ WORKSPACE_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "restore.no_checkpoint",
         "restore.session_changed",
         "tui.startup.session.workspace_restore_failed",
+        "tui.sessions.column.workspace",
+        "tui.sessions.search_placeholder.workspace",
+        "tui.sessions.tooltip.workspace",
         "workspaces.write_failed",
         "tui.workspace.leave_workspace.title",
         "tui.workspace.leave_workspace.message",
@@ -59,5 +62,6 @@ WORKSPACE_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "workspaces.registry_unreadable",
         "workspaces.registry_newer_version",
         "workspaces.working_dir_missing",
+        "workspaces.unspecified",
     }
 )

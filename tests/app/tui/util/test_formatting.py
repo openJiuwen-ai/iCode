@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import pytest
+from rich.cells import cell_len
 from rich.text import Text
 
 from chrys.app.tui.util.formatting import (
     elapsed_parts,
+    elide_end,
     format_byte_size,
     format_compact_count,
     format_elapsed,
@@ -160,3 +162,23 @@ def test_elapsed_parts_spans_milliseconds_through_days(
 ) -> None:
     assert elapsed_parts(seconds) == parts
     assert format_elapsed(seconds) == compact
+
+
+@pytest.mark.parametrize(
+    ("text", "end"),
+    [
+        ("abcdef", "abc…"),
+        ("中文天地", "中…"),
+        ("ab🇨🇳cd", "ab…"),
+        ("ab☀️cd", "ab…"),
+        ("ab😀cd", "ab…"),
+        ("ab🫠cd", "ab…"),
+        ("ab👨\u200d👩\u200d👧cd", "ab…"),
+        ("ab\u00adcdef", "ab\u00ad…"),
+        ("abe\u0301cd", "abe\u0301…"),
+    ],
+)
+def test_elide_end_keeps_whole_graphemes_within_the_cell_budget(text, end):
+    assert elide_end(text, 4) == end
+    for width in range(8):
+        assert cell_len(elide_end(text, width)) <= width

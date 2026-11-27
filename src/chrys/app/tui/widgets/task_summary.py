@@ -12,12 +12,13 @@ from rich.text import Text
 from textual.containers import HorizontalGroup, VerticalGroup
 from textual.widgets import Static
 
+from chrys.app.tui.util.formatting import iter_cell_graphemes, take_cells
 from chrys.app.tui.util.source_text import mark_hidden_format
 from chrys.foundation.i18n import msg
 from chrys.foundation.i18n.formatting import sanitize_terminal_block
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
 
     from textual.app import ComposeResult
 
@@ -25,21 +26,6 @@ if TYPE_CHECKING:
 
 
 _DURATION = msg("tui.task_summary.duration", fallback="Running for {duration}")
-
-
-def _graphemes(value: str) -> Iterator[tuple[str, int]]:
-    """Use the renderer's graphemes, keeping regional-indicator flag pairs together."""
-    spans, _ = split_graphemes(value)
-    index = 0
-    while index < len(spans):
-        start, end, cells = spans[index]
-        if end == start + 1 and 0x1F1E6 <= ord(value[start]) <= 0x1F1FF and index + 1 < len(spans):
-            next_start, next_end, next_cells = spans[index + 1]
-            if next_end == next_start + 1 and 0x1F1E6 <= ord(value[next_start]) <= 0x1F1FF:
-                end, cells = next_end, cells + next_cells
-                index += 1
-        yield value[start:end], cells
-        index += 1
 
 
 def display_command(value: str) -> str:
@@ -58,18 +44,6 @@ def display_command(value: str) -> str:
     return "\n".join(lines)
 
 
-def _take_cells(value: str, width: int, *, tail: bool = False) -> str:
-    graphemes = list(_graphemes(value))
-    selected = []
-    used = 0
-    for cluster, cells in reversed(graphemes) if tail else graphemes:
-        if used + cells > width:
-            break
-        selected.append(cluster)
-        used += cells
-    return "".join(reversed(selected) if tail else selected)
-
-
 def preview_text(value: str, width: int) -> tuple[str, bool]:
     """Wrap at grapheme boundaries into at most two lines; never interpret shell syntax."""
     width = max(2, width)
@@ -78,7 +52,7 @@ def preview_text(value: str, width: int) -> tuple[str, bool]:
     for line in value.split("\n"):
         current = ""
         used = 0
-        for cluster, cells in _graphemes(line):
+        for cluster, cells in iter_cell_graphemes(line):
             if used + cells > width:
                 lines.append(current)
                 current, used = "", 0
@@ -93,7 +67,7 @@ def preview_text(value: str, width: int) -> tuple[str, bool]:
                     return value[: start + 1] + "\n" + value[start + 1 :], False
         return "\n".join(lines), False
     flat = value.replace("\n", " ")
-    return _take_cells(flat, width - 1) + "…\n" + _take_cells(flat, width, tail=True), True
+    return take_cells(flat, width - 1) + "…\n" + take_cells(flat, width, tail=True), True
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +116,6 @@ class TaskSummary(VerticalGroup):
         meta.update(Text(duration, no_wrap=True, overflow="crop"))
         reason = self.query_one(".task-reason", Static)
         if reason_width > width:
-            reason_text = _take_cells(reason_text, width - 1) + "…"
+            reason_text = take_cells(reason_text, width - 1) + "…"
         reason.update(Text(reason_text, no_wrap=True, overflow="crop"))
         self.query_one(".task-info").display = bool(reason_text or duration)
