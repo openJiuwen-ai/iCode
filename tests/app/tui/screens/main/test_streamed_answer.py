@@ -11,14 +11,16 @@ from typing import TYPE_CHECKING
 import pytest
 from textual.widgets import Button
 
-from chrys.app.tui.widgets.chat.messages import AgentMessage, InterruptedMessage, RetryMessage
+from chrys.app.tui.widgets.chat.messages import AgentMessage, InterruptedMessage, RetryMessage, _FoldRowHeader
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chrome import status_bar as status_bar_module
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
+    ContextCompressed,
     InvocationAnswerWithdrawn,
     InvocationContentAbandoned,
     InvocationContentDelta,
@@ -27,22 +29,35 @@ from chrys.foundation.events.types import (
     InvocationRetryAttempt,
     InvocationSteered,
     InvocationToolCallStart,
+    SessionNew,
+    SessionRestore,
+    UserInjectResult,
+    UserInterrupt,
     UserMessage,
 )
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.kernel import AgentResponse, AgentSession, ChatResponse, ChatResponseUpdate, Content
+from chrys.orchestration.engine.run.bindings import TurnBindings
+from chrys.orchestration.invoker.content_projection import ContentProjector
+from chrys.orchestration.invoker.origin import BoundEmitter
+from tests.app.tui.screens.test_prompt_shortcut_send import running_session, send_plain, turn_finished
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
-from tests.support.tui_helpers import click_when_settled
-from tests.support.waiting import wait_for
+from tests.support.tui_helpers import ChatPanelApp, click_when_settled
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from textual.widget import Widget
+
+    from tests.support.engines import AgentEngineFactory
 
 _ORIGIN = InvocationOrigin("turn", "s1", "turn-1", None)
 
 
 def _shown(panel: ChatPanel) -> list[str]:
-    """The answer text each mounted agent message's markdown body currently renders."""
-    return [message.query_one(VirtualizedMarkdown).source for message in panel.query(AgentMessage)]
+    """The text in each mounted answer or preview."""
+    return [message.text for message in panel.query(AgentMessage)]
 
 
 async def test_streamed_answer_text_shows_before_the_final_message_and_once_after_it(tmp_path: Path) -> None:
@@ -67,8 +82,46 @@ async def test_streamed_answer_text_shows_before_the_final_message_and_once_afte
             description="streamed answer rendered before the final message",
         )
         (streaming,) = panel.query(AgentMessage)
-        assert streaming.has_class("--streaming"), "muted until it is known to be the answer"
+        preview = streaming.query_one(_FoldRowHeader)
+        await wait_for(
+            lambda: preview.render().plain == "▸ Replying... (4 tokens)",
+            pilot=pilot,
+            description="reply progress appears in the transcript row",
+        )
+        assert streaming.collapsed and not streaming.query(VirtualizedMarkdown)
+        assert streaming.has_class("--provisional")
         assert main.agent_running_state is True
+
+        await click_when_settled(pilot, preview)
+        await wait_for(
+            lambda: any(
+                body.display and body.shown_source == "Streaming answer"
+                for body in streaming.query(VirtualizedMarkdown)
+            ),
+            pilot=pilot,
+            description="clicking reply progress opens the streamed Markdown",
+        )
+        assert preview.render().plain.startswith("▾ Replying...")
+        body = streaming.query_one(VirtualizedMarkdown)
+        await bus.publish(_delta("seg-1", " **keeps growing**"), raise_handler_errors=True)
+        expanded_text = "Streaming answer **keeps growing**"
+        await wait_for(
+            lambda: body.display and body.shown_source == expanded_text,
+            pilot=pilot,
+            description="the open reply updates while new text arrives",
+        )
+
+        await click_when_settled(pilot, preview)
+        assert streaming.collapsed and not body.display
+        final_text = expanded_text + " while folded."
+        await bus.publish(_delta("seg-1", " while folded."), raise_handler_errors=True)
+        assert body.source == expanded_text
+        await click_when_settled(pilot, preview)
+        await wait_for(
+            lambda: body.display and body.shown_source == final_text,
+            pilot=pilot,
+            description="reopening the reply shows the text received while folded",
+        )
 
         await bus.publish(
             InvocationContentFinished(
@@ -76,18 +129,326 @@ async def test_streamed_answer_text_shows_before_the_final_message_and_once_afte
             ),
             raise_handler_errors=True,
         )
+        assert streaming.has_class("--provisional"), "a closed segment may still be intermediate"
         await bus.publish(
-            InvocationMessage(origin=_ORIGIN, session_id="s1", text="Streaming answer", is_final=True),
+            InvocationMessage(origin=_ORIGIN, session_id="s1", text=final_text, is_final=True),
             raise_handler_errors=True,
         )
         await wait_for(
-            lambda: not main.agent_running_state and not streaming.has_class("--streaming"),
+            lambda: not main.agent_running_state and not streaming.is_attached,
             pilot=pilot,
-            description="turn completed and the streamed message finalized",
+            description="turn completed and the preview was removed",
         )
-        assert list(panel.query(AgentMessage)) == [streaming]
-        assert _shown(panel) == ["Streaming answer"]
-        assert not streaming.has_class("--streaming") and not streaming.has_class("--intermediate")
+        answer = panel.query_one(AgentMessage)
+        assert answer.segment_ids == {"seg-1"}
+        assert not answer.collapsed and not answer.has_class("--provisional")
+        assert answer.styles.border_left[0] == "thick"
+        assert answer.query_one(VirtualizedMarkdown).source == final_text
+        assert _shown(panel) == [final_text]
+        assert panel.current_turn_children()[-1] is answer
+
+
+async def test_stop_during_final_reply_mount_keeps_one_successful_reply_after_reopen(
+    agent_engine: AgentEngineFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+        panel = session.main.query_one(ChatPanel)
+        final_mount = session.hold()
+        stop_checked = asyncio.Event()
+        mount_widget = panel.mount_transcript_widget
+        publish_interrupt = session.main._input_flow.publish_interrupt
+
+        async def hold_final_mount(widget: Widget) -> bool:
+            attached = await mount_widget(widget)
+            if isinstance(widget, AgentMessage) and not widget.is_provisional:
+                await final_mount.pass_through()
+            return attached
+
+        async def observe_stop() -> None:
+            try:
+                await publish_interrupt()
+            finally:
+                stop_checked.set()
+
+        def assert_reply_at_turn_end() -> None:
+            (answer,) = panel.query(AgentMessage)
+            assert answer.text == "Done."
+            assert panel.current_turn_children()[-1] is answer
+            assert not panel.query(InterruptedMessage)
+
+        monkeypatch.setattr(panel, "mount_transcript_widget", hold_final_mount)
+        monkeypatch.setattr(session.main._input_flow, "publish_interrupt", observe_stop)
+        await send_plain(session, "Finish the turn", typed=False)
+        await wait_for(
+            final_mount.entered.is_set,
+            pilot=session.pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="accepted final reply still mounting",
+        )
+        assert session.bar.agent_running
+        try:
+            await click_when_settled(session.pilot, "#send-btn")
+            await wait_for(stop_checked.is_set, pilot=session.pilot, description="Stop checked while the reply mounts")
+        finally:
+            final_mount.release()
+        await turn_finished(session)
+        assert_reply_at_turn_end()
+        assert session.seen.of(UserInterrupt) == []
+
+        original = session.session_id()
+        await session.bus.publish(SessionNew(), raise_handler_errors=True)
+        assert session.engine.session.session_id != original
+        assert not panel.query(AgentMessage)
+        await session.bus.publish(SessionRestore(session_id=original), raise_handler_errors=True)
+        assert session.engine.session.session_id == original
+        await panel.wait_replay_complete()
+        assert_reply_at_turn_end()
+
+
+async def test_a_late_context_fold_keeps_only_the_last_streamed_segment_as_the_final_reply(tmp_path: Path) -> None:
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
+    async with app.run_test(size=(120, 36)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        main._set_agent_running(True)
+        await panel.add_user_message("Check the tests.")
+        updates = [
+            ChatResponseUpdate(contents=[Content.from_text("The checks ran. ")], role="assistant"),
+            ChatResponseUpdate(contents=[Content.from_text_reasoning(text="Check the totals.")]),
+            ChatResponseUpdate(contents=[Content.from_text("All tests passed.")]),
+        ]
+        emitter = BoundEmitter(bus, _ORIGIN)
+        projector = ContentProjector(emitter)
+        for update in updates:
+            await projector.on_update(update)
+        response = ChatResponse.from_updates(updates)
+        await projector.response_ready(response)
+        await bus.publish(
+            ContextCompressed(session_id="s1", compressed_context_id="fold", summary="Earlier work", freed_messages=3),
+            raise_handler_errors=True,
+        )
+        bindings = object.__new__(TurnBindings)
+        bindings._bound_emitter = emitter
+        bindings._session = AgentSession(session_id=_ORIGIN.session_id)
+        bindings._session_id = _ORIGIN.session_id
+        await bindings._publish_response_text(AgentResponse(messages=response.messages))
+        await pilot.pause()
+
+        assert _shown(panel) == ["The checks ran.", "All tests passed."]
+        earlier, answer = panel.query(AgentMessage)
+        assert earlier.has_class("--intermediate")
+        assert answer.is_process_final and panel.current_turn_children()[-1] is answer
+
+
+async def test_an_injection_during_a_streamed_segment_keeps_the_complete_reply_together(tmp_path: Path) -> None:
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
+    async with app.run_test(size=(120, 36)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        main._set_agent_running(True)
+        await panel.add_user_message("Check the tests.")
+
+        await bus.publish(_delta("answer", "The checks ran. "), raise_handler_errors=True)
+        await bus.publish(
+            UserInjectResult(session_id="s1", text="Check the docs too.", consumed=True), raise_handler_errors=True
+        )
+        await bus.publish(_delta("answer", "All tests passed."), raise_handler_errors=True)
+        await bus.publish(
+            InvocationContentFinished(
+                origin=_ORIGIN, session_id="s1", segment_id="answer", channel="answer", status="completed"
+            ),
+            raise_handler_errors=True,
+        )
+        await bus.publish(
+            InvocationMessage(
+                origin=_ORIGIN, session_id="s1", text="The checks ran. All tests passed.", segment_id="answer"
+            ),
+            raise_handler_errors=True,
+        )
+
+        assert _shown(panel) == ["The checks ran. All tests passed."]
+        answer = panel.query_one(AgentMessage)
+        assert answer.is_process_final and panel.current_turn_children()[-1] is answer
+        await wait_for(
+            lambda: answer.query_one(VirtualizedMarkdown).shown_source == answer.text,
+            pilot=pilot,
+            description="the complete reply is rendered below the injection",
+        )
+
+
+async def test_an_injection_delivered_after_completion_still_goes_above_the_final_reply(tmp_path: Path) -> None:
+    bus = EventBus()
+    release = asyncio.Event()
+    reached_delivery = asyncio.Event()
+
+    async def wait_to_deliver(_event: UserInjectResult) -> None:
+        reached_delivery.set()
+        await release.wait()
+
+    await bus.subscribe(UserInjectResult, wait_to_deliver)
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
+    async with app.run_test(size=(120, 36)):
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        main._set_agent_running(True)
+        await panel.add_user_message("Check the tests.")
+        await bus.publish(_delta("answer", "All tests passed."), raise_handler_errors=True)
+        panel.finish_answer_segment("answer", completed=True)
+
+        injection = UserInjectResult(session_id="s1", text="Check the docs too.", consumed=True)
+        delivery = asyncio.create_task(bus.publish(injection, raise_handler_errors=True))
+        try:
+            await wait_for(reached_delivery.is_set, description="detached injection delivery has begun")
+            await bus.publish(
+                InvocationMessage(origin=_ORIGIN, session_id="s1", text="All tests passed.", segment_id="answer"),
+                raise_handler_errors=True,
+            )
+            assert not main.agent_running_state and not delivery.done()
+        finally:
+            release.set()
+            await delivery
+
+        answer = panel.query_one(AgentMessage)
+        assert answer.is_process_final
+        assert [entry.text for entry in panel.mounted_user_messages()] == ["Check the tests.", injection.text]
+        assert panel.current_turn_children()[-1] is answer
+
+
+async def test_an_injection_while_the_completed_process_mounts_goes_above_the_final_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
+    async with app.run_test(size=(120, 36)):
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        main._set_agent_running(True)
+        await panel.add_user_message("Check the tests.")
+        await panel.add_tool_start("read", "read_file", "filesystem.read")
+        await panel.add_tool_result("read", "read_file", "done")
+        await bus.publish(_delta("answer", "All tests passed."), raise_handler_errors=True)
+        panel.finish_answer_segment("answer", completed=True)
+
+        release = asyncio.Event()
+        completing = asyncio.Event()
+        publishing_injection = asyncio.Event()
+        place_entry = panel.place_transcript_entry
+
+        async def hold_completed_process(widget: Widget, anchor: Widget, *, before: bool = False) -> bool:
+            if isinstance(widget, ProcessBlock):
+                completing.set()
+                await release.wait()
+            return await place_entry(widget, anchor, before=before)
+
+        async def publish_injection() -> None:
+            publishing_injection.set()
+            await bus.publish(
+                UserInjectResult(session_id="s1", text="Check the docs too.", consumed=True),
+                raise_handler_errors=True,
+            )
+
+        monkeypatch.setattr(panel, "place_transcript_entry", hold_completed_process)
+        completion = InvocationMessage(origin=_ORIGIN, session_id="s1", text="All tests passed.", segment_id="answer")
+        async with asyncio.TaskGroup() as tasks:
+            finalizing = tasks.create_task(bus.publish(completion, raise_handler_errors=True))
+            try:
+                await wait_for(lambda: completing.is_set() or finalizing.done(), description="mounting the process")
+                if finalizing.done():
+                    await finalizing
+                assert completing.is_set() and not finalizing.done()
+                tasks.create_task(publish_injection())
+                await wait_for(publishing_injection.is_set, description="delivery during completion")
+            finally:
+                release.set()
+
+        answer = panel.query_one(AgentMessage)
+        assert answer.is_process_final and panel.current_turn_children()[-1] is answer
+        assert len(panel.query(ProcessBlock)) == 1
+        assert [entry.text for entry in panel.mounted_user_messages()] == ["Check the tests.", "Check the docs too."]
+
+
+async def test_an_injection_while_removing_retry_status_preserves_the_first_answer_delta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
+    async with app.run_test(size=(120, 36)):
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        main._set_agent_running(True)
+        await panel.add_user_message("Check the tests.")
+        await panel.add_retry("Rate limited", 1, 3, 1)
+        assert panel.query(RetryMessage)
+
+        clearing_retry = asyncio.Event()
+        release = asyncio.Event()
+        status = panel._live_renderer._status
+        remove_status = status.remove_trailing_status
+
+        async def hold_retry_removal() -> None:
+            clearing_retry.set()
+            await release.wait()
+            await remove_status()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(status, "remove_trailing_status", hold_retry_removal)
+            first = asyncio.create_task(bus.publish(_delta("answer", "All tests "), raise_handler_errors=True))
+            try:
+                await wait_for(clearing_retry.is_set, description="first delta is removing the retry status")
+                assert not first.done()
+                await bus.publish(
+                    UserInjectResult(session_id="s1", text="Check the docs too.", consumed=True),
+                    raise_handler_errors=True,
+                )
+            finally:
+                release.set()
+                await first
+
+        await bus.publish(_delta("answer", "passed."), raise_handler_errors=True)
+        panel.finish_answer_segment("answer", completed=True)
+        await bus.publish(
+            InvocationMessage(origin=_ORIGIN, session_id="s1", text="All tests passed.", segment_id="answer"),
+            raise_handler_errors=True,
+        )
+        answer = panel.query_one(AgentMessage)
+        assert answer.text == "All tests passed."
+        assert answer.is_process_final and panel.current_turn_children()[-1] is answer
+
+
+async def test_a_partial_answer_can_reopen_before_its_body_first_mounts() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_answer_delta("seg-1", "Retained partial text.")
+        partial = panel.query_one(AgentMessage)
+        panel.finish_answer_segment("seg-1", completed=False)
+        partial.collapsed = True
+        await pilot.pause()
+        assert not partial.query(VirtualizedMarkdown)
+        partial.collapsed = False
+        await wait_for(
+            lambda: any(body.shown_source == partial.text for body in partial.query(VirtualizedMarkdown)),
+            pilot=pilot,
+            description="the interrupted reply builds its body on opening",
+        )
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+async def test_a_snapshot_can_supply_the_final_reply_after_the_preview_is_withdrawn(interrupted: bool) -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_answer_delta("seg-1", "Withdraw this.")
+        if interrupted:
+            await panel.add_interrupted()
+        await panel.withdraw_answer(("seg-1",))
+        await panel.add_agent_message("The final reply.")
+        assert _shown(panel) == ["The final reply."]
 
 
 def _delta(segment_id: str, text: str) -> InvocationContentDelta:

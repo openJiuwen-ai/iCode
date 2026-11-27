@@ -342,6 +342,9 @@ async def test_archived_local_tools_keep_results_and_follow_the_turn_fold_policy
             second_narration = next(message for message in panel.query(AgentMessage) if message.text == "One more.")
             assert second_narration.process_hidden
             assert all(not group.display for group in groups)
+            answer = panel.query(AgentMessage).last()
+            entries = panel.transcript_content_children()
+            assert entries[entries.index(panel.query_one(ContextFoldWidget)) - 1] is answer
 
 
 @pytest.mark.parametrize("retained_kind", ["hosted", "informational"])

@@ -1117,7 +1117,7 @@
         ["awaitable", "await self._hosted_bridge.local_call_start_published(provider_call_id)", "unresolved"]
       ],
       "TurnBindings._publish_hosted_operation": [
-        ["awaitable", "await emitter.publish(InvocationMessage(origin=emitter.origin, text=operation.text, is_final=True, structured_output_completed=operation.structured_output_completed, **self._assistant_message_event_kwargs(), session_id=self._session_id))", "unresolved"],
+        ["awaitable", "await emitter.publish(InvocationMessage(origin=emitter.origin, text=operation.text, is_final=True, structured_output_completed=operation.structured_output_completed, segment_id=operation.answer_segment_id, **self._assistant_message_event_kwargs(), session_id=self._session_id))", "unresolved"],
         ["awaitable", "await emitter.publish(InvocationToolCallStart(origin=emitter.origin, tool_name=view.tool_name, call_id=operation.presentation_id, provider_hosted=True, hosted_family=view.family, provider=view.provider, provider_item_type=view.provider_item_type, provider_call_id=view.provider_call_id, provider_status=view.provider_status, tool_kind=HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY.get(view.family, ''), args=view.arguments, session_id=self._session_id))", "unresolved"],
         ["awaitable", "await emitter.publish(InvocationToolCallArgsUpdated(origin=emitter.origin, tool_name=view.tool_name, call_id=operation.presentation_id, provider_hosted=True, hosted_family=view.family, provider=view.provider, provider_item_type=view.provider_item_type, provider_call_id=view.provider_call_id, provider_status=view.provider_status, tool_kind=HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY.get(view.family, ''), args=view.arguments, session_id=self._session_id))", "unresolved"],
         ["awaitable", "await emitter.publish(InvocationToolCallProgress(origin=emitter.origin, tool_name=view.tool_name, call_id=operation.presentation_id, provider_hosted=True, hosted_family=view.family, provider=view.provider, provider_item_type=view.provider_item_type, provider_call_id=view.provider_call_id, provider_status=view.provider_status, lines=view.result_text.splitlines(), image_contents=view.image_contents, snapshot_metadata=view.metadata, session_id=self._session_id))", "unresolved"],
@@ -1126,7 +1126,7 @@
       ],
       "TurnBindings._publish_response_text": [
         ["awaitable", "await self._hosted_bridge.reconcile_accepted(result.messages, final=True)", "unresolved"],
-        ["awaitable", "await self._emitter.publish(InvocationMessage(origin=self._emitter.origin, text=final_text, is_final=True, **event_kwargs, session_id=self._session_id))", "unresolved"]
+        ["awaitable", "await self._emitter.publish(InvocationMessage(origin=self._emitter.origin, text=final_text, is_final=True, segment_id=last_answer_segment_id(result.messages[-1].contents) if result.messages else None, **event_kwargs, session_id=self._session_id))", "unresolved"]
       ],
       "TurnBindings._publish_retry_notice": [
         ["awaitable", "await self._hosted_bridge.attempt_rejected(message)", "unresolved"],

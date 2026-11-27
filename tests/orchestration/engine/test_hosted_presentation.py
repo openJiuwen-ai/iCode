@@ -543,18 +543,20 @@ async def test_narration_before_hosted_output_is_published_once(
             if isinstance(event, (InvocationToolCallStart, InvocationToolCallResult)) and event.provider_hosted
         )
         answer = [
-            (i, event.text)
+            (i, event)
             for i, event in enumerate(events)
             if isinstance(event, InvocationContentDelta) and event.origin.kind == "turn" and event.channel == "answer"
         ]
-        assert "".join(text for i, text in answer if i < hosted_at) == "Let me look. "
-        assert "".join(text for i, text in answer if i > hosted_at) == "Here it is."
+        assert "".join(delta.text for i, delta in answer if i < hosted_at) == "Let me look. "
+        assert "".join(delta.text for i, delta in answer if i > hosted_at) == "Here it is."
         assert [
             event.provider_hosted
             for event in events
             if isinstance(event, InvocationToolCallResult) and event.origin.kind == "turn"
         ] == ([False, True] if call[0] == "echo" else [True])
         assert _turn_messages(events) == [("Here it is.", True)]
+        (final,) = [event for event in events if isinstance(event, InvocationMessage)]
+        assert final.segment_id == answer[-1][1].segment_id
     finally:
         await context.cleanup()
 

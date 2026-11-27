@@ -152,10 +152,16 @@ class RunState:
     has_messages: bool = False
     generation: int = 0
     started_at: datetime | None = None
+    final_reply_generation: int | None = None
+    """The run whose final reply arrived, even while its transcript still renders."""
     # Only the screen writes this: set when a run starts, consumed when it
     # stops. Backend handlers clear ``agent_running`` before the screen sees
     # the stop, so that flag cannot tell the screen a run just ended.
     turn_end_check_pending: bool = False
+
+    @property
+    def final_reply_received(self) -> bool:
+        return self.final_reply_generation == self.generation
 
 
 @dataclass

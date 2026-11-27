@@ -12,6 +12,8 @@ from textual import events
 from textual.message import Message
 from textual.widgets import Button
 
+from chrys.app.tui.widgets.chat.messages import AgentMessage, InterruptedMessage
+from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome.input_bar import InputBar, _ChatTextArea
 from chrys.foundation.events.types import InvocationMessage, UserInterrupt
 from chrys.foundation.models.invocations import InvocationOrigin
@@ -96,6 +98,45 @@ async def test_enter_accepts_characters_already_waiting_in_its_input_pump(tmp_pa
         area.post_message(events.Key("enter", None))
         await wait_for(lambda: len(messages) == 1 and not main._state.submit.active, pilot=pilot)
         assert messages[0].text == "ab"
+
+
+@pytest.mark.parametrize("stop_already_publishing", [False, True])
+async def test_final_reply_deferred_behind_the_user_bubble_wins_over_stop(
+    tmp_path: Path, stop_already_publishing: bool
+) -> None:
+    app, bus, _messages, controls = await _app_with_recorded_controls(tmp_path)
+    async with app.run_test(size=(100, 30)):
+        main = app._main_screen
+        assert main is not None
+        main._set_agent_running(True)
+        main._state.render_gate.begin()
+        panel = main.query_one(ChatPanel)
+
+        async def publish_final_reply(_interrupt: UserInterrupt | None = None) -> None:
+            await bus.publish(
+                InvocationMessage(
+                    origin=InvocationOrigin("turn", "", "turn-1", None),
+                    text="done",
+                    is_final=True,
+                ),
+                raise_handler_errors=True,
+            )
+
+        if stop_already_publishing:
+            await bus.subscribe(UserInterrupt, publish_final_reply)
+        else:
+            await publish_final_reply()
+        await main._input_flow.publish_interrupt()
+
+        assert [type(event) for event in controls] == ([UserInterrupt] if stop_already_publishing else [])
+        assert main.agent_running_state
+        assert not panel.query(AgentMessage)
+        assert not panel.query(InterruptedMessage)
+        await main._input_flow.flush_deferred_agent_messages()
+        assert not main.agent_running_state
+        (answer,) = panel.query(AgentMessage)
+        assert answer.text == "done"
+        assert not panel.query(InterruptedMessage)
 
 
 @pytest.mark.parametrize("boundary", ["publish", "render"])

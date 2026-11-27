@@ -1199,6 +1199,7 @@ _message_ids.update(
         "tui.chat.retry_now",
         "tui.chat.retry_started",
         "tui.chat.thinking_label",
+        "tui.chat.replying_label",
         ("tui.chat.thinking_tokens", "tui.chat.thinking_tokens#plural"),
         ("tui.chat.thinking_speed", "tui.chat.thinking_speed#plural"),
         "tui.chat.thought_label",

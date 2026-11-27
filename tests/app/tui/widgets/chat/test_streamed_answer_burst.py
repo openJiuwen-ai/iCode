@@ -194,18 +194,16 @@ async def test_a_long_answer_burst_into_a_populated_transcript_parses_once_with_
             description="populated transcript parsed",
         )
 
-        # The first event mounts the streamed message; its body parses the first line on mount.
         await panel.add_answer_delta("answer", lines[0])
-        message = panel.query(AgentMessage).last()
-        body = message.query_one(VirtualizedMarkdown)
-        await wait_for(lambda: body._blocks, pilot=pilot, description="streamed message mounted")
+        preview = panel.query(AgentMessage).last()
+        assert not preview.query(VirtualizedMarkdown)
         await wait_for(lambda: screen_is_settled(app, screen), pilot=pilot, description="settled before burst")
 
         parsed: list[str] = []
         real_build = VirtualizedMarkdown._build_blocks
 
         def recording_build(markdown_widget: VirtualizedMarkdown, markdown: str) -> list[MarkdownBlock]:
-            if markdown_widget is body:
+            if markdown:
                 parsed.append(markdown)
             return real_build(markdown_widget, markdown)
 
@@ -222,8 +220,12 @@ async def test_a_long_answer_burst_into_a_populated_transcript_parses_once_with_
         # MainScreen awaits each event's handler inline, so the whole burst runs in one loop step.
         for line in lines[1:]:
             await panel.add_answer_delta("answer", line)
+        await pilot.pause()
+        assert not parsed, "a preview does not parse the streamed text as Markdown"
         panel.finish_answer_segment("answer", completed=True)
         await panel.add_agent_message(answer)
+        message = panel.query(AgentMessage).last()
+        body = message.query_one(VirtualizedMarkdown)
 
         await wait_for(
             # The lock is held from the parse of the final text until its blocks are installed.
@@ -240,8 +242,8 @@ async def test_a_long_answer_burst_into_a_populated_transcript_parses_once_with_
 
 
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
-async def test_each_row_a_streamed_answer_adds_lays_the_transcript_out_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A new row moves the whole transcript, so its layout costs in proportion to the transcript: one is enough."""
+async def test_streamed_lines_repaint_the_preview_without_growing_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """More lines of source text still fit on one preview row."""
     async with ChatPanelApp().run_test(size=(120, 36)) as pilot:
         app = pilot.app
         screen = app.screen
@@ -250,10 +252,8 @@ async def test_each_row_a_streamed_answer_adds_lays_the_transcript_out_once(monk
         await panel.add_user_message("Explain the streaming pipeline in depth.")
         await panel.add_answer_delta("answer", _answer(60))
         message = panel.query(AgentMessage).last()
-        body = message.query_one(VirtualizedMarkdown)
-        await wait_for(
-            lambda: body._blocks and screen_is_settled(app, screen), pilot=pilot, description="settled before growth"
-        )
+        await wait_for(lambda: screen_is_settled(app, screen), pilot=pilot, description="preview laid out")
+        height = message.size.height
 
         full_layouts: list[None] = []
         real_refresh_layout = screen._refresh_layout
@@ -266,30 +266,22 @@ async def test_each_row_a_streamed_answer_adds_lays_the_transcript_out_once(monk
         monkeypatch.setattr(screen, "_refresh_layout", recording_refresh_layout)
 
         for row in range(3):
-            height = message.size.height
             await panel.add_answer_delta("answer", f"\nRow {row}: a paragraph of its own.\n")
-            await wait_for(
-                lambda height=height: message.size.height > height and screen_is_settled(app, screen),
-                pilot=pilot,
-                description=f"row {row} laid out",
-            )
+            await pilot.pause()
+            assert message.size.height == height
 
-        assert len(full_layouts) == 3
+        assert not full_layouts
 
 
 async def test_streamed_inline_children_are_reused_then_released() -> None:
-    async with ChatPanelApp().run_test() as pilot:
-        panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history(_transcript(2))
-        await panel.add_user_message("Explain.")
-        await panel.add_answer_delta("answer", "**stable**")
-        message = panel.query(AgentMessage).last()
+    message = AgentMessage("**stable**", is_final=False)
+    async with WidgetApp(lambda: message).run_test() as pilot:
         body = message.query_one(VirtualizedMarkdown)
-        await panel.add_answer_delta("answer", "\n\nsecond")
+        message.append_text("\n\nsecond")
         await wait_for(lambda: body.shown_source.endswith("second"), pilot=pilot)
         assert body._inline_cache is not None
         children = body._inline_cache["**stable**"]
-        await panel.add_answer_delta("answer", "\n\nthird")
+        message.append_text("\n\nthird")
         await wait_for(lambda: body.shown_source.endswith("third"), pilot=pilot)
         assert body._inline_cache["**stable**"] is children
 
@@ -300,9 +292,10 @@ async def test_streamed_inline_children_are_reused_then_released() -> None:
         await message._body_parse
         assert body._inline_cache is None
 
-        await panel.add_answer_delta("next", "next segment")
-        next_body = panel.query(AgentMessage).last().query_one(VirtualizedMarkdown)
-        await panel.add_answer_delta("next", "\n\nmore")
+        next_segment = AgentMessage("next segment", is_final=False)
+        await pilot.app.mount(next_segment)
+        next_body = next_segment.query_one(VirtualizedMarkdown)
+        next_segment.append_text("\n\nmore")
         await wait_for(lambda: next_body.shown_source.endswith("more"), pilot=pilot)
         assert next_body._inline_cache
         await next_body.remove()

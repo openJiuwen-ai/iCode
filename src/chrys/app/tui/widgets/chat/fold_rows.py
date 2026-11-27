@@ -53,7 +53,7 @@ FOLDED_LABEL = msg("tui.chat.fold_row.folded_label", fallback="{label}: ")
 FOLDED_ARROW = "▸"
 OPEN_ARROW = "▾"
 
-_PREVIEW_SOURCE_CHARS = 1024
+PREVIEW_SOURCE_CHARS = 1024
 """How much of the text a preview reads: more than the widest row shows, a bounded cost for any length."""
 
 
@@ -63,7 +63,7 @@ def text_preview(text: str) -> str:
     Plain text, markdown markers included: the row is a hint at what the text says, not a rendering of it.
     Only the start of the text is read, enough to fill any row; the row cuts it to its width.
     """
-    return sanitize_legacy_scalar(" ".join(text[:_PREVIEW_SOURCE_CHARS].split()))
+    return sanitize_legacy_scalar(" ".join(text[:PREVIEW_SOURCE_CHARS].split()))
 
 
 ToolOutcome = Literal["", "failed", "interrupted"]
