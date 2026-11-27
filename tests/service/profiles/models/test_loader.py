@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 
 import pytest
+import yaml
 
 from chrys.service.profiles.models.loader import (
     ModelProfileLoadError,
@@ -557,3 +558,75 @@ async def test_handwritten_optional_fields_load_at_startup_and_build_a_client(tm
     await client.aclose()
     assert ("http_headers" in caplog.text) == bool(headers)
     assert "private-header-value" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "unsafe_id",
+    [
+        "../escape",
+        "sub/dir",
+        "a\\b",
+        "/abs",
+        "C:\\drive",
+        "a:b",
+        "CON",
+        "NUL",
+        "COM1",
+        " padded",
+        "..",
+        ".",
+    ],
+)
+def test_loader_rejects_filename_unsafe_id_from_yaml(tmp_path: Path, unsafe_id: str) -> None:
+    """An explicit ``id`` field in the YAML that is not filename-safe must fail load."""
+    path = tmp_path / "m.yaml"
+    path.write_text(yaml.safe_dump({"name": "M", "id": unsafe_id}), encoding="utf-8")
+    with pytest.raises(ModelProfileLoadError) as excinfo:
+        load_profile_from_yaml(path)
+    assert excinfo.value.field == "id"
+    assert excinfo.value.log_reason is not None
+    assert "filename-safe" in str(excinfo.value).lower() or "bare filename" in str(excinfo.value).lower()
+
+
+def test_loader_rejects_empty_id_from_yaml(tmp_path: Path) -> None:
+    """An empty ``id`` fails the nonempty check before the filename-safe check."""
+    path = tmp_path / "m.yaml"
+    path.write_text(yaml.safe_dump({"name": "M", "id": ""}), encoding="utf-8")
+    with pytest.raises(ModelProfileLoadError, match="must be nonempty text") as excinfo:
+        load_profile_from_yaml(path)
+    assert excinfo.value.field == "id"
+
+
+def test_loader_rejects_filename_unsafe_id_from_filename_stem(tmp_path: Path) -> None:
+    """If the YAML has no ``id`` field and the filename stem is itself unsafe, load fails.
+
+    macOS and Linux both permit ``local:dev.yaml`` as a filename, so a profile
+    that omits ``id`` would otherwise get the unsafe id ``local:dev``.
+    """
+    path = tmp_path / "local:dev.yaml"
+    path.write_text("name: Local\n", encoding="utf-8")
+    with pytest.raises(ModelProfileLoadError) as excinfo:
+        load_profile_from_yaml(path)
+    assert excinfo.value.field == "id"
+    assert "local:dev" in str(excinfo.value)
+
+
+def test_loader_sets_log_reason_on_id_failure(tmp_path: Path) -> None:
+    """The log_reason on id validation failure must be actionable."""
+    path = tmp_path / "bad.yaml"
+    path.write_text("name: B\nid: CON\n", encoding="utf-8")
+    with pytest.raises(ModelProfileLoadError) as excinfo:
+        load_profile_from_yaml(path)
+    assert excinfo.value.log_reason is not None
+    lower = excinfo.value.log_reason.lower()
+    assert "<safe-id>.yaml" in lower
+    assert "explicit" in lower
+
+
+def test_loader_accepts_normal_ids(tmp_path: Path) -> None:
+    """Sanity check: legitimate bare ids continue to load."""
+    for stem in ("my-model", "gpt4o-mini", "deepseek_r1", "Claude.Opus.4", "foo bar"):
+        p = tmp_path / f"{stem}.yaml"
+        p.write_text("name: OK\n", encoding="utf-8")
+        loaded = load_profile_from_yaml(p)
+        assert loaded.id == stem
