@@ -130,6 +130,8 @@ from jiuwenbox.server.workspace import JIUWENBOX_HOME
 
 RUNTIME_PROCESS = "process"
 RUNTIME_CONCH = "conch"
+# How long a delete waits for a create still starting that sandbox.
+DELETE_START_WAIT_SECONDS = 30.0
 
 
 def normalize_sandbox_runtime(sandbox_runtime: str | None) -> str:
@@ -220,6 +222,8 @@ class SandboxManager:
         # been cancelled. A delete waits for it before cleaning up, so a child
         # the start spawns after the delete began is still removed.
         self._starting: dict[str, asyncio.Event] = {}
+        # Deletes that stopped waiting for such a start and finish once it ends.
+        self._deferred_deletes: set[asyncio.Task[None]] = set()
         # 空闲沙箱淘汰: 后台 reaper task 句柄 + stop event。``None`` 表示当前没有
         # reaper 在跑 (idle_timeout 未配置 / 已被禁用 / 服务尚未 startup)。
         self._idle_reaper_task: asyncio.Task | None = None
@@ -932,7 +936,10 @@ class SandboxManager:
 
         A create still starting this sandbox's runtime is waited for first,
         so the cleanup also removes a child that start spawns late. The id
-        stays registered until then, so no other create can take it.
+        stays registered, in ``DELETING``, until then, so no other create can
+        take it. The wait is bounded by ``DELETE_START_WAIT_SECONDS``: when it
+        runs out, or this call is cancelled, a task finishes the delete once
+        the start ends and this call returns (or reraises) without it.
         """
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
@@ -943,9 +950,40 @@ class SandboxManager:
             self._save_state(ref)
             starting = self._starting.get(sandbox_id)
 
-        if starting is not None:
-            await starting.wait()
+        if starting is not None and not starting.is_set():
+            try:
+                await asyncio.wait_for(starting.wait(), DELETE_START_WAIT_SECONDS)
+            except (TimeoutError, asyncio.CancelledError):
+                task = asyncio.get_running_loop().create_task(
+                    self._delete_after_start(starting, ref, runtime)
+                )
+                self._deferred_deletes.add(task)
+                task.add_done_callback(self._deferred_deletes.discard)
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                logger.warning(
+                    "Sandbox %s is still starting after %.0fs; it is deleted once the start ends",
+                    sandbox_id,
+                    DELETE_START_WAIT_SECONDS,
+                )
+                return
+        await self._finish_delete(ref, runtime)
 
+    async def _delete_after_start(
+        self,
+        starting: asyncio.Event,
+        ref: SandboxRef,
+        runtime: RuntimeAdapter,
+    ) -> None:
+        await starting.wait()
+        try:
+            await self._finish_delete(ref, runtime)
+        except Exception:
+            logger.exception("Deferred delete of sandbox %s failed", ref.id)
+
+    async def _finish_delete(self, ref: SandboxRef, runtime: RuntimeAdapter) -> None:
+        sandbox_id = ref.id
         # Cleanup can wait on processes and namespace teardown. Keep it outside
         # the global state lock so deleting one sandbox does not block unrelated
         # sandbox operations.
