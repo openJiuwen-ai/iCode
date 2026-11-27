@@ -102,7 +102,7 @@ def test_exported_pack_loads_and_declares_the_browser_tools(tmp_path, monkeypatc
     )
     names = {tool.name for tool in bind_extension("browser", extension, build).tools}
 
-    assert len(names) == 31
+    assert len(names) == 32
     assert {
         "browser_open",
         "browser_navigate",
@@ -110,6 +110,7 @@ def test_exported_pack_loads_and_declares_the_browser_tools(tmp_path, monkeypatc
         "browser_tab_switch",
         "browser_click",
         "browser_drag",
+        "browser_query",
         "browser_network_body",
         "browser_snapshot",
         "browser_press_key",

@@ -19,6 +19,7 @@ def test_spawn_overrides_inherited_names(tmp_path, monkeypatch):
     def popen(*args, **kwargs):
         captured.update(kwargs["env"])
 
+    monkeypatch.setattr("icode_browser_use.broker_client.harden_private", lambda *_a, **_kw: True)
     monkeypatch.setattr("icode_browser_use.broker_client.subprocess.Popen", popen)
     cfg = BrowserConfig(state_dir=tmp_path, allowed_domains=("example.com",))
     BrokerClient(cfg)._spawn()
@@ -37,6 +38,7 @@ def test_spawn_passes_configured_origins(tmp_path, monkeypatch):
     def popen(*args, **kwargs):
         captured.update(kwargs["env"])
 
+    monkeypatch.setattr("icode_browser_use.broker_client.harden_private", lambda *_a, **_kw: True)
     monkeypatch.setattr("icode_browser_use.broker_client.subprocess.Popen", popen)
     cfg = BrowserConfig(
         state_dir=tmp_path,

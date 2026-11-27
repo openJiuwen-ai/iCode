@@ -47,6 +47,11 @@ instructions: |
 extensions:
   - browser
 
+skills:
+  auto_load_user_agents_skills: false
+  auto_load_cwd_agents_skills: false
+  script_extensions: []
+
 approval:
   default: auto
 """

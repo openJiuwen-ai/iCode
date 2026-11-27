@@ -9,6 +9,7 @@
 
 import {
   BRIDGE_METHODS,
+  METHOD_DOWNLOAD_BEHAVIOR,
   METHOD_FETCH_CONTINUE,
   METHOD_FETCH_ENABLE,
   METHOD_NETWORK_COOKIES,
@@ -17,6 +18,8 @@ import {
   METHOD_SITE,
   MUTATION_PROBE_SHA256,
   assertPermission,
+  hostRestrictedOverride,
+  isNonPublicHost,
   isSafeBlankUrl,
   methodPolicy,
   needsPermission,
@@ -46,6 +49,7 @@ let ownedWrite = Promise.resolve();
 let policyWrite = Promise.resolve();
 let dnrWrite = Promise.resolve();
 const ownedTabs = new Set();
+const staleTabs = new Set(); // released tabs: close-only until user navigates/removes them
 const closingTabs = new Set();
 const adoptingTabs = new Set();
 const sessions = new Map(); // child sessionId -> { tabId, targetId, url }
@@ -116,15 +120,75 @@ async function syncDnrRules() {
     // "|https://a.com/" anchors the whole origin; without the trailing "/" the
     // filter is a prefix and would also match https://a.com.evil.net/.
     const originFilter = (origin) => `|${origin}/`;
+    const originBlockFilters = (origin) => {
+      const filters = [originFilter(origin)];
+      try {
+        const parsed = new URL(origin);
+        const host = parsed.hostname.toLowerCase();
+        if (host && host.includes(".") && !host.startsWith("[") && !/^\d+(\.\d+){3}$/.test(host)) {
+          const portPart = parsed.port ? `:${parsed.port}` : "";
+          filters.push(`|${parsed.protocol}//${host}.${portPart}/`);
+        }
+      } catch {
+        // Ignore malformed origins.
+      }
+      return filters;
+    };
 
     // Layer 1 pre-request navigation boundary on owned tabs only:
-    // Priority 1: block main_frame navigations by default (fail-closed before cookies leave).
+    // Priority 1: block main_frame/sub_frame navigations by default (fail-closed before cookies leave).
     if (!publicFallbackAllow) {
       addRules.push({
         id: nextId++,
         priority: 1,
         action: { type: "block" },
         condition: { urlFilter: "|http", tabIds, resourceTypes },
+      });
+    } else {
+      // Priority 5: even in public-web / default-allow mode, block loopback and
+      // non-public hosts pre-request unless an explicit Priority-10 site allow overrides.
+      addRules.push({
+        id: nextId++,
+        priority: 5,
+        action: { type: "block" },
+        condition: { requestDomains: ["localhost", "local", "internal"], tabIds, resourceTypes },
+      });
+      for (const prefix of [
+        "|http://127.",
+        "|https://127.",
+        "|http://10.",
+        "|https://10.",
+        "|http://192.168.",
+        "|https://192.168.",
+        "|http://169.254.",
+        "|https://169.254.",
+        "|http://0.",
+        "|https://0.",
+        "|http://[::1]",
+        "|https://[::1]",
+        "|http://[fc",
+        "|https://[fc",
+        "|http://[fd",
+        "|https://[fd",
+        "|http://[fe80",
+        "|https://[fe80",
+      ]) {
+        addRules.push({
+          id: nextId++,
+          priority: 5,
+          action: { type: "block" },
+          condition: { urlFilter: prefix, tabIds, resourceTypes },
+        });
+      }
+      addRules.push({
+        id: nextId++,
+        priority: 5,
+        action: { type: "block" },
+        condition: {
+          regexFilter: "^https?://(172\\.(1[6-9]|2[0-9]|3[0-1])|100\\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7]))\\.",
+          tabIds,
+          resourceTypes,
+        },
       });
     }
     // Priority 10: allow explicitly permitted origins (when compatible with plugin narrowing).
@@ -141,15 +205,23 @@ async function syncDnrRules() {
         }
       }
     }
-    // With plugin narrowing, permissionFor() allows listed origins/domains when the
+    // With plugin narrowing, permissionFor() allows listed public origins/domains when the
     // default policy or the user's public-web opt-in allows them: mirror that here
-    // so layer 1 is never stricter than layer 2.
+    // so layer 1 is never stricter than layer 2, while never auto-allowing non-public hosts
+    // or apex domains of leading-dot (subdomain-only) rules.
     const narrowedFallbackAllow =
       hasNarrowing && (data.defaultPermission === "allow" || (data.bridgePublicWeb === true && data.userAllowsPublicWeb === true));
     if (narrowedFallbackAllow) {
       for (const origin of origins) {
         const clean = originOf(String(origin || ""));
         if (!clean) continue;
+        let host = "";
+        try {
+          host = new URL(clean).hostname.toLowerCase();
+        } catch {
+          continue;
+        }
+        if (isNonPublicHost(host)) continue;
         addRules.push({
           id: nextId++,
           priority: 10,
@@ -157,7 +229,17 @@ async function syncDnrRules() {
           condition: { urlFilter: originFilter(clean), tabIds, resourceTypes },
         });
       }
-      const requestDomains = domains.map((domain) => String(domain || "").replace(/^\./, "")).filter(Boolean);
+      const requestDomains = [];
+      const subdomainOnlyBases = [];
+      for (const rawDomain of domains) {
+        const trimmed = String(rawDomain || "").trim().toLowerCase().replace(/\.$/, "");
+        if (!trimmed) continue;
+        const subOnly = trimmed.startsWith(".");
+        const base = subOnly ? trimmed.slice(1) : trimmed;
+        if (!base || isNonPublicHost(base)) continue;
+        requestDomains.push(base);
+        if (subOnly) subdomainOnlyBases.push(base);
+      }
       if (requestDomains.length) {
         addRules.push({
           id: nextId++,
@@ -166,16 +248,39 @@ async function syncDnrRules() {
           condition: { requestDomains, tabIds, resourceTypes },
         });
       }
+      // Block apex hosts for leading-dot subdomain-only rules before cookies leave.
+      for (const base of subdomainOnlyBases) {
+        for (const filter of [
+          `|http://${base}/`,
+          `|https://${base}/`,
+          `|http://${base}:`,
+          `|https://${base}:`,
+          `|http://${base}./`,
+          `|https://${base}./`,
+          `|http://${base}.:`,
+          `|https://${base}.:`,
+        ]) {
+          addRules.push({
+            id: nextId++,
+            priority: 15,
+            action: { type: "block" },
+            condition: { urlFilter: filter, tabIds, resourceTypes },
+          });
+        }
+      }
     }
-    // Priority 20: explicit block/ask overrides always block before sending cookies.
+    // Priority 20: explicit block/ask overrides always block before sending cookies
+    // (including trailing-dot FQDN variants).
     for (const [origin, state] of Object.entries(permissions)) {
       if ((state === "block" || state === "ask") && originOf(origin) === origin) {
-        addRules.push({
-          id: nextId++,
-          priority: 20,
-          action: { type: "block" },
-          condition: { urlFilter: originFilter(origin), tabIds, resourceTypes },
-        });
+        for (const filter of originBlockFilters(origin)) {
+          addRules.push({
+            id: nextId++,
+            priority: 20,
+            action: { type: "block" },
+            condition: { urlFilter: filter, tabIds, resourceTypes },
+          });
+        }
       }
     }
     await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds, addRules });
@@ -185,7 +290,8 @@ async function syncDnrRules() {
 }
 
 async function releaseOwnedTabs() {
-  for (const tabId of Array.from(ownedTabs)) {
+  const released = Array.from(ownedTabs);
+  for (const tabId of released) {
     closingTabs.add(tabId);
     try {
       await chrome.debugger.sendCommand({ tabId }, "Fetch.disable");
@@ -200,7 +306,17 @@ async function releaseOwnedTabs() {
       // Best effort; tab may already be detached or closed.
     }
     forgetSessions(tabId);
+    ownedTabs.delete(tabId);
+    staleTabs.add(tabId);
     closingTabs.delete(tabId);
+  }
+  if (released.length > 0) {
+    const releasedSet = new Set(released);
+    await enqueueOwnedWrite(async () => {
+      const records = await readOwnedRecords();
+      if (records === null) return;
+      await writeOwnedRecords(records.filter((record) => !releasedSet.has(record.tabId)));
+    });
   }
   await enqueueDnrSync();
 }
@@ -365,6 +481,7 @@ async function browserSessionId() {
 }
 
 async function rememberOwned(tabId) {
+  staleTabs.delete(tabId);
   ownedTabs.add(tabId);
   await enqueueOwnedWrite(async () => {
     try {
@@ -385,6 +502,7 @@ async function rememberOwned(tabId) {
 
 async function forgetOwned(tabId) {
   ownedTabs.delete(tabId);
+  staleTabs.delete(tabId);
   await enqueueOwnedWrite(async () => {
     const records = await readOwnedRecords();
     if (records === null) return;
@@ -519,14 +637,36 @@ async function runCheckedGetCookies(target, params) {
   if (urls.length === 0) {
     throw new Error("Network.getCookies requires non-empty urls in bridge mode");
   }
+  let activeUrl = "";
+  if (target.sessionId) {
+    activeUrl = (sessions.get(target.sessionId) || {}).url || "";
+  } else {
+    const tab = await chrome.tabs.get(target.tabId);
+    activeUrl = (tab && tab.url) || "";
+  }
+  const activeOrigin = originOf(activeUrl);
+  if (!activeOrigin) {
+    throw new Error("Network.getCookies requires an active http(s) page origin in bridge mode");
+  }
   const allowedHosts = [];
   for (const rawUrl of urls) {
     const urlStr = String(rawUrl || "");
-    if (!originOf(urlStr)) {
+    const reqOrigin = originOf(urlStr);
+    if (!reqOrigin) {
       throw new Error(`Network.getCookies url is not an allowed http(s) origin: ${stripQueryAndFragment(urlStr)}`);
     }
     await assertPermission(urlStr);
-    allowedHosts.push(new URL(urlStr).hostname.toLowerCase());
+    if (reqOrigin !== activeOrigin) {
+      throw new Error(
+        `Network.getCookies url origin (${reqOrigin}) must match active tab origin (${activeOrigin}) in bridge mode`
+      );
+    }
+    const host = new URL(reqOrigin).hostname.toLowerCase().replace(/\.$/, "");
+    const restricted = await hostRestrictedOverride(host);
+    if (restricted) {
+      permissionError(urlStr, restricted);
+    }
+    allowedHosts.push(host);
   }
   const raw = (await chrome.debugger.sendCommand(target, "Network.getCookies", { urls })) || {};
   const cookies = Array.isArray(raw.cookies) ? raw.cookies : [];
@@ -671,8 +811,8 @@ async function handle(message, sourcePort = port) {
     result = { sessionId: String(tabId) };
   } else if (method === "Target.closeTarget") {
     const tabId = Number(params && params.targetId);
-    const owned = ownedTabs.has(tabId);
-    if (owned) {
+    const closable = ownedTabs.has(tabId) || staleTabs.has(tabId);
+    if (closable) {
       closingTabs.add(tabId);
       try {
         await forgetOwned(tabId);
@@ -683,7 +823,41 @@ async function handle(message, sourcePort = port) {
       }
     }
     // Same shape as CDP: a tab this bridge does not own is not closed, and says so.
-    result = { success: owned };
+    result = { success: closable };
+  } else if (method === "Target.detachFromTarget") {
+    const targetSession = String((params && params.sessionId) || sessionId || "");
+    if (!targetSession) {
+      throw new Error("Target.detachFromTarget requires sessionId");
+    }
+    const child = sessions.get(targetSession);
+    if (child) {
+      sessions.delete(targetSession);
+      try {
+        result =
+          (await chrome.debugger.sendCommand({ tabId: child.tabId }, "Target.detachFromTarget", {
+            sessionId: targetSession,
+          })) || {};
+      } catch {
+        result = {};
+      }
+    } else {
+      const tabId = Number(targetSession);
+      if (ownedTabs.has(tabId)) {
+        closingTabs.add(tabId);
+        try {
+          if (chrome.debugger && chrome.debugger.detach) {
+            await chrome.debugger.detach({ tabId });
+          }
+        } catch {
+          // Best effort; tab may already be detached.
+        } finally {
+          closingTabs.delete(tabId);
+        }
+        forgetSessions(tabId);
+        await forgetOwned(tabId);
+      }
+      result = {};
+    }
   } else if (method === "Target.setAutoAttach") {
     const target = debuggeeFor(sessionId);
     const autoParams = { ...(params || {}), autoAttach: true, flatten: true };
@@ -774,6 +948,13 @@ async function handle(message, sourcePort = port) {
       result = await runCheckedGetCookies(target, params);
     } else if (policy === METHOD_PROBE_SCRIPT) {
       result = await runCheckedProbeScript(target, params);
+    } else if (policy === METHOD_DOWNLOAD_BEHAVIOR) {
+      await assertSessionPermission(target);
+      const behavior = params && params.behavior;
+      if (behavior !== "deny") {
+        throw new Error(`Page.setDownloadBehavior behavior=${behavior} is not allowed in bridge mode`);
+      }
+      result = (await chrome.debugger.sendCommand(target, method, { behavior: "deny" })) || {};
     } else if (policy === METHOD_PLUMBING) {
       result = (await chrome.debugger.sendCommand(target, method, params || {})) || {};
     } else if (policy === METHOD_SITE) {
@@ -1023,6 +1204,10 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 
 if (chrome.webNavigation && chrome.webNavigation.onCommitted) {
   chrome.webNavigation.onCommitted.addListener(async ({ tabId, frameId, url }) => {
+    // Once the user navigates a released tab, permanently relinquish even close-only control.
+    if (frameId === 0 && staleTabs.has(tabId) && !isSafeBlankUrl(url)) {
+      staleTabs.delete(tabId);
+    }
     // No plugin connected: the tab is the user's again, never hijack it.
     if (!port || !ownedTabs.has(tabId) || isSafeBlankUrl(url)) return;
     const state = await permissionFor(url);

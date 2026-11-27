@@ -18,6 +18,7 @@ from ..types import ToolBlock, text_block
 from ._shared import (
     call_value,
     clear_pending_input_releases,
+    display_url,
     eval_value,
     flush_pending_input_releases,
     note_pending_input_release,
@@ -151,8 +152,12 @@ def _http_url_or_empty(raw: Any) -> str:
     candidate = str(raw or "").strip()
     if not candidate:
         return ""
-    if urlsplit(candidate).scheme.lower() in {"http", "https"}:
-        return candidate
+    try:
+        scheme = urlsplit(candidate).scheme.lower()
+    except ValueError:
+        return ""
+    if scheme in {"http", "https"}:
+        return display_url(candidate)
     return ""
 
 

@@ -64,12 +64,23 @@ function storage(initial = {}, options = {}) {
 
 test("originOf keeps only http(s) origins", () => {
   assert.equal(originOf("https://example.com/a?b=1"), "https://example.com");
+  assert.equal(originOf("https://example.com./a"), "https://example.com");
+  assert.equal(originOf("https://example.com../a"), "");
   assert.equal(originOf("https://example.com:443/a"), "https://example.com");
   assert.equal(originOf("http://example.com:80/a"), "http://example.com");
   assert.equal(originOf("http://example.com:8080/a"), "http://example.com:8080");
   assert.equal(originOf("about:blank"), "");
   assert.equal(originOf("chrome-extension://abc/x"), "");
   assert.equal(originOf("not a url"), "");
+});
+
+test("trailing-dot FQDN cannot bypass explicit block or ask overrides", async () => {
+  const store = storage(
+    { "https://bank.example": "block", "https://ask.example": "ask" },
+    { defaultPermission: "allow", userAllowsPublicWeb: true, bridgePublicWeb: true }
+  );
+  assert.equal(await permissionFor("https://bank.example./login", store), "block");
+  assert.equal(await permissionFor("https://ask.example./", store), "ask");
 });
 
 test("unknown origins default to ask", async () => {

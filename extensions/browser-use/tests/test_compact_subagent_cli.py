@@ -73,7 +73,7 @@ def test_full_toolset_remains_default(monkeypatch):
     reloaded = importlib.reload(ext)
     tool_names = {tool.name for tool in reloaded.extension.tools}
     assert reloaded.COMPACT_TOOL_NAMES.issubset(tool_names)
-    assert len(tool_names) == 31
+    assert len(tool_names) == 32
 
 
 @pytest.mark.asyncio
@@ -209,6 +209,9 @@ def test_subagent_install_writes_least_privilege_profile(tmp_path, capsys):
     assert "- filesystem.read" not in content
     assert "- shell" not in content
     assert "- filesystem.write" not in content
+    assert "auto_load_user_agents_skills: false" in content
+    assert "auto_load_cwd_agents_skills: false" in content
+    assert "script_extensions: []" in content
     assert "BROWSER_SESSION_FACTS" in content
 
     # Second install without --force refuses to overwrite.

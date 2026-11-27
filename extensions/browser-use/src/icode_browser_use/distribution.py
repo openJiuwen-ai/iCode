@@ -178,24 +178,28 @@ def install_pack(source: Path, *, config_dir: Path | None = None, replace: bool 
         shutil.rmtree(backup)
     shutil.copytree(source, temporary, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     moved_backup = False
+    replaced = False
     try:
         if target.exists():
             target.rename(backup)
             moved_backup = True
         try:
             os.replace(temporary, target)
+            replaced = True
         except OSError:
             if moved_backup and backup.exists():
                 try:
                     backup.rename(target)
                     moved_backup = False
-                except OSError:
-                    pass
+                except OSError as restore_exc:
+                    raise OSError(
+                        f"failed to install {target} and could not restore backup at {backup}: {restore_exc}"
+                    ) from restore_exc
             raise
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
-        if moved_backup and backup.exists():
+        if replaced and moved_backup and backup.exists():
             shutil.rmtree(backup, ignore_errors=True)
     return target
 
@@ -209,7 +213,13 @@ def uninstall_pack(*, config_dir: Path | None = None) -> list[Path]:
     removed: list[Path] = []
     root = extensions_dir(config_dir)
     for candidate in (root / EXTENSION_ID, root / f"{EXTENSION_ID}.py"):
+        if _is_link_or_junction(candidate):
+            raise ValueError(f"refusing to uninstall symlink/junction {candidate}; remove the link manually")
         if candidate.is_dir():
+            if not (candidate / "__init__.py").is_file():
+                raise ValueError(
+                    f"refusing to uninstall {candidate}: it does not look like an installed extension folder"
+                )
             shutil.rmtree(candidate)
             removed.append(candidate)
         elif candidate.is_file():

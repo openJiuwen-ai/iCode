@@ -35,6 +35,7 @@ EXPECTED_TOOLS = [
     "browser_download_cancel",
     "browser_scroll",
     "browser_extract",
+    "browser_query",
     "browser_logs",
     "browser_network_body",
     "browser_back",

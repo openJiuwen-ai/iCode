@@ -1239,6 +1239,9 @@ async def browser_status(
     lines = [" ".join(parts)]
     if reason:
         lines.append(f"reason: {reason}")
+    popup_warning = str(getattr(session, "popup_guard_warning", "") or "")
+    if popup_warning:
+        lines.append(f"warning: {popup_warning}")
     lines.append(f"next: {next_step}")
     return "\n".join(lines)
 
@@ -1855,6 +1858,47 @@ async def browser_extract(
 
 
 @_tool(requires_approval=False)
+async def browser_query(
+    ctx: ToolContext,
+    browser_id: Annotated[str, "Browser id returned by browser_open"],
+    selector: Annotated[
+        str,
+        "CSS selector matching each item/row/element to query (pierces open Shadow DOM)",
+    ],
+    fields: Annotated[
+        dict[str, str] | None,
+        "Optional mapping of output key -> relative extraction spec, e.g. "
+        "{'title': 'h3', 'price': '.price@exact_text', 'url': 'a@href', 'cells': 'td[]'}",
+    ] = None,
+    root: Annotated[
+        str | None,
+        "Optional container scope: CSS selector (e.g. 'main', '#results') or @eN#epoch ref",
+    ] = None,
+    visible_only: Annotated[
+        bool,
+        "Exclude CSS-hidden elements (display:none / visibility:hidden / opacity:0 / hidden)",
+    ] = True,
+    limit: Annotated[int, "Maximum items to return (1-50)"] = 20,
+    offset: Annotated[int, "0-based start item offset for paging"] = 0,
+    max_chars: Annotated[int, "Maximum total JSON characters (100-7000)"] = 7000,
+) -> str:
+    """Safe, read-only structured DOM query returning bounded JSON records without arbitrary JS."""
+    browser = _get(ctx, browser_id)
+    arguments: dict[str, object] = {
+        "selector": selector,
+        "visible_only": visible_only,
+        "limit": limit,
+        "offset": offset,
+        "max_chars": max_chars,
+    }
+    if fields is not None:
+        arguments["fields"] = fields
+    if root:
+        arguments["root"] = root
+    return await _run(browser, "browser_query", arguments)
+
+
+@_tool(requires_approval=False)
 async def browser_logs(
     ctx: ToolContext,
     browser_id: Annotated[str, "Browser id returned by browser_open"],
@@ -2334,9 +2378,15 @@ async def browser_context(ctx: TurnContext) -> str | None:
     mine = _mine(ctx)
     if mine:
         playbook = COMPACT_BROWSER_PLAYBOOK if _active_toolset() == "compact" else BROWSER_PLAYBOOK
+        warnings = [
+            str(getattr(b.session, "popup_guard_warning", "") or "")
+            for b in mine
+            if getattr(b.session, "popup_guard_warning", "")
+        ]
+        warn_suffix = f" Warning: {warnings[0]}" if warnings else ""
         return (
             f"Open browsers: {len(mine)}. Call browser_list to see open browser_id(s), "
-            "and pass browser_id to browser_* tools. " + playbook
+            "and pass browser_id to browser_* tools. " + playbook + warn_suffix
         )
     recorded = _recoverable(ctx)
     if recorded and _active_toolset() == "full":

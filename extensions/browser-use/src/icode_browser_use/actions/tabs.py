@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..policy import sanitize_display_title
+from ..snapshot.serializer import sanitize_text
 from ..types import ToolBlock, text_block
 from ._shared import display_url, truncate_chars
 
@@ -34,8 +35,9 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         opener = info.opener_id or "-"
         active = getattr(info, "active", None)
         vis = " [foreground]" if active is True else (" [background]" if active is False else "")
+        safe_title = " ".join(sanitize_text(sanitize_display_title(info.title, info.url)).split())
         lines.append(
             f"#{info.index} {marker} tab_id={info.target_id} opener={opener} "
-            f"url={display_url(info.url)} title={truncate_chars(sanitize_display_title(info.title, info.url), 120)}{vis}"
+            f"url={display_url(info.url)} title={truncate_chars(safe_title, 120)}{vis}"
         )
     return [text_block("\n".join(lines))]

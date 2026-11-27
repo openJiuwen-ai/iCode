@@ -218,7 +218,11 @@ test("a history step is checked against its destination, not the current page", 
     }
     return {};
   };
-  localData.sitePermissions = { "https://example.com": "allow", "https://blocked.example": "block" };
+  localData.sitePermissions = {
+    "https://example.com": "allow",
+    "https://example.com:8443": "allow",
+    "https://blocked.example": "block",
+  };
   handle({ id: 60, method: "Bridge.configure", params: { allowedDomains: [] }, leaseId: "lease-h" });
   handle({ id: 61, method: "Target.createTarget", params: { url: "https://example.com/" }, leaseId: "lease-h" });
   await new Promise((resolve) => setTimeout(resolve, 30));
@@ -254,7 +258,11 @@ test("S1: profile-wide CDP methods rejected on about:blank, cookies URL-checked,
     }
     return {};
   };
-  localData.sitePermissions = { "https://example.com": "allow", "https://blocked.example": "block" };
+  localData.sitePermissions = {
+    "https://example.com": "allow",
+    "https://example.com:8443": "allow",
+    "https://blocked.example": "block",
+  };
   handle({ id: 100, method: "Bridge.configure", params: { allowedDomains: [] }, leaseId: "lease-s1" });
   handle({ id: 101, method: "Target.createTarget", params: { url: "about:blank" }, leaseId: "lease-s1" });
   await new Promise((resolve) => setTimeout(resolve, 30));
@@ -267,18 +275,41 @@ test("S1: profile-wide CDP methods rejected on about:blank, cookies URL-checked,
   handle({ id: 106, method: "Network.getCookies", params: {}, sessionId: "31", leaseId: "lease-s1" });
   handle({ id: 107, method: "Page.addScriptToEvaluateOnNewDocument", params: { source: "alert(1)" }, sessionId: "31", leaseId: "lease-s1" });
   handle({ id: 108, method: "Page.addScriptToEvaluateOnNewDocument", params: { source: MUTATION_PROBE }, sessionId: "31", leaseId: "lease-s1" });
+  // On about:blank, Network.getCookies must fail closed (cannot blindly harvest arbitrary origins).
   handle({ id: 109, method: "Network.getCookies", params: { urls: ["https://example.com/app"] }, sessionId: "31", leaseId: "lease-s1" });
   await new Promise((resolve) => setTimeout(resolve, 40));
 
   assert.match(port.messages.find((m) => m.id === 102).error, /not allowed in bridge mode/);
   assert.match(port.messages.find((m) => m.id === 103).error, /not allowed in bridge mode/);
   assert.match(port.messages.find((m) => m.id === 104).error, /not allowed in bridge mode/);
-  assert.match(port.messages.find((m) => m.id === 105).error, /site_blocked/);
+  assert.match(port.messages.find((m) => m.id === 105).error, /active http\(s\) page origin/);
   assert.match(port.messages.find((m) => m.id === 106).error, /non-empty urls/);
   assert.match(port.messages.find((m) => m.id === 107).error, /restricted to the built-in mutation probe/);
   assert.equal(port.messages.find((m) => m.id === 108).error, undefined);
-  const cookiesResp = port.messages.find((m) => m.id === 109).result.cookies;
+  assert.match(port.messages.find((m) => m.id === 109).error, /active http\(s\) page origin/);
+
+  // Once the owned tab is on an allowed http(s) origin, Network.getCookies returns only same-origin cookies,
+  // rejects cross-origin / alternate-port cookie theft, and honors host-wide block overrides across ports.
+  chrome.tabs.get = async (tabId) => ({ id: tabId, windowId: 1, url: "https://example.com/app" });
+  port.messages.length = 0;
+  handle({ id: 110, method: "Network.getCookies", params: { urls: ["https://example.com/app"] }, sessionId: "31", leaseId: "lease-s1" });
+  handle({ id: 1110, method: "Network.getCookies", params: { urls: ["https://blocked.example/"] }, sessionId: "31", leaseId: "lease-s1" });
+  handle({ id: 1111, method: "Network.getCookies", params: { urls: ["https://example.com:8443/app"] }, sessionId: "31", leaseId: "lease-s1" });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const cookiesResp = port.messages.find((m) => m.id === 110).result.cookies;
   assert.deepEqual(cookiesResp, [{ name: "ok", domain: "example.com" }]);
+  assert.match(port.messages.find((m) => m.id === 1110).error, /site_blocked/);
+  assert.match(port.messages.find((m) => m.id === 1111).error, /must match active tab origin/);
+
+  // Alternate-port bypass test: https://blocked.example is blocked; even if active tab is on :8443 under defaultPermission=allow, refuse.
+  localData.defaultPermission = "allow";
+  chrome.tabs.get = async (tabId) => ({ id: tabId, windowId: 1, url: "https://blocked.example:8443/" });
+  port.messages.length = 0;
+  handle({ id: 1112, method: "Network.getCookies", params: { urls: ["https://blocked.example:8443/"] }, sessionId: "31", leaseId: "lease-s1" });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.match(port.messages.find((m) => m.id === 1112).error, /site_blocked/);
+  delete localData.defaultPermission;
+  chrome.tabs.get = async (tabId) => ({ id: tabId, windowId: 1, url: "about:blank" });
 });
 
 test("S2: webNavigation.onCommitted detaches debugger and resets unapproved owned tab", async () => {
@@ -474,7 +505,11 @@ test("page logs of a site the user did not allow are not forwarded", async () =>
     windowId: 1,
     url: tabId === 10 ? "https://blocked.example/secret" : "https://example.com/",
   });
-  localData.sitePermissions = { "https://example.com": "allow", "https://blocked.example": "block" };
+  localData.sitePermissions = {
+    "https://example.com": "allow",
+    "https://example.com:8443": "allow",
+    "https://blocked.example": "block",
+  };
   const methods = () => port.messages.map((message) => JSON.stringify(message));
 
   port.messages.length = 0;
@@ -749,6 +784,136 @@ test("Page.captureScreenshot refuses background tab before calling chrome.debugg
     const fgReply = port.messages.find((m) => m.id === 211);
     assert.equal(fgReply.result.data, "iVBORw0KGgo=");
     assert.deepEqual(sent, ["Page.captureScreenshot"]);
+  } finally {
+    chrome.debugger.sendCommand = origSend;
+    chrome.tabs.get = origGet;
+  }
+});
+
+test("Wave 1: Target.detachFromTarget, Page.setDownloadBehavior deny-only, DNR hardening, and released tab isolation", async () => {
+  const handle = port.onMessage.listeners[0];
+  const onEvent = chrome.debugger.onEvent.listeners[0];
+  const onCommitted = chrome.webNavigation.onCommitted.listeners[0];
+  const origSend = chrome.debugger.sendCommand;
+  const origGet = chrome.tabs.get;
+  const sent = [];
+  chrome.tabs.get = async (tabId) => ({ id: tabId, windowId: 2, url: "https://example.com/page", active: true });
+  chrome.debugger.sendCommand = async (target, method, params) => {
+    sent.push({ target, method, params });
+    return {};
+  };
+  try {
+    // 1. Page.setDownloadBehavior rejects allow/downloadPath and permits only deny.
+    localData.sitePermissions = { "https://example.com": "allow", "https://bank.example": "block" };
+    port.messages.length = 0;
+    sent.length = 0;
+    handle({
+      id: 301,
+      method: "Page.setDownloadBehavior",
+      sessionId: "88",
+      params: { behavior: "allow", downloadPath: "/tmp/pwn" },
+      leaseId: "lease-tab",
+    });
+    handle({
+      id: 302,
+      method: "Page.setDownloadBehavior",
+      sessionId: "88",
+      params: { behavior: "deny" },
+      leaseId: "lease-tab",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.match(port.messages.find((m) => m.id === 301).error, /not allowed in bridge mode/);
+    assert.equal(port.messages.find((m) => m.id === 302).error, undefined);
+    assert.deepEqual(
+      sent.filter((c) => c.method === "Page.setDownloadBehavior").map((c) => c.params),
+      [{ behavior: "deny" }]
+    );
+
+    // 2. Target.detachFromTarget works with top-level sessionId omitted (params.sessionId only).
+    onEvent(
+      { tabId: 88 },
+      "Target.attachedToTarget",
+      { sessionId: "child-detach-1", targetInfo: { targetId: "tgt-detach-1", url: "https://example.com/sub" } }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    port.messages.length = 0;
+    sent.length = 0;
+    handle({
+      id: 303,
+      method: "Target.detachFromTarget",
+      params: { sessionId: "child-detach-1" },
+      leaseId: "lease-tab",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(port.messages.find((m) => m.id === 303).error, undefined);
+    assert.ok(
+      sent.some(
+        (c) =>
+          c.target.tabId === 88 &&
+          c.method === "Target.detachFromTarget" &&
+          c.params &&
+          c.params.sessionId === "child-detach-1"
+      )
+    );
+
+    // 3. DNR rules include trailing-dot Priority-20 blocks, skip loopback under narrowedFallbackAllow,
+    //    block apex of leading-dot .docs.example, and add Priority-5 non-public blocks in publicFallbackAllow.
+    localData.defaultPermission = "allow";
+    handle({
+      id: 304,
+      method: "Bridge.configure",
+      params: { allowedDomains: [".docs.example", "corp.internal"], allowedOrigins: ["http://localhost:3000"] },
+      leaseId: "lease-tab",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.ok(
+      dnrSessionRules.some((r) => r.priority === 20 && r.condition.urlFilter === "|https://bank.example./"),
+      "trailing-dot FQDN must have Priority-20 block rule"
+    );
+    assert.ok(
+      !dnrSessionRules.some((r) => r.action.type === "allow" && r.condition.urlFilter === "|http://localhost:3000/"),
+      "unapproved loopback origin must not get narrowedFallbackAllow rule"
+    );
+    assert.ok(
+      dnrSessionRules.some((r) => r.priority === 15 && r.action.type === "block" && r.condition.urlFilter === "|https://docs.example/"),
+      "leading-dot .docs.example must block apex at Priority 15"
+    );
+    assert.ok(
+      !dnrSessionRules.some((r) => r.condition.requestDomains && r.condition.requestDomains.includes("corp.internal")),
+      "non-public domain must not get narrowedFallbackAllow rule"
+    );
+
+    handle({
+      id: 305,
+      method: "Bridge.configure",
+      params: { allowedDomains: [], publicWeb: true },
+      leaseId: "lease-tab",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.ok(
+      dnrSessionRules.some((r) => r.priority === 5 && r.action.type === "block" && r.condition.urlFilter === "|http://169.254."),
+      "publicFallbackAllow must block non-public hosts at Priority 5"
+    );
+    delete localData.defaultPermission;
+
+    // 4. Disconnect releases owned tab 88 out of ownedTabs: reconnecting cannot drive it,
+    //    and once the user navigates it, Target.closeTarget can no longer close it either.
+    for (const listener of port.onDisconnect.listeners) listener();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    reconnect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    handle({ id: 306, method: "Bridge.configure", params: { allowedDomains: [] }, leaseId: "lease-after-release" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    port.messages.length = 0;
+    handle({ id: 307, method: "Bridge.tabState", params: { targetId: "88" }, leaseId: "lease-after-release" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.match(port.messages.find((m) => m.id === 307).error, /not owned/);
+
+    await onCommitted({ tabId: 88, frameId: 0, url: "https://user-banking.example/" });
+    port.messages.length = 0;
+    handle({ id: 308, method: "Target.closeTarget", params: { targetId: "88" }, leaseId: "lease-after-release" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(port.messages.find((m) => m.id === 308).result, { success: false });
   } finally {
     chrome.debugger.sendCommand = origSend;
     chrome.tabs.get = origGet;

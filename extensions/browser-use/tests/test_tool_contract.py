@@ -21,6 +21,8 @@ NULLABLE_OMISSIONS = {
     ("browser_scroll", "target"),
     ("browser_scroll", "to_text"),
     ("browser_extract", "query"),
+    ("browser_query", "fields"),
+    ("browser_query", "root"),
     ("browser_screenshot", "target"),
 }
 
@@ -170,6 +172,11 @@ def test_native_invoke_parses_and_projects_defaults(native, monkeypatch):
                     "browser_extract",
                     {"query": None, "offset": 7000},
                     {"format": "text", "max_chars": 7000, "offset": 7000},
+                ),
+                (
+                    "browser_query",
+                    {"selector": ".card", "fields": None, "root": None},
+                    {"selector": ".card", "visible_only": True, "limit": 20, "offset": 0, "max_chars": 7000},
                 ),
                 (
                     "browser_network_body",

@@ -104,7 +104,7 @@ If Browser Use reports `browser_stale_ref`, ask the agent to locate the element 
 
 Navigation reports `navigation_status=loaded`, `domcontentloaded`, `committed`, or `unconfirmed` together with phase timings (`nav_ms`, `ready_ms`, `snapshot_ms`). When `domcontentloaded` returns early because slow images or trackers stall `load`, the main document is already readable and `browser_wait_for` can wait for any remaining asynchronous content. If navigation returns `navigation_status=unconfirmed`, the snapshot shows the page the browser observed—ask the agent to check that page before interacting with it.
 
-When reading multiple matching sections from a page, `browser_extract` accepts `max_matches` (up to `5`) to return ranked candidates with visibility and region context in one call.
+When reading multiple matching sections from a page, `browser_extract` accepts `max_matches` (up to `5`) to return ranked candidates with visibility and region context in one call. For structured lists, tables, product cards, links, or exact strings (preserving non-breaking spaces), use the default-enabled read-only `browser_query(selector, fields={...})` tool, which returns bounded valid JSON records and exact counts without executing arbitrary JavaScript.
 
 ## Write an extension
 

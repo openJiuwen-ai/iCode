@@ -27,7 +27,13 @@ from pathlib import Path
 from typing import Any
 
 from .. import __version__
-from .._proc import atomic_write_private, harden_private, pid_alive as _pid_alive, which_trusted
+from .._proc import (
+    atomic_write_private,
+    harden_private,
+    pid_alive as _pid_alive,
+    which_trusted,
+    windows_system_exe,
+)
 from .protocol import PROTOCOL_VERSION
 
 HOST_NAME = "com.chrys.browser"
@@ -349,7 +355,7 @@ def _launch(command: list[str]) -> None:
 
 def _open_folder(path: Path) -> None:
     if sys.platform == "win32":
-        _launch(["explorer", str(path)])
+        _launch([windows_system_exe("explorer.exe"), str(path)])
     elif sys.platform == "darwin":
         _launch(["open", str(path)])
     else:

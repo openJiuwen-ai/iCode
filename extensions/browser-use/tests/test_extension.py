@@ -127,6 +127,7 @@ def test_declares_extension_tools() -> None:
         "browser_download_cancel",
         "browser_scroll",
         "browser_extract",
+        "browser_query",
         "browser_logs",
         "browser_network_body",
         "browser_back",
@@ -1457,6 +1458,8 @@ def test_save_state_archive_survives_ephemeral_sub_agent_close(tmp_path, monkeyp
 
     class FakeClient:
         async def send(self, method: str, params=None, session_id=None, timeout=None):
+            if method == "Page.getFrameTree":
+                return {"frameTree": {"frame": {"url": "https://example.com"}}}
             if method == "Runtime.evaluate":
                 expr = (params or {}).get("expression", "")
                 if "localStorage" in expr:
@@ -1720,6 +1723,8 @@ def test_save_state_isolates_archives_across_slots_and_sessions(tmp_path, monkey
     def fake_client(marker: str):
         class FakeClient:
             async def send(self, method: str, params=None, session_id=None, timeout=None):
+                if method == "Page.getFrameTree":
+                    return {"frameTree": {"frame": {"url": "https://example.com"}}}
                 if method == "Runtime.evaluate":
                     expr = (params or {}).get("expression", "")
                     if "localStorage" in expr:

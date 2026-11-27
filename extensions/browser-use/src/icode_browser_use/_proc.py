@@ -32,10 +32,15 @@ _CACHED_WIN_SID: str | None = None
 _CACHED_WIN_SID_TRIED = False
 
 
+def windows_system_exe(*parts: str) -> str:
+    """Return an absolute executable path under ``%SystemRoot%`` to avoid Windows CWD hijacking."""
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    return str(Path(system_root).joinpath(*parts))
+
+
 def _system32_exe(name: str) -> str:
     """Return an absolute System32 executable path on Windows to avoid CWD hijacking."""
-    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
-    return str(Path(system_root) / "System32" / name)
+    return windows_system_exe("System32", name)
 
 
 def which_trusted(name: str) -> str | None:

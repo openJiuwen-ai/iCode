@@ -30,6 +30,8 @@ BROWSER_PLAYBOOK = (
     "avoid landmark words (navigation, main, settings) as targets: they match several elements; "
     "use the full @eN#epoch ref from the latest snapshot and keep the #epoch; "
     "read page text with browser_extract (omit query for the whole page, or pass @eN#epoch / #element-id; never pass complex CSS selectors); "
+    "for structured lists, tables, product cards, links, or exact strings (preserving NBSP/whitespace), prefer "
+    "browser_query(selector=..., fields={...}) to extract bounded JSON records and exact counts in one read-only call; "
     "to type and send a message use browser_fill(submit=true) in one call, not fill then press_key; "
     "browser_fill also sets native date/time/range/color inputs directly; "
     "use browser_drag(source, target) for drag-and-drop boards/lists and browser_click(..., offset_x, offset_y) for <canvas>/<svg> sub-regions; "

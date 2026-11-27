@@ -52,24 +52,33 @@ _QUERY_RE = re.compile(r"[?#][^\s\"'<>()]*")
 _POSITION_RE = re.compile(r"(?::\d+){1,2}$")
 #: ``user:password@`` or a bare ``token@`` in a URL (matches up to the last ``@`` in authority).
 _USERINFO_RE = re.compile(r"\b((?:https?|wss?|ftp)://)[^/?#\s]+@", re.IGNORECASE)
-#: Multi-cookie headers/assignments (``Cookie: a=1; b=2`` or ``cookie=a=1; b=2``): mask the full value list.
+#: Multi-cookie headers/assignments (``Cookie: a="1"; b=2`` or ``cookie=a=1; b=2``):
+#: mask the entire value list when the value is not itself a JSON-quoted string or object.
 _COOKIE_HEADER_RE = re.compile(
-    r"(\b(?:set-)?cookie)\s*([:=])\s*[^\r\n\"'{}]+",
+    r"(\b(?:set-)?cookie)\s*([:=])\s*(?![\\]?[\"']|\{)[^\r\n{}]+",
     re.IGNORECASE,
 )
-#: A secret word and its value: ``access_token=x``, ``"password": "x \"y\""``, ``{\"token\":\"x\"}``,
+#: ``Authorization: <AnyScheme> <credential>`` (handles Api-Key, NTLM, Negotiate, Bot, OAuth, etc.).
+_AUTH_HEADER_RE = re.compile(
+    r"\b(authorization)\s*[:=]\s*[A-Za-z][A-Za-z0-9._-]{1,24}\s+[^\s,;&\"'}\\]+",
+    re.IGNORECASE,
+)
+#: A secret word (including suffixed compound names like ``secret_key``/``private_key``/``authCode``)
+#: and its value: ``access_token=x``, ``"password": "x \"y\""``, ``{\"token\":\"x\"}``,
 #: ``Authorization: Bearer x``. Supports JSON backslash escapes without backtracking.
 _SECRET_RE = re.compile(
-    r"(token|secret|password|passwd|api[_-]?key|authorization|cookie|signature|credential"
-    r"|session[_-]?id|\bsid|jwt|\bpwd\b|\bauth\b|\bsession\b)"
+    r"((?:token|secret|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key"
+    r"|authorization|cookie|signature|credential|session[_-]?id|jwt|csrf|xsrf)[A-Za-z0-9_-]{0,24}"
+    r"|\bsid\b|\bpwd\b|\bauth(?:[_-]?(?:code|key|token|header|secret|info))?\b"
+    r"|\bsession(?:[_-]?(?:id|key|token))?\b)"
     r"\\?[\"']?\s*[:=]\s*(?:\\?\"(?:\\.|[^\"\\])*\\?\"|'(?:\\.|[^'\\])*'"
-    r"|(?:(?:bearer|basic|token|apikey|digest)\s+)?[^\s,;&\"'}\\]+)",
+    r"|(?:(?:bearer|basic|token|api[-_]?key|digest|ntlm|negotiate|oauth|bot)\s+)?[^\s,;&\"'}\\]+)",
     re.IGNORECASE,
 )
 #: Digest auth parameters (``Digest username="alice", response="..."``): mask the whole parameter list.
 _DIGEST_AUTH_RE = re.compile(r"\b(digest)\s+[A-Za-z0-9_-]+\s*=[^\r\n{}]+", re.IGNORECASE)
 #: Standalone auth credentials (``Bearer eyJ…``, ``Basic dXNlcjpwYXNz``, ``ApiKey k123``, ``Token tok_123``).
-_AUTH_SCHEME_RE = re.compile(r"\b(bearer|basic|apikey|token)\s+([\w.~+/=-]{6,})", re.IGNORECASE)
+_AUTH_SCHEME_RE = re.compile(r"\b(bearer|basic|api[-_]?key|token)\s+([\w.~+/=-]{6,})", re.IGNORECASE)
 #: A bare JWT token anywhere in text (including unsigned/empty-signature ``eyJ... . eyJ... .``).
 _BARE_JWT_RE = re.compile(r"\beyJ[\w-]{4,}\.[\w-]{4,}\.(?:[\w-]{4,}\b)?")
 
@@ -104,6 +113,7 @@ def _redact_secrets(text: str) -> str:
         lambda match: f"{match.group(1)}: ***" if match.group(2) == ":" else f"{match.group(1)}=***",
         text,
     )
+    text = _AUTH_HEADER_RE.sub(lambda match: f"{match.group(1)}=***", text)
     text = _SECRET_RE.sub(lambda match: f"{match.group(1)}=***", text)
     text = _AUTH_SCHEME_RE.sub(_mask_auth_scheme, text)
     text = _BARE_JWT_RE.sub("***", text)
@@ -113,7 +123,7 @@ def _redact_secrets(text: str) -> str:
 def scrub(text: str) -> str:
     """Model-visible form of a stored entry text: query values and secrets masked, then
     the shared redaction (whitespace collapsed, truncated). Linear in the bounded input."""
-    return redact_message(_redact_secrets(text[:_MAX_RAW_TEXT]))
+    return redact_message(_redact_secrets(text[:_MAX_RAW_TEXT]), _already_redacted=True)
 
 
 def scrub_payload(text: str, *, max_raw: int = MAX_PAYLOAD_SCAN) -> str:

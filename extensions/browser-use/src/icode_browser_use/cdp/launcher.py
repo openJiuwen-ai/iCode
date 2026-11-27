@@ -37,7 +37,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Final, Literal, cast
 
-from .._proc import pid_alive, rotate_log_if_needed, which_trusted as _which_trusted, windows_hidden_kwargs
+from .._proc import (
+    _system32_exe,
+    pid_alive,
+    rotate_log_if_needed,
+    which_trusted as _which_trusted,
+    windows_hidden_kwargs,
+    windows_system_exe,
+)
 from ..config import CHROME_READY_TIMEOUT, BrowserConfig
 from ..errors import Unavailable
 from ..logging import log
@@ -526,7 +533,7 @@ def _terminate_windows(pid: int, job: int | None) -> None:
         return
     try:
         result = subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(int(pid))],
+            [_system32_exe("taskkill.exe"), "/F", "/T", "/PID", str(int(pid))],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -852,7 +859,7 @@ def _win_cmdline(pid: int) -> str | None:
     try:
         ps_result = subprocess.run(
             [
-                "powershell",
+                windows_system_exe("System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
@@ -873,7 +880,14 @@ def _win_cmdline(pid: int) -> str | None:
         pass
     try:
         result = subprocess.run(
-            ["wmic", "process", "where", f"ProcessId={int(pid)}", "get", "CommandLine"],
+            [
+                windows_system_exe("System32", "wbem", "WMIC.exe"),
+                "process",
+                "where",
+                f"ProcessId={int(pid)}",
+                "get",
+                "CommandLine",
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",

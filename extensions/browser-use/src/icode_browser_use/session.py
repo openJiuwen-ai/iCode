@@ -454,6 +454,12 @@ class BrowserSession:
         loader = self._frame_loader.get(self._main_frame_id, "")
         return self._document_status.get((self._session_id, self._main_frame_id, loader))
 
+    @property
+    def popup_guard_warning(self) -> str:
+        """Non-empty warning when popup interception is unavailable (e.g. Attach mode)."""
+        policy = self._policy
+        return str(getattr(policy, "popup_guard_warning", "") or "") if policy is not None else ""
+
     def register_oopif(
         self,
         cdp_session_id: str,
@@ -876,6 +882,7 @@ class BrowserSession:
                     download_dir=str(self._download_dir) if self._download_dir is not None else None,
                     owns_session=self._owns_session,
                     route_attach_events=True,
+                    popup_discovery_external=bool(self.cfg.bridge),
                 )
             else:
                 # A recycled page keeps the policy object (and its one set of event
@@ -886,6 +893,7 @@ class BrowserSession:
                     scoped=True,
                     discover_pages=self._transport.owns_browser,
                     download_dir=str(self._download_dir) if self._download_dir is not None else None,
+                    popup_discovery_external=bool(self.cfg.bridge),
                 )
             if not self._transport.owns_browser and self._transport.browser_commands and not self._browser_identity:
                 self._browser_identity = await self._read_browser_identity()

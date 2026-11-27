@@ -38,14 +38,8 @@ PARAMS: dict[str, Any] = {
 }
 
 _NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
-_STATE_EXPR = (
-    "(() => ({"
-    "origin: String(location.origin || ''), "
-    "href: String(location.href || ''), "
-    "storage: JSON.stringify(Object.fromEntries(Object.entries(localStorage)))"
-    "}))()"
-)
-_LS_EXPR = _STATE_EXPR
+_LS_EXPR = "(() => JSON.stringify(Object.fromEntries(Object.entries(localStorage))))()"
+_STATE_EXPR = _LS_EXPR
 
 
 def _is_reserved_name(name: str) -> bool:
@@ -84,7 +78,9 @@ def _strip_userinfo(url: str) -> str:
 
 
 def _write_archive(directory: Path, path: Path, content: str) -> tuple[str, str]:
-    directory.mkdir(parents=True, exist_ok=True)
+    if directory.is_symlink():
+        raise OSError(f"refusing to write archive into symlinked directory: {directory}")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     dir_ok = harden_private(directory, is_dir=True, strict=False)
     file_ok = atomic_write_private(path, content, strict=(sys.platform == "win32"), reject_symlink=True)
     if sys.platform == "win32":
@@ -94,6 +90,30 @@ def _write_archive(directory: Path, path: Path, content: str) -> tuple[str, str]
         dir_note = "目录 0700" if dir_ok else "目录 0700（chmod 不受支持）"
         file_note = "文件 0600" if file_ok else "文件 0600（chmod 不受支持）"
     return dir_note, file_note
+
+
+async def _authoritative_main_frame_url(session: Any, client: Any) -> str:
+    """Read the browser-authoritative main-frame URL from CDP ``Page.getFrameTree``.
+
+    Never derive cookie-export origins from page main-world JS (``window.String``
+    or globals can be overridden by untrusted scripts to steer ``Network.getCookies``
+    toward another origin).
+    """
+    tree = await client.send(
+        "Page.getFrameTree",
+        {},
+        session_id=session.session_id,
+        timeout=session.cfg.cdp_timeout,
+    )
+    if not isinstance(tree, dict):
+        return ""
+    frame_tree = tree.get("frameTree")
+    if not isinstance(frame_tree, dict):
+        return ""
+    frame = frame_tree.get("frame")
+    if not isinstance(frame, dict):
+        return ""
+    return str(frame.get("url") or "").strip()
 
 
 async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
@@ -106,25 +126,11 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         raise BadRequest(f"name 不能使用系统保留设备名：{name!r}")
 
     client = session.require_client()
-    raw_state = await eval_value(session, _STATE_EXPR)
-    if isinstance(raw_state, dict):
-        origin = str(raw_state.get("origin") or "")
-        href = str(raw_state.get("href") or "")
-        storage = _parse_storage(raw_state.get("storage"))
-    else:
-        # Compat fallback for legacy unit test fakes that answer separate localStorage & location.origin probes
-        storage = _parse_storage(raw_state)
-        origin = str(await eval_value(session, "location.origin") or "")
-        href = origin or str(getattr(session.snapshot, "url", "") or "")
-
-    clean_href = (
-        _strip_userinfo(href)
-        or _strip_userinfo(origin)
-        or _strip_userinfo(str(getattr(session.snapshot, "url", "") or ""))
-    )
-    resolved_origin = canonical_origin(origin) or canonical_origin(clean_href)
-    if not resolved_origin or origin == "null":
-        raise BadRequest("无法确定当前 origin，拒绝导出登录态")
+    cdp_url = await _authoritative_main_frame_url(session, client)
+    clean_href = _strip_userinfo(cdp_url)
+    resolved_origin = canonical_origin(clean_href)
+    if not resolved_origin:
+        raise BadRequest("无法从浏览器帧树确认当前 origin，拒绝导出登录态")
 
     parts = urlsplit(clean_href or resolved_origin)
     if not scheme_allowed(parts.scheme):
@@ -133,6 +139,12 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     origins = getattr(session.cfg, "allowed_origins", ())
     if not url_host_allowed(clean_href or resolved_origin, domains, origins):
         raise Blocked(f"当前站点不在允许范围内，拒绝导出登录态：{resolved_origin}", blocked_origin=resolved_origin)
+
+    raw_storage = await eval_value(session, _LS_EXPR)
+    if isinstance(raw_storage, dict):
+        storage = _parse_storage(raw_storage.get("storage"))
+    else:
+        storage = _parse_storage(raw_storage)
 
     cookie_url = clean_href if (clean_href and canonical_origin(clean_href) == resolved_origin) else resolved_origin
     cookies_response = await client.send(
@@ -151,6 +163,8 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
     }
 
     directory = session.cfg.state_archive_dir
+    if directory.is_symlink():
+        raise BadRequest(f"拒绝写入符号链接归档目录：{directory}")
     path = directory / f"{name}.json"
     if path.is_symlink():
         raise BadRequest(f"拒绝写入符号链接目标：{path}")

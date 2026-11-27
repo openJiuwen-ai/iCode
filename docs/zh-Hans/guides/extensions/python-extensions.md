@@ -104,7 +104,7 @@ Hooks 也以同样方式匹配扩展中的工具，例如 `match.tool_kind: exte
 
 导航结果会同时返回阶段耗时（`nav_ms`、`ready_ms`、`snapshot_ms`）与完成状态 `navigation_status=loaded|domcontentloaded|committed|unconfirmed`。当慢图片或第三方资源阻塞 `load` 时，主文档在 `domcontentloaded` 就绪即可先行返回供阅读，需要异步内容时再配合 `browser_wait_for`。如果返回 `navigation_status=unconfirmed`，快照显示的是浏览器实际观察到的页面，请先确认页面状态再继续交互。
 
-需要一次读取多个匹配区块时，可向 `browser_extract` 传入 `max_matches`（上限 `5`），在单次调用中按序返回带可见性与所属区域信息的候选内容。
+需要一次读取多个匹配区块时，可向 `browser_extract` 传入 `max_matches`（上限 `5`），在单次调用中按序返回带可见性与所属区域信息的候选内容。对于列表页、表格、商品卡片、链接集合或需保留原始空格/不间断空格的精确文本，可直接调用默认开放的安全只读工具 `browser_query(selector, fields={...})`，无需开启任意 JS 执行即可单次返回带精确计数且始终合法的受限 JSON。
 
 ## 编写扩展
 

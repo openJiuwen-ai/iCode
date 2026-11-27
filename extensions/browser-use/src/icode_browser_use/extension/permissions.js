@@ -22,8 +22,13 @@ export function originOf(url) {
   if (!url) return "";
   try {
     const parsed = new URL(url);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.origin;
-    return "";
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    let host = parsed.hostname.toLowerCase();
+    if (!host || host.endsWith("..")) return "";
+    if (host.endsWith(".")) host = host.slice(0, -1);
+    if (!host) return "";
+    const port = parsed.port ? `:${parsed.port}` : "";
+    return `${parsed.protocol}//${host}${port}`;
   } catch {
     return "";
   }
@@ -33,8 +38,9 @@ export function stripQueryAndFragment(url) {
   if (!url) return "";
   try {
     const parsed = new URL(url);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return `${parsed.origin}${parsed.pathname}`;
+    const origin = originOf(url);
+    if (origin) {
+      return `${origin}${parsed.pathname}`;
     }
     return `${parsed.protocol}`;
   } catch {
@@ -287,12 +293,37 @@ export async function importPermissions(payload, storage = chrome.storage.local)
 // Methods not listed here (Storage.*, Network.getAllCookies, Browser.*,
 // Target.sendMessageToTarget, Debugger.*, IO.*, Extensions.*, etc.) are
 // rejected even on about:blank.
+export async function hostRestrictedOverride(rawHost, storage = chrome.storage.local) {
+  const host = String(rawHost || "").trim().toLowerCase().replace(/\.$/, "");
+  if (!host) return "block";
+  const permissions = await readPermissions(storage);
+  let sawAsk = false;
+  for (const [entryOrigin, state] of Object.entries(permissions)) {
+    if (state !== "block" && state !== "ask") continue;
+    const cleanOrigin = originOf(entryOrigin);
+    if (!cleanOrigin) continue;
+    let entryHost = "";
+    try {
+      entryHost = new URL(cleanOrigin).hostname.toLowerCase().replace(/\.$/, "");
+    } catch {
+      continue;
+    }
+    if (!entryHost) continue;
+    if (host === entryHost || host.endsWith(`.${entryHost}`)) {
+      if (state === "block") return "block";
+      sawAsk = true;
+    }
+  }
+  return sawAsk ? "ask" : null;
+}
+
 export const METHOD_PLUMBING = "plumbing";
 export const METHOD_SITE = "site";
 export const METHOD_FETCH_ENABLE = "fetch_enable";
 export const METHOD_FETCH_CONTINUE = "fetch_continue";
 export const METHOD_NETWORK_COOKIES = "network_cookies";
 export const METHOD_PROBE_SCRIPT = "probe_script";
+export const METHOD_DOWNLOAD_BEHAVIOR = "download_behavior";
 
 export const BRIDGE_METHODS = new Map([
   // Plumbing (no page content exposed; safe while arming a tab or enforcing policy)
@@ -338,7 +369,7 @@ export const BRIDGE_METHODS = new Map([
   ["Page.getNavigationHistory", METHOD_SITE],
   ["Page.reload", METHOD_SITE],
   ["Page.handleJavaScriptDialog", METHOD_SITE],
-  ["Page.setDownloadBehavior", METHOD_SITE],
+  ["Page.setDownloadBehavior", METHOD_DOWNLOAD_BEHAVIOR],
 ]);
 
 export function methodPolicy(method) {

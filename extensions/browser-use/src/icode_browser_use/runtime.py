@@ -22,6 +22,7 @@ _OBSERVE_TOOLS = frozenset(
         "browser_snapshot",
         "browser_find",
         "browser_extract",
+        "browser_query",
         "browser_screenshot",
         "browser_tabs",
     }

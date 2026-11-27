@@ -31,13 +31,17 @@ _SECRET_RE = re.compile(
 _SPACE_RE = re.compile(r"\s+")
 
 
-def redact_message(raw: Any) -> str:
-    """Collapse control/format characters, mask ``secret=value`` runs, truncate."""
+def redact_message(raw: Any, *, _already_redacted: bool = False) -> str:
+    """Collapse control/format characters, mask secrets/tokens/URLs, truncate."""
     text = "".join(
         " " if unicodedata.category(ch) == "Cf" or ch.isspace() or ord(ch) < 32 or ord(ch) == 127 else ch
         for ch in str(raw or "")[:RAW_LIMIT]
     )
     text = _SPACE_RE.sub(" ", text).strip()
+    if not _already_redacted:
+        from .page_log import _redact_secrets
+
+        text = _redact_secrets(text)
     text = _SECRET_RE.sub(lambda match: f"{match.group(1)}=***", text)
     if len(text) > MESSAGE_LIMIT:
         text = text[:MESSAGE_LIMIT] + f"… (+{len(text) - MESSAGE_LIMIT} chars)"

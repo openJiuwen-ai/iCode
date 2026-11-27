@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..policy import sanitize_display_url
 from ..snapshot.scoring import build_node_index, describe_region
 from ..snapshot.serializer import escape_label, is_hidden, sanitize_text
 from ..types import ToolBlock, text_block
@@ -145,8 +146,17 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         role_text = sanitize_text(str(getattr(node, "role", "") or "-"))
         tag_text = sanitize_text(str(getattr(node, "tag", "") or "-"))
         line = f"- {_token(node)} role={role_text} name={name or '-'} tag={tag_text}"
-        raw_href = str(getattr(node, "href", "") or "")
-        href = escape_label(raw_href, limit=120)
+        raw_href = str(getattr(node, "href", "") or "").strip()
+        if raw_href:
+            if raw_href.startswith("//"):
+                safe_href = sanitize_display_url(f"https:{raw_href}")
+            elif ":" in raw_href.split("/", 1)[0]:
+                safe_href = sanitize_display_url(raw_href)
+            else:
+                safe_href = raw_href.split("?", 1)[0].split("#", 1)[0].split(";", 1)[0]
+        else:
+            safe_href = ""
+        href = escape_label(safe_href, limit=120)
         if href and href != name:
             line += f" href={href}"
         line += _box_size_suffix(node)

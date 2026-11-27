@@ -946,3 +946,24 @@ def test_broker_press_key_pre_dispatch_failures_count_zero_writes(tmp_path, monk
             reloaded._browsers.clear()
 
     asyncio.run(scenario())
+
+
+def test_broker_start_closes_server_and_uses_strict_private_write_on_error(tmp_path, monkeypatch) -> None:
+    """P1-6: BrokerServer.start hardens broker.json with strict=True and closes _server on failure."""
+    seen_kwargs: list[dict[str, object]] = []
+
+    def _failing_write(_path, _content, **kwargs):
+        seen_kwargs.append(dict(kwargs))
+        raise OSError("simulated ACL failure")
+
+    monkeypatch.setattr(broker_module, "atomic_write_private", _failing_write)
+
+    async def scenario() -> None:
+        broker = BrokerServer(_cfg(tmp_path))
+        with pytest.raises(OSError, match="simulated ACL failure"):
+            await broker.start()
+        assert broker._server is None
+        assert broker._lock is None
+        assert seen_kwargs == [{"strict": True, "reject_symlink": True}]
+
+    asyncio.run(scenario())

@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from ._proc import atomic_write_private
+from ._proc import atomic_write_private, harden_private
 from .actions import build_tool_defs
 from .actions._shared import override_call_toolset
 from .bridge.protocol import MAX_TCP_MESSAGE_BYTES, ProtocolError, encode_message, read_async_frame
@@ -119,7 +119,8 @@ class BrokerServer:
         self._last_activity = time.monotonic()
 
     async def start(self) -> None:
-        self.broker_dir.mkdir(parents=True, exist_ok=True)
+        self.broker_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        await asyncio.to_thread(harden_private, self.broker_dir, is_dir=True, strict=True)
         self._lock = await acquire_instance_lock(self.broker_dir, wait=0.0)
         try:
             self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
@@ -143,9 +144,18 @@ class BrokerServer:
                 "cdp_url": self.cfg.cdp_url or "",
                 "upload_roots": [str(p) for p in self.cfg.upload_roots],
             }
-            await asyncio.to_thread(atomic_write_private, self.file, json.dumps(payload), strict=False)
+            await asyncio.to_thread(
+                atomic_write_private,
+                self.file,
+                json.dumps(payload),
+                strict=True,
+                reject_symlink=True,
+            )
             self._sweep_task = asyncio.get_running_loop().create_task(self._sweep())
         except BaseException:
+            if self._server is not None:
+                self._server.close()
+                self._server = None
             self._release_lock()
             raise
 

@@ -419,3 +419,33 @@ def test_foreign_extension_frame_is_detached() -> None:
     )
     assert ("Target.detachFromTarget", {"sessionId": "f1"}) in client.calls
     assert policy.detached_workers == 1
+
+
+def test_scoped_arm_page_denies_downloads_and_attach_sets_popup_guard_warning() -> None:
+    import asyncio
+
+    # Attach mode (scoped=True, discover_pages=False, popup_discovery_external=False):
+    # emits explicit popup guard warning AND denies downloads on every armed page target.
+    attach_policy = NetworkPolicy(("example.com",), resolver=_public)
+    attach_client = FakeClient()
+    attach_policy.attach(attach_client)
+    asyncio.run(attach_policy.bootstrap(attach_client, session_id="s1", scoped=True, discover_pages=False))
+    assert "discover_pages=False" in attach_policy.popup_guard_warning
+
+    attach_client.calls.clear()
+    asyncio.run(attach_policy._arm_child("popup-s2", page=True, target_id="t-popup"))
+    assert ("Page.setDownloadBehavior", {"behavior": "deny"}) in attach_client.calls
+
+    # Bridge mode (popup_discovery_external=True): no Attach warning, still denies downloads on armed pages.
+    bridge_policy = NetworkPolicy(("example.com",), resolver=_public)
+    bridge_client = FakeClient()
+    bridge_policy.attach(bridge_client)
+    asyncio.run(
+        bridge_policy.bootstrap(
+            bridge_client, session_id="s1", scoped=True, discover_pages=False, popup_discovery_external=True
+        )
+    )
+    assert bridge_policy.popup_guard_warning == ""
+    bridge_client.calls.clear()
+    asyncio.run(bridge_policy._arm_child("popup-s3", page=True, target_id="t-popup-3"))
+    assert ("Page.setDownloadBehavior", {"behavior": "deny"}) in bridge_client.calls

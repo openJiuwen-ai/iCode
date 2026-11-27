@@ -339,6 +339,8 @@ class NetworkPolicy:
         self._client: CDPConnection | None = None
         self._armed_sessions: set[str] = set()
         self._arm_lock = asyncio.Lock()
+        self._scoped_deny_downloads = False
+        self.popup_guard_warning = ""
 
     # -------------------------------------------------------------- handlers
 
@@ -472,10 +474,15 @@ class NetworkPolicy:
             log(f"页面恢复失败（fail-closed）：{child_session}")
             await self._fail_page(target_id, child_session, "Runtime.runIfWaitingForDebugger")
             return
-        for method, params in (
+        secondary: list[tuple[str, dict[str, Any] | None]] = [
             ("Network.enable", None),
             ("Network.setBlockedURLs", {"urls": self.blocked_patterns}),
-        ):
+        ]
+        if self._scoped_deny_downloads:
+            # Scoped (Attach/Bridge) sessions cannot set browser-wide download
+            # policy, so deny downloads per armed page target as well.
+            secondary.append(("Page.setDownloadBehavior", {"behavior": "deny"}))
+        for method, params in secondary:
             if await self._send_quiet(method, params, child_session):
                 continue
             self.arm_degraded += 1
@@ -552,6 +559,7 @@ class NetworkPolicy:
         scoped: bool = False,
         discover_pages: bool = False,
         download_dir: str | None = None,
+        popup_discovery_external: bool = False,
     ) -> None:
         """Enable interception on the root session and arm auto-attach.
 
@@ -568,6 +576,16 @@ class NetworkPolicy:
         cancel it. Without it downloads stay denied; scoped (Attach/Bridge) mode
         never changes browser-wide download settings.
         """
+        self._scoped_deny_downloads = bool(scoped and not discover_pages)
+        if scoped and not discover_pages and not popup_discovery_external:
+            self.popup_guard_warning = (
+                "Attach mode runs without browser-level popup discovery (discover_pages=False): "
+                "popups opened by the page may bypass NetworkPolicy and download denial; "
+                "avoid untrusted popup links or use Owned/Bridge mode."
+            )
+            log(f"警告：{self.popup_guard_warning}")
+        else:
+            self.popup_guard_warning = ""
         self._armed_sessions.add(session_id)
         await client.send("Fetch.enable", _FETCH_ENABLE_PARAMS, session_id=session_id, timeout=CDP_TIMEOUT)
         await client.send("Network.enable", None, session_id=session_id, timeout=CDP_TIMEOUT)
@@ -612,6 +630,7 @@ async def install_network_policy(
     download_dir: str | None = None,
     owns_session: Callable[[str, str], bool] | None = None,
     route_attach_events: bool = False,
+    popup_discovery_external: bool = False,
 ) -> NetworkPolicy:
     """Build, attach and bootstrap a :class:`NetworkPolicy` for *client*.
 
@@ -630,5 +649,6 @@ async def install_network_policy(
         scoped=scoped,
         discover_pages=discover_pages,
         download_dir=download_dir,
+        popup_discovery_external=popup_discovery_external,
     )
     return policy

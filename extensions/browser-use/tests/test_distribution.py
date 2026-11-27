@@ -144,3 +144,53 @@ def test_distribution_version_reads_the_entry_point_distribution(monkeypatch):
 
     monkeypatch.setattr(distribution, "wheel_entry_point", lambda: None)
     assert distribution.distribution_version() is None, "a folder or source-tree run has no wheel version"
+
+
+def test_uninstall_pack_refuses_non_extension_dir_and_symlinks(tmp_path):
+    config = tmp_path / "config"
+    bogus = config / "extensions" / distribution.EXTENSION_ID
+    bogus.mkdir(parents=True)
+    (bogus / "user_notes.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not look like an installed extension folder"):
+        distribution.uninstall_pack(config_dir=config)
+    assert (bogus / "user_notes.txt").is_file()
+
+    outside = tmp_path / "outside_repo"
+    outside.mkdir()
+    (outside / "__init__.py").write_text("", encoding="utf-8")
+    (bogus / "user_notes.txt").unlink()
+    bogus.rmdir()
+    try:
+        bogus.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable on this platform/privilege level")
+    with pytest.raises(ValueError, match="symlink/junction"):
+        distribution.uninstall_pack(config_dir=config)
+    assert (outside / "__init__.py").is_file()
+
+
+def test_install_pack_keeps_backup_when_replace_and_rollback_both_fail(tmp_path, monkeypatch):
+    _no_entry_points(monkeypatch)
+    source = _pack(tmp_path / "export")
+    config = tmp_path / "config"
+    existing = _pack(config)
+    (existing / "marker.txt").write_text("original", encoding="utf-8")
+
+    def _boom_replace(_src, _dst):
+        raise OSError("simulated replace failure")
+
+    orig_rename = Path.rename
+
+    def _flaky_rename(self: Path, target: Path):
+        if self.name.endswith(".bak"):
+            raise OSError("simulated rollback failure")
+        return orig_rename(self, target)
+
+    monkeypatch.setattr(distribution.os, "replace", _boom_replace)
+    monkeypatch.setattr(Path, "rename", _flaky_rename)
+    with pytest.raises(OSError, match="could not restore backup"):
+        distribution.install_pack(source, config_dir=config, replace=True)
+    backups = list((config / "extensions").glob(".browser.*.bak"))
+    assert len(backups) == 1
+    assert (backups[0] / "marker.txt").read_text(encoding="utf-8") == "original"

@@ -119,4 +119,17 @@ def _coerce(name: str, spec: dict[str, Any], value: Any) -> Any:
         if upper is not None and len(value) > upper:
             raise BadRequest(f"参数 {name} 最多允许 {upper} 项")
         return list(value)
+    if kind == "object":
+        if not isinstance(value, dict):
+            raise BadRequest(f"参数 {name} 必须是 JSON 对象")
+        max_props = spec.get("maxProperties")
+        if max_props is not None and len(value) > max_props:
+            raise BadRequest(f"参数 {name} 最多允许 {max_props} 个字段")
+        add_props = spec.get("additionalProperties")
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise BadRequest(f"参数 {name} 的键必须是字符串")
+            result[key] = _coerce(f"{name}.{key}", add_props, item) if isinstance(add_props, dict) else item
+        return result
     return value

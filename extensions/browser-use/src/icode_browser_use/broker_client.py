@@ -11,7 +11,7 @@ import subprocess
 from types import SimpleNamespace
 from typing import Any
 
-from ._proc import pid_alive, rotate_log_if_needed, windows_hidden_kwargs
+from ._proc import harden_private, pid_alive, rotate_log_if_needed, windows_hidden_kwargs
 from .bridge.protocol import MAX_TCP_MESSAGE_BYTES, encode_message, read_async_frame
 from .config import BrowserConfig
 from .distribution import broker_command
@@ -406,7 +406,8 @@ class BrokerClient:
                 "sys.executable is not a Python interpreter, so `python -m icode_browser_use.broker` would not "
                 "start a broker. Start `icode-browser-use-broker` yourself, or use the Owned or Attach backend"
             )
-        self.file.parent.mkdir(parents=True, exist_ok=True)
+        self.file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        harden_private(self.file.parent, is_dir=True, strict=False)
         log_path = self.file.parent / "broker.log"
         rotate_log_if_needed(log_path)
         env = {
@@ -424,6 +425,7 @@ class BrokerClient:
             "ICODE_BROWSER_UPLOAD_ROOTS": os.pathsep.join(str(p) for p in self.cfg.upload_roots),
         }
         log = log_path.open("ab")
+        harden_private(log_path, is_dir=False, strict=False)
         try:
             self._child = subprocess.Popen(
                 command,
