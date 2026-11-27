@@ -90,7 +90,8 @@ Deliberately absent: ``rg`` (``--pre`` executes a command), ``less``/``more``
 (interactive ``!`` and ``LESSOPEN``), ``tree`` (``-o`` writes a file), ``date``
 (``-s`` sets the clock), ``hostname`` (a bare argument sets the name), ``jq``
 (``env``/``$ENV`` reads the environment, and ``-f``/``-L`` read files), ``ps``
-(some options print another process's environment), ``cd`` and ``type`` (shell
+(some options print another process's environment), ``go version`` (the Go
+toolchain may download a module-selected version), ``cd`` and ``type`` (shell
 builtins), and every command whose option surface is large enough to need the
 validators in ``readonly.commands`` (git, sed, awk, find, env, xargs, sort,
 uniq, python/node/curl version probes, ...).

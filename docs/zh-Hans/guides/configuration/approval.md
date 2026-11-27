@@ -127,7 +127,7 @@ icode approval clear --all                   # 全部删除
 - 单条、简单且不访问敏感目标的 POSIX Shell 命令，例如 `ls`、`cat`、`grep`。
 - 工作目录 Git 仓库内、且不访问敏感目标的文件写入。
 
-自动放行的范围被有意收窄：命令中不能包含管道、重定向、通配符、变量或命令替换、花括号或波浪号展开，以及其他会改变传给程序的实际参数的 Shell 语法；引号内的字面文本可以保留。包含上述任一结构的命令都需要审批。PowerShell 和 `cmd` Shell 命令目前一律需要审批。即使命令名看起来只读，只要它可以启动其他程序、读取密钥或改变系统状态，也不会自动放行，例如 `rg --pre`、`less`、`more`、`tree -o`、`date -s`、`hostname` 和 `jq`。`ps` 仅放行普通的进程列表形式；`pytest` 一律需要审批，因为旧版本的版本查询也可能加载项目代码；`git status`、工作区 `git diff` 或 `git describe --dirty` 也需要审批，因为 Git 可能运行已配置的 clean 或 process 过滤器。自动放行的 Git 命令会保留用户的全局和系统 Git 配置（包括 `GIT_CONFIG_GLOBAL`），但会固定可执行配置项。`read_only` Shell 过滤器是另一套尽力而为的过滤规则，不是审批边界；参阅[智能体配置参考](../../reference/agent-profile.md#tools)。
+自动放行的范围被有意收窄：命令中不能包含管道、重定向、通配符、变量或命令替换、花括号或波浪号展开，以及其他会改变传给程序的实际参数的 Shell 语法；引号内的字面文本可以保留。包含上述任一结构的命令都需要审批。PowerShell 和 `cmd` Shell 命令目前一律需要审批。即使命令名看起来只读，只要它可以启动其他程序、读取密钥或改变系统状态，也不会自动放行，例如 `rg --pre`、`less`、`more`、`tree -o`、`date -s`、`hostname`、`jq` 和 `go version`（Go 工具链可能下载 go.mod 指定的版本）。`ps` 仅放行普通的进程列表形式；`pytest` 一律需要审批，因为旧版本的版本查询也可能加载项目代码；`git status`、工作区 `git diff` 或 `git describe --dirty` 也需要审批，因为 Git 可能运行已配置的 clean 或 process 过滤器。自动放行的 Git 命令会保留用户的全局和系统 Git 配置（包括 `GIT_CONFIG_GLOBAL`），但会固定可执行配置项。`read_only` Shell 过滤器是另一套尽力而为的过滤规则，不是审批边界；参阅[智能体配置参考](../../reference/agent-profile.md#tools)。
 
 Shell 命令和文件读写访问 `.env`、凭据、私钥等敏感目标时，即使操作只读取文件或写入 Git 工作目录，也仍会进入审批流程。该保护适用于“手动”和“自动”模式；“绕过”模式会跳过这些审批保护。
 
