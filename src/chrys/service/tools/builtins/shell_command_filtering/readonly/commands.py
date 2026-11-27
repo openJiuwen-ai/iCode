@@ -12,7 +12,6 @@ _VERSION_HELP_ARGS_BY_COMMAND = {
     "cargo": frozenset({("--version",), ("-V",), ("--help",), ("-h",), ("help",), ("version",)}),
     "curl": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "dotnet": frozenset({("--version",), ("--info",), ("--list-sdks",), ("--list-runtimes",), ("--help",), ("-h",)}),
-    "go": frozenset({("version",), ("help",)}),
     "java": frozenset({("-version",), ("--version",), ("-help",), ("--help",), ("-h",)}),
     "mypy": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "node": frozenset({("--version",), ("-v",), ("--help",), ("-h",)}),
@@ -58,7 +57,7 @@ _UNIQ_OPTIONS_NO_VALUE = frozenset(
     }
 )
 _UNIQ_OPTIONS_WITH_VALUE = frozenset({"-f", "--skip-fields", "-s", "--skip-chars", "-w", "--check-chars"})
-_PS_SAFE_ARGS = frozenset({(), ("aux",), ("-e",), ("-ef",), ("-f",), ("-l",)})
+_PS_SAFE_ARGS = frozenset({(), ("aux",), ("-f",), ("-l",)})
 """``ps`` forms that only list process metadata; ``e``/``E``/``-o`` can print environments."""
 _UNIQ_OPTION_PREFIXES_WITH_VALUE = ("-f", "-s", "-w", "--skip-fields=", "--skip-chars=", "--check-chars=")
 _SED_PRINT_SCRIPT_RE = re.compile(r"^(?:\d+|\$)?(?:,(?:\d+|\$))?[p=]$")
@@ -149,7 +148,9 @@ def _is_safe_ruff(args: list[str]) -> bool:
             sub_args, _RUFF_NON_FIXING_CHECK_ARGS
         )
     if subcommand == "format":
-        return _has_arg(sub_args, "--check") or _has_arg(sub_args, "--diff")
+        return (_has_arg(sub_args, "--check") or _has_arg(sub_args, "--diff")) and _has_any_ruff_arg(
+            sub_args, _RUFF_NO_CACHE_ARGS
+        )
     return False
 
 

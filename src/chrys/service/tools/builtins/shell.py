@@ -1198,6 +1198,23 @@ class ShellTools:
             if workdir:
                 return _workdir_not_found(exc.path, workdir)
             return working_dir_missing_error(exc.path)
+        except PermissionError:
+            _record_shell_error()
+            if argv:
+                # Direct exec reports an unexecutable file at spawn time. The
+                # shell path would print ``permission denied`` and exit 126.
+                executable = argv[0]
+                _record_shell_exit_code(126)
+                return tool_error(
+                    "command_not_executable",
+                    f"command not executable — {executable}\n[exit_code: 126]",
+                    details={"command": command, "executable": executable},
+                )
+            return tool_error(
+                "shell_not_executable",
+                f"shell not executable at {shell.path}",
+                details={"shell_path": shell.path},
+            )
         except FileNotFoundError:
             _record_shell_error()
             if argv:

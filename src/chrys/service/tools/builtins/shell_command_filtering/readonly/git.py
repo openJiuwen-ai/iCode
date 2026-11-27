@@ -90,6 +90,7 @@ _GIT_LOG_FLAGS = (
 )
 _GIT_DESCRIBE_FLAGS = frozenset(
     {
+        "--abbrev",
         "--always",
         "--all",
         "--contains",
@@ -100,7 +101,7 @@ _GIT_DESCRIBE_FLAGS = frozenset(
         "--tags",
     }
 )
-_GIT_DESCRIBE_OPTIONS_WITH_VALUE = frozenset({"--abbrev", "--candidates", "--exclude", "--match"})
+_GIT_DESCRIBE_OPTIONS_WITH_VALUE = frozenset({"--candidates", "--exclude", "--match"})
 _GIT_DESCRIBE_OPTION_PREFIXES = ("--abbrev=", "--candidates=", "--exclude=", "--match=")
 _GIT_GREP_FLAGS = frozenset(
     {

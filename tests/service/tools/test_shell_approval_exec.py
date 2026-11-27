@@ -86,6 +86,27 @@ async def test_missing_direct_executable_reports_command_not_found(monkeypatch: 
     assert "shell not found" not in result
 
 
+async def test_unexecutable_direct_binary_keeps_shell_exit_126(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An auto-approved file without execute permission is not a missing shell."""
+
+    async def denied_spawn(command, shell, cwd, *, direct_argv=None, sanitized=False):
+        raise PermissionError(13, "Permission denied", direct_argv[0] if direct_argv else command)
+
+    monkeypatch.setattr(shell_module, "_spawn_pty", denied_spawn)
+    monkeypatch.setattr(shell_module, "_spawn_pipe", denied_spawn)
+    metadata: dict[str, object] = {}
+    token = shell_result_metadata.set(metadata)
+    try:
+        result = await _shell().execute("md5sum README.md", reason="test")
+    finally:
+        shell_result_metadata.reset(token)
+
+    assert "command not executable — md5sum" in result
+    assert "[exit_code: 126]" in result
+    assert metadata[SHELL_EXIT_CODE_METADATA_KEY] == 126
+    assert "shell not executable" not in result
+
+
 @pytest.mark.parametrize(
     "command",
     [
