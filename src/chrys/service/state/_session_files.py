@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 from chrys.foundation.models.workdir_migration import BackupOriginal, ReportReadError, source_edit
 from chrys.foundation.platform.files import _atomic_write_bytes as _common_atomic_write_bytes
 from chrys.foundation.platform.files import atomic_write_text as _common_atomic_write_text
-from chrys.foundation.platform.files import require_writable_file
+from chrys.foundation.platform.files import read_bytes_with_retry, require_writable_file
 from chrys.foundation.util.lock import FileLock as FileLock
 from chrys.foundation.util.session_ids import session_short_id as _session_short_id
 from chrys.service.state.session_mru import SESSION_MRU_FILE_NAME
@@ -135,7 +135,7 @@ def _ensure_lock_parent(path: Path) -> None:
 
 def atomic_copy_file(source: Path, dest: Path) -> None:
     """Copy *source* to *dest* without ever exposing a partial destination."""
-    _common_atomic_write_bytes(dest, source.read_bytes())
+    _common_atomic_write_bytes(dest, read_bytes_with_retry(source))
 
 
 def _atomic_write_text(path: Path, payload: str, *, encoding: str = "utf-8") -> bytes:
@@ -149,7 +149,7 @@ def dump_session_envelope(envelope: dict[str, Any]) -> str:
 
 def read_session_envelope(path: Path, *, probe_legacy_source: bool = False) -> tuple[bytes, dict[str, Any] | None]:
     """Read a session file using normal filesystem access, including symlink resolution."""
-    raw = path.read_bytes()
+    raw = read_bytes_with_retry(path)
     # Session writers spell both tokens literally. Escapes can hide either token in imported JSON.
     if probe_legacy_source and (b'"source_kind"' not in raw or b'"project"' not in raw) and b"\\u" not in raw:
         return raw, None

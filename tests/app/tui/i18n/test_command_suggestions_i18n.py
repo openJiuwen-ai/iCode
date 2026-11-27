@@ -62,6 +62,43 @@ def test_command_description_suggestions_render_current_locale() -> None:
     assert format_message(localized_command.description) == "Start a new session"
 
 
+@pytest.mark.parametrize(("locale", "summary_text"), [("en", "compaction summaries"), ("zh-Hans", "压缩摘要")])
+@pytest.mark.parametrize("surface", ["suggestion", "manual"])
+def test_fold_suggestion_and_manual_include_compaction_summaries(
+    locale: str, summary_text: str, surface: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = LocaleController(Settings(locale=locale))
+    handler = _suggestion_handler(controller)
+    handler.build_slash_commands()
+    popup = MagicMock()
+    popup.is_attached = False
+    monkeypatch.setattr(handler, "_view", popup)
+    handler._suggestion_mode = "commands"
+    handler.on_text_changed("/fo")
+    items = popup.update_suggestions.call_args.args[0]
+    fold_item = next(item for item in items if item.value == "fold")
+    if surface == "suggestion":
+        assert summary_text in fold_item.label.plain
+        return
+
+    pages: list[ManPageSpec] = []
+    actions = MagicMock()
+    actions.show_man_pages.side_effect = lambda specs, *, start_index=0: pages.extend(specs[start_index:])
+    registry = MainSlashCommandRegistry(
+        actions=actions,
+        buddy=BuddyCommandController(MagicMock(), render_message=controller.localizer.render),
+        render_message=controller.localizer.render,
+    )
+    man = next(command for command in registry.build() if command.name == "man")
+    man.action("fold")
+    page = pages[0]
+    monkeypatch.setattr(man_page_module, "widget_localizer", lambda _widget: controller.localizer)
+    manual = ManPageDialog([page])._render_page(page)
+    # Check the body separately: the command's description also appears in NAME.
+    body = manual.split("DESCRIPTION" if locale == "en" else "说明", 1)[1]
+    assert summary_text in " ".join(body.split())
+
+
 def test_completion_labels_localize_without_changing_values() -> None:
     localizer = Localizer("zh-Hans")
     actions = MagicMock()
@@ -169,7 +206,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
         "  /language     - Set display language\n"
         "  /chdir        - Change working directory\n"
         "  /copy         - Copy agent, user, or all turns to clipboard\n"
-        "  /fold         - Toggle collapse on activity, tool groups and thinking\n"
+        "  /fold         - Toggle collapse on activity, tool groups, thinking, text between tool calls and compaction summaries\n"
         "  /diff         - View file changes for the current session\n"
         "  /rollback     - Discard recent turns or discard starting from a turn\n"
         "  /approval     - Switch approval mode: manual → auto → bypass\n"

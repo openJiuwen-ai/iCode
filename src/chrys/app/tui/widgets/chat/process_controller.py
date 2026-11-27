@@ -31,11 +31,13 @@ from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chat.transcript_panel import note_fold
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
 
 class ProcessHost(Protocol):
     def current_turn_children(self) -> list[Widget]: ...
+
+    def transcript_content_children(self) -> list[Widget]: ...
 
     async def mount_transcript_widget(self, widget: Widget) -> bool: ...
 
@@ -85,6 +87,8 @@ def process_entry(widget: Widget) -> ProcessEntry:
     if isinstance(widget, AgentMessage):
         if widget.is_status:
             return ProcessEntry("failure")
+        if widget.is_structured_completion:
+            return ProcessEntry("completion")
         return ProcessEntry("answer" if widget.is_process_final else "intermediate")
     if isinstance(widget, ToolGroup):
         return ProcessEntry("tool")
@@ -115,11 +119,20 @@ class ProcessController:
         self._active_row: LiveProcessRow | None = None
         self._segment_start: Widget | None = None
         self._released_rows: list[LiveProcessRow] = []
+        self._resume_anchor: ProcessBlock | LiveProcessMember | None = None
+        # A stop before the prompt mounts releases the row without rebuilding its title yet.
+        self._resumed_title_members: WeakSet[LiveProcessMember] = WeakSet()
+        self._continued = False
+        self._pending_turn_end: tuple[ref[Widget], bool] | None = None
 
     def clear(self) -> None:
         # The panel removes all children itself.
         self._release_live_rows(reveal_members=False)
         self._released_rows.clear()
+        self._resume_anchor = None
+        self._resumed_title_members.clear()
+        self._continued = False
+        self._pending_turn_end = None
         self._completed.clear()
         self._blocks.clear()
         self._owners.clear()
@@ -129,15 +142,27 @@ class ProcessController:
     def new_members_collapsed(self) -> bool:
         return self._active_row is None or self._active_row.collapsed
 
-    def folded_live_rows(self) -> Iterator[LiveProcessRow]:
-        """Yield the previews that can represent hidden work while waiting."""
-        return (row for row in self._live_rows if row.collapsed and row.display and row.parent is self._host)
+    def waiting_live_rows(self) -> Iterator[LiveProcessRow]:
+        """Yield the rows that cover a wait, including an open title before its first new step."""
+        return (
+            row
+            for row in self._live_rows
+            if (row.collapsed or row.resumed) and row.display and row.parent is self._host
+        )
 
     def begin_segment(self, start: Widget) -> None:
         self.seal_segment()
         self._segment_start = start
 
     async def _mount_live_header(self, row: LiveProcessRow, *, before: AgentMessage | None = None) -> bool:
+        anchor, self._resume_anchor = self._resume_anchor, None
+        if anchor is not None:
+            placed = await self._host.place_transcript_entry(row, anchor, before=True)
+            if isinstance(anchor, ProcessBlock):
+                self._host.forget_transcript_widget(anchor)
+                await remove_all_shielded([anchor])
+            if placed or row.is_attached:
+                return placed
         if self._segment_start is not None:
             return await self._host.place_transcript_entry(row, self._segment_start)
         # A continued run starts after the steps already left in the transcript.
@@ -188,10 +213,123 @@ class ProcessController:
         if row is None:
             row = self._active_row = LiveProcessRow()
             self._live_rows.append(row)
+            if self._segment_start is None:
+                self._resume_stopped_segment(row)
         if self.owner_of(member) is row:
             return row, False
         row.answering = answer
         row.summarize_answer_preview = True
+        self._join_row(row, member)
+        self._update_live_row(row)
+        return row, new
+
+    def continue_stopped_turn(self) -> None:
+        """The next work belongs to the turn that just stopped.
+
+        An end it deferred until its prompt loads is no longer its end: it ends again later and is planned then.
+        """
+        self._continued = True
+        if (pending := self._pending_turn_end) is not None and pending[0]() in self._host.current_turn_children():
+            self._pending_turn_end = None
+
+    async def resume_stopped_title(self) -> None:
+        """Take over the stopped title when Continue starts or the title finishes replaying."""
+        if not self._continued or self._segment_start is not None:
+            return
+        row = self._active_row
+        if row is None:
+            row = LiveProcessRow()
+        elif row.stopped_members or not row.is_attached or row._pruning:
+            return
+        self._resume_stopped_segment(row)
+        if self._resume_anchor is None:
+            return
+        if self._active_row is None:
+            self._active_row = row
+            self._live_rows.append(row)
+        if not await self._mount_live_header(row):
+            self._release_live_rows(reveal_members=True)
+            await self.remove_released_rows()
+            return
+        self._update_live_row(row)
+        self._host.process_members_changed()
+
+    async def resume_replayed_title(self) -> None:
+        """Merge a late title into the continuation's first row even after guidance sealed it."""
+        if not self._live_rows or not (row := self._live_rows[0]).settled:
+            await self.resume_stopped_title()
+            return
+        if row.stopped_members or not row.is_attached or row._pruning:
+            return
+        self._resume_stopped_segment(row)
+        if self._resume_anchor is not None and await self._mount_live_header(row):
+            self._stop_live_preview(row)
+            row.settle()
+            self._host.process_members_changed()
+
+    def _resume_stopped_segment(self, row: LiveProcessRow) -> None:
+        """A continued run carries on in the segment it stopped in: that segment's title becomes *row* again."""
+        if not self._continued:
+            return
+        widgets = self._turn_occurrences()
+        if row.settled:
+            if row.latest not in widgets:
+                return
+            # Keep the search above the boundary that sealed this row.
+            widgets = widgets[: widgets.index(row.latest) + 1]
+        tail: list[LiveProcessMember] = []
+        block: ProcessBlock | None = None
+        answering: AgentMessage | None = None
+        for entry in reversed(widgets):
+            if isinstance(entry, (UserMessage, CompactionCard, ContextFoldWidget)):
+                break
+            owner = self.owner_of(entry)
+            if isinstance(owner, ProcessBlock) and owner in self._blocks and owner.is_attached:
+                block = owner
+                break
+            if isinstance(entry, AgentMessage) and entry.is_provisional:
+                if answering is None:
+                    answering = entry
+                continue
+            # An earlier Continue may have stopped while its prompt still replayed.
+            # Its steps are mounted after the old title but have not been folded into it yet.
+            if owner is None and (
+                isinstance(entry, (ThinkingMessage, ToolGroup))
+                or (isinstance(entry, AgentMessage) and process_entry(entry).kind == "intermediate")
+            ):
+                tail.append(entry)
+
+        if block is None:
+            if self._resumed_title_members.isdisjoint(tail):
+                return
+            # Another Continue can start before replay has rebuilt the title we took over.
+            self._resume_anchor = tail[-1]
+            members: Iterable[ProcessMember] = reversed(tail)
+        else:
+            self._blocks.discard(block)
+            self._resume_anchor = block
+            self._resumed_title_members.clear()
+            if not row.is_attached:
+                row.collapsed = block.collapsed
+            members = (*block.members, *reversed(tail))
+        if row.answering is None:
+            row.answering = answering
+        for member in members:
+            self._owners.pop(member, None)
+            if not member.is_attached:
+                continue
+            if isinstance(member, (AgentMessage, ThinkingMessage, ToolGroup)):
+                opened = not member.collapsed
+                self._join_row(row, member)
+                row.stopped_members.add(member)
+                # A step the user opened under the folded title stays open inside it.
+                member.collapsed = not opened
+            else:
+                # An earlier notice a replay folded shows again, as notices do while a turn runs.
+                member.set_process_hidden(False)
+        self._resumed_title_members.update(row.stopped_members)
+
+    def _join_row(self, row: LiveProcessRow, member: LiveProcessMember) -> None:
         if member.live_status_animates:
             row.running_members.add(member)
         # A streamed answer can settle after a later member has already mounted.
@@ -211,8 +349,6 @@ class ProcessController:
             row.set_group_tally(member, member.tool_tally)
         member.set_live_status_reporting(True)
         self._sync_member_visibility(row, member)
-        self._update_live_row(row)
-        return row, new
 
     def seal_segment(self) -> None:
         """Keep this segment interactive with a frozen activity preview."""
@@ -274,6 +410,7 @@ class ProcessController:
                 changed.setdefault(row, row.latest)
                 self._owners.pop(member, None)
                 row.members.remove(member)
+                row.stopped_members.discard(member)
                 row.running_members.discard(member)
                 if isinstance(member, ToolGroup):
                     member.live_process_state_changed = None
@@ -284,6 +421,7 @@ class ProcessController:
         for row, old_latest in changed.items():
             if row.members:
                 if row.settled:
+                    row.summarized = row.resumed
                     row.update_status(resample=row.latest is not old_latest)
                 else:
                     self._update_live_row(row)
@@ -313,6 +451,28 @@ class ProcessController:
                 if isinstance(member, AgentMessage) and member.segment_ids & segment_ids
             ]
         )
+
+    async def forget_removed_members(self, removed: Iterable[Widget]) -> None:
+        """Drop members a withdrawal or a turn cleanup removed; a title left with none goes too."""
+        members = set(removed)
+        blocks = {owner for member in members if isinstance(owner := self.owner_of(member), ProcessBlock)}
+        emptied: list[ProcessBlock] = []
+        for block in blocks:
+            for member in block.members:
+                if member in members and self.owner_of(member) is block:
+                    self._owners.pop(member, None)
+            block.members = [member for member in block.members if member not in members]
+            if block.members:
+                block.tally = process_tally(block.members)
+                block.refresh(layout=False)
+            else:
+                self._blocks.discard(block)
+                self._host.forget_transcript_widget(block)
+                emptied.append(block)
+        if emptied:
+            await remove_all_shielded(emptied)
+        if blocks:
+            self._host.process_members_changed()
 
     def owner_of(self, member: Widget) -> ProcessBlock | LiveProcessRow | None:
         reference = self._owners.get(member) if isinstance(member, ProcessMember) else None
@@ -351,7 +511,9 @@ class ProcessController:
     @staticmethod
     def _sync_live_summary(row: LiveProcessRow) -> None:
         row.summarized = (
-            row.collapsed and row.answering is not None and row.summarize_answer_preview and not row.running_members
+            row.collapsed
+            and (row.resumed or (row.answering is not None and row.summarize_answer_preview))
+            and not row.running_members
         )
 
     def refresh_localization(self) -> None:
@@ -385,7 +547,8 @@ class ProcessController:
                 focused = member.app.focused
                 if focused is not None and (focused is member or member in focused.ancestors):
                     member.screen.set_focus(None, scroll_visible=False)
-            member.collapsed = True
+            if isinstance(member, ToolGroup) or member.foldable:
+                member.collapsed = True
         if hidden and member.is_attached and member.display:
             note_fold(member)
         member.set_process_hidden(hidden)
@@ -417,14 +580,14 @@ class ProcessController:
         self._replay_failures_after.update(preceding_widgets)
 
     def _plan(
-        self, widgets: list[Widget], *, protect_last_turn: bool = False
+        self, widgets: list[Widget], *, protect_last_turn: bool = False, stopped_after: Widget | None = None
     ) -> tuple[dict[Widget, ProcessBlock], dict[Widget, tuple[Widget, Widget]]]:
         headers: dict[Widget, ProcessBlock] = {}
         answers: dict[Widget, tuple[Widget, Widget]] = {}
         segments = plan_process_segments(
             [
                 replace(process_entry(widget), failure_after=True)
-                if widget in self._replay_failures_after
+                if widget is stopped_after or widget in self._replay_failures_after
                 else process_entry(widget)
                 for widget in widgets
             ],
@@ -434,9 +597,8 @@ class ProcessController:
             if not segment.fold:
                 continue
             anchor = widgets[segment.anchor]
-            if segment.answer is not None:
-                tail = segment.members[-1] if segment.members else segment.anchor
-                answers[anchor] = (widgets[segment.answer], widgets[tail])
+            if segment.answer is not None and segment.answer_after is not None:
+                answers[anchor] = (widgets[segment.answer], widgets[segment.answer_after])
             if anchor in self._completed:
                 continue
             if not segment.members:
@@ -466,11 +628,104 @@ class ProcessController:
             self._owners[member] = ref(block)
         block.try_finalize_fold()
 
-    async def complete_live(self) -> None:
+    async def complete_live(
+        self, fold_choice: Callable[[], bool | None] | None = None, *, late_injection: bool = False
+    ) -> None:
         widgets = self._turn_occurrences()
-        if not widgets or not isinstance(widgets[0], UserMessage):
+        if late_injection and (pending := self._pending_turn_end) is not None:
+            end, stopped = pending
+            # A consumed note can arrive after the final reply but before the original prompt.
+            # Include it in the deferred plan so the reply moves below it when the prompt mounts.
+            if not stopped and end() in widgets and isinstance(note := widgets[-1], UserMessage) and note.is_injection:
+                self._pending_turn_end = (ref(note), False)
+                return
+        if self._continued:
+            self._continued = False
+            if not widgets or not isinstance(widgets[0], UserMessage) or widgets[0].is_injection:
+                self._defer_turn_end(widgets)
+                return
+            await self._replan_turn(widgets, fold_choice)
             return
-        headers, answers = self._plan(widgets)
+        if not widgets or not isinstance(widgets[0], UserMessage) or widgets[0].is_injection:
+            return
+        await self._mount_plan(widgets)
+
+    def _defer_turn_end(self, widgets: list[Widget]) -> None:
+        """Plan the turn once its prompt has mounted, ending at its last step.
+
+        Its ending notice can go before then (a new prompt removes it), so the step it followed
+        remembers that the turn stopped, as a replay remembers an omitted notice.
+        """
+        steps = [widget for widget in widgets if process_entry(widget).kind != "failure"]
+        if not steps:
+            self._pending_turn_end = None
+            return
+        end = steps[-1]
+        self._pending_turn_end = (ref(end), widgets[-1] is not end)
+
+    async def complete_replayed_turn(self, fold_choice: Callable[[], bool | None]) -> bool:
+        """Replan a continuation that finished before its original prompt mounted."""
+        if self._pending_turn_end is None:
+            return False
+        pending, stopped = self._pending_turn_end
+        end = pending()
+        if end is None or not end.is_attached or (end_occurrence := self._host.transcript_occurrence(end)) is None:
+            self._pending_turn_end = None
+            return False
+        # Display order can move an answer within a turn but keeps its prompt first.
+        occurrences: list[tuple[int, Widget]] = []
+        for entry in reversed(self._host.transcript_content_children()):
+            if not entry.is_attached or isinstance(entry, (LiveProcessRow, ProcessBlock)):
+                continue
+            occurrence = self._host.transcript_occurrence(entry)
+            if occurrence is None or occurrence > end_occurrence:
+                continue
+            occurrences.append((occurrence, entry))
+            if isinstance(entry, UserMessage) and not entry.is_injection:
+                self._pending_turn_end = None
+                occurrences.sort(key=lambda item: item[0])
+                widgets = [widget for _, widget in occurrences]
+                await self._replan_turn(widgets, fold_choice, stopped_after=end if stopped else None)
+                return True
+        return False
+
+    async def _replan_turn(
+        self,
+        widgets: list[Widget],
+        fold_choice: Callable[[], bool | None] | None,
+        *,
+        stopped_after: Widget | None = None,
+    ) -> None:
+        blocks: set[ProcessBlock] = set()
+        for widget in widgets:
+            self._completed.discard(widget)
+            if isinstance(owner := self.owner_of(widget), ProcessBlock) and owner in self._blocks:
+                blocks.add(owner)
+        for block in blocks:
+            self._blocks.discard(block)
+            self._host.forget_transcript_widget(block)
+            for member in block.members:
+                if self.owner_of(member) is block:
+                    self._owners.pop(member, None)
+                    member.set_process_hidden(False)
+        if blocks:
+            await remove_all_shielded(blocks)
+        await self._mount_plan(widgets, stopped_after=stopped_after)
+        # Mounting the new titles can yield to another /fold; both continuation paths use its latest choice.
+        collapsed = fold_choice() if fold_choice is not None else None
+        if collapsed is not None:
+            blocks = {owner for widget in widgets if isinstance(owner := self.owner_of(widget), ProcessBlock)}
+            for block in blocks:
+                block.requested_collapsed = collapsed
+                block.try_finalize_fold()
+            for widget in widgets:
+                if (isinstance(widget, ToolGroup) and not widget.collapse_locked) or (
+                    folds_with_turn(widget) and widget.foldable
+                ):
+                    widget.collapsed = collapsed
+
+    async def _mount_plan(self, widgets: list[Widget], *, stopped_after: Widget | None = None) -> None:
+        headers, answers = self._plan(widgets, stopped_after=stopped_after)
         mounted: dict[Widget, Widget] = {}
         for anchor, block in headers.items():
             if await self._host.place_transcript_entry(block, anchor):

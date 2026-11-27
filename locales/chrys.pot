@@ -5943,8 +5943,9 @@ msgstr ""
 msgid "tui.commands.description.exit"
 msgstr ""
 
-#. English: Toggle collapse on activity, tool groups and thinking
-#. chrys-meta={"fingerprint":"0010b6235021bc3af66568d5a6d1f642d73830b454299291955fc019c2bc82a9","multiline":false,"placeholders":[]}
+#. English: Toggle collapse on activity, tool groups, thinking, text between
+#. tool calls and compaction summaries
+#. chrys-meta={"fingerprint":"a7e587ebb11c15bf4a78fb4fd50ba5d2c61039748f3d6017fb6abbb680ad6473","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.fold"
 msgstr ""
@@ -8568,13 +8569,13 @@ msgstr ""
 msgid "tui.man.exit.body"
 msgstr ""
 
-#. English: Toggle collapse state on activity sections, tool groups and
-#. thinking in the current conversation view.  If any are open, collapse them
-#. all; otherwise expand them all. Thinking that is still being written and
-#. controls waiting for your input stay open. Click an activity header to
-#. toggle just that section. Useful for decluttering the view when reviewing
-#. long sessions.
-#. chrys-meta={"fingerprint":"9c42fb5c1abaf8d9c6288243716520774e7e69f68320962187da68b601a3a4fe","multiline":true,"placeholders":[]}
+#. English: Toggle collapse state on activity sections, tool groups, thinking,
+#. text between tool calls and compaction summaries in the current conversation
+#. view.  If any are open, collapse them all; otherwise expand them all.
+#. Thinking that is still being written and controls waiting for your input
+#. stay open. Click an activity header to toggle just that section. Useful for
+#. decluttering the view when reviewing long sessions.
+#. chrys-meta={"fingerprint":"fecfec08899f051390da4532d75faeeb6e22cfe202dd3f2ae28f72ee93f69f9f","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.fold.body"
 msgstr ""

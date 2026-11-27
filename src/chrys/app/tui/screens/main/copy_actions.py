@@ -110,7 +110,7 @@ class CopyActionController:
         self._view.copy_text(format_chat_copy_payload(selected), message=message, title=COPIED_TITLE.bind())
 
     def toggle_fold(self) -> None:
-        """Collapse or expand all process sections, tool groups and thinking."""
+        """Collapse or expand all process sections, tool groups, thinking and compaction summaries."""
         collapsed = self._view.toggle_chat_fold_all()
         label = "Folded" if collapsed else "Unfolded"
         self._debug("Fold", label)

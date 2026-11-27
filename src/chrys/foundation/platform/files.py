@@ -138,27 +138,27 @@ _HELD_FILE_RETRY_DELAY_SECONDS = 0.01
 
 
 def _retries_held_files() -> bool:
-    """Whether a file another handle holds open is worth waiting for: only Windows refuses to replace or delete it."""
+    """Whether a sharing conflict is worth waiting for."""
     return _is_windows()
 
 
-def _retry_while_held(operation: Callable[[], None]) -> None:
-    """Run *operation*, trying again briefly on Windows while the file it replaces or deletes is held open.
+def _retry_while_held[T](operation: Callable[[], T]) -> T:
+    """Run *operation*, trying again briefly on Windows while another handle blocks it.
 
     Antivirus scanners, the search indexer, sync clients and readers in this
     process open files for a moment without ``FILE_SHARE_DELETE`` (CPython's
-    ``open()`` among them), and Windows refuses the rename or delete with
-    ``PermissionError`` meanwhile. Up to six tries with about 0.3 s of sleeps
-    in all; elsewhere one try.
+    ``open()`` among them), blocking rename or delete. A handle without read
+    sharing can similarly block a reader. Retry ``PermissionError`` up to six
+    tries with about 0.3 s of sleeps in all, elsewhere one try.
     """
-    for attempt in range(_HELD_FILE_MAX_ATTEMPTS):
+    for attempt in range(_HELD_FILE_MAX_ATTEMPTS - 1):
         try:
-            operation()
-            return
+            return operation()
         except PermissionError:
-            if attempt == _HELD_FILE_MAX_ATTEMPTS - 1 or not _retries_held_files():
+            if not _retries_held_files():
                 raise
             time.sleep(_HELD_FILE_RETRY_DELAY_SECONDS * 2**attempt)
+    return operation()
 
 
 def replace_with_retry(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
@@ -169,6 +169,16 @@ def replace_with_retry(source: str | os.PathLike[str], target: str | os.PathLike
 def unlink_with_retry(path: str | os.PathLike[str]) -> None:
     """``os.unlink`` that tries again briefly on Windows while the file is held open."""
     _retry_while_held(lambda: os.unlink(path))
+
+
+def open_binary_read_with_retry(path: Path, *, buffering: int = -1) -> BinaryIO:
+    """Open a file for reading, waiting briefly for Windows sharing conflicts."""
+    return _retry_while_held(lambda: path.open("rb", buffering=buffering))
+
+
+def read_bytes_with_retry(path: Path) -> bytes:
+    """Read a file, waiting briefly for Windows sharing conflicts."""
+    return _retry_while_held(path.read_bytes)
 
 
 def publish_file_no_replace(source: Path, target: Path) -> None:

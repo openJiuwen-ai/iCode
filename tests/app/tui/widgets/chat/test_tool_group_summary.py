@@ -29,7 +29,7 @@ from chrys.foundation.tool_kinds import (
     KIND_SHELL,
     KIND_SLEEP,
 )
-from tests.support.tui_helpers import ChatPanelApp, LocalizedWidgetApp, resize_when_settled
+from tests.support.tui_helpers import ChatPanelApp, LocalizedWidgetApp, open_process_for, resize_when_settled
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -155,6 +155,8 @@ async def test_a_closed_group_counts_its_calls_and_a_narrow_title_still_shows_wh
         assert title.render().plain[2:] == "Running shell command"
 
         await cp.add_interrupted()
+        # The stopped turn folds; open it to read the group.
+        open_process_for(group)
         # The rejected write failed with the read; the cut-short command was interrupted, not failed.
         counts = "Read 2 files · edited 1 file · ran 2 commands · 2 failed · 1 interrupted"
         await wait_for(

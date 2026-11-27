@@ -705,13 +705,15 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         return await_remove
 
     async def on_event(self, event: textual_events.Event) -> None:
-        """Observe GC-relevant activity before Textual dispatches it."""
+        """Observe pointer gestures and GC activity before Textual dispatches input."""
         if not event.is_forwarded:
             if isinstance(event, textual_events.MouseDown) and event.button:
                 self._gc_pointer_buttons_down.add(event.button)
             elif isinstance(event, textual_events.MouseUp) and event.button:
                 self._gc_pointer_buttons_down.discard(event.button)
             elif isinstance(event, textual_events.MouseMove):
+                if event.button == 1 and event.screen_offset != self.mouse_position:
+                    self._discard_dragged_fold_click()
                 if event.button:
                     self._gc_pointer_buttons_down.add(event.button)
                     self._gc_freeze.note_input(occurred_at=event.time)
@@ -729,6 +731,21 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                         requested_at=event.time,
                     )
         await super().on_event(event)
+
+    def _discard_dragged_fold_click(self) -> None:
+        origin = self._mouse_down_widget
+        if origin is None or not origin.is_attached or (press := self.screen._mouse_down_offset) is None:
+            return
+
+        from chrys.app.tui.widgets.chat.guide_fold import SameCellClick
+
+        if any(
+            isinstance(widget, SameCellClick) and widget.fold_click_at(origin, press)
+            for widget in origin.ancestors_with_self
+        ):
+            # Textual sends motion to the hovered widget, then can synthesize a click at the press target.
+            # Drop only that click. The screen still owns the drag selection.
+            self._mouse_down_widget = None
 
     @property
     def current_theme(self) -> Theme:

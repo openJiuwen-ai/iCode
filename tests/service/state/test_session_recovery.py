@@ -16,10 +16,12 @@ from chrys.foundation.util.lock import FileLock
 from chrys.kernel import Message
 from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY, stamp_message_created_at
 from chrys.service.state.store import (
+    SESSION_FILE_NAME,
     SESSION_RECOVERY_FILE_NAME,
     JsonFileStateStore,
 )
 from tests.service.state._store_helpers import SkewedDateTime
+from tests.support.windows_replace import briefly_held_read
 
 # --- crash-safe session.json writes --------------------------------------
 
@@ -103,6 +105,35 @@ async def test_chat_restore_reads_healthy_checkpoint_once(tmp_path: Path, monkey
     assert restored.meta.title == "saved title"
     assert not restored.recovered_from_sidecar
     assert paths == [store.session_dir("s1") / "session.json"]
+
+
+@pytest.mark.parametrize(
+    ("filename", "startup"),
+    [(SESSION_FILE_NAME, False), (SESSION_RECOVERY_FILE_NAME, False), (SESSION_RECOVERY_FILE_NAME, True)],
+    ids=["post-save-primary", "post-save-sidecar", "startup-sidecar"],
+)
+async def test_session_checkpoint_read_retries_a_brief_windows_sharing_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str, startup: bool
+) -> None:
+    store = JsonFileStateStore(tmp_path)
+    session_id = "12345678-abcd-4111-8222-123456789abc"
+    monkeypatch.setattr(store_module, "datetime", SkewedDateTime)
+    monkeypatch.setattr(SkewedDateTime, "current", datetime(2026, 1, 1, tzinfo=UTC))
+    await store.save_session(session_id, {"messages": [Message("user", ["committed"])]})
+    monkeypatch.setattr(SkewedDateTime, "current", datetime(2026, 1, 2, tzinfo=UTC))
+    await asyncio.to_thread(store.save_recovery_session, session_id, {"messages": [Message("user", ["latest"])]})
+
+    path = store.session_dir(session_id) / filename
+    held = briefly_held_read(monkeypatch, path, failures=2)
+    if startup:
+        meta = await store.resolve_startup_session(session_id)
+        assert meta is not None and meta.session_id == session_id
+        assert meta.updated_at == datetime(2026, 1, 2, tzinfo=UTC)
+    else:
+        assert await store.recovery_session_wins(session_id)
+
+    assert held.attempts == [str(path)] * 3
+    assert held.sleeps == [0.01, 0.02]
 
 
 @pytest.mark.parametrize(

@@ -204,6 +204,9 @@ class _Harness:
             async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
                 harness.chat_errors.append(message)
 
+            async def add_error_notice(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+                harness.chat_errors.append(message)
+
             async def add_user_message(
                 self,
                 text: str,

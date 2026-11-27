@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from textual.widgets import Button, Static
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
@@ -26,7 +27,12 @@ from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
 )
-from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
+from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION, ErrorMessage, InterruptedMessage, UserMessage
+from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
+from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
 from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
 from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.foundation.branding import APP_DISPLAY_NAME
@@ -37,8 +43,11 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.text.draft_references import EMPTY_REFERENCES, DraftReferences
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ
+from chrys.kernel import Content, Message
 from chrys.orchestration.engine.workspaces import LeaveConfirmationRequired
 from tests.support.tui_helpers import (
+    ChatPanelApp,
     fake_session_title,
     main_screen_state_at,
     make_backend_handler,
@@ -444,7 +453,7 @@ def test_pending_turn_error_leaves_the_draft_for_the_sender_without_inline_retry
             assert error is True
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+        async def add_error_notice(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             chat_errors.append((message, action_label))
 
     chat_errors: list[tuple[str, MessageRef | str | None]] = []
@@ -472,6 +481,121 @@ def test_pending_turn_error_leaves_the_draft_for_the_sender_without_inline_retry
     assert running == []
     assert handler._state.submit.returned is False
     assert chat_errors == [("Prompt denied", None)]
+
+
+async def test_a_hook_rejection_leaves_the_crash_recovered_turn_expanded() -> None:
+    class _StatusBar:
+        def flash(self, _message: MessageRef | str, *, error: bool = False) -> None:
+            assert error
+
+    history = [
+        Message("user", [Content.from_text("The recovered prompt")]).to_dict(),
+        Message(
+            "assistant",
+            [Content.from_function_call(call_id="c1", name="read_file", arguments="{}")],
+        ).to_dict(),
+        Message("tool", [Content.from_function_result(call_id="c1", result="ok")]).to_dict(),
+    ]
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(history, recovered_from_sidecar=True)
+        await panel.wait_replay_complete()
+        steps = panel.query_one(ToolGroup)
+        assert steps.display and not panel.query(ProcessBlock)
+
+        state = _blocked_prompt_state()
+        widgets = {"ChatPanel": panel, "StatusBar": _StatusBar()}
+        screen = SimpleNamespace(_state=state, query_one=lambda cls: widgets[cls.__name__])
+        handler = make_backend_handler(screen)
+        state.submit.publish_from_current_task()
+        await handler.on_error(Error(code="hook_blocked", message="Prompt denied"))
+
+        assert state.submit.blocked
+        assert [prompt.text for prompt in panel.query(UserMessage)] == ["The recovered prompt"]
+        notice = panel.query_one(ErrorMessage)
+        assert notice._text == "Prompt denied" and not notice.query(".status-action-btn")
+        assert panel.transcript_entry_after(steps) is notice
+        assert steps.display and not panel.query(ProcessBlock)
+
+
+@pytest.mark.parametrize("previous", ["crash-recovered", "crash-recovered-during-tool", "interrupted", "running"])
+async def test_error_preserves_settled_history_and_ends_a_live_turn(previous: str) -> None:
+    """A failed directory change preserves settled history; a live failure still ends its turn."""
+
+    class _StatusBar:
+        def flash(self, _message: MessageRef | str, *, error: bool = False) -> None:
+            assert error
+
+    class _InputBar(_RestorableDraftFake):
+        locked = False
+        retry_mode = False
+
+        def unlock_and_keep(self) -> None:
+            self.locked = False
+
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        recovered = previous.startswith("crash-recovered")
+        if recovered:
+            history = [
+                Message("user", [Content.from_text("The recovered prompt")]).to_dict(),
+                Message(
+                    "assistant",
+                    [Content.from_function_call(call_id="c1", name="read_file", arguments="{}")],
+                ).to_dict(),
+                Message("tool", [Content.from_function_result(call_id="c1", result="ok")]).to_dict(),
+            ]
+            if previous == "crash-recovered-during-tool":
+                history.pop()
+            await panel.replay_history(history, recovered_from_sidecar=True)
+            await panel.wait_replay_complete()
+            assert panel.query_one(ToolGroup).display and not panel.query(ProcessBlock)
+            assert not panel.query_one(ToolGroup).shows_running
+            assert not panel.query(LiveProcessRow) and not panel.query_one(WaitingRow).display
+        else:
+            panel.agent_running = True
+            await panel.add_user_message("Read the file")
+            await panel.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, args={"path": "/tmp/a.py"})
+            await panel.add_tool_result("c1", "read_file", "ok")
+            if previous == "interrupted":
+                await panel.add_interrupted()
+                panel.agent_running = False
+                stopped = panel.query_one(ProcessBlock)
+                assert stopped.collapsed
+                notice = panel.query_one(InterruptedMessage)
+                assert str(notice.query_one(".status-action-btn", Button).label) == "Continue"
+                assert str(notice.query_one(".status-rollback-btn", Button).label) == "Discard This Turn"
+
+        state = MainScreenState(run=RunState(agent_running=previous == "running"))
+        input_bar = _InputBar()
+        widgets = {"ChatPanel": panel, "StatusBar": _StatusBar(), "InputBar": input_bar}
+        screen = SimpleNamespace(
+            _state=state,
+            _session_title=fake_session_title(),
+            query_one=lambda cls: widgets[cls.__name__],
+            _set_agent_running=lambda running: setattr(panel, "agent_running", running),
+        )
+        handler = make_backend_handler(screen)
+        code = "executor_error" if previous == "running" else "workspace_change_failed"
+        message = "Model request failed" if previous == "running" else "Could not load settings in /tmp/new"
+        await handler.on_error(Error(code=code, message=message))
+
+        error = panel.query_one(ErrorMessage)
+        assert error._text == message
+        assert error.query_one(".status-body", Static).render().plain == f"✗ Error\n{message}"
+        assert str(error.query_one(".status-action-btn", Button).label) == "Retry"
+        assert error.display and input_bar.retry_mode and not state.run.agent_running
+        assert not panel.query(InterruptedMessage) and not panel.query(".status-rollback-btn")
+        steps = panel.query_one(ToolGroup)
+        if recovered:
+            assert steps.display and not panel.query(ProcessBlock)
+        else:
+            block = panel.query_one(ProcessBlock)
+            assert block.collapsed and not steps.display
+            if previous == "interrupted":
+                assert block is stopped
+        assert panel.transcript_entry_after(steps) is error
+        assert not panel.query(LiveProcessRow) and not panel.query_one(WaitingRow).display
 
 
 @pytest.mark.parametrize(
@@ -505,7 +629,8 @@ def test_directory_error_outside_submit_keeps_the_existing_retry_surface(
             flashes.append((flashed, error))
 
     class _FakeChatPanel:
-        async def add_error(self, shown: str, *, action_label: MessageRef | str | None = None) -> None:
+        async def add_error_notice(self, shown: str, *, action_label: MessageRef | str | None = None) -> None:
+            assert action_label is ERROR_RETRY_ACTION
             chat_errors.append(shown)
 
     input_bar = _FakeInputBar()
@@ -562,7 +687,7 @@ def test_pending_submit_error_display_localizes_chat_but_debug_keeps_protocol_en
             flashes.append(message)
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+        async def add_error_notice(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             chat_errors.append((message, action_label))
 
     input_bar = _FakeInputBar()
@@ -891,7 +1016,7 @@ def test_error_event_empty_message_uses_code_fallback() -> None:
             self.locked = False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+        async def add_error_notice(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             assert action_label is ERROR_RETRY_ACTION
             chat_errors.append(message)
 
@@ -960,7 +1085,7 @@ def test_error_display_message_localizes_ui_surfaces_and_keeps_raw_debug() -> No
             self.locked = False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+        async def add_error_notice(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             chat_errors.append(message)
 
     status = _FakeStatusBar()
@@ -1051,7 +1176,7 @@ def _make_agent_load_error_handler(dialog: object) -> tuple[BackendEventHandler,
         retry_mode = False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+        async def add_error_notice(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             assert action_label is ERROR_RETRY_ACTION
             probe.chat_errors.append(message)
 

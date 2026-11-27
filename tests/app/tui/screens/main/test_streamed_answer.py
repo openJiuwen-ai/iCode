@@ -11,7 +11,17 @@ from typing import TYPE_CHECKING
 import pytest
 from textual.widgets import Button
 
-from chrys.app.tui.widgets.chat.messages import AgentMessage, InterruptedMessage, RetryMessage, _FoldRowHeader
+from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
+from chrys.app.tui.widgets.chat.messages import (
+    AgentMessage,
+    ErrorMessage,
+    InterruptedMessage,
+    RetryMessage,
+    _FoldRowHeader,
+)
+from chrys.app.tui.widgets.chat.messages import (
+    UserMessage as TranscriptUserMessage,
+)
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
@@ -41,6 +51,8 @@ from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.content_projection import ContentProjector
 from chrys.orchestration.invoker.origin import BoundEmitter
 from tests.app.tui.screens.test_prompt_shortcut_send import running_session, send_plain, turn_finished
+from tests.app.tui.widgets.chat.test_live_process_row import _painted, _read, _settled
+from tests.app.tui.widgets.chat.test_stopped_turn_folding import _hold_replay_before_prompt
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -317,6 +329,130 @@ async def test_an_injection_delivered_after_completion_still_goes_above_the_fina
         assert answer.is_process_final
         assert [entry.text for entry in panel.mounted_user_messages()] == ["Check the tests.", injection.text]
         assert panel.current_turn_children()[-1] is answer
+
+
+async def test_late_injections_go_above_the_completed_reply_when_the_prompt_is_still_replaying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bus = EventBus()
+    release = asyncio.Event()
+    reached_delivery = asyncio.Event()
+
+    async def wait_to_deliver(_event: UserInjectResult) -> None:
+        reached_delivery.set()
+        await release.wait()
+
+    await bus.subscribe(UserInjectResult, wait_to_deliver)
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
+    async with app.run_test(size=(120, 36)):
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+
+        async with _hold_replay_before_prompt(panel, monkeypatch, calls=180):
+            panel.capture_settled_status()
+            main._set_agent_running(True)
+            await panel.clear_settled_status()
+            await bus.publish(_delta("answer", "All tests passed."), raise_handler_errors=True)
+            panel.finish_answer_segment("answer", completed=True)
+
+            injection = UserInjectResult(session_id="s1", text="Check the docs too.", consumed=True)
+            delivery = asyncio.create_task(bus.publish(injection, raise_handler_errors=True))
+            try:
+                await wait_for(reached_delivery.is_set, description="detached injection delivery has begun")
+                await bus.publish(
+                    InvocationMessage(origin=_ORIGIN, session_id="s1", text="All tests passed.", segment_id="answer"),
+                    raise_handler_errors=True,
+                )
+                assert not main.agent_running_state and not delivery.done()
+            finally:
+                release.set()
+                await delivery
+            await bus.publish(
+                UserInjectResult(session_id="s1", text="Include the version.", consumed=True), raise_handler_errors=True
+            )
+            assert [entry.text for entry in panel.query(TranscriptUserMessage)] == [
+                injection.text,
+                "Include the version.",
+            ]
+
+        answer = next(entry for entry in panel.query(AgentMessage) if entry.is_process_final)
+        entries = panel.current_turn_children()
+        assert [entry.text for entry in entries if isinstance(entry, TranscriptUserMessage)] == [
+            "prompt",
+            injection.text,
+            "Include the version.",
+        ]
+        assert entries[-1] is answer
+
+
+async def test_retry_keeps_the_stopped_tool_summary_after_a_late_injection_seals_the_row(tmp_path: Path) -> None:
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
+    async with app.run_test(size=(120, 40)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        await panel.add_user_message("Read that file")
+        await _read(panel, "original", "/tmp/original.py", done=False)
+        await panel.add_interrupted()
+        await _settled(pilot)
+        stopped = _painted(panel.query_one(ProcessBlock))
+        assert "interrupted" in stopped
+
+        panel.capture_settled_status()
+        main._set_agent_running(True)
+        await panel.clear_settled_status()
+        await bus.publish(
+            InvocationContentDelta(
+                origin=_ORIGIN, session_id="s1", segment_id="thought", channel="reasoning", text="Trying again."
+            ),
+            raise_handler_errors=True,
+        )
+        row = panel.query_one(LiveProcessRow)
+        assert not row.resumed
+        await bus.publish(
+            UserInjectResult(session_id="s1", text="Check the docs too.", consumed=True), raise_handler_errors=True
+        )
+        assert row.settled
+        await bus.publish(
+            InvocationContentAbandoned(origin=_ORIGIN, session_id="s1", segment_ids=("thought",)),
+            raise_handler_errors=True,
+        )
+        await _settled(pilot)
+        assert _painted(row) == stopped
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["interrupted", "error"])
+async def test_a_late_injection_cannot_move_a_partial_reply_below_its_stop_notice(tmp_path: Path, failed: bool) -> None:
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
+    async with app.run_test(size=(120, 40)):
+        main = app._main_screen
+        assert main is not None
+        panel = main.query_one(ChatPanel)
+        main._set_agent_running(True)
+        await panel.add_user_message("Check the tests.")
+        await _read(panel, "read", "/tmp/test.py")
+        await bus.publish(_delta("answer", "The checks ran."), raise_handler_errors=True)
+        if failed:
+            await panel.add_error("Connection lost.")
+        else:
+            await panel.add_interrupted()
+        main._set_agent_running(False)
+        partial = panel.query_one(AgentMessage)
+        notice = panel.query_one(ErrorMessage if failed else InterruptedMessage)
+        assert partial.is_process_final
+
+        await bus.publish(
+            UserInjectResult(session_id="s1", text="Check the docs too.", consumed=True), raise_handler_errors=True
+        )
+        entries = panel.current_turn_children()
+        assert entries.index(partial) < entries.index(notice)
+        panel.capture_settled_status()
+        main._set_agent_running(True)
+        await panel.clear_settled_status()
+        assert not notice.is_attached
 
 
 async def test_an_injection_while_the_completed_process_mounts_goes_above_the_final_reply(

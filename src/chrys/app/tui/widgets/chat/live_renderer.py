@@ -323,6 +323,8 @@ class LiveTranscriptRenderer:
             if isinstance(widget, UserMessage):
                 self._toc.remove_failed_prompt(widget.id)
         await remove_all_shielded(removed)
+        if self._process is not None:
+            await self._process.forget_removed_members(removed)
 
     def apply_turn_started(self, turn_number: int, *, opening_item_id: str | None = None) -> None:
         """Bind the live opener and its TOC children to the backend's turn number and history item."""
@@ -738,7 +740,7 @@ class LiveTranscriptRenderer:
         """
         self.stop_answer()
         await self.cancel_running_tools(stopped_at=stopped_at)
-        await self._status.remove_trailing_status()
+        await self._status.remove_trailing_status(replacing=True)
 
         copy = resolve_interrupted_message_copy(self._reason_text(reason), source, self._resolve_message)
         label = copy.retry_action if source == "error" else copy.continue_action
@@ -765,7 +767,11 @@ class LiveTranscriptRenderer:
         """
         self.stop_answer()
         await self.cancel_running_tools(stopped_at=stopped_at)
-        await self._status.remove_trailing_status()
+        await self.show_error(text, action_label=action_label)
+
+    async def show_error(self, text: str, *, action_label: MessageRef | str | None) -> None:
+        """Replace the trailing status with an error card."""
+        await self._status.remove_trailing_status(replacing=True)
 
         msg = ErrorMessage(text, action_label=self._action_label_text(action_label))
         await self._mount.mount_transcript_widget(msg)

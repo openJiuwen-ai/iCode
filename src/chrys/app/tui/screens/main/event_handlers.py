@@ -50,6 +50,7 @@ from chrys.app.tui.util.context_pressure import context_pressure_message
 from chrys.app.tui.widgets import PromptDraft
 from chrys.app.tui.widgets.chat.agent_transcript_surface import AnswerSegments
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload, FileSnapshotRef, should_externalize_snapshot
+from chrys.app.tui.widgets.chat.messages import ERROR_RETRY_ACTION
 from chrys.app.tui.widgets.chrome.app_header import APPROVAL_MODE_MESSAGES
 from chrys.app.tui.widgets.chrome.input_bar import INPUT_RETRY
 from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
@@ -2253,9 +2254,11 @@ class BackendEventHandler:
                 self._agent_load().fail(f"{display_full}\n{raw_msg}" if with_raw else display_full)
             ui.flash_status(STATUS_ERROR.bind(message=short_msg), error=True)
             if restore_closed_session:
-                await ui.add_error(chat_msg, action_label=None)
-            else:
+                await ui.add_error_notice(chat_msg)
+            elif was_live:
                 await ui.add_error(chat_msg)
+            else:
+                await ui.add_error_notice(chat_msg, action_label=ERROR_RETRY_ACTION)
         finally:
             if not was_live or (self._state.run.generation == terminal_generation and s.agent_running):
                 if was_live:
@@ -2356,7 +2359,7 @@ class BackendEventHandler:
             # card and its action so the user can retry after resolving this.
             s.notify(chat_msg, title=_RETRY_NOT_STARTED.bind(), severity="error", timeout=8)
         else:
-            await ui.add_error(chat_msg, action_label=None)
+            await ui.add_error_notice(chat_msg)
         s.debug("Error", f"[{code}] {(message if raw_message is None else raw_message)[:60]}")
 
     async def on_retry_attempt(self, event: InvocationRetryAttempt) -> None:

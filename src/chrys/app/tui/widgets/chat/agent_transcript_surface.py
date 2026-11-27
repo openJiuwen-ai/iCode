@@ -918,7 +918,7 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
         if not event.process:
             event.member.fold_member_guide(self)
 
-    async def remove_trailing_status(self) -> None:
+    async def remove_trailing_status(self, *, replacing: bool = False) -> None:
         status = self.failed_turn_status()
         if isinstance(status, (ErrorMessage, InterruptedMessage, RetryMessage)):
             await remove_shielded(status)

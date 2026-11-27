@@ -72,11 +72,18 @@ class LiveProcessRow(ProcessGuideMixin, RunningTitle, FoldGap, Static, can_focus
         self._group_tallies: dict[ToolGroup, ToolTally] = {}
         self.settled = False
         self.summarized = False
+        self.stopped_members: set[LiveProcessMember] = set()
+        """Members carried over from the stopped title, until removed from this row."""
         self.answering: AgentMessage | None = None
         """The pending preview alongside this segment's members."""
         self.summarize_answer_preview = True
         self.running_members: set[LiveProcessMember] = set()
         self._status: LiveStatus | None = None
+
+    @property
+    def resumed(self) -> bool:
+        """Only stopped steps remain, so the row reads as it did before Continue."""
+        return bool(self.stopped_members) and len(self.stopped_members) == len(self.members)
 
     @property
     def latest(self) -> LiveProcessMember | None:
@@ -128,7 +135,7 @@ class LiveProcessRow(ProcessGuideMixin, RunningTitle, FoldGap, Static, can_focus
     def settle(self) -> None:
         """Freeze the preview when the turn goes on below a segment boundary."""
         self.answering = None
-        self.summarized = False
+        self.summarized = self.resumed
         self.running_members.clear()
         self.settled = True
         self.update_status(resample=True)

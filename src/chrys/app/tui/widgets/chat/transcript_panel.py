@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from textual.geometry import Region
     from textual.widget import Widget
 
 
@@ -21,6 +22,14 @@ class ChatTranscriptPanelMarker:
     """
 
     __slots__ = ()
+
+    def pause_following(self) -> None:
+        """Hold the view while the user opens transcript content to read it."""
+        raise NotImplementedError
+
+    def reveal_transcript_region(self, region: Region) -> None:
+        """Reveal transcript content without the floating bottom button covering it."""
+        raise NotImplementedError
 
     def entry_folded(self) -> None:
         """An entry folded, or gave rows up: show the transcript at its new height in the layout that places it."""

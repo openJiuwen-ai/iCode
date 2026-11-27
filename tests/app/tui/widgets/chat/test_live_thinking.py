@@ -747,7 +747,7 @@ async def test_interleaved_turn_matches_replay_after_stopping_or_continuing(endi
         live_shape = body(panel)
     async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.replay_history(history, recovered_from_sidecar=ending == "interrupt")
+        await panel.replay_history(history)
         await panel.wait_replay_complete()
         if panel.query(ProcessBlock):
             panel.toggle_fold_all()

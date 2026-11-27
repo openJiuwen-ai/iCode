@@ -84,6 +84,9 @@ def _handler(
         async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
             surfaces.chat_errors.append(message)
 
+        async def add_error_notice(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+            surfaces.chat_errors.append(message)
+
         async def prepare_retry(self) -> None:
             return
 

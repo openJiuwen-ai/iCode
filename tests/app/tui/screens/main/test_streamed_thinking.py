@@ -146,7 +146,7 @@ async def test_slash_fold_preserves_an_expanded_streaming_thought(tmp_path: Path
         assert "Still going." not in "\n".join(s.text for s in app.screen._compositor.render_strips())
 
 
-async def test_escape_restores_the_order_of_answer_then_thinking(tmp_path: Path) -> None:
+async def test_escape_keeps_the_thinking_above_the_answer_as_while_running(tmp_path: Path) -> None:
     app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=EventBus())
     async with app.run_test(size=(100, 28)) as pilot:
         main = app._main_screen
@@ -167,4 +167,5 @@ async def test_escape_restores_the_order_of_answer_then_thinking(tmp_path: Path)
         )
         answer = panel.query_one(AgentMessage)
         thought = panel.query_one(ThinkingMessage)
-        assert answer.display and thought.display and answer.region.y < thought.region.y
+        # The stopped turn keeps its running shape: the folded step above, the reply below.
+        assert answer.display and thought.display and thought.region.y < answer.region.y

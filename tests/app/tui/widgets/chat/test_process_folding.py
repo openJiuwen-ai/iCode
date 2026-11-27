@@ -13,7 +13,13 @@ from rich.style import Style
 
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
 from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
-from chrys.app.tui.widgets.chat.messages import AgentMessage, InterruptedMessage, ThinkingMessage, UserMessage
+from chrys.app.tui.widgets.chat.messages import (
+    AgentMessage,
+    InterruptedMessage,
+    SystemMessage,
+    ThinkingMessage,
+    UserMessage,
+)
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.process_controller import process_entry
@@ -100,7 +106,9 @@ def _terminal_status(marker: str, status_code: str | None) -> dict[str, Any]:
         (HistoryMarkerKind.AWAITING_SUB_AGENTS, None),
     ],
 )
-async def test_compressed_terminal_status_prevents_folding(inside: bool, marker: str, status_code: str | None) -> None:
+async def test_compressed_terminal_status_folds_the_stopped_turn(
+    inside: bool, marker: str, status_code: str | None
+) -> None:
     history = _history()
     history[-1] = Message("assistant", [Content.from_text("Partial answer")]).to_dict()
     status = _terminal_status(marker, status_code)
@@ -113,8 +121,14 @@ async def test_compressed_terminal_status_prevents_folding(inside: bool, marker:
             [summary] if inside else [summary, status], folds=[FoldItem("archive", "condensed", block=block)]
         )
         await panel.wait_replay_complete()
-        assert not panel.query(ProcessBlock)
-        assert all(message.display for message in panel.query(AgentMessage))
+        # The stopped turn folds as a finished one does; its last reply stays outside, as its answer.
+        assert _summary(panel) == [
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 1, True, "▸ 1 tool call: 1 read"),
+        ]
+        assert [message.text for message in panel.query(AgentMessage) if message.display and not message.is_status] == [
+            "Partial answer"
+        ]
         if inside:
             assert not panel.query(InterruptedMessage)
             assert all(not message.is_status for message in panel.query(AgentMessage))
@@ -214,11 +228,14 @@ async def test_omitted_failure_after_a_non_answer_still_ends_the_turn(boundary: 
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([summary], folds=[FoldItem("archive", "condensed", block=block)])
         await panel.wait_replay_complete()
-        assert not panel.query(ProcessBlock)
-        assert all(message.display for message in panel.query(AgentMessage))
+        assert _summary(panel) == [
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 1, True, "▸ 1 tool call: 1 read"),
+        ]
+        assert [message.text for message in panel.query(AgentMessage) if message.display] == ["Done."]
 
 
-async def test_omitted_failure_stays_visible_until_a_later_success() -> None:
+async def test_an_omitted_failure_folds_the_turn_and_a_later_success_keeps_its_sections() -> None:
     history = _history()
     history.append(_terminal_status(HistoryMarkerKind.INTERRUPTED, None))
     summary, block = _archive(history)
@@ -228,8 +245,11 @@ async def test_omitted_failure_stays_visible_until_a_later_success() -> None:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([summary], folds=[FoldItem("archive", "condensed", block=block)])
         await panel.wait_replay_complete()
+        assert _summary(panel) == [
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 1, True, "▸ 1 tool call: 1 read"),
+        ]
         await panel.add_agent_message("")
-        assert not panel.query(ProcessBlock)
         await panel.add_agent_message("Recovered.")
         assert _summary(panel) == [
             (0, 1, True, "▸ 1 tool call: 1 read"),
@@ -330,18 +350,15 @@ async def test_archived_local_tools_keep_results_and_follow_the_turn_fold_policy
             [("read_file", "ok")],
             [("read_file", "ok")],
         ]
-        if failed:
-            assert not panel.query(ProcessBlock)
-            assert all(group.display for group in groups)
-        else:
-            # The injection still divides the turn's two tool batches into separate folded activities.
-            assert _summary(panel) == [
-                (0, 1, True, "▸ 1 tool call: 1 read"),
-                (1, 1, True, "▸ 1 tool call: 1 read"),
-            ]
-            second_narration = next(message for message in panel.query(AgentMessage) if message.text == "One more.")
-            assert second_narration.process_hidden
-            assert all(not group.display for group in groups)
+        # Failed or not, the injection divides the turn's two tool batches into separate folded activities.
+        assert _summary(panel) == [
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 1, True, "▸ 1 tool call: 1 read"),
+        ]
+        second_narration = next(message for message in panel.query(AgentMessage) if message.text == "One more.")
+        assert second_narration.process_hidden
+        assert all(not group.display for group in groups)
+        if not failed:
             answer = panel.query(AgentMessage).last()
             entries = panel.transcript_content_children()
             assert entries[entries.index(panel.query_one(ContextFoldWidget)) - 1] is answer
@@ -402,7 +419,7 @@ async def test_mixed_compressed_turn_counts_tools_in_collapsed_and_expanded_titl
 
 
 @pytest.mark.parametrize("status_code", [None, HistoryMarkerKind.STATUS_AWAITING_SUB_AGENTS])
-async def test_restored_awaiting_sub_agents_status_cannot_complete_a_turn(status_code: str | None) -> None:
+async def test_restored_awaiting_sub_agents_status_folds_the_turn_and_stays_outside(status_code: str | None) -> None:
     history = _history()
     history.append(
         Message(
@@ -424,8 +441,11 @@ async def test_restored_awaiting_sub_agents_status_cannot_complete_a_turn(status
         status = panel.query(AgentMessage).last()
         assert status.is_status and not status.is_process_final
         assert process_entry(status).kind == "failure"
-        assert not panel.query(ProcessBlock)
-        assert all(group.display for group in panel.query(ToolGroup))
+        assert _summary(panel) == [
+            (0, 1, True, "▸ 1 tool call: 1 read"),
+            (1, 1, True, "▸ 1 tool call: 1 read"),
+        ]
+        assert status.display and not any(group.display for group in panel.query(ToolGroup))
 
 
 async def test_failed_header_mount_keeps_members_visible_and_can_be_retried(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -720,6 +740,29 @@ async def test_inserted_header_preserves_cross_entry_selection_and_prepend_ancho
         assert panel.transcript_entry_after(user) is panel.query(ProcessBlock).first()
 
 
+async def test_placing_and_reordering_entries_above_the_latest_turn_keeps_prepend_order() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await _live(panel)
+        opener = panel.query(UserMessage).first()
+        header = panel.query(ProcessBlock).first()
+        await panel.add_user_message("Another question")
+        latest = panel.query(UserMessage).last()
+
+        # A replay insertion into the earlier turn must fit between its neighbors.
+        notice = SystemMessage("An earlier notice")
+        assert await panel.place_transcript_entry(notice, opener)
+        assert panel.transcript_entry_after(opener) is notice
+        assert panel.transcript_entry_after(notice) is header
+
+        panel.apply_transcript_order([opener, header, notice])
+        children = panel.transcript_content_children()
+        start = children.index(opener)
+        assert children[start : start + 3] == [opener, header, notice]
+        assert children[-1] is latest
+        assert panel.transcript_entry_after(header) is notice
+
+
 def test_empty_segments_and_transient_notices_never_renumber_segments() -> None:
     entries = [
         ProcessEntry("user"),
@@ -750,6 +793,76 @@ def test_a_compaction_starts_a_new_segment_of_its_turn_and_stays_out_of_both(
 ) -> None:
     planned = plan_process_segments([ProcessEntry(kind) for kind in entries])
     assert [(segment.anchor, segment.index, segment.members) for segment in planned] == expected
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected"),
+    [
+        pytest.param(
+            ["user", "tool", "intermediate", "tool", "failure"], (True, (1, 2, 3), None), id="stopped-in-a-tool"
+        ),
+        pytest.param(["user", "tool", "answer", "failure"], (True, (1,), 2), id="stopped-reply-is-the-answer"),
+        pytest.param(
+            ["user", "tool", "answer", "thinking", "other", "failure"], (True, (1, 3), 2), id="thinking-after-the-reply"
+        ),
+        pytest.param(["user", "failure", "tool", "answer"], (True, (1, 2), 3), id="earlier-failure-is-a-step"),
+        pytest.param(["user", "tool", "intermediate"], (False, (1, 2), None), id="not-ended"),
+        pytest.param(["user", "tool", "completion", "failure"], (False, (1, 2), None), id="completed-then-a-notice"),
+    ],
+)
+def test_a_turn_folds_once_it_ends_and_its_ending_notice_stays_outside(
+    entries: list[Any], expected: tuple[bool, tuple[int, ...], int | None]
+) -> None:
+    (segment,) = plan_process_segments([ProcessEntry(kind) for kind in entries])
+    assert (segment.fold, segment.members, segment.answer) == expected
+
+
+def test_an_omitted_failure_after_trailing_thinking_still_ends_the_turn() -> None:
+    entries = [ProcessEntry("user"), ProcessEntry("tool"), ProcessEntry("thinking", failure_after=True)]
+    (segment,) = plan_process_segments(entries)
+    assert (segment.fold, segment.members, segment.answer) == (True, (1, 2), None)
+
+
+def test_an_omitted_failure_after_the_reply_keeps_it_the_answer() -> None:
+    entries = [ProcessEntry("user"), ProcessEntry("tool"), ProcessEntry("answer", failure_after=True)]
+    (segment,) = plan_process_segments(entries)
+    assert (segment.fold, segment.members, segment.answer) == (True, (1,), 2)
+
+
+@pytest.mark.parametrize(
+    ("first", "fold"),
+    [
+        pytest.param(["user", "thinking", "intermediate", "tool"], True, id="a-later-turn-ends-it"),
+        pytest.param(["user", "tool", "completion"], False, id="a-structured-completion-shows-its-steps"),
+    ],
+)
+def test_a_turn_without_its_ending_folds_once_a_later_turn_follows(first: list[Any], fold: bool) -> None:
+    """A new prompt after a stop can drop the stop notice from history; the turn still ended."""
+    entries = [ProcessEntry(kind) for kind in [*first, "user", "answer"]]
+    earlier, _later = plan_process_segments(entries)
+    assert earlier.fold is fold
+
+
+async def test_replay_folds_a_stopped_turn_whose_notice_a_new_prompt_dropped() -> None:
+    history = [
+        *_history()[:3],
+        # Only the stop notice went; the turn's end stays.
+        Message(
+            "assistant", [], additional_properties={HistoryMarkerKind.KEY: HistoryMarkerKind.TURN, "_turn": 1}
+        ).to_dict(),
+        Message("user", [Content.from_text("next")]).to_dict(),
+        Message("assistant", [Content.from_text("Next answer.")]).to_dict(),
+    ]
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(history)
+        await panel.wait_replay_complete()
+        assert _summary(panel) == [(0, 1, True, "▸ 1 tool call: 1 read")]
+        assert not panel.query_one(ToolGroup).display
+
+
+def test_a_structured_completion_is_its_own_kind_of_entry() -> None:
+    assert process_entry(AgentMessage("✓", is_structured_completion=True)).kind == "completion"
 
 
 def test_a_compaction_card_and_a_context_fold_are_each_a_compaction_entry() -> None:
@@ -827,7 +940,7 @@ def test_foreground_budget_caps_visible_entries_and_total_hidden_entries() -> No
 
 
 @pytest.mark.parametrize("ending", ["error", "interrupted", "empty"])
-async def test_unsuccessful_or_empty_final_never_hides_the_last_process(ending: str) -> None:
+async def test_a_stopped_turn_folds_but_an_empty_final_does_not(ending: str) -> None:
     async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.add_user_message("prompt")
@@ -839,5 +952,9 @@ async def test_unsuccessful_or_empty_final_never_hides_the_last_process(ending: 
             await panel.add_interrupted()
         else:
             await panel.add_agent_message("")
-        assert not panel.query(ProcessBlock)
-        assert panel.query_one(ToolGroup).display
+        if ending == "empty":
+            assert not panel.query(ProcessBlock)
+            assert panel.query_one(ToolGroup).display
+        else:
+            assert _summary(panel) == [(0, 1, True, "▸ 1 tool call: 1 read")]
+            assert not panel.query_one(ToolGroup).display
