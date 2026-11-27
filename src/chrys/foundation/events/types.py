@@ -594,6 +594,8 @@ class InvocationMessage(InvocationEvent):
     text: str = ""
     is_final: bool = True
     structured_output_completed: bool = False
+    segment_id: str | None = None
+    """The last readable answer segment in the accepted snapshot, if it was projected."""
 
 
 @dataclass

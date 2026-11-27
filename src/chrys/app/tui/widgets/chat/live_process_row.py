@@ -73,7 +73,8 @@ class LiveProcessRow(ProcessGuideMixin, RunningTitle, FoldGap, Static, can_focus
         self.settled = False
         self.summarized = False
         self.answering: AgentMessage | None = None
-        """The answer below this segment, which summarizes once its work is idle."""
+        """The pending preview alongside this segment's members."""
+        self.summarize_answer_preview = True
         self.running_members: set[LiveProcessMember] = set()
         self._status: LiveStatus | None = None
 
@@ -85,6 +86,8 @@ class LiveProcessRow(ProcessGuideMixin, RunningTitle, FoldGap, Static, can_focus
         return False
 
     def guide_members(self) -> list[LiveProcessMember]:
+        if self.answering is not None and self.answering.is_provisional:
+            return [*self.members, self.answering]
         return self.members
 
     def ends_folded(self) -> bool:

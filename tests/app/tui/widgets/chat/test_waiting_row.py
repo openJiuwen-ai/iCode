@@ -15,7 +15,6 @@ from textual.screen import Screen
 from chrys.app.tui.widgets.chat.chrome import ChatBottomSpacer
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
 from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
-from chrys.app.tui.widgets.chat.fold_gap import FOLD_GAP_ROWS
 from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
@@ -354,8 +353,7 @@ async def test_the_row_showing_under_a_tall_prompt_keeps_the_view_on_its_top(mon
 
 @pytest.mark.parametrize("entry", ["thinking", "compaction"])
 async def test_an_entry_in_the_rows_place_under_a_tall_prompt_takes_the_view_down(entry: str) -> None:
-    """The reply came, and the view follows. Folded thinking takes the row's place, and the gap below it as it ends the
-    transcript; a compaction that starts takes the row's place at its height, so the size stays."""
+    """Folded thinking leaves space underneath as it takes the waiting row's place."""
     async with ChatPanelApp(thinking_expanded=lambda: False).run_test(size=(80, 20)) as pilot:
         app = pilot.app
         panel = app.query_one(ChatPanel)
@@ -389,7 +387,7 @@ async def test_an_entry_in_the_rows_place_under_a_tall_prompt_takes_the_view_dow
             pilot=pilot,
             description=f"{entry} shows in the row's place",
         )
-        assert panel.virtual_size.height == height + (FOLD_GAP_ROWS if entry == "thinking" else 0)
+        assert panel.virtual_size.height == height + (1 if entry == "thinking" else 0)
         assert panel._anchor_released is False
         assert panel.scroll_y == panel.max_scroll_y > prompt.virtual_region_with_margin.y
 
@@ -450,9 +448,9 @@ async def test_waiting_sync_and_live_member_mount_ignore_earlier_turns(monkeypat
             thought = panel.query(ThinkingMessage).last()
             answer = panel.query(AgentMessage).last()
             await wait_for(
-                lambda: thought.region.height > 0 and thought.region.y < answer.region.y,
+                lambda: thought.region.height > 0 and answer.region.y < thought.region.y,
                 pilot=pilot,
-                description="the new thought appears above the visible answer",
+                description="the new thought appears below the visible preview",
             )
             assert not _row(panel).display
             return visits, occurrence.call_count

@@ -25,7 +25,7 @@ from chrys.foundation.hosted_tools import (
     normalize_hosted_tool_status,
 )
 from chrys.foundation.io.result_content import extract_result_images, extract_result_text
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY, HistoryMarkerKind
 from chrys.foundation.tool_result_metadata import (
     TOOL_ERROR_CODE_METADATA_KEY,
     TOOL_ERROR_MESSAGE_METADATA_KEY,
@@ -139,6 +139,7 @@ class FinalTextOp:
 
     text: str
     structured_output_completed: bool = False
+    answer_segment_id: str | None = None
 
 
 type HostedToolOperation = (
@@ -782,6 +783,15 @@ def _hosted_ops(
     return operations
 
 
+def last_answer_segment_id(contents: Sequence[Content]) -> str | None:
+    """Find the projected segment of the accepted answer's last readable fragment."""
+    for content in reversed(contents):
+        if content.type == "text" and content.text and content.text.strip():
+            segment_id = content.additional_properties.get(ANSWER_SEGMENT_KEY)
+            return segment_id if isinstance(segment_id, str) and segment_id else None
+    return None
+
+
 @dataclass(frozen=True)
 class ResponsePresentationPlan:
     """Pure, exchange-aware presentation plan for an assembled response.
@@ -793,6 +803,7 @@ class ResponsePresentationPlan:
     operations: list[HostedToolOperation]
     final_text: str
     structured_output_completed: bool = False
+    answer_segment_id: str | None = None
 
     @classmethod
     def from_messages(cls, messages: Sequence[Message]) -> ResponsePresentationPlan:
@@ -803,12 +814,9 @@ class ResponsePresentationPlan:
             for content in message.contents
         )
         if not has_hosted:
-            final_text = ""
-            if messages:
-                final_text = "".join(
-                    content.text or "" for content in messages[-1].contents if content.type == "text" and content.text
-                )
-            return cls([], final_text)
+            contents = messages[-1].contents if messages else ()
+            final_text = "".join(content.text or "" for content in contents if content.type == "text")
+            return cls([], final_text, answer_segment_id=last_answer_segment_id(contents))
 
         pairs = _presentation_pairs(messages)
         operations: list[HostedToolOperation] = []
@@ -903,7 +911,8 @@ class ResponsePresentationPlan:
                         trailing_text_final = False
 
         final_text = "".join(content.text or "" for content in pending_text) if trailing_text_final else ""
-        return cls(operations, final_text, bool(successful_structured_occurrences))
+        answer_segment_id = last_answer_segment_id(pending_text) if trailing_text_final else None
+        return cls(operations, final_text, bool(successful_structured_occurrences), answer_segment_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1266,6 +1275,7 @@ class HostedPresentationBridge:
                 FinalTextOp(
                     plan.final_text,
                     structured_output_completed=not plan.final_text.strip() and plan.structured_output_completed,
+                    answer_segment_id=plan.answer_segment_id,
                 )
             )
             self._finalized_response_keys.add(response_key)

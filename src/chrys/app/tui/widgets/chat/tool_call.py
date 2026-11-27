@@ -2416,7 +2416,7 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
 
     def render(self) -> RenderResult:
         # Its header and calls cover the rest: only its gap shows its own content.
-        return self.gap_render() if self.gap_above or self.gap_below else super().render()
+        return self.gap_text() if self.gap_above else super().render()
 
     def watch_collapsed(self, collapsed: bool) -> None:
         try:

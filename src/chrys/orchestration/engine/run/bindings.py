@@ -89,6 +89,7 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     HostedToolStartOp,
     HostedToolStatusOp,
     PresentationSinkOperation,
+    last_answer_segment_id,
     next_hosted_run_generation,
 )
 from chrys.service.agent_middleware.events.tool_events import ToolEventRetrySnapshot
@@ -426,6 +427,7 @@ class TurnBindings:
                     text=operation.text,
                     is_final=True,
                     structured_output_completed=operation.structured_output_completed,
+                    segment_id=operation.answer_segment_id,
                     **self._assistant_message_event_kwargs(),
                     session_id=self._session_id,
                 )
@@ -866,6 +868,7 @@ class TurnBindings:
                 origin=self._emitter.origin,
                 text=final_text,
                 is_final=True,
+                segment_id=last_answer_segment_id(result.messages[-1].contents) if result.messages else None,
                 **event_kwargs,
                 session_id=self._session_id,
             )

@@ -5,12 +5,18 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
 import pytest
 
 from chrys.app.tui.notifications import drivers
 from chrys.foundation.platform import process as process_mod
+
+
+def _stub_notification_spawn(monkeypatch: pytest.MonkeyPatch, spawn: Callable[..., Awaitable[object]]) -> None:
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(drivers, "managed_subprocess", process_mod.managed_subprocess)
 
 
 @pytest.mark.asyncio
@@ -137,12 +143,17 @@ def test_default_notification_driver_dispatches_by_platform(monkeypatch: pytest.
         assert isinstance(drivers.default_notification_driver(), expected)
 
 
+async def test_mocking_the_native_subprocess_is_required() -> None:
+    with pytest.raises(AssertionError, match="Stub the notification subprocess"):
+        await drivers._run_command(["nonexistent-test-notification-command"])
+
+
 @pytest.mark.asyncio
 async def test_run_command_swallows_spawn_nonzero_and_timeout_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _raise_oserror(*_args: object, **_kwargs: object) -> None:
         raise OSError("missing")
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _raise_oserror)
+    _stub_notification_spawn(monkeypatch, _raise_oserror)
     assert await drivers._run_command(["missing"]) is False
 
     class _NonzeroProcess:
@@ -208,7 +219,7 @@ async def test_run_command_spawns_hidden_windows_console(monkeypatch: pytest.Mon
     hidden = {"creationflags": process_mod._CREATE_NEW_CONSOLE, "startupinfo": "hidden-startupinfo"}
     monkeypatch.setattr(process_mod.sys, "platform", "win32")
     monkeypatch.setattr(process_mod, "windows_hidden_subprocess_kwargs", lambda: dict(hidden))
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _capture)
+    _stub_notification_spawn(monkeypatch, _capture)
 
     assert await drivers._run_command(["C:\\pwsh.exe", "-NoProfile", "-Command", "notify"]) is True
 
@@ -265,7 +276,7 @@ async def test_run_command_timeout_cleanup_hides_taskkill_console(monkeypatch: p
     monkeypatch.setattr(process_mod.sys, "platform", "win32")
     monkeypatch.setattr(process_mod, "windows_hidden_subprocess_kwargs", lambda: dict(hidden))
     monkeypatch.setattr(process_mod.shutil, "which", lambda name: taskkill if name == "taskkill" else None)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
+    _stub_notification_spawn(monkeypatch, _spawn)
 
     assert await drivers._run_command(["C:\\pwsh.exe", "-Command", "notify"], timeout=0.001) is False
 

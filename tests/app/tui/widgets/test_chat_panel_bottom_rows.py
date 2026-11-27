@@ -45,6 +45,10 @@ def _shows(body: VirtualizedMarkdown, text: str) -> bool:
     return body.source == text and body._pending_parse is None and not body.lock.is_locked
 
 
+def _shows_preview(answer: AgentMessage, text: str) -> bool:
+    return answer.text == text and answer.query_one(_FoldRowHeader).render().plain.startswith("▸ Replying...")
+
+
 def _text_rows(answer: AgentMessage) -> int:
     """The rows of the answer's header and text, and the blank row below text between tool calls."""
     body = answer.query_one(VirtualizedMarkdown)
@@ -216,8 +220,8 @@ async def test_a_streamed_answer_gives_back_at_once_the_row_its_closing_markup_f
         cp = app.query_one(ChatPanel)
         await scrolled_to_bottom(cp, pilot)
         cp.agent_running = True
-        await cp.add_answer_delta("segment-1", "start")
-        answer = cp.mounted_agent_messages()[-1]
+        answer = AgentMessage("start", is_final=False)
+        await cp.mount_transcript_widget(answer)
         body = answer.query_one(VirtualizedMarkdown)
         await wait_for(
             lambda: _shows(body, "start") and screen_is_settled(app, cp.screen),
@@ -337,9 +341,10 @@ async def test_an_answer_shows_its_tool_group_folded_above_it_in_the_frame_that_
         ) as heights:
             await cp.add_answer_delta("segment-1", "The answer starts")
         answer = cp.mounted_agent_messages()[-1]
-        body = answer.query_one(VirtualizedMarkdown)
         await wait_for(
-            lambda: group.collapsed and _shows(body, "The answer starts") and screen_is_settled(app, cp.screen),
+            lambda: (
+                group.collapsed and _shows_preview(answer, "The answer starts") and screen_is_settled(app, cp.screen)
+            ),
             pilot=pilot,
             description="the answer started below the folded group",
         )
@@ -460,11 +465,7 @@ async def test_text_and_the_tool_call_after_it_fold_as_what_follows_them_starts_
         await cp.add_answer_delta("segment-1", "A short note")
         note = cp.mounted_agent_messages()[-1]
         await wait_for(
-            lambda: (
-                group.collapsed
-                and _shows(note.query_one(VirtualizedMarkdown), "A short note")
-                and screen_is_settled(app, cp.screen)
-            ),
+            lambda: group.collapsed and _shows_preview(note, "A short note") and screen_is_settled(app, cp.screen),
             pilot=pilot,
             description="the note started below the folded group",
         )
@@ -492,11 +493,7 @@ async def test_text_and_the_tool_call_after_it_fold_as_what_follows_them_starts_
         await cp.add_answer_delta("segment-2", "The answer")
         answer = cp.mounted_agent_messages()[-1]
         await wait_for(
-            lambda: (
-                following.collapsed
-                and _shows(answer.query_one(VirtualizedMarkdown), "The answer")
-                and screen_is_settled(app, cp.screen)
-            ),
+            lambda: following.collapsed and _shows_preview(answer, "The answer") and screen_is_settled(app, cp.screen),
             pilot=pilot,
             description="the answer started below the folded group",
         )
@@ -523,7 +520,7 @@ async def test_a_turn_with_its_tool_groups_folded_shows_its_end_on_the_bottom_bo
         note = cp.mounted_agent_messages()[-1]
         await wait_for(
             lambda: (
-                _shows(note.query_one(VirtualizedMarkdown), text)
+                note.query_one(_FoldRowHeader).render().plain.startswith("▸ Replying...")
                 and cp.scroll_y == cp.max_scroll_y
                 and screen_is_settled(app, cp.screen)
             ),
@@ -587,7 +584,7 @@ async def test_text_that_starts_while_the_turn_waits_shows_the_thinking_folded_a
             lambda: (
                 thinking.collapsed
                 and not row.display
-                and _shows(answer.query_one(VirtualizedMarkdown), "The answer")
+                and _shows_preview(answer, "The answer")
                 and screen_is_settled(app, cp.screen)
             ),
             pilot=pilot,
@@ -650,8 +647,8 @@ async def _start(cp: ChatPanel, follows: str) -> Callable[[], bool]:
     """Start more text, or a tool call, as *follows* says; whether it shows."""
     if follows == "text":
         await cp.add_answer_delta("segment-2", "The answer")
-        body = cp.mounted_agent_messages()[-1].query_one(VirtualizedMarkdown)
-        return lambda: _shows(body, "The answer")
+        answer = cp.mounted_agent_messages()[-1]
+        return lambda: _shows_preview(answer, "The answer")
     await cp.add_tool_start("c-next", "read_file", KIND_FILESYSTEM_READ, "next.py", {"path": "next.py"})
     group = cp.query_one(ToolGroup)
     return lambda: group.display
@@ -659,11 +656,10 @@ async def _start(cp: ChatPanel, follows: str) -> Callable[[], bool]:
 
 @pytest.mark.parametrize("thinking_expanded", [False, True], ids=["folded-thinking", "open-thinking"])
 @pytest.mark.parametrize("follows", ["tool-call", "text"])
-async def test_text_restored_above_thinking_keeps_the_end_on_the_bottom_border(
+async def test_text_stays_above_later_thinking_and_keeps_the_end_on_the_bottom_border(
     monkeypatch: pytest.MonkeyPatch, thinking_expanded: bool, follows: str
 ) -> None:
-    """Thinking appears above the possible answer. When the answer folds into the process, no frame has a blank
-    row under the transcript's last line."""
+    """When the preview above later thinking joins the process, its row stays in place and fits the viewport."""
     async with ChatPanelApp(thinking_expanded=lambda: thinking_expanded).run_test(size=(80, 40)) as pilot:
         app = pilot.app
         cp = app.query_one(ChatPanel)
@@ -680,11 +676,11 @@ async def test_text_restored_above_thinking_keeps_the_end_on_the_bottom_border(
         await wait_for(
             lambda: cp.scroll_y == cp.max_scroll_y and screen_is_settled(app, cp.screen),
             pilot=pilot,
-            description="the thinking laid out above the note",
+            description="the thinking laid out below the note",
         )
         title = cp.query_one(LiveProcessRow)
-        assert title.region.y < thinking.region.y < note.region.y
-        assert thinking.gap_above
+        assert title.region.y < note.region.y < thinking.region.y
+        assert thinking.gap_above_from is note
         blank_rows = _record_blank_rows(monkeypatch, cp)
 
         started = await _start(cp, follows)
@@ -720,12 +716,33 @@ def _held_parses(monkeypatch: pytest.MonkeyPatch, *sources: str) -> Iterator[dic
             gate.set()
 
 
+async def test_the_final_reply_replaces_the_preview_while_its_markdown_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    final = "A complete reply.\n\nWith a second paragraph."
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("Prompt")
+        await panel.add_answer_delta("answer", final)
+        preview = panel.query_one(AgentMessage)
+        panel.finish_answer_segment("answer", completed=True)
+        with _held_parses(monkeypatch, final):
+            completed = asyncio.create_task(panel.add_agent_message(final))
+            await wait_for(completed.done, description="the turn completes while the Markdown parse is held")
+            await completed
+            assert not preview.is_attached
+            answer = panel.query_one(AgentMessage)
+            assert answer.text == final
+            body = answer.query_one(VirtualizedMarkdown)
+            assert body.shown_source == ""
+        await wait_for(lambda: body.shown_source == final, pilot=pilot, description="the full reply appears")
+
+
 async def _an_answer_below_a_folded_group(cp: ChatPanel, pilot: object) -> tuple[AgentMessage, VirtualizedMarkdown]:
     """Start an answer below the tool group it folds, in a view that follows the bottom."""
     app = cp.app
     group = await _following_a_tool_group(cp, pilot, tools=1)
-    await cp.add_answer_delta("segment-1", "The answer starts")
-    answer = cp.mounted_agent_messages()[-1]
+    group.collapsed = True
+    answer = AgentMessage("The answer starts", is_final=False, segment_ids=("segment-1",))
+    await cp.mount_transcript_widget(answer)
     body = answer.query_one(VirtualizedMarkdown)
     await wait_for(
         lambda: group.collapsed and _shows(body, "The answer starts") and screen_is_settled(app, cp.screen),

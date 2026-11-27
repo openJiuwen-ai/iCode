@@ -158,14 +158,18 @@ _textual_node_diet.apply_runtime_patch()
 def notification_driver(monkeypatch: pytest.MonkeyPatch) -> RecordingNotificationDriver:
     """Keep notification policy live, but never deliver to the developer's desktop.
 
-    Native-driver tests still exercise their own explicitly mocked OS commands.
     Acknowledging sound delivery also prevents NotificationService's bell fallback.
+    Native-driver tests stub the subprocess they exercise.
     """
-    from chrys.app.tui.notifications import service
+    from chrys.app.tui.notifications import drivers, service
     from tests.support.notifications import RecordingNotificationDriver
+
+    def refuse_native_subprocess(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Stub the notification subprocess in this test")
 
     driver = RecordingNotificationDriver()
     monkeypatch.setattr(service, "default_notification_driver", lambda: driver)
+    monkeypatch.setattr(drivers, "managed_subprocess", refuse_native_subprocess)
     return driver
 
 
