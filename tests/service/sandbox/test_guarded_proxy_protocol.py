@@ -16,12 +16,15 @@ each direction on its own.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
+import inspect
 import os
 import shutil
 import socket
 import tempfile
+import textwrap
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -877,3 +880,14 @@ async def test_the_sandbox_bridge_keeps_uploading_while_its_client_is_not_readin
 
     assert flooding.sent_chunks < _FloodingPeer._CHUNKS
     assert flooding.received == [b"hello"]
+
+
+def _function_ast(function: Callable[..., object]) -> str:
+    return ast.dump(ast.parse(textwrap.dedent(inspect.getsource(function))))
+
+
+def test_the_bridge_relays_with_the_proxy_tunnel_code() -> None:
+    """The in-sandbox daemon imports nothing from the package, so it carries its own copy."""
+    assert _function_ast(sandbox_daemon._tunnel) == _function_ast(guarded_proxy._tunnel)
+    assert _function_ast(sandbox_daemon._shut_write) == _function_ast(guarded_proxy._shut_write)
+    assert sandbox_daemon._RELAY_BYTES == guarded_proxy._RELAY_BYTES

@@ -439,6 +439,48 @@ def test_timed_out_follows_only_the_daemon_timeout_error(jiuwenbox_importable: N
     assert timed.model_dump()["timed_out"] is True
 
 
+class _ExitedDaemon:
+    returncode = 1
+
+    def poll(self) -> int:
+        return self.returncode
+
+
+@pytest.mark.parametrize(
+    ("log", "first_line"),
+    [
+        (
+            b"setting up\nbwrap: Can't mkdir /jiuwenbox: Permission denied\n\n",
+            "Sandbox daemon exited during startup with code 1: bwrap: Can't mkdir /jiuwenbox: Permission denied",
+        ),
+        (
+            b"Traceback\n  File x\nOSError: \x1b[31mno space\x1b[0m\n",
+            "Sandbox daemon exited during startup with code 1: OSError: [31mno space[0m",
+        ),
+        (b"\x1b\x07\n", "Sandbox daemon exited during startup with code 1."),
+    ],
+)
+def test_a_daemon_that_dies_at_startup_names_its_last_line_first(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+    log: bytes,
+    first_line: str,
+) -> None:
+    from jiuwenbox.server.runtime.process import ProcessRuntime
+
+    from chrys.service.sandbox import backend
+
+    runtime = ProcessRuntime()
+    runtime._cleanup_sandbox_artifacts = lambda *_args: None  # type: ignore[method-assign]
+    with (tmp_path / "startup.log").open("w+b") as startup_log:
+        startup_log.write(log)
+        with pytest.raises(RuntimeError) as caught:
+            runtime._verify_daemon_alive("box", _ExitedDaemon(), None, startup_log)  # type: ignore[arg-type]
+    message = str(caught.value)
+    assert message.splitlines()[0] == first_line
+    assert str(backend._not_ready({"error_message": message})) == f"Sandbox did not become ready: {first_line}"
+
+
 class _CreateRuntime:
     def __init__(self) -> None:
         self.mode = "ok"
@@ -597,12 +639,22 @@ async def test_dropped_duplicate_create_keeps_the_existing_sandbox(
     assert runtime.cleaned == []
 
 
-def test_the_server_health_lists_the_hidden_host_paths_feature(jiuwenbox_importable: None) -> None:
+async def test_the_server_health_lists_the_hidden_host_paths_feature(
+    jiuwenbox_importable: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
     from jiuwenbox.models.common import HealthResponse
+    from jiuwenbox.server.app import create_app
 
     from chrys.service.sandbox import backend
 
-    assert backend._HIDDEN_HOST_PATHS_FEATURE in HealthResponse(version="0").model_dump()["features"]
+    monkeypatch.setenv("JIUWENBOX_API_TOKEN", "health-token")
+    transport = httpx.ASGITransport(app=create_app())
+    headers = {"Authorization": "Bearer health-token"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://sandbox.test", headers=headers) as client:
+        assert await backend._require_health(client) is True
+    assert HealthResponse(version="0").features == []
 
 
 class _LateSpawnRuntime(_CreateRuntime):
@@ -661,6 +713,81 @@ async def test_a_delete_during_a_cold_start_also_stops_the_child_spawned_after_i
 
     assert isinstance(result, Response)
     assert result.status_code == 499
+    assert runtime.running == set()
+    assert await manager.list_sandboxes() == []
+    assert manager._starting == {}
+
+
+class _SlowStartRuntime(_LateSpawnRuntime):
+    """Spawns its child once ``spawn`` is set, then returns or raises once ``finish`` is set."""
+
+    def __init__(self, *, fails: bool) -> None:
+        super().__init__()
+        self.finish = asyncio.Event()
+        self.fails = fails
+
+    async def create(self, *, sandbox_id: str, policy_path: object, env: object) -> int:
+        del policy_path, env
+        self.entered.set()
+        await self.spawn.wait()
+        self.running.add(sandbox_id)
+        await self.finish.wait()
+        if self.fails:
+            raise RuntimeError("the daemon did not answer")
+        return 7
+
+
+@pytest.mark.parametrize("start", ["returns", "raises"])
+@pytest.mark.parametrize("ends", ["wait_runs_out", "delete_cancelled"])
+async def test_a_delete_that_stops_waiting_for_a_start_finishes_once_the_start_ends(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ends: str,
+    start: str,
+) -> None:
+    """The client stays connected, so only the deferred delete removes the sandbox and its late child."""
+    from jiuwenbox.models.sandbox import SandboxPhase
+    from jiuwenbox.server import sandbox_manager
+    from jiuwenbox.server.routes import sandbox as sandbox_routes
+    from jiuwenbox.server.routes.sandbox import CreateSandboxRequest, create_sandbox
+
+    from tests.support.waiting import wait_for
+
+    if ends == "wait_runs_out":
+        monkeypatch.setattr(sandbox_manager, "DELETE_START_WAIT_SECONDS", 0.0)
+    runtime = _SlowStartRuntime(fails=start == "raises")
+    manager = _route_manager(tmp_path, runtime)
+    monkeypatch.setattr(sandbox_routes, "_mgr", lambda: manager)
+    creating = asyncio.create_task(
+        create_sandbox(CreateSandboxRequest(sandbox_id="slow"), _DisconnectRequest(None))  # type: ignore[arg-type]
+    )
+    await wait_for(lambda: runtime.entered.is_set() or creating.done(), description="the runtime start under way")
+    ref = manager._sandboxes["slow"]
+    deleting = asyncio.create_task(manager.delete_sandbox("slow"))
+    if ends == "wait_runs_out":
+        await deleting
+    else:
+        await wait_for(
+            lambda: deleting.done() or ref.phase == SandboxPhase.DELETING,
+            description="the delete marked the sandbox",
+        )
+        deleting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await deleting
+
+    assert not creating.done()
+    assert manager._sandboxes == {"slow": ref}
+    assert ref.phase == SandboxPhase.DELETING
+    assert len(manager._deferred_deletes) == 1
+    runtime.spawn.set()
+    await wait_for(lambda: "slow" in runtime.running, description="the child spawned after the delete returned")
+    runtime.finish.set()
+    result = await creating
+    await wait_for(lambda: not manager._deferred_deletes, description="the deferred delete finished")
+
+    assert result is ref
+    assert result.phase == SandboxPhase.DELETING
     assert runtime.running == set()
     assert await manager.list_sandboxes() == []
     assert manager._starting == {}

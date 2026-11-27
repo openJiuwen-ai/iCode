@@ -42,5 +42,6 @@ class HealthResponse(BaseModel):
     runtime: str = "process"
     landlock_supported: bool = False
     sandboxes_active: int = 0
-    # Optional request fields this server honours, for clients that rely on them.
-    features: list[str] = Field(default_factory=lambda: ["hidden_host_paths"])
+    # Optional request fields this server honours, for clients that rely on
+    # them. The ``/health`` route names them; a bare model claims none.
+    features: list[str] = Field(default_factory=list)

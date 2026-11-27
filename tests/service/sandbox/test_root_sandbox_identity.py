@@ -563,6 +563,7 @@ def test_workspace_under_private_tmp_is_rebound_after_the_tmpfs(
     assert argv.count("/home/dev/ws") == 2
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="the sandbox server runs on Linux only")
 @pytest.mark.parametrize("destination", ["/tmp", "/tmp/", "/run", "/var/run"])
 def test_host_bind_onto_a_private_directory_is_refused(
     jiuwenbox_importable: None,

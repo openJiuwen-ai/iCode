@@ -557,6 +557,7 @@ def create_app() -> FastAPI:
             version=__version__,
             landlock_supported=detect_landlock_abi() > 0,
             sandboxes_active=active,
+            features=["hidden_host_paths"],
         )
 
     from jiuwenbox.server.routes.mcp import mcp_server

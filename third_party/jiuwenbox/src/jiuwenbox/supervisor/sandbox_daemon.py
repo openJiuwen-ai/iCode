@@ -638,6 +638,9 @@ _GUARDED_PROXY_PORT = 3128
 # Longer than the host proxy's idle limit, so the host side ends an idle
 # connection first and this relay only reclaims one the host never closed.
 _GUARDED_BRIDGE_IDLE_SECONDS = 330.0
+# The relay below is ``guarded_proxy._tunnel`` copied verbatim, with its
+# buffer size, because this script imports nothing from the package.
+_RELAY_BYTES = 65536
 
 
 def _limit_output_file_size() -> None:
@@ -683,11 +686,7 @@ def _make_command_preexec(
 def _bridge_guarded_client(client: socket.socket) -> None:
     """Relay one sandbox connection to the host proxy socket.
 
-    The two directions move independently: bytes a peer is not reading yet
-    wait in a buffer of at most 64 KiB while the other direction keeps
-    flowing, and their source is not read until they are sent. A side that
-    closes its write half passes that on once its bytes are delivered. The
-    relay ends once both sides closed or nothing moved for
+    The relay ends once both sides closed or nothing moved for
     ``_GUARDED_BRIDGE_IDLE_SECONDS``.
     """
     remote = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -698,7 +697,7 @@ def _bridge_guarded_client(client: socket.socket) -> None:
         client.close()
         return
     try:
-        _relay_both_ways(client, remote, _GUARDED_BRIDGE_IDLE_SECONDS)
+        _tunnel(client, remote, _GUARDED_BRIDGE_IDLE_SECONDS)
     except OSError:
         pass
     finally:
@@ -706,11 +705,20 @@ def _bridge_guarded_client(client: socket.socket) -> None:
         client.close()
 
 
-def _relay_both_ways(left: socket.socket, right: socket.socket, idle: float) -> None:
-    # Kept in step with ``guarded_proxy._tunnel``; this script imports nothing from the package.
+def _tunnel(
+    left: socket.socket, right: socket.socket, idle_seconds: float, early: bytes = b""
+) -> None:
+    """Relay both ways until each side has closed or nothing moves for ``idle_seconds``.
+
+    The two directions move independently: bytes a peer is not reading yet
+    wait in a buffer of at most ``_RELAY_BYTES`` while the other direction
+    keeps flowing, and their source is not read until they are sent. A side
+    that closes its write half passes that on once its bytes are delivered.
+    ``early`` is what ``left`` already sent, still owed to ``right``.
+    """
     peer = {left: right, right: left}
     # Bytes received from the other side, waiting to be sent to the key.
-    pending = {left: bytearray(), right: bytearray()}
+    pending = {left: bytearray(), right: bytearray(early)}
     reading = {left, right}
     left.setblocking(False)
     right.setblocking(False)
@@ -729,7 +737,7 @@ def _relay_both_ways(left: socket.socket, right: socket.socket, idle: float) -> 
                     else:
                         selector.modify(sock, wanted, sock)
                     interest[sock] = wanted
-            events = selector.select(idle)
+            events = selector.select(idle_seconds)
             if not events:
                 return
             for key, mask in events:
@@ -744,7 +752,7 @@ def _relay_both_ways(left: socket.socket, right: socket.socket, idle: float) -> 
                         _shut_write(ready)
                 if mask & selectors.EVENT_READ:
                     try:
-                        chunk = ready.recv(65536)
+                        chunk = ready.recv(_RELAY_BYTES)
                     except BlockingIOError:
                         continue
                     if chunk:
@@ -1955,9 +1963,12 @@ def _fastpath_login_env_safe() -> bool:
             [
                 _BASH_BIN,
                 "-lc",
-                "exec python3 -c 'import json,os,sys;"
-                "sys.stdout.write(json.dumps(dict(os.environ)))'",
+                (
+                    "exec python3 -c 'import json,os,sys;"
+                    "sys.stdout.write(json.dumps(dict(os.environ)))'"
+                ),
             ],
+            check=False,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,

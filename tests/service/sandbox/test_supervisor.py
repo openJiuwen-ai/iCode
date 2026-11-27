@@ -1182,7 +1182,7 @@ async def test_ignored_sigterm_is_killed_within_the_grace(
         await running.closer.aclose()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot ignore SIGTERM")
+@pytest.mark.skipif(sys.platform != "linux", reason="the bundled sandbox server runs on Linux only")
 async def test_cancelling_the_stop_still_kills_a_child_that_ignores_sigterm(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

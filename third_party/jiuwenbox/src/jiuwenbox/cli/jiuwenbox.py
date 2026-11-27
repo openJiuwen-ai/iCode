@@ -39,7 +39,7 @@ import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, IO, NoReturn, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 import httpx
 
