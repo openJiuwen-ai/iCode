@@ -185,7 +185,15 @@ async def test_kind_shell_tool_without_a_command_skips_shell_identity_checks() -
 
 @pytest.mark.parametrize(
     "command",
-    ["cat .en''v", "rg secret .en''v", "env A=", "'env'", "cat café.txt .en''v", "rg secret café.txt .en''v"],
+    [
+        "cat .en''v",
+        "rg secret .en''v",
+        "env A=",
+        "'env'",
+        "en''v café",
+        "cat café.txt .en''v",
+        "rg secret café.txt .en''v",
+    ],
 )
 async def test_permissive_policy_still_requires_approval_for_normalized_sensitive_targets(
     command: str,

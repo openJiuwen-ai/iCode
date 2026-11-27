@@ -103,6 +103,30 @@ _GIT_DESCRIBE_FLAGS = frozenset(
 )
 _GIT_DESCRIBE_OPTIONS_WITH_VALUE = frozenset({"--candidates", "--exclude", "--match"})
 _GIT_DESCRIBE_OPTION_PREFIXES = ("--abbrev=", "--candidates=", "--exclude=", "--match=")
+_GIT_LS_FILES_FLAGS = frozenset(
+    {
+        "--abbrev",
+        "--cached",
+        "-c",
+        "--debug",
+        "--deduplicate",
+        "--directory",
+        "--error-unmatch",
+        "--exclude-standard",
+        "--full-name",
+        "--killed",
+        "-k",
+        "--no-empty-directory",
+        "--recurse-submodules",
+        "--stage",
+        "-s",
+        "--unmerged",
+        "-u",
+        "-z",
+    }
+)
+_GIT_LS_FILES_OPTIONS_WITH_VALUE = frozenset({"--exclude", "--format", "--with-tree"})
+_GIT_LS_FILES_OPTION_PREFIXES = ("--abbrev=", "--exclude=", "--format=", "--with-tree=")
 _GIT_GREP_FLAGS = frozenset(
     {
         "-n",
@@ -128,7 +152,6 @@ _GIT_NO_EXEC_READONLY_SUBCOMMANDS = frozenset(
         "check-ignore",
         "check-mailmap",
         "for-each-ref",
-        "ls-files",
         "ls-tree",
         "merge-base",
         "name-rev",
@@ -366,6 +389,16 @@ def _is_safe_git_stash(args: list[str]) -> bool:
     return False
 
 
+def _is_safe_git_ls_files(args: list[str]) -> bool:
+    """Accept only index/tree listing; worktree comparisons can run filters."""
+    return _git_args_use_only_allowed_options(
+        args,
+        flags=_GIT_LS_FILES_FLAGS,
+        options_with_value=_GIT_LS_FILES_OPTIONS_WITH_VALUE,
+        option_prefixes=_GIT_LS_FILES_OPTION_PREFIXES,
+    )
+
+
 def _is_safe_git_describe(args: list[str]) -> bool:
     """Accept only object queries; ``--dirty``/``--broken`` refresh the worktree."""
     return _git_args_use_only_allowed_options(
@@ -417,6 +450,8 @@ def _is_safe_git(args: list[str]) -> bool:
         return _git_args_use_only_allowed_options(sub_args, flags=_GIT_CAT_FILE_FLAGS)
     if subcommand == "describe":
         return _is_safe_git_describe(sub_args)
+    if subcommand == "ls-files":
+        return _is_safe_git_ls_files(sub_args)
     if subcommand in _GIT_NO_EXEC_READONLY_SUBCOMMANDS:
         return True
     if subcommand == "remote":

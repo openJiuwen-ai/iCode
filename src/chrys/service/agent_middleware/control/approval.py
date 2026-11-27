@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import os
+import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -57,6 +58,7 @@ from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedR
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
     shell_arg_may_access_sensitive_data,
+    shell_command_may_access_sensitive_data,
     target_may_access_sensitive_data,
 )
 from chrys.service.tools.approval_targets import approved_targets
@@ -368,7 +370,10 @@ class ApprovalMiddleware(FunctionMiddleware):
             # Unknown or unmodeled dialect: a POSIX simple-command parse is a
             # conservative extra sensitivity check (it can only require approval).
             parsed_argv = simple_command_argv(shell_command, shell_name="bash")
-        argv_sensitive = parsed_argv is not None and any(target_may_access_sensitive_data(arg) for arg in parsed_argv)
+        argv_sensitive = parsed_argv is not None and (
+            any(target_may_access_sensitive_data(arg) for arg in parsed_argv)
+            or shell_command_may_access_sensitive_data(shlex.join(parsed_argv), shell_name=shell_name)
+        )
         # Sensitive targets run before the policy fast path and the reuse offer:
         # both must see the normalized argv the command will actually execute,
         # not only the raw text.

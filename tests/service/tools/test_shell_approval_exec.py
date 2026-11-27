@@ -107,6 +107,28 @@ async def test_unexecutable_direct_binary_keeps_shell_exit_126(monkeypatch: pyte
     assert "shell not executable" not in result
 
 
+async def test_unenterable_working_directory_is_not_a_command_permission_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A cwd chdir failure must not be reported as an unexecutable command."""
+
+    async def denied_spawn(command, shell, cwd, *, direct_argv=None, sanitized=False):
+        raise PermissionError(13, "Permission denied", cwd)
+
+    monkeypatch.setattr(shell_module, "_spawn_pty", denied_spawn)
+    monkeypatch.setattr(shell_module, "_spawn_pipe", denied_spawn)
+    metadata: dict[str, object] = {}
+    token = shell_result_metadata.set(metadata)
+    try:
+        result = await _shell().execute("md5sum README.md", reason="test", workdir=str(tmp_path))
+    finally:
+        shell_result_metadata.reset(token)
+
+    assert "cannot enter working directory" in result
+    assert "[exit_code: 126]" not in result
+    assert SHELL_EXIT_CODE_METADATA_KEY not in metadata
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -161,6 +183,8 @@ def test_approval_safe_env_removes_startup_hooks(monkeypatch: pytest.MonkeyPatch
     assert not any(name.startswith("BASH_FUNC_") for name in env)
     assert env["PAGER"] == "cat"
     assert env["GIT_PAGER"] == "cat"
+    assert env["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
+    assert env["PIP_NO_INDEX"] == "1"
     assert env["GIT_CONFIG_GLOBAL"] == "/tmp/evil-global"
     assert env["GIT_CONFIG_SYSTEM"] == "/tmp/evil-system"
     assert "GIT_CONFIG_PARAMETERS" not in env

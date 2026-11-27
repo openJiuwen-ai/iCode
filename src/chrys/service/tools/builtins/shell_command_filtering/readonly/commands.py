@@ -9,7 +9,6 @@ import re
 from chrys.service.tools.builtins.shell_command_filtering.readonly.git import _is_safe_git
 
 _VERSION_HELP_ARGS_BY_COMMAND = {
-    "cargo": frozenset({("--version",), ("-V",), ("--help",), ("-h",), ("help",), ("version",)}),
     "curl": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "dotnet": frozenset({("--version",), ("--info",), ("--list-sdks",), ("--list-runtimes",), ("--help",), ("-h",)}),
     "java": frozenset({("-version",), ("--version",), ("-help",), ("--help",), ("-h",)}),
@@ -98,10 +97,6 @@ _XARGS_OPTION_PREFIXES_WITH_VALUE = (
 )
 
 
-def _has_arg(args: list[str], value: str) -> bool:
-    return value in args
-
-
 def _has_arg_with_prefix(args: list[str], prefixes: tuple[str, ...]) -> bool:
     return any(any(arg.startswith(prefix) for prefix in prefixes) for arg in args)
 
@@ -125,6 +120,7 @@ def _is_safe_pip(args: list[str]) -> bool:
     if subcommand == "list":
         return not any(
             arg in _PIP_LIST_BLOCKED_ARGS
+            or _has_single_dash_option_char(arg, frozenset({"o", "u"}))
             or any(_is_long_option_abbreviation(arg, blocked) for blocked in _PIP_LIST_BLOCKED_LONG_ARGS)
             for arg in args[1:]
         )
@@ -148,7 +144,7 @@ def _is_safe_ruff(args: list[str]) -> bool:
             sub_args, _RUFF_NON_FIXING_CHECK_ARGS
         )
     if subcommand == "format":
-        return (_has_arg(sub_args, "--check") or _has_arg(sub_args, "--diff")) and _has_any_ruff_arg(
+        return _has_any_ruff_arg(sub_args, frozenset({"--check", "--diff"})) and _has_any_ruff_arg(
             sub_args, _RUFF_NO_CACHE_ARGS
         )
     return False

@@ -528,7 +528,6 @@ def test_safe_readonly_allows_dev_version_help_probes() -> None:
     assert is_safe_readonly_command("uv --version")
     assert is_safe_readonly_command("pytest --version")
     assert is_safe_readonly_command("mypy --help")
-    assert is_safe_readonly_command("cargo --version")
     assert is_safe_readonly_command("java -version")
     assert is_safe_readonly_command("dotnet --info")
     assert is_safe_readonly_command("wget --version")
@@ -547,6 +546,7 @@ def test_safe_readonly_rejects_bare_version_help_targets() -> None:
     assert not is_safe_readonly_command("npx version")
     assert not is_safe_readonly_command("mypy help")
     assert not is_safe_readonly_command("go version")
+    assert not is_safe_readonly_command("cargo --version")
 
 
 def test_safe_readonly_rejects_arbitrary_dev_execution() -> None:
@@ -586,6 +586,7 @@ def test_safe_readonly_allows_pip_readonly_inspection() -> None:
     assert not is_safe_readonly_command("pip list --outdated")
     assert not is_safe_readonly_command("pip list --out")
     assert not is_safe_readonly_command("pip list --upt")
+    assert not is_safe_readonly_command("pip list -ou")
     assert not is_safe_readonly_command("pip install chrys")
 
 

@@ -211,6 +211,15 @@ def classify_shell_for_approval(command: str, *, shell_name: str = "") -> Approv
         # Which pytest runs comes from PATH. pytest 8 loads plugins and conftest
         # even for ``--version``; only pytest 9 skips that. Require approval.
         return ApprovalShellDecision(reason="not_approval_safe:pytest")
+    if name == "xargs":
+        # GNU xargs has optional-value options and a child-command suffix whose
+        # parsing differs by implementation; keep it behind approval.
+        return ApprovalShellDecision(reason="not_approval_safe:xargs")
+    if name == "find" and any(arg.startswith(("-f", "--files0-from=")) or arg == "--files0-from" for arg in args):
+        # BSD find treats -f as a path option (and -fpath as its attached
+        # spelling), so a following token starting with "-" is a path, not an
+        # expression action. The flat validator cannot tell them apart.
+        return ApprovalShellDecision(reason="not_approval_safe:find")
     if _is_safe_special_command(name, args):
         return _safe_command(argv, execution="exec", rule=f"validator:{name}", shell_name=shell_name)
     return ApprovalShellDecision(reason=f"not_approval_safe:{name}")

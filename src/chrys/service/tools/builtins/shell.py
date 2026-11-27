@@ -383,6 +383,10 @@ def _approval_safe_env() -> dict[str, str]:
     # build_shell_subprocess_env already sets cat; pin it again after cleanup.
     env["PAGER"] = "cat"
     env["GIT_PAGER"] = "cat"
+    # Pip's read-only queries must stay local even when the environment or a
+    # config file enables an index-backed mode.
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    env["PIP_NO_INDEX"] = "1"
     # Keep Git's global/system config for read-only semantics (core.excludesFile,
     # safe.directory), including the user's GIT_CONFIG_GLOBAL/SYSTEM/NOSYSTEM,
     # but pin every key that can execute another program. The inherited
@@ -405,6 +409,17 @@ def _approval_safe_env() -> dict[str, str]:
     env["GIT_CONFIG_KEY_6"] = "gpg.x509.program"
     env["GIT_CONFIG_VALUE_6"] = os.devnull
     return env
+
+
+def _permission_error_is_working_dir(exc: PermissionError, cwd: str) -> bool:
+    """Return whether *exc* came from entering *cwd*, not from starting a program."""
+    filename = exc.filename
+    if not isinstance(filename, (str, bytes)):
+        return False
+    try:
+        return os.path.samefile(filename, cwd)
+    except OSError:
+        return os.path.abspath(os.fspath(filename)) == os.path.abspath(cwd)
 
 
 def _direct_argv_variants(argv: Sequence[str]) -> list[tuple[str, ...]]:
@@ -1198,8 +1213,14 @@ class ShellTools:
             if workdir:
                 return _workdir_not_found(exc.path, workdir)
             return working_dir_missing_error(exc.path)
-        except PermissionError:
+        except PermissionError as exc:
             _record_shell_error()
+            if _permission_error_is_working_dir(exc, cwd):
+                return tool_error(
+                    "working_dir_permission_denied",
+                    f"cannot enter working directory — {cwd}",
+                    details={"working_dir": cwd},
+                )
             if argv:
                 # Direct exec reports an unexecutable file at spawn time. The
                 # shell path would print ``permission denied`` and exit 126.
