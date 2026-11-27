@@ -15,10 +15,14 @@ and keeps it only in memory. This module does not run the user's command
 on the host.
 
 Each child gets its own owner-only engine home directory under
-``<config_dir>/sandbox-engine``, named after this process's pid, so children
-of one or several iCode processes never share state, policy or workspace
-files. The home is removed after the child's close. A start also removes
-homes whose iCode process no longer exists.
+``<config_dir>/sandbox-engine``, so children of one or several iCode
+processes never share state, policy or workspace files. The home is removed
+after the child's close. While it exists its process holds a lock on a
+sibling ``<home>.lock`` file, and a start removes the homes of this host
+whose lock is free: their process ended without removing them. The lock,
+not a pid lookup, decides, so iCode in another pid namespace on a shared
+config volume keeps its home; homes named after another host are left to
+that host.
 
 Each child keeps the ``sandbox.network`` value it was started with. The
 caller passes the value from its own settings, so a change reaches a
@@ -38,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 import secrets
 import shutil
@@ -45,7 +50,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import AsyncGenerator, Awaitable
 from contextlib import asynccontextmanager
@@ -53,6 +57,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NoReturn, Protocol
 
+from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.once_close import finish_close
 from chrys.service.sandbox.backend import SandboxError
 from chrys.service.sandbox.client import open_client
@@ -124,6 +129,8 @@ _NETWORK_MODES = frozenset({"offline", "guarded", "host"})
 _server: _RunningServer | None = None
 _retired: list[_RunningServer] = []
 _lock: asyncio.Lock | None = None
+# Home path -> the lock this process holds on it while the home exists.
+_engine_home_locks: dict[str, FileLock] = {}
 
 
 def _engine_homes_root() -> Path:
@@ -133,33 +140,72 @@ def _engine_homes_root() -> Path:
 
 
 def _new_engine_home() -> str:
-    """Create an owner-only home for one child, named after this process."""
+    """Create an owner-only home for one child and hold its lock until :func:`_remove_engine_home`."""
     root = _engine_homes_root()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     _sweep_stale_engine_homes(root)
-    return tempfile.mkdtemp(prefix=f"{os.getpid()}-", dir=root)
+    home = root / f"{_host_tag()}-{os.getpid()}-{secrets.token_hex(8)}"
+    lock = FileLock(_engine_home_lock_path(home), timeout=0)
+    lock.acquire()
+    try:
+        home.mkdir(mode=0o700)
+    except BaseException:
+        _release_engine_home_lock(lock)
+        raise
+    _engine_home_locks[str(home)] = lock
+    return str(home)
+
+
+def _host_tag() -> str:
+    return hashlib.sha256(socket.gethostname().encode("utf-8", "surrogateescape")).hexdigest()[:12]
+
+
+def _engine_home_lock_path(home: Path) -> Path:
+    return home.with_name(home.name + ".lock")
+
+
+def _release_engine_home_lock(lock: FileLock) -> None:
+    lock.release()
+    # Windows refuses to delete a file that is still open, so the unlink follows the release.
+    with contextlib.suppress(OSError):
+        lock.path.unlink()
 
 
 def _sweep_stale_engine_homes(root: Path) -> None:
-    """Remove homes whose iCode process is gone; it could not remove them itself."""
-    import psutil
-
+    """Remove this host's homes whose lock is free; their process could not remove them itself."""
     try:
-        entries = list(root.iterdir())
+        names = {entry.name.removesuffix(".lock") for entry in root.iterdir()}
     except OSError:
         return
-    for entry in entries:
-        owner, _sep, _rest = entry.name.partition("-")
-        if not owner.isdecimal():
+    host = _host_tag()
+    for name in names:
+        tag, _sep, _rest = name.partition("-")
+        if tag != host:
             continue
-        pid = int(owner)
-        if pid == os.getpid() or psutil.pid_exists(pid):
+        home = root / name
+        lock = FileLock(_engine_home_lock_path(home), timeout=0)
+        try:
+            lock.acquire()
+        except OSError:
+            # Held by a live process (TimeoutError), or not a lock this module can take.
             continue
-        shutil.rmtree(entry, ignore_errors=True)
+        try:
+            shutil.rmtree(home, ignore_errors=True)
+        finally:
+            _release_engine_home_lock(lock)
 
 
 async def _remove_engine_home(home: str) -> None:
-    await asyncio.to_thread(shutil.rmtree, home, True)
+    await asyncio.to_thread(_remove_engine_home_now, home)
+
+
+def _remove_engine_home_now(home: str) -> None:
+    try:
+        shutil.rmtree(home, ignore_errors=True)
+    finally:
+        lock = _engine_home_locks.pop(home, None)
+        if lock is not None:
+            _release_engine_home_lock(lock)
 
 
 def uds_http_base() -> str:

@@ -164,6 +164,42 @@ async def test_cwd_in_the_config_dir_under_a_home_workspace_is_rejected(
     assert _exec_ids(script) == []
 
 
+_SERVER_CANNOT_HIDE = (
+    "The sandbox service at sandbox.url cannot hide the iCode config and session directories, and this "
+    "workspace contains one of them. Update the sandbox service, or use a workspace that does not contain them."
+)
+
+
+async def test_a_service_that_cannot_hide_directories_is_refused_a_workspace_holding_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    home = tmp_path / "home"
+    _config_dir_in(home, monkeypatch)
+    script = _Script()
+    script.health = {"status": "ok"}
+    _install(monkeypatch, script)
+    with pytest.raises(SandboxError) as caught:
+        await _run_workspace(_Settings(), cwd=str(home), workspace_root=str(home))
+    assert str(caught.value) == _SERVER_CANNOT_HIDE
+    assert _create_bodies(script) == []
+
+
+async def test_a_service_that_cannot_hide_directories_still_runs_a_workspace_without_them(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _config_dir_in(tmp_path / "home", monkeypatch)
+    work = tmp_path / "work"
+    work.mkdir()
+    script = _Script()
+    script.health = {"status": "ok", "features": []}
+    _install(monkeypatch, script)
+    result = await _run_workspace(_Settings(), cwd=str(work), workspace_root=str(work))
+    assert result.exit_code == 0
+    assert _exec_workdirs(script) == [os.path.realpath(work)]
+
+
 async def test_a_workspace_inside_the_config_dir_keeps_its_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A mount that starts below the hidden directory is a bind of its own and stays visible."""
     config = _config_dir_in(tmp_path / "home", monkeypatch)

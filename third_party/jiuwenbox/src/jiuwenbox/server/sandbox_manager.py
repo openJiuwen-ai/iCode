@@ -216,6 +216,10 @@ class SandboxManager:
         # second manager using the same directories keeps its own state.
         self._owned_state_files: set[Path] = set()
         self._owned_policy_files: set[Path] = set()
+        # Set once a create's runtime start for that id has finished, failed or
+        # been cancelled. A delete waits for it before cleaning up, so a child
+        # the start spawns after the delete began is still removed.
+        self._starting: dict[str, asyncio.Event] = {}
         # 空闲沙箱淘汰: 后台 reaper task 句柄 + stop event。``None`` 表示当前没有
         # reaper 在跑 (idle_timeout 未配置 / 已被禁用 / 服务尚未 startup)。
         self._idle_reaper_task: asyncio.Task | None = None
@@ -682,9 +686,33 @@ class SandboxManager:
                     delivery.registered = None
                 raise
             runtime = self._runtime_for(ref)
+            started = asyncio.Event()
+            self._starting[sandbox_id] = started
 
         # Runtime startup can be expensive. Do it outside the manager-wide lock
         # so independent sandboxes can start in parallel.
+        try:
+            return await self._start_created(ref, runtime, policy_path, delivery)
+        finally:
+            if self._starting.get(sandbox_id) is started:
+                del self._starting[sandbox_id]
+            started.set()
+
+    async def _start_created(
+        self,
+        ref: SandboxRef,
+        runtime: RuntimeAdapter,
+        policy_path: Path,
+        delivery: CreateDelivery | None,
+    ) -> SandboxRef:
+        """Start the runtime of a just-registered ``ref`` and publish READY, or clean it up.
+
+        A start the client left, or a delete began on, is cleaned up here once
+        it returns. A delete waits until this has returned, failed or been
+        cancelled, then runs its own cleanup, so a child spawned under a
+        cancelled start is not left running.
+        """
+        sandbox_id = ref.id
         try:
             pid = await runtime.create(
                 sandbox_id=sandbox_id,
@@ -901,6 +929,10 @@ class SandboxManager:
 
         With ``expected``, only that registered object is removed: an id
         now held by another ref raises :class:`SandboxNotFoundError`.
+
+        A create still starting this sandbox's runtime is waited for first,
+        so the cleanup also removes a child that start spawns late. The id
+        stays registered until then, so no other create can take it.
         """
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
@@ -909,6 +941,10 @@ class SandboxManager:
             runtime = self._runtime_for(ref)
             ref.phase = SandboxPhase.DELETING
             self._save_state(ref)
+            starting = self._starting.get(sandbox_id)
+
+        if starting is not None:
+            await starting.wait()
 
         # Cleanup can wait on processes and namespace teardown. Keep it outside
         # the global state lock so deleting one sandbox does not block unrelated

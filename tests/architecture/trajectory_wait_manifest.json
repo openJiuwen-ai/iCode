@@ -806,6 +806,7 @@
       "AgentEngine.shutdown": [
         ["awaitable", "await self._workflows.shutdown()", "unresolved"],
         ["awaitable", "await self._hook_confirmations.close()", "unresolved"],
+        ["wrapper", "await finish_close(asyncio.create_task(self._sandbox_hold.release()))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
         ["wrapper", "await self._release()", "unresolved", "chrys.orchestration.engine.engine.AgentEngine._release"]
       ],
       "AgentEngine.start": [
@@ -5455,6 +5456,17 @@
       "_stop_on_cancel": [
         ["wrapper", "await finish_close(task)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
       ],
+      "release_external_sandboxes": [
+        ["wrapper", "await finish_close(asyncio.create_task(delete_all()))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
+      "release_external_sandboxes.delete_all": [
+        ["timeout", "async with asyncio.timeout(_EXIT_DELETE_SECONDS)", "unresolved"],
+        ["gather", "await asyncio.gather(*(delete_on(url, ids) for url, ids in owned.items()), return_exceptions=True)", "unresolved"]
+      ],
+      "release_external_sandboxes.delete_on": [
+        ["wrapper", "async with connect(url, servers[url], _STOP_TIMEOUT_SECONDS, trust_env=True)", "unresolved", "chrys.service.sandbox.client.connect"],
+        ["wrapper", "await _delete_quietly(client, sandbox_id)", "unresolved", "chrys.service.sandbox.backend._delete_quietly"]
+      ],
       "run_shell": [
         ["wrapper", "await retire_bundled_server()", "unresolved", "chrys.service.sandbox.runtime_hold.retire_bundled_server"],
         ["awaitable", "await run(settings.sandbox_url, settings.sandbox_token, trust_env=True, server_key=settings.sandbox_url)", "unresolved"],
@@ -5472,6 +5484,7 @@
     },
     "chrys.service.sandbox.runtime_hold": {
       "RuntimeHold.release": [
+        ["wrapper", "await release_external_sandboxes()", "unresolved", "chrys.service.sandbox.backend.release_external_sandboxes"],
         ["wrapper", "await shutdown()", "unresolved", "chrys.service.sandbox.supervisor.shutdown"]
       ],
       "retire_bundled_server": [
@@ -5520,7 +5533,7 @@
         ["awaitable", "await stream.read(_READ_CHUNK_BYTES)", "unresolved"]
       ],
       "_remove_engine_home": [
-        ["thread_pool", "await asyncio.to_thread(shutil.rmtree, home, True)", "unresolved"]
+        ["thread_pool", "await asyncio.to_thread(_remove_engine_home_now, home)", "unresolved"]
       ],
       "_request_exit": [
         ["timeout", "await asyncio.wait_for(proc.wait(), _STOP_GRACE_SECONDS)", "unresolved"],

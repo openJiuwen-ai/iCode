@@ -3,19 +3,27 @@
 """Count the runtimes in this process that may run sandboxed commands.
 
 Importing this module does not import the supervisor or its HTTP client; the
-last release imports it to stop the bundled server.
+last release imports them to stop the bundled server and to delete what this
+process created on a configured ``sandbox.url``.
 """
 
 from __future__ import annotations
 
 _runtimes = 0
 _bundled_started = False
+_external_used = False
 
 
 def note_bundled_server_started() -> None:
     """Record that this process started a bundled server, which ``retire_bundled_server`` may stop."""
     global _bundled_started
     _bundled_started = True
+
+
+def note_external_server_used() -> None:
+    """Record that a command ran on a configured ``sandbox.url``, whose sandboxes the last release deletes."""
+    global _external_used
+    _external_used = True
 
 
 async def retire_bundled_server() -> None:
@@ -34,13 +42,14 @@ async def retire_bundled_server() -> None:
 
 
 class RuntimeHold:
-    """One runtime's claim on the bundled sandbox server for as long as it is live.
+    """One runtime's claim on the sandbox servers for as long as it is live.
 
     Engine assembly builds one per engine; the engine acquires it once it takes
     events and releases it once at shutdown. Both are idempotent, and a hold that
     was never acquired releases nothing. When the last held runtime releases,
-    ``supervisor.shutdown`` stops every bundled server: this process has no
-    runtime left to run sandboxed commands.
+    this process has no runtime left to run sandboxed commands: the sandboxes
+    it created on a configured ``sandbox.url`` are deleted there, and
+    ``supervisor.shutdown`` stops every bundled server.
     """
 
     def __init__(self) -> None:
@@ -61,6 +70,12 @@ class RuntimeHold:
         _runtimes -= 1
         if _runtimes:
             return
-        from chrys.service.sandbox.supervisor import shutdown
+        try:
+            if _external_used:
+                from chrys.service.sandbox.backend import release_external_sandboxes
 
-        await shutdown()
+                await release_external_sandboxes()
+        finally:
+            from chrys.service.sandbox.supervisor import shutdown
+
+            await shutdown()

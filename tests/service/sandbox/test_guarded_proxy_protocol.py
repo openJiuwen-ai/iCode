@@ -8,8 +8,10 @@ uploads, interim responses, close-delimited and truncated responses,
 request framing that could smuggle a second request, origin-form targets
 and hop-by-hop fields, trying each resolved address, the IPv6 transition
 ranges, streaming without holding a whole body, the idle limit on tunnels,
-upstream waits and the in-sandbox bridge, and :meth:`GuardedProxy.close`
-ending open connections, also from the runtime's stop and restart.
+upstream waits and the in-sandbox bridge, :meth:`GuardedProxy.close`
+ending open connections, also from the runtime's stop and restart, an
+origin answering before the upload ends, and tunnels and the bridge moving
+each direction on its own.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ import jiuwenbox.supervisor.guarded_proxy as guarded_proxy
 import jiuwenbox.supervisor.sandbox_daemon as sandbox_daemon
 import pytest
 
-from tests.support.waiting import wait_for
+from tests.support.waiting import wait_for, wait_until
 
 _PUBLIC_HOST = "8.8.8.8"
 _READ_SECONDS = 15.0
@@ -708,3 +710,170 @@ async def test_sandbox_bridge_reclaims_an_idle_connection(
         holder.join(5)
 
     assert closed
+
+
+def _send_quietly(sock: socket.socket, data: bytes) -> None:
+    with contextlib.suppress(OSError):
+        sock.sendall(data)
+
+
+@pytest.mark.parametrize(
+    ("sent", "origin_reads"),
+    [
+        pytest.param(1024, 0, id="client-pauses-mid-body"),
+        pytest.param(4 * 1024 * 1024, 65536, id="origin-stops-reading"),
+    ],
+)
+def test_origin_answer_during_the_upload_reaches_the_client(
+    monkeypatch: pytest.MonkeyPatch,
+    proxy: _Proxy,
+    origins: list[_Origin],
+    sent: int,
+    origin_reads: int,
+) -> None:
+    # Short enough that a proxy still waiting on the upload answers 502 well before the client gives up.
+    monkeypatch.setattr(guarded_proxy, "_IDLE_TIMEOUT_SECONDS", 3.0)
+
+    def serve(conn: socket.socket) -> None:
+        _head, rest = _read_head(conn)
+        _read_exact(conn, rest, origin_reads)
+        conn.sendall(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 3\r\nConnection: close\r\n\r\nbig")
+        origin.release.wait(_READ_SECONDS)
+
+    origin = _start(origins, serve)
+    _dial_to(monkeypatch, origin.port)
+    request = (
+        f"PUT http://{_PUBLIC_HOST}:{origin.port}/f HTTP/1.1\r\n".encode("ascii")
+        + f"Host: x\r\nContent-Length: {sent * 2}\r\n\r\n".encode("ascii")
+        + b"x" * sent
+    )
+    sender = threading.Thread(target=_send_quietly, args=(proxy.client, request), daemon=True)
+    sender.start()
+    try:
+        head, body = _final_response(proxy.client)
+        _rest, closed = _read_until_closed(proxy.client)
+        # The proxy keeps reading the rest of the body, so the client finishes sending it.
+        sender.join(_READ_SECONDS)
+        drained = not sender.is_alive()
+    finally:
+        proxy.client.close()
+        sender.join(5)
+
+    assert head.startswith(b"HTTP/1.1 413 "), head
+    assert body == b"big"
+    assert closed
+    assert drained
+
+
+class _FloodingPeer:
+    """Sends far more than any socket buffer holds while it waits for five bytes the other way."""
+
+    _CHUNK = b"y" * 65536
+    _CHUNKS = 512
+
+    def __init__(self) -> None:
+        self.sent_chunks = 0
+        self.arrived = threading.Event()
+        self.received: list[bytes] = []
+        self.release = threading.Event()
+
+    def serve(self, conn: socket.socket) -> None:
+        flood = threading.Thread(target=self._flood, args=(conn,), daemon=True)
+        flood.start()
+        self.received.append(_read_exact(conn, b"", 5))
+        self.arrived.set()
+        self.release.wait(_READ_SECONDS)
+        # Unlike close(), shutdown wakes the flood thread blocked in its send.
+        with contextlib.suppress(OSError):
+            conn.shutdown(socket.SHUT_RDWR)
+        flood.join(5)
+
+    def _flood(self, conn: socket.socket) -> None:
+        with contextlib.suppress(OSError):
+            for _ in range(self._CHUNKS):
+                conn.sendall(self._CHUNK)
+                self.sent_chunks += 1
+
+    async def stalled(self) -> None:
+        """Return once the flood stopped moving: every buffer towards the silent client is full."""
+        while True:
+            seen = self.sent_chunks
+            if not await wait_until(lambda seen=seen: self.sent_chunks != seen, timeout=0.5):
+                return
+
+
+async def test_a_tunnel_keeps_uploading_while_its_client_is_not_reading(
+    monkeypatch: pytest.MonkeyPatch,
+    origins: list[_Origin],
+) -> None:
+    peer = _FloodingPeer()
+    origin = _start(origins, peer.serve)
+    _dial_to(monkeypatch, origin.port)
+    served = _Proxy()
+    try:
+        served.client.sendall(f"CONNECT {_PUBLIC_HOST}:{origin.port} HTTP/1.1\r\nHost: x\r\n\r\n".encode("ascii"))
+        head, _rest = await asyncio.to_thread(_read_head, served.client)
+        assert head.startswith(b"HTTP/1.1 200 "), head
+        await peer.stalled()
+        served.client.sendall(b"hello")
+        await wait_for(peer.arrived.is_set, description="the upload passed the stalled download")
+    finally:
+        peer.release.set()
+        served.close()
+
+    assert peer.sent_chunks < _FloodingPeer._CHUNKS
+    assert peer.received == [b"hello"]
+
+
+@needs_unix_sockets
+async def test_the_sandbox_bridge_keeps_uploading_while_its_client_is_not_reading(
+    monkeypatch: pytest.MonkeyPatch,
+    short_dir: Path,
+) -> None:
+    flooding = _FloodingPeer()
+    path = short_dir / "f.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    listener.listen(1)
+
+    def accept() -> None:
+        try:
+            conn, _address = listener.accept()
+        except OSError:
+            return
+        with conn, contextlib.suppress(OSError):
+            conn.settimeout(_READ_SECONDS)
+            flooding.serve(conn)
+
+    peer = threading.Thread(target=accept, name="guarded-bridge-test-flood", daemon=True)
+    peer.start()
+    monkeypatch.setattr(sandbox_daemon, "_GUARDED_PROXY_SOCKET", str(path))
+    pair_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    pair_listener.bind(("127.0.0.1", 0))
+    pair_listener.listen(1)
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    worker: threading.Thread | None = None
+    try:
+        client.connect(pair_listener.getsockname())
+        accepted, _address = pair_listener.accept()
+        worker = threading.Thread(
+            target=sandbox_daemon._bridge_guarded_client,
+            args=(accepted,),
+            name="guarded-bridge-flood-test",
+            daemon=True,
+        )
+        worker.start()
+        await flooding.stalled()
+        client.sendall(b"hello")
+        await wait_for(flooding.arrived.is_set, description="the upload passed the stalled download")
+    finally:
+        flooding.release.set()
+        client.close()
+        pair_listener.close()
+        listener.close()
+        peer.join(5)
+        if worker is not None:
+            worker.join(5)
+
+    assert flooding.sent_chunks < _FloodingPeer._CHUNKS
+    assert flooding.received == [b"hello"]

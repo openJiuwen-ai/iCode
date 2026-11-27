@@ -18,6 +18,7 @@ import grp
 import json
 import logging
 import os
+import posixpath
 import pwd
 import shutil
 import signal
@@ -320,7 +321,7 @@ def _reject_binds_onto_private_tmpfs(policy: SecurityPolicy) -> None:
     """
     private = set(_PRIVATE_RUNTIME_DIRS)
     for mount in policy.filesystem_policy.bind_mounts:
-        destination = os.path.normpath(mount.sandbox_path)
+        destination = posixpath.normpath(mount.sandbox_path)
         if destination in private:
             raise RuntimeError(
                 f"Host path {mount.host_path!r} cannot be mounted at {destination}: the sandbox "

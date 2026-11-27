@@ -683,11 +683,12 @@ def _make_command_preexec(
 def _bridge_guarded_client(client: socket.socket) -> None:
     """Relay one sandbox connection to the host proxy socket.
 
-    A side that closes its write half passes that on while the other
-    direction keeps flowing, so a half-closed client still gets a slow
-    response. The relay ends once both sides closed or nothing moved for
-    ``_GUARDED_BRIDGE_IDLE_SECONDS``; a peer that stops reading fails the
-    send after the same wait.
+    The two directions move independently: bytes a peer is not reading yet
+    wait in a buffer of at most 64 KiB while the other direction keeps
+    flowing, and their source is not read until they are sent. A side that
+    closes its write half passes that on once its bytes are delivered. The
+    relay ends once both sides closed or nothing moved for
+    ``_GUARDED_BRIDGE_IDLE_SECONDS``.
     """
     remote = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -697,34 +698,68 @@ def _bridge_guarded_client(client: socket.socket) -> None:
         client.close()
         return
     try:
-        idle = _GUARDED_BRIDGE_IDLE_SECONDS
-        client.settimeout(idle)
-        remote.settimeout(idle)
-        with selectors.DefaultSelector() as selector:
-            selector.register(client, selectors.EVENT_READ, (client, remote))
-            selector.register(remote, selectors.EVENT_READ, (remote, client))
-            reading = 2
-            while reading:
-                events = selector.select(idle)
-                if not events:
-                    return
-                for key, _mask in events:
-                    source, target = key.data
-                    chunk = source.recv(65536)
-                    if chunk:
-                        target.sendall(chunk)
-                        continue
-                    selector.unregister(source)
-                    reading -= 1
-                    try:
-                        target.shutdown(socket.SHUT_WR)
-                    except OSError:
-                        pass
+        _relay_both_ways(client, remote, _GUARDED_BRIDGE_IDLE_SECONDS)
     except OSError:
         pass
     finally:
         remote.close()
         client.close()
+
+
+def _relay_both_ways(left: socket.socket, right: socket.socket, idle: float) -> None:
+    # Kept in step with ``guarded_proxy._tunnel``; this script imports nothing from the package.
+    peer = {left: right, right: left}
+    # Bytes received from the other side, waiting to be sent to the key.
+    pending = {left: bytearray(), right: bytearray()}
+    reading = {left, right}
+    left.setblocking(False)
+    right.setblocking(False)
+    with selectors.DefaultSelector() as selector:
+        interest = {left: 0, right: 0}
+        while reading or pending[left] or pending[right]:
+            for sock in (left, right):
+                wanted = selectors.EVENT_WRITE if pending[sock] else 0
+                if sock in reading and not pending[peer[sock]]:
+                    wanted |= selectors.EVENT_READ
+                if wanted != interest[sock]:
+                    if not interest[sock]:
+                        selector.register(sock, wanted, sock)
+                    elif not wanted:
+                        selector.unregister(sock)
+                    else:
+                        selector.modify(sock, wanted, sock)
+                    interest[sock] = wanted
+            events = selector.select(idle)
+            if not events:
+                return
+            for key, mask in events:
+                ready: socket.socket = key.data
+                if mask & selectors.EVENT_WRITE:
+                    try:
+                        sent = ready.send(pending[ready])
+                    except BlockingIOError:
+                        sent = 0
+                    del pending[ready][:sent]
+                    if not pending[ready] and peer[ready] not in reading:
+                        _shut_write(ready)
+                if mask & selectors.EVENT_READ:
+                    try:
+                        chunk = ready.recv(65536)
+                    except BlockingIOError:
+                        continue
+                    if chunk:
+                        pending[peer[ready]].extend(chunk)
+                        continue
+                    reading.discard(ready)
+                    if not pending[peer[ready]]:
+                        _shut_write(peer[ready])
+
+
+def _shut_write(sock: socket.socket) -> None:
+    try:
+        sock.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
 
 
 def _start_guarded_forwarder() -> None:

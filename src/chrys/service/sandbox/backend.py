@@ -87,8 +87,11 @@ home or one of its parents cannot read settings, keys or transcripts. The
 server hides its own home the same way, so this client adds no cover for
 it. A directory stays visible only below a mount that starts strictly
 inside it. A command cwd that the server would hide raises
-``SandboxError`` before a sandbox is created or reused. A server that does
-not know the field ignores it; the read-only cover above still applies.
+``SandboxError`` before a sandbox is created or reused. A server lists
+``hidden_host_paths`` in the ``features`` of its ``/health`` answer when it
+honours the field. A configured ``sandbox.url`` that does not raises
+``SandboxError`` when a workspace mount or the command cwd contains one of
+those directories; the bundled server always honours it.
 
 When ``workspace_root`` is omitted, the first command cwd remains the
 writable root of a single legacy slot. That slot is separate from the
@@ -111,7 +114,10 @@ bundled server. A command for another server parks the current entries
 and uses that server's own, so a switch to another URL and back reuses the
 sandboxes the first server still holds. A command with a configured URL
 also retires the bundled server this process started; it stops once no
-command leases it.
+command leases it. When the last runtime in the process releases, every
+sandbox still cached for a configured URL is deleted on that service
+(``release_external_sandboxes``), so restarting iCode does not leave them
+behind.
 
 Lock and command budget
 -----------------------
@@ -156,6 +162,7 @@ deleted either. This path does not POST ``/stop``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import os
 import posixpath
@@ -176,6 +183,8 @@ if TYPE_CHECKING:
 
 _HTTP_TIMEOUT_SLACK_SECONDS = 15.0
 _STOP_TIMEOUT_SECONDS = 2.0
+# Process exit waits at most this long for configured services to delete their sandboxes.
+_EXIT_DELETE_SECONDS = 5.0
 _MAX_READY_ERROR_CHARS = 200
 # Scheme, "://", and the rest of the token, userinfo and path included.
 _READY_ERROR_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
@@ -192,6 +201,11 @@ _OUTSIDE_WORKDIR = "Sandbox command working directory is outside the workspace a
 _UNENCODABLE_PATH = "Sandbox path could not be encoded for the sandbox request."
 _HIDDEN_WORKDIR = (
     "Sandbox command working directory is inside the iCode config or session directory, which the sandbox hides."
+)
+_HIDDEN_HOST_PATHS_FEATURE = "hidden_host_paths"
+_SERVER_CANNOT_HIDE = (
+    "The sandbox service at sandbox.url cannot hide the iCode config and session directories, and this "
+    "workspace contains one of them. Update the sandbox service, or use a workspace that does not contain them."
 )
 # Host trees that must not be bind-mounted merely because the process cwd
 # is there. The account home is added at the call. Comparison is realpath
@@ -226,6 +240,8 @@ _in_flight: dict[str, int] = {}
 _retiring: set[str] = set()
 _server_key: str | None = None
 _parked: dict[str, _ServerCache] = {}
+# Each configured ``sandbox_url`` a command used, with the token last sent there.
+_external_servers: dict[str, str] = {}
 _lock: asyncio.Lock | None = None
 # Every bundled server shares one key: a sandbox on a replaced one answers 404 and is recreated.
 _BUNDLED_SERVER_KEY = ""
@@ -273,6 +289,53 @@ def _use_server_cache(key: str) -> None:
         _readonly_root = restored.readonly_root
         _readonly_physical = restored.readonly_physical
     _server_key = key
+
+
+async def release_external_sandboxes() -> None:
+    """DELETE every sandbox this process keeps on a configured ``sandbox_url``.
+
+    The last runtime to release calls this at exit. No later command can reuse
+    those sandboxes, and a service with idle reaping off would keep each one
+    for good. The bundled server is stopped instead, which removes its own.
+    The whole release is bounded by ``_EXIT_DELETE_SECONDS``; a service that
+    does not answer keeps its sandboxes, and nothing here fails the exit.
+    """
+    servers = dict(_external_servers)
+    _external_servers.clear()
+    owned = {url: ids for url in servers if (ids := _take_server_ids(url))}
+    if not owned:
+        return
+    from chrys.service.sandbox.client import connect
+
+    async def delete_on(url: str, ids: tuple[str, ...]) -> None:
+        async with connect(url, servers[url], _STOP_TIMEOUT_SECONDS, trust_env=True) as client:
+            for sandbox_id in ids:
+                await _delete_quietly(client, sandbox_id)
+
+    async def delete_all() -> None:
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(_EXIT_DELETE_SECONDS):
+                await asyncio.gather(*(delete_on(url, ids) for url, ids in owned.items()), return_exceptions=True)
+
+    await finish_close(asyncio.create_task(delete_all()))
+
+
+def _take_server_ids(key: str) -> tuple[str, ...]:
+    """Empty ``key``'s cache slots and return the sandbox ids they held. No await."""
+    global _sandbox_id, _writable_root
+    if key == _server_key:
+        held = [_sandbox_id, _readonly_id, *_writable_by_root.values()]
+        _sandbox_id = None
+        _writable_root = None
+        _writable_by_root.clear()
+        _writable_mounts.clear()
+        _drop_readonly()
+    else:
+        parked = _parked.pop(key, None)
+        if parked is None:
+            return ()
+        held = [parked.sandbox_id, parked.readonly_id, *parked.writable_by_root.values()]
+    return tuple(dict.fromkeys(sandbox_id for sandbox_id in held if sandbox_id is not None))
 
 
 class SandboxError(Exception):
@@ -350,7 +413,7 @@ async def run_shell(
 
     # Imported here so a non-Linux call does not touch the client, and so this
     # module can define SandboxError before the client imports it back.
-    from chrys.service.sandbox.runtime_hold import retire_bundled_server
+    from chrys.service.sandbox.runtime_hold import note_external_server_used, retire_bundled_server
     from chrys.service.sandbox.supervisor import leased_server
 
     run = functools.partial(
@@ -362,6 +425,8 @@ async def run_shell(
         workspace_dirs=workspace_dirs,
     )
     if settings.sandbox_url:
+        _external_servers[settings.sandbox_url] = settings.sandbox_token
+        note_external_server_used()
         await retire_bundled_server()
         return await run(settings.sandbox_url, settings.sandbox_token, trust_env=True, server_key=settings.sandbox_url)
     # Held until the command is done: a server replaced by a network change
@@ -389,7 +454,9 @@ async def _run_on_server(
     # for a configured URL and is off for the bundled server this process started.
     http_timeout = float(timeout_seconds) + _HTTP_TIMEOUT_SLACK_SECONDS
     async with connect(base_url, token, http_timeout, trust_env=trust_env) as client:
-        await _require_health(client)
+        hides = await _require_health(client)
+        if not hides and server_key != _BUNDLED_SERVER_KEY:
+            _reject_unhidden_private_dirs(cwd, workspace_root, workspace_dirs)
         sandbox_id, workdir, remaining = await _sandbox_for_command(
             client,
             cwd,
@@ -411,10 +478,26 @@ async def _run_on_server(
                 await _delete_sandbox(client, sandbox_id)
 
 
-async def _require_health(client: httpx.AsyncClient) -> None:
+async def _require_health(client: httpx.AsyncClient) -> bool:
+    """Raise unless the server is healthy; return whether it hides ``hidden_host_paths``."""
     payload = _json_object(await client.get("/health"))
     if payload.get("status") != "ok":
         raise SandboxError("Sandbox server health is not ok.")
+    features = payload.get("features")
+    return isinstance(features, list) and _HIDDEN_HOST_PATHS_FEATURE in features
+
+
+def _reject_unhidden_private_dirs(cwd: str, workspace_root: str | None, workspace_dirs: Sequence[str]) -> None:
+    """Raise when a server that cannot hide directories would mount the config or session directory.
+
+    The mounts considered are the workspace mounts, or the cwd for the
+    legacy slot, and the cwd itself.
+    """
+    physical_cwd = _physical_dir(cwd)
+    mounts = _workspace_mounts(workspace_root, workspace_dirs) if workspace_root is not None else ()
+    for hidden in _hidden_host_paths():
+        if any(_same_or_inside_physical(mount, hidden) for mount in (*mounts, physical_cwd)):
+            raise SandboxError(_SERVER_CANNOT_HIDE)
 
 
 async def _sandbox_for_command(
@@ -961,8 +1044,8 @@ def _hidden_host_paths() -> tuple[str, ...]:
     The server mounts an empty read-only tmpfs wherever a bind shows one of
     them, so a mount of the account home or one of its parents cannot read
     settings, keys or transcripts. The bundled server's own home lives in the
-    config directory. A server that does not know the field ignores it; the
-    read-only cover of the config directory still keeps it unwritable there.
+    config directory. A configured server that does not honour the field is
+    refused when a mount would show one of them (``_reject_unhidden_private_dirs``).
     """
     from chrys.foundation.config.settings import resolve_sessions_dir
 

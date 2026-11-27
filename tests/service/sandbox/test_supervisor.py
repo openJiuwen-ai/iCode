@@ -22,8 +22,9 @@ from types import ModuleType
 import httpx
 import pytest
 
-from chrys.service.sandbox import client, supervisor
+from chrys.service.sandbox import client, runtime_hold, supervisor
 from chrys.service.sandbox.backend import SandboxError, run_shell
+from chrys.service.sandbox.runtime_hold import RuntimeHold
 from tests.support.waiting import wait_for, wait_until
 
 _REAL_CHOOSE = supervisor._choose_listen_url
@@ -399,7 +400,7 @@ async def test_each_child_gets_its_own_home_and_it_is_removed_after_the_childs_c
     root = get_platform().config_dir / "sandbox-engine"
     for home in homes:
         assert home.parent == root
-        assert home.name.startswith(f"{os.getpid()}-")
+        assert home.name.startswith(f"{supervisor._host_tag()}-{os.getpid()}-")
     if sys.platform != "win32":
         assert modes == [0o700, 0o700]
     assert present_at_close == [True]
@@ -408,25 +409,62 @@ async def test_each_child_gets_its_own_home_and_it_is_removed_after_the_childs_c
     await supervisor._shutdown()
     assert present_at_close == [True, True]
     assert not homes[1].exists()
+    assert sorted(root.iterdir()) == []
 
 
-def test_a_start_removes_only_the_homes_of_processes_that_are_gone(
+_HOLD_LOCK = """
+import sys
+from chrys.foundation.util.lock import FileLock
+with FileLock(sys.argv[1]):
+    print("held", flush=True)
+    sys.stdin.read()
+"""
+
+
+def test_a_start_removes_only_this_hosts_homes_whose_lock_is_free(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import psutil
-
+    host = supervisor._host_tag()
     root = tmp_path / "sandbox-engine"
-    gone = root / "4242-old"
-    other = root / "5151-running"
-    mine = root / f"{os.getpid()}-earlier"
+    gone = root / f"{host}-4242-aa"
+    # Its pid is not one this host knows, as for iCode in another pid namespace: the held lock keeps it.
+    held = root / f"{host}-4243-bb"
+    elsewhere = root / "0123456789ab-4244-cc"
     unrelated = root / "notes"
-    for path in (gone, other, mine, unrelated):
+    for path in (gone, held, elsewhere, unrelated):
         (path / "sandboxes").mkdir(parents=True)
-    monkeypatch.setattr(supervisor, "_engine_homes_root", lambda: root)
-    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid != 4242)
-    created = Path(supervisor._new_engine_home())
-    assert sorted(path.name for path in root.iterdir()) == sorted([other.name, mine.name, unrelated.name, created.name])
+    (root / f"{gone.name}.lock").touch()
+    orphan_lock = root / f"{host}-4245-dd.lock"
+    orphan_lock.touch()
+    env = {**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "APPDATA": str(tmp_path)}
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD_LOCK, str(root / f"{held.name}.lock")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        env=env,
+    )
+    try:
+        if holder.stdout is None or holder.stdout.readline().strip() != b"held":
+            raise AssertionError("the lock holder did not start")
+        monkeypatch.setattr(supervisor, "_engine_homes_root", lambda: root)
+        created = Path(supervisor._new_engine_home())
+        names = sorted(path.name for path in root.iterdir())
+    finally:
+        if holder.stdin is not None:
+            holder.stdin.close()
+        holder.wait(15)
+        if holder.stdout is not None:
+            holder.stdout.close()
+
+    assert created.is_dir()
+    assert names == sorted(
+        [held.name, f"{held.name}.lock", elsewhere.name, unrelated.name, created.name, f"{created.name}.lock"]
+    )
+    supervisor._remove_engine_home_now(str(created))
+    assert not created.exists()
+    assert not (root / f"{created.name}.lock").exists()
+    assert supervisor._engine_home_locks == {}
 
 
 def test_network_mode_keeps_known_values_and_falls_back_to_guarded() -> None:
@@ -712,7 +750,7 @@ async def test_run_shell_after_a_network_change_recreates_the_sandbox_on_the_new
         path = request.url.path
         requests.append((server, request.method, path))
         if path == "/health":
-            return httpx.Response(200, json={"status": "ok"})
+            return httpx.Response(200, json={"status": "ok", "features": ["hidden_host_paths"]})
         if request.method == "POST" and path == "/api/v1/sandboxes":
             sandbox_id = f"{server}-box{len(owned)}"
             owned.add(sandbox_id)
@@ -786,7 +824,7 @@ def _install_servers(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, st
         path = request.url.path
         requests.append((server, request.method, path))
         if path == "/health":
-            return httpx.Response(200, json={"status": "ok"})
+            return httpx.Response(200, json={"status": "ok", "features": ["hidden_host_paths"]})
         if request.method == "POST" and path == "/api/v1/sandboxes":
             sandbox_id = f"{server}-box{len(owned)}"
             owned.add(sandbox_id)
@@ -833,6 +871,38 @@ async def test_switching_sandbox_url_away_and_back_reuses_the_first_servers_sand
     # Neither server is asked about the other's sandbox, and nothing is deleted.
     assert all(path.startswith(f"/api/v1/sandboxes/{server}-") for server, _method, path in requests if "-box" in path)
     assert not [request for request in requests if request[1] == "DELETE"]
+
+
+async def test_the_last_runtime_release_deletes_the_sandboxes_on_each_configured_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runtime_hold, "_runtimes", 0)
+    monkeypatch.setattr(runtime_hold, "_external_used", False)
+    requests = _install_servers(monkeypatch)
+    first, last = RuntimeHold(), RuntimeHold()
+    first.acquire()
+    last.acquire()
+    one, two = tmp_path / "one", tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    assert await _run_in(_UrlSettings("http://a.test"), one) == "a.test-box0"
+    assert await _run_in(_UrlSettings("http://a.test"), two) == "a.test-box1"
+    assert await _run_in(_UrlSettings("http://b.test"), one) == "b.test-box0"
+
+    def deletes() -> list[tuple[str, str]]:
+        return sorted((server, path) for server, method, path in requests if method == "DELETE")
+
+    await first.release()
+    assert deletes() == []
+    await last.release()
+    assert deletes() == [
+        ("a.test", "/api/v1/sandboxes/a.test-box0"),
+        ("a.test", "/api/v1/sandboxes/a.test-box1"),
+        ("b.test", "/api/v1/sandboxes/b.test-box0"),
+    ]
+    # Nothing deleted stays cached: the next command creates a new sandbox.
+    assert await _run_in(_UrlSettings("http://a.test"), one) == "a.test-box2"
 
 
 async def test_a_configured_url_retires_the_bundled_server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -910,7 +980,7 @@ async def test_health_probe_requires_status_ok(monkeypatch: pytest.MonkeyPatch):
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request.headers.get("authorization"))
         if len(seen) == 1:
-            return httpx.Response(200, json={"status": "ok"})
+            return httpx.Response(200, json={"status": "ok", "features": ["hidden_host_paths"]})
         return httpx.Response(200, json={"status": "down"})
 
     def new_client(**kwargs: object) -> httpx.AsyncClient:
@@ -1179,7 +1249,7 @@ async def test_bundled_server_sends_a_fresh_bearer_token(monkeypatch: pytest.Mon
 
     def handler(request: httpx.Request) -> httpx.Response:
         headers.append(request.headers.get("authorization"))
-        return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(200, json={"status": "ok", "features": ["hidden_host_paths"]})
 
     def new_client(**kwargs: object) -> httpx.AsyncClient:
         trust_env.append(kwargs["trust_env"])

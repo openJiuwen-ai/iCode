@@ -22,6 +22,7 @@ async def _reset_sandbox_process_state():
     backend._retiring.clear()
     backend._server_key = None
     backend._parked.clear()
+    backend._external_servers.clear()
     backend._lock = None
     supervisor._lock = None
     await supervisor._shutdown()
@@ -38,5 +39,6 @@ async def _reset_sandbox_process_state():
     backend._retiring.clear()
     backend._server_key = None
     backend._parked.clear()
+    backend._external_servers.clear()
     backend._lock = None
     supervisor._lock = None

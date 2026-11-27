@@ -47,7 +47,7 @@ class _Script:
     def __init__(self) -> None:
         self.events: list[tuple[str, str, object, str | None, str]] = []
         self.health_status = 200
-        self.health: dict[str, object] = {"status": "ok"}
+        self.health: dict[str, object] = {"status": "ok", "features": ["hidden_host_paths"]}
         self.create_phase = "ready"
         self.start_phase = "ready"
         self.start_status = 200

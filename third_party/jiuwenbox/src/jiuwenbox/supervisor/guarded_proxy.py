@@ -38,10 +38,12 @@ import re
 import selectors
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,9 @@ _IDLE_TIMEOUT_SECONDS = 300.0
 # How long a request with ``Expect: 100-continue`` waits for the origin's
 # answer before the body is sent anyway, as clients do.
 _CONTINUE_WAIT_SECONDS = 1.0
+# How long the rest of a request body is read and dropped after an early
+# response, so that closing does not reset the connection under it.
+_LINGER_SECONDS = 2.0
 
 # Ranges a sandboxed command must not reach through the proxy, on top of
 # every address ``ipaddress`` does not call global.
@@ -276,6 +281,10 @@ _BAD_REQUEST = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: cl
 _BAD_GATEWAY = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 
 
+class _Sink(Protocol):
+    def sendall(self, data: bytes, /) -> None: ...
+
+
 class _BadMessage(ValueError):
     """A head or body framing the proxy will not pass on."""
 
@@ -290,6 +299,14 @@ class _Truncated(OSError):
 
 class _Closing(Exception):
     """The proxy is closing; the connection ends without a reply."""
+
+
+class _OriginAnswered(Exception):
+    """The origin sent its final response before the request body was complete."""
+
+    def __init__(self, head: _Head) -> None:
+        super().__init__("origin answered during the request body")
+        self.head = head
 
 
 def _close_quietly(sock: socket.socket) -> None:
@@ -360,6 +377,84 @@ class _Stream:
         with selectors.DefaultSelector() as selector:
             selector.register(self.sock, selectors.EVENT_READ)
             return bool(selector.select(timeout))
+
+
+class _Upload(_Stream):
+    """A request body on its way from the client to the origin.
+
+    An origin may answer before the body is complete (``413`` is typical)
+    and stop reading it. Every wait for client bytes, and for room to send
+    them upstream, also watches the origin: an interim response is passed on
+    and the body continues, a final one ends the body with
+    :class:`_OriginAnswered`. Reads share the client stream's buffer.
+    """
+
+    def __init__(self, client: _Stream, origin: _Stream, *, interim_ok: bool) -> None:
+        super().__init__(client.sock)
+        self.buffer = client.buffer
+        self._origin = origin
+        self._interim_ok = interim_ok
+
+    def _fill(self) -> bool:
+        while not self._ready(self.sock, selectors.EVENT_READ):
+            pass
+        return super()._fill()
+
+    def sendall(self, data: bytes) -> None:
+        upstream = self._origin.sock
+        view = memoryview(data)
+        while view:
+            if not self._ready(upstream, selectors.EVENT_WRITE):
+                continue
+            upstream.setblocking(False)
+            try:
+                sent = upstream.send(view)
+            except BlockingIOError:
+                continue
+            except OSError:
+                # An origin that answered and closed resets the upload.
+                if self._origin.has_data(0):
+                    self._answer()
+                raise
+            finally:
+                upstream.settimeout(_IDLE_TIMEOUT_SECONDS)
+            view = view[sent:]
+
+    def _ready(self, sock: socket.socket, event: int) -> bool:
+        """Wait until ``sock`` is ready for ``event``; False after passing on an interim response."""
+        if self._origin.buffer:
+            self._answer()
+            return False
+        upstream = self._origin.sock
+        with selectors.DefaultSelector() as selector:
+            if sock is upstream:
+                selector.register(upstream, selectors.EVENT_READ | event)
+            else:
+                selector.register(sock, event)
+                selector.register(upstream, selectors.EVENT_READ)
+            events = selector.select(_IDLE_TIMEOUT_SECONDS)
+        if not events:
+            raise TimeoutError("request body stalled")
+        for key, mask in events:
+            if key.fileobj is upstream and mask & selectors.EVENT_READ:
+                self._answer()
+                return False
+        return True
+
+    def _answer(self) -> None:
+        """Read what the origin sent: pass an interim response on, raise on a final one."""
+        try:
+            raw = self._origin.read_head()
+            if raw is None:
+                raise _Truncated("origin closed during the request body")
+            head = _parse_head(raw)
+            status = _status_of(head)
+        except _BadMessage as exc:
+            raise _BadGateway(str(exc)) from exc
+        if status == 101 or status >= 200:
+            raise _OriginAnswered(head)
+        if self._interim_ok:
+            self.sock.sendall(raw)
 
 
 @dataclass(frozen=True)
@@ -543,7 +638,7 @@ def _status_of(head: _Head) -> int:
     return int(matched.group(1))
 
 
-def _copy_exact(source: _Stream, target: socket.socket, count: int) -> None:
+def _copy_exact(source: _Stream, target: _Sink, count: int) -> None:
     while count:
         piece = source.read_some(min(count, _RELAY_BYTES))
         if not piece:
@@ -552,7 +647,7 @@ def _copy_exact(source: _Stream, target: socket.socket, count: int) -> None:
         count -= len(piece)
 
 
-def _copy_chunked(source: _Stream, target: socket.socket) -> None:
+def _copy_chunked(source: _Stream, target: _Sink) -> None:
     """Pass one chunked body on, framing included, and stop after its last line."""
     while True:
         line = _check_line(source.read_line(_CHUNK_LINE_LIMIT))
@@ -580,7 +675,7 @@ def _copy_chunked(source: _Stream, target: socket.socket) -> None:
         target.sendall(line + b"\r\n")
 
 
-def _copy_until_close(source: _Stream, target: socket.socket) -> None:
+def _copy_until_close(source: _Stream, target: _Sink) -> None:
     while True:
         piece = source.read_some(_RELAY_BYTES)
         if not piece:
@@ -588,7 +683,7 @@ def _copy_until_close(source: _Stream, target: socket.socket) -> None:
         target.sendall(piece)
 
 
-def _copy_body(source: _Stream, target: socket.socket, framing: tuple[str, int]) -> None:
+def _copy_body(source: _Stream, target: _Sink, framing: tuple[str, int]) -> None:
     kind, length = framing
     if kind == "length":
         _copy_exact(source, target, length)
@@ -717,21 +812,48 @@ def _serve_plain(stream: _Stream, request: _Request, connections: _Connections) 
         upstream.sendall(_upstream_head(request))
         origin = _Stream(upstream)
         early: _Head | None = None
+        interim_ok = request.version == b"HTTP/1.1"
         if framing != _NO_BODY:
             if b"100-continue" in {item.lower() for item in request.head.values(b"expect")}:
                 try:
-                    early = _await_continue(origin, client, request.version == b"HTTP/1.1")
+                    early = _await_continue(origin, client, interim_ok)
                 except _BadMessage as exc:
                     raise _BadGateway(str(exc)) from exc
             if early is None:
-                _copy_body(stream, upstream, framing)
-            else:
-                # The body was never read, so this connection cannot carry another request.
+                upload = _Upload(stream, origin, interim_ok=interim_ok)
+                try:
+                    _copy_body(upload, upload, framing)
+                except _OriginAnswered as answered:
+                    early = answered.head
+            if early is not None:
+                # The body was not read to its end, so this connection cannot carry another request.
                 keep = False
         try:
-            return _relay_response(origin, client, request, early, keep=keep)
+            kept = _relay_response(origin, client, request, early, keep=keep)
         except _BadMessage as exc:
             raise _BadGateway(str(exc)) from exc
+        if early is not None and framing != _NO_BODY:
+            _linger(client)
+        return kept
+
+
+def _linger(client: socket.socket) -> None:
+    """Let the client read a response sent before its request body ended.
+
+    Closing a socket that holds unread request bytes resets the connection,
+    and the reset can discard the response still on its way. The write side
+    is shut first; what the client still sends is dropped for at most
+    ``_LINGER_SECONDS``.
+    """
+    try:
+        client.shutdown(socket.SHUT_WR)
+        deadline = time.monotonic() + _LINGER_SECONDS
+        while (left := deadline - time.monotonic()) > 0:
+            client.settimeout(left)
+            if not client.recv(_RELAY_BYTES):
+                return
+    except OSError:
+        return
 
 
 def _handle_client(client: socket.socket, connections: _Connections | None = None) -> None:
@@ -790,40 +912,73 @@ def _serve_tunnel(stream: _Stream, request: _Request, connections: _Connections)
         stream.sock.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         # Past the 200 the bytes belong to the tunnel: a failure only ends it.
         try:
-            if stream.buffer:
-                remote.sendall(bytes(stream.buffer))
-                stream.buffer.clear()
-            _tunnel(stream.sock, remote, _IDLE_TIMEOUT_SECONDS)
+            early = bytes(stream.buffer)
+            stream.buffer.clear()
+            _tunnel(stream.sock, remote, _IDLE_TIMEOUT_SECONDS, early)
         except OSError:
             return
 
 
-def _tunnel(left: socket.socket, right: socket.socket, idle_seconds: float) -> None:
+def _tunnel(
+    left: socket.socket, right: socket.socket, idle_seconds: float, early: bytes = b""
+) -> None:
     """Relay both ways until each side has closed or nothing moves for ``idle_seconds``.
 
-    A side that closes its write half passes that on, and the other
-    direction keeps flowing. Every received chunk restarts the idle wait;
-    a peer that stops reading fails the send after the same wait.
+    The two directions move independently: bytes a peer is not reading yet
+    wait in a buffer of at most ``_RELAY_BYTES`` while the other direction
+    keeps flowing, and their source is not read until they are sent. A side
+    that closes its write half passes that on once its bytes are delivered.
+    ``early`` is what ``left`` already sent, still owed to ``right``.
     """
-    left.settimeout(idle_seconds)
-    right.settimeout(idle_seconds)
+    peer = {left: right, right: left}
+    # Bytes received from the other side, waiting to be sent to the key.
+    pending = {left: bytearray(), right: bytearray(early)}
+    reading = {left, right}
+    left.setblocking(False)
+    right.setblocking(False)
     with selectors.DefaultSelector() as selector:
-        selector.register(left, selectors.EVENT_READ, (left, right))
-        selector.register(right, selectors.EVENT_READ, (right, left))
-        reading = 2
-        while reading:
+        interest = {left: 0, right: 0}
+        while reading or pending[left] or pending[right]:
+            for sock in (left, right):
+                wanted = selectors.EVENT_WRITE if pending[sock] else 0
+                if sock in reading and not pending[peer[sock]]:
+                    wanted |= selectors.EVENT_READ
+                if wanted != interest[sock]:
+                    if not interest[sock]:
+                        selector.register(sock, wanted, sock)
+                    elif not wanted:
+                        selector.unregister(sock)
+                    else:
+                        selector.modify(sock, wanted, sock)
+                    interest[sock] = wanted
             events = selector.select(idle_seconds)
             if not events:
                 return
-            for key, _mask in events:
-                source, target = key.data
-                chunk = source.recv(_RELAY_BYTES)
-                if chunk:
-                    target.sendall(chunk)
-                    continue
-                selector.unregister(source)
-                reading -= 1
-                try:
-                    target.shutdown(socket.SHUT_WR)
-                except OSError:
-                    pass
+            for key, mask in events:
+                ready: socket.socket = key.data
+                if mask & selectors.EVENT_WRITE:
+                    try:
+                        sent = ready.send(pending[ready])
+                    except BlockingIOError:
+                        sent = 0
+                    del pending[ready][:sent]
+                    if not pending[ready] and peer[ready] not in reading:
+                        _shut_write(ready)
+                if mask & selectors.EVENT_READ:
+                    try:
+                        chunk = ready.recv(_RELAY_BYTES)
+                    except BlockingIOError:
+                        continue
+                    if chunk:
+                        pending[peer[ready]].extend(chunk)
+                        continue
+                    reading.discard(ready)
+                    if not pending[peer[ready]]:
+                        _shut_write(peer[ready])
+
+
+def _shut_write(sock: socket.socket) -> None:
+    try:
+        sock.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass

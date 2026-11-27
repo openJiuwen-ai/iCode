@@ -597,6 +597,75 @@ async def test_dropped_duplicate_create_keeps_the_existing_sandbox(
     assert runtime.cleaned == []
 
 
+def test_the_server_health_lists_the_hidden_host_paths_feature(jiuwenbox_importable: None) -> None:
+    from jiuwenbox.models.common import HealthResponse
+
+    from chrys.service.sandbox import backend
+
+    assert backend._HIDDEN_HOST_PATHS_FEATURE in HealthResponse(version="0").model_dump()["features"]
+
+
+class _LateSpawnRuntime(_CreateRuntime):
+    """Spawns its child only when ``spawn`` is set, then waits for a readiness that never comes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.spawn = asyncio.Event()
+        self.running: set[str] = set()
+
+    async def create(self, *, sandbox_id: str, policy_path: object, env: object) -> int:
+        del policy_path, env
+        self.entered.set()
+        await self.spawn.wait()
+        self.running.add(sandbox_id)
+        await asyncio.Event().wait()
+        return 7
+
+    async def cleanup(self, sandbox_id: str) -> None:
+        await super().cleanup(sandbox_id)
+        self.running.discard(sandbox_id)
+
+
+async def test_a_delete_during_a_cold_start_also_stops_the_child_spawned_after_it(
+    jiuwenbox_importable: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenbox.models.sandbox import SandboxPhase
+    from jiuwenbox.server.routes import sandbox as sandbox_routes
+    from jiuwenbox.server.routes.sandbox import CreateSandboxRequest, create_sandbox
+    from starlette.responses import Response
+
+    from tests.support.waiting import wait_for
+
+    runtime = _LateSpawnRuntime()
+    manager = _route_manager(tmp_path, runtime)
+    monkeypatch.setattr(sandbox_routes, "_mgr", lambda: manager)
+    gone = asyncio.Event()
+    creating = asyncio.create_task(
+        create_sandbox(CreateSandboxRequest(sandbox_id="late"), _DisconnectRequest(gone))  # type: ignore[arg-type]
+    )
+    await wait_for(lambda: runtime.entered.is_set() or creating.done(), description="the runtime start under way")
+    ref = manager._sandboxes["late"]
+    deleting = asyncio.create_task(manager.delete_sandbox("late"))
+    await wait_for(
+        lambda: deleting.done() or ref.phase == SandboxPhase.DELETING,
+        description="the delete marked the sandbox",
+    )
+    runtime.spawn.set()
+    await wait_for(lambda: "late" in runtime.running, description="the child spawned after the delete began")
+    assert not deleting.done()
+    gone.set()
+    result = await creating
+    await deleting
+
+    assert isinstance(result, Response)
+    assert result.status_code == 499
+    assert runtime.running == set()
+    assert await manager.list_sandboxes() == []
+    assert manager._starting == {}
+
+
 async def test_delete_with_an_expected_ref_spares_another_owner(
     jiuwenbox_importable: None,
     tmp_path: Path,
@@ -937,6 +1006,7 @@ async def test_served_create_cancel_does_not_leave_ready_sandboxes(
         listener.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bwrap enumerates POSIX host roots")
 def test_policy_read_only_cover_wins_over_a_read_write_bind_of_the_same_path(
     jiuwenbox_importable: None,
     tmp_path: Path,

@@ -61,7 +61,7 @@ The workspace is mounted writable inside the sandbox, so the command can read an
 
 The writable area is the workspace of this session: the directory where iCode was started. Starting iCode in your home directory makes the rest of that directory writable. These paths stay read-only when they are real files or directories inside that writable area: `.ssh`, `.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, `.zprofile`, `.zshenv`, `.zlogin`, `.gitconfig`, `.git-credentials`, `.gnupg`, `.pypirc`, `.npmrc`, `.wgetrc`, `.curlrc`, `.azure`, `.config/gh`, `.config/git`, `.config/gcloud`, `.config/glab`, `.config/configstore`, `.local/share/keyrings`, `.aws`, `.kube`, `.docker`, and `.netrc`. A symbolic link with one of those names is left as it is. The sandbox's limit is where the command can write.
 
-Commands in the sandbox cannot see iCode's own settings folder (`~/.chrys`) or the folder where your sessions are saved. When the workspace contains them, for example because you started iCode in your home directory, they look empty and read-only inside the sandbox. A Shell command whose directory is inside one of them is refused with an error. Starting iCode in a folder inside `~/.chrys` still works, and that folder is visible as usual.
+Commands in the sandbox cannot see iCode's own settings folder (`~/.chrys`) or the folder where your sessions are saved. When the workspace contains them, for example because you started iCode in your home directory, they look empty and read-only inside the sandbox. A Shell command whose directory is inside one of them is refused with an error. Starting iCode in a folder inside `~/.chrys` still works, and that folder is visible as usual. An older sandbox service at `sandbox.url` that cannot hide these folders is refused with an error while the workspace contains one of them: update that service, or start iCode in a folder that does not contain them.
 
 Other working directories you add to the session are writable in the same way. Adding or removing one takes effect at the next Shell command: a directory you removed is no longer writable there. When a command's directory is reached through a symbolic link, the command runs in the real directory the link points to.
 
@@ -98,6 +98,8 @@ Save the user settings file, then quit iCode and start it again so the agent rel
 When `sandbox.network` changes, iCode starts a new sandbox with the new network for the next Shell command. A command already running in the old sandbox is not stopped: it finishes there, and iCode closes the old sandbox once no command is using it.
 
 When you set `sandbox.url` or turn the sandbox off, iCode closes the sandbox it started itself at the next Shell command. A command still running there finishes first. If you later switch `sandbox.url` back to a service iCode already used, it continues in the sandbox it had on that service.
+
+When iCode exits, it also deletes the sandboxes it created on each `sandbox.url` it used.
 
 ## Windows and macOS
 

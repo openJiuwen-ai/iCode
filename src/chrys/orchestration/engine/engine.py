@@ -60,6 +60,7 @@ from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.tool_kinds import KIND_SUB_AGENT
 from chrys.foundation.trajectory.context import TrajectoryContext
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine import trajectory as trajectory_recorder
 from chrys.orchestration.engine.loader import AgentLoader
 from chrys.orchestration.engine.rollback import RollbackController
@@ -584,9 +585,15 @@ class AgentEngine:
         try:
             await self._workflows.shutdown()
         except BaseException:
-            # The release, which closes the hook confirmations, never started: they close all the same.
-            if self._release_task is None and self._hook_confirmations is not None:
-                await self._hook_confirmations.close()
+            # The release never started. What it would close closes all the same: the hook
+            # confirmations, and this runtime's claim on the bundled sandbox server, which a caller
+            # that drops this engine (ACP removes the session first) would otherwise never return.
+            if self._release_task is None:
+                try:
+                    if self._hook_confirmations is not None:
+                        await self._hook_confirmations.close()
+                finally:
+                    await finish_close(asyncio.create_task(self._sandbox_hold.release()))
             raise
         await self._release()
 

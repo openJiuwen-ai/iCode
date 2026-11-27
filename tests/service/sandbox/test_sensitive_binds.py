@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 import pytest
@@ -41,7 +43,7 @@ class _Script:
         self.events.append((request.method, request.url.path, body))
         path = request.url.path
         if path == "/health":
-            return httpx.Response(200, json={"status": "ok"})
+            return httpx.Response(200, json={"status": "ok", "features": ["hidden_host_paths"]})
         if request.method == "POST" and path == "/api/v1/sandboxes":
             return httpx.Response(201, json={"id": "sb-1", "phase": "ready"})
         if request.method == "POST" and path.endswith("/exec"):
@@ -492,11 +494,14 @@ async def test_account_control_dir_is_not_bound_twice(tmp_path: Path, monkeypatc
     assert _bind_mounts(script) == [_bind(physical, "rw"), _bind(covered, "ro")]
 
 
-def test_password_database_home_prefers_pw_dir(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``pw_dir`` wins. A missing ``pwd`` entry falls back to ``Path.home()``."""
-    import sys
-    import types
+def _platform_named(platform: str) -> types.ModuleType:
+    shadow = types.ModuleType("sys")
+    shadow.platform = platform
+    return shadow
 
+
+def test_password_database_home_prefers_pw_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On POSIX ``pw_dir`` wins over ``Path.home()``."""
     fake = types.ModuleType("pwd")
 
     class _Record:
@@ -504,8 +509,21 @@ def test_password_database_home_prefers_pw_dir(monkeypatch: pytest.MonkeyPatch) 
 
     fake.getpwuid = lambda _uid: _Record()
     monkeypatch.setitem(sys.modules, "pwd", fake)
+    monkeypatch.setattr(backend, "sys", _platform_named("linux"))
     monkeypatch.setattr(backend.os, "geteuid", lambda: 0, raising=False)
     assert backend._password_database_home() == "/srv/pw-home"
+
+
+def test_password_database_home_on_windows_is_path_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def refuse(_uid: int) -> NoReturn:
+        raise AssertionError("pwd is not consulted on Windows")
+
+    fake = types.ModuleType("pwd")
+    fake.getpwuid = refuse
+    monkeypatch.setitem(sys.modules, "pwd", fake)
+    monkeypatch.setattr(backend, "sys", _platform_named("win32"))
+    monkeypatch.setattr(backend.Path, "home", classmethod(lambda _cls: tmp_path))
+    assert backend._password_database_home() == str(tmp_path)
 
 
 def test_parent_read_write_bind_precedes_child_read_only_bind() -> None:

@@ -61,7 +61,7 @@ iCode 不会以 root 启动这个沙箱。如果以 root 启动 iCode，沙箱�
 
 可写范围是本次会话的工作区，也就是启动 iCode 时所在的目录。在主目录中启动 iCode 时，主目录里其余的文件仍然可写。下面这些路径如果是工作区里的真实文件或目录，会保持只读：`.ssh`、`.bashrc`、`.bash_profile`、`.profile`、`.zshrc`、`.zprofile`、`.zshenv`、`.zlogin`、`.gitconfig`、`.git-credentials`、`.gnupg`、`.pypirc`、`.npmrc`、`.wgetrc`、`.curlrc`、`.azure`、`.config/gh`、`.config/git`、`.config/gcloud`、`.config/glab`、`.config/configstore`、`.local/share/keyrings`、`.aws`、`.kube`、`.docker`、`.netrc`。同名的符号链接不会被盖住。沙箱限制的是命令能写入的位置。
 
-沙箱中的命令看不到 iCode 自己的设置文件夹（`~/.chrys`），也看不到保存会话的文件夹。如果工作区包含它们（例如你在主目录中启动了 iCode），它们在沙箱里是空的只读目录。Shell 命令所在的目录如果位于其中，命令会被拒绝并报错。在 `~/.chrys` 内部的某个文件夹中启动 iCode 仍然可以正常使用，那个文件夹照常可见。
+沙箱中的命令看不到 iCode 自己的设置文件夹（`~/.chrys`），也看不到保存会话的文件夹。如果工作区包含它们（例如你在主目录中启动了 iCode），它们在沙箱里是空的只读目录。Shell 命令所在的目录如果位于其中，命令会被拒绝并报错。在 `~/.chrys` 内部的某个文件夹中启动 iCode 仍然可以正常使用，那个文件夹照常可见。如果 `sandbox.url` 上是不能隐藏这些文件夹的旧版沙箱服务，只要工作区包含其中之一，命令就会被拒绝并报错：请升级该服务，或在不包含它们的文件夹中启动 iCode。
 
 你为会话添加的其他工作目录也同样可写。添加或移除目录会在下一条 Shell 命令生效：移除的目录在那里不再可写。如果命令所在的目录是经由符号链接到达的，命令会在链接指向的真实目录里运行。
 
@@ -98,6 +98,8 @@ iCode 不会以 root 启动这个沙箱。如果以 root 启动 iCode，沙箱�
 `sandbox.network` 改变后，iCode 会为下一条 Shell 命令启动一个使用新网络的沙箱。旧沙箱里已经在运行的命令不会被停止：它会在旧沙箱里运行完，等没有命令再使用旧沙箱时，iCode 才关闭它。
 
 设置了 `sandbox.url` 或关闭沙箱后，iCode 会在下一条 Shell 命令时关闭它自己启动的沙箱；那里仍在运行的命令会先运行完。之后如果把 `sandbox.url` 改回 iCode 用过的服务，它会继续使用之前在那个服务上的沙箱。
+
+iCode 退出时，也会删除它在用过的每个 `sandbox.url` 上创建的沙箱。
 
 ## Windows 和 macOS
 
