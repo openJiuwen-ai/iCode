@@ -62,6 +62,7 @@ from chrys.service.approval.safety_classifier import (
     shell_command_may_access_sensitive_data,
     target_may_access_sensitive_data,
 )
+from chrys.service.approval.turn_context import formal_review_is_stale
 from chrys.service.tools.approval_targets import approved_targets
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.tools import tool_operation_id
@@ -723,6 +724,8 @@ class ApprovalMiddleware(FunctionMiddleware):
                     targets = await asyncio.to_thread(binding.targets, context)
             elif remember_choice and binding is not None and reuse is not None and reuse.candidate is not None:
                 await self._remember(binding, reuse.candidate, remember_choice)
+            if judging and formal_review_is_stale() and self.captures_tool_history:
+                raise asyncio.CancelledError
             with approved_targets(targets):
                 await call_next()
         else:

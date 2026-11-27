@@ -473,8 +473,8 @@ def test_formal_prompt_preserves_summary_and_adjacent_text(call_id):
     ]
 
 
-@pytest.mark.parametrize("timestamp, before_call", [("02", True), ("04", False), (None, False)])
-def test_formal_prompt_keeps_queued_submission_order_in_later_review(timestamp, before_call):
+@pytest.mark.parametrize("timestamp", ["02", "04", None])
+def test_formal_prompt_keeps_queued_user_after_prior_tool_calls(timestamp):
     def timing(start, end):
         return {
             TRAJECTORY_TIMING_KEY: build_trajectory_timing(
@@ -517,27 +517,25 @@ def test_formal_prompt_keeps_queued_submission_order_in_later_review(timestamp, 
     prompt = formal_module.build_formal_user_prompt(request, history=history)
     queued = '{"user": "Do not create it."}'
     call = '{"read_file": {"path": "target.txt"}}'
-    assert (prompt.index(queued) < prompt.index(call)) is before_call
+    assert prompt.index(call) < prompt.index(queued)
     proposal = '{"assistant": "I propose a different action."}'
-    assert (prompt.index(queued) < prompt.index(proposal)) is before_call
+    assert prompt.index(proposal) < prompt.index(queued)
     hosted = '{"shell": {"commands": ["echo historical"]}}'
-    assert (prompt.index(queued) < prompt.index(hosted)) is before_call
+    assert prompt.index(hosted) < prompt.index(queued)
     assert prompt.count(queued) == 1
     assert prompt.index(queued) < prompt.index('{"assistant": "Stopped."}')
     assert [msg.role for msg in history] == ["user", "assistant", "tool", "user", "assistant", "user"]
 
 
 @pytest.mark.parametrize(
-    ("has_answer_time", "queued_text", "answer", "queued_first"),
+    ("has_answer_time", "queued_text", "answer"),
     [
-        (True, "Yes", "User response: No", True),
-        (False, "Yes", "User response: No", False),
-        (True, "Do not write the file.", "User response: Yes", False),
+        (True, "Yes", "User response: No"),
+        (False, "Yes", "User response: No"),
+        (True, "Do not write the file.", "User response: Yes"),
     ],
 )
-def test_formal_prompt_orders_queued_messages_against_authenticated_answers(
-    has_answer_time, queued_text, answer, queued_first
-):
+def test_formal_prompt_keeps_delivered_input_after_earlier_authenticated_answers(has_answer_time, queued_text, answer):
     def timing(start, end):
         return {
             TRAJECTORY_TIMING_KEY: build_trajectory_timing(
@@ -580,12 +578,11 @@ def test_formal_prompt_orders_queued_messages_against_authenticated_answers(
     proposal = {"assistant": "I propose a new action."}
     reply = {"ask_user": {"questions": questions}, "result": answer}
     queued = {"user": queued_text}
-    tail = [queued, proposal, reply] if queued_first else [proposal, reply, queued]
-    assert rows == [{"user": "Check the workspace."}, *tail]
+    assert rows == [{"user": "Check the workspace."}, proposal, reply, queued]
 
 
 @pytest.mark.parametrize("drained", [0, 1, 2])
-def test_formal_prompt_keeps_queue_submission_order_before_and_after_drain(drained):
+def test_formal_prompt_keeps_model_request_order_after_queue_drain(drained):
     def at(second):
         return f"2026-11-26T09:06:{second}+00:00"
 
@@ -653,13 +650,13 @@ def test_formal_prompt_keeps_queue_submission_order_before_and_after_drain(drain
     with formal_user_inputs.set(turn.user_inputs):
         prompt = formal_module.build_formal_user_prompt(request, history=history)
     rows = [json.loads(row) for row in prompt.split("<context>\n", 1)[1].split("\n</context>", 1)[0].splitlines()]
-    assert rows == [
+    expected = [
         {"user": origin},
-        {"user": "Yes"},
         {"assistant": "I propose writing target.txt."},
         {"ask_user": {"questions": questions}, "result": refusal},
-        {"user": "Do not write."},
+        *({"user": text} for text, _, _ in submitted[:drained]),
     ]
+    assert rows == expected
 
 
 def test_formal_prompt_orders_parallel_questions_by_actual_submission():
@@ -875,7 +872,7 @@ def test_formal_sub_agent_keeps_queued_assent_before_parent_proposal():
     ]
 
 
-def test_sub_agent_approval_drops_withdrawn_parent_queue_input():
+def test_sub_agent_approval_uses_only_delivered_parent_input():
     opener = "Check the workspace."
     text = "You may write target.txt."
     turn = TurnContextHolder()
@@ -916,22 +913,16 @@ def test_sub_agent_approval_drops_withdrawn_parent_queue_input():
         active_tool_batch_messages.set((parent_history, ())),
         formal_module.formal_parent_context("delegate", turn.user_inputs),
     ):
-        before = context()
+        expected = [
+            {"user": opener},
+            {"user": "Only modify target.txt."},
+            {"parent_agent": "Continue checking."},
+        ]
+        assert context() == expected
         turn.remove(text, item_id=withdrawn_id)
-        assert context() == [
-            {"user": opener},
-            {"user": "Only modify target.txt."},
-            {"user": "Keep the existing formatting.", "source": "parent_session"},
-            {"parent_agent": "Continue checking."},
-        ]
-        # A live empty snapshot means every queued item was withdrawn.
+        assert context() == expected
         turn.reset()
-        assert context() == [
-            {"user": opener},
-            {"user": "Only modify target.txt."},
-            {"parent_agent": "Continue checking."},
-        ]
-    assert {"user": text, "source": "parent_session"} in before
+        assert context() == expected
 
 
 @pytest.mark.parametrize("timeout", [0, -1])

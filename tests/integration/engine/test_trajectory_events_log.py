@@ -22,6 +22,7 @@ from chrys.foundation.config.settings_store import persist
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ApprovalRequest,
+    ApprovalReviewed,
     SessionDelete,
     SessionDeleted,
     SessionReady,
@@ -29,6 +30,7 @@ from chrys.foundation.events.types import (
     SetApprovalMode,
     SetModelProfile,
     SettingsReload,
+    UserInjectSteer,
     UserMessage,
     UserRetry,
     UserRollback,
@@ -47,9 +49,11 @@ from chrys.foundation.trajectory.writer import DEFAULT_WRITE_ACK_TIMEOUT_SECONDS
 from chrys.kernel import ChatResponse, Message
 from chrys.kernel.types import UsageDetails
 from chrys.orchestration.engine.build import builder as builder_module
+from chrys.orchestration.invoker.kernel import KernelConversation
 from chrys.service.analytics import Precision
 from chrys.service.analytics.aggregation import analyze_trajectory
 from chrys.service.approval import judge as judge_module
+from chrys.service.approval.arbitration import ApprovalDecisionArbiter
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.runner import HookResult, HookRunner
@@ -1315,3 +1319,93 @@ async def test_a_request_that_misses_the_prompt_cache_is_recorded_under_its_exch
     # Under the request that missed, not the run the three requests share.
     assert miss.parent_operation_id == exchanges[-1].operation_id
     assert miss.sequence > exchanges[-1].sequence
+
+
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_send_now_invalidates_the_old_formal_review(tmp_path, monkeypatch):
+    """A late allow cannot win while the accepted steer is still stopping its pass."""
+    install_tools(monkeypatch, [echo_tool])
+    old_entered, old_release, old_finished = (asyncio.Event() for _ in range(3))
+    interrupt_entered, interrupt_release = asyncio.Event(), asyncio.Event()
+    prompts = []
+    verdicts = []
+    original_interrupt = KernelConversation._interrupt
+    original_judge = ApprovalDecisionArbiter.judge
+
+    async def hold_interrupt(self, active):
+        interrupt_entered.set()
+        await interrupt_release.wait()
+        return await original_interrupt(self, active)
+
+    async def observe_judge(self, **kwargs):
+        try:
+            await original_judge(self, **kwargs)
+        finally:
+            if kwargs["judge_input"].args["message"] == "old":
+                old_finished.set()
+
+    async def respond(client, messages, *, stream, options, timeout):
+        prompts.append(messages[1].text)
+        if len(prompts) == 1:
+            old_entered.set()
+            await old_release.wait()
+        return ChatResponse(messages=[Message("assistant", [structured_response()])])
+
+    async def record_verdict(event):
+        verdicts.append(event)
+
+    monkeypatch.setattr(KernelConversation, "_interrupt", hold_interrupt)
+    monkeypatch.setattr(ApprovalDecisionArbiter, "judge", observe_judge)
+    monkeypatch.setattr(judge_module, "get_final_response", respond)
+    ctx = await create_test_engine(
+        [
+            MockResponse(tool_calls=[("echo", "old-call", {"message": "old"})]),
+            MockResponse(tool_calls=[("echo", "new-call", {"message": "new"})]),
+            MockResponse(text="done"),
+        ],
+        tmp_path,
+        approval_default="require",
+    )
+    run_task = steer_task = None
+    try:
+        freeze_process_env()
+        persist({"approval.auto_review": "formal", "model.profile.active": "mock-profile"})
+        await ctx.bus.publish(SettingsReload(), raise_handler_errors=True)
+        await ctx.bus.publish(SetApprovalMode(mode="auto", persist=False), raise_handler_errors=True)
+        await ctx.bus.subscribe(ApprovalReviewed, record_verdict)
+        run_task = asyncio.create_task(ctx.send_message("Review the old operation."))
+        await old_entered.wait()
+        await ctx.bus.publish(UserMessage(text="Switch to the new operation.", injection_id="queued"))
+        steer = UserInjectSteer(injection_id="queued")
+        steer_task = asyncio.create_task(ctx.bus.publish(steer, raise_handler_errors=True))
+        await interrupt_entered.wait()
+        old_release.set()
+        await old_finished.wait()
+        assert verdicts == []
+        assert ctx.mock_client.call_count == 1
+
+        interrupt_release.set()
+        await steer_task
+        assert steer.accepted
+        await run_task
+        assert len(prompts) == 2
+        assert "Switch to the new operation." not in prompts[0]
+        assert '{"user": "Switch to the new operation."}' in prompts[1]
+        assert len(verdicts) == 1 and verdicts[0].approved
+        second_request = ctx.mock_client.call_history[1][0]
+        old_result = next(
+            item.result
+            for message in second_request
+            for item in message.contents
+            if item.type == "function_result" and item.call_id == "old-call"
+        )
+        assert str(old_result).startswith("Error: Tool execution was interrupted.")
+    finally:
+        old_release.set()
+        interrupt_release.set()
+        for task in (steer_task, run_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        await ctx.cleanup()

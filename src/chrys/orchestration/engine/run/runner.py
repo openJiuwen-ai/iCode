@@ -37,7 +37,7 @@ from chrys.orchestration.invoker.contracts import (
     StaleContinuation,
     UnsupportedRequest,
 )
-from chrys.service.approval.turn_context import ApprovalUserInput, QueuedApprovalInput
+from chrys.service.approval.turn_context import ApprovalUserInput, QueuedApprovalInput, formal_pass_steered
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationScope, PreparationTrace
 from chrys.service.trajectory.state import (
     TurnRecord,
@@ -420,7 +420,9 @@ class TurnRunner:
         """
         while True:
             bindings = self._current.require_loaded().bindings
-            outcome = await bindings.backend.run(request)
+            backend = bindings.backend
+            with formal_pass_steered.set(lambda backend=backend: backend.active_abort_cause is AbortCause.STEER):
+                outcome = await backend.run(request)
             bindings.record_outcome(outcome)
             # The pass gave its output up for the steer: settle it so, even when an owner closing took over its cause.
             if not isinstance(outcome, Aborted) or not bindings.state.steered:

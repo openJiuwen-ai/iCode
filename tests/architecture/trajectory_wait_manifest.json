@@ -1508,7 +1508,7 @@
         ["awaitable", "await self._skills.refresh(update_active_turn=update_active_turn)", "unresolved"]
       ],
       "TurnRunner._run_passes": [
-        ["awaitable", "await bindings.backend.run(request)", "unresolved"],
+        ["awaitable", "await backend.run(request)", "unresolved"],
         ["awaitable", "await self._finalizer.settle_steered_pass(request.messages, withdraw=self._withdraw_answer)", "unresolved"]
       ],
       "TurnRunner._withdraw_answer": [

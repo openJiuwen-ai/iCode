@@ -75,6 +75,7 @@ from chrys.service.acp_client.spec import PermissionDecision
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
 from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.approval.turn_context import formal_review_is_stale
 from chrys.service.session.sub_agent_logs import ACP_ANSWER_WITHDRAWN_UPDATE
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.waits import WaitOutcome, WaitTrace
@@ -1034,7 +1035,9 @@ class AcpPermissionBroker:
         # broker.mark_aborted() synchronously before yielding, so by the time
         # `await future` returns the flag is visible. Honoring the approval
         # here would let the remote run a tool after the global interrupt.
-        if self._aborted:
+        if self._aborted or (
+            judging and formal_review_is_stale() and self._judge is not None and self._judge.uses_formal_review
+        ):
             if approval_trace is not None:
                 approval_trace.interrupted_soon(reason_code="cascade_abort", judge_audit=judge_audit)
             return PermissionDecision.cancelled()
@@ -1047,6 +1050,8 @@ class AcpPermissionBroker:
                     arguments_modified=False,
                     judge_audit=judge_audit,
                 )
+            if judging and formal_review_is_stale() and self._judge is not None and self._judge.uses_formal_review:
+                return PermissionDecision.cancelled()
             return PermissionDecision.allow(allow.option_id)
         if approval_trace is not None:
             await approval_trace.resolved(

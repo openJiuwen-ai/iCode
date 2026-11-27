@@ -63,7 +63,6 @@ class _HistoryEntry(NamedTuple):
     row: dict[str, Any]
     at: str | None = None
     item_id: str | None = None
-    queued_only: bool = False
 
 
 pending_formal_call_id: ContextVar[str] = ContextVar("pending_formal_call_id", default="")
@@ -138,16 +137,6 @@ def _insert_answer(entries: list[_HistoryEntry], answer: _HistoryEntry) -> None:
     entries.insert(index, answer)
 
 
-def _queued_insert_index(entries: Sequence[_HistoryEntry], at: str | None) -> int:
-    index = len(entries)
-    while at is not None and index:
-        previous_at = entries[index - 1].at
-        if previous_at is None or previous_at <= at:
-            break
-        index -= 1
-    return index
-
-
 def _history_entries(history: Sequence[Message]) -> list[_HistoryEntry]:
     from chrys.service.agent_middleware.events.hosted_tools import adapt_hosted_tool
     from chrys.service.agent_middleware.system_reminder import REMINDER_TAG_CLOSE, REMINDER_TAG_OPEN
@@ -179,22 +168,14 @@ def _history_entries(history: Sequence[Message]) -> list[_HistoryEntry]:
             role = "workflow_input"
         elif role == "user" and props.get(DELEGATED_PROMPT_KEY) is True:
             role = "parent_agent"
-        timing = trajectory_timing_from_metadata(props)
-        started_at = timing["started_at"] if timing is not None else None
-        # A response span does not establish when a particular proposal became
-        # visible while streaming. Use completion as the conservative boundary.
-        finished_at = timing["finished_at"] if timing is not None else None
+        # A queued input is part of history at its delivery boundary, even
+        # when the user submitted it before an earlier tool call.
         injected = role == "user" and props.get(HistoryMarkerKind.INJECTED_KEY) is True
-        # The model receives queued input at a later request boundary. Only the
-        # judge's projected history uses the original submission time.
-        queued_at = started_at if injected else None
         item_id = read_analytics_item_id(props) if injected else None
-        insert_at = _queued_insert_index(entries, queued_at)
         typed = props.get(HistoryMarkerKind.TYPED_TEXT_KEY)
         if role == "user" and isinstance(typed, str) and typed:
-            entries.insert(insert_at, _HistoryEntry({"user": typed}, queued_at, item_id))
+            entries.append(_HistoryEntry({"user": typed}, item_id=item_id))
             continue
-        injected_entries: list[_HistoryEntry] = []
         for content_index, item in enumerate(message.contents):
             occurrence = (message_index, content_index)
             if (entry := answers.get(occurrence)) is not None:
@@ -206,21 +187,13 @@ def _history_entries(history: Sequence[Message]) -> list[_HistoryEntry]:
                     and item.text.endswith(REMINDER_TAG_CLOSE)
                 ):
                     continue
-                if injected:
-                    injected_entries.append(_HistoryEntry({"user": item.text}, queued_at, item_id))
-                else:
-                    entries.append(_HistoryEntry({role: item.text}, finished_at if role == "assistant" else None))
+                entries.append(_HistoryEntry({role: item.text}, item_id=item_id))
             elif role == "assistant" and item.type == "function_call":
                 if occurrence not in answered:
-                    call_timing = trajectory_timing_from_metadata(item.additional_properties)
-                    call_at = call_timing["started_at"] if call_timing is not None else finished_at
-                    entries.append(_HistoryEntry({item.name or item.type: dict(item.parse_arguments() or {})}, call_at))
+                    entries.append(_HistoryEntry({item.name or item.type: dict(item.parse_arguments() or {})}))
             elif role == "assistant" and item.type in TOOL_CALL_CONTENT_TYPES:
                 hosted = adapt_hosted_tool(item)
-                # Hosted calls share the response span. Its start is not the call's time.
-                entries.append(_HistoryEntry({hosted.tool_name or item.type: hosted.arguments}, finished_at))
-        if injected:
-            entries[insert_at:insert_at] = injected_entries
+                entries.append(_HistoryEntry({hosted.tool_name or item.type: hosted.arguments}))
 
     return entries
 
@@ -236,8 +209,7 @@ def _pending_narration(response: Sequence[Message], call_id: str) -> list[_Histo
                 if item.type == "function_call" and item.call_id == call_id:
                     return narration
                 if item.type == "text" and item.text:
-                    timing = trajectory_timing_from_metadata(response[index].additional_properties)
-                    narration.append(_HistoryEntry({"assistant": item.text}, timing["finished_at"] if timing else None))
+                    narration.append(_HistoryEntry({"assistant": item.text}))
     return []
 
 
@@ -251,8 +223,9 @@ def _add_user_inputs(
         return {"user": text, "source": "parent_session"} if from_parent else {"user": text}
 
     current = [entry.strip() for entry in user_inputs if isinstance(entry, str) and entry.strip()]
-    queued = [entry for entry in user_inputs if isinstance(entry, QueuedApprovalInput)]
-    queued_ids = {entry.item_id for entry in queued}
+    # Mid-run inputs are eligible only through delivered model history. Their
+    # IDs still keep a delivered injection out of the plain-text deduplication.
+    queued_ids = {entry.item_id for entry in user_inputs if isinstance(entry, QueuedApprovalInput)}
     visible = [
         value.strip()
         for entry in entries
@@ -266,42 +239,15 @@ def _add_user_inputs(
         entries[workflow_start:workflow_start] = [_HistoryEntry({"user": text}) for text in current[overlap:]]
     else:
         entries.extend(_HistoryEntry(user_row(text)) for text in current[overlap:])
-    seen = {entry.item_id for entry in entries}
-    for entry in queued:
-        if entry.item_id not in seen:
-            entries.insert(
-                _queued_insert_index(entries, entry.submitted_at),
-                _HistoryEntry(user_row(entry.text.strip()), entry.submitted_at, entry.item_id, queued_only=True),
-            )
-
-
-def _add_pending_narration(entries: list[_HistoryEntry], narration: Sequence[_HistoryEntry]) -> None:
-    for item in narration:
-        index = len(entries)
-        while item.at is not None and index:
-            previous = entries[index - 1]
-            if previous.item_id is None or previous.at is None or previous.at <= item.at:
-                break
-            index -= 1
-        entries.insert(index, item)
-
-
-def _current_parent_entries(
-    parent: Sequence[_HistoryEntry], user_inputs: Sequence[ApprovalUserInput] | None
-) -> list[_HistoryEntry]:
-    if user_inputs is None:
-        return list(parent)
-    active_ids = {entry.item_id for entry in user_inputs if isinstance(entry, QueuedApprovalInput)}
-    return [entry for entry in parent if not entry.queued_only or entry.item_id in active_ids]
 
 
 @contextmanager
 def formal_parent_context(call_id: str, user_inputs: Sequence[ApprovalUserInput] | None = None) -> Generator[None]:
-    """Capture parent history and remember which inputs are still withdrawable."""
+    """Capture the conversation visible to a parent when it delegated."""
     history, response = active_tool_batch_messages.get()
-    entries = [*_current_parent_entries(_parent_entries.get() or (), user_inputs), *_history_entries(history)]
+    entries = [*(_parent_entries.get() or ()), *_history_entries(history)]
     _add_user_inputs(entries, user_inputs or (), from_parent=True)
-    _add_pending_narration(entries, _pending_narration(response, call_id))
+    entries.extend(_pending_narration(response, call_id))
     token = _parent_entries.set(tuple(entries))
     try:
         yield
@@ -315,11 +261,11 @@ def build_formal_user_prompt(
     """Render the effective conversation and keep the reviewed call separate."""
     parent = _parent_entries.get()
     user_inputs = formal_user_inputs.get()
-    entries = [*_current_parent_entries(parent or (), user_inputs), *_history_entries(history)]
+    entries = [*(parent or ()), *_history_entries(history)]
     _add_user_inputs(
         entries, request.user_messages if user_inputs is None else user_inputs, from_parent=parent is not None
     )
-    _add_pending_narration(entries, _pending_narration(response, call_id))
+    entries.extend(_pending_narration(response, call_id))
 
     runtime = {"tool_kind": request.tool_kind, **current_time_fields(), "workspace_roots": request.workspace_roots}
     context = "\n".join(_formal_json(entry.row) for entry in entries)

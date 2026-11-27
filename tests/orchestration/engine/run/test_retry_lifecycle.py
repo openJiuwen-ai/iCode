@@ -658,7 +658,7 @@ class TestRetryLifecycleApprovalContext:
         with formal_user_inputs.set(turn.user_inputs):
             prompt = build_formal_user_prompt(request, history=history)
         context = prompt.splitlines()[1 : prompt.splitlines().index("</context>")]
-        expected_rows = [{"user": opener}, {"user": "Yes"}, {"ask_user": {"questions": questions}, "result": refusal}]
+        expected_rows = [{"user": opener}, {"ask_user": {"questions": questions}, "result": refusal}, {"user": "Yes"}]
         if note:
             expected_rows.append({"user": note})
         assert [json.loads(row) for row in context] == expected_rows

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,6 +23,14 @@ class QueuedApprovalInput:
 type ApprovalUserInput = str | QueuedApprovalInput
 
 formal_user_inputs: ContextVar[tuple[ApprovalUserInput, ...] | None] = ContextVar("formal_user_inputs", default=None)
+
+formal_pass_steered: ContextVar[Callable[[], bool] | None] = ContextVar("formal_pass_steered", default=None)
+
+
+def formal_review_is_stale() -> bool:
+    """A steering request superseded the pass that proposed this action."""
+    steered = formal_pass_steered.get()
+    return steered is not None and steered()
 
 
 @runtime_checkable
