@@ -256,6 +256,21 @@ class WorkspacePickerController:
             choices.append((unspecified, ("◦ " if current_id is None else "  ") + unspecified))
         return choices
 
+    def edit(self, workspace: Workspace) -> None:
+        if not self.busy(labels.EDIT_BUSY):
+            self._start_worker(partial(self._edit, workspace.id, self._owner(), self._screen_generation))
+
+    def new_session(self, workspace_id: str | None) -> None:
+        if not self.busy(labels.SESSION_BUSY):
+            self._start_worker(partial(self._new_session, workspace_id, self._owner()))
+
+    async def _new_session(self, workspace_id: str | None, owner: WorkspaceActionOwner) -> None:
+        if self._current(owner) and not self.busy():
+            await self._start_session(
+                SessionNew(workspace_id=workspace_id, start_unspecified=workspace_id is None),
+                partial(self._current, owner),
+            )
+
     async def _ask[ResultT](self, dialog: BaseDialog[ResultT]) -> ResultT | None:
         return await ask_dialog(self._view.push_screen, dialog)
 

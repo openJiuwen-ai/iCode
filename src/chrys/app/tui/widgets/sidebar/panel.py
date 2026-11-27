@@ -16,6 +16,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Tab, TabbedContent, TabPane, Tabs
 
+from chrys.app.tui import workspace_text as workspace_labels
 from chrys.app.tui.i18n import render_content
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
@@ -26,6 +27,7 @@ from chrys.app.tui.widgets.sidebar.diff_preview import DiffPreview, SidebarChatP
 from chrys.app.tui.widgets.sidebar.hooks import HookRunList
 from chrys.app.tui.widgets.sidebar.tasks import TasksPanel, TodoListState
 from chrys.app.tui.widgets.sidebar.toc import ConversationToc
+from chrys.app.tui.widgets.sidebar.workspaces import WorkspacePanel
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 
@@ -36,6 +38,7 @@ _SIDEBAR_CONTEXT = msg("tui.sidebar.tab.context", fallback="Context")
 _SIDEBAR_DEBUG = msg("tui.sidebar.tab.debug", fallback="Debug")
 _SIDEBAR_BUDDY = msg("tui.sidebar.tab.buddy", fallback="Buddy")
 _SIDEBAR_TAB_LABELS: tuple[MessageDef, ...] = (
+    workspace_labels.WORKSPACE,
     _SIDEBAR_CHAT,
     _SIDEBAR_TASKS,
     _SIDEBAR_CONTEXT,
@@ -45,7 +48,7 @@ _SIDEBAR_TAB_LABELS: tuple[MessageDef, ...] = (
 )
 SIDEBAR_HOOKS_TAB = "tab-hooks"
 # Workflow runs build their own hook managers, which the run log does not record.
-_WORKFLOW_HIDDEN_TABS = ("tab-toc", "tab-tasks", SIDEBAR_HOOKS_TAB, "tab-context")
+_WORKFLOW_HIDDEN_TABS = ("tab-workspace", "tab-toc", "tab-tasks", SIDEBAR_HOOKS_TAB, "tab-context")
 _TAB_STRIP_SCROLL_CELLS = 4
 """How far one wheel step moves the tab strip."""
 _MARK_CELLS = 1
@@ -212,10 +215,12 @@ class SidebarPanel(Widget, can_focus=False):
         self._room: int | None = None
         self._workflow_mode = False
         self._tab_strip_focusable = False
-        self._chat_tab = "tab-toc"
+        self._home_tab = "tab-workspace"
 
     def compose(self) -> ComposeResult:
-        with TabbedContent(initial="tab-toc"):
+        with TabbedContent(initial="tab-workspace"):
+            with TabPane(self._localized_content(workspace_labels.WORKSPACE.bind()), id="tab-workspace"):
+                yield WorkspacePanel(locale_controller=self._locale_controller)
             with TabPane(self._localized_content(_SIDEBAR_CHAT.bind()), id="tab-toc"):
                 yield SidebarChatPanel(locale_controller=self._locale_controller)
             with TabPane(self._localized_content(_SIDEBAR_TASKS.bind()), id="tab-tasks"):
@@ -271,6 +276,7 @@ class SidebarPanel(Widget, can_focus=False):
         tabs = self.query_one(TabbedContent).query_one(Tabs)
         for tab, definition in zip(tabs.query(Tab).results(Tab), _SIDEBAR_TAB_LABELS, strict=True):
             tab.label = self._localized_content(definition.bind())
+        self.query_one(WorkspacePanel).refresh_localization()
         self.context_panel.refresh_localization()
         self.tasks_panel.refresh_localization()
         self.hooks_panel.refresh_localization()
@@ -500,6 +506,7 @@ class SidebarPanel(Widget, can_focus=False):
             # After a hidden repaint the compositor can rebuild its map before reflow,
             # so restoring display may deliver neither Show nor Resize.
             self.call_after_refresh(self._sync_tab_layout)
+            self.query_one(WorkspacePanel).screen_resumed()
 
     def set_workflow_mode(self, workflow: bool) -> None:
         """Keep chat-only panels out of workflow navigation, retaining the chat selection."""
@@ -508,7 +515,7 @@ class SidebarPanel(Widget, can_focus=False):
         self._workflow_mode = workflow
         tabs = self.query_one(TabbedContent)
         if workflow:
-            self._chat_tab = tabs.active
+            self._home_tab = tabs.active
             if tabs.active in _WORKFLOW_HIDDEN_TABS:
                 tabs.active = "tab-debug"
             for pane in _WORKFLOW_HIDDEN_TABS:
@@ -516,7 +523,7 @@ class SidebarPanel(Widget, can_focus=False):
         else:
             for pane in _WORKFLOW_HIDDEN_TABS:
                 tabs.show_tab(pane)
-            tabs.active = self._chat_tab
+            tabs.active = self._home_tab
         # A scroll reflow can apply the new set of tabs without notifying
         # virtual_size watchers. Sync the marks and selection after layout.
         self.call_after_refresh(self._sync_tab_layout)

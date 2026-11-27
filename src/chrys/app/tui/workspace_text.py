@@ -49,6 +49,8 @@ MORE_REFERENCE_FOLDERS = msg(
     fallback="+{count} more reference folder",
     plural_fallback="+{count} more reference folders",
 )
+SHOW_MORE = msg("tui.workspaces.show_more", fallback="Show more")
+SHOW_LESS = msg("tui.workspaces.show_less", fallback="Show less")
 CREATE = msg("tui.workspaces.create", fallback="Create")
 CREATED_PICKER = msg(
     "tui.workspaces.created_picker",
@@ -64,7 +66,15 @@ DELETE_MESSAGE = msg(
     multiline=True,
 )
 BUSY = msg("tui.workspaces.busy", fallback="Cannot change workspace while agent is busy")
+SESSION_BUSY = msg("tui.workspaces.session_busy", fallback="Cannot switch sessions while agent is busy")
+EDIT_BUSY = msg("tui.workspaces.edit_busy", fallback="Cannot edit a workspace while agent is busy")
 BUSY_TITLE = msg("tui.workspaces.busy_title", fallback="Busy")
+NO_WORKSPACES = msg(
+    "tui.workspaces.no_workspaces", fallback="Workspaces you create with /workspace new will appear here"
+)
+LOADING = msg("tui.workspaces.loading", fallback="Loading workspaces")
+NO_SESSIONS = msg("tui.workspaces.no_sessions", fallback="No sessions")
+NEW_SESSION = msg("tui.workspaces.new_session", fallback="New session")
 EDIT = msg("tui.workspaces.edit", fallback="Edit")
 
 

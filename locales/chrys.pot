@@ -11497,7 +11497,7 @@ msgstr ""
 #. English: 1 day ago
 #. English-plural: {count} days ago
 #. chrys-meta={"fingerprint":"fef2c250226c86f6b1c15855230e06e35855dbb479b24dcaa5219a96a4c693aa","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/sessions/presenter.py
+#: src/chrys/app/tui/util/time_ago.py
 msgid "tui.sessions.time.days_ago"
 msgid_plural "tui.sessions.time.days_ago#plural"
 msgstr[0] ""
@@ -11505,26 +11505,26 @@ msgstr[1] ""
 
 #. English: {hour_count}h ago
 #. chrys-meta={"fingerprint":"ad721a35127f4bb3e803d0e32a9c7c95ff5db8090efce4e58c99b400ce9ce5de","multiline":false,"placeholders":["hour_count"]}
-#: src/chrys/app/tui/screens/sessions/presenter.py
+#: src/chrys/app/tui/util/time_ago.py
 msgid "tui.sessions.time.hours_ago"
 msgstr ""
 
 #. English: just now
 #. chrys-meta={"fingerprint":"c2f4dc4e207a3fbbce4d1283f32e761bc9afdbeb78713d3e8b9e11aaea63681f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/sessions/presenter.py
+#: src/chrys/app/tui/util/time_ago.py
 msgid "tui.sessions.time.just_now"
 msgstr ""
 
 #. English: {minute_count}m ago
 #. chrys-meta={"fingerprint":"eb7af5f266fe43500b0c771ae6cf5bda1070498513b6a38671341f24a89baa3f","multiline":false,"placeholders":["minute_count"]}
-#: src/chrys/app/tui/screens/sessions/presenter.py
+#: src/chrys/app/tui/util/time_ago.py
 msgid "tui.sessions.time.minutes_ago"
 msgstr ""
 
 #. English: 1 month ago
 #. English-plural: {count} months ago
 #. chrys-meta={"fingerprint":"925dba382153eb65c0b2eab899928dfb0b08f4286d570b2fe7d611c4bf96fac5","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/sessions/presenter.py
+#: src/chrys/app/tui/util/time_ago.py
 msgid "tui.sessions.time.months_ago"
 msgid_plural "tui.sessions.time.months_ago#plural"
 msgstr[0] ""
@@ -11533,7 +11533,7 @@ msgstr[1] ""
 #. English: 1 year ago
 #. English-plural: {count} years ago
 #. chrys-meta={"fingerprint":"256ccfd9b7de8bd0d526f3f6e501eb54c7443ec7a961bf908e1fd28881abf5a2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/sessions/presenter.py
+#: src/chrys/app/tui/util/time_ago.py
 msgid "tui.sessions.time.years_ago"
 msgid_plural "tui.sessions.time.years_ago#plural"
 msgstr[0] ""
@@ -17954,6 +17954,12 @@ msgstr ""
 msgid "tui.workspaces.edit"
 msgstr ""
 
+#. English: Cannot edit a workspace while agent is busy
+#. chrys-meta={"fingerprint":"9c655acb5347992d94a22ea4bb8bbb6f08d8f6a52ae2dbd2e9ba5454e22bd755","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.edit_busy"
+msgstr ""
+
 #. English: This workspace was edited elsewhere. Close and reopen this dialog
 #. to edit it. Your draft is still here to copy.
 #. chrys-meta={"fingerprint":"f7b8c45502bcdbf6b7aef1b1d2f8edf5ca24a9e3b0ce78a828a8970f310d409d","multiline":false,"placeholders":[]}
@@ -17989,6 +17995,18 @@ msgid_plural "tui.workspaces.folders#plural"
 msgstr[0] ""
 msgstr[1] ""
 
+#. English: Could not load workspaces.
+#. chrys-meta={"fingerprint":"c1928fe7da982a3f0e4b46ac64de25d3afc4eed73942c3c62f43c31d47ffb8b5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/workspaces.py
+msgid "tui.workspaces.load_failed"
+msgstr ""
+
+#. English: Loading workspaces
+#. chrys-meta={"fingerprint":"b9bbe3a9ebc7dd99ca9f58a4dbecc73126626046a7441aed050862122411ee82","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.loading"
+msgstr ""
+
 #. English: missing
 #. chrys-meta={"fingerprint":"f9b18616c27539ba099c63387787a044fa36db5c03842f33b2d54a744e5032d9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/workspace_text.py
@@ -18022,10 +18040,28 @@ msgstr ""
 msgid "tui.workspaces.new"
 msgstr ""
 
+#. English: New session
+#. chrys-meta={"fingerprint":"9131b5c344492c08b08bbf6a49f91c895f10bcff24befb5b52732f32a07cb299","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.new_session"
+msgstr ""
+
 #. English: New Workspace
 #. chrys-meta={"fingerprint":"bd6acdd2f20b2a68950f304e8a729ab47dca0f9c885a3c88a0da95f6d3e03f83","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/workspace_text.py
 msgid "tui.workspaces.new_title"
+msgstr ""
+
+#. English: No sessions
+#. chrys-meta={"fingerprint":"53aeed8f9d98aeb28a1d94a2059df47bbf1bd98bc8ef9d6372aa1710fd9e3d0a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.no_sessions"
+msgstr ""
+
+#. English: Workspaces you create with /workspace new will appear here
+#. chrys-meta={"fingerprint":"9a4c72c2482419969c04c397adfd5b675b46ab0469d07ffb2352fa709d67cb71","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.no_workspaces"
 msgstr ""
 
 #. English: No workspace
@@ -18075,6 +18111,24 @@ msgstr ""
 #. chrys-meta={"fingerprint":"d94821678480c3b8bcecab1c971c91f42de8a1d84e01403e226e9e375767da96","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/workspace_text.py
 msgid "tui.workspaces.select_primary"
+msgstr ""
+
+#. English: Cannot switch sessions while agent is busy
+#. chrys-meta={"fingerprint":"2078b5bf3bec2a753584a00ac82c94e203b71bce3393bb2d8d6d029b0d090413","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.session_busy"
+msgstr ""
+
+#. English: Show less
+#. chrys-meta={"fingerprint":"e94d8c45dd9a38a5eadb42008aeb28634532c24c8b6275689436b24d8db6f620","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.show_less"
+msgstr ""
+
+#. English: Show more
+#. chrys-meta={"fingerprint":"3e815dab33a6c83ee84412bedfba6174504102ce3fd6dcde33fd0a61fd56636c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.show_more"
 msgstr ""
 
 #. English: Workspaces

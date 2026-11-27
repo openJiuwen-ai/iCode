@@ -27,7 +27,8 @@ from chrys.service.state.session_listing import (
     SessionPage,
     page_slice,
 )
-from chrys.service.state.store import ChatSessionMeta, SessionMeta
+from chrys.service.state.store import ChatSessionMeta, SessionMeta, WorkflowSessionMeta
+from chrys.service.workflows.history import WorkflowRunMeta
 from tests.support.waiting import wait_for
 
 
@@ -36,6 +37,31 @@ class SessionsHostApp(App):
 
     def compose(self) -> ComposeResult:
         yield Static("placeholder")
+
+
+def session_listing_entry(meta: SessionMeta) -> SessionListingEntry:
+    return SessionListingEntry(
+        meta.session_id,
+        meta.updated_at,
+        meta.last_surface or SessionSurface.TUI,
+        Path(meta.session_id),
+        meta=copy_session_meta(meta),
+    )
+
+
+def workflow_session_meta(
+    session_id: str, updated_at: datetime, *, title: str = "", latest_run: WorkflowRunMeta | None = None
+) -> WorkflowSessionMeta:
+    """Workflow metadata with either no runs or one explicit latest run."""
+    return WorkflowSessionMeta(
+        session_id=session_id,
+        created_at=updated_at,
+        updated_at=updated_at,
+        title=title,
+        run_count=1 if latest_run is not None else 0,
+        latest_run_id=latest_run.run_id if latest_run is not None else "",
+        latest_run=latest_run,
+    )
 
 
 class FakeSessionStore:
@@ -80,19 +106,7 @@ class FakeSessionStore:
             key=lambda meta: (meta.updated_at, meta.session_id),
             reverse=True,
         )
-        return SessionListing(
-            kind,
-            tuple(
-                SessionListingEntry(
-                    meta.session_id,
-                    meta.updated_at,
-                    meta.last_surface or SessionSurface.TUI,
-                    Path(meta.session_id),
-                    meta=copy_session_meta(meta),
-                )
-                for meta in listed
-            ),
-        )
+        return SessionListing(kind, tuple(map(session_listing_entry, listed)))
 
     async def load_session_page(
         self,

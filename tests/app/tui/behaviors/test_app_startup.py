@@ -717,11 +717,15 @@ def _attach_startup_facade(screen: object) -> object:
     def cancel_startup_session_restore() -> None:
         return
 
+    def set_startup_workspace_pending(_pending: bool) -> None:
+        return
+
     screen.set_startup_agent_loading = set_startup_agent_loading  # type: ignore[attr-defined]
     screen.is_startup_agent_loading = is_startup_agent_loading  # type: ignore[attr-defined]
     screen.restore_startup_session = restore_startup_session  # type: ignore[attr-defined]
     screen.dismiss_startup_load_dialog_before_restore = dismiss_startup_load_dialog_before_restore  # type: ignore[attr-defined]
     screen.cancel_startup_session_restore = cancel_startup_session_restore  # type: ignore[attr-defined]
+    screen.set_startup_workspace_pending = set_startup_workspace_pending  # type: ignore[attr-defined]
     return screen
 
 
@@ -984,6 +988,77 @@ def test_main_screen_cancel_startup_restore_clears_restoring_state() -> None:
     assert calls == [("cancel", None), ("restoring", False)]
 
 
+@pytest.mark.parametrize(
+    ("start_new", "start_fails"),
+    [(False, False), (True, False), (True, True)],
+    ids=["retry", "start-new", "start-new-fails"],
+)
+async def test_startup_sidebar_waits_for_reset_and_choice_without_changing_loading(start_new, start_fails):
+    from unittest.mock import AsyncMock
+
+    from chrys.app.tui import app as tui_app
+    from chrys.app.tui.screens.main.screen import MainScreen
+    from chrys.app.tui.widgets.sidebar.workspaces import WorkspacePanel
+    from tests.support.tui_helpers import WidgetApp
+
+    panel = WorkspacePanel()
+    main = object.__new__(MainScreen)
+    calls = []
+    loading = False
+    main._workspace_panel = panel
+    main._events = SimpleNamespace(cancel_agent_load=lambda: calls.append("cancel"))
+    main._set_restoring_session = lambda _active: None
+
+    def set_loading(active):
+        nonlocal loading
+        loading = active
+
+    main._set_agent_loading = set_loading
+    main.is_startup_agent_loading = lambda: loading
+    app = object.__new__(ChrysApp)
+    app._startup_session_id = "saved"
+    app._startup_workspace_id = None
+    app._deferred_settings_warnings = []
+    app._restore_startup_session = AsyncMock(side_effect=[tui_app._SESSION_NOTIFICATION_TITLE.bind(), None])
+    app._flush_deferred_settings_warnings = AsyncMock()
+
+    def failed(_screen, error):
+        raise error
+
+    if not start_fails:
+        app._show_startup_failure = failed
+
+    async def reset():
+        assert loading is True
+        assert str(panel.query_one(".workspace-empty").render()) == "Loading workspaces"
+        calls.append("reset")
+
+    async def choose(_screen, _problem):
+        assert loading is True
+        assert "reset" in calls
+        assert str(panel.query_one(".workspace-empty").render()) == (
+            "Workspaces you create with /workspace new will appear here"
+        )
+        calls.append("choice")
+        return start_new
+
+    app._engine = SimpleNamespace(
+        prepare=AsyncMock(),
+        reset_after_failed_startup_restore=reset,
+        start=AsyncMock(side_effect=RuntimeError("startup exploded") if start_fails else None),
+    )
+    app._choose_new_startup_session = choose
+    async with WidgetApp(lambda: panel).run_test():
+        await app._start_engine(object(), main)
+        assert calls.index("cancel") < calls.index("reset") < calls.index("choice")
+        assert loading is not start_fails
+        assert str(panel.query_one(".workspace-empty").render()) == (
+            "Workspaces you create with /workspace new will appear here" if start_fails else "Loading workspaces"
+        )
+        assert app._startup_session_id == ""
+        assert app._engine.start.await_count == int(start_new)
+
+
 async def test_start_engine_dismisses_startup_modal_before_startup_session_restore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1215,6 +1290,9 @@ async def test_start_engine_flushes_deferred_settings_warnings_when_falling_back
             return "failed"
 
         def cancel_startup_session_restore(self) -> None:
+            return
+
+        def set_startup_workspace_pending(self, pending: bool) -> None:
             return
 
         def query_one(self, cls: type) -> _StatusBar:
@@ -1593,3 +1671,52 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
             assert registry.snapshot().workspace_id_for_session(TARGET_SESSION) == workspace.id
     else:
         launch(args, examine)
+
+
+async def test_failed_startup_build_settles_workspace_sidebar_after_dismissal(tmp_path):
+    from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
+    from chrys.app.tui.screens.main.screen import MainScreen
+    from chrys.app.tui.widgets.sidebar.workspaces import WorkspacePanel
+    from chrys.foundation.events.types import AgentLoadFailed, AgentLoadStarted
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.state.store import JsonFileStateStore
+    from tests.support.tui_app_harness import ShutdownOnlyEngine, make_chrys_app
+    from tests.support.tui_helpers import click_when_settled
+    from tests.support.waiting import MAIN_SCREEN_BUILD_TIMEOUT, wait_for
+
+    bus = EventBus()
+    profiles = AgentProfileRegistry()
+    profile = AgentProfile(name="Code")
+    profiles.register(profile)
+
+    class FailingEngine(ShutdownOnlyEngine):
+        async def start(self, profile):
+            await bus.publish(AgentLoadStarted(operation="startup", to_profile=profile.name))
+            await bus.publish(AgentLoadFailed(operation="startup", agent_profile=profile.name, message="build failed"))
+            raise RuntimeError("build failed")
+
+    store = JsonFileStateStore(tmp_path / "sessions")
+    app = make_chrys_app(
+        tmp_path / "sessions", engine=FailingEngine(), event_bus=bus, agent_registry=profiles, state_store=store
+    )
+    async with app.run_test(size=(150, 36)) as pilot:
+        await wait_for(
+            lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            timeout=MAIN_SCREEN_BUILD_TIMEOUT,
+        )
+        await await_engine_startup(app)
+        main = next(screen for screen in app.screen_stack if isinstance(screen, MainScreen))
+        assert main.is_startup_agent_loading() is False
+        await click_when_settled(pilot, "#agent-load-ok")
+        await wait_for(lambda: app.screen is main, pilot=pilot)
+        panel = main.query_one(WorkspacePanel)
+        await wait_for(
+            lambda: (
+                str(panel.query_one(".workspace-empty").render())
+                == "Workspaces you create with /workspace new will appear here"
+            ),
+            pilot=pilot,
+        )
+        assert not any(notice.title == "Agent startup failed" for notice in app._notifications)

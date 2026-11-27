@@ -25,6 +25,7 @@ from chrys.foundation.models.hook_confirmations import (
 )
 from chrys.foundation.models.hook_executions import HookExecutionView
 from chrys.foundation.models.invocations import ContentChannel, ContentStatus, InvocationOrigin
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.models.workflow_session import (
@@ -1643,6 +1644,10 @@ class SessionSaved(Event):
     """A session has been auto-saved (backend → frontend, triggers history refresh)."""
 
     session_id: str | None = ""
+    updated_at: datetime | None = None
+    """The persisted ordering time. A save can preserve the previous value."""
+    last_surface: SessionSurface | None = None
+    """The persisted surface; ``None`` when the session records none (it then counts as TUI)."""
 
 
 @dataclass

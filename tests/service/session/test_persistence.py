@@ -281,22 +281,29 @@ async def test_recovery_persistence_strict_propagates_while_wrapper_swallows(
         await persistence.save_recovery_session_strict("sess-1", state, **kwargs)
 
 
-async def test_save_publishes_session_saved(persistence: SessionPersistence, bus: EventBus) -> None:
-    """save_session should publish a SessionSaved event."""
+async def test_save_publishes_session_saved(
+    persistence: SessionPersistence, bus: EventBus, store: JsonFileStateStore
+) -> None:
+    """The save notice carries the saved ordering time and surface, even when they were preserved."""
     from chrys.foundation.events.types import SessionSaved
+    from chrys.foundation.models.session_surface import SessionSurface
 
     events = await capture_events(bus, SessionSaved)
 
-    await persistence.save_session(
-        "sess-1",
-        {"messages": [_make_msg()]},
-        agent_profile_name="Code",
-        agent_display_name="Code",
-        agent_profile_id="",
-        workspace=None,
-    )
-    assert len(events) == 1
-    assert events[0].session_id == "sess-1"
+    for surface in (SessionSurface.CLI, None, SessionSurface.TUI):
+        await persistence.save_session(
+            "sess-1",
+            {"messages": [_make_msg()]},
+            agent_profile_name="Code",
+            agent_display_name="Code",
+            agent_profile_id="",
+            workspace=None,
+            last_surface=surface,
+        )
+    meta = await store.load_session_meta("sess-1")
+    assert meta is not None
+    assert [(event.session_id, event.updated_at) for event in events] == [("sess-1", meta.updated_at)] * 3
+    assert [event.last_surface for event in events] == [SessionSurface.CLI, SessionSurface.CLI, SessionSurface.TUI]
 
 
 async def test_save_persists_usage_tokens(persistence: SessionPersistence) -> None:

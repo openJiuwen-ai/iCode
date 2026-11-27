@@ -354,6 +354,14 @@ async def test_the_list_ticks_and_its_details_open_without_restyling_a_populated
             pilot=pilot,
             description="the list shown and ticking",
         )
+        # Opening the tab may slide the tab strip to centre it (Textual animates
+        # that); the measurement below is about the list, not the tab switch.
+        strip = sidebar.query_one("#tabs-scroll")
+        await wait_for(
+            lambda: not app.animator.is_being_animated(strip, "scroll_x"),
+            pilot=pilot,
+            description="the tab strip at rest",
+        )
         await _settle(app, main)
 
         layout = create_autospec(main._refresh_layout, side_effect=main._refresh_layout)

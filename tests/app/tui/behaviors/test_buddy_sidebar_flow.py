@@ -34,6 +34,10 @@ def _turns() -> int:
 
 
 class _SidebarApp(App[None]):
+    # A real main screen focuses its input bar first. Here the sidebar is the
+    # whole app, so auto-focus would land in the hidden Chat pane and select it.
+    AUTO_FOCUS = None
+
     def compose(self) -> ComposeResult:
         yield SidebarPanel()
 
@@ -64,7 +68,7 @@ class _SidebarApp(App[None]):
 async def test_hatching_from_the_command_opens_the_buddy_tab_on_the_newborn() -> None:
     app = _SidebarApp()
     async with app.run_test(size=(60, 40)) as pilot:
-        assert app.active_tab == "tab-toc"
+        assert app.active_tab == "tab-workspace"
         assert app.panel.query_one(".buddy-empty", Static).display
 
         app.controller().handle("hatch")
@@ -136,7 +140,7 @@ async def test_a_command_pet_updates_the_panel_without_taking_the_tab(monkeypatc
         model.go.set()
         await wait_for(lambda: app.toasts()[-1:] == [("information", "💛 done")], pilot=pilot, description="answered")
 
-        assert app.active_tab == "tab-toc"
+        assert app.active_tab == "tab-workspace"
         await controller.shutdown()
 
 
@@ -165,7 +169,7 @@ async def test_a_command_pet_counted_after_it_was_answered_still_shows_on_the_pa
             pilot=pilot,
             description="the panel shows the pet once it is counted",
         )
-        assert app.active_tab == "tab-toc"
+        assert app.active_tab == "tab-workspace"
         await controller.shutdown()
 
 
@@ -210,7 +214,7 @@ async def test_coming_back_to_the_tab_shows_the_turns_finished_meanwhile(monkeyp
     actions.hatch(Random(1))
     app = _SidebarApp()
     async with app.run_test(size=(60, 40)) as pilot:
-        assert app.active_tab == "tab-toc"
+        assert app.active_tab == "tab-workspace"
         assert app.label("#buddy-level") == "Level 1\n0/100 XP"
 
         lifecycle.on_successful_turn()

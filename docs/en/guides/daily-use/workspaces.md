@@ -49,7 +49,7 @@ After you select a folder, you return to the workspace form. iCode adds a refere
 
 If saving fails, the form displays the reason and keeps your draft so you can retry.
 
-Workspaces containing the current directory come first, followed by the most recently used workspaces. The picker and command suggestions use this order. The picker opens with your current workspace or **Unspecified** highlighted. Choose a workspace in the picker or enter `/workspace switch <name>` to switch directly. Choose **Unspecified** or enter `/workspace switch Unspecified` to switch to Unspecified in the current working directory. If the conversation has messages, choose **Move this session**, **New session**, or **Cancel**. **New session** keeps the original conversation and starts another under the selected item. Selecting the current item closes the picker. If the selected workspace's primary folder is missing, iCode shows the workspace name and folder path.
+Workspaces containing the current directory come first, followed by the most recently used workspaces. The picker, sidebar and command suggestions use this order. The picker opens with your current workspace or **Unspecified** highlighted. Choose a workspace in the picker or enter `/workspace switch <name>` to switch directly. Choose **Unspecified** or enter `/workspace switch Unspecified` to switch to Unspecified in the current working directory. If the conversation has messages, choose **Move this session**, **New session**, or **Cancel**. **New session** keeps the original conversation and starts another under the selected item. Selecting the current item closes the picker. If the selected workspace's primary folder is missing, iCode shows the workspace name and folder path.
 
 Use **Edit** at the end of a row to change the name and reference folders, including when the primary folder is missing. The picker marks a missing primary folder, and the editor and status-bar tooltip mark the missing folders they list, in the theme's warning color. Restore a missing primary folder before entering the workspace, or create a workspace to use a different primary folder. Click **✕** to remove a reference folder.
 
@@ -57,7 +57,7 @@ Use **Delete** to remove a workspace. Its folders and conversations are kept, an
 
 If someone edits or deletes the same workspace while you have it open, the form keeps your draft. You can copy it before closing the form. If the workspace still exists, reopen it to make changes.
 
-The bottom status bar shows the current workspace or Unspecified. On narrower terminals, it shortens the workspace, agent, and model names and may hide their labels.
+The bottom status bar shows the current workspace or Unspecified. On narrower terminals, it shortens the workspace, agent, and model names and may hide their labels. Open the **Workspace** page in the right sidebar to browse and open conversations by workspace; the sidebar opens on this page by default. Each workspace lists five conversations at a time, and so does the list of workspaces; use **Show more** / **Show less** to expand or shorten a list.
 
 When the primary folder is available and the workspace has reference folders, the picker shows their count next to the primary folder path. The status-bar tooltip names the primary folder and lists reference folders, with a count for any remaining reference folders.
 

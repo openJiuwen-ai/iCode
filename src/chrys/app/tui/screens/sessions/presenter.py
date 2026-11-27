@@ -11,10 +11,11 @@ running app.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from chrys.app.tui.util.formatting import elide_middle, format_byte_size
+from chrys.app.tui.util.formatting import elide_middle, format_byte_size, title_display
+from chrys.app.tui.util.time_ago import time_ago
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.session_surface import SessionSurface
@@ -27,9 +28,6 @@ if TYPE_CHECKING:
     from chrys.service.state.store import ChatSessionMeta, SessionMeta, WorkflowSessionMeta
     from chrys.service.workflows.history import WorkflowRunMeta
 
-
-_SESSION_ID_PREVIEW_LEN = 8
-"""Characters to show when a session has no title."""
 
 _DIRECTORY_MAX_WIDTH = 24
 """Cell-width cap for the Directory column; longer names elide the middle."""
@@ -50,24 +48,6 @@ class WorkspaceNames:
 _NO_WORKSPACE_NAMES = WorkspaceNames()
 """No registry read (unreadable, or a browser opened without one): every Workspace cell stays empty."""
 
-_JUST_NOW = msg("tui.sessions.time.just_now", fallback="just now")
-_MINUTES_AGO = msg("tui.sessions.time.minutes_ago", fallback="{minute_count}m ago")
-_HOURS_AGO = msg("tui.sessions.time.hours_ago", fallback="{hour_count}h ago")
-_DAYS_AGO = msg(
-    "tui.sessions.time.days_ago",
-    fallback="1 day ago",
-    plural_fallback="{count} days ago",
-)
-_MONTHS_AGO = msg(
-    "tui.sessions.time.months_ago",
-    fallback="1 month ago",
-    plural_fallback="{count} months ago",
-)
-_YEARS_AGO = msg(
-    "tui.sessions.time.years_ago",
-    fallback="1 year ago",
-    plural_fallback="{count} years ago",
-)
 _COLUMN_WORKSPACE = msg("tui.sessions.column.workspace", fallback="Workspace")
 _COLUMN_SESSION_ID = msg("tui.sessions.column.session_id", fallback="Session ID")
 _COLUMN_TITLE = msg("tui.sessions.column.title", fallback="Title")
@@ -137,41 +117,6 @@ def format_tokens(count: int) -> str:
     return str(count)
 
 
-def time_ago(
-    dt: datetime,
-    *,
-    now: datetime | None = None,
-    render_message: Callable[[MessageRef], str] = format_message,
-) -> str:
-    """Format a datetime as a relative time string."""
-    delta = (now or datetime.now(UTC)) - dt
-    seconds = int(delta.total_seconds())
-    if seconds < 60:
-        return render_message(_JUST_NOW.bind())
-    minutes = seconds // 60
-    if minutes < 60:
-        return render_message(_MINUTES_AGO.bind(minute_count=minutes))
-    hours = minutes // 60
-    if hours < 24:
-        return render_message(_HOURS_AGO.bind(hour_count=hours))
-    days = hours // 24
-    if days == 1:
-        return render_message(_DAYS_AGO.bind(count=1))
-    if days < 30:
-        return render_message(_DAYS_AGO.bind(count=days))
-    months = days // 30
-    if months == 1:
-        return render_message(_MONTHS_AGO.bind(count=1))
-    if months < 12:
-        return render_message(_MONTHS_AGO.bind(count=months))
-    # Months are 30 days throughout this function, so twelve of them make a
-    # year: 360 days reads "1 year ago", never "0 years ago".
-    years = months // 12
-    if years == 1:
-        return render_message(_YEARS_AGO.bind(count=1))
-    return render_message(_YEARS_AGO.bind(count=years))
-
-
 def last_interaction_display(dt: datetime) -> str:
     """Absolute local-timezone timestamp (tooltip counterpart of time_ago)."""
     return dt.astimezone().strftime("%Y/%m/%d %H:%M")
@@ -182,11 +127,6 @@ def profile_display(meta: ChatSessionMeta) -> str:
     if meta.agent_profile_history:
         return meta.agent_profile_history[-1]
     return meta.agent_display_name or meta.agent_profile or "?"
-
-
-def title_display(meta: SessionMeta) -> str:
-    """User-facing title, falling back to a session-id preview."""
-    return meta.display_title or f"{meta.session_id[:_SESSION_ID_PREVIEW_LEN]}.."
 
 
 def listed_cwd(meta: ChatSessionMeta, workspace_names: WorkspaceNames) -> str:

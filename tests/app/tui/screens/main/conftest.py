@@ -7,9 +7,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from textual.widgets import Tree
 
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.screens.main.workspace_branch import WorkspaceBranchController
+from chrys.app.tui.widgets.sidebar.workspaces import WorkspacePanel
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     SessionReady,
@@ -21,6 +23,7 @@ from chrys.service.state.store import JsonFileStateStore
 from chrys.service.workspaces.registry import Workspace
 from tests.support.rollback_spec import PROFILE
 from tests.support.tui_app_harness import make_chrys_app
+from tests.support.tui_helpers import settle_workspace_page_reads
 from tests.support.waiting import (
     ENGINE_TURN_TIMEOUT,
     MAIN_SCREEN_BUILD_TIMEOUT,
@@ -64,6 +67,9 @@ async def workspace_main(tmp_path, monkeypatch):
             ),
             raise_handler_errors=True,
         )
+        panel = main.query_one(WorkspacePanel)
+        await wait_for(lambda: bool(panel.query_one(Tree).root.children), pilot=pilot)
+        await settle_workspace_page_reads(panel)
         yield app, pilot, main
         main._events.cancel_agent_load()
 

@@ -2,7 +2,7 @@
 
 This tutorial shows how to install iCode, configure a model, and use agents to complete a development task in a project.
 
-Enter `/workspace new <name>` to create a workspace for related folders and conversations. The bottom status bar shows the current workspace.
+Enter `/workspace new <name>` to create a workspace for related folders and conversations. The bottom status bar shows the current workspace, and the sidebar **Workspace** page groups conversations by workspace.
 
 ## 1. Install iCode
 

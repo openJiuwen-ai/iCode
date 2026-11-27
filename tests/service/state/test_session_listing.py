@@ -8,10 +8,11 @@ import asyncio
 import errno
 import json
 import shutil
+import threading
 from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import pytest
@@ -694,3 +695,66 @@ async def test_listing_the_legacy_way_still_reports_sizes_and_feeds_the_catalog(
     assert listed[0].size_bytes == store_module._dir_size(store.session_dir("s")) > 0
     assert listed[0].last_surface is SessionSurface.ACP
     assert _catalog_ids(tmp_path) == {"s"}
+
+
+async def _cancel_while_reading_the_first_session(
+    store: JsonFileStateStore, monkeypatch: pytest.MonkeyPatch
+) -> list[str]:
+    """Cancel a listing while its scan reads the first session; return the sessions the scan read in all."""
+    read: list[str] = []
+    entered, release, ended = threading.Event(), threading.Event(), threading.Event()
+    listing_meta, scan = store._listing_meta, store._open_session_listing_sync
+
+    def held(session_dir: Path) -> Any:
+        read.append(session_dir.name)
+        if len(read) == 1:
+            entered.set()
+            release.wait(5)
+        return listing_meta(session_dir)
+
+    def tracked(kind: Literal["chat", "workflow"], stop: threading.Event | None = None) -> SessionListing:
+        try:
+            return scan(kind, stop)
+        finally:
+            ended.set()
+
+    monkeypatch.setattr(store, "_listing_meta", held)
+    monkeypatch.setattr(store, "_open_session_listing_sync", tracked)
+    listing = asyncio.create_task(store.open_session_listing(kind="chat"))
+    assert await asyncio.to_thread(entered.wait, 5)
+    listing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await listing
+    release.set()
+    assert await asyncio.to_thread(ended.wait, 5)
+    return read
+
+
+async def test_a_cancelled_listing_reads_no_further_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Quitting cancels the startup listing: its scan must stop instead of holding up the exit."""
+    store = JsonFileStateStore(tmp_path)
+    for session_id in ("a", "b", "c"):
+        await _chat(store, session_id)
+
+    assert len(await _cancel_while_reading_the_first_session(store, monkeypatch)) == 1
+    assert not (tmp_path / ".cache" / "session_catalog.json").exists()
+    assert _ids(await JsonFileStateStore(tmp_path).open_session_listing(kind="chat")) == ["c", "b", "a"]
+
+
+async def test_a_cancelled_listing_still_removes_a_deleted_sessions_catalog_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A delete the catalog lock held up must not keep its prompts on disk because the next listing was cut short."""
+    monkeypatch.setattr(catalog_module, "SESSION_CATALOG_LOCK_TIMEOUT_SECONDS", 0.05)
+    store = JsonFileStateStore(tmp_path)
+    for session_id in ("keep", "gone"):
+        await _chat(store, session_id, f"private prompt of {session_id}")
+    await store.open_session_listing(kind="chat")
+    with FileLock(store._catalog.lock_path, timeout=1.0):
+        await store.delete_session("gone")
+    assert _catalog_ids(tmp_path) == {"keep", "gone"}
+
+    await _cancel_while_reading_the_first_session(store, monkeypatch)
+
+    assert _catalog_ids(tmp_path) == {"keep"}
+    assert "private prompt of gone" not in (tmp_path / ".cache" / "session_catalog.json").read_text(encoding="utf-8")

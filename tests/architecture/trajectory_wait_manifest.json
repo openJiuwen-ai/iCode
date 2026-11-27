@@ -5444,7 +5444,7 @@
       ],
       "SessionPersistence.save_session": [
         ["awaitable", "await self._state_store.save_session(session_id, history_state, agent_profile=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, agent_profile_history=agent_profile_history or None, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id, service_session_workspace_fingerprint=workspace_scope_fingerprint(workspace) if service_session_id else '', last_surface=last_surface)", "unresolved"],
-        ["awaitable", "await self._bus.publish(SessionSaved(session_id=session_id))", "unresolved"]
+        ["awaitable", "await self._bus.publish(SessionSaved(session_id=session_id, updated_at=checkpoint.updated_at if checkpoint is not None else None, last_surface=checkpoint.last_surface if checkpoint is not None else None))", "unresolved"]
       ]
     },
     "chrys.service.session.sub_agent_logs": {
@@ -5582,7 +5582,7 @@
         ["thread_pool", "await asyncio.to_thread(self._load_workflow_session_sync, session_id)", "workflow-blocking"]
       ],
       "JsonFileStateStore.open_session_listing": [
-        ["thread_pool", "await asyncio.to_thread(self._open_session_listing_sync, kind)", "unresolved"]
+        ["thread_pool", "await asyncio.to_thread(self._open_session_listing_sync, kind, stop)", "unresolved"]
       ],
       "JsonFileStateStore.recovery_session_wins": [
         ["thread_pool", "await asyncio.to_thread(self._recovery_session_wins_sync, session_id)", "unresolved"]

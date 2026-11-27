@@ -40,7 +40,7 @@ from chrys.service.state.store import JsonFileStateStore
 from tests.support.engines import AgentEngineFactory
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, show_sidebar_tab
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
 
 pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
@@ -207,6 +207,8 @@ async def test_engine_edit_restore_and_rollback_refresh_the_preview(
             description="engine ready",
         )
         main = app._main_screen
+        # The sidebar opens on the Workspace page; watch this turn's edits on Chat.
+        await show_sidebar_tab(pilot, main, "tab-toc")
         preview = main.query_one(DiffPreview)
         assert preview.entries == ()
         await app.workers.wait_for_complete()
@@ -365,6 +367,7 @@ async def test_same_height_preview_refresh_does_not_relayout_or_restyle_a_popula
     async with app.run_test(size=(140, 45)) as pilot:
         main = app._main_screen
         assert main is not None
+        await show_sidebar_tab(pilot, main, "tab-toc")
         panel = main.query_one(ChatPanel)
         for index in range(12):
             await panel.add_user_message(f"Question {index}")
@@ -441,6 +444,7 @@ async def test_hidden_or_covered_sidebar_chat_catches_up_when_shown(
     async with app.run_test(size=(140, 40)) as pilot:
         main = app._main_screen
         assert main is not None
+        await show_sidebar_tab(pilot, main, "tab-toc")
         await bus.publish(SessionReady(session_id="s1", agent_profile="Code"), raise_handler_errors=True)
         preview = main.query_one(DiffPreview)
         sidebar_chat = main.query_one(SidebarChatPanel)
@@ -513,6 +517,7 @@ async def test_workspace_updated_clears_old_display_keys_before_reloading(
     async with app.run_test(size=(140, 40)) as pilot:
         main = app._main_screen
         assert main is not None
+        await show_sidebar_tab(pilot, main, "tab-toc")
         await bus.publish(
             SessionReady(session_id="s1", agent_profile="Code", primary_cwd=str(old_cwd)), raise_handler_errors=True
         )

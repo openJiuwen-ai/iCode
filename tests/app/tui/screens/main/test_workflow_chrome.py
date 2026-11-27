@@ -360,7 +360,7 @@ async def test_workflow_frame_and_controls_center_after_resize(tmp_path: Path, m
         app.save_screenshot("workflow-output-tab.svg", path=str(tmp_path))
 
 
-@pytest.mark.parametrize("chat_tab", ["tab-toc", "tab-tasks", "tab-context", "tab-debug"])
+@pytest.mark.parametrize("chat_tab", ["tab-workspace", "tab-toc", "tab-tasks", "tab-context", "tab-debug"])
 async def test_workflow_sidebar_hides_chat_tabs_and_restores_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chat_tab: str
 ) -> None:
@@ -377,6 +377,7 @@ async def test_workflow_sidebar_hides_chat_tabs_and_restores_selection(
         await switch_mode(main, pilot)
         expected = "tab-debug"
         await wait_for(lambda: tabs.active == expected and tabs.get_pane(expected).display, pilot=pilot)
+        assert not tabs.get_pane("tab-workspace").display
         assert not tabs.get_pane("tab-toc").display
         assert not tabs.get_pane("tab-tasks").display
         assert not tabs.get_pane("tab-context").display
@@ -413,7 +414,7 @@ async def test_entering_workflow_keeps_the_current_sidebar_tab_in_view(
         content = main.query_one(SidebarPanel).query_one(TabbedContent)
         tabs = content.query_one(Tabs)
         strip = tabs.query_one("#tabs-scroll")
-        await wait_for(lambda: content.active == "tab-toc" and screen_is_settled(app, main), pilot=pilot)
+        await wait_for(lambda: content.active == "tab-workspace" and screen_is_settled(app, main), pilot=pilot)
         assert strip.scroll_offset.x == 0
 
         await click_when_settled(pilot, "#mode-badge")

@@ -664,6 +664,7 @@ class MainScreenViewAdapter:
                 on_surfaces_changed=remember,
                 workspaces=state_store.workspace_registry,
                 current_workspace_name=membership.name if (membership := self._state.workspace.membership) else None,
+                on_session_deleted=None if workflow_mode else self._screen._workspace_sessions_changed,
             ),
             on_result,
         )

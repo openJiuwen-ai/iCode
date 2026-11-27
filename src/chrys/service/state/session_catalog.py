@@ -66,7 +66,7 @@ type FileSignature = tuple[int, int, int]
 _UNRECORDED_FIELDS = frozenset({"kind", "size_bytes", "latest_run"})
 
 
-def file_signature(path: Path) -> FileSignature | None:
+def file_signature(path: str | os.PathLike[str]) -> FileSignature | None:
     """The change signature of *path*, or ``None`` when it cannot be stat'ed."""
     try:
         stat = os.stat(path)

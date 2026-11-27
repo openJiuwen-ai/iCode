@@ -294,7 +294,13 @@ class SessionPersistence:
                 last_surface=last_surface,
             )
             self._last_checkpoint = (session_id, checkpoint) if checkpoint is not None else None
-            await self._bus.publish(SessionSaved(session_id=session_id))
+            await self._bus.publish(
+                SessionSaved(
+                    session_id=session_id,
+                    updated_at=checkpoint.updated_at if checkpoint is not None else None,
+                    last_surface=checkpoint.last_surface if checkpoint is not None else None,
+                )
+            )
             return True
         except Exception:
             logger.warning("Failed to save session %s", session_id, exc_info=True)

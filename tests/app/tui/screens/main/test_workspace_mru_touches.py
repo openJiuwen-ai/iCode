@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rich.text import Text
 
 from chrys.app.tui.screens.main.state import MainScreenState, SessionViewState
 from chrys.foundation.events.types import (
@@ -40,6 +41,11 @@ def _make_mru_workspace_screen(calls: list[tuple[str, object]]) -> SimpleNamespa
     """Minimal screen fake for the no-messages on_workspace_updated path."""
 
     class _FakePanel:
+        session_id = ""
+
+        def set_session_id(self, session_id: str) -> None:
+            self.session_id = session_id
+
         border_subtitle = None
 
         def update_welcome(self, *, profile: str = "", cwd: str = "") -> None:
@@ -98,6 +104,14 @@ def test_session_ready_schedules_mru_touches_for_all_roots(monkeypatch: pytest.M
     )
 
     class _FakePanel:
+        session_id = ""
+
+        def set_session_id(self, session_id: str) -> None:
+            self.session_id = session_id
+
+        def set_workspace_cwd(self, cwd: str) -> None:
+            self.border_subtitle = Text(cwd)
+
         def set_profile(self, _profile: str) -> None:
             return
 
@@ -115,9 +129,11 @@ def test_session_ready_schedules_mru_touches_for_all_roots(monkeypatch: pytest.M
         def set_tool_info(self, _trail: str) -> None:
             return
 
+    panel = _FakePanel()
+
     def _query_one(cls):
         if cls.__name__ == "ChatPanel":
-            return _FakePanel()
+            return panel
         if cls.__name__ == "InputBar":
             return _FakeInputBar()
         if cls.__name__ == "StatusBar":
@@ -161,6 +177,7 @@ def test_session_restored_schedules_mru_touches_for_all_roots(monkeypatch: pytes
     calls: list[tuple[str, object]] = []
 
     class _FakePanel:
+        session_id = ""
         border_subtitle = None
 
         def update_welcome(self, *, profile: str = "", cwd: str = "") -> None:
@@ -170,6 +187,7 @@ def test_session_restored_schedules_mru_touches_for_all_roots(monkeypatch: pytes
             calls.append(("clear", None))
 
         def set_session_id(self, _session_id: str) -> None:
+            self.session_id = _session_id
             return
 
         def set_workspace_cwd(self, cwd: str) -> None:

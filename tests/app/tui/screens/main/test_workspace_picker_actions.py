@@ -14,7 +14,7 @@ from unittest.mock import create_autospec
 import pytest
 from rich.cells import cell_len
 from textual.content import Content
-from textual.widgets import Button, OptionList, Static, TextArea
+from textual.widgets import Button, OptionList, Static, TabbedContent, TextArea, Tree
 from textual.widgets._toast import Toast
 
 from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
@@ -23,6 +23,7 @@ from chrys.app.tui.screens.dialogs.file_picker import FilePicker
 from chrys.app.tui.screens.sessions.screen import SessionsScreen
 from chrys.app.tui.screens.workspaces.edit import WorkspaceEditDialog
 from chrys.app.tui.screens.workspaces.picker import WorkspacesScreen
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets import EnhancedInput
 from chrys.app.tui.widgets.chat.messages import AgentMessage
 from chrys.app.tui.widgets.chat.messages import UserMessage as ChatUserMessage
@@ -31,6 +32,8 @@ from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
+from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
+from chrys.app.tui.widgets.sidebar.workspaces import WorkspacePanel
 from chrys.foundation.events.types import (
     BackgroundTasksChanged,
     SessionNew,
@@ -361,11 +364,12 @@ async def test_slow_primary_does_not_block_picker_rows(workspace_main, tmp_path,
     await wait_for(lambda: app.screen is main and not main._workspace_picker._open, pilot=pilot)
 
 
+@pytest.mark.parametrize("entry", ["sidebar-edit", "switch-name"])
 @pytest.mark.parametrize("return_to_main", [False, True])
 async def test_prepared_workspace_dialog_does_not_open_after_sessions_overlay(
-    live_workspace_chat, monkeypatch, return_to_main
+    live_workspace_chat, monkeypatch, entry, return_to_main
 ):
-    pilot, main, engine, _, current, _target = live_workspace_chat
+    pilot, main, engine, _, current, target = live_workspace_chat
     app = pilot.app
     registry = main._services.workspaces
     main._state.run.has_messages = True
@@ -381,8 +385,12 @@ async def test_prepared_workspace_dialog_does_not_open_after_sessions_overlay(
 
     monkeypatch.setattr(registry, "snapshot", hold_first_snapshot)
     try:
-        main._workspace_picker.run_command("switch Target")
-        worker_name = "_select_name"
+        if entry == "sidebar-edit":
+            main.query_one(WorkspacePanel).post_message(WorkspacePanel.EditRequested(target))
+            worker_name = "_edit"
+        else:
+            main._workspace_picker.run_command("switch Target")
+            worker_name = "_select_name"
         await wait_for(entered.is_set, pilot=pilot)
         (worker,) = [worker for worker in app.workers if worker.name == worker_name]
         assert not worker.is_finished
@@ -1227,6 +1235,10 @@ async def test_cancel_switch_after_creating_workspace_keeps_definition(live_work
     pilot, main, engine, registry, current, _ = live_workspace_chat
     app = pilot.app
     main._state.run.has_messages = True
+    await resize_when_settled(pilot, 170, 36)
+    main.query_one(SidebarPanel).query_one(TabbedContent).active = "tab-workspace"
+    panel = main.query_one(WorkspacePanel)
+    await wait_for(lambda: is_widget_shown_on_active_screen(panel), pilot=pilot)
     session_id = engine.session_id
     if cancel_new_session:
         await main._services.bus.publish(
@@ -1256,6 +1268,11 @@ async def test_cancel_switch_after_creating_workspace_keeps_definition(live_work
         "Move the current session into “New team”?\n"
         "• Move this session: bring the conversation along. Its working directory stays the same.\n"
         "• New session: open a new session in “New team”. The current session stays where it is."
+    )
+    await wait_for(
+        lambda: any(str(node.label).lstrip().startswith("New team ▾") for node in panel.query_one(Tree).root.children),
+        pilot=pilot,
+        description="the sidebar shows the new workspace while the move is undecided",
     )
     assert any(workspace.name == "New team" for workspace in registry.snapshot().workspaces)
     assert app.screen is confirmation

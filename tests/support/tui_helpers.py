@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from PIL import Image
 from rich.console import Console
+from rich.style import Style
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -23,7 +24,7 @@ from textual.events import Click, MouseScrollDown, MouseScrollUp
 from textual.message import Message
 from textual.messages import Prune
 from textual.widget import Widget
-from textual.widgets import Button, Static, Tab, TabbedContent, Tabs
+from textual.widgets import Button, Static, Tab, TabbedContent, Tabs, Tree
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.main.commands import SlashCommandActions
@@ -35,6 +36,7 @@ from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.suggestions import SuggestionCallbacks, SuggestionHandler
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.support.gc_freeze import GcAbsorbRequested, GcReclaimRequested
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.agent_transcript_surface import AgentTranscriptSurface
 from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ChatBottomSpacer, _ScrollToBottomButton
@@ -49,7 +51,7 @@ from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult, Wor
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.app.tui.widgets.loading import RunningTitle
-from chrys.app.tui.widgets.sidebar.panel import TabOverflowMark
+from chrys.app.tui.widgets.sidebar.panel import SidebarPanel, TabOverflowMark
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.i18n import MessageRef
@@ -65,6 +67,81 @@ if TYPE_CHECKING:
     from rich.segment import Segment
     from textual.pilot import Pilot
     from textual.screen import Screen
+    from textual.widgets.tree import TreeNode
+
+    from chrys.app.tui.widgets.sidebar.workspaces import SavedWorkspaceSession, WorkspacePanel
+    from chrys.foundation.models.workspace import Workspace
+
+
+def cache_workspace_page(
+    panel: WorkspacePanel,
+    workspaces: tuple[Workspace, ...],
+    saved: dict[str, list[SavedWorkspaceSession]],
+    *,
+    render: bool = False,
+) -> None:
+    """Install one completed sidebar read; optionally paint it immediately."""
+    from chrys.service.workspaces.registry import RegistrySnapshot
+
+    panel._queued = None
+    panel._loaded_snapshot = RegistrySnapshot(workspaces=workspaces)
+    panel._workspaces = workspaces
+    panel._saved = {key: list(rows) for key, rows in saved.items()}
+    if render:
+        panel._render_rows()
+
+
+def current_row_label(panel: WorkspacePanel) -> str:
+    """The current session's own row as it reads: its title one cell in, then its time."""
+    for node in panel.query_one(Tree).root.children:
+        if node.data == panel._current_id:
+            return str(node.label)
+    raise AssertionError("the current session is not listed")
+
+
+def workspace_tree_line(tree: Tree[str], row: str | TreeNode[str]) -> int:
+    """Find a drawn node by identity, or the first row with the given data."""
+    for line in range(tree.last_line + 1):
+        node = tree.get_node_at_line(line)
+        if node is not None and (node is row or (isinstance(row, str) and str(node.data) == row)):
+            return line
+    raise AssertionError(f"{row!r} is not drawn")
+
+
+def workspace_tree_cell(tree: Tree[str], column: int, line: int) -> tuple[int, int]:
+    """A pilot offset for a content cell, accounting for the tree's padding and scroll."""
+    region, content = tree.region, tree.content_region
+    return content.x - region.x + column, content.y - region.y + line - tree.scroll_offset.y
+
+
+async def wait_for_workspace_tree(pilot: Pilot, tree: Tree[str]) -> None:
+    """Wait until the workspace tree has rows and a width to paint them."""
+    await wait_for(
+        lambda: tree.display and tree.size.width > 0 and bool(tree.root.children) and tree.last_line >= 0,
+        pilot=pilot,
+    )
+
+
+def workspace_session_rows(panel: WorkspacePanel) -> list[tuple[str, str, bool]]:
+    """Read session ids, visible titles and current-row emphasis from the real tree."""
+    return [
+        (str(node.data), node.label.plain.strip().split("  ", 1)[0].rstrip(), bool(node.label.style.bold))
+        for node in panel.query_one(Tree).root.children
+        if node.data and not str(node.data).startswith("__")
+    ]
+
+
+def workspace_session_titles(panel: WorkspacePanel) -> dict[str, str]:
+    """Read the displayed sessions without their style information."""
+    return {session_id: title for session_id, title, _bold in workspace_session_rows(panel)}
+
+
+def workspace_row_style(tree: Tree[str], data: str) -> Style:
+    """Resolve the style at the first non-blank character of a workspace row."""
+    label = next(node.label for node in tree.root.children if node.data == data)
+    start = len(label.plain) - len(label.plain.lstrip())
+    styles = [label.style, *(span.style for span in label.spans if span.start <= start < span.end)]
+    return Style.combine(style if isinstance(style, Style) else Style.parse(style) for style in styles)
 
 
 def install_trajectory_dashboard_query(screen: object) -> None:
@@ -245,6 +322,15 @@ def main_screen_parts(screen: object) -> tuple[MainScreenState, MainScreenServic
     if removed:
         raise _removed_main_screen_field_error(removed)
     install_trajectory_dashboard_query(screen)
+    for name, default in (("is_attached", True), ("_pruning", False), ("_closing", False)):
+        if not hasattr(screen, name):
+            setattr(screen, name, default)
+    if not hasattr(screen, "app"):
+        screen.app = SimpleNamespace(is_running=True)
+    elif not hasattr(screen.app, "is_running"):
+        screen.app.is_running = True
+    if not hasattr(screen, "_session_title"):
+        screen._session_title = fake_session_title()
     if not hasattr(screen, "context_usage_state"):
         screen.context_usage_state = None
     return (
@@ -260,6 +346,23 @@ def main_screen_state_at(cwd: str) -> MainScreenState:
     state.workspace.current_cwd = cwd
     state.workspace_marker.current_cwd = cwd
     return state
+
+
+async def show_sidebar_tab(pilot: Pilot, main: Widget, tab_id: str) -> None:
+    """Select *tab_id* in the main screen's sidebar and wait until its pane is shown.
+
+    The sidebar opens on the Workspace page, so a test that watches another panel
+    (Chat's preview, for one) must say so; a hidden panel deliberately defers
+    its work until it is shown.
+    """
+    sidebar = main.query_one(SidebarPanel)
+    sidebar.focus_tab(tab_id)
+    tabs = sidebar.query_one(TabbedContent)
+    await wait_for(
+        lambda: is_widget_shown_on_active_screen(tabs.get_pane(tab_id)),
+        pilot=pilot,
+        description=f"sidebar {tab_id} shown",
+    )
 
 
 def _call_screen_hook(screen: object, name: str, *args: object) -> object | None:
@@ -555,6 +658,18 @@ async def interrupt_removal(busy: BusyWidget, begin: Callable[[], object], inter
         interrupt()
     finally:
         busy.release.set()
+
+
+async def settle_workspace_page_reads(panel: WorkspacePanel) -> None:
+    """Wait only for this page; hidden requests are deferred until it becomes readable."""
+    await wait_for(
+        lambda: (
+            panel._refresh_running is None
+            and not panel._refresh_pending
+            and (panel._queued is None or not panel._page_readable())
+        ),
+        description="the workspace page settles its executable requests",
+    )
 
 
 async def assert_app_handles_messages(app: App) -> None:

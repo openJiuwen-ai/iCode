@@ -1278,12 +1278,14 @@ def test_welcome_rollback_keeps_logo_metadata_and_suppresses_chdir_marker() -> N
     terminal_title_cwds: list[str] = []
 
     class _FakePanel:
+        session_id = ""
         border_subtitle = None
 
         async def clear(self) -> None:
             calls.append(("clear", None))
 
         def set_session_id(self, session_id: str) -> None:
+            self.session_id = session_id
             calls.append(("session_id", session_id))
 
         def set_workspace_cwd(self, cwd: str) -> None:
@@ -1399,12 +1401,14 @@ def test_welcome_rollback_clears_todo_state() -> None:
     """Rolling back to turn 0 clears the Tasks panel alongside the welcome reset."""
 
     class _FakePanel:
+        session_id = ""
         border_subtitle = None
 
         async def clear(self) -> None:
             return
 
         def set_session_id(self, session_id: str) -> None:
+            self.session_id = session_id
             return
 
         def set_workspace_cwd(self, cwd: str) -> None:

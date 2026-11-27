@@ -23,7 +23,7 @@ from chrys.app.tui.widgets.sidebar.toc import ConversationToc, TocItem
 from chrys.foundation.config.settings import Settings
 from chrys.service.mutations.types import MutationOp
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import WidgetApp, click_when_settled, resize_when_settled
+from tests.support.tui_helpers import WidgetApp, click_when_settled, resize_when_settled, show_sidebar_tab
 from tests.support.waiting import wait_for
 
 
@@ -181,6 +181,7 @@ async def test_shell_mode_and_live_theme_changes_style_both_chat_frames_together
     app.theme = "textual-dark"
     async with app.run_test(size=(140, 40)) as pilot:
         sidebar = app.query_one(SidebarPanel)
+        await show_sidebar_tab(pilot, app.screen, "tab-toc")
         chat = sidebar.query_one(SidebarChatPanel)
         chat.set_entries((changed_file("file.py"),))
         messages = chat.query_one("#toc-box")
@@ -227,6 +228,7 @@ async def test_chinese_messages_title_switches_live_without_rebuilding_the_tree(
     controller = LocaleController(Settings(locale="en"))
     async with WidgetApp(lambda: SidebarPanel(locale_controller=controller)).run_test(size=(140, 40)) as pilot:
         sidebar = pilot.app.query_one(SidebarPanel)
+        await show_sidebar_tab(pilot, pilot.app.screen, "tab-toc")
         toc = sidebar.query_one(ConversationToc)
         toc.update_items([TocItem("turn-1", "A conversation")])
         box = toc.query_one("#toc-box")

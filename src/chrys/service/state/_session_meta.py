@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
@@ -111,11 +112,12 @@ def copy_session_meta(meta: SessionMeta) -> SessionMeta:
     The store's listing caches hand out copies, so a caller that edits the
     meta it was given cannot change what later listings read.
     """
-    if isinstance(meta, ChatSessionMeta):
-        return replace(
-            meta, working_dirs=list(meta.working_dirs), agent_profile_history=list(meta.agent_profile_history)
-        )
-    return replace(meta, working_dirs=list(meta.working_dirs))
+    # A shallow copy, then fresh lists: what ``replace`` would build, without re-running ``__init__``.
+    copied = copy.copy(meta)
+    copied.working_dirs = list(copied.working_dirs)
+    if isinstance(copied, ChatSessionMeta):
+        copied.agent_profile_history = list(copied.agent_profile_history)
+    return copied
 
 
 def _is_visible_message(m: Message) -> bool:

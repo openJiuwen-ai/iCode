@@ -22,6 +22,9 @@ from chrys.service.state._session_meta import SessionMeta
 
 SESSION_PAGE_SIZE = 100
 
+DEFAULT_SURFACES = frozenset({SessionSurface.TUI})
+"""Surfaces listed until the user picks others; sessions from before surfaces were recorded count as TUI."""
+
 
 @dataclass(frozen=True, slots=True)
 class SessionListingEntry:

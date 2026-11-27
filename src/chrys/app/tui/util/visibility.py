@@ -233,6 +233,26 @@ def is_widget_shown_on_active_screen(widget: Widget) -> bool:
     return _is_widget_shown(widget, active_screen_only=True)
 
 
+def is_widget_displayed_on_active_screen(widget: Widget) -> bool:
+    """Whether *widget* is displayed and laid out on the active screen.
+
+    ``is_widget_shown_on_active_screen`` also asks the compositor's visible cut,
+    which is derived from the last arranged frame: a widget that just appeared
+    can miss it for one frame. A caller whose work runs once (a page's first
+    read) uses this to tell that transient miss from a hidden widget — a real
+    hide turns ``display`` off, changes the active screen, or takes the layout
+    away (width zero), and all three answer False here.
+    """
+    if not widget.is_attached or not widget.display or not widget.visible:
+        return False
+    try:
+        screen = widget.screen
+        active = screen.app.screen
+    except NoScreen, ScreenStackError:
+        return False
+    return screen is active and widget.region.area > 0
+
+
 def _is_widget_shown(widget: Widget, *, active_screen_only: bool) -> bool:
     if not widget.is_attached or not widget.display or not widget.visible:
         return False

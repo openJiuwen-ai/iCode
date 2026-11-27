@@ -146,6 +146,7 @@ from chrys.app.tui.widgets.sidebar.hooks import HookRunList
 from chrys.app.tui.widgets.sidebar.panel import SIDEBAR_HOOKS_TAB, SidebarPanel
 from chrys.app.tui.widgets.sidebar.tasks import TodoListState
 from chrys.app.tui.widgets.sidebar.toc import ConversationToc
+from chrys.app.tui.widgets.sidebar.workspaces import WorkspacePanel
 from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
 from chrys.app.tui.widgets.workflow import text as workflow_text
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
@@ -174,6 +175,7 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.models.resolver import model_for_agent
 from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, is_model_profile_selectable
 from chrys.service.session.sub_agent_transcript import load_persisted_sub_agent_transcript
+from chrys.service.state.store import ChatSessionMeta, SessionMeta
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -194,7 +196,7 @@ if TYPE_CHECKING:
     from chrys.app.update_check import UpdateNotice
     from chrys.foundation.config.settings_store import PersistResult, SettingsHandle
     from chrys.foundation.events.bus import EventBus
-    from chrys.foundation.events.types import SessionNew
+    from chrys.foundation.events.types import SessionNew, SessionSaved
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_runs import HookRunDetail, HookRunRecord
     from chrys.foundation.models.workspace import Workspace
@@ -445,6 +447,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             call_from_thread=lambda callback: self.app.call_from_thread(callback),  # noqa: PLW0108 — app bound later
         )
         self._workspace_order: WorkspaceOrder | None = None
+        self._workspace_panel: WorkspacePanel | None = None
         self._workspace_refresh_pending = False
         self._workspace_refresh_requested = False
         self._workspace_indicator_folder_key: tuple[str, tuple[str, ...]] | None = None
@@ -596,6 +599,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 refresh_diff_preview=self._refresh_diff_preview,
                 reset_rollback_request=self._rollback_controller.reset_pending,
                 refresh_workspace=self._refresh_session_workspace,
+                session_saved=self._workspace_session_saved,
+                session_loaded=self._workspace_session_loaded,
+                session_list_changed=self._workspace_sessions_changed,
                 choose_missing_working_dir=partial(self._workspace_actions.choose_replacement_dir, reason="restore"),
                 confirm_workspace_leave=self._workspace_actions.confirm_workspace_leave,
                 confirm_stopping_background_tasks=self._confirm_stopping_background_tasks,
@@ -851,6 +857,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _show_session_title(self, title: str) -> None:
         # ``chat_session_title`` is data-bound to the ChatPanel border.
         self.chat_session_title = title
+        if composed_live(self):
+            self._workspace_page().update_current_title(self.chat_session_id, title)
 
     def _set_workspace_cwd(self, cwd: str) -> None:
         self._state.workspace.current_cwd = cwd
@@ -1156,6 +1164,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Startup-facing facade for setting agent loading state."""
         self._set_agent_loading(active)
 
+    def set_startup_workspace_pending(self, pending: bool) -> None:
+        """Show whether startup is waiting to open a session."""
+        self._workspace_page().set_startup_pending(pending)
+
     def is_startup_agent_loading(self) -> bool:
         """Return whether startup still considers the agent loading."""
         return self._state.run.agent_loading
@@ -1377,7 +1389,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self.query_one(ChrysFooter).sync_bindings()
 
     def on_screen_resume(self, _event: ScreenResume) -> None:
-        """Recover deferred workflow, Footer and hook indicator updates after an overlay closes."""
+        """Recover deferred workflow, Footer, hook and workspace page updates after an overlay closes."""
         if self._workflow.workflow_mode:
             self._workflow.shown()
         self._sync_workflow_timer()
@@ -1385,6 +1397,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self.sync_footer_bindings()
         self.query_one(HookIndicator).screen_resumed()
         self.query_one(HookRunList).screen_resumed()
+        self._workspace_page().screen_resumed()
         self._diff_preview.screen_resumed()
         self.query_one(SuggestionList).resume_marquee()
         if self.theme_editor is not None:
@@ -2500,6 +2513,24 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._sync_workspace_indicator()
             # Reference folders hold shortcuts too: a workspace change that keeps the primary folder must read them now.
             self._suggestions.follow_prompt_shortcut_folders()
+        # A restore's SessionReady comes before the restore is committed; SessionRestored binds the page.
+        if self._state.workspace.workspace_known and not self._state.session.restoring_session:
+            panel = self._workspace_page()
+            panel.set_session(
+                self._state.workspace.membership,
+                self._services.state_store,
+                self.chat_session_id,
+                self.chat_session_title,
+                registry=self._services.workspaces,
+            )
+        self._request_workspace_order()
+
+    @on(WorkspacePanel.OrderWanted)
+    def _workspace_order_wanted(self, event: WorkspacePanel.OrderWanted) -> None:
+        event.stop()
+        self._request_workspace_order()
+
+    def _request_workspace_order(self) -> None:
         self._workspace_refresh_requested = True
         if not self._workspace_refresh_pending:
             self._workspace_refresh_pending = True
@@ -2553,6 +2584,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._apply_workspace_snapshot(order.snapshot, previous)
         if listed is None or (listed.workspaces, listed.current_id) != (order.workspaces, order.current_id):
             self._suggestions.refresh_open_choices()
+        if order is not listed:
+            self._workspace_page().workspace_order_changed(order)
 
     def _apply_workspace_snapshot(self, snapshot: RegistrySnapshot, previous: RegistrySnapshot | None) -> None:
         if not self._state.workspace.workspace_known:
@@ -2621,6 +2654,27 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._missing_workspace_folders = missing
             self._refresh_workspace_indicator()
 
+    def _workspace_page(self) -> WorkspacePanel:
+        """The sidebar's Workspace page, looked up once: the first query after the chat changes walks every widget."""
+        if self._workspace_panel is None:
+            self._workspace_panel = self.query_one(WorkspacePanel)
+        return self._workspace_panel
+
+    def _workspace_session_loaded(self, session_id: str, meta: SessionMeta) -> None:
+        """A restored chat's saved time and surface, as its row in the session list has them."""
+        if composed_live(self) and isinstance(meta, ChatSessionMeta):
+            self._workspace_page().current_session_saved(session_id, meta.updated_at, meta.last_surface)
+
+    def _workspace_session_saved(self, event: SessionSaved) -> None:
+        if composed_live(self) and event.session_id:
+            self._workspace_page().current_session_saved(
+                event.session_id, event.updated_at or event.timestamp, event.last_surface
+            )
+
+    def _workspace_sessions_changed(self) -> None:
+        if composed_live(self):
+            self._workspace_page().refresh_sessions()
+
     async def _start_workspace_session(self, event: SessionNew, is_current: Callable[[], bool]) -> bool:
         previous = self.chat_session_id
         await self._sessions.create_new_session(event, confirmation_is_current=is_current)
@@ -2659,6 +2713,30 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             # The definition is already saved while the user decides whether to enter it.
             self._refresh_workspace()
         return await self._workspace_actions.confirm_workspace_switch(target, created)
+
+    @on(WorkspacePanel.SessionSelected)
+    def _workspace_session_selected(self, event: WorkspacePanel.SessionSelected) -> None:
+        event.stop()
+        if not composed_live(self) or not self._workspace_page().can_restore_session(event.session_id):
+            return
+        if self._state.submit.active:
+            # The same notice typing gets while a message is still being sent.
+            self._view_adapter.flash_submit_still_sending()
+            return
+        if not self._workspace_picker.busy(workspace_text.SESSION_BUSY):
+            self._start_worker(partial(self._restore_session_or_flash, event.session_id))
+
+    @on(WorkspacePanel.EditRequested)
+    def _workspace_edit_requested(self, event: WorkspacePanel.EditRequested) -> None:
+        event.stop()
+        if composed_live(self) and not self._workflow.workflow_mode:
+            self._workspace_picker.edit(event.workspace)
+
+    @on(WorkspacePanel.NewSessionRequested)
+    def _workspace_new_session_requested(self, event: WorkspacePanel.NewSessionRequested) -> None:
+        event.stop()
+        if composed_live(self) and not self._workflow.workflow_mode:
+            self._workspace_picker.new_session(event.workspace_id)
 
     @on(StatusBar.WorkspaceTagClicked)
     def _on_workspace_tag_clicked(self, _event: StatusBar.WorkspaceTagClicked) -> None:

@@ -223,6 +223,7 @@ async def test_sidebar_panel_routes_todo_state_to_tasks_tab() -> None:
     async with SidebarPanelApp().run_test(size=(120, 40)) as pilot:
         sidebar = pilot.app.query_one(SidebarPanel)
         assert [pane.id for pane in sidebar.query("TabPane")] == [
+            "tab-workspace",
             "tab-toc",
             "tab-tasks",
             "tab-context",
