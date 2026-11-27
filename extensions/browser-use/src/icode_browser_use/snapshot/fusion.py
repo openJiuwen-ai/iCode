@@ -76,13 +76,42 @@ _IDX_CURSOR = COMPUTED_STYLES.index("cursor")
 _IDX_POINTER_EVENTS = COMPUTED_STYLES.index("pointer-events")
 
 _INTERACTIVE_ROLES = frozenset(
-    {"button", "link", "textbox", "checkbox", "radio", "combobox", "slider", "switch", "tab", "menuitem"}
+    {
+        "button",
+        "link",
+        "textbox",
+        "searchbox",
+        "checkbox",
+        "radio",
+        "combobox",
+        "listbox",
+        "option",
+        "slider",
+        "spinbutton",
+        "switch",
+        "tab",
+        "menuitem",
+        "menuitemcheckbox",
+        "menuitemradio",
+        "treeitem",
+    }
 )
+_EDITABLE_ROLES = frozenset({"textbox", "searchbox", "spinbutton"})
 _SCROLL_OVERFLOW = frozenset({"auto", "scroll", "overlay"})
-_CLICKABLE_TAGS = frozenset({"button", "input", "select", "textarea"})
+_CLICKABLE_TAGS = frozenset({"button", "input", "select", "textarea", "summary"})
 _HEAD_META_TAGS = frozenset({"head", "title", "meta", "link", "base", "script", "style", "noscript", "template"})
 _INLINE_DISPLAY_NONE_RE = re.compile(r"(?:^|;)\s*display\s*:\s*none\b", re.IGNORECASE)
+_VALID_ROLE_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,31}$")
 _WS_RE = re.compile(r"\s+")
+
+
+def _clean_role(raw: str) -> str:
+    """Return a single valid ARIA/tag role token, rejecting multi-line or spoofed attributes."""
+    text = (raw or "").strip()
+    if not text or "\n" in text or "\r" in text or '"' in text or "@" in text:
+        return ""
+    token = text.split()[0]
+    return token if _VALID_ROLE_RE.fullmatch(token) else ""
 
 
 def _fp_name(value: str) -> str:
@@ -414,9 +443,9 @@ def _tag_interactive(tag: str, attrs: dict[str, str]) -> bool:
         return True
     if _is_contenteditable(attrs):
         return True
-    if tag == "a" and "href" in attrs:
+    if tag in {"a", "area"} and "href" in attrs:
         return True
-    if attrs.get("role", "").lower() == "button":
+    if _clean_role(attrs.get("role", "")).lower() in _INTERACTIVE_ROLES:
         return True
     if "onclick" in attrs:
         return True
@@ -442,20 +471,43 @@ def _backend_at(backend_ids: list[Any], index: int) -> int:
         return 0
 
 
-def _ancestor_backend_ids(parent_index: list[Any], backend_ids: list[Any], position: int) -> tuple[int, ...]:
+def _ancestor_backend_ids(
+    parent_index: list[Any],
+    backend_ids: list[Any],
+    position: int,
+    cache: dict[int, tuple[int, ...]] | None = None,
+) -> tuple[int, ...]:
     """Element ancestors of *position*, root first (document nodes carry no backend id)."""
-    chain: list[int] = []
+    if cache is not None and position in cache:
+        return cache[position]
+    trail: list[int] = []
     seen: set[int] = set()
     hops = 0
-    parent = int(parent_index[position]) if position < len(parent_index) else -1
+    parent = int(parent_index[position]) if 0 <= position < len(parent_index) else -1
+    base: tuple[int, ...] = ()
     while 0 <= parent < len(parent_index) and parent not in seen and hops < 512:
+        if cache is not None and parent in cache:
+            parent_backend = _backend_at(backend_ids, parent)
+            base = (*cache[parent], parent_backend) if parent_backend else cache[parent]
+            break
         seen.add(parent)
         hops += 1
-        backend = _backend_at(backend_ids, parent)
-        if backend:
-            chain.append(backend)
+        trail.append(parent)
         parent = int(parent_index[parent]) if parent < len(parent_index) else -1
-    return tuple(reversed(chain))
+    if trail:
+        chain = list(base)
+        for node_pos in reversed(trail):
+            if cache is not None and node_pos not in cache:
+                cache[node_pos] = tuple(chain)
+            backend = _backend_at(backend_ids, node_pos)
+            if backend:
+                chain.append(backend)
+        result = tuple(chain)
+    else:
+        result = base
+    if cache is not None:
+        cache[position] = result
+    return result
 
 
 def _is_interactive(
@@ -531,6 +583,9 @@ def _fuse_document(
     frame: FrameInfo,
     target_id: str,
     cdp_session_id: str | None = None,
+    *,
+    force_hidden: bool = False,
+    hidden_owner_out: set[int] | None = None,
 ) -> list[FusedNode]:
     parent_index = nodes_section.get("parentIndex") or []
     node_type = nodes_section.get("nodeType") or []
@@ -558,10 +613,21 @@ def _fuse_document(
     offset_x, offset_y = frame.offset
 
     counters: dict[tuple[int, str], int] = {}
-    hidden_positions: set[int] = set()
+    hard_hidden_positions: set[int] = set()
+    vis_hidden_positions: set[int] = set()
+    ancestor_cache: dict[int, tuple[int, ...]] = {}
     out: list[FusedNode] = []
     for position in range(len(node_type)):
+        parent = int(parent_index[position]) if position < len(parent_index) else -1
+        parent_hard_hidden = force_hidden or (parent in hard_hidden_positions)
+        parent_vis_hidden = parent in vis_hidden_positions
         if int(node_type[position] or 0) != 1:
+            # Propagate inherited visibility across ShadowRoot / <template> DocumentFragment
+            # boundaries (nodeType == 11) before skipping non-element nodes.
+            if parent_hard_hidden:
+                hard_hidden_positions.add(position)
+            if parent_vis_hidden:
+                vis_hidden_positions.add(position)
             continue  # only elements: ``#text`` and friends are skipped
         tag = _resolve(strings, node_name[position] if position < len(node_name) else None).lower()
         if position in pseudo or tag.startswith("::"):
@@ -570,9 +636,8 @@ def _fuse_document(
             continue
         backend_id = int(backend_ids[position]) if position < len(backend_ids) else 0
         attrs = _parse_attributes(strings, attributes[position] if position < len(attributes) else None)
-        parent = int(parent_index[position]) if position < len(parent_index) else -1
         parent_backend_id = _backend_at(backend_ids, parent) if parent >= 0 else 0
-        ancestor_ids = _ancestor_backend_ids(parent_index, backend_ids, position)
+        ancestor_ids = _ancestor_backend_ids(parent_index, backend_ids, position, ancestor_cache)
         key = (parent, tag)
         counters[key] = counters.get(key, 0) + 1
         nth = counters[key]
@@ -602,27 +667,26 @@ def _fuse_document(
         except ValueError:
             opacity = 1.0
 
-        parent_hidden = parent in hidden_positions
-        explicitly_hidden = (
-            display == "none"
-            or visibility == "hidden"
-            or opacity <= 0.0
-            or (not has_bounds and bool(_INLINE_DISPLAY_NONE_RE.search(attrs.get("style", ""))))
-        )
         head_meta = tag in _HEAD_META_TAGS
         html_hidden = "hidden" in attrs
-        if parent_hidden or explicitly_hidden or head_meta or html_hidden:
-            hidden_positions.add(position)
-
-        visible = (
-            has_bounds
-            and not parent_hidden
-            and not html_hidden
-            and not head_meta
-            and display != "none"
-            and visibility != "hidden"
-            and opacity > 0.0
+        hard_hidden = (
+            parent_hard_hidden
+            or display == "none"
+            or opacity <= 0.0
+            or (not has_bounds and bool(_INLINE_DISPLAY_NONE_RE.search(attrs.get("style", ""))))
+            or head_meta
+            or html_hidden
         )
+        if hard_hidden:
+            hard_hidden_positions.add(position)
+
+        # ``visibility: hidden|collapse`` is inherited unless a descendant explicitly sets ``visibility: visible``.
+        self_vis_hidden = visibility in {"hidden", "collapse"}
+        effective_vis_hidden = self_vis_hidden or (parent_vis_hidden and visibility != "visible")
+        if effective_vis_hidden:
+            vis_hidden_positions.add(position)
+
+        visible = has_bounds and not hard_hidden and not effective_vis_hidden
         clip = frame.viewport_clip
         if clip is not None:
             clip_l, clip_t, clip_r, clip_b = clip
@@ -651,31 +715,36 @@ def _fuse_document(
         overflow_y = _style(style_row, _IDX_OVERFLOW_Y, strings).strip().lower() or overflow
         sr = _rect_at(scroll_rects, layout_position)
         cr = _rect_at(client_rects, layout_position)
-        bigger_than_viewport = (viewport_w > 0 and width > viewport_w) or (viewport_h > 0 and height > viewport_h)
+        has_scroll_metrics = sr is not None and cr is not None
         has_x_scroll = overflow_x in _SCROLL_OVERFLOW and (
-            (sr is not None and cr is not None and sr[2] > cr[2] + 1.0) or (viewport_w > 0 and width > viewport_w)
+            (sr[2] > cr[2] + 1.0) if has_scroll_metrics else (viewport_w > 0 and width > viewport_w)
         )
         has_y_scroll = overflow_y in _SCROLL_OVERFLOW and (
-            (sr is not None and cr is not None and sr[3] > cr[3] + 1.0) or (viewport_h > 0 and height > viewport_h)
+            (sr[3] > cr[3] + 1.0) if has_scroll_metrics else (viewport_h > 0 and height > viewport_h)
         )
-        scrollable = (
-            has_x_scroll
-            or has_y_scroll
-            or ((overflow_x in _SCROLL_OVERFLOW or overflow_y in _SCROLL_OVERFLOW) and bigger_than_viewport)
-        )
+        scrollable = has_x_scroll or has_y_scroll
 
         ax_node = ax_index.get(backend_id) or {}
         focusable = bool(ax_node.get("focusable"))
-        disabled = bool(ax_node.get("disabled")) or "disabled" in attrs
+        disabled = (
+            bool(ax_node.get("disabled"))
+            or "disabled" in attrs
+            or attrs.get("aria-disabled", "").strip().lower() == "true"
+        )
         readonly = (
             bool(ax_node.get("readonly"))
             or "readonly" in attrs
             or attrs.get("aria-readonly", "").strip().lower() == "true"
         )
-        role = str(ax_node.get("role") or "") or attrs.get("role", "") or tag
+        role = (
+            _clean_role(str(ax_node.get("role") or ""))
+            or _clean_role(attrs.get("role", ""))
+            or _clean_role(tag)
+            or "generic"
+        )
         is_text_input = tag == "input" and attrs.get("type", "").strip().lower() in _TEXT_INPUT_TYPES
         editable = (not disabled and not readonly) and (
-            _is_contenteditable(attrs) or tag == "textarea" or is_text_input or role.strip().lower() == "textbox"
+            _is_contenteditable(attrs) or tag == "textarea" or is_text_input or role.strip().lower() in _EDITABLE_ROLES
         )
         placeholder = (
             attrs.get("placeholder", "").strip()
@@ -705,7 +774,9 @@ def _fuse_document(
             # Icon-only controls: the AX name is empty, so fall back to the labels the
             # DOM still carries (a wrapped image's only for a link/button, so plain
             # wrappers stay unnamed), and for a link to where it leads.
-            control = role in _IMAGE_LABEL_ROLES or tag == "button" or (tag == "a" and bool(href))
+            control = (
+                role.strip().lower() in _IMAGE_LABEL_ROLES or tag == "button" or (tag in {"a", "area"} and bool(href))
+            )
             name = (
                 attrs.get("aria-label", "").strip()
                 or attrs.get("alt", "").strip()
@@ -728,9 +799,10 @@ def _fuse_document(
             if name and not text_hint:
                 text_hint = name
 
-        not_laid_out = (
-            bool(layout_of) and layout_position is None and not interactive and not editable and not scrollable
-        )
+        # Stylesheet ``display:none`` and unslotted light-DOM controls have no layout entry
+        # and are ignored in Chrome's AX tree (``not ax_node``), unlike ``display:contents``
+        # elements which remain active in the AX tree.
+        not_laid_out = bool(layout_of) and layout_position is None and not ax_node
         zero_sized_text = (
             bool(layout_of)
             and not has_bounds
@@ -739,10 +811,12 @@ def _fuse_document(
             and not editable
             and not scrollable
         )
-        css_hidden = parent_hidden or explicitly_hidden or head_meta or html_hidden or not_laid_out or zero_sized_text
+        css_hidden = hard_hidden or effective_vis_hidden or not_laid_out or zero_sized_text
         if css_hidden:
             visible = False
             in_viewport = False
+        if hidden_owner_out is not None and (css_hidden or not visible):
+            hidden_owner_out.add(position)
 
         out.append(
             FusedNode(
@@ -779,67 +853,97 @@ def _fuse_document(
     return out
 
 
-def _child_document_frames(
+def _register_child_document_frames(
+    *,
+    doc_index: int,
+    document: dict[str, Any],
     documents: list[Any],
     strings: list[Any],
-    root_frame: FrameInfo,
-) -> dict[int, FrameInfo]:
-    """Resolve same-process child document offsets & visible clip rects via ``contentDocumentIndex``."""
-    frames: dict[int, FrameInfo] = {0: root_frame}
-    root_clip = root_frame.viewport_clip or (0.0, 0.0, root_frame.viewport[0], root_frame.viewport[1])
-    clips: dict[int, tuple[float, float, float, float]] = {0: root_clip}
-    dpr = root_frame.dpr or 1.0
-    for doc_index, document in enumerate(documents):
-        if not isinstance(document, dict):
+    parent_frame: FrameInfo,
+    parent_clip: tuple[float, float, float, float],
+    parent_hidden: bool,
+    hidden_owners: set[int],
+    frames: dict[int, FrameInfo],
+    clips: dict[int, tuple[float, float, float, float]],
+    hidden_docs: set[int],
+) -> None:
+    """Resolve child documents owned by *document*, propagating owner hidden state and clip rects."""
+    nodes_section = document.get("nodes") or {}
+    layout_section = document.get("layout") or {}
+    cdi = nodes_section.get("contentDocumentIndex")
+    if not isinstance(cdi, dict):
+        return
+    indices = cdi.get("index") or []
+    values = cdi.get("value") or []
+    node_index = layout_section.get("nodeIndex") or []
+    layout_of = {int(np): lp for lp, np in enumerate(node_index)}
+    bounds = layout_section.get("bounds") or []
+    client_rects = layout_section.get("clientRects")
+    dpr = parent_frame.dpr or 1.0
+
+    for node_pos, child_doc_idx in zip(indices, values, strict=False):
+        if not isinstance(child_doc_idx, int) or child_doc_idx <= doc_index or child_doc_idx >= len(documents):
             continue
-        parent_frame = frames.get(doc_index, root_frame)
-        parent_clip = clips.get(doc_index, root_clip)
-        nodes_section = document.get("nodes") or {}
-        layout_section = document.get("layout") or {}
-        cdi = nodes_section.get("contentDocumentIndex")
-        if not isinstance(cdi, dict):
-            continue
-        indices = cdi.get("index") or []
-        values = cdi.get("value") or []
-        node_index = layout_section.get("nodeIndex") or []
-        layout_of = {int(np): lp for lp, np in enumerate(node_index)}
-        bounds = layout_section.get("bounds") or []
-        client_rects = layout_section.get("clientRects")
-        for node_pos, child_doc_idx in zip(indices, values, strict=False):
-            if not isinstance(child_doc_idx, int) or child_doc_idx <= doc_index or child_doc_idx >= len(documents):
-                continue
-            lp = layout_of.get(int(node_pos))
-            bound_rect = _rect_at(bounds, lp)
-            if bound_rect is None:
-                continue
-            client_rect = _rect_at(client_rects, lp)
-            # DOMSnapshot ``clientRects`` stores ``[clientLeft, clientTop, clientWidth, clientHeight]``
-            # relative to the element's border-box ``bounds``, NOT document coordinates.
-            border_x = client_rect[0] if client_rect is not None else 0.0
-            border_y = client_rect[1] if client_rect is not None else 0.0
-            ox = (bound_rect[0] + border_x) / dpr - parent_frame.scroll_x + parent_frame.offset[0]
-            oy = (bound_rect[1] + border_y) / dpr - parent_frame.scroll_y + parent_frame.offset[1]
-            cw = (client_rect[2] if client_rect is not None and client_rect[2] > 0 else bound_rect[2]) / dpr
-            ch = (client_rect[3] if client_rect is not None and client_rect[3] > 0 else bound_rect[3]) / dpr
-            child_doc = documents[child_doc_idx] if isinstance(documents[child_doc_idx], dict) else {}
-            child_clip = (
-                max(parent_clip[0], ox),
-                max(parent_clip[1], oy),
-                min(parent_clip[2], ox + cw),
-                min(parent_clip[3], oy + ch),
-            )
-            clips[child_doc_idx] = child_clip
-            child_frame_id = _resolve(strings, child_doc.get("frameId")) or parent_frame.frame_id
+        pos = int(node_pos)
+        child_doc = documents[child_doc_idx] if isinstance(documents[child_doc_idx], dict) else {}
+        child_frame_id = _resolve(strings, child_doc.get("frameId")) or parent_frame.frame_id
+        lp = layout_of.get(pos)
+        bound_rect = _rect_at(bounds, lp)
+        owner_hidden = parent_hidden or (pos in hidden_owners) or bound_rect is None
+        if owner_hidden or bound_rect is None:
+            hidden_docs.add(child_doc_idx)
+            zero_clip = (0.0, 0.0, 0.0, 0.0)
+            clips[child_doc_idx] = zero_clip
             frames[child_doc_idx] = FrameInfo(
                 frame_id=child_frame_id,
-                viewport=(cw, ch),
+                viewport=(0.0, 0.0),
+                scroll_x=float(child_doc.get("scrollOffsetX") or 0.0),
+                scroll_y=float(child_doc.get("scrollOffsetY") or 0.0),
+                offset=parent_frame.offset,
+                dpr=dpr,
+                viewport_clip=zero_clip,
+            )
+            continue
+        client_rect = _rect_at(client_rects, lp)
+        # DOMSnapshot ``clientRects`` stores ``[clientLeft, clientTop, clientWidth, clientHeight]``
+        # relative to the element's border-box ``bounds``, NOT document coordinates.
+        border_x = client_rect[0] if client_rect is not None else 0.0
+        border_y = client_rect[1] if client_rect is not None else 0.0
+        ox = (bound_rect[0] + border_x) / dpr - parent_frame.scroll_x + parent_frame.offset[0]
+        oy = (bound_rect[1] + border_y) / dpr - parent_frame.scroll_y + parent_frame.offset[1]
+        # Respect explicit 0-sized client rects instead of falling back to the outer border box.
+        cw = (client_rect[2] if client_rect is not None else bound_rect[2]) / dpr
+        ch = (client_rect[3] if client_rect is not None else bound_rect[3]) / dpr
+        if cw <= 0.0 or ch <= 0.0 or bound_rect[2] <= 0.0 or bound_rect[3] <= 0.0:
+            hidden_docs.add(child_doc_idx)
+            zero_clip = (0.0, 0.0, 0.0, 0.0)
+            clips[child_doc_idx] = zero_clip
+            frames[child_doc_idx] = FrameInfo(
+                frame_id=child_frame_id,
+                viewport=(0.0, 0.0),
                 scroll_x=float(child_doc.get("scrollOffsetX") or 0.0),
                 scroll_y=float(child_doc.get("scrollOffsetY") or 0.0),
                 offset=(ox, oy),
                 dpr=dpr,
-                viewport_clip=child_clip,
+                viewport_clip=zero_clip,
             )
-    return frames
+            continue
+        child_clip = (
+            max(parent_clip[0], ox),
+            max(parent_clip[1], oy),
+            min(parent_clip[2], ox + cw),
+            min(parent_clip[3], oy + ch),
+        )
+        clips[child_doc_idx] = child_clip
+        frames[child_doc_idx] = FrameInfo(
+            frame_id=child_frame_id,
+            viewport=(cw, ch),
+            scroll_x=float(child_doc.get("scrollOffsetX") or 0.0),
+            scroll_y=float(child_doc.get("scrollOffsetY") or 0.0),
+            offset=(ox, oy),
+            dpr=dpr,
+            viewport_clip=child_clip,
+        )
 
 
 def fuse(
@@ -862,7 +966,10 @@ def fuse(
     strings = snapshot.get("strings") or []
     documents = snapshot.get("documents") or []
     ax_index = _build_ax_index(ax)
-    doc_frames = _child_document_frames(documents, strings, frame)
+    root_clip = frame.viewport_clip or (0.0, 0.0, frame.viewport[0], frame.viewport[1])
+    doc_frames: dict[int, FrameInfo] = {0: frame}
+    doc_clips: dict[int, tuple[float, float, float, float]] = {0: root_clip}
+    hidden_docs: set[int] = set()
     result: list[FusedNode] = []
     for doc_index, document in enumerate(documents):
         if not isinstance(document, dict):
@@ -881,6 +988,10 @@ def fuse(
                 dpr=frame.dpr,
                 viewport_clip=frame.viewport_clip,
             )
+            doc_frames[doc_index] = doc_frame
+        doc_clip = doc_clips.get(doc_index, root_clip)
+        doc_hidden = doc_index in hidden_docs
+        hidden_owners: set[int] = set()
         nodes = _fuse_document(
             nodes_section,
             layout_section,
@@ -889,6 +1000,21 @@ def fuse(
             doc_frame,
             target_id,
             cdp_session_id,
+            force_hidden=doc_hidden,
+            hidden_owner_out=hidden_owners,
+        )
+        _register_child_document_frames(
+            doc_index=doc_index,
+            document=document,
+            documents=documents,
+            strings=strings,
+            parent_frame=doc_frame,
+            parent_clip=doc_clip,
+            parent_hidden=doc_hidden,
+            hidden_owners=hidden_owners,
+            frames=doc_frames,
+            clips=doc_clips,
+            hidden_docs=hidden_docs,
         )
         if doc_index == 0 and cdp_session_id is None:
             for node in nodes:

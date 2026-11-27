@@ -156,6 +156,8 @@ async def run(session: Any, arguments: dict[str, Any]) -> list[ToolBlock]:
         ]
         if entry is not None:
             old_nodes = _subtree(old_nodes, entry)
+        if scope == "full":
+            old_nodes = [replace(node, in_viewport=True) for node in old_nodes]
         old_visible = [node for node in old_nodes if not is_structural(node) and not is_hidden(node)]
         current_visible = [node for node in view if not is_structural(node) and not is_hidden(node)]
         old_by_id = {(node.frame_id, node.backend_node_id): node for node in old_visible}

@@ -20,7 +20,7 @@ from .fusion import FusedNode
 #: Code point above which a character counts as full-width (CJK + full-width punctuation).
 _FULL_WIDTH_THRESHOLD = 0x2E7F
 
-_ZERO_WIDTH = frozenset({0xFEFF})
+_ZERO_WIDTH = frozenset({0x00AD, 0x061C, 0xFEFF})
 _CONTROL_KEEP = frozenset({0x09, 0x0A})  # tab, newline
 _REF_SPOOF_RE = re.compile(r"@(e\d+#\d+)")
 
@@ -43,7 +43,9 @@ def sanitize_text(text: str) -> str:
         if 0xD800 <= code <= 0xDBFF:  # high surrogate
             if index + 1 < length and 0xDC00 <= ord(text[index + 1]) <= 0xDFFF:
                 low = ord(text[index + 1])
-                out.append(chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)))
+                combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                if not (0xE0000 <= combined <= 0xE007F):
+                    out.append(chr(combined))
                 index += 2
                 continue
             index += 1
@@ -54,6 +56,7 @@ def sanitize_text(text: str) -> str:
         if (
             0x200B <= code <= 0x200F
             or 0x202A <= code <= 0x202E
+            or 0x2060 <= code <= 0x2064
             or 0x2066 <= code <= 0x2069
             or 0xE0000 <= code <= 0xE007F
             or code in _ZERO_WIDTH
@@ -74,6 +77,16 @@ def _single_line(text: str) -> str:
     if not cleaned:
         return ""
     return " ".join(cleaned.split())
+
+
+def sanitize_role(role: str) -> str:
+    """Sanitize a node role token for single-line model output, preventing ref/line spoofing."""
+    flat = _single_line(role)
+    if not flat:
+        return "generic"
+    flat = _REF_SPOOF_RE.sub(r"＠\1", flat).replace('"', "")
+    parts = flat.split()
+    return (parts[0] if parts else "generic")[:32]
 
 
 def escape_label(text: str, *, limit: int = 120) -> str:
@@ -138,14 +151,16 @@ def _rank(nodes: list[FusedNode]) -> list[FusedNode]:
 
 def _header_url(url: str) -> str:
     """Strip credentials and query params, keep short plain anchor fragments, and cap length."""
-    base = sanitize_display_url(url) or url
+    base = sanitize_display_url(url)
+    if not base:
+        return ""
     try:
         frag = urlsplit(url).fragment
     except ValueError:
         frag = ""
-    if frag and "=" not in frag and len(frag) < 16 and base and not base.endswith(":"):
+    if frag and "=" not in frag and len(frag) < 16 and not base.endswith(":"):
         base = f"{base}#{frag}"
-    cleaned = _single_line(base)
+    cleaned = _REF_SPOOF_RE.sub(r"＠\1", _single_line(base))
     if len(cleaned) > 200:
         return cleaned[:199] + "…"
     return cleaned
@@ -169,7 +184,7 @@ def render(
     if focus:
         suffix += f", subtree {focus}"
     header_url = _header_url(url)
-    header_title = _single_line(sanitize_display_title(title, url))
+    header_title = _REF_SPOOF_RE.sub(r"＠\1", _single_line(sanitize_display_title(title, url)))
     if len(header_title) > 120:
         header_title = header_title[:119] + "…"
     header = f"[{header_url}] {header_title}  (epoch {page_epoch}{suffix})"
@@ -185,7 +200,7 @@ def render(
             break
         take = min(count, capacity)
         token = f"@e{node.ref}#{page_epoch}" if node.ref is not None else "-"
-        role = _single_line(node.role)
+        role = sanitize_role(node.role)
         raw_name = node.name if _single_line(node.name) else (node.text_hint or "")
         name = escape_label(raw_name, limit=120)
         star = "*" if node.scrollable else ""

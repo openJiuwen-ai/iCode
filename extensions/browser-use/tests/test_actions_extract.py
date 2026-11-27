@@ -301,3 +301,157 @@ def test_extract_unique_main_landmark_and_batch_max_matches(monkeypatch) -> None
     batch_text = batch_blocks[0]["text"]
     assert "[match 1/2] @e3#5" in batch_text and "in main" in batch_text and "Alpha $10" in batch_text
     assert "[match 2/2] @e4#5" in batch_text and "Beta $20" in batch_text
+
+
+def test_wave2_deep_text_js_blocks_display_none_ancestor_and_supports_visibility_override() -> None:
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        return
+    script = (
+        f"{extract._DEEP_TEXT_JS}\n"
+        "const txt = (v) => ({ nodeType: 3, nodeValue: v });\n"
+        "const el = (tag, children = [], style = {}, extra = {}) => {\n"
+        "  const n = Object.assign({ nodeType: 1, tagName: tag, childNodes: children, shadowRoot: null, _style: style,\n"
+        "    querySelectorAll: () => children }, extra);\n"
+        "  for (const c of children) if (c && c.nodeType === 1) c.parentElement = n;\n"
+        "  return n;\n"
+        "};\n"
+        "globalThis.getComputedStyle = (n) => Object.assign({ display: 'block', visibility: 'visible', opacity: '1' }, n._style || {});\n"
+        "const hiddenBox = el('DIV', [txt('SECRET_DISPLAY_NONE')], { display: 'none' }, { innerText: 'SECRET_DISPLAY_NONE' });\n"
+        "const opChild = el('SPAN', [txt('SECRET_OP_ANCESTOR')], {}, { innerText: 'SECRET_OP_ANCESTOR' });\n"
+        "const opParent = el('DIV', [opChild], { opacity: '0' });\n"
+        "const revived = el('SPAN', [txt('REVIVED_CHILD')], { visibility: 'visible' });\n"
+        "const visHidden = el('DIV', [txt('VIS_HIDDEN_TEXT'), revived], { visibility: 'hidden' });\n"
+        "const xhtmlScript = el('script', [txt('ALERT_SCRIPT')]);\n"
+        "const body = el('BODY', [visHidden, xhtmlScript, el('P', [txt('Visible')])]);\n"
+        "body.querySelectorAll = () => [visHidden, revived, xhtmlScript, el('DIV', [], { opacity: '0' })];\n"
+        "console.log(JSON.stringify({\n"
+        "  hiddenBox: deepText(hiddenBox),\n"
+        "  opChild: deepText(opChild),\n"
+        "  body: deepText(body),\n"
+        "  opParentHidden: isAncestorHidden(opChild),\n"
+        "}));\n"
+    )
+    out = subprocess.check_output([node, "-e", script], text=True, encoding="utf-8").strip()
+    data = json.loads(out)
+    assert data["hiddenBox"] == ""
+    assert data["opChild"] == ""
+    assert data["opParentHidden"] is True
+    assert "REVIVED_CHILD" in data["body"]
+    assert "Visible" in data["body"]
+    assert "VIS_HIDDEN_TEXT" not in data["body"]
+    assert "ALERT_SCRIPT" not in data["body"]
+
+
+def test_wave2_html_to_markdown_nested_hidden_unquoted_nested_tables_and_href_scrub() -> None:
+    html = (
+        "<html><body>"
+        '<div style="display:none"><div>inner</div>NESTED_HIDDEN_LEAK</div>'
+        "<p hidden>ATTR_HIDDEN_LEAK</p>"
+        "<p style=display:none>UNQUOTED_HIDDEN_LEAK</p>"
+        '<p style="content-visibility:hidden">CV_HIDDEN_LEAK</p>'
+        '<div style="visibility:hidden"><span style="visibility:visible">REVIVED_MD</span><span>STILL_VIS_HIDDEN</span></div>'
+        "<table><tr><th>Col1</th><th>Col2</th></tr>"
+        "<tr><td>A</td><td><table><tr><td>NestedVal</td></tr></table></td></tr>"
+        "<tr><td>B</td><td>Tail</td></tr></table>"
+        '<a href="https://alice:secret@example.com/cb?token=LEAK#sec">SafeLink</a> '
+        '<a href="javascript:alert(1)">NoScriptLink</a> '
+        '<a href="//bob:pw@cdn.example/p?sig=1">ProtoRel</a>'
+        "</body></html>"
+    )
+    md = extract.html_to_markdown(html)
+    for leak in (
+        "NESTED_HIDDEN_LEAK",
+        "ATTR_HIDDEN_LEAK",
+        "UNQUOTED_HIDDEN_LEAK",
+        "CV_HIDDEN_LEAK",
+        "STILL_VIS_HIDDEN",
+        "alice:secret",
+        "token=LEAK",
+        "javascript:",
+        "bob:pw",
+        "sig=1",
+    ):
+        assert leak not in md, f"{leak!r} leaked into markdown: {md!r}"
+    assert "REVIVED_MD" in md
+    assert "| Col1 | Col2 |" in md
+    assert "| A | NestedVal |" in md
+    assert "| B | Tail |" in md
+    assert "[SafeLink](https://example.com/cb#sec)" in md
+    assert "NoScriptLink" in md
+    assert "[ProtoRel](https://cdn.example/p)" in md
+
+
+def test_wave2_extract_hidden_skips_snapshot_fallback_and_multiple_pagination_is_stable(monkeypatch) -> None:
+    from icode_browser_use.snapshot.fusion import FusedNode
+
+    # 1. Live hidden element returning {len:0, chunk:"", hidden:True} must NOT resurrect stale snapshot text.
+    child = FusedNode(
+        2, "f", "t", "generic", "STALE_HIDDEN_TEXT", "div", 0, (0, 0, 10, 10), ancestor_ids=(1,), visible=True
+    )
+    entry = SimpleNamespace(token="@e1#5", backend_node_id=1, frame_id="f", cdp_session_id=None)
+
+    async def fake_call_hidden(_session, _oid, _fn, **_kwargs):
+        return {"value": {"len": 0, "chunk": "", "hidden": True}}
+
+    monkeypatch.setattr(extract, "call_value", fake_call_hidden)
+    session = SimpleNamespace(
+        target_id="t",
+        snapshot=SimpleNamespace(nodes=[child]),
+        resolve_object_id=lambda _e: asyncio.sleep(0, result="oid-1"),
+    )
+    out = asyncio.run(extract._extract_entry(session, entry, "text", offset=0, max_chars=200))
+    assert out == ""
+
+    # 2. _extract_multiple uses offset-independent per_item_limit and strips inner next offset markers.
+    cards = [
+        FusedNode(
+            10 + i,
+            "f",
+            "t",
+            "link",
+            f"Item Card {i}",
+            "a",
+            i,
+            (0, i * 30, 200, 20),
+            ref=10 + i,
+            epoch=5,
+            visible=True,
+            in_viewport=True,
+            interactive=True,
+        )
+        for i in (1, 2)
+    ]
+    seen_limits: list[int] = []
+
+    async def fake_call_multi(_session, oid, _fn, **kwargs):
+        limit = kwargs["arguments"][1]["value"]
+        seen_limits.append(limit)
+        full = ("X" if oid == "oid-11" else "Y") * 5000
+        return {"value": {"len": len(full), "chunk": full[:limit], "hidden": False}}
+
+    monkeypatch.setattr(extract, "call_value", fake_call_multi)
+    multi_session = SimpleNamespace(
+        target_id="t",
+        page_epoch=5,
+        snapshot_dirty=False,
+        snapshot=SimpleNamespace(nodes=cards),
+        note_success=lambda _t: None,
+        resolve_target=lambda tok: SimpleNamespace(
+            token=tok, backend_node_id=11 if tok == "@e11#5" else 12, frame_id="f", cdp_session_id=None
+        ),
+        resolve_object_id=lambda e: asyncio.sleep(0, result=f"oid-{e.backend_node_id}"),
+    )
+    p1 = asyncio.run(
+        extract._extract_multiple(multi_session, "Item Card", "text", max_matches=2, offset=0, max_chars=1000)
+    )
+    p2 = asyncio.run(
+        extract._extract_multiple(multi_session, "Item Card", "text", max_matches=2, offset=1000, max_chars=1000)
+    )
+    assert seen_limits[:2] == seen_limits[2:4], "per_item_limit must not drift with offset"
+    assert "next offset=" not in p1.rsplit("… (+", 1)[0]
+    assert p2 and p1 != p2

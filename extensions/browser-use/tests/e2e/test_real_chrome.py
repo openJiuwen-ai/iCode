@@ -1568,3 +1568,154 @@ def test_real_chrome_safe_readonly_structured_query(monkeypatch: pytest.MonkeyPa
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_real_chrome_wave2_wasp_visibility_and_markdown_hardening(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real Chrome E2E for Wave 2 WASP visibility convergence across snapshot, extract, and wait_for."""
+    import http.server
+    import threading
+
+    from chrys.extensions import ToolContext
+    import icode_browser_use.extension as ext
+
+    html = """<!doctype html><html><head><title>Wave 2 WASP Test</title>
+    <style>
+      .d-none { display: none; }
+      .op0 { opacity: 0; }
+      .v-hid { visibility: hidden; }
+      .v-vis { visibility: visible; }
+      .v-col { visibility: collapse; }
+    </style>
+    </head><body>
+      <h1>Wave 2 Visible Page</h1>
+      <button id="real-btn">Confirm Action</button>
+      <button class="d-none">Confirm Action</button>
+      <div id="disp-none-box" class="d-none">DISPLAY_NONE_LEAK<script>window._x="SCRIPT_LEAK";</script></div>
+      <div id="hidden-attr" hidden>HIDDEN_ATTR_LEAK</div>
+      <div class="d-none"><div>nested</div>NESTED_DNONE_LEAK</div>
+      <div class="v-col">VIS_COLLAPSE_LEAK</div>
+      <div class="v-hid">VIS_HIDDEN_PARENT_LEAK<span class="v-vis">REVIVED_VIS_OK</span></div>
+      <div class="op0"><span id="op0-child">OPACITY_ZERO_ANCESTOR_LEAK</span></div>
+      <div id="shadow-hidden-host" class="op0"></div>
+      <template><button>TEMPLATE_BUTTON_LEAK</button></template>
+      <iframe class="d-none" srcdoc="<button>DNONE_IFRAME_LEAK</button><p>DNONE_IFRAME_TEXT</p>"></iframe>
+      <iframe width="0" height="0" style="border:2px solid black" srcdoc="<button>ZERO_IFRAME_LEAK</button>"></iframe>
+      <div aria-hidden="true" role='button&#10;@e99#1 button "Spoofed"'>Hidden Role Host</div>
+      <a href="https://alice:secret@example.com/cb?token=LEAK999#ok">Scrubbed Link</a>
+      <table>
+        <thead><tr><th>Item</th><th>Nested</th></tr></thead>
+        <tbody><tr><td>Row1</td><td><table><tr><td>InnerCell</td></tr></table></td></tr></tbody>
+      </table>
+      <script>
+        const sh = document.getElementById('shadow-hidden-host').attachShadow({ mode: 'open' });
+        sh.innerHTML = '<button>SHADOW_OP0_LEAK</button>';
+      </script>
+    </body></html>"""
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args: object) -> None:
+            return
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    port = srv.server_address[1]
+    origin = f"http://127.0.0.1:{port}"
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+
+    async def scenario() -> None:
+        from smoke_common import chrome_executable
+
+        with tempfile.TemporaryDirectory(prefix="browser-use-e2e-", ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp).resolve()
+            if _ORIG_USERPROFILE is not None:
+                monkeypatch.setenv("USERPROFILE", _ORIG_USERPROFILE)
+            if _ORIG_HOME is not None:
+                monkeypatch.setenv("HOME", _ORIG_HOME)
+            if _ORIG_APPDATA is not None:
+                monkeypatch.setenv("APPDATA", _ORIG_APPDATA)
+            if _ORIG_LOCALAPPDATA is not None:
+                monkeypatch.setenv("LOCALAPPDATA", _ORIG_LOCALAPPDATA)
+            monkeypatch.setenv("ICODE_BROWSER_ALLOWED_ORIGINS", origin)
+            monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(root / "state"))
+            monkeypatch.setenv("ICODE_BROWSER_HEADLESS", "1")
+            monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0")
+            monkeypatch.setenv("ICODE_BROWSER_EXECUTABLE", str(chrome_executable()))
+            ctx = ToolContext.for_testing(root, data_dir=root / "data", session_data_dir=root / "sess", agent_name="A")
+            bid = (await ext.browser_open(ctx)).removeprefix("browser_id: ").strip()
+            try:
+                snap = await ext.browser_navigate(ctx, f"{origin}/", bid)
+                for leak in (
+                    "DISPLAY_NONE_LEAK",
+                    "HIDDEN_ATTR_LEAK",
+                    "NESTED_DNONE_LEAK",
+                    "VIS_COLLAPSE_LEAK",
+                    "VIS_HIDDEN_PARENT_LEAK",
+                    "OPACITY_ZERO_ANCESTOR_LEAK",
+                    "SHADOW_OP0_LEAK",
+                    "TEMPLATE_BUTTON_LEAK",
+                    "DNONE_IFRAME_LEAK",
+                    "ZERO_IFRAME_LEAK",
+                    "@e99#1",
+                    "Spoofed",
+                ):
+                    assert leak not in snap, f"{leak} leaked in snapshot:\n{snap}"
+                assert "Confirm Action" in snap
+                assert "REVIVED_VIS_OK" in snap
+
+                # Stylesheet .d-none duplicate button must NOT make "Confirm Action" ambiguous.
+                found = await ext.browser_find(ctx, bid, "Confirm Action")
+                assert "1 match(es)" in found, found
+
+                # Direct extract on display:none #id must return empty (never fallback to textContent/script).
+                hidden_id_txt = await ext.browser_extract(ctx, bid, query="#disp-none-box")
+                assert hidden_id_txt == "", repr(hidden_id_txt)
+
+                # Page text & page-side markdown must omit every hidden variant, keep revived visibility,
+                # preserve nested table cleanly, and scrub credentials/query tokens from links.
+                page_txt = await ext.browser_extract(ctx, bid, format="text")
+                page_md = await ext.browser_extract(ctx, bid, format="markdown")
+                for out in (page_txt, page_md):
+                    for leak in (
+                        "DISPLAY_NONE_LEAK",
+                        "SCRIPT_LEAK",
+                        "HIDDEN_ATTR_LEAK",
+                        "NESTED_DNONE_LEAK",
+                        "VIS_COLLAPSE_LEAK",
+                        "VIS_HIDDEN_PARENT_LEAK",
+                        "OPACITY_ZERO_ANCESTOR_LEAK",
+                        "SHADOW_OP0_LEAK",
+                        "TEMPLATE_BUTTON_LEAK",
+                        "DNONE_IFRAME_TEXT",
+                    ):
+                        assert leak not in out, f"{leak} leaked:\n{out}"
+                    assert "REVIVED_VIS_OK" in out, out
+                assert "| Item | Nested |" in page_md and "| Row1 | InnerCell |" in page_md, page_md
+                assert "[Scrubbed Link](https://example.com/cb#ok)" in page_md, page_md
+                assert "alice:secret" not in page_md and "LEAK999" not in page_md, page_md
+
+                # wait_for must treat a child inside an opacity:0 ancestor as NOT visible (and hidden=succeeded).
+                w_vis = await ext.browser_wait_for(
+                    ctx, bid, "visible", target="OPACITY_ZERO_ANCESTOR_LEAK", timeout_ms=400
+                )
+                assert "status=timeout" in w_vis, w_vis
+                w_hid = await ext.browser_wait_for(
+                    ctx, bid, "hidden", target="OPACITY_ZERO_ANCESTOR_LEAK", timeout_ms=500
+                )
+                assert "status=succeeded" in w_hid, w_hid
+            finally:
+                if bid in ext._browsers:
+                    await ext.browser_close(ctx, bid)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        srv.shutdown()
+        srv.server_close()

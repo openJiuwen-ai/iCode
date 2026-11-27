@@ -18,7 +18,7 @@ from html import unescape
 from ..config import AMBIGUITY_GAP, MIN_TOP_SCORE
 from ..errors import TargetAmbiguous, TargetNotFound
 from .fusion import FusedNode
-from .serializer import escape_label
+from .serializer import escape_label, sanitize_role
 
 _EXACT_NAME_POINTS = 40
 _EXACT_HINT_FALLBACK_POINTS = 30
@@ -62,7 +62,7 @@ _REAL_CONTROL_ROLES = frozenset(
         "colorwell",
     }
 )
-_SNAPSHOT_SPEC_RE = re.compile(r'^\s*([a-zA-Z][a-zA-Z0-9_-]{0,24})\s+"([^"]+)"\s*$')
+_SNAPSHOT_SPEC_RE = re.compile(r'^\s*([a-zA-Z][a-zA-Z0-9_-]{0,31})\s+"((?:\\.|[^"\\])+)"\s*$')
 _SEMANTIC_CONTAINER_RANK: dict[str, int] = {
     "dialog": 3,
     "alertdialog": 3,
@@ -104,6 +104,68 @@ _LANDMARK_TAGS = frozenset(
 )
 _HEAD_META_TAGS = frozenset({"head", "title", "meta", "link", "style", "script", "noscript", "base", "template"})
 _STRUCTURAL_TAG_SPECS = _LANDMARK_TAGS | frozenset({"h1", "h2", "h3", "h4", "h5", "h6", "iframe"})
+_KNOWN_ROLE_OR_TAG_HINTS = (
+    _REAL_CONTROL_TAGS
+    | _REAL_CONTROL_ROLES
+    | _LANDMARK_ROLES
+    | _LANDMARK_TAGS
+    | _LABEL_ROLES
+    | _STRUCTURAL_TAG_SPECS
+    | frozenset(
+        {
+            "generic",
+            "heading",
+            "img",
+            "image",
+            "cell",
+            "row",
+            "rowheader",
+            "columnheader",
+            "gridcell",
+            "list",
+            "listitem",
+            "paragraph",
+            "section",
+            "figure",
+            "group",
+            "status",
+            "alert",
+            "progressbar",
+            "tablist",
+            "tabpanel",
+            "menu",
+            "menubar",
+            "tree",
+            "grid",
+            "toolbar",
+            "tooltip",
+            "separator",
+            "div",
+            "span",
+            "p",
+            "ul",
+            "ol",
+            "li",
+            "td",
+            "th",
+            "tr",
+            "tbody",
+            "thead",
+            "tfoot",
+            "svg",
+            "canvas",
+            "video",
+            "audio",
+            "details",
+            "fieldset",
+            "legend",
+            "pre",
+            "code",
+            "blockquote",
+            "area",
+        }
+    )
+)
 
 #: Minimum fuzzy-similarity ratio for a name to count as a spec match at all.
 _SIMILARITY_MIN_RATIO = 0.5
@@ -123,12 +185,16 @@ def _norm(text: str) -> str:
     return " ".join(unescape(text or "").split()).lower()
 
 
-def _parse_spec(spec: str) -> tuple[str, str]:
+def _parse_spec(spec: str, *, allow_role_hint: bool = True) -> tuple[str, str]:
     """Parse ``role "label"`` specs copied from snapshots, returning ``(role_hint, target)``."""
     raw = (spec or "").strip()
-    match = _SNAPSHOT_SPEC_RE.match(raw)
-    if match is not None:
-        return _norm(match.group(1)), _norm(match.group(2))
+    if allow_role_hint:
+        match = _SNAPSHOT_SPEC_RE.match(raw)
+        if match is not None:
+            hint = _norm(match.group(1))
+            if hint in _KNOWN_ROLE_OR_TAG_HINTS:
+                label = match.group(2).replace('\\"', '"').replace("\\\\", "\\")
+                return hint, _norm(label)
     return "", _norm(raw)
 
 
@@ -240,12 +306,12 @@ def _effective_name(node: FusedNode) -> tuple[str, bool]:
     return (hint if hint_fallback else name), hint_fallback
 
 
-def score(node: FusedNode, spec: str, *, seen_names: dict[str, int]) -> int:
+def score(node: FusedNode, spec: str, *, seen_names: dict[str, int], allow_role_hint: bool = True) -> int:
     """Score *node* against *spec* (design section 6.1, additive terms)."""
     name = _norm(node.name)
     hint = _norm(node.text_hint)
     effective_name, hint_fallback = _effective_name(node)
-    role_hint, target = _parse_spec(spec)
+    role_hint, target = _parse_spec(spec, allow_role_hint=allow_role_hint)
     total = 0
 
     if target and effective_name and node.name_from_href and name:
@@ -262,7 +328,7 @@ def score(node: FusedNode, spec: str, *, seen_names: dict[str, int]) -> int:
 
     if role_hint and _role_tag_matches(node, role_hint):
         total += _ROLE_OR_TAG_POINTS
-    elif target and _role_tag_matches(node, target):
+    elif not role_hint and target and _role_tag_matches(node, target):
         total += _ROLE_OR_TAG_POINTS
 
     if node.in_viewport and node.visible:
@@ -295,7 +361,7 @@ def score(node: FusedNode, spec: str, *, seen_names: dict[str, int]) -> int:
     return total
 
 
-def _matches_spec(node: FusedNode, spec: str) -> bool:
+def _matches_spec(node: FusedNode, spec: str, *, allow_role_hint: bool = True) -> bool:
     """Whether *spec* produced a real signal for *node*.
 
     Visibility/scrollability bonuses alone must not manufacture a candidate:
@@ -303,13 +369,13 @@ def _matches_spec(node: FusedNode, spec: str) -> bool:
     instead of not-found.
     """
     name = _norm(node.name)
-    role_hint, target = _parse_spec(spec)
+    role_hint, target = _parse_spec(spec, allow_role_hint=allow_role_hint)
     if not target:
         return False
     if role_hint and not _role_tag_matches(node, role_hint):
         return False
     if name and node.name_from_href:
-        return _href_name_match(name, target) > 0 or _role_tag_matches(node, target)
+        return _href_name_match(name, target) > 0 or (not role_hint and _role_tag_matches(node, target))
     if name and (name == target or target in name or _is_meaningful_reverse_match(name, target)):
         return True
     if not role_hint and _role_tag_matches(node, target):
@@ -333,41 +399,57 @@ def _matches_spec(node: FusedNode, spec: str) -> bool:
     )
 
 
-def _drop_redundant_ancestors(candidates: list[Candidate], spec: str) -> list[Candidate]:
-    """Suppress non-interactive ancestors that merely echo an interactive descendant's name.
+def _drop_redundant_ancestors(
+    candidates: list[Candidate], spec: str, *, allow_role_hint: bool = True
+) -> list[Candidate]:
+    """Suppress non-control ancestors that merely echo an interactive/control descendant's name.
 
     A ``<td><button>Resolve INC-0117</button></td>`` exposes both the ``button``
-    and its non-interactive ``cell`` ancestor with the same accessible name.
-    Unless the caller explicitly targeted the ancestor's role/tag, keep the
-    interactive descendant as the sole contender instead of failing with a
-    spurious ambiguity error.
+    and its ``cell`` ancestor (which may also inherit ``cursor: pointer``) with
+    the same accessible name. Unless the caller explicitly targeted the
+    ancestor's role/tag, keep the descendant control as the sole contender
+    instead of failing with a spurious ambiguity error.
     """
-    role_hint, target = _parse_spec(spec)
+    role_hint, target = _parse_spec(spec, allow_role_hint=allow_role_hint)
     interactive_by_ancestor: dict[tuple[str, str | None, int, str], int] = {}
+    control_by_ancestor: dict[tuple[str, str | None, int, str], int] = {}
     for candidate in candidates:
         node = candidate.node
-        if not node.interactive or not node.ancestor_ids:
+        if not node.ancestor_ids:
+            continue
+        is_control = _is_real_control(node)
+        if not node.interactive and not is_control:
             continue
         name, _ = _effective_name(node)
         if not name:
             continue
         for ancestor_id in node.ancestor_ids:
             key = (node.frame_id, node.cdp_session_id, ancestor_id, name)
-            prev = interactive_by_ancestor.get(key)
-            if prev is None or candidate.score > prev:
-                interactive_by_ancestor[key] = candidate.score
-    if not interactive_by_ancestor:
+            if node.interactive:
+                prev = interactive_by_ancestor.get(key)
+                if prev is None or candidate.score > prev:
+                    interactive_by_ancestor[key] = candidate.score
+            if is_control:
+                prev_ctrl = control_by_ancestor.get(key)
+                if prev_ctrl is None or candidate.score > prev_ctrl:
+                    control_by_ancestor[key] = candidate.score
+    if not interactive_by_ancestor and not control_by_ancestor:
         return candidates
     filtered: list[Candidate] = []
     for candidate in candidates:
         node = candidate.node
-        explicit_role = _role_tag_matches(node, role_hint) or _role_tag_matches(node, target)
-        if not node.interactive and not explicit_role:
+        explicit_role = _role_tag_matches(node, role_hint) or (not role_hint and _role_tag_matches(node, target))
+        if not explicit_role:
             anc_name, _ = _effective_name(node)
             key = (node.frame_id, node.cdp_session_id, node.backend_node_id, anc_name)
-            child_score = interactive_by_ancestor.get(key)
-            if child_score is not None and child_score >= candidate.score:
-                continue
+            if not node.interactive:
+                child_score = interactive_by_ancestor.get(key)
+                if child_score is not None and child_score >= candidate.score:
+                    continue
+            elif not _is_real_control(node):
+                ctrl_score = control_by_ancestor.get(key)
+                if ctrl_score is not None and ctrl_score >= candidate.score:
+                    continue
         filtered.append(candidate)
     return filtered
 
@@ -382,7 +464,9 @@ def _is_real_control(node: FusedNode) -> bool:
     )
 
 
-def _drop_redundant_descendants(candidates: list[Candidate], spec: str) -> list[Candidate]:
+def _drop_redundant_descendants(
+    candidates: list[Candidate], spec: str, *, allow_role_hint: bool = True
+) -> list[Candidate]:
     """Collapse wrapper descendants that merely echo a same-name ancestor.
 
     Handles both:
@@ -394,7 +478,7 @@ def _drop_redundant_descendants(candidates: list[Candidate], spec: str) -> list[
       ``<td><p>Warranty</p></td>``: when two non-control candidates share an ancestor-descendant
       link and the exact same effective name, keep the stronger semantic container.
     """
-    role_hint, target = _parse_spec(spec)
+    role_hint, target = _parse_spec(spec, allow_role_hint=allow_role_hint)
     interactive_ancestors: set[tuple[str, str | None, int, str]] = set()
     for candidate in candidates:
         node = candidate.node
@@ -460,14 +544,14 @@ def _drop_redundant_descendants(candidates: list[Candidate], spec: str) -> list[
     return [cand for cand in after_interactive if id(cand) not in dropped_ids]
 
 
-def _drop_shadowed_labels(candidates: list[Candidate], spec: str) -> list[Candidate]:
+def _drop_shadowed_labels(candidates: list[Candidate], spec: str, *, allow_role_hint: bool = True) -> list[Candidate]:
     """Suppress ``<label>`` caption nodes when a same-name form control is also a candidate.
 
     ``<label for="x">Priority Level</label><input id="x" type="range" aria-label="Priority Level">``
     exposes both a clickable ``<label>`` and the actual focusable form control with the same name.
     Unless the caller explicitly targeted ``label``/``labeltext``, resolve to the control itself.
     """
-    role_hint, target = _parse_spec(spec)
+    role_hint, target = _parse_spec(spec, allow_role_hint=allow_role_hint)
     if target in _LABEL_ROLES or role_hint in _LABEL_ROLES:
         return candidates
     control_keys: set[tuple[str, str | None, str]] = set()
@@ -492,23 +576,19 @@ def _drop_shadowed_labels(candidates: list[Candidate], spec: str) -> list[Candid
     return filtered
 
 
-def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
-    """Score every spec-matching node, keep the positive ones and sort descending."""
-    eligible = [node for node in nodes if _norm(node.tag) not in _HEAD_META_TAGS]
-    seen_names: dict[str, int] = {}
-    for node in eligible:
-        if node.css_hidden:
-            continue
-        key, _ = _effective_name(node)
-        if key:
-            seen_names[key] = seen_names.get(key, 0) + 1
-
-    role_hint, target = _parse_spec(spec)
+def _rank_pass(
+    eligible: list[FusedNode],
+    seen_names: dict[str, int],
+    spec: str,
+    *,
+    allow_role_hint: bool,
+) -> list[Candidate]:
+    role_hint, target = _parse_spec(spec, allow_role_hint=allow_role_hint)
     candidates: list[Candidate] = []
     for node in eligible:
-        if not _matches_spec(node, spec):
+        if not _matches_spec(node, spec, allow_role_hint=allow_role_hint):
             continue
-        value = score(node, spec, seen_names=seen_names)
+        value = score(node, spec, seen_names=seen_names, allow_role_hint=allow_role_hint)
         if value > 0:
             name = _norm(node.name)
             effective_name, _ = _effective_name(node)
@@ -522,10 +602,28 @@ def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
             candidates.append(Candidate(node=node, score=value, exact_match=exact))
     if any(not candidate.node.css_hidden for candidate in candidates):
         candidates = [candidate for candidate in candidates if not candidate.node.css_hidden]
-    candidates = _drop_redundant_ancestors(candidates, spec)
-    candidates = _drop_redundant_descendants(candidates, spec)
-    candidates = _drop_shadowed_labels(candidates, spec)
+    candidates = _drop_redundant_ancestors(candidates, spec, allow_role_hint=allow_role_hint)
+    candidates = _drop_redundant_descendants(candidates, spec, allow_role_hint=allow_role_hint)
+    candidates = _drop_shadowed_labels(candidates, spec, allow_role_hint=allow_role_hint)
     candidates.sort(key=lambda candidate: candidate.score, reverse=True)
+    return candidates
+
+
+def rank(nodes: list[FusedNode], spec: str) -> list[Candidate]:
+    """Score every spec-matching node, keep the positive ones and sort descending."""
+    eligible = [node for node in nodes if _norm(node.tag) not in _HEAD_META_TAGS]
+    seen_names: dict[str, int] = {}
+    for node in eligible:
+        if node.css_hidden:
+            continue
+        key, _ = _effective_name(node)
+        if key:
+            seen_names[key] = seen_names.get(key, 0) + 1
+
+    role_hint, _ = _parse_spec(spec, allow_role_hint=True)
+    candidates = _rank_pass(eligible, seen_names, spec, allow_role_hint=True)
+    if not candidates and role_hint:
+        candidates = _rank_pass(eligible, seen_names, spec, allow_role_hint=False)
     return candidates
 
 
@@ -536,16 +634,17 @@ def top3_to_text(candidates: list[Candidate], *, all_nodes: list[FusedNode] | No
     for candidate in candidates[:_MAX_CANDIDATES]:
         node = candidate.node
         label = escape_label(node.name or node.text_hint, limit=120)
+        role = sanitize_role(node.role)
         vis = "in-view" if node.in_viewport else "off-screen"
         region = describe_region(node, nodes_by_key)
         where = f" in {region}" if region else ""
-        lines.append(f'  {_ref_token(node)} {node.role} "{label}" [{vis}]{where} (score {candidate.score})')
+        lines.append(f'  {_ref_token(node)} {role} "{label}" [{vis}]{where} (score {candidate.score})')
     return "\n".join(lines)
 
 
 def _summary(candidates: list[Candidate]) -> str:
     parts = [
-        f'{_ref_token(c.node)} {c.node.role} "{escape_label(c.node.name or c.node.text_hint, limit=120)}"'
+        f'{_ref_token(c.node)} {sanitize_role(c.node.role)} "{escape_label(c.node.name or c.node.text_hint, limit=120)}"'
         for c in candidates[:_MAX_CANDIDATES]
     ]
     return "; ".join(parts)

@@ -1011,3 +1011,99 @@ def test_wait_for_text_changed_and_baseline_ignore_incomplete_oopif_timeout() ->
         )
     )[0]["text"]
     assert "status=timeout" in res_text_err
+
+
+def test_wave2_wait_for_oopif_target_visibility_shadow_hit_degraded_and_login_propagation(
+    monkeypatch: pytest.MonkeyPatch, deterministic_clock
+) -> None:
+    from icode_browser_use.actions import snapshot as snapshot_action
+    from icode_browser_use.errors import LoginRequired
+
+    # 1. Target inside a hidden OOPIF must not satisfy visible/text and satisfies hidden; unknown fails closed.
+    oopif_state = ["hidden"]
+
+    async def fake_oopif_vis(_sess, _sid, **_kw):
+        if oopif_state[0] == "hidden":
+            return False
+        if oopif_state[0] == "unknown":
+            return None
+        return True
+
+    monkeypatch.setattr(wait_for, "is_oopif_visible", fake_oopif_vis)
+    deterministic_clock.step = 0.2
+    sess_vis = FakeSession(
+        client=FakeClient(probes=[{"present": True, "visible": True, "text": "READY"}]),
+        cdp_session_id="oopif-child",
+    )
+    assert "status=timeout" in run(
+        sess_vis, {"condition": "visible", "target": "@e1#5", "value": "", "timeout_ms": 300}
+    )
+    assert "status=timeout" in run(
+        sess_vis, {"condition": "text", "target": "@e1#5", "value": "READY", "timeout_ms": 300}
+    )
+    assert "status=succeeded" in run(
+        sess_vis, {"condition": "hidden", "target": "@e1#5", "value": "", "timeout_ms": 300}
+    )
+
+    oopif_state[0] = "unknown"
+    assert "status=timeout" in run(
+        sess_vis, {"condition": "visible", "target": "@e1#5", "value": "", "timeout_ms": 300}
+    )
+    assert "status=timeout" in run(sess_vis, {"condition": "hidden", "target": "@e1#5", "value": "", "timeout_ms": 300})
+
+    # 2. _shadow_text_hit is case-sensitive and excludes css_hidden, name_from_attr/href, and form inputs.
+    assert not wait_for._shadow_text_hit(
+        [
+            FusedNode(1, "f", "t", "generic", "loading", "div", 0, (0, 0, 10, 10), visible=True),
+            FusedNode(2, "f", "t", "generic", "Loading", "div", 0, (0, 0, 10, 10), visible=True, css_hidden=True),
+            FusedNode(3, "f", "t", "textbox", "Loading", "input", 0, (0, 0, 10, 10), visible=True),
+            FusedNode(4, "f", "t", "generic", "Loading", "div", 0, (0, 0, 10, 10), visible=True, name_from_attr=True),
+        ],
+        "Loading",
+    )
+    assert wait_for._shadow_text_hit(
+        [FusedNode(5, "f", "t", "generic", "Loading", "div", 0, (0, 0, 10, 10), visible=True)],
+        "Loading",
+    )
+
+    # 3. _GONE_RE matches destroyed execution context; mismatched ref epoch fails fast with StaleRef.
+    assert wait_for._is_gone(BrowserError("Cannot find context with specified id"))
+    assert wait_for._is_gone(BrowserError("Execution context was destroyed"))
+    nav_sess = FakeSession(client=FakeClient(probes=[{"present": True, "visible": True, "text": "ok"}]))
+    nav_sess.entry = SimpleNamespace(token="@e1#4", cdp_session_id=None, backend_node_id=11, epoch=4)
+    nav_sess.page_epoch = 5
+    with pytest.raises(StaleRef):
+        asyncio.run(wait_for.run(nav_sess, {"condition": "visible", "target": "@e1#4", "value": "", "timeout_ms": 300}))
+    assert "basis=gone" in run(nav_sess, {"condition": "hidden", "target": "@e1#4", "value": "", "timeout_ms": 300})
+
+    # 4. Degraded empty snapshot never satisfies _snapshot_matches_epoch.
+    deg_sess = FakeSession()
+    deg_sess._snapshot_degraded_reason = "页面过大（>32 MiB）"
+    assert wait_for._snapshot_matches_epoch(deg_sess) is False
+
+    # 5. return_mode="snapshot" propagates LoginRequired instead of swallowing it.
+    async def raise_login(_sess, _args):
+        raise LoginRequired("需要登录")
+
+    monkeypatch.setattr(snapshot_action, "run", raise_login)
+    login_sess = FakeSession(client=FakeClient(values=["READY"]))
+    login_sess._last_snapshot_sig = ("full", False, "")
+    with pytest.raises(LoginRequired):
+        asyncio.run(
+            wait_for.run(
+                login_sess,
+                {"condition": "text", "target": "", "value": "READY", "timeout_ms": 500, "return_mode": "snapshot"},
+            )
+        )
+    assert login_sess._last_snapshot_sig == ("full", False, "")
+
+    # 6. Page-wide condition="text" does not refresh on poll #0 and throttles shadow refreshes >= 2s.
+    deterministic_clock.step = 0.15
+    throttle_sess = FakeSession(client=FakeClient(values=["still loading"]))
+    monkeypatch.setattr(wait_for, "capture_and_register", capture)
+    run(throttle_sess, {"condition": "text", "target": "", "value": "NEVER_APPEARS", "timeout_ms": 5000})
+    assert 1 <= throttle_sess.captures <= 3, f"expected throttled shadow snapshots, got {throttle_sess.captures}"
+
+    # 7. _STABLE_PAGE_EXPR observes same-origin iframes and throttles full scans via lastScanAt.
+    assert "contentDocument" in wait_for._STABLE_PAGE_EXPR
+    assert "lastScanAt" in wait_for._STABLE_PAGE_EXPR

@@ -283,3 +283,32 @@ def test_snapshot_delta_detects_disabled_state_change_and_keeps_ref(monkeypatch)
     assert "[disabled]" not in text
     assert session.snapshot.nodes[0].ref == original_ref
     assert session.resolve_target(original_token).backend_node_id == 10
+
+
+def test_wave2_scope_full_since_delta_ignores_unchanged_offscreen_nodes(monkeypatch) -> None:
+    offscreen = _node("Below Fold Item", 1, in_viewport=False)
+    session = _session([])
+
+    async def fake_capture(_session, **_kwargs):
+        _session.register_snapshot(
+            [_node("Below Fold Item", 1, in_viewport=False)], url="https://example.com", title="Example"
+        )
+        return list(_session.snapshot.nodes), None
+
+    async def fake_count(_session):
+        return 0
+
+    async def fake_title(_session):
+        return "Example"
+
+    monkeypatch.setattr(snapshot, "capture_and_register", fake_capture)
+    monkeypatch.setattr(snapshot, "_read_mutation_count", fake_count)
+    monkeypatch.setattr(snapshot, "_page_title", fake_title)
+    monkeypatch.setattr(snapshot, "detect_login", lambda *_args: None)
+
+    first = asyncio.run(snapshot.run(session, {"scope": "full", "interactive_only": False, "since": 0}))[0]["text"]
+    assert offscreen.name in first
+    v = session.snapshot.version
+    second = asyncio.run(snapshot.run(session, {"scope": "full", "interactive_only": False, "since": v}))[0]["text"]
+    assert f"delta: no changes since version {v}" in second
+    assert offscreen.name not in second

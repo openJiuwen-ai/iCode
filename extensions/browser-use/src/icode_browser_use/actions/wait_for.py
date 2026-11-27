@@ -33,6 +33,7 @@ from ..errors import (
     BrowserError,
     CDPTimeout,
     ConnectionClosed,
+    LoginRequired,
     StaleRef,
     TargetAmbiguous,
 )
@@ -89,6 +90,7 @@ EXPECT_PARAMS: dict[str, Any] = {
 
 _POLL_SECONDS = 0.15
 _REFRESH_MIN_SECONDS = 0.5
+_SHADOW_TEXT_REFRESH_SECONDS = 2.0
 _REFRESH_FLOOR_SECONDS = 0.1
 _STABLE_DEFAULT_MS = 1500
 _STABLE_MIN_MS = 100
@@ -116,9 +118,7 @@ def _node_probe_fn(needle: str = "") -> str:
         f"function(){{{_DEEP_TEXT_JS}{_TEXT_DIGEST_JS}"
         " if(!this || !this.isConnected) return {present:false, visible:false, editable:false, text:'', text_digest:''};"
         " const rect=this.getBoundingClientRect();"
-        " const style=getComputedStyle(this);"
-        " const visible=rect.width>0 && rect.height>0 && style.visibility!=='hidden'"
-        "   && style.visibility!=='collapse' && style.display!=='none' && style.opacity!=='0';"
+        " const visible=rect.width>0 && rect.height>0 && !isAncestorHidden(this);"
         " const tag=(this.tagName||'').toLowerCase();"
         " const type=(this.type||'').toLowerCase();"
         " const disabled=this.disabled===true || (typeof this.matches==='function' && this.matches(':disabled'))"
@@ -132,7 +132,7 @@ def _node_probe_fn(needle: str = "") -> str:
         f" const needle={needle_js};"
         " const out={present:true, visible, editable, disabled, readOnly, tag,"
         "   text:raw.slice(0,20000), text_digest:textDigest(raw)};"
-        " if(needle){ out.text_hit=raw.includes(needle); }"
+        " if(needle){ out.text_hit=visible && raw.includes(needle); }"
         " return out;"
         "}"
     )
@@ -233,10 +233,16 @@ _OBSERVE_OPTIONS = "{subtree:true, childList:true, characterData:true, attribute
 _OBSERVE_SHADOWS_JS = (
     "const inScope=(node,root)=>{"
     " let cur=node;"
-    " while(cur){"
+    " let hops=0;"
+    " while(cur && hops<256){"
+    "  hops++;"
     "  if(cur===root) return true;"
     "  if(cur.parentNode){ cur=cur.parentNode; continue; }"
     "  if(cur.host){ cur=cur.host; continue; }"
+    "  try{"
+    "   const fe=cur.ownerDocument && cur.ownerDocument.defaultView ? cur.ownerDocument.defaultView.frameElement : null;"
+    "   if(fe){ cur=fe; continue; }"
+    "  }catch(_){}"
     "  return false;"
     " }"
     " return false;"
@@ -261,6 +267,20 @@ _OBSERVE_SHADOWS_JS = (
     "   }"
     "   stack.push(cur.shadowRoot);"
     "  }"
+    "  const curTag=(cur.tagName||'').toUpperCase();"
+    "  if(curTag==='IFRAME' || curTag==='FRAME'){"
+    "   try{"
+    "    const docEl=cur.contentDocument && cur.contentDocument.documentElement;"
+    "    if(docEl){"
+    "     if(!seen.has(docEl)){"
+    "      seen.add(docEl);"
+    "      added=true;"
+    f"      try{{ obs.observe(docEl, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
+    "     }"
+    "     stack.push(docEl);"
+    "    }"
+    "   }catch(_){}"
+    "  }"
     "  if(cur.querySelectorAll){"
     "   for(const el of cur.querySelectorAll('*')){"
     "    if(el.shadowRoot){"
@@ -270,6 +290,20 @@ _OBSERVE_SHADOWS_JS = (
     f"      try{{ obs.observe(el.shadowRoot, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
     "     }"
     "     stack.push(el.shadowRoot);"
+    "    }"
+    "    const etag=(el.tagName||'').toUpperCase();"
+    "    if(etag==='IFRAME' || etag==='FRAME'){"
+    "     try{"
+    "      const docEl=el.contentDocument && el.contentDocument.documentElement;"
+    "      if(docEl){"
+    "       if(!seen.has(docEl)){"
+    "        seen.add(docEl);"
+    "        added=true;"
+    f"        try{{ obs.observe(docEl, {_OBSERVE_OPTIONS}); }}catch(_){{}}"
+    "       }"
+    "       stack.push(docEl);"
+    "      }"
+    "     }catch(_){}"
     "    }"
     "   }"
     "  }"
@@ -285,6 +319,7 @@ def _stable_page_expr(run_id: str) -> str:
         f"(()=>{{{_OBSERVE_SHADOWS_JS}"
         " const root=document.documentElement;"
         f" const rid={rid};"
+        " const now=performance.now();"
         " let m=window.__chrys_stable;"
         " if(m && m.rid!==rid){"
         "  if(m.obs){ try{ m.obs.disconnect(); }catch(_){} }"
@@ -301,10 +336,11 @@ def _stable_page_expr(run_id: str) -> str:
         "   }"
         "   if(hit){ m.n++; m.at=performance.now(); }"
         "  });"
-        "  m={rid, n:0, at:performance.now(), obs, seen}; window.__chrys_stable=m;"
+        "  m={rid, n:0, at:now, lastScanAt:now, obs, seen}; window.__chrys_stable=m;"
         "  observeTree(m.obs, m.seen, root, true);"
-        " }else if(observeTree(m.obs, m.seen, root, true)){"
-        "  m.n++; m.at=performance.now();"
+        " }else if(now - (m.lastScanAt||0) >= 1000){"
+        "  m.lastScanAt=now;"
+        "  if(observeTree(m.obs, m.seen, root, true)){ m.n++; m.at=performance.now(); }"
         " }"
         " return {present:true, n:m.n, quiet_ms:performance.now()-m.at};"
         "})()"
@@ -326,6 +362,7 @@ def _stable_node_fn(run_id: str) -> str:
         " if(!this || !this.isConnected) return {present:false};"
         " const root=this;"
         f" const rid={rid};"
+        " const now=performance.now();"
         " let map=window.__chrys_stable_by_node;"
         " if(!map){map=new WeakMap(); window.__chrys_stable_by_node=map;}"
         " let m=map.get(root);"
@@ -344,10 +381,11 @@ def _stable_node_fn(run_id: str) -> str:
         "   }"
         "   if(hit){ m.n++; m.at=performance.now(); }"
         "  });"
-        "  m={rid, n:0, at:performance.now(), obs, seen}; map.set(root, m);"
+        "  m={rid, n:0, at:now, lastScanAt:now, obs, seen}; map.set(root, m);"
         "  observeTree(m.obs, m.seen, root, true);"
         "  if(this.shadowRoot) observeTree(m.obs, m.seen, this.shadowRoot, true);"
-        " }else{"
+        " }else if(now - (m.lastScanAt||0) >= 1000){"
+        "  m.lastScanAt=now;"
         "  const added=observeTree(m.obs, m.seen, root, true)"
         "   || (this.shadowRoot ? observeTree(m.obs, m.seen, this.shadowRoot, true) : false);"
         "  if(added){ m.n++; m.at=performance.now(); }"
@@ -368,22 +406,32 @@ _STABLE_NODE_CLEANUP_FN = (
 )
 
 
+_FORM_TAGS_NO_SHADOW_TEXT = frozenset({"input", "textarea", "select"})
+
+
 def _shadow_text_hit(nodes: list[Any], value: str) -> bool:
-    """Match *value* only against visible nodes' text/name (never href-derived names or hidden nodes)."""
-    needle = value.casefold()
-    if not needle:
+    """Case-sensitive match of *value* against visible, non-hidden nodes' text (never attrs/hrefs/inputs)."""
+    if not value:
         return False
     for node in nodes:
-        if not getattr(node, "visible", False):
+        if not getattr(node, "visible", False) or getattr(node, "css_hidden", False):
             continue
-        name = "" if getattr(node, "name_from_href", False) else str(getattr(node, "name", "") or "")
+        if getattr(node, "name_from_href", False) or getattr(node, "name_from_attr", False):
+            continue
+        if str(getattr(node, "tag", "") or "").lower() in _FORM_TAGS_NO_SHADOW_TEXT:
+            continue
+        name = str(getattr(node, "name", "") or "")
         hint = str(getattr(node, "text_hint", "") or "")
-        if needle in name.casefold() or needle in hint.casefold():
+        if value in name or value in hint:
             return True
     return False
 
 
-_GONE_RE = re.compile(r"could not find (?:node|object)|no node with given id|node .*detached", re.IGNORECASE)
+_GONE_RE = re.compile(
+    r"could not find (?:node|object)|no node with given id|node .*detached"
+    r"|cannot find context with specified id|execution context was destroyed",
+    re.IGNORECASE,
+)
 _COUNT_RE = re.compile(r"^\s*(>=|<=|==|=|>|<)?\s*(\d+)\s*$")
 _COUNT_OPS = {
     "=": lambda n, k: n == k,
@@ -414,6 +462,8 @@ def _evidence(session: Any) -> str:
 
 def _snapshot_matches_epoch(session: Any) -> bool:
     """Whether a snapshot is usable for conditions that consider the entire page."""
+    if getattr(session, "_snapshot_degraded_reason", ""):
+        return False
     return not getattr(session.snapshot, "subframes_invalidated", False) and all(
         node.epoch == session.page_epoch for node in session.snapshot.nodes
     )
@@ -757,35 +807,42 @@ async def _collect_return_payload(
 
         snap_target = target if (target and condition not in {"hidden", "count"}) else ""
         rendered = ""
+        prev_sig = getattr(session, "_last_snapshot_sig", None)
         try:
-            blocks = await asyncio.wait_for(
-                snapshot_action.run(
-                    session,
-                    {"scope": "viewport", "interactive_only": False, "target": snap_target, "since": 0},
-                ),
-                timeout=remaining,
-            )
-            rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
-        except ConnectionClosed:
-            raise
-        except Exception:
-            remaining = _remaining(deadline)
-            if snap_target and remaining > 0:
-                try:
-                    blocks = await asyncio.wait_for(
-                        snapshot_action.run(
-                            session,
-                            {"scope": "viewport", "interactive_only": False, "target": "", "since": 0},
-                        ),
-                        timeout=remaining,
-                    )
-                    rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
-                except ConnectionClosed:
-                    raise
-                except Exception:
+            try:
+                blocks = await asyncio.wait_for(
+                    snapshot_action.run(
+                        session,
+                        {"scope": "viewport", "interactive_only": False, "target": snap_target, "since": 0},
+                    ),
+                    timeout=remaining,
+                )
+                rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+            except (ConnectionClosed, LoginRequired):
+                raise
+            except Exception:
+                remaining = _remaining(deadline)
+                if snap_target and remaining > 0:
+                    try:
+                        blocks = await asyncio.wait_for(
+                            snapshot_action.run(
+                                session,
+                                {"scope": "viewport", "interactive_only": False, "target": "", "since": 0},
+                            ),
+                            timeout=remaining,
+                        )
+                        rendered = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+                    except (ConnectionClosed, LoginRequired):
+                        raise
+                    except Exception:
+                        return ""
+                else:
                     return ""
-            else:
-                return ""
+        finally:
+            try:
+                session._last_snapshot_sig = prev_sig
+            except (AttributeError, TypeError):
+                pass
         if len(rendered) > max_chars:
             rendered = rendered[:max_chars] + f"\n…(snapshot truncated at {max_chars} chars)"
         return f"snapshot:\n{rendered}" if rendered else ""
@@ -828,6 +885,10 @@ async def read_text_baseline(session: Any, target: str = "", *, timeout_s: float
         if not target:
             sample = await _read_page_text(session, deadline)
             return sample.digest if sample.complete else None
+        if not target.startswith("@") and snapshot_needs_refresh(session):
+            can_refresh = capture_and_register is not _shared_capture or hasattr(session, "read_frame_metrics")
+            if can_refresh:
+                await _refresh(session, deadline)
         entry = session.resolve_target(target)
         if entry is None:
             return None
@@ -959,6 +1020,10 @@ async def _run_with_baseline_outcome(
     if ref_spec:
         entry = session.resolve_target(target)
     refresh_at = started - _REFRESH_MIN_SECONDS
+    # Delay the first closed-shadow snapshot fallback slightly so fast DOM updates avoid full snapshots,
+    # and cap subsequent shadow snapshot polls to once every _SHADOW_TEXT_REFRESH_SECONDS.
+    shadow_initial_delay = min(0.45, max(0.05, (timeout_ms / 1000.0) * 0.25))
+    next_shadow_refresh_at = started + shadow_initial_delay
 
     last = "尚未观测"
     detail = ""
@@ -992,13 +1057,16 @@ async def _run_with_baseline_outcome(
                         can_refresh = capture_and_register is not _shared_capture or hasattr(
                             session, "read_frame_metrics"
                         )
+                        now_mono = time.monotonic()
                         if (
                             can_refresh
-                            and time.monotonic() - refresh_at >= _REFRESH_MIN_SECONDS
+                            and now_mono >= next_shadow_refresh_at
                             and _remaining(deadline) > _REFRESH_FLOOR_SECONDS
                         ):
+                            next_shadow_refresh_at = now_mono + _SHADOW_TEXT_REFRESH_SECONDS
                             if await _refresh(session, deadline):
                                 refresh_at = time.monotonic()
+                                next_shadow_refresh_at = refresh_at + _SHADOW_TEXT_REFRESH_SECONDS
                                 if _shadow_text_hit(list(session.snapshot.nodes), value):
                                     ok = True
                                     basis = "shadow_text_match"
@@ -1044,9 +1112,10 @@ async def _run_with_baseline_outcome(
                     if due and can_capture and await _refresh(session, deadline):
                         refresh_at = time.monotonic()
                         count_epoch = session.page_epoch
+                        refresh_failed = False
                     elif due and can_capture:
                         refresh_failed = True
-                    if count_epoch != session.page_epoch or not _snapshot_matches_epoch(session):
+                    if refresh_failed or count_epoch != session.page_epoch or not _snapshot_matches_epoch(session):
                         if refresh_failed:
                             last = "count snapshot refresh failed; retrying"
                         elif not can_capture:
@@ -1077,11 +1146,23 @@ async def _run_with_baseline_outcome(
                             force_refresh = False
                     else:
                         refreshed = False
-                        if not object_id:
+                        entry_epoch = getattr(entry, "epoch", None)
+                        if entry_epoch is not None and entry_epoch != session.page_epoch:
+                            last = f"target={target} gone"
+                            if condition == "hidden":
+                                ok, basis = True, "gone"
+                            else:
+                                raise StaleRef(
+                                    "引用已失效（页面已导航），请重新 snapshot",
+                                    reason="main_frame_navigated",
+                                )
+                        elif not object_id:
                             object_id = await _resolve_node(session, entry, deadline, object_group=object_group) or ""
                             if object_id:
                                 resolved_sessions.add(entry.cdp_session_id if entry else None)
-                    if entry is None:
+                    if ok:
+                        pass
+                    elif entry is None:
                         last = f"target={target} not_found"
                         if condition == "hidden" and refreshed and _snapshot_matches_epoch(session):
                             ok, basis = True, "not_found"
@@ -1150,36 +1231,49 @@ async def _run_with_baseline_outcome(
                             if ok:
                                 detail = _changed_text(text)
                         else:
-                            visible = bool(probe.get("visible"))
-                            if "text" in probe:
-                                observed_text = str(probe.get("text", ""))
-                            last = f"target={target} visible={visible}"
-                            if condition == "visible":
-                                ok, basis = visible, "visible"
-                                if not visible:
-                                    last = f"target={target} visible=False state=found_hidden"
-                            elif condition == "editable":
-                                editable = bool(probe.get("editable"))
-                                ok, basis = (visible and editable), "editable"
-                                if not visible:
-                                    last = f"target={target} visible=False state=found_hidden"
-                                elif not editable:
-                                    reason_bits = []
-                                    if probe.get("disabled"):
-                                        reason_bits.append("disabled")
-                                    if probe.get("readOnly"):
-                                        reason_bits.append("readonly")
-                                    if probe.get("tag"):
-                                        reason_bits.append(f"tag={probe['tag']}")
-                                    suffix = f" ({' '.join(reason_bits)})" if reason_bits else ""
-                                    last = f"target={target} state=found_not_editable visible=True{suffix}"
-                            elif condition == "hidden":
-                                ok, basis = (not visible), "invisible"
+                            oopif_vis: bool | None = True
+                            if entry and entry.cdp_session_id:
+                                oopif_vis = await is_oopif_visible(
+                                    session,
+                                    entry.cdp_session_id,
+                                    timeout=_probe_timeout(session, deadline),
+                                    fail_open=False,
+                                )
+                            if oopif_vis is None:
+                                ok = False
+                                last = f"target={target} oopif_visibility_unknown"
                             else:
-                                text, _, hit = _parse_text_result(probe)
-                                ok = hit if hit is not None else (value in text)
-                                basis = "text_match"
-                                last += f" text_hit={ok}"
+                                visible = bool(probe.get("visible")) and bool(oopif_vis)
+                                if "text" in probe:
+                                    observed_text = str(probe.get("text", ""))
+                                last = f"target={target} visible={visible}"
+                                if condition == "visible":
+                                    ok, basis = visible, "visible"
+                                    if not visible:
+                                        last = f"target={target} visible=False state=found_hidden"
+                                elif condition == "editable":
+                                    editable = bool(probe.get("editable"))
+                                    ok, basis = (visible and editable), "editable"
+                                    if not visible:
+                                        last = f"target={target} visible=False state=found_hidden"
+                                    elif not editable:
+                                        reason_bits = []
+                                        if probe.get("disabled"):
+                                            reason_bits.append("disabled")
+                                        if probe.get("readOnly"):
+                                            reason_bits.append("readonly")
+                                        if probe.get("tag"):
+                                            reason_bits.append(f"tag={probe['tag']}")
+                                        suffix = f" ({' '.join(reason_bits)})" if reason_bits else ""
+                                        last = f"target={target} state=found_not_editable visible=True{suffix}"
+                                elif condition == "hidden":
+                                    ok, basis = (not visible), "invisible"
+                                else:
+                                    text, _, hit = _parse_text_result(probe)
+                                    text_hit = hit if hit is not None else (value in text)
+                                    ok = visible and text_hit
+                                    basis = "text_match"
+                                    last += f" text_hit={ok}"
             except ConnectionClosed:
                 raise
             except StaleRef:
