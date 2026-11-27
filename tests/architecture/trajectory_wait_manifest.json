@@ -5440,7 +5440,7 @@
       "_run_on_server": [
         ["wrapper", "async with connect(base_url, token, http_timeout, trust_env=trust_env)", "unresolved", "chrys.service.sandbox.client.connect"],
         ["wrapper", "await _require_health(client)", "unresolved", "chrys.service.sandbox.backend._require_health"],
-        ["wrapper", "await _sandbox_for_command(client, cwd, timeout_seconds, workspace_root=workspace_root, workspace_dirs=workspace_dirs)", "unresolved", "chrys.service.sandbox.backend._sandbox_for_command"],
+        ["wrapper", "await _sandbox_for_command(client, cwd, timeout_seconds, server_key=server_key, workspace_root=workspace_root, workspace_dirs=workspace_dirs)", "unresolved", "chrys.service.sandbox.backend._sandbox_for_command"],
         ["wrapper", "await _exec(client, sandbox_id, argv, workdir, timeout_seconds, remaining)", "unresolved", "chrys.service.sandbox.backend._exec"],
         ["wrapper", "await _stop_on_cancel(sandbox_id)", "unresolved", "chrys.service.sandbox.backend._stop_on_cancel"],
         ["wrapper", "await _delete_sandbox(client, sandbox_id)", "unresolved", "chrys.service.sandbox.backend._delete_sandbox"]
@@ -5456,9 +5456,10 @@
         ["wrapper", "await finish_close(task)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
       ],
       "run_shell": [
-        ["awaitable", "await run(settings.sandbox_url, settings.sandbox_token, trust_env=True)", "unresolved"],
+        ["wrapper", "await retire_bundled_server()", "unresolved", "chrys.service.sandbox.runtime_hold.retire_bundled_server"],
+        ["awaitable", "await run(settings.sandbox_url, settings.sandbox_token, trust_env=True, server_key=settings.sandbox_url)", "unresolved"],
         ["wrapper", "async with leased_server(settings.sandbox_network)", "unresolved", "chrys.service.sandbox.supervisor.leased_server"],
-        ["awaitable", "await run(base_url, token, trust_env=False)", "unresolved"]
+        ["awaitable", "await run(base_url, token, trust_env=False, server_key=_BUNDLED_SERVER_KEY)", "unresolved"]
       ]
     },
     "chrys.service.sandbox.client": {
@@ -5472,6 +5473,9 @@
     "chrys.service.sandbox.runtime_hold": {
       "RuntimeHold.release": [
         ["wrapper", "await shutdown()", "unresolved", "chrys.service.sandbox.supervisor.shutdown"]
+      ],
+      "retire_bundled_server": [
+        ["wrapper", "await retire()", "unresolved", "chrys.service.sandbox.supervisor.retire"]
       ]
     },
     "chrys.service.sandbox.supervisor": {
@@ -5557,6 +5561,10 @@
         ["async_context", "async with _gate()", "unresolved"],
         ["wrapper", "await _current_server(_network_mode(network_mode), health_timeout)", "unresolved", "chrys.service.sandbox.supervisor._current_server"],
         ["wrapper", "await finish_close(asyncio.create_task(_end_lease(running)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
+      "retire": [
+        ["async_context", "async with _gate()", "unresolved"],
+        ["wrapper", "await _retire_current()", "unresolved", "chrys.service.sandbox.supervisor._retire_current"]
       ],
       "shutdown": [
         ["wrapper", "await _shutdown()", "unresolved", "chrys.service.sandbox.supervisor._shutdown"]
@@ -5894,6 +5902,7 @@
       ],
       "ShellTools._run": [
         ["wrapper", "await self._run_sandboxed(command, shell, cwd, timeout, budget)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._run_sandboxed"],
+        ["wrapper", "await retire_bundled_server()", "unresolved", "chrys.service.sandbox.runtime_hold.retire_bundled_server"],
         ["wrapper", "await self._execute_pipe(command, shell, cwd, timeout, reason)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pipe"],
         ["wrapper", "await self._execute_pty(command, shell, cwd, timeout, reason)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pty"],
         ["wrapper", "await self._bound_result('\\n'.join(parts), budget, captures)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"],

@@ -415,6 +415,30 @@ async def test_disabled_sandbox_uses_host_executor(
     assert "sandbox-out" not in result
 
 
+async def test_a_disabled_sandbox_retires_the_bundled_server(
+    runtime: SessionEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session that turned the sandbox off does not keep the bundled server it started."""
+    from chrys.service.sandbox import runtime_hold, supervisor
+
+    host_calls: list[str] = []
+    retired: list[str] = []
+    _stub_host_executor(monkeypatch, host_calls)
+
+    async def retire() -> None:
+        retired.append("retire")
+
+    monkeypatch.setattr(supervisor, "retire", retire)
+    monkeypatch.setattr(runtime_hold, "_bundled_started", False)
+    shell = ShellTools(runtime, settings=Settings(sandbox_enabled=False))
+    await shell.execute("echo hello", reason="test")
+    assert retired == []
+    runtime_hold.note_bundled_server_started()
+    await shell.execute("echo hello", reason="test")
+    assert retired == ["retire"]
+    assert len(host_calls) == 2
+
+
 # ───────────────────────── enabled uses the sandbox ─────────────────────────
 
 

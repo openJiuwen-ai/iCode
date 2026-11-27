@@ -9,6 +9,28 @@ last release imports it to stop the bundled server.
 from __future__ import annotations
 
 _runtimes = 0
+_bundled_started = False
+
+
+def note_bundled_server_started() -> None:
+    """Record that this process started a bundled server, which ``retire_bundled_server`` may stop."""
+    global _bundled_started
+    _bundled_started = True
+
+
+async def retire_bundled_server() -> None:
+    """Stop the bundled server for a command that does not use it.
+
+    A command with the sandbox disabled, or with ``sandbox.url`` set, calls
+    this so a long session does not keep the bundled server it used before.
+    A server a command still leases stops when that lease ends. Before any
+    bundled start this returns without importing the supervisor.
+    """
+    if not _bundled_started:
+        return
+    from chrys.service.sandbox.supervisor import retire
+
+    await retire()
 
 
 class RuntimeHold:

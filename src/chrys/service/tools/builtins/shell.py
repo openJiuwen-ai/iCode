@@ -1028,6 +1028,11 @@ class ShellTools:
         if self._settings is not None and self._settings.sandbox_enabled_was_rejected():
             _record_shell_error()
             return tool_error("sandbox_unavailable", "sandbox.enabled is invalid, so the command was not run.")
+        if self._settings is not None:
+            # A session that turned the sandbox off stops the bundled server it used.
+            from chrys.service.sandbox.runtime_hold import retire_bundled_server
+
+            await retire_bundled_server()
         try:
             if sys.platform == "win32":
                 # Windows: snapshot outer TUI's console mode so a child TUI

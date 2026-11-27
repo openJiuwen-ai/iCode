@@ -765,6 +765,103 @@ async def test_run_shell_after_a_network_change_recreates_the_sandbox_on_the_new
     ]
 
 
+class _UrlSettings:
+    sandbox_enabled = True
+    sandbox_token = ""
+    sandbox_network = "guarded"
+
+    def __init__(self, sandbox_url: str) -> None:
+        self.sandbox_url = sandbox_url
+
+
+def _install_servers(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str]]:
+    """Each configured host, and each bundled child (told apart by its token), knows only its own sandboxes."""
+    sandboxes: dict[str, set[str]] = {}
+    requests: list[tuple[str, str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        server = request.headers["authorization"].removeprefix("Bearer ") if host == "127.0.0.1" else host
+        owned = sandboxes.setdefault(server, set())
+        path = request.url.path
+        requests.append((server, request.method, path))
+        if path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.method == "POST" and path == "/api/v1/sandboxes":
+            sandbox_id = f"{server}-box{len(owned)}"
+            owned.add(sandbox_id)
+            return httpx.Response(200, json={"id": sandbox_id, "phase": "ready"})
+        sandbox_id = path.removeprefix("/api/v1/sandboxes/").removesuffix("/exec")
+        if sandbox_id not in owned:
+            return httpx.Response(404, json={"error": "not found"})
+        if path.endswith("/exec"):
+            return httpx.Response(200, json={"exit_code": 0, "stdout": sandbox_id, "stderr": ""})
+        return httpx.Response(200, json={"id": sandbox_id, "phase": "ready"})
+
+    def new_client(**kwargs: object) -> httpx.AsyncClient:
+        built = dict(kwargs)
+        built["transport"] = httpx.MockTransport(handler)
+        return httpx.AsyncClient(**built)
+
+    monkeypatch.setattr(client, "_new_client", new_client)
+    return requests
+
+
+async def _run_in(settings: _UrlSettings, workspace: Path) -> str:
+    completed = await run_shell(
+        settings,
+        argv=["echo"],
+        cwd=str(workspace),
+        timeout_seconds=5,
+        linux=True,
+        workspace_root=str(workspace),
+    )
+    assert completed.exit_code == 0
+    return completed.stdout
+
+
+async def test_switching_sandbox_url_away_and_back_reuses_the_first_servers_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests = _install_servers(monkeypatch)
+    assert await _run_in(_UrlSettings("http://a.test"), tmp_path) == "a.test-box0"
+    assert await _run_in(_UrlSettings("http://b.test"), tmp_path) == "b.test-box0"
+    assert await _run_in(_UrlSettings("http://a.test"), tmp_path) == "a.test-box0"
+    creates = [server for server, method, path in requests if (method, path) == ("POST", "/api/v1/sandboxes")]
+    assert creates == ["a.test", "b.test"]
+    # Neither server is asked about the other's sandbox, and nothing is deleted.
+    assert all(path.startswith(f"/api/v1/sandboxes/{server}-") for server, _method, path in requests if "-box" in path)
+    assert not [request for request in requests if request[1] == "DELETE"]
+
+
+async def test_a_configured_url_retires_the_bundled_server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    events: list[str] = []
+    _patch_recording_spawn(monkeypatch, events)
+
+    async def healthy(_base_url: str, _token: str) -> bool:
+        return True
+
+    monkeypatch.setattr(supervisor, "_health_ok", healthy)
+    _install_servers(monkeypatch)
+    holder, release = await _start_lease_holder("guarded")
+    try:
+        assert await _run_in(_UrlSettings("http://a.test"), tmp_path) == "a.test-box0"
+        # The bundled server a command still leases stops when that lease ends.
+        assert events == ["spawn:0"]
+        assert supervisor._server is None
+        release.set()
+        await holder
+        assert events == ["spawn:0", "close:0"]
+        await supervisor.ensure_started()
+        assert events == ["spawn:0", "close:0", "spawn:1"]
+        await _run_in(_UrlSettings("http://a.test"), tmp_path)
+        assert events == ["spawn:0", "close:0", "spawn:1", "close:1"]
+    finally:
+        release.set()
+        await _settle(holder)
+
+
 def test_child_env_offline_sets_network_mode_and_host_clears_it(monkeypatch: pytest.MonkeyPatch) -> None:
     offline = supervisor._child_env(
         "C:/policy.yaml",

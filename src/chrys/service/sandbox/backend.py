@@ -106,6 +106,13 @@ moment its id is chosen under the lock until the exec returns, raises or
 is cancelled, and the last use to end performs the delete. That delete is
 not cancellation.
 
+The cache belongs to one server: a configured ``sandbox_url``, or the
+bundled server. A command for another server parks the current entries
+and uses that server's own, so a switch to another URL and back reuses the
+sandboxes the first server still holds. A command with a configured URL
+also retires the bundled server this process started; it stops once no
+command leases it.
+
 Lock and command budget
 -----------------------
 The process lock covers reading or updating that cache and creating a
@@ -157,6 +164,7 @@ import secrets
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -202,6 +210,11 @@ _PROTECTED_DIRECTORIES = ("/run", "/tmp", "/var/run", "/var/tmp", "/root")
 # ``_in_flight`` counts the execs using each id. A replaced id, or a
 # read-only id forgotten on cancel, waits in ``_retiring`` until its count
 # reaches zero, then is deleted.
+# The slots above belong to the server ``_server_key`` names. A command for
+# another server parks them in ``_parked`` under that key and takes its own
+# server's slots, so switching ``sandbox.url`` away and back reuses the
+# sandboxes the first server still holds. ``_in_flight`` and ``_retiring``
+# are shared: ids are minted by this client and never repeat.
 _sandbox_id: str | None = None
 _writable_root: str | None = None
 _writable_by_root: dict[str, str] = {}
@@ -211,7 +224,55 @@ _readonly_root: str | None = None
 _readonly_physical: bool = False
 _in_flight: dict[str, int] = {}
 _retiring: set[str] = set()
+_server_key: str | None = None
+_parked: dict[str, _ServerCache] = {}
 _lock: asyncio.Lock | None = None
+# Every bundled server shares one key: a sandbox on a replaced one answers 404 and is recreated.
+_BUNDLED_SERVER_KEY = ""
+
+
+@dataclass(slots=True)
+class _ServerCache:
+    """The cache slots of one server while commands use another."""
+
+    sandbox_id: str | None = None
+    writable_root: str | None = None
+    writable_by_root: dict[str, str] = field(default_factory=dict)
+    writable_mounts: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    readonly_id: str | None = None
+    readonly_root: str | None = None
+    readonly_physical: bool = False
+
+    def holds(self, sandbox_id: str) -> bool:
+        return sandbox_id in (self.sandbox_id, self.readonly_id) or sandbox_id in self.writable_by_root.values()
+
+
+def _use_server_cache(key: str) -> None:
+    """Make ``key``'s slots current, parking the current server's. Called with the lock held; no await."""
+    global _server_key, _sandbox_id, _writable_root, _readonly_id, _readonly_root, _readonly_physical
+    if key == _server_key:
+        return
+    if _server_key is not None:
+        _parked[_server_key] = _ServerCache(
+            sandbox_id=_sandbox_id,
+            writable_root=_writable_root,
+            writable_by_root=dict(_writable_by_root),
+            writable_mounts=dict(_writable_mounts),
+            readonly_id=_readonly_id,
+            readonly_root=_readonly_root,
+            readonly_physical=_readonly_physical,
+        )
+        restored = _parked.pop(key, None) or _ServerCache()
+        _sandbox_id = restored.sandbox_id
+        _writable_root = restored.writable_root
+        _writable_by_root.clear()
+        _writable_by_root.update(restored.writable_by_root)
+        _writable_mounts.clear()
+        _writable_mounts.update(restored.writable_mounts)
+        _readonly_id = restored.readonly_id
+        _readonly_root = restored.readonly_root
+        _readonly_physical = restored.readonly_physical
+    _server_key = key
 
 
 class SandboxError(Exception):
@@ -289,6 +350,7 @@ async def run_shell(
 
     # Imported here so a non-Linux call does not touch the client, and so this
     # module can define SandboxError before the client imports it back.
+    from chrys.service.sandbox.runtime_hold import retire_bundled_server
     from chrys.service.sandbox.supervisor import leased_server
 
     run = functools.partial(
@@ -300,11 +362,12 @@ async def run_shell(
         workspace_dirs=workspace_dirs,
     )
     if settings.sandbox_url:
-        return await run(settings.sandbox_url, settings.sandbox_token, trust_env=True)
+        await retire_bundled_server()
+        return await run(settings.sandbox_url, settings.sandbox_token, trust_env=True, server_key=settings.sandbox_url)
     # Held until the command is done: a server replaced by a network change
     # is stopped only after the last command on it.
     async with leased_server(settings.sandbox_network) as (base_url, token):
-        return await run(base_url, token, trust_env=False)
+        return await run(base_url, token, trust_env=False, server_key=_BUNDLED_SERVER_KEY)
 
 
 async def _run_on_server(
@@ -312,6 +375,7 @@ async def _run_on_server(
     token: str,
     *,
     trust_env: bool,
+    server_key: str,
     argv: Sequence[str],
     cwd: str,
     timeout_seconds: int,
@@ -330,6 +394,7 @@ async def _run_on_server(
             client,
             cwd,
             timeout_seconds,
+            server_key=server_key,
             workspace_root=workspace_root,
             workspace_dirs=workspace_dirs,
         )
@@ -357,6 +422,7 @@ async def _sandbox_for_command(
     cwd: str,
     timeout_seconds: int,
     *,
+    server_key: str,
     workspace_root: str | None,
     workspace_dirs: Sequence[str],
 ) -> tuple[str, str, float]:
@@ -368,6 +434,7 @@ async def _sandbox_for_command(
     """
     remaining = await _acquire_cache_lock(float(timeout_seconds))
     try:
+        _use_server_cache(server_key)
         sandbox_id, workdir = await _ready_sandbox(
             client,
             cwd,
@@ -744,7 +811,14 @@ async def _stop_and_forget(sandbox_id: str) -> None:
 
 
 async def _forget_cached_id(sandbox_id: str) -> None:
-    """Drop and retire a cancelled read-only id. The writable cache is not touched."""
+    """Drop and retire a cancelled read-only id. The writable cache is not touched.
+
+    A read-only slot only ever takes an id it creates, so an id no slot holds
+    now never will: a cancelled writable command returns without waiting
+    for the lock.
+    """
+    if not _holds_readonly(sandbox_id):
+        return
     lock = _gate()
     await lock.acquire()
     try:
@@ -761,13 +835,23 @@ def _clear_cached_id(sandbox_id: str) -> None:
     retired like a replaced one: the cancelled command still holds an
     in-flight use, so the last exec using the id deletes it
     (``_release_in_flight``). An id another cache entry still holds is not
-    marked.
+    marked. A parked server's read-only slot is cleared the same way.
     """
-    if _readonly_id != sandbox_id:
-        return
-    _drop_readonly()
+    if _readonly_id == sandbox_id:
+        _drop_readonly()
+    else:
+        parked = next((cache for cache in _parked.values() if cache.readonly_id == sandbox_id), None)
+        if parked is None:
+            return
+        parked.readonly_id = None
+        parked.readonly_root = None
+        parked.readonly_physical = False
     if not _is_cached(sandbox_id):
         _retiring.add(sandbox_id)
+
+
+def _holds_readonly(sandbox_id: str) -> bool:
+    return _readonly_id == sandbox_id or any(cache.readonly_id == sandbox_id for cache in _parked.values())
 
 
 def _not_ready(payload: dict[str, Any]) -> SandboxError:
@@ -1186,8 +1270,10 @@ def _store_writable(primary: str, mounts: tuple[str, ...], sandbox_id: str) -> N
 
 
 def _is_cached(sandbox_id: str) -> bool:
-    """Whether any cache entry still points at ``sandbox_id``."""
-    return sandbox_id in (_sandbox_id, _readonly_id) or sandbox_id in _writable_by_root.values()
+    """Whether any cache entry, current or parked, still points at ``sandbox_id``."""
+    if sandbox_id in (_sandbox_id, _readonly_id) or sandbox_id in _writable_by_root.values():
+        return True
+    return any(parked.holds(sandbox_id) for parked in _parked.values())
 
 
 def _sandbox_path(sandbox_id: str) -> str:

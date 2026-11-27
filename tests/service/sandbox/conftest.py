@@ -20,6 +20,8 @@ async def _reset_sandbox_process_state():
     backend._readonly_physical = False
     backend._in_flight.clear()
     backend._retiring.clear()
+    backend._server_key = None
+    backend._parked.clear()
     backend._lock = None
     supervisor._lock = None
     await supervisor._shutdown()
@@ -34,5 +36,7 @@ async def _reset_sandbox_process_state():
     backend._readonly_physical = False
     backend._in_flight.clear()
     backend._retiring.clear()
+    backend._server_key = None
+    backend._parked.clear()
     backend._lock = None
     supervisor._lock = None

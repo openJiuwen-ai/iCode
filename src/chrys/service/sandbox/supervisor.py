@@ -56,6 +56,7 @@ from typing import NoReturn, Protocol
 from chrys.foundation.util.once_close import finish_close
 from chrys.service.sandbox.backend import SandboxError
 from chrys.service.sandbox.client import open_client
+from chrys.service.sandbox.runtime_hold import note_bundled_server_started
 
 _HEALTH_TIMEOUT_SECONDS = 30.0
 _HEALTH_POLL_SECONDS = 0.05
@@ -504,6 +505,14 @@ async def _retire_current() -> None:
     await finish_close(asyncio.create_task(_stop_server(running)))
 
 
+async def retire() -> None:
+    """Take the current bundled server off new commands; it stops once no command leases it."""
+    if _server is None:
+        return
+    async with _gate():
+        await _retire_current()
+
+
 async def shutdown() -> None:
     """Stop every bundled server; this process has no runtime left to use one.
 
@@ -633,6 +642,7 @@ async def _current_server(network_mode: str, health_timeout: float) -> _RunningS
             raise SandboxError("Sandbox server failed to start.") from None
         raise
     _server = _RunningServer(url=listen, token=token, proc=proc, closer=stack, network_mode=network_mode)
+    note_bundled_server_started()
     return _server
 
 
