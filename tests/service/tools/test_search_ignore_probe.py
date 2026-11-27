@@ -17,6 +17,9 @@ from chrys.service.tools.builtins import search
 @pytest.fixture
 def project(tmp_path: Path, git_repo_factory, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # Runtime overrides deliberately force the Git probe. Let only the test supply them.
+    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
     root = git_repo_factory(tmp_path / "repo")
     (root / "src/pkg").mkdir(parents=True)
     (root / "src/pkg/main.py").write_text("NEEDLE\n", encoding="utf-8")

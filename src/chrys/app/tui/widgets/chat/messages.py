@@ -1212,6 +1212,11 @@ class AgentMessage(StreamedMarkdownMessage):
     """
 
     @property
+    def is_structured_completion(self) -> bool:
+        """The check mark a turn ends with when it completed with structured output instead of a reply."""
+        return self._is_structured_completion
+
+    @property
     def is_process_final(self) -> bool:
         """A visible answer to keep outside a successful turn's process."""
         return (
@@ -1680,12 +1685,14 @@ def folds_with_turn(widget: Widget) -> TypeGuard[ThinkingMessage | AgentMessage]
     return isinstance(widget, ThinkingMessage) or (isinstance(widget, AgentMessage) and widget.foldable)
 
 
-async def remove_withdrawn_answer(container: Widget, segment_ids: Iterable[str]) -> None:
-    """Remove *container*'s agent messages that show any of *segment_ids*: an answer a retry asks for again."""
+async def remove_withdrawn_answer(container: Widget, segment_ids: Iterable[str]) -> list[AgentMessage]:
+    """Remove and return *container*'s agent messages that show any of *segment_ids*."""
     withdrawn = frozenset(segment_ids)
-    await remove_all_shielded(
+    removed = [
         child for child in container.children if isinstance(child, AgentMessage) and child.segment_ids & withdrawn
-    )
+    ]
+    await remove_all_shielded(removed)
+    return removed
 
 
 class SystemMessage(Static):

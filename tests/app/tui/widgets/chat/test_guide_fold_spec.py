@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
 
 import pytest
-from textual.events import Click, MouseDown, MouseUp
+from textual.events import Click, MouseDown, MouseMove, MouseUp
 from textual.geometry import Offset
 from textual.widgets import Static
 
@@ -26,12 +26,16 @@ from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup, ToolGroupTitle
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
-from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, TOOL_CALL_KIND_METADATA_KEY
+from chrys.kernel import Content, Message
 from tests.support.pilot_barrier import screen_is_settled
+from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import ChatPanelApp, click_when_settled
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual.pilot import Pilot
     from textual.widget import Widget
 
@@ -304,6 +308,32 @@ async def test_dragging_across_a_header_or_along_a_guide_folds_nothing(
         assert not process.collapsed
 
 
+@pytest.mark.parametrize("process_type", [LiveProcessRow, ProcessBlock], ids=["live", "finished"])
+@pytest.mark.parametrize("hovered", [False, True], ids=["untracked-pointer", "hovered-pointer"])
+async def test_dragging_out_and_back_to_a_process_title_does_not_toggle_it(
+    tmp_path: Path,
+    process_type: type[LiveProcessRow | ProcessBlock],
+    hovered: bool,
+) -> None:
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(100, 50)) as pilot:
+        panel = app.screen.query_one(ChatPanel)
+        await _turn(panel, finish=process_type is ProcessBlock)
+        await _settled(pilot)
+        process = panel.query_one(process_type)
+        x, y = process.region.x + 4, process.region.y
+        outside = (x, y - 2)
+        if hovered:
+            await pilot.hover(offset=(x, y))
+        for event, cell in ((MouseDown, (x, y)), (MouseMove, outside), (MouseMove, (x, y)), (MouseUp, (x, y))):
+            pilot.app.post_message(_mouse(event, pilot.app.screen, *cell))
+            await pilot.pause()
+        await _settled(pilot)
+        assert process.collapsed
+        await click_when_settled(pilot, process, offset=(4, 0))
+        await wait_for(lambda: not process.collapsed, pilot=pilot, description="a fresh click still opens the process")
+
+
 async def test_double_clicking_a_guide_selects_nothing() -> None:
     async with ChatPanelApp(
         thinking_expanded=_on,
@@ -465,11 +495,26 @@ async def test_locked_member_and_process_titles_do_not_light_any_guides(containe
 async def test_a_short_guide_above_a_live_title_opens_the_preceding_member() -> None:
     async with ChatPanelApp(thinking_expanded=_on).run_test(size=(100, 50)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
-        await panel.add_user_message("prompt")
-        await panel.add_tool_start("old", "read_file", KIND_FILESYSTEM_READ, args={"path": "old.py"})
-        await panel.add_tool_result("old", "read_file", "ok")
-        await panel.add_interrupted()
+        # A turn recovered after a crash keeps its steps open; continuing it puts a live title right below them.
+        history = [
+            Message("user", [Content.from_text("prompt")]).to_dict(),
+            Message(
+                "assistant",
+                [
+                    Content.from_function_call(
+                        call_id="old",
+                        name="read_file",
+                        arguments='{"path": "old.py"}',
+                        additional_properties={TOOL_CALL_KIND_METADATA_KEY: KIND_FILESYSTEM_READ},
+                    )
+                ],
+            ).to_dict(),
+            Message("tool", [Content.from_function_result(call_id="old", result="ok")]).to_dict(),
+        ]
+        await panel.replay_history(history, recovered_from_sidecar=True)
+        await panel.wait_replay_complete()
         previous = panel.query_one(ToolGroup)
+        panel.agent_running = True
         await panel.add_thinking_delta("next", "reasoning", "Continue.")
         row = panel.query_one(LiveProcessRow)
         panel._toggle_live_process_row(row)

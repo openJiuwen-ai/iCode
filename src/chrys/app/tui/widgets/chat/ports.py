@@ -73,7 +73,12 @@ class TranscriptUiPort(Protocol):
 class StatusCleanupPort(Protocol):
     """Mounted-child status cleanup operations."""
 
-    async def remove_trailing_status(self) -> None: ...
+    async def remove_trailing_status(self, *, replacing: bool = False) -> None:
+        """Remove the active status card; *replacing* when a new status card takes its place, not new output.
+
+        A retry notice is not a replacement: the turn goes on after it, and output that follows sees only the notice.
+        """
+        ...
 
     def failed_turn_status(self) -> Widget | None:
         """Find a trailing failure past context notices, but never newer user input."""

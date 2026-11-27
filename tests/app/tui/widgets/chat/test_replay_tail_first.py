@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 from textual import events
 from textual.widget import AwaitMount, Widget
+from textual.widgets import Static
 
+from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
 from chrys.app.tui.widgets.chat.messages import AgentMessage, ErrorMessage, ThinkingMessage, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.replay_mount import REPLAY_MOUNT_BATCH_SIZE
@@ -24,6 +26,7 @@ from chrys.app.tui.widgets.welcome import WelcomeWidget
 from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY, HistoryMarkerKind
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, TOOL_CALL_KIND_METADATA_KEY
 from chrys.kernel import Content
+from chrys.service.state.folds import FoldItem
 from tests.app.tui.widgets._scroll_gc import install_fake_chat_panel_gc
 from tests.support.tui_helpers import (
     ChatPanelApp,
@@ -887,6 +890,34 @@ async def test_fold_all_during_prepend_reaches_thinking_mounted_later(monkeypatc
         assert [message.collapsed for message in thinking] == [False] * len(thinking)
         assert all(message.query(VirtualizedMarkdown) for message in thinking)
         assert cp.toggle_fold_all() is True
+
+
+@pytest.mark.parametrize("pending_only", [False, True], ids=["mounted-and-pending", "only-pending"])
+async def test_fold_all_during_prepend_opens_summaries_mounted_later(
+    pending_only: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folds = [FoldItem(f"ctx-{index}", f"Summary {index}") for index in range(1 if pending_only else 72)]
+    async with ChatPanelApp().run_test(size=_SIZE) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        gate = _PrependGate(panel, monkeypatch)
+        await panel.replay_history(_turns() if pending_only else [], folds=folds)
+        await gate.wait_held(pilot)
+        mounted = list(panel.query(ContextFoldWidget))
+        assert bool(mounted) is not pending_only
+        assert all(not fold.query_one("#summary").display for fold in mounted)
+        assert any(isinstance(widget, ContextFoldWidget) for widget in panel.pending_transcript_widgets())
+
+        try:
+            assert panel.toggle_fold_all() is False
+        finally:
+            gate.release.set()
+        await _wait_complete(panel)
+        markers = list(panel.query(ContextFoldWidget))
+        assert len(markers) == len(folds)
+        for marker in markers:
+            title, body = marker.query(Static)
+            assert body.display
+            assert str(title.render()).strip() == "═══ ▾ Compressed ═══"
 
 
 async def test_fold_all_while_the_last_batch_mounts_outlasts_the_choice_before_it(

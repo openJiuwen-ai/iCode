@@ -731,7 +731,7 @@ async def test_working_dir_error_outside_a_submit_leaves_the_prompt_to_the_turn_
             flashes.append(message)
 
     class _ChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error_notice(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
             chat_errors.append(message)
 
     widgets = {"InputBar": _InputBar(), "StatusBar": _StatusBar(), "ChatPanel": _ChatPanel()}

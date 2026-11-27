@@ -25,7 +25,7 @@ from textual._arrange import DockArrangeResult
 from textual.color import Color
 from textual.containers import VerticalScroll
 from textual.dom import NoScreen
-from textual.geometry import Offset, Region, Size
+from textual.geometry import Offset, Region, Size, Spacing
 from textual.message import Message
 from textual.reactive import reactive
 from textual.scrollbar import ScrollBar, ScrollDown, ScrollTo, ScrollUp
@@ -62,6 +62,7 @@ from chrys.app.tui.widgets.chat.chrome import (
     ScrollToBottomButton,
     ScrollToBottomRequested,
 )
+from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
 from chrys.app.tui.widgets.chat.fold_gap import show_fold_gaps
 from chrys.app.tui.widgets.chat.guide_fold import GuideFoldRequested, GuideHoverMixin
@@ -162,8 +163,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._transcript_occurrences: WeakKeyDictionary[Widget, int] = WeakKeyDictionary()
         self._guide_refresh_pending = False
         self._process_controller = ProcessController(self)
-        # Detached injection delivery can otherwise mount midway through the final process placement.
-        self._reply_completion_lock = Lock()
+        # Keep replay, stop, Continue and detached injection delivery from changing an in-flight process placement.
+        self._turn_completion_lock = Lock()
         self._replay_process_protect_last = False
         self._ask_user_tool_widgets: WeakSet[AskUserToolCall] = WeakSet()
         self._replay_progress_callback: Callable[[int, int], None] | None = None
@@ -309,6 +310,12 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         sync); modal dismissal focus recovery must not yank it to old content.
         """
         return self._scroll_controller.scroll_to_region(region, **kwargs)
+
+    def reveal_transcript_region(self, region: Region) -> None:
+        """Reveal rows above the floating bottom button with the shortest scroll."""
+        button = self._scroll_to_bottom_button
+        bottom = button.region.height if button is not None and self.scroll_y < self.max_scroll_y else 0
+        self.scroll_to_region(region, spacing=Spacing(0, 0, bottom, 0), animate=False, immediate=True, x_axis=False)
 
     def _check_anchor(self) -> None:
         """Re-engage bottom-follow only at exact bottom."""
@@ -549,7 +556,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             return False
         last: Widget | None = None
         latest = 0
-        for row in self._process_controller.folded_live_rows():
+        for row in self._process_controller.waiting_live_rows():
             occurrence = self._waiting_occurrence(row)
             if occurrence > latest:
                 last, latest = row, occurrence
@@ -595,6 +602,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Apply display order within the supplied entries, keeping their document key slots."""
         wanted = set(widgets)
         current = [child for child in self.current_turn_children() if child in wanted]
+        if len(current) != len(widgets):
+            # Replay can land a continued turn's prompt after a newer turn has already started.
+            current = [child for child in self.children if child in wanted]
         if current == widgets or len(current) != len(widgets):
             return
         slots = sorted(self._transcript_seqs[widget] for widget in current)
@@ -630,22 +640,33 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
                 self._transcript_seqs[widget] = Fraction(next(_transcript_seq_counter))
 
     async def place_transcript_entry(self, widget: Widget, anchor: Widget, *, before: bool = False) -> bool:
-        """Mount a header next to its anchor without changing other order keys."""
+        """Place a header next to its anchor without changing other order keys."""
         if not self.can_mount_replay() or anchor.parent is not self or anchor._pruning:
             return False
         anchor_seq = self._transcript_seqs[anchor]
-        neighbors = (
-            seq
-            for node in self.current_turn_children()
-            if node is not widget and (seq := self.transcript_seq(node)) is not None
-        )
+        entries = self.current_turn_children()
+        if entries and anchor_seq < self._transcript_seqs.get(entries[0], anchor_seq):
+            # A replayed title or its late prompt can be above the latest turn; use its actual neighbors.
+            entries = self.transcript_content_children()
+        neighbors = (seq for node in entries if node is not widget and (seq := self.transcript_seq(node)) is not None)
         neighbor_seq = (
             max((seq for seq in neighbors if seq < anchor_seq), default=anchor_seq - 1)
             if before
             else min((seq for seq in neighbors if seq > anchor_seq), default=anchor_seq + 1)
         )
+        if before and (pending := self._replay_mount.last_pending_entry()) is not None:
+            pending_seq = self._transcript_seqs[pending]
+            if neighbor_seq < pending_seq < anchor_seq:
+                neighbor_seq = pending_seq
         self._transcript_seqs[widget] = (anchor_seq + neighbor_seq) / 2
-        await self.mount(widget, before=anchor if before else None, after=None if before else anchor)
+        if widget.parent is self:
+            if before:
+                self.move_child(widget, before=anchor)
+            else:
+                self.move_child(widget, after=anchor)
+            self._schedule_selection_reprojection()
+        else:
+            await self.mount(widget, before=anchor if before else None, after=None if before else anchor)
         return widget.parent is self and not widget._pruning
 
     def on_tool_group_process_state_changed(self, event: ToolGroup.ProcessStateChanged) -> None:
@@ -691,13 +712,17 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def _toggle_process_block(self, block: ProcessBlock) -> None:
         if block.parent is not self:
             return
-        self.note_user_scroll()
-        self.set_anchor_released(True)
-        self._auto_scroll_paused_by_user = True
+        self.pause_following()
         with self.app.batch_update():
             block.requested_collapsed = not block.requested_collapsed
             block.try_finalize_fold()
         self.process_members_changed()
+
+    def pause_following(self) -> None:
+        """Hold the view while the user opens transcript content to read it."""
+        self.note_user_scroll()
+        self.set_anchor_released(True)
+        self._auto_scroll_paused_by_user = True
 
     def process_guide_for(self, member: Widget) -> Widget | None:
         owner = self._process_controller.guide_owner_of(member)
@@ -1074,6 +1099,19 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
                 # Re-evaluate only these batch roots. Hatch is repaint-only,
                 # so this never invalidates MainScreen's transcript layout.
                 self.app.stylesheet.update_nodes(attached)
+        mounted_prompt = any(isinstance(widget, UserMessage) and not widget.is_injection for widget in batch)
+        if mounted_prompt or any(isinstance(widget, ProcessBlock) for widget in batch):
+            try:
+                async with self._turn_completion_lock:
+                    with self.app.batch_update():
+                        if mounted_prompt and await self._process_controller.complete_replayed_turn(
+                            self._replay_mount.fold_choice
+                        ):
+                            self.process_members_changed()
+                        await self._process_controller.resume_replayed_title()
+                        self._sync_waiting_row()
+            except Exception:
+                logger.exception("Updating the continued replayed turn failed")
 
     def transcript_entry_after(self, widget: Widget) -> Widget | None:
         """Return the oldest mounted entry stamped after ``widget``: where ``widget`` mounts above.
@@ -1185,9 +1223,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Schedule the final replay scroll-to-bottom call."""
         self._scroll_controller.after_replay_history_mounted()
 
-    async def remove_trailing_status(self) -> None:
+    async def remove_trailing_status(self, *, replacing: bool = False) -> None:
         """StatusCleanupPort wrapper for trailing status removal."""
-        await self._remove_trailing_status()
+        await self._remove_trailing_status(replacing=replacing)
 
     def failed_turn_status(self) -> Widget | None:
         """Find a failure eligible for replacement by a fresh user message."""
@@ -1395,17 +1433,19 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._chrome.set_update_notice(notice)
 
     def toggle_fold_all(self) -> bool:
-        """Collapse or expand process sections, tool groups, thinking and the text between tool calls.
+        """Toggle process sections, tool groups, thinking, text between tool calls and compaction summaries.
 
         If any eligible visible item is expanded, collapse all; otherwise
         expand all, including controls inside process sections. Return the
-        new collapsed state.
+        new collapsed state, or False if there is nothing eligible. Empty
+        summaries are ignored; pending replay entries take the same choice.
         """
-        folds: list[ToolGroup | StreamedMarkdownMessage] = [
+        folds: list[ToolGroup | StreamedMarkdownMessage | ContextFoldWidget] = [
             group for group in self.query(ToolGroup) if not group.collapse_locked
         ]
         # Thinking that still streams keeps the state it has; an answer never folds here.
         folds.extend(message for message in self.query(StreamedMarkdownMessage) if message.foldable)
+        folds.extend(marker for marker in self.query(ContextFoldWidget) if marker.has_summary())
         processes_collapsed = self._process_controller.folds_collapsed()
         # Entries still waiting to be prepended take the choice as they mount.
         pending_collapsed = self._replay_mount.pending_folds_collapsed()
@@ -1415,7 +1455,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
         any_expanded = (
             processes_collapsed is False
-            or any(not fold.process_hidden and not fold.collapsed for fold in folds)
+            or any(
+                (isinstance(fold, ContextFoldWidget) or not fold.process_hidden) and not fold.collapsed
+                for fold in folds
+            )
             or pending_collapsed is False
         )
         with self.app.batch_update():
@@ -1463,7 +1506,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     ) -> None:
         """Display a user message."""
         process = self._process_controller
-        async with self._reply_completion_lock if is_injection else nullcontext():
+        async with self._turn_completion_lock if is_injection else nullcontext():
             with self.app.batch_update():
                 if not is_injection:
                     await process.end_live()
@@ -1477,7 +1520,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
                 )
                 if is_injection and not self.agent_running:
                     # A detached delivery can finish after the turn's completion event.
-                    await process.complete_live()
+                    await process.complete_live(late_injection=True)
 
     async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_item_ids: tuple[str, ...]) -> None:
         """Apply backend cleanup after replay so queued entries cannot reappear."""
@@ -1550,7 +1593,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         turn_started_at: Any = None,
     ) -> None:
         """Complete the turn's answer, whose text already streamed as deltas; it took from *turn_started_at*."""
-        async with self._reply_completion_lock:
+        async with self._turn_completion_lock:
             with self.app.batch_update():
                 await self._live_renderer.add_agent_message(
                     text,
@@ -1571,7 +1614,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     async def _end_live_process(self) -> None:
         with self.app.batch_update():
             await self._process_controller.end_live()
-            await self._process_controller.complete_live()
+            await self._process_controller.complete_live(self._replay_mount.fold_choice)
         self.process_members_changed()
         self._sync_waiting_row()
 
@@ -2016,15 +2059,22 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     async def add_interrupted(self, reason: MessageRef | str | None = None, source: str = "user") -> None:
         """Display an interruption notice, replacing any trailing error/interrupted widget."""
-        with self.app.batch_update():
-            await self._live_renderer.add_interrupted(reason, source)
-            await self._end_live_process()
+        async with self._turn_completion_lock:
+            with self.app.batch_update():
+                await self._live_renderer.add_interrupted(reason, source)
+                await self._end_live_process()
 
     async def add_error(self, text: str, *, action_label: MessageRef | str | None = ERROR_RETRY_ACTION) -> None:
         """Display an error message, replacing any trailing error/interrupted widget."""
+        async with self._turn_completion_lock:
+            with self.app.batch_update():
+                await self._live_renderer.add_error(text, action_label=action_label)
+                await self._end_live_process()
+
+    async def add_error_notice(self, text: str, *, action_label: MessageRef | str | None = None) -> None:
+        """Display an error from outside a turn."""
         with self.app.batch_update():
-            await self._live_renderer.add_error(text, action_label=action_label)
-            await self._end_live_process()
+            await self._live_renderer.show_error(text, action_label=action_label)
 
     async def add_retry(
         self,
@@ -2109,13 +2159,16 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._retry_settled_status = None
         self._retry_settled_status_captured = False
         captured = status() if status is not None else None
-        if (
-            isinstance(captured, (ErrorMessage, InterruptedMessage))
-            and captured.is_mounted
-            and self._find_trailing_status() is captured
-        ):
-            await remove_shielded(captured)
-            self._sync_waiting_row()
+        if not isinstance(captured, (ErrorMessage, InterruptedMessage)):
+            return
+        # A replayed stop may still be mounting its title. It must settle before Continue takes it over.
+        async with self._turn_completion_lock:
+            if captured.is_mounted and self._find_trailing_status() is captured:
+                self._process_controller.continue_stopped_turn()
+                with self.app.batch_update():
+                    await remove_shielded(captured)
+                    await self._process_controller.resume_stopped_title()
+                self._sync_waiting_row()
 
     async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
         """Remove the answer text a Continue, Retry or steer dropped from history: the messages these segments showed.
@@ -2136,7 +2189,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             try:
                 await self._process_controller.withdraw_live_answers(withdrawn)
             finally:
-                await remove_withdrawn_answer(self, segment_ids)
+                removed = await remove_withdrawn_answer(self, segment_ids)
+                await self._process_controller.forget_removed_members(removed)
         self._sync_waiting_row()
 
     def set_trailing_status_action_disabled(self, disabled: bool) -> None:
@@ -2145,12 +2199,18 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         if isinstance(last, (ErrorMessage, InterruptedMessage)):
             last.set_action_disabled(disabled)
 
-    async def _remove_trailing_status(self) -> None:
-        """Remove the active status widget, allowing trailing retry notes."""
+    async def _remove_trailing_status(self, *, replacing: bool = False) -> None:
+        """Remove the active status widget, allowing trailing retry notes.
+
+        New output removes it as the turn it stopped goes on; a new status card only takes its place.
+        """
         status = self._find_trailing_status()
-        if status is not None:
-            await remove_shielded(status)
-            self._sync_waiting_row()
+        if status is None:
+            return
+        if not replacing and isinstance(status, (ErrorMessage, InterruptedMessage)):
+            self._process_controller.continue_stopped_turn()
+        await remove_shielded(status)
+        self._sync_waiting_row()
 
     def _find_trailing_status(
         self, *, allow_retry_notes: bool = True

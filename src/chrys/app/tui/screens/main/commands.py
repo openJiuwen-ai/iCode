@@ -81,7 +81,8 @@ _DESCRIPTION_COPY = msg(
     fallback="Copy agent, user, or all turns to clipboard",
 )
 _DESCRIPTION_FOLD = msg(
-    "tui.commands.description.fold", fallback="Toggle collapse on activity, tool groups and thinking"
+    "tui.commands.description.fold",
+    fallback="Toggle collapse on activity, tool groups, thinking, text between tool calls and compaction summaries",
 )
 _DESCRIPTION_DIFF = msg(
     "tui.commands.description.diff",
@@ -328,8 +329,9 @@ _MAN_COPY_USEFUL_FOR = msg(
 _MAN_FOLD_BODY = msg(
     "tui.man.fold.body",
     fallback=(
-        "Toggle collapse state on activity sections, tool groups\n"
-        "and thinking in the current conversation view.\n\n"
+        "Toggle collapse state on activity sections, tool groups, thinking,\n"
+        "text between tool calls and compaction summaries in the current\n"
+        "conversation view.\n\n"
         "If any are open, collapse them all; otherwise expand them all.\n"
         "Thinking that is still being written and controls waiting\n"
         "for your input stay open.\n"

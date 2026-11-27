@@ -38,6 +38,7 @@ import logging
 
 from textual.widget import Widget
 
+from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     StreamedMarkdownMessage,
@@ -106,6 +107,10 @@ class ReplayMountController:
     def pending_widgets(self) -> list[Widget]:
         """Entries not mounted yet, in document order."""
         return list(self._pending)
+
+    def last_pending_entry(self) -> Widget | None:
+        """The pending entry just above the mounted replay tail."""
+        return self._pending[-1] if self._pending else None
 
     async def wait_complete(self) -> None:
         """Wait until the running prepend has mounted everything or stopped."""
@@ -183,17 +188,22 @@ class ReplayMountController:
             task.cancel()
 
     def pending_folds_collapsed(self) -> bool | None:
-        """Collapsed state pending tool groups and thinking will mount with; None without any."""
+        """Collapsed state pending groups, thinking and summaries will mount with; None without any."""
         if not any(
-            (isinstance(widget, ToolGroup) or folds_with_turn(widget)) and not widget.process_hidden
+            (isinstance(widget, ContextFoldWidget) and widget.has_summary())
+            or ((isinstance(widget, ToolGroup) or folds_with_turn(widget)) and not widget.process_hidden)
             for widget in self._pending
         ):
             return None
-        # Replay builds every tool group and thinking block collapsed.
+        # Replay builds tool groups, thinking and compaction summaries collapsed.
         return True if self._fold_collapsed is None else self._fold_collapsed
 
+    def fold_choice(self) -> bool | None:
+        """The last fold-all choice during this prepend, including while its final batch mounts."""
+        return self._fold_collapsed
+
     def set_fold_state(self, collapsed: bool) -> None:
-        """Apply a fold-all choice to tool groups and thinking that mount after it."""
+        """Apply a fold-all choice to groups, thinking and summaries that mount after it."""
         # The whole prepend, not just ``pending``: the last batch has left it while it mounts.
         if self._task is not None:
             self._fold_collapsed = collapsed
@@ -283,6 +293,9 @@ class ReplayMountController:
         if collapsed is not None:
             for root in batch:
                 if not root.is_attached:
+                    continue
+                if isinstance(root, ContextFoldWidget):
+                    root.collapsed = collapsed
                     continue
                 if isinstance(root, StreamedMarkdownMessage):
                     if root.foldable and not root.process_hidden:

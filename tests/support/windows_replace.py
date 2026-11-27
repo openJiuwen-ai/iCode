@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""A rename or delete that another program briefly blocks, as Windows refuses them, for file-retry tests."""
+"""Simulate Windows sharing conflicts in filesystem retry tests."""
 
 from __future__ import annotations
 
@@ -71,4 +71,23 @@ def briefly_held_unlink(
 
     _retry_as_on(monkeypatch, record, windows=windows)
     monkeypatch.setattr(files.os, "unlink", unlink)
+    return record
+
+
+def briefly_held_read(
+    monkeypatch: pytest.MonkeyPatch, target: Path, *, failures: int, windows: bool = True
+) -> LockedRename:
+    """Block a binary read open as Windows does when another handle denies read sharing."""
+    real_open = Path.open
+    record = LockedRename()
+
+    def open_file(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+        if path == target and mode == "rb":
+            record.attempts.append(os.fspath(path))
+            if len(record.attempts) <= failures:
+                raise PermissionError("another handle denies read sharing")
+        return real_open(path, mode, buffering, encoding, errors, newline)
+
+    _retry_as_on(monkeypatch, record, windows=windows)
+    monkeypatch.setattr(Path, "open", open_file)
     return record

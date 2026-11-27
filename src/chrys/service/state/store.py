@@ -26,6 +26,7 @@ from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.platform.files import atomic_write_text as _common_atomic_write_text
+from chrys.foundation.platform.files import open_binary_read_with_retry
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.util.once_close import finish_close
 from chrys.foundation.util.session_ids import (
@@ -1452,7 +1453,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             if busy := self._busy_recovery_lock(owners):
                 return None, busy
             # Pin the version before rechecking. Writers replace the file atomically.
-            with path.open("rb") as stream:
+            with open_binary_read_with_retry(path) as stream:
                 if busy := self._busy_recovery_lock(owners):
                     return None, busy
                 payload = stream.read()
@@ -2464,11 +2465,13 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             if signature is not None and cached is not None and cached[0] == signature:
                 # Metadata can still match while permissions or a file-share lock
                 # prevent reads. Probe a single byte without reparsing the archive.
-                with path.open("rb", buffering=0) as stream:
+                with open_binary_read_with_retry(path, buffering=0) as stream:
                     if not stream.read(1):
                         return None
                 return copy_session_meta(cached[1])
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            _, raw = read_session_envelope(path)
+            if raw is None:
+                return None
             meta = self._session_meta_from_envelope(raw, size_bytes=path.stat().st_size)
             if signature is not None and file_signature(path) == signature:
                 with self._meta_cache_lock:

@@ -64,7 +64,7 @@ class _FakeStatus:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
 
-    async def remove_trailing_status(self) -> None:
+    async def remove_trailing_status(self, *, replacing: bool = False) -> None:
         self.calls.append("remove_status")
 
 

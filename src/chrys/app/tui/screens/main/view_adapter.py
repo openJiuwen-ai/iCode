@@ -898,6 +898,9 @@ class MainScreenViewAdapter:
     async def add_error(self, message: str, *, action_label: MessageRef | str | None = ERROR_RETRY_ACTION) -> None:
         await self._screen.query_one(ChatPanel).add_error(message, action_label=action_label)
 
+    async def add_error_notice(self, message: str, *, action_label: MessageRef | str | None = None) -> None:
+        await self._screen.query_one(ChatPanel).add_error_notice(message, action_label=action_label)
+
     async def add_system(self, text: str, *, key: str | None = None) -> None:
         await self._screen.query_one(ChatPanel).add_system(text, key=key)
 

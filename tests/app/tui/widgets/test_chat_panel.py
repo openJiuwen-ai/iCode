@@ -461,8 +461,9 @@ async def test_chat_panel_toggle_fold_all_leaves_agent_messages() -> None:
         panel = pilot.app.query_one(ChatPanel)
         tool_group = ToolGroup()
         agent_message = AgentMessage("Done.")
+        summary = ContextFoldWidget("ctx", "Summary")
 
-        await panel.mount(tool_group)
+        await panel.mount(tool_group, summary)
         await panel.mount(agent_message)
         await pilot.pause()
 
@@ -472,10 +473,12 @@ async def test_chat_panel_toggle_fold_all_leaves_agent_messages() -> None:
         assert panel.toggle_fold_all() is True
         assert tool_group.collapsed is True
         assert agent_message.collapsed is False
+        assert not summary.query_one("#summary").display
 
         assert panel.toggle_fold_all() is False
         assert tool_group.collapsed is False
         assert agent_message.collapsed is False
+        assert summary.query_one("#summary").display
 
 
 async def test_chat_panel_toggle_fold_all_affects_replayed_tool_groups() -> None:
@@ -598,9 +601,9 @@ async def test_chat_panel_replay_settles_an_answer_segment_a_later_one_followed(
 @pytest.mark.parametrize(
     ("turn_range", "expected_title"),
     [
-        ((3, 5), "  ═══ Compressed (Turn 3-5) ═══"),
-        ((7, 7), "  ═══ Compressed (Turn 7) ═══"),
-        ((0, 0), "  ═══ Compressed (5,000 messages) ═══"),
+        ((3, 5), "▸ Compressed (Turn 3-5)"),
+        ((7, 7), "▸ Compressed (Turn 7)"),
+        ((0, 0), "▸ Compressed (5,000 messages)"),
     ],
 )
 def test_context_fold_title_includes_turn_range(
@@ -609,7 +612,7 @@ def test_context_fold_title_includes_turn_range(
 ) -> None:
     widget = ContextFoldWidget("ctx_abc", "summary", 5000, turn_range)
 
-    assert widget.render().plain.splitlines()[0] == expected_title
+    assert widget.title_text == expected_title
 
 
 async def test_chat_panel_add_messages() -> None:
@@ -628,7 +631,7 @@ async def test_chat_panel_add_messages() -> None:
         assert not list(cp.query(ErrorMessage))
         assert len(list(cp.query(SystemMessage))) == 1
         fold = cp.query_one(ContextFoldWidget)
-        assert fold.render().plain.splitlines()[0] == "  ═══ Compressed (Turn 3-5) ═══"
+        assert fold.title_text == "▸ Compressed (Turn 3-5)"
 
 
 async def test_chat_panel_removes_failed_prompt_from_toc() -> None:
@@ -954,7 +957,7 @@ async def test_chat_panel_context_fold_replaces_trailing_error_on_retry() -> Non
 
         assert not list(cp.query(ErrorMessage))
         fold = cp.query_one(ContextFoldWidget)
-        assert "Compressed (Turn 1)" in fold.render().plain
+        assert fold.title_text == "▸ Compressed (Turn 1)"
 
 
 async def test_chat_panel_context_fold_breaks_stale_stream_cursor() -> None:

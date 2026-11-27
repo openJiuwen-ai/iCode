@@ -35,6 +35,14 @@ class SameCellClick(_WidgetBase):
     def on_mouse_down(self, event: MouseDown) -> None:
         self._pressed_cell = event.screen_offset if event.button == 1 else None
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        if event.screen_offset != self._pressed_cell:
+            self._pressed_cell = None
+
+    def fold_click_at(self, origin: Widget, cell: Offset) -> bool:
+        """Whether a press at this screen cell would target this widget's fold gesture."""
+        return False
+
     def clicked_same_cell(self, event: Click) -> bool:
         pressed, self._pressed_cell = self._pressed_cell, None
         return event.button == 1 and event.screen_offset == pressed
@@ -183,6 +191,13 @@ class GuideHoverMixin(SameCellClick):
         key = self._guide_key_at(cell)
         return self._guide_for_key(key) if key is not None else None
 
+    def fold_click_at(self, origin: Widget, cell: Offset) -> bool:
+        # Forwarded guide clicks can start on the entry or its own guide surface.
+        if origin is not self and not (isinstance(origin, GuideSurfaceMixin) and origin._guide_owner() is self):
+            return False
+        guide = self._guide_at(cell)
+        return guide is not None and guide.clickable
+
     def _click_guide(self, event: Click) -> bool:
         guide = self._guide_at(event.screen_offset)
         if guide is None or not guide.clickable:
@@ -289,6 +304,9 @@ class GuideFoldMixin(GuideHoverMixin):
     def fold_from_guide(self) -> None:
         raise NotImplementedError
 
+    def fold_click_at(self, origin: Widget, cell: Offset) -> bool:
+        return (self.can_toggle_from_guide() and origin is self.guide_title()) or super().fold_click_at(origin, cell)
+
     def fold_member_guide(self, parent: Widget, *, before_fold: Callable[[], None] | None = None) -> None:
         if self.parent is parent and self.display and self.can_toggle_from_guide():
             if before_fold is not None:
@@ -331,6 +349,9 @@ class ProcessGuideMixin(GuideHoverMixin):
         parent = self.parent
         painters = tuple(entry for entry in self.guide_members() if entry.display and entry.parent is parent)
         return _Guide(painters, self, member, process=True, clickable=clickable)
+
+    def fold_click_at(self, origin: Widget, cell: Offset) -> bool:
+        return (origin is self and self._process_title_at(cell)) or super().fold_click_at(origin, cell)
 
     def _process_title_at(self, cell: Offset) -> bool:
         from chrys.app.tui.widgets.chat.fold_gap import FOLD_GAP_ROWS, FoldGap

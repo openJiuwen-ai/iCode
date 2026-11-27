@@ -182,9 +182,9 @@ def test_context_fold_resolves_chinese_once_and_keeps_english_fallback() -> None
     )
     english = ContextFoldWidget("ctx-en", "summary", 5_000, (3, 5))
 
-    assert "已压缩 (第 3-5 轮)" in ranged.render().plain
-    assert "已压缩 (5,000 条消息)" in counted.render().plain
-    assert english.render().plain == "  ═══ Compressed (Turn 3-5) ═══\n  summary"
+    assert ranged.title_text == "▸ 已压缩 (第 3-5 轮)"
+    assert counted.title_text == "▸ 已压缩 (5,000 条消息)"
+    assert english.title_text == "▸ Compressed (Turn 3-5)"
 
 
 @pytest.mark.asyncio

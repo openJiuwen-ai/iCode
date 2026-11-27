@@ -100,7 +100,7 @@ class _FakeStatus:
         self.calls = calls
         self.children: list[Widget] = []
 
-    async def remove_trailing_status(self) -> None:
+    async def remove_trailing_status(self, *, replacing: bool = False) -> None:
         self.calls.append("remove_status")
 
     def failed_turn_status(self) -> Widget | None:
@@ -1007,10 +1007,10 @@ async def test_tool_registry_interrupt_during_status_cleanup_does_not_reopen_gro
     release_cleanup = asyncio.Event()
 
     class _DelayedStatus(_FakeStatus):
-        async def remove_trailing_status(self) -> None:
+        async def remove_trailing_status(self, *, replacing: bool = False) -> None:
             entered_cleanup.set()
             await asyncio.wait_for(release_cleanup.wait(), timeout=5)
-            await super().remove_trailing_status()
+            await super().remove_trailing_status(replacing=replacing)
 
     calls: list[str] = []
     monkeypatch.setattr(tool_registry_module, "ToolGroup", _FakeToolGroup)
@@ -1349,7 +1349,7 @@ async def test_replay_context_fold_uses_persisted_turn_range() -> None:
     )
 
     fold = next(widget for widget in mount.widgets if isinstance(widget, ContextFoldWidget))
-    assert fold.render().plain.splitlines()[0] == "  ═══ Compressed (Turn 7) ═══"
+    assert fold.title_text == "▸ Compressed (Turn 7)"
 
 
 @pytest.mark.asyncio
@@ -1374,7 +1374,7 @@ async def test_replay_legacy_context_fold_uses_persisted_message_count() -> None
     )
 
     fold = next(widget for widget in mount.widgets if isinstance(widget, ContextFoldWidget))
-    assert fold.render().plain.splitlines()[0] == "  ═══ Compressed (2 messages) ═══"
+    assert fold.title_text == "▸ Compressed (2 messages)"
 
 
 @pytest.mark.asyncio

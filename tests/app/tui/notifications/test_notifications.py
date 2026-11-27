@@ -705,6 +705,9 @@ async def test_error_notifies_only_for_live_turn_errors() -> None:
         async def add_error(self, *_args: object, **_kwargs: object) -> None:
             return
 
+        async def add_error_notice(self, *_args: object, **_kwargs: object) -> None:
+            return
+
     def query_one(cls: type) -> object:
         if cls.__name__ == "StatusBar":
             return _StatusBar()

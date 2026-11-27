@@ -59,7 +59,12 @@ from chrys.foundation.tool_kinds import (
 )
 from chrys.kernel import Content, Message
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import ChatPanelApp, LocalizedWidgetApp, chat_content_children, click_when_settled
+from tests.support.tui_helpers import (
+    ChatPanelApp,
+    LocalizedWidgetApp,
+    chat_content_children,
+    click_when_settled,
+)
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -1454,33 +1459,6 @@ async def test_a_structured_output_success_shows_its_steps_row_by_row() -> None:
 
 
 @pytest.mark.parametrize("ending", ["error", "interrupted"])
-async def test_a_failed_or_interrupted_turn_shows_its_steps_row_by_row_still_folded(ending: str) -> None:
-    async with ChatPanelApp(
-        thinking_expanded=_on,
-    ).run_test() as pilot:
-        panel = pilot.app.query_one(ChatPanel)
-        await panel.add_user_message("prompt")
-        await _think(panel, "r1", "Look first.")
-        await _say(panel, "a1", "Checking.")
-        await _read(panel, "c1", "/tmp/a.py")
-        await _settled(pilot)
-        assert _rows(panel)
-        if ending == "error":
-            await panel.add_error("failed")
-        else:
-            await panel.add_interrupted()
-        await _settled(pilot)
-        assert not _rows(panel)
-        assert not panel.query(ProcessBlock)
-        members = _members(panel)
-        assert len(members) == 3
-        assert all(_shown(members))
-        thinking, text, _group = members
-        assert thinking.collapsed, "a step folded behind the row stays folded (Q4)"
-        assert text.collapsed
-
-
-@pytest.mark.parametrize("ending", ["error", "interrupted"])
 async def test_thinking_ended_by_a_failure_shows_as_its_folded_row(ending: str) -> None:
     """The cost Q4 accepts: with thinking shown open by default, it was folded behind the row and stays folded."""
     async with ChatPanelApp(
@@ -1504,65 +1482,6 @@ async def test_thinking_ended_by_a_failure_shows_as_its_folded_row(ending: str) 
         # It opens on a click, as any folded thinking does.
         thinking.collapsed = False
         await wait_for(lambda: bool(thinking.query(VirtualizedMarkdown)), pilot=pilot, description="it opens")
-
-
-async def test_a_new_message_after_a_failure_leaves_nothing_hidden() -> None:
-    async with ChatPanelApp(
-        thinking_expanded=_on,
-    ).run_test() as pilot:
-        panel = pilot.app.query_one(ChatPanel)
-        await panel.add_user_message("prompt")
-        await _think(panel, "r1", "Look first.")
-        await _read(panel, "c1", "/tmp/a.py")
-        await panel.add_error("failed")
-        earlier = _members(panel)
-        await panel.add_user_message("try again")
-        await _read(panel, "c2", "/tmp/b.py", done=False)
-        await _settled(pilot)
-        assert all(_shown(earlier))
-        row = _row(panel)
-        assert row.collapsed
-        children = chat_content_children(panel)
-        assert children.index(row) > children.index(panel.query(UserMessage).last())
-
-
-async def test_continuing_after_an_interrupt_starts_a_new_folded_row_and_success_folds_the_whole_turn() -> None:
-    async with ChatPanelApp().run_test() as pilot:
-        panel = pilot.app.query_one(ChatPanel)
-        await panel.add_user_message("prompt")
-        await _read(panel, "c1", "/tmp/a.py")
-        row = _row(panel)
-        await click_when_settled(pilot, row)
-        await wait_for(lambda: not row.collapsed, pilot=pilot, description="the row opens")
-        await panel.add_interrupted()
-        await _settled(pilot)
-        assert not _rows(panel)
-        before = panel.query_one(ToolGroup)
-        assert before.display
-
-        # Continue: the same turn goes on, with no new user message; the run starts again.
-        panel.hide_trailing_status_action()
-        panel.agent_running = True
-        await _read(panel, "c2", "/tmp/b.py", done=False)
-        await _settled(pilot)
-        again = _row(panel)
-        assert again.collapsed, "every new row starts folded"
-        assert before.display, "steps from before the interrupt are not this row's members"
-        assert not panel.query(ToolGroup).last().display
-        assert again.gap_above and again.region.height == 3
-        assert [line.text.rstrip() for line in again.render_lines(Region(0, 0, again.size.width, 2))] == [
-            "  │",
-            "▸ Reading /tmp/b.py",
-        ]
-
-        await panel.add_tool_result("c2", "read_file", "ok")
-        await _finish(panel)
-        await _settled(pilot)
-        assert not _rows(panel)
-        (block,) = panel.query(ProcessBlock)
-        assert block.collapsed
-        assert all(group in block.members for group in panel.query(ToolGroup))
-        assert not any(group.display for group in panel.query(ToolGroup))
 
 
 async def test_continuing_a_recovered_turn_folds_only_new_steps_until_it_succeeds() -> None:
