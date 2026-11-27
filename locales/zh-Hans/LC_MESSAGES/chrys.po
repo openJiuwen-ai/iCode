@@ -1727,6 +1727,48 @@ msgstr "已忽略 {source}={raw}：工作目录设置只能收紧此键。"
 msgid "settings.rollback.snapshots_keep.label"
 msgstr "保留的回滚快照数"
 
+#. English: Sandbox: hide paths in its logs and trajectories
+#. chrys-meta={"fingerprint":"2c81e34ab9996dcf75031847296e9a944d5cbe01669cca86ed4cec0ff788a217","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.audit.redact_paths.label"
+msgstr "沙箱：在其日志和轨迹中隐藏路径"
+
+#. English: Sandbox: extra paths commands may read
+#. chrys-meta={"fingerprint":"4c4db386668eb2bc246f1b370f5f0cd5b9980caa5d9c2184f38bf0c040903786","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.commands.allow_paths.label"
+msgstr "沙箱：命令额外可读路径"
+
+#. English: Sandbox: extra paths commands may change
+#. chrys-meta={"fingerprint":"f294c4709ed579553d2b1a05cfc5024b8f2b21dd25b9c5b59aebaf35f3f603e4","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.commands.write_paths.label"
+msgstr "沙箱：命令可额外写入的路径"
+
+#. English: File-access sandbox (next start)
+#. chrys-meta={"fingerprint":"16ee330a654ba8e3335f8414c77b647998ed9d3df4fced2c47c739ac6d0fbda1","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.enabled.label"
+msgstr "文件访问沙箱（下次启动生效）"
+
+#. English: Sandbox: extra never-granted paths
+#. chrys-meta={"fingerprint":"70cf357cd596bb41e5af11ec2f6135bb8963e5d6c170103d85cc036dca06af0d","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.floor.extra.label"
+msgstr "沙箱：额外的永不授权路径"
+
+#. English: Sandbox: extra paths iCode may read
+#. chrys-meta={"fingerprint":"cf6ebf2331e4f075328302e5e4e56ff35f754d51baad88c42c786ab4a8845a8f","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.main.allow_paths.label"
+msgstr "沙箱：iCode 额外可读路径"
+
+#. English: If the sandbox is unavailable
+#. chrys-meta={"fingerprint":"e4b77d384997b2eea6b74bb6413481fa24b44630086d978121da1dbddcbdabdf","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.on_unavailable.label"
+msgstr "沙箱不可用时"
+
 #. English: Auto-generate session titles
 #. chrys-meta={"fingerprint":"cd2486f2b154cb5b2fd8d6f71b221150a4099c93a305280eb5e73b2ea8bae622","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -4519,6 +4561,12 @@ msgstr "编辑文件"
 msgid "tui.approval.presentation.read_files"
 msgstr "读取文件"
 
+#. English: Read outside the workspace
+#. chrys-meta={"fingerprint":"fbb0a50d4871933609be0548fd38284ff33f34e076f1aeabbeb716e3dbab4334","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.presentation.read_outside"
+msgstr "读取工作区以外的文件"
+
 #. English: Remote tool
 #. chrys-meta={"fingerprint":"f33aa17733f8d6df641b05bdfbc32e58e822baa6b6a538452f0a9703965794e0","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
@@ -4536,6 +4584,12 @@ msgstr "运行命令"
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.presentation.search"
 msgstr "搜索"
+
+#. English: Write outside the workspace
+#. chrys-meta={"fingerprint":"a4a6498465b8dca76f443511822cc3efdf776af1c4f1a8a831d35109e1891463","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.presentation.write_outside"
+msgstr "写入工作区以外"
 
 #. English: Reason (optional, sent to agent on Decline)
 #. chrys-meta={"fingerprint":"7c06530807a0cb5cda897d93004b0f7ffef8b45afabca58c24fff871059bfdd1","multiline":false,"placeholders":[]}
@@ -4579,12 +4633,25 @@ msgstr "允许在命令末尾添加参数"
 msgid "tui.approval.reuse.files"
 msgstr "修改这些文件不再询问"
 
+#. English: Approve alone allows only this one request; tick the box to allow
+#. the whole folder for longer.
+#. chrys-meta={"fingerprint":"ddaa2127124ef3f1d5be8ea7e4abf0d15ffc89bb969b009f073f9432f2f4b724","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.once_hint"
+msgstr "只点批准，仅允许这一次请求；勾选下方选项可在更长时间内允许整个文件夹。"
+
 #. English: Dangerous extra flags (such as --force) will also run without
 #. asking.
 #. chrys-meta={"fingerprint":"2ad4ebd0721e33da1220e6dfcdb2401222780695c16b4145a020abc891b5ebaf","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.prefix_warning"
 msgstr "新增的危险参数（如 --force）也会免确认。"
+
+#. English: Don't ask again to read in this folder
+#. chrys-meta={"fingerprint":"2b7c937315d65b3a76755c0b9de9fc989fb24ed05e8a491afec4abb405343692","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.read_folder"
+msgstr "以后读取此文件夹时不再询问"
 
 #. English: This session
 #. chrys-meta={"fingerprint":"12b3b02a90d375bfcac56fa2e2e2480dfaa6d8b3403623740039d86b07fad1d9","multiline":false,"placeholders":[]}
@@ -4603,6 +4670,18 @@ msgstr "恢复同一会话后仍然有效。"
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.title"
 msgstr "记住审批"
+
+#. English: This turn
+#. chrys-meta={"fingerprint":"823faa63bd722780fe8c6c7105372225e699fa2c9d9d4f65f235eb6aa429d519","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.turn"
+msgstr "本轮"
+
+#. English: Until the agent finishes answering this message.
+#. chrys-meta={"fingerprint":"db5db7e020669474610c9fcf839218a9b4433a68516e03f8096b9871022314d1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.turn_hint"
+msgstr "直到智能体回答完这条消息为止。"
 
 #. English: This working directory
 #. chrys-meta={"fingerprint":"73c1f271073a585f6a3e9402b7d4c55df975c62b4134f1d5bee46765a7f051aa","multiline":false,"placeholders":[]}
@@ -4627,6 +4706,12 @@ msgstr "此工作区"
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.workspace_hint"
 msgstr "在此工作区的其他会话中也生效。"
+
+#. English: Don't ask again to write in this folder
+#. chrys-meta={"fingerprint":"47a7c2731609f8b38e6c2b93669b8da9b4c5a13561bbec41916d0cbac99f0100","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.write_folder"
+msgstr "以后写入此文件夹时不再询问"
 
 #. English: The risk definitions could not be loaded.
 #. chrys-meta={"fingerprint":"1bb7592ee2026f1ec271d16fd198cb4be1e1677c0077172fdf0ebb09bfb07d96","multiline":false,"placeholders":[]}
@@ -5178,6 +5263,12 @@ msgstr "粘贴"
 #: src/chrys/app/tui/binding_display.py
 msgid "tui.binding.quit"
 msgstr "退出"
+
+#. English: Sandbox
+#. chrys-meta={"fingerprint":"2d57328c39be50e23df01174d7439ad822b0913f10edadfb271b429952ecf62f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.binding.sandbox"
+msgstr "沙箱"
 
 #. English: Sessions
 #. chrys-meta={"fingerprint":"c5cc776a4d7579ddf82b6d982259975f712ab352028d2c5a15b02fa329179077","multiline":false,"placeholders":[]}
@@ -7354,6 +7445,12 @@ msgstr "正在派生会话"
 #: src/chrys/app/tui/screens/dialogs/fork_session.py
 msgid "tui.fork_session.title.success"
 msgstr "会话已派生"
+
+#. English: ⚠ Sandbox NOT active
+#. chrys-meta={"fingerprint":"a905410d53795fcb82bc49f6fee2a8bd94e8002bb7c01453cbd90cd0c92dc62c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/sandbox_warning.py
+msgid "tui.guard.unavailable"
+msgstr "⚠ 沙箱未启用"
 
 #. English: Language
 #. chrys-meta={"fingerprint":"069c539d6372dc4257c89640a609eca0013e26dc53aa15417e68e7a44b16c955","multiline":false,"placeholders":[]}
@@ -12116,6 +12213,21 @@ msgstr "在遥测数据中记录提示词、模型回复、工具参数和工具
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.rollback.snapshots_keep"
 msgstr "为 /rollback 保留的每轮快照数；默认 {default}。"
+
+#. English: Confine file reads to the working folders and the folders you
+#. grant. Applies from the next start; a running session keeps what it started
+#. with.
+#. chrys-meta={"fingerprint":"ff2a8b898532a6da65312d8373e6292e2da1fa3908213137b3b87deb41b39845","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.sandbox.files.enabled"
+msgstr "把文件读取限制在工作文件夹和你授权的文件夹内。下次启动生效；正在运行的会话保持启动时的状态。"
+
+#. English: What to do when the sandbox is on but this computer can't provide
+#. it: refuse to start, or warn and start without it.
+#. chrys-meta={"fingerprint":"f867412e525fa7e8e5e1ce142517cdb1253e9148b85112ec1e804a3b776816c8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.sandbox.files.on_unavailable"
+msgstr "开启了沙箱但这台电脑无法提供时的处理方式：拒绝启动，或警告后不带沙箱启动。"
 
 #. English: Update the session title after each successful turn.
 #. chrys-meta={"fingerprint":"407e817daab632ba1d7c8a6e5aa8088608abb29e921b5fe8787b73433fe4ab19","multiline":false,"placeholders":[]}

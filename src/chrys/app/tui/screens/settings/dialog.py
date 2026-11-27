@@ -21,6 +21,7 @@ from chrys.app.tui.screens.settings.layout import (
     RowKind,
     SettingRowSpec,
     SettingsTab,
+    shown_rows,
     tab_by_id,
 )
 from chrys.app.tui.screens.settings.panes.notifications import NotificationsPane
@@ -120,7 +121,7 @@ class SettingsDialog(BaseDialog[None]):
         localizer = widget_localizer(self)
         groups: list[Widget] = []
         for section in tab.sections:
-            group = VerticalGroup(*(self._build_row(row) for row in section.rows), classes="settings-section")
+            group = VerticalGroup(*(self._build_row(row) for row in shown_rows(section)), classes="settings-section")
             group.border_title = Text(render_str(localizer, section.title.bind()))
             groups.append(group)
         return groups

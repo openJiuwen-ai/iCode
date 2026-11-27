@@ -277,7 +277,18 @@ def _is_folder_style_mention_value(value: str) -> bool:
 def load_image_attachments(
     mentions: Sequence[ImageMention], *, max_bytes: int = MAX_IMAGE_BYTES
 ) -> AttachmentParseResult:
-    """Load image bytes for previously discovered mentions, each compressed to at most *max_bytes*."""
+    """Load image bytes for previously discovered mentions, each compressed to at most *max_bytes*.
+
+    The person attached these files, so under the file-access sandbox they are
+    read even outside the workspace (one file at a time, never a protected one).
+    """
+    from chrys.foundation import guard
+
+    with guard.current().user_reads():
+        return _load_image_attachments(mentions, max_bytes=max_bytes)
+
+
+def _load_image_attachments(mentions: Sequence[ImageMention], *, max_bytes: int) -> AttachmentParseResult:
     attachments: list[ImageAttachment] = []
     errors: list[str] = []
 

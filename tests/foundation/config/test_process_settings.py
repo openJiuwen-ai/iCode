@@ -76,6 +76,15 @@ _RESTART_FIELDS_OUTSIDE_THE_SNAPSHOT = {
     "mutation_snapshot_skip_binary": "policy captured when the snapshot store is first built",
     "update_check": "read once when the TUI starts, to decide whether it checks for a newer release",
     "chat_image_graphics": "read once when the TUI builds its main screen, to pick how images are drawn",
+    # The sandbox is decided before the settings loader runs, by
+    # chrys/foundation/guard.py and icode_sandbox/bootstrap.py reading the user document directly.
+    "sandbox_files_enabled": "read once by the sandbox bootstrap before any settings load",
+    "sandbox_files_on_unavailable": "read once by the sandbox bootstrap before any settings load",
+    "sandbox_files_main_allow_paths": "read once by the sandbox bootstrap before any settings load",
+    "sandbox_files_commands_allow_paths": "read once by the sandbox bootstrap before any settings load",
+    "sandbox_files_audit_redact_paths": "read once by the sandbox bootstrap before any settings load",
+    "sandbox_files_floor_extra": "read once by the sandbox bootstrap before any settings load",
+    "sandbox_files_commands_write_paths": "read once by the sandbox bootstrap before any settings load",
 }
 
 

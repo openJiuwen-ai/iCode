@@ -101,6 +101,17 @@ _HINT_APPROVAL_DEFAULT_MODE = msg(
     "tui.settings.hint.approval.default_mode",
     fallback="Approval mode for the next launch. Use /approval to change both the current mode and this default.",
 )
+_HINT_SANDBOX_ENABLED = msg(
+    "tui.settings.hint.sandbox.files.enabled",
+    fallback=(
+        "Confine file reads to the working folders and the folders you grant. "
+        "Applies from the next start; a running session keeps what it started with."
+    ),
+)
+_HINT_SANDBOX_ON_UNAVAILABLE = msg(
+    "tui.settings.hint.sandbox.files.on_unavailable",
+    fallback="What to do when the sandbox is on but this computer can't provide it: refuse to start, or warn and start without it.",
+)
 _HINT_APPROVAL_AUTO_REVIEW = msg(
     "tui.settings.hint.approval.auto_review",
     fallback=(
@@ -288,6 +299,23 @@ class SettingsSection:
     rows: tuple[SettingRowSpec, ...]
 
 
+GUARD_ROW_KEYS = frozenset(
+    {"sandbox.files.enabled", "sandbox.files.on_unavailable", "sandbox.files.audit.redact_paths"}
+)
+"""Rows shown only when the sandbox package is installed: switched on without it, iCode would not start."""
+
+
+def shown_rows(section: SettingsSection) -> tuple[SettingRowSpec, ...]:
+    """The rows of *section* the panel renders."""
+    if not any(row.key in GUARD_ROW_KEYS for row in section.rows):
+        return section.rows
+    from chrys.foundation import guard
+
+    if guard.installed():
+        return section.rows
+    return tuple(row for row in section.rows if row.key not in GUARD_ROW_KEYS)
+
+
 @dataclass(frozen=True, slots=True)
 class SettingsTab:
     id: str
@@ -386,6 +414,9 @@ TABS: tuple[SettingsTab, ...] = (
                     SettingRowSpec("approval.auto_review", hint=_HINT_APPROVAL_AUTO_REVIEW),
                     SettingRowSpec("approval.timeout_seconds", hint=_HINT_APPROVAL_TIMEOUT_SECONDS),
                     SettingRowSpec("ui.approval.defer_while_judging", hint=_HINT_APPROVAL_DEFER_WHILE_JUDGING),
+                    SettingRowSpec("sandbox.files.enabled", hint=_HINT_SANDBOX_ENABLED),
+                    SettingRowSpec("sandbox.files.on_unavailable", hint=_HINT_SANDBOX_ON_UNAVAILABLE),
+                    SettingRowSpec("sandbox.files.audit.redact_paths"),
                 ),
             ),
             SettingsSection(
@@ -545,6 +576,11 @@ DEFERRED_KEYS: frozenset[str] = frozenset(
         "tools.web_fetch.http_origins",
         "tools.web_fetch.allowed_origins",
         "tools.web_fetch.denied_origins",
+        # Sandbox path lists: set in the user settings file (see the sandbox guide).
+        "sandbox.files.main.allow_paths",
+        "sandbox.files.commands.allow_paths",
+        "sandbox.files.floor.extra",
+        "sandbox.files.commands.write_paths",
         # Low-frequency keys with a natural home, held back until asked for.
         "workspace.mru_max_entries",
         "mutations.snapshot.max_file_mb",

@@ -56,6 +56,10 @@ class MCPServerConfig:
     folder, a relative path starts at the workspace folder, and ``{{ENV_VAR}}``
     placeholders are filled in (no ``{{!command}}``), like an ACP agent's ``cwd``.
     """
+    read_paths: list[str] = field(default_factory=list)
+    """Under the file-access sandbox: folders this server, and no other, may also read (never protected ones)."""
+    write_paths: list[str] = field(default_factory=list)
+    """The same for changing them (never what the sandbox keeps unwritable)."""
 
     # http transport
     url: str = ""

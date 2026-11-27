@@ -22,7 +22,7 @@ import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import AsyncGenerator, Awaitable, Iterable, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Iterator
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Any, Never, cast
@@ -501,6 +501,53 @@ async def spawn_managed_stdio_process(
     )
 
 
+# Under the file-access sandbox (``icode-sandbox``) a command runs in a
+# session of its own, started by the broker, behind a stub process that iCode
+# spawned and holds. The stub's session (and group: it leads both) is *linked*
+# to the command's, so everything below — liveness, CPU, stopped members,
+# signals — sees and reaches the real command.
+_linked_sessions: dict[int, Callable[[], int]] = {}
+
+
+def link_process_session(stub_session_id: int, resolve: Callable[[], int]) -> None:
+    """Treat the session *resolve()* returns as part of *stub_session_id*.
+
+    *resolve* answers 0 while that session isn't known yet, and a negative
+    number once it is gone for good: the link is then dropped.
+    """
+    _linked_sessions[stub_session_id] = resolve
+
+
+def _linked_session(session_id: int) -> int:
+    resolve = _linked_sessions.get(session_id)
+    if resolve is None:
+        return 0
+    try:
+        found = resolve()
+    except Exception:
+        return 0
+    if found < 0:
+        _linked_sessions.pop(session_id, None)
+        return 0
+    return found
+
+
+def process_group_alive(process_group_id: int) -> bool:
+    """True while the POSIX group (or the command behind a sandbox stub leading it) has a member.
+
+    A member that is exiting but not yet reaped answers EPERM on macOS: it counts.
+    """
+    for group in {process_group_id, _linked_session(process_group_id)} - {0}:
+        try:
+            cast(Any, os).killpg(group, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            return True
+        return True
+    return False
+
+
 def terminate_process_group(process_group_id: int) -> bool:
     """Send SIGTERM to a POSIX process group without signaling Chrys's own group."""
     from chrys.foundation.platform import get_platform
@@ -511,10 +558,12 @@ def terminate_process_group(process_group_id: int) -> bool:
     with contextlib.suppress(OSError):
         if process_group_id == posix_os.getpgrp():
             return False
+    if (linked := _linked_session(process_group_id)) > 0:
+        signal_process_session(linked, signal.SIGTERM)
     try:
         posix_os.killpg(process_group_id, signal.SIGTERM)
     except ProcessLookupError, PermissionError, OSError:
-        return False
+        return linked > 0
     return True
 
 
@@ -1166,6 +1215,8 @@ def kill_process_group(process_group_id: int) -> bool:
     with contextlib.suppress(OSError):
         if process_group_id == os.getpgrp():
             return False
+    if (linked := _linked_session(process_group_id)) > 0:
+        signal_process_session(linked, signal.SIGKILL)
     try:
         os.killpg(process_group_id, signal.SIGKILL)
     except ProcessLookupError:
@@ -1188,11 +1239,15 @@ def signal_process_session(process_session_id: int, signum: int) -> bool:
     with contextlib.suppress(OSError):
         if process_session_id == os.getsid(0):
             return False
-    members = [
-        status
-        for status in _iter_posix_process_statuses()
-        if status.session_id == process_session_id and status.pgid > 0
-    ]
+    statuses = list(_iter_posix_process_statuses())
+    members = [status for status in statuses if status.session_id == process_session_id and status.pgid > 0]
+    sent_linked = False
+    if (linked := _linked_session(process_session_id)) > 0:
+        # A live stub already relays the signals it can catch to the command's
+        # own group; reach the rest of the command's session directly.
+        stub_alive = any(status.state[:1] not in {"Z", ""} for status in members)
+        skip = {linked} if stub_alive and signum in STUB_RELAYED_SIGNALS else set()
+        sent_linked = _signal_session_members(statuses, linked, signum, skip_groups=skip)
     own_group = os.getpgrp()
     sent = False
     for process_group_id in sorted({status.pgid for status in members} - {own_group}):
@@ -1208,6 +1263,28 @@ def signal_process_session(process_session_id: int, signum: int) -> bool:
             continue
         else:
             sent = True
+    return sent or sent_linked
+
+
+STUB_RELAYED_SIGNALS = frozenset(
+    getattr(signal, name)
+    for name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2", "SIGWINCH", "SIGALRM", "SIGCONT")
+    if hasattr(signal, name)
+)
+"""Kept in step with the signals the sandbox's command stub forwards (``runtime/stub.py::_FORWARDED``)."""
+
+
+def _signal_session_members(
+    statuses: list[_ProcessStatus], session_id: int, signum: int, *, skip_groups: set[int]
+) -> bool:
+    sent = False
+    own_group = cast(Any, os).getpgrp()
+    for status in statuses:
+        if status.session_id != session_id or status.pgid in skip_groups or status.pgid == own_group:
+            continue
+        with contextlib.suppress(OSError):
+            os.kill(status.pid, signum)
+            sent = True
     return sent
 
 
@@ -1222,6 +1299,8 @@ def session_processes(session_id: int) -> dict[int, float]:
     import psutil
 
     found: dict[int, float] = {}
+    if (linked := _linked_session(session_id)) > 0:
+        found.update(session_processes(linked))
     for pid in psutil.pids():
         try:
             if os.getsid(pid) != session_id:
@@ -1427,7 +1506,7 @@ def _infer_process_group_id(proc: asyncio.subprocess.Process, kwargs: dict[str, 
 async def _monitor_process_group_stopped(process_group_id: int) -> Never:
     while True:
         await asyncio.sleep(_STOPPED_PROCESS_POLL_INTERVAL)
-        if await asyncio.to_thread(_process_group_has_stopped_member, process_group_id):
+        if await asyncio.to_thread(_processes_have_stopped_member, process_group_id, 0):
             msg = f"Subprocess process group {process_group_id} entered stopped state."
             raise SubprocessStoppedError(msg)
 
@@ -1442,6 +1521,12 @@ async def _monitor_processes_stopped(process_group_id: int | None, process_sessi
 
 def _processes_have_stopped_member(process_group_id: int | None, process_session_id: int) -> bool:
     if _process_session_has_stopped_member(process_session_id):
+        return True
+    if (
+        process_group_id is not None
+        and (linked := _linked_session(process_group_id)) > 0
+        and _process_session_has_stopped_member(linked)
+    ):
         return True
     return process_group_id is not None and _process_group_has_stopped_member(process_group_id)
 
@@ -1486,7 +1571,9 @@ def _process_listing_has_stopped_group_member(raw: bytes, process_group_id: int)
 def _process_session_has_stopped_member(process_session_id: int) -> bool:
     if sys.platform == "win32" or process_session_id <= 0:
         return False
-    return _process_statuses_have_stopped_session_member(_iter_posix_process_statuses(), process_session_id)
+    sessions = {process_session_id, _linked_session(process_session_id)} - {0}
+    statuses = list(_iter_posix_process_statuses())
+    return any(_process_statuses_have_stopped_session_member(statuses, session) for session in sessions)
 
 
 def _process_statuses_have_stopped_session_member(statuses: Iterable[_ProcessStatus], process_session_id: int) -> bool:

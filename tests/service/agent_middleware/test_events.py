@@ -1706,3 +1706,40 @@ def test_asks_anything_recognises_empty_string_result_override() -> None:
     from chrys.service.hooks.manager import _asks_anything
 
     assert _asks_anything({"result_override": ""})
+
+
+@pytest.mark.parametrize("sub_agent", [False, True])
+async def test_sandbox_refusal_retains_source_in_result_and_hooks(sub_agent):
+    from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
+    from tests.service.agent_middleware.test_approval import _require_all_policy
+
+    bus = EventBus()
+    results = await capture_events(bus, InvocationToolCallResult)
+    manager = PayloadRecordingHookManager({HookEvent.AFTER_TOOL_CALL: HookDecision()})
+    origin = InvocationOrigin("turn", "test", "turn-test", None)
+    if sub_agent:
+        events = SubAgentEventMiddleware(
+            bus,
+            session_id="test",
+            hook_manager=manager,
+            profile_name="Code",
+            agent_name="Child",
+            invocation_id="child",
+            origin=InvocationOrigin("sub_agent", "test", "child", origin),
+        )
+    else:
+        events = ToolEventMiddleware(bus, session_id="test", hook_manager=manager, profile_name="Code", origin=origin)
+    approval = ApprovalMiddleware(_require_all_policy("filesystem.write"), bus)
+    ctx = _ctx("write_file", "filesystem.write", args={"path": "blocked", "content": "x"})
+
+    async def refuse():
+        approval.refuse(ctx, "Error: sandbox refused this write")
+
+    try:
+        await events.process(ctx, refuse)
+    finally:
+        await approval.close()
+    assert results[0].metadata[TOOL_ERROR_KIND_METADATA_KEY] == "sandbox_denied"
+    assert "approval" not in results[0].metadata
+    assert ctx.metadata[TOOL_RESULT_METADATA_KEY][TOOL_ERROR_KIND_METADATA_KEY] == "sandbox_denied"
+    assert manager.payloads[HookEvent.AFTER_TOOL_CALL][0]["result"]["rejection_source"] == "sandbox"

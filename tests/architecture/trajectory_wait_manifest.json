@@ -60,6 +60,11 @@
         ["queue", "await self._queue.get()", "unresolved"]
       ]
     },
+    "chrys.foundation.guard": {
+      "_NoToolCalls.run": [
+        ["awaitable", "await proceed()", "unresolved"]
+      ]
+    },
     "chrys.foundation.patches.textual_callback_cache": {
       "apply_runtime_patch._invoke": [
         ["awaitable", "await result", "unresolved"]
@@ -148,7 +153,7 @@
       ],
       "_monitor_process_group_stopped": [
         ["sleep", "await asyncio.sleep(_STOPPED_PROCESS_POLL_INTERVAL)", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(_process_group_has_stopped_member, process_group_id)", "unresolved"]
+        ["thread_pool", "await asyncio.to_thread(_processes_have_stopped_member, process_group_id, 0)", "unresolved"]
       ],
       "_monitor_processes_stopped": [
         ["sleep", "await asyncio.sleep(_STOPPED_PROCESS_POLL_INTERVAL)", "unresolved"],
@@ -2900,7 +2905,7 @@
         ["wrapper", "await self._fire_sub_agent_hook(HookEvent.SUB_AGENT_START, tool_name=tool_name, invocation_id=invocation_id, parent_call_id=parent_call_id, parent_provider_call_id=parent_provider_call_id, target_operation_id=sub_agent_trace.operation_id if sub_agent_trace is not None else None)", "unresolved", "chrys.orchestration.sub_agents.tools.SubAgentTools._fire_sub_agent_hook"],
         ["awaitable", "await invocation_reminder.refresh_extension_context(prompt)", "unresolved"],
         ["awaitable", "await self._bus.publish(warning)", "unresolved"],
-        ["wrapper", "await create_approval(conversation, ApprovalInputs(approval_policy=approval_policy, event_bus=self._bus, session_id=self._session_id, tool_kinds=self._tool_kinds.get(tool_name), caller_name=self._display_names.get(tool_name, tool_name), workspace_roots=self._workspace_roots, approval_mode=self._approval_mode, approval_judge=self._approval_judge, approval_log_dir=self._approval_log_dir, workspace_cwd=self._workspace_cwd, dev_mode=False, hook_manager=self._hook_manager, profile_name=self._hook_profile_names.get(tool_name, tool_name), session_archive_read_roots=[self._session_dir / COMPACTIONS_DIR_NAME] if self._session_dir else None, turn_context=self._turn_context, extension_hooks=self._extension_hooks.get(tool_name)))", "unresolved", "chrys.orchestration.invoker.runtime.create_approval"],
+        ["wrapper", "await create_approval(conversation, ApprovalInputs(approval_policy=approval_policy, event_bus=self._bus, session_id=self._session_id, tool_kinds=self._tool_kinds.get(tool_name), caller_name=self._display_names.get(tool_name, tool_name), workspace_roots=self._workspace_roots, approval_mode=self._approval_mode, approval_judge=self._approval_judge, approval_log_dir=self._approval_log_dir, workspace_cwd=self._workspace_cwd, dev_mode=False, hook_manager=self._hook_manager, profile_name=self._hook_profile_names.get(tool_name, tool_name), session_archive_read_roots=[self._session_dir / COMPACTIONS_DIR_NAME] if self._session_dir else None, turn_context=self._turn_context, extension_hooks=self._extension_hooks.get(tool_name), sandbox_can_request=False))", "unresolved", "chrys.orchestration.invoker.runtime.create_approval"],
         ["awaitable", "await controller.run()", "unresolved"],
         ["wrapper", "await _finish_cancellation_cleanup(controller.finalize_cancellation())", "unresolved", "chrys.orchestration.sub_agents.tools._finish_cancellation_cleanup"],
         ["awaitable", "await log_writer.write(status='cancelled', result='cancelled', last_error='cancelled', ended=True)", "unresolved"],
@@ -3904,17 +3909,7 @@
       "ApprovalMiddleware._ensure_auto_fulfill_block_subscription": [
         ["awaitable", "await self._approval_arbiter.ensure_subscription()", "unresolved"]
       ],
-      "ApprovalMiddleware._publish_abandoned": [
-        ["wrapper", "await finish_close(retract)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
-      ],
-      "ApprovalMiddleware._remember": [
-        ["thread_pool", "await asyncio.to_thread(binding.service.remember, candidate, choice)", "unresolved"],
-        ["awaitable", "await self._bus.publish(Warning(session_id=self._session_id, code='approval_reuse_save_failed', message=_REMEMBER_FAILED.fallback, display_message=_REMEMBER_FAILED.bind()))", "unresolved"]
-      ],
-      "ApprovalMiddleware.close": [
-        ["awaitable", "await self._approval_arbiter.close()", "unresolved"]
-      ],
-      "ApprovalMiddleware.process": [
+      "ApprovalMiddleware._process_approval": [
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
@@ -3935,6 +3930,28 @@
         ["thread_pool", "await asyncio.to_thread(binding.targets, context)", "unresolved"],
         ["wrapper", "await self._remember(binding, reuse.candidate, remember_choice)", "unresolved", "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._remember"],
         ["awaitable", "await call_next()", "unresolved"]
+      ],
+      "ApprovalMiddleware._publish_abandoned": [
+        ["wrapper", "await finish_close(retract)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
+      "ApprovalMiddleware._remember": [
+        ["thread_pool", "await asyncio.to_thread(binding.service.remember, candidate, choice)", "unresolved"],
+        ["awaitable", "await self._bus.publish(Warning(session_id=self._session_id, code='approval_reuse_save_failed', message=_REMEMBER_FAILED.fallback, display_message=_REMEMBER_FAILED.bind()))", "unresolved"]
+      ],
+      "ApprovalMiddleware.ask": [
+        ["async_context", "async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id)", "unresolved"],
+        ["awaitable", "await self._bus.publish(ApprovalRequest(request_id=request_id, call_id=get_call_id(context), tool_name=tool_name, tool_kind='', presentation_kind=kind, args={'path': path, 'tool': tool_name}, intent_summary=intent, session_id=self._session_id, caller_name=self._caller_name, user_message=self._user_message, workspace_roots=list(self._workspace_roots), workspace_cwd=self._workspace_cwd or '', reuse_offer=offer))", "unresolved"],
+        ["future", "await correlation.future", "unresolved"],
+        ["wrapper", "await self._publish_abandoned(request_id, ended_by=exc)", "unresolved", "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._publish_abandoned"]
+      ],
+      "ApprovalMiddleware.close": [
+        ["awaitable", "await self._approval_arbiter.close()", "unresolved"]
+      ],
+      "ApprovalMiddleware.process": [
+        ["awaitable", "await self._guard_calls.run(context, lambda: self._process_approval(context, call_next))", "unresolved"]
+      ],
+      "ApprovalMiddleware.publish": [
+        ["awaitable", "await self._bus.publish(event)", "unresolved"]
       ]
     },
     "chrys.service.agent_middleware.control.approval_hooks": {

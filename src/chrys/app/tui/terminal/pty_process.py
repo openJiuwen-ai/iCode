@@ -144,15 +144,18 @@ class _PosixPtyProcess:
             write_fd = os.dup(master)
             # Sized before the program starts: it must never see the 0x0 a new terminal has.
             size = (columns, lines) if resize_pty(slave, columns, lines) else None
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=slave,
-                stdout=slave,
-                stderr=slave,
-                env=env,
-                cwd=cwd,
-                preexec_fn=partial(prepare_child_pty, slave),
-            )
+            from chrys.foundation import guard
+
+            with guard.current().controlling_terminal():
+                process = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=slave,
+                    stdout=slave,
+                    stderr=slave,
+                    env=env,
+                    cwd=cwd,
+                    preexec_fn=partial(prepare_child_pty, slave),
+                )
         except BaseException:
             for fd in (master, slave, write_fd):
                 if fd >= 0:

@@ -501,16 +501,54 @@ def _open_posix_parent(path: Path) -> tuple[int, str]:
         raise SecureFileError("Secure file path has no filename.")
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
-    directory_fd = os.open(absolute.anchor, flags)
     try:
-        for component in absolute.parts[1:-1]:
+        return _walk_posix_parent(absolute, Path(absolute.anchor), flags), absolute.name
+    except PermissionError:
+        # Under the file-access sandbox the walk can't open the private roots
+        # themselves (the home directory), and on Linux not even ``/``: restart
+        # at the deepest directory this process may open, or else at the
+        # shallowest ancestor it can (a confined child has no sandbox runtime
+        # to ask). Components above the start are opened by the kernel's own
+        # path walk, as any ``open`` does; only symlinks below it are refused.
+        # Unconfined, a refusal is a refusal: the walk from ``/`` stands.
+        from chrys.foundation import guard
+
+        if not guard.confined():
+            raise
+        start = guard.current().walk_start(str(absolute.parent))
+        if start is None:
+            start = _shallowest_openable(absolute, flags)
+        if start is None:
+            raise
+        return _walk_posix_parent(absolute, Path(start), flags), absolute.name
+
+
+def _shallowest_openable(absolute: Path, flags: int) -> str | None:
+    parents = absolute.parts[:-1]
+    for depth in range(2, len(parents) + 1):
+        candidate = str(Path(*parents[:depth]))
+        try:
+            fd = os.open(candidate, flags)
+        except PermissionError:
+            continue
+        except OSError:
+            return None
+        os.close(fd)
+        return candidate
+    return None
+
+
+def _walk_posix_parent(absolute: Path, start: Path, flags: int) -> int:
+    directory_fd = os.open(str(start), flags)
+    try:
+        for component in absolute.parts[len(start.parts) : -1]:
             next_fd = os.open(component, flags, dir_fd=directory_fd)
             os.close(directory_fd)
             directory_fd = next_fd
     except BaseException:
         os.close(directory_fd)
         raise
-    return directory_fd, absolute.name
+    return directory_fd
 
 
 @cache

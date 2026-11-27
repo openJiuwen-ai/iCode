@@ -75,6 +75,7 @@ class EventType:
     TOOL_PAYLOAD_OBSERVED = "tool.payload.observed"
     APPROVAL_REQUESTED = "approval.requested"
     APPROVAL_RESOLVED = "approval.resolved"
+    SANDBOX_ACCESS_DENIED = "sandbox.access.denied"
     INTERRUPT_REQUESTED = "interrupt.requested"
     INTERRUPT_OBSERVED = "interrupt.observed"
 

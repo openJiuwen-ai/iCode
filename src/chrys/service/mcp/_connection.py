@@ -72,6 +72,9 @@ def _validate_config(config: MCPServerConfig) -> None:
         not isinstance(config.allowed_tools, list) or not all(isinstance(name, str) for name in config.allowed_tools)
     ):
         raise ValueError(f"MCP server {config.name!r}: 'allowed_tools' must be a list of strings or null")
+    for field_name, paths in (("read_paths", config.read_paths), ("write_paths", config.write_paths)):
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise ValueError(f"MCP server {config.name!r}: {field_name!r} must be a list of strings")
     if not isinstance(config.always_load, list) or not all(isinstance(name, str) for name in config.always_load):
         raise ValueError(f"MCP server {config.name!r}: 'always_load' must be a list of strings")
     if policy_errors := validate_mcp_tool_loading_policy(
@@ -135,6 +138,8 @@ def _create_mcp_tool(config: MCPServerConfig) -> MCPTool:
             "env": env if env_is_complete else env or None,
             "encoding": config.encoding,
             "env_is_complete": env_is_complete,
+            "sandbox_read_paths": config.read_paths,
+            "sandbox_write_paths": config.write_paths,
         }
         cwd = _STDIO_CWD_OVERRIDE.get()
         if cwd is not None:

@@ -744,6 +744,25 @@ _LABEL_MUTATIONS_TRACE_FSATRACE_PATH = msg("settings.mutations.trace.fsatrace_pa
 _LABEL_WORKDIR_CONFIG_ENABLED = msg("settings.workdir.config_enabled.label", fallback="Load working directory settings")
 _LABEL_WORKDIR_HOOKS_ENABLED = msg("settings.workdir.hooks_enabled.label", fallback="Load working directory hooks")
 _LABEL_WORKDIR_SKILLS_ENABLED = msg("settings.workdir.skills_enabled.label", fallback="Load working directory skills")
+_LABEL_SANDBOX_ENABLED = msg("settings.sandbox.files.enabled.label", fallback="File-access sandbox (next start)")
+_LABEL_SANDBOX_ON_UNAVAILABLE = msg(
+    "settings.sandbox.files.on_unavailable.label", fallback="If the sandbox is unavailable"
+)
+_LABEL_SANDBOX_MAIN_ALLOW = msg(
+    "settings.sandbox.files.main.allow_paths.label", fallback="Sandbox: extra paths iCode may read"
+)
+_LABEL_SANDBOX_COMMANDS_ALLOW = msg(
+    "settings.sandbox.files.commands.allow_paths.label", fallback="Sandbox: extra paths commands may read"
+)
+_LABEL_SANDBOX_COMMANDS_WRITE = msg(
+    "settings.sandbox.files.commands.write_paths.label", fallback="Sandbox: extra paths commands may change"
+)
+_LABEL_SANDBOX_AUDIT_REDACT = msg(
+    "settings.sandbox.files.audit.redact_paths.label", fallback="Sandbox: hide paths in its logs and trajectories"
+)
+_LABEL_SANDBOX_FLOOR_EXTRA = msg(
+    "settings.sandbox.files.floor.extra.label", fallback="Sandbox: extra never-granted paths"
+)
 _LABEL_NOTIFICATIONS_ENABLED = msg("settings.notifications.enabled.label", fallback="Enable notifications")
 _LABEL_NOTIFICATIONS_DELIVERY_DESKTOP = msg("settings.notifications.delivery.desktop.label", fallback="Desktop popup")
 _LABEL_NOTIFICATIONS_DELIVERY_SOUND = msg("settings.notifications.delivery.sound.label", fallback="Sound")
@@ -1653,6 +1672,103 @@ class Settings:
             # A working directory must not be able to switch its own hooks back on.
             workdir_merge=WorkdirMerge.DENY,
             risk=Risk.CAUTION,
+        ),
+    )
+
+    # File-access sandbox (the ``icode-sandbox`` package). Read once, at process start,
+    # straight from the user document by ``foundation/guard.py`` and the package
+    # (before this loader exists); declared here so the panel shows the keys
+    # and the loader does not report them as unknown. A working directory can't
+    # touch them, except to switch the sandbox on: a repository must not be able
+    # to switch its own sandbox off.
+    sandbox_files_enabled: bool = field(
+        default=False,
+        metadata=spec(
+            key="sandbox.files.enabled",
+            label=_LABEL_SANDBOX_ENABLED,
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
+            group="approval",
+            kind=Kind.BOOL,
+            workdir_merge=WorkdirMerge.ENABLE_ONLY,
+            risk=Risk.CAUTION,
+        ),
+    )
+    sandbox_files_on_unavailable: str = field(
+        default="refuse",
+        metadata=spec(
+            key="sandbox.files.on_unavailable",
+            label=_LABEL_SANDBOX_ON_UNAVAILABLE,
+            coerce=choice_coercer(choices=("refuse", "warn")),
+            choices=("refuse", "warn"),
+            apply=Apply.RESTART,
+            group="approval",
+            kind=Kind.ENUM,
+            workdir_merge=WorkdirMerge.DENY,
+        ),
+    )
+    sandbox_files_main_allow_paths: str = field(
+        default="",
+        metadata=spec(
+            key="sandbox.files.main.allow_paths",
+            label=_LABEL_SANDBOX_MAIN_ALLOW,
+            coerce=text_coercer(),
+            apply=Apply.RESTART,
+            group="approval",
+            kind=Kind.TEXT,
+            workdir_merge=WorkdirMerge.DENY,
+            risk=Risk.CAUTION,
+        ),
+    )
+    sandbox_files_commands_allow_paths: str = field(
+        default="",
+        metadata=spec(
+            key="sandbox.files.commands.allow_paths",
+            label=_LABEL_SANDBOX_COMMANDS_ALLOW,
+            coerce=text_coercer(),
+            apply=Apply.RESTART,
+            group="approval",
+            kind=Kind.TEXT,
+            workdir_merge=WorkdirMerge.DENY,
+            risk=Risk.CAUTION,
+        ),
+    )
+    sandbox_files_commands_write_paths: str = field(
+        default="",
+        metadata=spec(
+            key="sandbox.files.commands.write_paths",
+            label=_LABEL_SANDBOX_COMMANDS_WRITE,
+            coerce=text_coercer(),
+            apply=Apply.RESTART,
+            group="approval",
+            kind=Kind.TEXT,
+            workdir_merge=WorkdirMerge.DENY,
+            risk=Risk.CAUTION,
+        ),
+    )
+    sandbox_files_floor_extra: str = field(
+        default="",
+        metadata=spec(
+            key="sandbox.files.floor.extra",
+            label=_LABEL_SANDBOX_FLOOR_EXTRA,
+            coerce=text_coercer(),
+            apply=Apply.RESTART,
+            group="approval",
+            kind=Kind.TEXT,
+            workdir_merge=WorkdirMerge.DENY,
+        ),
+    )
+
+    sandbox_files_audit_redact_paths: bool = field(
+        default=False,
+        metadata=spec(
+            key="sandbox.files.audit.redact_paths",
+            label=_LABEL_SANDBOX_AUDIT_REDACT,
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
+            group="approval",
+            kind=Kind.BOOL,
+            workdir_merge=WorkdirMerge.DENY,
         ),
     )
 

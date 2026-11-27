@@ -168,6 +168,23 @@ def build_parser() -> argparse.ArgumentParser:
     workspace_flags = tui_options.add_mutually_exclusive_group()
     workspace_flags.add_argument("--workspace", metavar="WORKSPACE", help="Open a workspace by name or ID prefix")
     workspace_flags.add_argument(*WORKDIR_OPTIONS, metavar="DIR", help="Start the TUI in the given working directory")
+    from chrys.foundation import guard
+
+    if guard.installed():  # offered only when it can work: without the package, --sandbox refuses to start
+        tui_options.add_argument(
+            "--sandbox",
+            action="store_true",
+            help="Confine file reads to the workspace and granted folders for this run (also: CHRYS_FILE_SANDBOX=1)",
+        )
+        tui_options.add_argument(
+            "--no-sandbox", action="store_true", help="Run without the file-access sandbox this time"
+        )
+
+    tui_options.add_argument(
+        "--sandbox-on-unavailable",
+        choices=("refuse", "warn"),
+        help="When a requested sandbox is unavailable: refuse startup (default), or warn and continue",
+    )
 
     commands = parser.add_argument_group("commands")
     commands.add_argument(
@@ -179,9 +196,82 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_SANDBOXED_COMMANDS: Final = frozenset({"run", "acp", "workflow", "workflows", _TUI_SUBPROCESS_COMMAND})
+_UNSANDBOXED_COMMANDS: Final = frozenset(
+    {"agent", "agents", "model", "models", "approval", "approvals", "hook", "hooks", "install", "uninstall"}
+    | {"serve", "trajectory", "trajectories", "sandbox"}
+)
+
+
+def _sandbox_launch_roots(argv: list[str]) -> list[str]:
+    """Resolve launch roots without entering a folder or starting the runtime.
+
+    Invalid selectors remain the command parser's to report. An empty result
+    gives the guard no launch-folder access while that command reports them.
+    """
+    import os
+    from pathlib import Path
+
+    from chrys.foundation.guard import launch_dirs
+
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    selectors = parser.add_mutually_exclusive_group()
+    selectors.add_argument(*WORKDIR_OPTIONS, dest="workdir")
+    selectors.add_argument("--workspace")
+    try:
+        selected, _unknown = parser.parse_known_args(argv)
+    except argparse.ArgumentError:
+        return []
+    if selected.workspace is not None:
+        from chrys.app.cli.launch_cwd import resolve_workspace_selector
+        from chrys.service.workspaces.registry import WorkspaceRegistryError
+
+        try:
+            workspace, _snapshot = resolve_workspace_selector(selected.workspace)
+        except WorkspaceRegistryError:
+            return []
+        return [workspace.primary_cwd, *(directory.path for directory in workspace.working_dirs)]
+    if selected.workdir is not None:
+        try:
+            return [str(Path(os.path.expanduser(selected.workdir)).absolute())]
+        except OSError:
+            # A relative selector cannot resolve against a deleted cwd. Let the
+            # command report its usual launch-directory error after parsing.
+            return []
+    return launch_dirs([])
+
+
+def _enable_sandbox(argv: list[str]) -> list[str]:
+    """Enable the file-access sandbox for commands that run an agent; strip its flags.
+
+    Runs before anything else in the process — the sandbox confines only
+    threads started after it — and decides once: see ``foundation/guard.py``.
+    """
+    from chrys.foundation.guard import parse_flags, startup_flags
+
+    rest, wanted, policy = parse_flags(argv)
+    command = rest[0] if rest else ""
+    if command == "serve":
+        # The HTTP server stays unconfined; every browser session decides at startup.
+        return ["serve", *startup_flags(wanted, policy), *rest[1:]]
+    if command in _UNSANDBOXED_COMMANDS or argv in (["--version"], ["-v"], ["--help"], ["-h"]):
+        from chrys.foundation.guard import strip_flags
+
+        return strip_flags(argv)[0]
+    # _SANDBOXED_COMMANDS and anything else (passed to the TUI) are confined.
+    from chrys.foundation.guard import install_at_startup
+
+    rest, _status = install_at_startup(argv, resolve_launch_roots=_sandbox_launch_roots)
+    return rest
+
+
 def main() -> int:
     """Dispatch ``chrys`` entrypoint modes."""
-    argv = sys.argv[1:]
+    argv = _enable_sandbox(sys.argv[1:])
+    if argv and argv[0] == "sandbox":
+        from chrys.foundation import guard
+
+        return guard.cli(argv[1:])
     if argv and argv[0] == _TUI_SUBPROCESS_COMMAND:
         return _run_tui(argv[1:])
     if argv in (["--version"], ["-v"]):

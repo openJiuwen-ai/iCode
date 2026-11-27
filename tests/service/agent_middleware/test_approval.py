@@ -1383,6 +1383,10 @@ async def test_quoted_sensitive_env_reference_keeps_readonly_auto_approval(tmp_p
         "read-azure-msal-cache",
     ],
 )
+@pytest.mark.skipif(
+    os.environ.get("CHRYS_TEST_SANDBOX") == "1",
+    reason="under the file-access sandbox protected paths (keychains, keys) are refused before approval (by design)",
+)
 async def test_auto_judge_reviews_sensitive_targets_even_when_policy_is_auto(
     tool_name: str,
     tool_kind: str,
@@ -1623,7 +1627,7 @@ async def test_auto_judge_exception_flags_as_failure() -> None:
             responders.create_task(_respond_later(ev.request_id))
 
         await bus.subscribe(ApprovalRequest, _on_request)
-        await mw.process(_ctx("write_file", "filesystem.write", {"path": "/x"}), _noop)
+        await mw.process(_ctx("write_file", "filesystem.write", {"path": "x"}), _noop)
 
     assert len(reviews) == 1
     assert reviews[0].approved is False
@@ -1692,7 +1696,7 @@ async def test_auto_mode_without_judge_falls_back_to_manual() -> None:
 
     await bus.subscribe(ApprovalRequest, _on_req)
 
-    await h.run(mw, _ctx("write_file", "filesystem.write", {"path": "/x"}))
+    await h.run(mw, _ctx("write_file", "filesystem.write", {"path": "x"}))
 
     assert len(h.requests) == 1
     assert h.requests[0].judging is False  # no judge → dialog shows normal state

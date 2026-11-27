@@ -12,7 +12,7 @@ import io
 import json
 import subprocess
 import sys
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 from aiohttp import ClientPayloadError, web
@@ -24,22 +24,8 @@ from chrys.app.cli import serve as serve_cli
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import atomic_write_owner_only_text
+from tests.app.cli._serve_helpers import FakeServer, fixed_tui_command
 from tests.support.waiting import wait_for
-
-
-class FakeServer:
-    """Minimal textual-serve stand-in for CLI tests."""
-
-    instances: ClassVar[list[FakeServer]] = []
-
-    def __init__(self, command: str, **kwargs: Any) -> None:
-        self.command = command
-        self.kwargs = kwargs
-        self.debug: bool | None = None
-        FakeServer.instances.append(self)
-
-    def serve(self, *, debug: bool = False) -> None:
-        self.debug = debug
 
 
 class FakeAiohttpBaseServer:
@@ -348,9 +334,11 @@ def test_textual_serve_clipboard_bridge_contract() -> None:
 def test_run_command_starts_textual_serve(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=9000,
@@ -378,9 +366,11 @@ def test_run_command_starts_textual_serve(monkeypatch: pytest.MonkeyPatch) -> No
 def test_run_command_passes_normalized_public_url(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=9000,
@@ -399,10 +389,12 @@ def test_run_command_passes_normalized_public_url(monkeypatch: pytest.MonkeyPatc
 def test_run_command_passes_env_auth_config(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="localhost",
         port=9000,
@@ -425,10 +417,12 @@ def test_run_command_passes_env_auth_config(monkeypatch: pytest.MonkeyPatch) -> 
 def test_run_command_passes_trusted_forwarded_for_auth_config(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="localhost",
         port=9000,
@@ -450,6 +444,8 @@ def test_resolve_auth_config_rejects_mismatched_prompt(monkeypatch: pytest.Monke
     prompts = iter(["one", "two"])
     monkeypatch.setattr(serve_cli.getpass, "getpass", lambda _prompt: next(prompts))
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="localhost",
         port=7777,
@@ -670,9 +666,11 @@ def test_run_command_warns_for_wildcard_host_without_public_url(
 ) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host=host,
         port=9000,
@@ -699,10 +697,12 @@ def test_run_command_rejects_auth_over_non_loopback_http_by_default(
 ) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=9000,
@@ -727,10 +727,12 @@ def test_run_command_rejects_wildcard_auth_without_public_url(
 ) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=9000,
@@ -755,10 +757,12 @@ def test_run_command_rejects_wildcard_auth_without_explicit_https_public_url_on_
 ) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=443,
@@ -783,10 +787,12 @@ def test_run_command_rejects_wildcard_auth_with_http_loopback_public_url(
 ) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=9000,
@@ -812,10 +818,12 @@ def test_run_command_rejects_auth_with_malformed_public_url(
 ) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=9000,
@@ -855,8 +863,10 @@ def test_run_command_rejects_malformed_public_url_without_auth(
 ) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="localhost",
         port=7777,
@@ -877,10 +887,12 @@ def test_run_command_rejects_malformed_public_url_without_auth(
 def test_run_command_allows_wildcard_auth_with_https_public_url(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=9000,
@@ -901,10 +913,12 @@ def test_run_command_allows_wildcard_auth_with_https_public_url(monkeypatch: pyt
 def test_run_command_allows_auth_on_ipv6_loopback_default_url(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="::1",
         port=9000,
@@ -928,10 +942,12 @@ def test_run_command_allows_explicit_insecure_http_auth(
 ) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=9000,
@@ -957,10 +973,12 @@ def test_run_command_warns_for_explicit_insecure_wildcard_auth_with_http_loopbac
 ) -> None:
     FakeServer.instances.clear()
     monkeypatch.setattr(serve_cli, "_load_server_class", lambda: FakeServer)
-    monkeypatch.setattr(serve_cli, "build_tui_command", lambda _session: "chrys __tui_subprocess__")
+    monkeypatch.setattr(serve_cli, "build_tui_command", fixed_tui_command)
     monkeypatch.setenv("CHRYS_SERVE_PASSWORD", "secret")
 
     args = argparse.Namespace(
+        sandbox=None,
+        sandbox_on_unavailable=None,
         session=None,
         host="0.0.0.0",
         port=9000,

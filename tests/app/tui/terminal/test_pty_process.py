@@ -255,6 +255,9 @@ async def test_posix_kill_ends_the_program_and_a_read_in_progress(
         assert await reading == ""
         await process.close()
     # Reaped, not merely dead: `is_running` is false for a pid that is gone or is someone else's.
+    if os.environ.get("CHRYS_TEST_SANDBOX") == "1":
+        # Under the sandbox the broker is the program's parent and reaps it, an instant after this process's child.
+        await wait_for(lambda: not child.is_running(), description="the broker reaped the program")
     assert not child.is_running()
     assert await process.write("x") is False
     assert await process.resize(100, 30) is False

@@ -96,6 +96,12 @@ async def _run_command(command: str) -> str:
     return token
 
 
+def _sandboxed() -> bool:
+    from chrys.foundation import guard
+
+    return guard.current().active
+
+
 async def _run_and_keep(handle: str, credential: _Credential) -> None:
     placeholder = command_placeholder(handle)
     failure: str | None = None
@@ -114,6 +120,11 @@ async def _run_and_keep(handle: str, credential: _Credential) -> None:
     # Raised outside the handler so nothing is chained to it: whoever walks an error's
     # chain for a timeout would blame a slow command on the server it was for.
     message = f"The command in {placeholder.location} {failure}. Run it in a terminal to see why."
+    if _sandboxed():
+        message += (
+            " The file-access sandbox is on: the command can read only what iCode's commands may read,"
+            " so a keychain or a password store in your home folder is out of its reach."
+        )
     if credential.token is None:
         raise EnvVarResolutionError(message)
     logger.warning("%s Keeping its previous output.", message)

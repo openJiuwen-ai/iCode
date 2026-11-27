@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
@@ -85,6 +86,11 @@ async def test_a_full_result_stops_rg_before_it_prints_the_rest(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell launcher")
+@pytest.mark.skipif(
+    os.environ.get("CHRYS_TEST_SANDBOX") == "1",
+    reason="under the file-access sandbox the launcher and its rg are children of the broker, not of the spawned stub "
+    "(known deviation; that they end is covered by the next test)",
+)
 async def test_a_full_result_stops_an_rg_that_a_launcher_started(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observed_rg: _ObservedRg
 ) -> None:

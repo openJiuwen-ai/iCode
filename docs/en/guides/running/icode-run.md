@@ -196,3 +196,9 @@ Automation scripts can use the exit status to determine the outcome:
 | `2` | Invalid command-line arguments, such as a missing `--agent`, or both or neither of a prompt and `--task`. The usage message is written to standard error as plain text, even with `--json`. |
 | `124` | An internal operation timed out. `icode run` has no overall time limit for a task. |
 | `130` | The run was interrupted. |
+
+## Sandbox startup policy
+
+`--sandbox` requests the optional file-access sandbox; `--no-sandbox` turns it off for this start. `--sandbox-on-unavailable=refuse` stops startup if a requested sandbox cannot start; `--sandbox-on-unavailable=warn` permits startup with an explicit warning. This option overrides `CHRYS_FILE_SANDBOX_ON_UNAVAILABLE` and the user's `sandbox.files.on_unavailable` setting.
+
+A working-directory setting can request the sandbox only when you enable working-directory configuration. If that is the only request, an unavailable sandbox warns instead of stopping startup. It cannot weaken a sandbox request in your own settings or your failure policy. A forked TUI window keeps its parent's sandbox choice and effective failure policy.

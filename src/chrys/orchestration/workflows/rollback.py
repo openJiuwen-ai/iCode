@@ -50,6 +50,8 @@ async def rollback_files(
     )
 
     def apply() -> tuple[WorkflowRollbackResult, dict[str, Any] | None]:
+        from chrys.foundation import guard
+
         snapshots = SnapshotStore(directory, policy=SnapshotPolicy.from_settings(settings))
         tracker = MutationTracker.deserialize(mutations, snapshots)
         cwd = workspace.primary_cwd
@@ -95,7 +97,9 @@ async def rollback_files(
                     raise ValueError(
                         "Files changed while preparing rollback. Review the updated plan before confirming."
                     )
-                restored = tracker.restore_files(plan)
+                # Under the sandbox, as the tool calls that made these changes were.
+                with guard.current().session_scope(request.session_id, scope_paths, cwd):
+                    restored = tracker.restore_files(plan)
                 finished = time()
                 restored_paths = {item.path for item in restored if item.changed}
                 coordinator.publish_claims(

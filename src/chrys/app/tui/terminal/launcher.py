@@ -102,8 +102,16 @@ def can_open_new_chrys_window(env: Mapping[str, str] | None = None) -> bool:
 
 
 def build_chrys_tui_argv(session_id: str) -> list[str]:
-    """Return argv that opens Chrys TUI and restores *session_id*."""
-    return [*_entrypoint_argv(), _TUI_SUBPROCESS_COMMAND, "--session", session_id]
+    """Return argv that opens Chrys TUI and restores *session_id*.
+
+    A sandboxed window opens a sandboxed window: the new process decides for
+    itself at start, and a ``--sandbox`` given on this one's command line would
+    otherwise be lost.
+    """
+    from chrys.foundation import guard
+
+    sandbox = guard.fork_flags()
+    return [*_entrypoint_argv(), _TUI_SUBPROCESS_COMMAND, "--session", session_id, *sandbox]
 
 
 def build_macos_fork_argv(session_id: str) -> list[str]:

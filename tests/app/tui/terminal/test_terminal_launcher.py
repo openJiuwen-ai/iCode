@@ -21,9 +21,26 @@ from chrys.app.tui.terminal.launcher import (
     is_remote_execution_environment,
     is_remote_ssh_session,
 )
+from chrys.foundation import guard
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import Localizer
 from chrys.foundation.i18n.formatting import format_message
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_not_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The argv these tests pin is the one a process without the sandbox builds."""
+    monkeypatch.setattr(guard, "status", lambda: guard.GuardStatus(state="inactive", requested=False))
+
+
+def test_a_sandboxed_window_opens_a_sandboxed_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(guard, "status", lambda: guard.GuardStatus(state="active", requested=True))
+    argv = build_chrys_tui_argv("session-1")
+    assert argv[-3:] == ["--session", "session-1", "--sandbox"]
+    # The flag survives dispatch: the new process strips it before routing the TUI subcommand.
+    rest, decision = guard.decide(argv[argv.index("--session") - 1 :], launcher.Path("/nonexistent"), env={})
+    assert decision.enabled is True and rest[0] == launcher._TUI_SUBPROCESS_COMMAND
+
 
 _MACOS_WINDOW_SERVER_PROBE = launcher._macos_window_server_session_is_available
 _WINDOWS_DESKTOP_PROBE = launcher._windows_desktop_shell_is_visible
@@ -99,7 +116,8 @@ async def test_exiting_fork_dialog_reaps_pending_applescript(monkeypatch: pytest
 
     def find_sender() -> bool:
         nonlocal sender
-        for child in parent.children():
+        # A sandbox broker owns the real command; its stub is the direct child.
+        for child in parent.children(recursive=True):
             if child.name() == "osascript" and marker in child.cmdline():
                 sender = child
                 return True
@@ -620,3 +638,47 @@ async def test_iterm_window_runs_the_directory_change_in_a_shell(monkeypatch) ->
     cwd = "/someone's project"
     await launcher._launch_macos(argv, cwd=cwd)
     assert shlex.split(shlex.split(commands[0])[-1]) == ["cd", cwd, "&&", *argv]
+
+
+@pytest.mark.parametrize("source", ["workdir", "cli"])
+def test_a_warned_parent_preserves_warning_policy_in_its_fork(tmp_path, monkeypatch, source):
+    config, work = tmp_path / "config", tmp_path / "work"
+    config.mkdir()
+    (work / ".chrys").mkdir(parents=True)
+    (config / "settings.yaml").write_text("workdir.config_enabled: true\n")
+    (work / ".chrys/settings.yaml").write_text("sandbox.files.enabled: true\n")
+    saved = guard.current()
+    monkeypatch.setattr(guard, "status", lambda: guard.current().status())
+
+    def missing():
+        raise LookupError("missing test package")
+
+    monkeypatch.setattr(guard, "_load_plugin", missing)
+    monkeypatch.setenv(guard.ENV_ON_UNAVAILABLE, "warn" if source == "cli" else "refuse")
+    try:
+        parent = ["--sandbox"] if source == "cli" else []
+        guard.install_at_startup([*parent, "-C", str(work)], config_dir=config)
+        child = build_chrys_tui_argv("session-1")
+        # A desktop terminal can launch independently, without the parent's environment.
+        monkeypatch.delenv(guard.ENV_ON_UNAVAILABLE)
+        _, decision = guard.decide(child, config, env={})
+        assert decision.enabled is True
+        assert decision.on_unavailable == "warn"
+        _, status = guard.install_at_startup(child, config_dir=config)
+        assert (status.state, status.requested) == ("inactive", True)
+    finally:
+        guard.set_current(saved)
+
+
+def test_fork_cannot_weaken_a_refusing_parent_with_its_environment(tmp_path, monkeypatch):
+    saved = guard.current()
+    try:
+        guard.set_current(
+            guard._NoGuard(guard.GuardStatus(state="active", requested=True)),
+            decision=guard.Decision(enabled=True, source="settings", on_unavailable="refuse"),
+        )
+        _, decision = guard.decide(build_chrys_tui_argv("session-1"), tmp_path, env={guard.ENV_ON_UNAVAILABLE: "warn"})
+        assert decision.enabled is True
+        assert decision.on_unavailable == "refuse"
+    finally:
+        guard.set_current(saved)

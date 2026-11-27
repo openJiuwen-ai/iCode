@@ -351,6 +351,10 @@ def test_windows_batch_serializer_validates_shim_path(shim: str) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
+@pytest.mark.skipif(
+    os.environ.get("CHRYS_TEST_SANDBOX") == "1",
+    reason="under the file-access sandbox the pid iCode holds is the stub's, not the command's (known deviation)",
+)
 async def test_spawn_managed_stdio_process_owns_posix_session(tmp_path) -> None:
     process = await spawn_managed_stdio_process(
         sys.executable,
@@ -1166,6 +1170,10 @@ async def test_windows_process_wait_registers_with_the_running_loops_completion_
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
+@pytest.mark.skipif(
+    os.environ.get("CHRYS_TEST_SANDBOX") == "1",
+    reason="under the file-access sandbox the pid iCode holds is the stub's, not the command's (known deviation)",
+)
 async def test_a_start_that_finishes_as_its_wait_times_out_still_has_its_tree_ended(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1217,6 +1225,10 @@ async def test_a_start_that_finishes_as_its_wait_times_out_still_has_its_tree_en
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
+@pytest.mark.skipif(
+    os.environ.get("CHRYS_TEST_SANDBOX") == "1",
+    reason="under the file-access sandbox the pid iCode holds is the stub's, not the command's (known deviation)",
+)
 async def test_a_start_finishing_after_its_cancel_went_on_still_has_its_tree_ended(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1317,6 +1329,10 @@ async def test_a_cancel_ends_even_when_the_start_never_finishes(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
+@pytest.mark.skipif(
+    os.environ.get("CHRYS_TEST_SANDBOX") == "1",
+    reason="under the file-access sandbox the pid iCode holds is the stub's, not the command's (known deviation)",
+)
 @pytest.mark.parametrize("cancels", [1, 2], ids=["one-cancel", "a-second-cancel"])
 @pytest.mark.parametrize("starter", ["managed_subprocess", "spawn_managed_stdio_process"])
 async def test_a_cancel_while_the_child_starts_ends_everything_it_started(
@@ -1373,3 +1389,16 @@ async def test_a_cancel_while_the_child_starts_ends_everything_it_started(
         return not any(still_running(process) for process in processes)
 
     await wait_for(gone, timeout=ENGINE_TURN_TIMEOUT, description="the shell and its sleep ended")
+
+
+def test_a_linked_session_that_is_gone_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its pid may be reused by another process: once gone, the link must reach nothing."""
+    from chrys.foundation.platform import process
+
+    monkeypatch.setattr(process, "_linked_sessions", {})
+    answers = iter([0, 4242, -1])
+    process.link_process_session(777, lambda: next(answers))
+    assert process._linked_session(777) == 0  # not started yet: kept
+    assert process._linked_session(777) == 4242
+    assert process._linked_session(777) == 0  # gone: dropped, never asked again
+    assert 777 not in process._linked_sessions

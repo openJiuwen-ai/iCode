@@ -237,3 +237,9 @@ icode serve --public-url http://localhost:8888 --auth-required
 ### 复制失败
 
 若出现复制对话框，点击 **Copy**。仍失败时，选中对话框中的文字，使用浏览器的复制快捷键手动复制。
+
+## 文件访问沙箱
+
+使用 `icode serve --sandbox`（或 `icode --sandbox serve`）为每个浏览器会话请求可选的文件访问沙箱。HTTP 服务本身不进入沙箱。使用 `--no-sandbox` 为这些会话关闭沙箱；不指定开关时，每个会话照常读取设置和环境变量。
+
+请求的沙箱不可用时，会话默认拒绝启动。只有愿意在没有隔离保护的情况下继续运行时，才添加 `--sandbox-on-unavailable=warn`。降级会话会打印警告，并在底栏持续显示**沙箱未启用**，即使沙箱包缺失也会提示。

@@ -38,3 +38,9 @@ TrajectoryDashboard > SessionJsonPanel {
 #footer-row > HookIndicator {
     dock: right;
 }
+
+/* Left of the hook indicator: a second widget docked right does not stack,
+   so it stays in the row's flow and the footer keys (1fr) give way to it. */
+#footer-row > SandboxIndicator {
+    width: auto;
+}

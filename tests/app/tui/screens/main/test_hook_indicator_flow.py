@@ -1109,21 +1109,30 @@ async def test_the_footer_keys_keep_every_cell_the_label_does_not_take(tmp_path:
         await wait_for(lambda: footer.query(FooterKey), pilot=pilot, description="the footer keys")
         keys = list(footer.query(FooterKey))
 
+        # The process guard's indicator (the file-access sandbox), mounted only while it is on
+        # (CHRYS_TEST_SANDBOX); found by its type name so the sandbox package stays optional.
+        found = main.query("SandboxIndicator")
+        sandbox = found.first() if found else None
+
         def keys_whole() -> bool:
-            return footer.region.right == indicator.region.x and all(
+            # The sandbox indicator, shown while the sandbox is on (CHRYS_TEST_SANDBOX), sits between them.
+            shown = sandbox is not None and sandbox.display and sandbox.region.width
+            neighbour = sandbox.region.x if shown and sandbox is not None else indicator.region.x
+            return footer.region.right == neighbour and all(
                 key.region.width and key.region.right <= footer.region.right for key in keys
             )
 
         await wait_for(keys_whole, pilot=pilot, description="every key whole beside the idle label")
         # A box of the indicator's full width would leave the keys too little room.
-        assert sum(key.region.width for key in keys) > app.size.width - HOOK_INDICATOR_WIDTH
+        sandbox_cells = sandbox.region.width if sandbox is not None and sandbox.display else 0
+        assert sum(key.region.width for key in keys) > app.size.width - HOOK_INDICATOR_WIDTH - sandbox_cells
         assert indicator.region.width == len(" ⠿ Hooks ")
         assert indicator.region.right == app.size.width
 
         await _snapshot(bus, _view("a-hook-whose-id-is-long-enough", age=2))
         await wait_for(lambda: "…" in _indicator(app), pilot=pilot, description="the long id shown")
         assert indicator.region.width == HOOK_INDICATOR_WIDTH
-        assert footer.region.right == indicator.region.x
+        assert footer.region.right + sandbox_cells == indicator.region.x
         await _snapshot(bus)
         await _shows(pilot, "Hooks")
         await wait_for(keys_whole, pilot=pilot, description="the keys whole again")
@@ -1711,3 +1720,17 @@ async def test_hiding_the_footer_row_drops_the_hover(tmp_path: Path, monkeypatch
         assert not await wait_until(lambda: _highlighted(app, hover), timeout=0.3, pilot=pilot), _highlighted(
             app, hover
         )
+
+
+async def test_missing_sandbox_package_keeps_warning_visible_in_footer(tmp_path, monkeypatch):
+    from chrys.foundation import guard
+
+    monkeypatch.setattr(
+        guard,
+        "_current",
+        guard._NoGuard(guard.GuardStatus(state="inactive", requested=True, reasons=["package missing"])),
+    )
+    app = _make_app(tmp_path, EventBus())
+    async with app.run_test(size=(160, 40)) as pilot:
+        await _ready(pilot)
+        assert "Sandbox NOT active" in _frame(app).splitlines()[-1]

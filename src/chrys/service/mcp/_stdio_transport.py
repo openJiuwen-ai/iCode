@@ -398,6 +398,8 @@ async def tolerant_stdio_client(
     dropped_banner_lines: list[str] | None = None,
     process_diagnostics: _StdioProcessDiagnostics | None = None,
     inherit_env: bool = True,
+    sandbox_read_paths: list[str] | None = None,
+    sandbox_write_paths: list[str] | None = None,
 ) -> AsyncGenerator[tuple[Any, Any]]:
     """``mcp.client.stdio.stdio_client`` variant that ignores banner lines.
 
@@ -515,13 +517,21 @@ async def tolerant_stdio_client(
         # The SDK types ``errlog`` as ``TextIO`` but hands it straight to
         # ``anyio.open_process`` / ``subprocess.Popen(stderr=...)`` on every
         # platform path, so the ``PIPE`` sentinel is accepted at runtime.
-        process = await _create_platform_compatible_process(
-            command=command,
-            args=server.args,
-            env=env,
-            errlog=cast("TextIO", subprocess.PIPE),
-            cwd=server.cwd,
-        )
+        from chrys.foundation import guard
+
+        # The person configured this server: under the sandbox it may read its own files.
+        reads = [os.path.expanduser(path) for path in sandbox_read_paths or ()]
+        writes = [os.path.expanduser(path) for path in sandbox_write_paths or ()]
+        with guard.current().launching_configured(
+            command, list(server.args), str(server.cwd) if server.cwd else None, reads=reads, writes=writes
+        ):
+            process = await _create_platform_compatible_process(
+                command=command,
+                args=server.args,
+                env=env,
+                errlog=cast("TextIO", subprocess.PIPE),
+                cwd=server.cwd,
+            )
     except OSError:
         await read_stream.aclose()
         await write_stream.aclose()
@@ -714,11 +724,20 @@ class _SafeStdioTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPSt
        surface them in error messages.
     """
 
-    def __init__(self, *args: Any, env_is_complete: bool = False, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        env_is_complete: bool = False,
+        sandbox_read_paths: list[str] | None = None,
+        sandbox_write_paths: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
         self._errlog_file: io.TextIOWrapper | None = None
         self.dropped_banner_lines: list[str] = []
         self._process_diagnostics = _StdioProcessDiagnostics()
         self._env_is_complete = env_is_complete
+        self._sandbox_read_paths = sandbox_read_paths
+        self._sandbox_write_paths = sandbox_write_paths
         super().__init__(*args, **kwargs)
 
     def get_mcp_client(self) -> Any:
@@ -743,6 +762,8 @@ class _SafeStdioTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPSt
             dropped_banner_lines=self.dropped_banner_lines,
             process_diagnostics=self._process_diagnostics,
             inherit_env=not self._env_is_complete,
+            sandbox_read_paths=self._sandbox_read_paths,
+            sandbox_write_paths=self._sandbox_write_paths,
         )
 
     def _devnull_errlog(self) -> io.TextIOWrapper:

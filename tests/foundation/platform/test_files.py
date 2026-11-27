@@ -1164,3 +1164,26 @@ def test_windows_secure_open_owner_only_append_propagates_other_errors(
     monkeypatch.setattr(files, "_windows_secure_open", fake_windows_secure_open)
     with pytest.raises(files.SecureFileError):
         files.secure_open_owner_only_append(tmp_path / "events.jsonl")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX parent walk")
+@pytest.mark.skipif(
+    os.environ.get("CHRYS_TEST_SANDBOX") == "1", reason="checks an unconfined process; this one is confined"
+)
+def test_an_unconfined_refusal_on_the_parent_walk_stays_a_refusal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The restart below the first refused directory is for a sandboxed process only."""
+    from chrys.foundation.platform import files
+
+    calls: list[str] = []
+
+    def refuse(absolute: Path, start: Path, flags: int) -> int:
+        calls.append(str(start))
+        raise PermissionError(13, "refused", str(start))
+
+    monkeypatch.setattr(files, "_walk_posix_parent", refuse)
+    monkeypatch.delenv("CHRYS_FILE_SANDBOX_INHERITED", raising=False)
+    with pytest.raises(PermissionError):
+        files._open_posix_parent(tmp_path / "a" / "f")
+    assert calls == ["/"]

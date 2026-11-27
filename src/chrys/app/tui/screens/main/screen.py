@@ -24,6 +24,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.events import DescendantFocus, Event, Key, MouseDown, Paste, Resize, ScreenResume, ScreenSuspend
 from textual.geometry import Offset, Region, Size
+from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.selection import Selection, SelectState
@@ -147,6 +148,7 @@ from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
 from chrys.app.tui.widgets.workflow import text as workflow_text
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
+from chrys.foundation import guard
 from chrys.foundation.config.errors import RELOAD_SESSION_CHANGED, config_error_display
 from chrys.foundation.config.settings import (
     DEFAULT_LOCALE,
@@ -248,6 +250,7 @@ _BACKGROUND_FULL = msg(
     fallback="The command keeps running here. Stop a background task in the Tasks tab, then try again.",
 )
 _TRAJECTORY_BINDING = msg("tui.binding.trajectory", fallback="Trajectory")
+_SANDBOX_BINDING = msg("tui.binding.sandbox", fallback="Sandbox")
 _CHAT_PAGE_UP_BINDING = msg("tui.binding.chat_page_up", fallback="Chat Page Up")
 _CHAT_PAGE_DOWN_BINDING = msg("tui.binding.chat_page_down", fallback="Chat Page Down")
 _CHAT_SCROLL_BOTTOM_BINDING = msg("tui.binding.chat_scroll_bottom", fallback="Chat Scroll Bottom")
@@ -313,6 +316,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         localized_binding("f9", "pick_theme", _THEMES_BINDING, priority=True),
         localized_binding("f10", "settings", _SETTINGS_BINDING, priority=True),
         localized_binding("f12", "toggle_trajectory_dashboard", _TRAJECTORY_BINDING, show=True, priority=True),
+        # Hidden from the footer keys: the sandbox indicator in the same row shows the state.
+        localized_binding("f7", "sandbox_panel", _SANDBOX_BINDING, show=False, priority=True),
         localized_binding("ctrl+g", "toggle_sidebar", _SIDEBAR_BINDING, priority=True),
         localized_binding("pageup", "chat_page_up", _CHAT_PAGE_UP_BINDING, show=False, priority=True),
         localized_binding("pagedown", "chat_page_down", _CHAT_PAGE_DOWN_BINDING, show=False, priority=True),
@@ -1325,6 +1330,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # while a hook it shows runs.
         with Horizontal(id="footer-row"):
             yield footer
+            if (indicator := guard.current().indicator()) is not None:
+                yield indicator
+            elif guard.status().requested and guard.status().state == "inactive":
+                from chrys.app.tui.widgets.chrome.sandbox_warning import SandboxWarning
+
+                yield SandboxWarning(locale_controller=self._locale_controller)
             yield HookIndicator(locale_controller=self._locale_controller)
 
     async def _load_sub_agent_transcript(self, log_file: str) -> PersistedSubAgentTranscript | None:
@@ -2599,6 +2610,16 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def shortcut_model_text(self, spec: str) -> str:
         """How a shortcut's ``model`` is listed, against the models configured now (as the card matches it)."""
         return listed_shortcut_model(spec, self._prompt_card_models())
+
+    def on_sandbox_indicator_clicked(self, _event: Message) -> None:
+        """The process guard's footer indicator was clicked (its ``Clicked`` message)."""
+        self.action_sandbox_panel()
+
+    def action_sandbox_panel(self) -> None:
+        """Open the process guard's panel (F7, or a click on its footer indicator)."""
+        panel = guard.current().panel()
+        if panel is not None and not isinstance(self.app.screen, type(panel)):
+            self.app.push_screen(panel)
 
     def on_hook_indicator_clicked(self, event: HookIndicator.Clicked) -> None:
         """Show the sidebar's Hooks tab, and over it the run the indicator shows, if any.

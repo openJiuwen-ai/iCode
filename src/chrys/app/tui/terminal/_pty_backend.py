@@ -84,6 +84,11 @@ def kill_posix_process(pid: int, *, fallback_to_process: bool) -> None:
     """Kill a POSIX process group, optionally falling back to its leader."""
     posix_os = cast(Any, os)
     posix_signal = cast(Any, signal)
+    from chrys.foundation.platform.process import kill_process_group
+
+    # Also reaches the command behind a sandbox stub (a linked session).
+    if kill_process_group(pid):
+        return
     try:
         posix_os.killpg(pid, posix_signal.SIGKILL)
     except ProcessLookupError, PermissionError, OSError:
