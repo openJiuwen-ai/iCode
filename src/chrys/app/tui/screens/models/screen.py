@@ -2072,8 +2072,19 @@ class ModelConfigScreen(BaseDialog[str]):
         active_profile = resolve_profile_selector(self._registry, get_active_profile_id())
         was_runtime_effective = active_profile is not None and active_profile.id == profile_id
 
-        await asyncio.to_thread(delete_profile, profile_id)
+        deleted = await asyncio.to_thread(delete_profile, profile_id)
         self._registry.remove(profile_id)
+        if not deleted:
+            # The file was already gone, so the row was stale.  Drop it from the
+            # list as before, but tell the user the disk had nothing to remove
+            # instead of presenting the delete as an ordinary success.
+            self.notify(
+                "Model profile file was not found on disk; removed the stale entry from the list.",
+                title=self._render_toast(_MODEL_SETTINGS_TITLE.bind()),
+                severity="warning",
+                timeout=5,
+                markup=False,
+            )
 
         profiles = self._listed_profiles()
         seeded_default = not profiles
