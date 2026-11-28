@@ -1188,3 +1188,50 @@ async def test_model_config_delete_last_key_value_row_recreates_blank_row() -> N
         assert len(rows) == 1
         assert rows[0].query_one(".mc-kv-key-input", Input).value == ""
         assert rows[0].query_one(".mc-kv-value-input", Input).value == ""
+
+
+async def test_model_config_delete_warns_when_the_file_is_already_gone() -> None:
+    """Deleting a stale in-memory entry must warn instead of staying silent."""
+    registry = ModelProfileRegistry()
+    stale = ModelProfile(id="missing-model", name="Missing", model_id="gpt-test")
+    keep = ModelProfile(id="other-model", name="Other", model_id="gpt-test")
+    # Neither profile is on disk, so deleting the stale one finds no file.
+    registry.register(stale)
+    registry.register(keep)
+
+    async with open_model_config(registry, global_default_profile_id=keep.id) as (screen, _pilot):
+        captured = _capture_notifications(screen)
+
+        await screen._do_delete(stale.id)
+
+        assert screen._cancel_result() == "deleted"
+
+    assert registry.get(stale.id) is None
+    assert registry.get(keep.id) is not None
+    assert captured
+    severity, message = captured[-1]
+    assert severity == "warning"
+    assert "not found" in message
+
+
+async def test_model_config_delete_does_not_warn_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real delete must not emit the missing-file warning."""
+    registry = ModelProfileRegistry()
+    removable = ModelProfile(id="removable", name="Removable", model_id="gpt-test")
+    keep = ModelProfile(id="keep-model", name="Keep", model_id="gpt-test")
+    registry.register(removable)
+    registry.register(keep)
+    monkeypatch.setattr(
+        "chrys.service.profiles.models.serializer.delete_profile",
+        lambda _profile_id: True,
+    )
+
+    async with open_model_config(registry, global_default_profile_id=keep.id) as (screen, _pilot):
+        captured = _capture_notifications(screen)
+
+        await screen._do_delete(removable.id)
+
+        assert screen._cancel_result() == "deleted"
+
+    assert registry.get(removable.id) is None
+    assert all(severity != "warning" for severity, _message in captured)
