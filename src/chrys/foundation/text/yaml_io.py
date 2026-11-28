@@ -24,17 +24,26 @@ class _BlockStyleDumper(yaml.SafeDumper):
     """SafeDumper variant that emits multi-line strings in block style."""
 
 
+# YAML's reader treats NEL and the Unicode line/paragraph separators as line
+# breaks in every scalar style, so a literal block would silently turn them
+# into "\n" on the next load.  Emit such strings double-quoted instead: that
+# style escapes them as ``\N`` / ``\L`` / ``\P`` and round-trips faithfully.
+_BLOCK_STYLE_UNSAFE = "\x85\u2028\u2029"
+
+
 def _str_representer(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
     """Use ``|`` for multi-line strings; leave single-line strings to the default."""
+    if any(char in data for char in _BLOCK_STYLE_UNSAFE):
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style='"')
     if "\n" in data:
         # ``|`` preserves line breaks verbatim and is trivial for users to
         # edit.  Strip trailing whitespace per line to avoid YAML's
         # "chomping"-style surprises where trailing spaces change meaning.
-        cleaned = "\n".join(line.rstrip() for line in data.splitlines())
-        # Preserve a final trailing newline if the original had one so
-        # round-tripping stays faithful.
-        if data.endswith("\n"):
-            cleaned += "\n"
+        # Split on "\n" alone: ``str.splitlines`` also breaks on vertical
+        # tab, form feed, NEL and the Unicode separators, rewriting them into
+        # real newlines before the emitter ever sees them.  The trailing empty
+        # element keeps a final newline intact, so no extra append is needed.
+        cleaned = "\n".join(line.rstrip() for line in data.split("\n"))
         return dumper.represent_scalar("tag:yaml.org,2002:str", cleaned, style="|")
     return dumper.represent_scalar("tag:yaml.org,2002:str", data)
 
