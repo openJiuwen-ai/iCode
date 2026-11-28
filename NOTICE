@@ -217,6 +217,15 @@ Installing the iCode wheel installs these packages from their own
 distributions; the standalone executables bundle them. Each package ships its
 full license text in its *.dist-info directory.
 
+The optional Structured Pre-Judge parsers are installed separately from the
+standard iCode wheel and standalone distributions. Each wheel carries its
+own MIT license (Part 4.1):
+
+  - py-tree-sitter: Copyright (c) 2019 Max Brunsfeld, GitHub
+    (https://github.com/tree-sitter/py-tree-sitter).
+  - tree-sitter-bash: Copyright (c) 2017 Max Brunsfeld
+    (https://github.com/tree-sitter/tree-sitter-bash).
+
 Several packages contain further third-party code, mostly libraries that
 their compiled extensions link statically. Pillow ships the notices of the
 libraries it links in its *.dist-info directory (aom, Brotli, bzip2, dav1d,

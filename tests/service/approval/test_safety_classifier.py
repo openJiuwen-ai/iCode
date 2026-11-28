@@ -8,16 +8,185 @@ import pytest
 
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
+    prejudge_source_may_access_sensitive_data,
     shell_arg_may_access_sensitive_data,
+    shell_argv_may_access_sensitive_data,
     shell_command_may_access_sensitive_data,
     target_may_access_sensitive_data,
 )
+
+
+@pytest.mark.parametrize(
+    ("argv", "sensitive"),
+    [
+        (("grep", "-F", "$DEMO_TOKEN", "README.md"), False),
+        (("printenv", "DEMO_TOKEN"), True),
+        ((r"C:\Tools\PrInTeNv.EXE", "DEMO_TOKEN"), True),
+        (("env", "A=1", "printenv"), True),
+        ((r"C:\Tools\ENV.EXE", "A=1", "/usr/bin/PrintEnv.EXE"), True),
+        (("bash", "-c", "echo '$DEMO_TOKEN'"), False),
+        (("bash", "-c", 'echo "$DEMO_TOKEN"'), True),
+        (("exec", "bash", "-c", "printenv"), True),
+        (("exec", "-a", "fixture", "bash", "-c", "printenv"), True),
+        (("exec", "-cla", "fixture", "bash", "-c", "echo fixture"), False),
+        (("exec", "-clafixture", "bash", "-c", "printenv"), True),
+        (("exec", "-clafixture", "bash", "-c", "echo fixture"), False),
+        (("time", "-p", "printenv"), True),
+        (("builtin", "eval", "printenv"), True),
+        (("command", "exec", "bash", "-c", "printenv"), True),
+        (("command", "builtin", "eval", "printenv"), True),
+        (("coproc", "bash", "-c", "printenv"), None),
+        (("EXEC", "bash", "-c", "printenv"), None),
+        (("/tmp/builtin", "eval", "printenv"), None),
+        (("xargs", "exec", "bash", "-c", "printenv"), None),
+        (("exec", "-a"), None),
+        (("exec", "-a", "fixture", "bash", "-c", "(printf fixture)"), None),
+        (("builtin", "printf", "fixture"), False),
+        (("builtin", "printenv"), False),
+        (("builtin", "env"), False),
+        (("builtin", "--", "bash", "-c", "printenv"), False),
+        (("time", "-p", "printf", "fixture"), False),
+        (("eval", "echo", "$DEMO_TOKEN"), True),
+        (("eval", "echo", "'$DEMO_TOKEN'"), False),
+        (("command", "-v", "eval", "echo $DEMO_TOKEN"), False),
+        (("command", "-pv", "eval", "echo $DEMO_TOKEN"), False),
+        (("command", "-pp", "eval", "echo $DEMO_TOKEN"), True),
+        (("COMMAND", "-pv", "echo"), None),
+        (("/tmp/command", "-pv", "echo"), None),
+        (("xargs", "command", "-pv", "echo"), None),
+        (("EvAl", "echo '$DEMO_TOKEN'"), None),
+        (("/tmp/EVAL.EXE", "echo '$DEMO_TOKEN'"), None),
+        (("env", "eval", "echo '$DEMO_TOKEN'"), None),
+        (("timeout", "5", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("timeout", "--signal=TERM", "--", "5m", "/bin/bash", "-lc", "echo $DEMO_TOKEN"), True),
+        (("nice", "-n", "5", "timeout", "5", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("xargs", "-0", "-n1", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("xargs", "-0", "-r", "-n", "1", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("xargs", "-0rn", "1", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("xargs", "-0rn1", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("XARGS.EXE", "-0rn1", "BASH.EXE", "-c", "echo $DEMO_TOKEN"), True),
+        (("xargs.exe", "-0rn1", "bash.exe", "-c", "echo $DEMO_TOKEN"), True),
+        (("/usr/bin/XaRgS", "-0rn1", "/bin/BaSh", "-c", "echo $DEMO_TOKEN"), True),
+        ((r"C:\tools\XaRgS.EXE", "-0rn1", r"C:\tools\BaSh.EXE", "-c", "echo $DEMO_TOKEN"), True),
+        (("TIMEOUT", "5", "Nice", "-n1", "XARGS", "-0rn1", "BASH", "-c", "echo $DEMO_TOKEN"), True),
+        (("TIMEOUT", "5", "XaRgS", "-I{}", "BASH", "-c", "echo $DEMO_TOKEN"), None),
+        (("XaRgS", "--version"), False),
+        (("XARGS", "-0rn1", "BASH", "-c", "echo '$DEMO_TOKEN'"), False),
+        (("echo", "XARGS", "BASH", "-c", "$DEMO_TOKEN"), False),
+        (("xargs", "-0r", "--max-args=1", "--", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("xargs", "--null", "--max-args", "1", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("xargs", "-0rn", "1", "grep", "-F", "bash", "-c", "$DEMO_TOKEN"), False),
+        (("xargs", "-0rd", "-", "grep", "-F", "$DEMO_TOKEN"), False),
+        (("xargs", "-v", "bash", "-c", "echo $DEMO_TOKEN"), None),
+        (("xargs", "-0rn"), None),
+        (("xargs", "--max-args", "--", "bash", "-c", "echo $DEMO_TOKEN"), None),
+        (("xargs", "--max-args="), None),
+        (("xargs", "--version"), False),
+        (("xargs", "-0r"), False),  # Default command is echo.
+        (("timeout", "-vsTERM", "5", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("timeout", "-vs", "TERM", "5", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("timeout", "-vk", "5"), None),
+        (("nice", "-n-5", "timeout", "-vsTERM", "5", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("nice", "-n"), None),
+        (("nice", "--help"), False),
+        (("sudo", "-nuroot", "nice", "-n1", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("sudo", "-nZ", "bash", "-c", "echo $DEMO_TOKEN"), None),
+        (("timeout", "5", "env", "-iuDEMO", "bash", "-c", "echo $DEMO_TOKEN"), True),
+        (("nice", "-n1", "env", "-S", "bash -c 'echo $DEMO_TOKEN'"), None),
+        (("bash", "-c", "timeout 5 bash -c 'echo $DEMO_TOKEN'"), True),
+        (("bash", "-c", "timeout 5 xargs -I{} bash -c 'echo $DEMO_TOKEN'"), None),
+        (("bash", "-c", "xargs -I{} echo '{}' && echo \"$DEMO_TOKEN\""), True),
+        (("echo", "bash", "-c", "$DEMO_TOKEN"), False),
+        (("grep", "-F", "bash", "-c", "$DEMO_TOKEN"), False),
+        (("timeout", "5", "grep", "-F", "bash", "-c", "$DEMO_TOKEN"), False),
+        (("timeout", "--help", "5", "bash", "-c", "echo $DEMO_TOKEN"), False),
+        (("xargs", "--replace=bash", "echo", "bash", "-c", "$DEMO_TOKEN"), None),
+    ],
+)
+def test_certified_argv_keeps_literal_tokens_and_explicit_child_source_distinct(argv, sensitive):
+    assert shell_argv_may_access_sensitive_data(argv, shell_name="bash") is sensitive
+
+
+@pytest.mark.parametrize("shell_name", ["bash", "git_bash"])
+@pytest.mark.parametrize("head", ["xargs", "/usr/bin/XARGS", r"C:\tools\XaRgS.EXE", "/bin/BaSh", "COMMAND", "EvAl"])
+def test_incomplete_argv_preserves_potential_carrier_identity(shell_name, head):
+    assert shell_argv_may_access_sensitive_data((head, "-c"), shell_name=shell_name, complete=False) is None
 
 
 def test_shell_sensitive_analysis_caps_pathological_unclosed_substitutions() -> None:
     """Large malformed substitution input is conservatively judged instead of rescanned quadratically."""
     command = "$(" * 5000
     assert shell_command_may_access_sensitive_data(command, shell_name="zsh") is True
+    assert prejudge_source_may_access_sensitive_data(command, shell_name="bash") is True
+
+
+@pytest.mark.parametrize("shell_name", ["bash", "git_bash"])
+@pytest.mark.parametrize(
+    ("command", "enhanced", "legacy"),
+    [
+        ('echo "$(bash -c printenv)"', True, True),
+        ('echo "$(BaSh -c printenv)"', True, False),
+        ("echo `BASH -c printenv`", True, False),
+        ("cat <(BASH -c printenv)", True, False),
+        ("echo fixture > >(BASH -c printenv)", True, False),
+        ('echo "$(XARGS -0rn1 BASH -c printenv)"', True, False),
+        ('echo "$(nice bash -c printenv)"', True, False),
+        ('echo "$(eval printenv)"', True, False),
+        ("exec bash -c printenv", True, False),
+        ("exec -a x bash -c printenv", True, False),
+        ("time printenv", True, False),
+        ("builtin eval printenv", True, False),
+        ("command exec bash -c printenv", True, False),
+        ("coproc bash -c printenv", None, False),
+        ('echo "$( (bash -c printenv) )"', None, False),
+        ('echo "$({ printenv; })"', None, False),
+        ('echo "$(if true; then bash -c printenv; fi)"', None, False),
+        ('echo "$(for i in 1; do xargs -0 bash -c printenv; done)"', None, False),
+        ('echo "$(! printenv)"', None, False),
+        ('echo "$(time printenv)"', True, False),
+        ('echo "$(time -p x=1 printenv)"', True, False),
+        ('echo "$(x=1 printenv)"', True, False),
+        ('echo "$( (cat .env) )"', None, False),
+        ('echo "$(x=1 env)"', True, False),
+        ('echo "$(coproc fixture { printf fixture; })"', None, False),
+        ('echo "$(f () { printf fixture; }; f)"', None, False),
+        ('echo "$(f() { printf fixture; }; f)"', None, False),
+        ('echo "$(case x in x) printf fixture;; esac)"', None, False),
+        ('echo "$(time (printf fixture))"', None, False),
+        ('echo "$(time -p printf fixture)"', False, False),
+        ("echo \"$(exec -a fixture bash -c 'echo fixture')\"", False, False),
+        ('echo "$(builtin printf fixture)"', False, False),
+        ('echo "$(builtin printenv)"', False, False),
+        ('echo "$(builtin -- bash -c printenv)"', False, False),
+        ("grep -F '$(if true; then printenv; fi)' README.md", False, False),
+        ("echo 'exec bash -c printenv'", False, False),
+        ('echo "$(echo "$(XARGS -Z BASH -c x)")"', None, False),
+        ('echo "$(xargs "$FIXTURE_FLAGS" BASH -c printenv)"', None, False),
+        ('echo "$(echo "$(BASH -c printenv)")"', True, False),
+        ("""echo "$(printf '%s' ")"; XARGS -0rn1 BASH -c printenv)" """.strip(), True, False),
+        ('echo "$(BASH -c printenv</dev/null)"', True, False),
+        ('echo "$(BASH -c)"', None, False),
+        ('echo "$(eval printenv); $(XARGS -Z BASH -c x)"', True, False),
+        ("echo \"$(xargs -0 bash -c 'echo fixture')\"", False, False),
+        ('grep -F "$DEMO_TOKEN" README.md', True, True),
+        ("grep -F '$DEMO_TOKEN' README.md", False, False),
+        ("grep -F '$(XARGS -0 BASH -c printenv)' README.md", False, False),
+        (r'grep -F "\$(XARGS -0 BASH -c printenv)" README.md', False, False),
+        (r'echo "\`BASH -c printenv\`"', False, False),
+        ('grep -F "<(BASH -c printenv)" README.md', False, False),
+        ('grep -F ">(BASH -c printenv)" README.md', False, False),
+        ("echo ';' XARGS -0 BASH -c printenv", False, False),
+        (r"echo \; XARGS -0 BASH -c printenv", False, False),
+        ("echo fixture # $(XARGS -0 BASH -c printenv)", False, False),
+        (r"echo fixture\ #$(BASH -c printenv)", True, False),
+        ("grep -F bash -c printenv README.md", False, False),
+        ("echo $(echo $(echo $(echo $(echo fixture))))", None, False),
+        ("cat .env", True, True),
+    ],
+)
+def test_carrier_aware_prejudge_source_analysis(command, enhanced, legacy, shell_name):
+    assert prejudge_source_may_access_sensitive_data(command, shell_name=shell_name) is enhanced
+    assert shell_command_may_access_sensitive_data(command, shell_name=shell_name) is legacy
 
 
 @pytest.mark.parametrize(

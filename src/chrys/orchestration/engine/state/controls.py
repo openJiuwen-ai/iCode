@@ -93,6 +93,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_PREJUDGE_UNAVAILABLE = msg(
+    "controls.prejudge_unavailable",
+    fallback="Structured Pre-Judge is disabled. Check the YAML at {path} and the parser installation, then restart iCode.",
+)
+
 _RELOAD_DONE = msg(
     "controls.reload_done",
     fallback="Reloaded settings, profiles, memory, skills, hooks, MCP servers, themes and prompt shortcuts.",
@@ -282,8 +287,9 @@ class RuntimeControls:
             logger.warning("Unknown approval mode: %r", event.mode)
             return
         self._session.approval_mode = mode
+        prejudge_path = None
         if self._current.loaded is not None:
-            self._current.loaded.bindings.approval.set_approval_mode(mode)
+            prejudge_path = self._current.loaded.bindings.approval.set_approval_mode(mode)
         # Propagate to sub-agent tools so each fresh sub-agent invocation
         # constructs its ApprovalMiddleware with the live mode.
         if self._current.loaded is not None and self._current.loaded.sub_agent_tools is not None:
@@ -306,6 +312,16 @@ class RuntimeControls:
                 )
             else:
                 updated.saved_as_default = True
+        if prejudge_path is not None:
+            display = _PREJUDGE_UNAVAILABLE.bind(path=DisplayPath(str(prejudge_path)))
+            prejudge_warning = Warning(
+                code="prejudge_unavailable",
+                message=format_message(display),
+                display_message=display,
+                session_id=self._session.session_id,
+            )
+            updated.prejudge_warning = prejudge_warning
+            await self._bus.publish(prejudge_warning)
         await self._bus.publish(updated)
 
     async def on_profile_switch(self, event: AgentProfileSwitch) -> None:

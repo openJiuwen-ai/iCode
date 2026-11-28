@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock, create_autospec
 
 import pytest
@@ -22,6 +22,8 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentProfileSwitch,
     ApprovalModeUpdated,
+    ApprovalRequest,
+    ApprovalResponse,
     Error,
     ModelProfileSwitched,
     ProfileSwitched,
@@ -29,11 +31,16 @@ from chrys.foundation.events.types import (
     SetModelProfile,
     SettingsReload,
     SettingsReloaded,
+    Warning,
     WorkspaceChange,
     WorkspaceUpdated,
 )
 from chrys.foundation.i18n import DisplayPath
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.platform import get_platform
+from chrys.foundation.tool_kinds import KIND_SHELL, set_tool_kind
+from chrys.kernel.middleware import FunctionInvocationContext
+from chrys.kernel.tools import FunctionTool
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.state import lifecycle_permits
 from chrys.orchestration.engine.workspaces import MembershipWrite, WorkspacePlan
@@ -391,6 +398,99 @@ async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass(
     assert persisted == ["bypass"]
     assert engine.settings.default_approval_mode == "bypass"
     assert [(event.mode, event.session_id, event.saved_as_default) for event in events] == [("bypass", "sid", True)]
+
+
+@pytest.mark.parametrize("mode", [ApprovalMode.MANUAL, ApprovalMode.AUTO])
+@pytest.mark.parametrize("failure", ["yaml", "rule", "grammar"])
+@pytest.mark.parametrize("persist", [False, True, "frontend"])
+async def test_failed_prejudge_load_does_not_interrupt_approval_mode_propagation(
+    monkeypatch: pytest.MonkeyPatch, mode: ApprovalMode, failure: str, persist: bool | Literal["frontend"]
+) -> None:
+    from chrys.service.approval import prejudge_v2
+
+    def missing_grammar() -> None:
+        raise RuntimeError("Missing Tree-sitter grammar")
+
+    config = get_platform().config_dir / "prejudge.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    content = "schema_version: 1\nmode: enforce\npolicy_id: sample\n"
+    if failure == "grammar":
+        monkeypatch.setattr(prejudge_v2, "_ensure_bash_parser", missing_grammar)
+    config.write_text(
+        content + {"yaml": "rules: [", "rule": "rules: [{id: incomplete}]", "grammar": "rules: []"}[failure],
+        encoding="utf-8",
+    )
+    bus = EventBus()
+    engine = assemble_agent_engine(bus, settings=Settings(), initial_approval_mode=ApprovalMode.BYPASS)
+    engine.session.session_id = "sid"
+    persist_mode = create_autospec(engine_module.persist_approval_mode, return_value=None)
+    monkeypatch.setattr(engine_module, "persist_approval_mode", persist_mode)
+    tool = FunctionTool(name="bash")
+    set_tool_kind(tool, KIND_SHELL)
+    policy = ApprovalPolicy(ApprovalConfig(default="require"), tools=[tool])
+    main = ApprovalMiddleware(policy, bus, approval_mode=ApprovalMode.BYPASS)
+    child = ApprovalMiddleware(policy, bus, approval_mode=ApprovalMode.BYPASS)
+    sub_agents = SubAgentTools(event_bus=bus, approval_mode=ApprovalMode.BYPASS)
+    sub_agents._live_approvals.append(child)
+    install_loaded_agent(engine, sub_agent_tools=sub_agents)
+    engine.current.require_loaded().bindings.approval = main
+    workflow_nodes = create_autospec(engine.workflows.set_approval_mode)
+    monkeypatch.setattr(engine.workflows, "set_approval_mode", workflow_nodes)
+    updates: list[ApprovalModeUpdated] = []
+    warnings: list[Warning] = []
+    requests: list[ApprovalRequest] = []
+
+    async def updated(event: ApprovalModeUpdated) -> None:
+        updates.append(event)
+
+    async def warned(event: Warning) -> None:
+        warnings.append(event)
+
+    async def reject(request: ApprovalRequest) -> None:
+        requests.append(request)
+        await bus.publish(ApprovalResponse(request_id=request.request_id, approved=False))
+
+    async def execute() -> None:
+        pytest.fail("A failed policy load must not retain BYPASS")
+
+    await bus.subscribe(SetApprovalMode, engine._on_set_approval_mode)
+    await bus.subscribe(ApprovalModeUpdated, updated)
+    await bus.subscribe(Warning, warned)
+    await bus.subscribe(ApprovalRequest, reject)
+    try:
+        # EventBus swallows handler errors: verify every target and a real
+        # approval request, rather than just that publish() returned.
+        await bus.publish(SetApprovalMode(mode=mode.value, persist=persist))
+        assert engine.session.approval_mode is mode
+        assert main.approval_mode is mode
+        assert child.approval_mode is mode
+        assert sub_agents._approval_mode is mode
+        workflow_nodes.assert_called_once_with(mode)
+        assert [event.mode for event in updates] == [mode.value]
+        assert updates[0].saved_as_default is (persist is True)
+        assert updates[0].save_in_frontend is (persist == "frontend")
+        if persist is True:
+            persist_mode.assert_called_once_with(mode.value)
+            assert engine.settings.default_approval_mode == mode.value
+        else:
+            persist_mode.assert_not_called()
+            assert engine.settings.default_approval_mode == "manual"
+        warning = updates[0].prejudge_warning
+        assert warning is not None
+        assert warnings == [warning]
+        assert warning.session_id == "sid"
+        assert warning.code == "prejudge_unavailable"
+        assert str(config) in warning.message and "restart iCode" in warning.message
+        for middleware in (main, child):
+            await middleware.process(FunctionInvocationContext(tool, {"command": "unconfigured_tool"}), execute)
+        assert len(requests) == 2
+    finally:
+        await main.close()
+        await child.close()
+        await bus.unsubscribe(SetApprovalMode, engine._on_set_approval_mode)
+        await bus.unsubscribe(ApprovalModeUpdated, updated)
+        await bus.unsubscribe(Warning, warned)
+        await bus.unsubscribe(ApprovalRequest, reject)
 
 
 async def test_setting_the_approval_mode_moves_its_provenance_with_the_value(

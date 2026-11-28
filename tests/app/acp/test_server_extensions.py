@@ -20,6 +20,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentLoadProgress,
     AgentRuntimeDetails,
+    ApprovalModeUpdated,
     CompactionFinished,
     CompactionStarted,
     Error,
@@ -572,6 +573,26 @@ async def test_set_session_mode_rejects_unknown_mode() -> None:
     with pytest.raises(RequestError):
         await server.set_session_mode(mode_id="yolo", session_id="s1")
     assert manager.approval_modes == []
+
+
+@pytest.mark.anyio
+async def test_set_session_mode_reports_unavailable_prejudge() -> None:
+    warning = Warning(code="prejudge_unavailable", message="Fix prejudge.yaml and restart iCode", session_id="s1")
+
+    class Manager(_FakeManager):
+        async def set_approval_mode(self, session_id: str, mode: str) -> ApprovalModeUpdated:
+            return ApprovalModeUpdated(mode=mode, session_id=session_id, prejudge_warning=warning)
+
+    client = _FakeClient()
+    server = ChrysAcpServer(Manager(_FakeHost(event_bus=EventBus())), initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(client)
+
+    await server.set_session_mode(mode_id="manual", session_id="s1")
+
+    assert client.updates[0].update.current_mode_id == "manual"
+    assert client.ext_notifications == [
+        ("chrys/warning", {"code": warning.code, "message": warning.message, "sessionId": "s1"})
+    ]
 
 
 @pytest.mark.anyio

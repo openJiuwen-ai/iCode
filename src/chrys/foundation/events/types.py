@@ -1008,6 +1008,7 @@ class ApprovalModeUpdated(Event):
     """This update also committed the global default for future launches."""
     save_in_frontend: bool = False
     """The requesting frontend owns the write for this confirmed choice."""
+    prejudge_warning: Warning | None = None
 
 
 @dataclass

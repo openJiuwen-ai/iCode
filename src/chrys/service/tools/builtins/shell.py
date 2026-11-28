@@ -71,6 +71,7 @@ from chrys.foundation.tool_result_metadata import (
 )
 from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel.tools import SyncToolCancelledAfterCompletion
+from chrys.service.approval.prejudge_v2.execution import ApprovalInvalidatedError, isolated_shell_call
 from chrys.service.mutations.trace import discard_trace_file, prefix_trace_file, shell_trace_argv
 from chrys.service.tools.approval_targets import (
     CHANGED_AFTER_APPROVAL,
@@ -286,7 +287,9 @@ def _pipefail_args(shell: ShellInfo) -> tuple[str, ...]:
     return ("-o", "pipefail") if shell.name in _PIPEFAIL_SHELLS else ()
 
 
-def _shell_argv_variants(shell: ShellInfo, command: str) -> list[tuple[str, ...]]:
+def _shell_argv_variants(
+    shell: ShellInfo, command: str, *, startup_args: tuple[str, ...] = ()
+) -> list[tuple[str, ...]]:
     """Launch argvs to try in order: traced first (when armed), then bare.
 
     The mutation pipeline hands an fsatrace wrapper prefix over via
@@ -295,7 +298,7 @@ def _shell_argv_variants(shell: ShellInfo, command: str) -> list[tuple[str, ...]
     variant must degrade to the bare one: tracing may never change
     user-visible shell behavior.
     """
-    base = (shell.path, *_pipefail_args(shell), *shell.args, command)
+    base = (shell.path, *startup_args, *_pipefail_args(shell), *shell.args, command)
     prefix = shell_trace_argv.get()
     if prefix:
         return [(*prefix, *base), base]
@@ -319,6 +322,17 @@ def _prepare_pipe_command(command: str, shell: ShellInfo) -> str:
     if shell.name not in ("pwsh", "powershell"):
         return command
     return f"{_POWERSHELL_UTF8_PREAMBLE}\n{command}"
+
+
+def _shell_launch(
+    shell: ShellInfo, command: str, *, pipe: bool = False
+) -> tuple[list[tuple[str, ...]], dict[str, str]]:
+    approved = isolated_shell_call.get()
+    if approved is None:
+        payload = _prepare_pipe_command(command, shell) if pipe else command
+        return _shell_argv_variants(shell, payload), build_shell_subprocess_env()
+    approved.require_launch(shell, command)
+    return _shell_argv_variants(shell, command, startup_args=("--noprofile", "--norc")), approved.environment
 
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -613,8 +627,6 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
         flags = fcntl.fcntl(master, fcntl.F_GETFL)
         fcntl.fcntl(master, fcntl.F_SETFL, flags | posix_os.O_NONBLOCK)
 
-        env = build_shell_subprocess_env()
-
         def _setup_pty() -> None:
             posix_os.setsid()
 
@@ -622,7 +634,7 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
         # stdio fds are inherited, ``setsid`` applies to fsatrace, and
         # the shell inherits its process group — draining and
         # group-kill behave exactly as untraced.
-        argv_variants = _shell_argv_variants(shell, command)
+        argv_variants, env = _shell_launch(shell, command)
         proc: asyncio.subprocess.Process | None = None
         for index, argv in enumerate(argv_variants):
             try:
@@ -712,8 +724,7 @@ async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
     of its own elsewhere: every process the command starts can be listed and
     stopped with it.
     """
-    env = build_shell_subprocess_env()
-    argv_variants = _shell_argv_variants(shell, _prepare_pipe_command(command, shell))
+    argv_variants, env = _shell_launch(shell, command, pipe=True)
     proc: ManagedStdioProcess | None = None
     for index, argv in enumerate(argv_variants):
         try:
@@ -959,6 +970,12 @@ class ShellTools:
         """Execute a shell command on the current platform."""
         budget = max(100, max_output_tokens)
         tasks = self._tasks
+        approved_shell = isolated_shell_call.get()
+        if approved_shell is not None and not approved_shell.claim(self._shell, command):
+            _record_shell_error()
+            return tool_error(
+                "approval_invalidated", "Shell command or launch configuration changed after structured approval."
+            )
         # Validate command against filter policy (if configured); the command
         # this shell is given to stop a background task always passes.
         if self._filter is not None and not (tasks is not None and tasks.is_stop_command(command, self._shell.name)):
@@ -1046,6 +1063,9 @@ class ShellTools:
         except SubprocessStoppedError:
             _record_shell_error()
             return tool_error("process_stopped", "command entered stopped state and was terminated.")
+        except ApprovalInvalidatedError as exc:
+            _record_shell_error()
+            return tool_error("approval_invalidated", str(exc))
         except MissingWorkingDirectoryError as exc:
             _record_shell_error()
             if workdir:

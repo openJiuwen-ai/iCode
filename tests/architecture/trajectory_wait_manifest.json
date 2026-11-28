@@ -2041,6 +2041,7 @@
       ],
       "RuntimeControls.on_set_approval_mode": [
         ["awaitable", "await self._bus.publish(Warning(code='approval_default_save_failed', message=str(exc), display_message=exc.display if isinstance(exc, ConfigError) else None, session_id=self._session.session_id))", "unresolved"],
+        ["awaitable", "await self._bus.publish(prejudge_warning)", "unresolved"],
         ["awaitable", "await self._bus.publish(updated)", "unresolved"]
       ],
       "RuntimeControls.on_set_model_profile": [
@@ -3915,6 +3916,7 @@
         ["awaitable", "await self._approval_arbiter.close()", "unresolved"]
       ],
       "ApprovalMiddleware.process": [
+        ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],

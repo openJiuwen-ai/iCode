@@ -129,6 +129,8 @@ icode approval clear --all                   # 全部删除
 
 Shell 命令和文件读写访问 `.env`、凭据、私钥等敏感目标时，即使操作只读取文件或写入 Git 工作目录，也仍会进入审批流程。该保护适用于“手动”和“自动”模式；“绕过”模式会跳过这些审批保护。
 
+可选的[结构化 Shell Pre-Judge](./prejudge.md) 用户策略适用于各个 Profile 和工作区。满足条件的结构化快捷审批和原有只读快捷审批可在授权复用或 AUTO 审批裁判之前满足 `approval.overrides.shell: require`。必须进行的敏感目标检查和独立的 Shell Command Filter 仍然适用。Pre-Judge 返回 DEFER 后，原有审批流程仍可能批准该调用。
+
 Skill 脚本以当前用户权限在本机运行，不受沙箱隔离，因此默认会请求审批。会话使用绕过模式时，Skill 脚本会不经询问直接运行。安装或运行第三方 Skill 前，应先检查其 `SKILL.md`、脚本和相关文件，确保可信。
 
 网络工具会向外部服务发送请求，因此 `web_search` 和 `web_fetch` 类别默认也会请求审批，即使智能体的 `approval.default` 为 `auto`。针对这些类别或工具名称的显式 `approval.overrides` 规则仍然优先。“自动”模式下审批裁判模型可以批准这些调用，“绕过”模式下它们会不经询问直接执行。由提供方运行的搜索（例如 DeepSeek 的服务端 `web_search`）在模型提供方一侧执行，不受这些审批规则约束。参阅[配置网络工具](./web-tools.md#审批网络工具调用)。
