@@ -141,7 +141,7 @@ Only cases the checks actually judged are compared, and every evaluation gives a
 
 Stdout includes `baseline_score`, `best_score`, `best_candidate`, `epochs`, `dropped`, `inconclusive` and `perfect` for this run. It also includes `best_json_updated`, and `install_candidate` / `install_score` / `install_kind` for what `install` will export. When `best_json_updated=False`, this run's `best_candidate` is **not** what `install` exports; `icode rsi get` shows the same `last_optimize_install_*` values.
 
-Why: this is the actual RSI search. Stub mode (`optimize` without `--agent`) is for CI and wiring checks; it does not call a model. A stub dry-run before your first live run does not block the live result from `best.json`, and a stub run after it does not overwrite it with marker-only stub instructions.
+Why: this is the actual RSI search. Stub mode (`optimize` without `--agent` and without `--optimizer-model`) is for CI and wiring checks; it does not call a model. A stub dry-run before your first live run does not block the live result from `best.json`, and a stub run after it does not overwrite it with marker-only stub instructions.
 
 Useful variants:
 
