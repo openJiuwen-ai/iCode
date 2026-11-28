@@ -11,7 +11,8 @@ import pytest
 
 from chrys.service.profiles.agents.schema import AgentProfile, SkillConfig, SkillsConfig
 from chrys.service.rsi import build_rsi_service_context
-from chrys.service.rsi.case_runner import ProfileAwareStubRunner
+from chrys.service.rsi.case_runner import ProfileAwareStubRunner, _synthesize_passing_case
+from chrys.service.rsi.dataset import RsiCase, ScriptExpect
 from chrys.service.rsi.mutations import (
     AppendInstructions,
     RemoveInlineSkill,
@@ -20,6 +21,7 @@ from chrys.service.rsi.mutations import (
     case_marker,
     parse_mutation,
 )
+from chrys.service.rsi.script_judge import judge_case
 from chrys.service.rsi.snapshot import load_candidate, read_best_pointer
 
 _OPTIMIZE_FIXTURE = Path(__file__).parent / "fixtures" / "optimize_dataset.json"
@@ -123,7 +125,7 @@ async def test_install_refuses_user_without_dir(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_builtin_candidate_exports_full_prompt_and_installs_as_custom_agent(tmp_path):
+async def test_builtin_candidate_exports_full_prompt_and_installs_as_custom_agent(tmp_path: Path) -> None:
     from chrys.service.profiles.agents.loader import load_profile_from_yaml
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.agents.serializer import save_profile
@@ -292,3 +294,164 @@ def test_append_instructions_ignores_trailing_whitespace_when_deduping() -> None
     second = apply_mutations(first, [AppendInstructions(text="Run tests.")])
     assert second.instructions.count("Run tests.") == 1
     assert second.instructions == first.instructions
+
+
+@pytest.mark.asyncio
+async def test_optimize_stub_synthesizes_regex_response(tmp_path: Path) -> None:
+    dataset = tmp_path / "suite.json"
+    dataset.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset_id": "regex-stub",
+                "cases": [
+                    {
+                        "case_id": "regex-only",
+                        "prompt": "Announce the deployment",
+                        "evaluation": {
+                            "method": "script_based",
+                            "expect": {"response_regex": ["deployed successfully"]},
+                        },
+                    },
+                    {
+                        "case_id": "mixed-checks",
+                        "prompt": "Confirm the rollout",
+                        "evaluation": {
+                            "method": "script_based",
+                            "expect": {
+                                "response_contains": ["rollout complete"],
+                                "response_regex": ["zero downtime"],
+                            },
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    created = ctx.create_task(name="regex-opt", max_iterations=1, dataset_path=dataset)
+    result = await ctx.optimize_task(created["task_id"], max_epochs=1)
+    assert result.baseline_score == 0.0
+    assert result.best_score == 1.0
+    assert result.perfect is True
+
+
+@pytest.mark.parametrize(
+    ("expect", "expected_response"),
+    [
+        # Anchored pattern already matched by the contains text: keep it verbatim.
+        (ScriptExpect(response_contains=("done",), response_regex=("^done$",)), "done"),
+        # Alternation would inject a forbidden word; the contains text already matches.
+        (
+            ScriptExpect(
+                response_contains=("done",),
+                response_not_contains=("error",),
+                response_regex=("done|error",),
+            ),
+            "done",
+        ),
+        # Regex-only case leans on the "ok" fallback, which already matches.
+        (ScriptExpect(response_regex=("[a-z]{2}",)), "ok"),
+        # A forbidden fallback word must not be prefixed to a regex-only response.
+        (ScriptExpect(response_regex=("ready",), response_not_contains=("ok",)), "ready"),
+        # Both checks were satisfied by the same text before: still exactly "ok".
+        (ScriptExpect(response_contains=("ok",), response_regex=("ok",)), "ok"),
+        # A pattern absent from the fallback text is still appended literally.
+        (ScriptExpect(response_regex=("deployed successfully",)), "ok deployed successfully"),
+        (
+            ScriptExpect(response_contains=("rollout complete",), response_regex=("zero downtime",)),
+            "rollout complete zero downtime",
+        ),
+        # A lookahead before a digit literal only passes once the digit comes first.
+        (
+            ScriptExpect(response_contains=("status",), response_regex=("ok(?!.*\\d)", "1")),
+            "status 1 ok(?!.*\\d)",
+        ),
+    ],
+)
+def test_synthesize_passing_case_keeps_existing_response(
+    tmp_path: Path, expect: ScriptExpect, expected_response: str
+) -> None:
+    case = RsiCase(case_id="c1", prompt="p", expect=expect)
+    result = _synthesize_passing_case(case, tmp_path)
+    assert result.error is None
+    assert result.response_text == expected_response
+    judged = judge_case(case, response_text=result.response_text, workdir=tmp_path, dataset_dir=tmp_path)
+    assert judged.passed, judged.findings
+
+
+def test_synthesize_passing_case_keeps_regexes_valid(tmp_path: Path) -> None:
+    # Appending the second literal used to invalidate the first lookahead.
+    expect = ScriptExpect(response_regex=("ok(?!.*\\d)", "1"))
+    case = RsiCase(case_id="c1", prompt="p", expect=expect)
+    result = _synthesize_passing_case(case, tmp_path)
+    assert result.error is None
+    judged = judge_case(case, response_text=result.response_text, workdir=tmp_path, dataset_dir=tmp_path)
+    assert judged.passed, judged.findings
+
+
+@pytest.mark.asyncio
+async def test_optimize_stub_avoids_forbidden_fallback_word(tmp_path: Path) -> None:
+    dataset = tmp_path / "suite.json"
+    dataset.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset_id": "forbidden-fallback",
+                "cases": [
+                    {
+                        "case_id": "ready-only",
+                        "prompt": "Report readiness",
+                        "evaluation": {
+                            "method": "script_based",
+                            "expect": {
+                                "response_regex": ["ready"],
+                                "response_not_contains": ["ok"],
+                            },
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    created = ctx.create_task(name="forbidden-fallback", max_iterations=1, dataset_path=dataset)
+    result = await ctx.optimize_task(created["task_id"], max_epochs=1)
+    assert result.baseline_score == 0.0
+    assert result.best_score == 1.0
+    assert result.perfect is True
+
+
+@pytest.mark.asyncio
+async def test_optimize_stub_regex_order_independent(tmp_path: Path) -> None:
+    dataset = tmp_path / "suite.json"
+    dataset.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset_id": "regex-order",
+                "cases": [
+                    {
+                        "case_id": "order-sensitive",
+                        "prompt": "Emit a status token",
+                        "evaluation": {
+                            "method": "script_based",
+                            "expect": {
+                                "response_contains": ["status"],
+                                "response_regex": ["ok(?!.*\\d)", "1"],
+                            },
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx = build_rsi_service_context(tasks_root=tmp_path / "tasks")
+    created = ctx.create_task(name="regex-order", max_iterations=1, dataset_path=dataset)
+    result = await ctx.optimize_task(created["task_id"], max_epochs=1)
+    assert result.baseline_score == 0.0
+    assert result.best_score == 1.0
+    assert result.perfect is True

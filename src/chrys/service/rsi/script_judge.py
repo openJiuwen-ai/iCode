@@ -61,7 +61,8 @@ def judge_case(
     return JudgeResult(passed=passed, score=1.0 if passed else 0.0, findings=tuple(findings))
 
 
-def _judge_expect(expect: ScriptExpect, *, response_text: str, workdir: Path) -> list[JudgeFinding]:
+def response_findings(expect: ScriptExpect, *, response_text: str) -> list[JudgeFinding]:
+    """Response-only declarative checks, shared with the stub synthesizer."""
     findings: list[JudgeFinding] = [
         JudgeFinding("response_contains", f"response missing substring: {needle!r}")
         for needle in expect.response_contains
@@ -80,6 +81,11 @@ def _judge_expect(expect: ScriptExpect, *, response_text: str, workdir: Path) ->
             continue
         if compiled.search(response_text) is None:
             findings.append(JudgeFinding("response_regex", f"response did not match regex: {pattern!r}"))
+    return findings
+
+
+def _judge_expect(expect: ScriptExpect, *, response_text: str, workdir: Path) -> list[JudgeFinding]:
+    findings = response_findings(expect, response_text=response_text)
 
     root = workdir.resolve()
     for rel in expect.files_exist:
