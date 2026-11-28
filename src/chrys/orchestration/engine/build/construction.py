@@ -320,6 +320,7 @@ async def build_agent(
             model_registry=model_registry,
             workspace=runtime_workspace,
             missing_working_dirs=staged.workspace_plan.missing_working_dirs,
+            workspace_folders=staged.workspace_plan.workspace_folders,
             session_id=target.session_id,
             bus=bus,
             agent_registry=agent_registry,

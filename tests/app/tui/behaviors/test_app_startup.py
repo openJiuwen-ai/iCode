@@ -1344,11 +1344,11 @@ def test_missing_tui_workspace_primary_exits_before_bootstrap_in_the_ui_locale(
     assert caught.value.code == 1
     error, hint = capsys.readouterr().err.splitlines()
     if locale == "en":
-        assert "Primary folder does not exist" in error
+        assert error == f"The primary folder of workspace “Team”, {primary}, does not exist."
         assert "primary folder" in hint and "main folder" not in hint
         assert ("start again with --workspace and -s" in hint) == restore
     else:
-        assert "主文件夹" in error and "Primary folder" not in error
+        assert error == f"工作区“Team”的主文件夹 {primary} 不存在。"
         assert "主文件夹" in hint and "start again" not in hint
         assert ("再用 --workspace 和 -s 重新启动" in hint) == restore
     if not restore:
@@ -1440,9 +1440,13 @@ def test_tui_argv_restore_ignores_workdir_until_replacement_is_chosen(
     async def examine(app, pilot):
         if entry in {"choose-replacement", "cancel"}:
             dialog = await _top_screen(pilot, ConfirmDialog)
-            message = str(dialog.query_one("#confirm-message", Static).content).lower()
-            assert "primary folder" in message
-            assert "leave" in message
+            message = dialog.query_one("#confirm-message", Static).render().plain
+            assert message == (
+                f"The primary folder {primary} of workspace “Team” no longer exists. "
+                f"Restore {primary} to keep the saved session in “Team”.\n\n"
+                "• Choose Folder…: select a replacement working directory and open the saved session as Unspecified.\n"
+                "• Cancel: keep the current session open."
+            )
             assert not report.exists()
             if entry == "cancel":
                 from chrys.app.tui.screens.dialogs.confirm import StartupSessionChoiceDialog
@@ -1470,7 +1474,9 @@ def test_tui_argv_restore_ignores_workdir_until_replacement_is_chosen(
     launch(["-s", TARGET_SESSION, "-C", str(override)], examine)
 
 
-@pytest.mark.parametrize("outcome", ["missing", "move", "refused", "saved-open-failed", "installed-restore-failed"])
+@pytest.mark.parametrize(
+    "outcome", ["new", "missing", "move", "refused", "saved-open-failed", "installed-restore-failed"]
+)
 def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, outcome):
     from chrys.foundation.config.spec import Source
     from chrys.kernel import Message
@@ -1484,11 +1490,13 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
     store, launch, messages = workspace_argv
     primary, old, extra = make_workdirs(tmp_path, "primary", "old", "extra")
     report = tmp_path / "workspace-hook.txt"
-    write_launch_settings(primary, report, event="session_start" if outcome == "missing" else "session_restored")
+    write_launch_settings(
+        primary, report, event="session_start" if outcome in {"new", "missing"} else "session_restored"
+    )
     workspace = registry.create("Team", str(primary))
     previous = registry.create("Previous", str(old))
     before = None
-    if outcome != "missing":
+    if outcome not in {"new", "missing"}:
         asyncio.run(
             save_chat_session(
                 store,
@@ -1546,10 +1554,13 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
         engine = app._engine
         assert Path.cwd().samefile(primary)
         assert engine.workspace.primary_cwd == str(primary)
+        tag = app._main_screen.query_one("#workspace-tag", Static)
+        assert tag.display
+        assert tag.render().plain == "Team"
         assert engine.settings_handle.base.source_for("context.warn_threshold_pct").layer == Source.WORKDIR
         assert Path(report.read_text(encoding="utf-8")).samefile(primary)
         assert registry.snapshot().workspace_id_for_session(engine.session_id) == workspace.id
-        if outcome == "missing":
+        if outcome in {"new", "missing"}:
             assert engine.session_id != MISSING_SESSION
         else:
             assert engine.session_id == TARGET_SESSION
@@ -1562,7 +1573,9 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
                 description="workspace move notice",
             )
 
-    args = ["--workspace", "Team", "-s", MISSING_SESSION if outcome == "missing" else TARGET_SESSION]
+    args = ["--workspace", "Team"]
+    if outcome != "new":
+        args.extend(("-s", MISSING_SESSION if outcome == "missing" else TARGET_SESSION))
     if failing:
         with pytest.raises(SystemExit) as failed:
             launch(args, examine)

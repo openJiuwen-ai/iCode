@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -14,6 +16,41 @@ from chrys.kernel import Message
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.workspaces.registry import WorkspaceRegistry
 from tests.support.symlinks import symlink_or_skip
+
+if TYPE_CHECKING:
+    from chrys.app.tui.i18n import LocaleController
+    from chrys.app.tui.screens.workspaces.edit import WorkspaceEditDialog
+    from chrys.foundation.models.workspace import Workspace
+    from chrys.foundation.models.workspace_operations import WorkspaceDefinitionEdit
+
+
+def workspace_edit_dialog(
+    registry: WorkspaceRegistry,
+    cwd: str,
+    workspace: Workspace | None = None,
+    *,
+    locale_controller: LocaleController | None = None,
+) -> WorkspaceEditDialog:
+    """Connect a standalone form to the test registry."""
+    from chrys.app.tui.screens.workspaces.edit import WorkspaceEditDialog
+
+    async def update(edit: WorkspaceDefinitionEdit) -> Workspace:
+        return await asyncio.to_thread(
+            registry.update,
+            edit.expected.id,
+            name=edit.name,
+            primary=edit.expected.primary_cwd,
+            folders=edit.folders,
+            expected=edit.expected,
+        )
+
+    async def delete(expected: Workspace) -> bool:
+        await asyncio.to_thread(registry.delete, expected.id, expected=expected)
+        return True
+
+    return WorkspaceEditDialog(
+        registry, cwd, workspace, locale_controller=locale_controller, update_workspace=update, delete_workspace=delete
+    )
 
 
 @pytest.fixture
@@ -29,6 +66,24 @@ def default_workspace_registry() -> WorkspaceRegistry:
 @pytest.fixture(name="store")
 def workspace_store(tmp_path: Path) -> JsonFileStateStore:
     return JsonFileStateStore(tmp_path / "sessions", workspace_registry=WorkspaceRegistry())
+
+
+def write_workspace_shortcut(root: Path, name: str, body: str) -> Path:
+    """Write a literal shortcut in one workspace folder and return its source path."""
+    path = root / ".chrys" / "shortcuts" / f"{name}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def write_workspace_skill(root: Path, name: str, description: str = "Workspace fixture") -> Path:
+    """Write a workspace skill with a stable description and return its directory."""
+    folder = root / ".agents" / "skills" / name
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\nUse this skill.\n", encoding="utf-8"
+    )
+    return folder
 
 
 def make_workdirs(root: Path, *names: str) -> tuple[Path, ...]:

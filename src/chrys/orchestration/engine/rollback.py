@@ -44,6 +44,7 @@ from chrys.service.mutations.types import (
 from chrys.service.mutations.workspace_changes import format_partial_revert_notice, format_retained_changes_notice
 from chrys.service.state.store import SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME, recorded_surface
 from chrys.service.trajectory.state import turn_records
+from chrys.service.workspaces.paths import MissingWorkspacePrimary
 
 if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import SettingsHandle
@@ -67,7 +68,7 @@ logger = logging.getLogger(__name__)
 _ROLLBACK_PRIMARY_MISSING = msg(
     "workspaces.rollback_primary_missing",
     fallback=(
-        "The workspace's primary folder, {path}, no longer exists. Restore the folder at its original path before "
+        "The primary folder of workspace “{name}”, {path}, no longer exists. Restore the folder at its original path before "
         "rolling back, or reopen the session in another folder to leave the workspace."
     ),
 )
@@ -894,8 +895,8 @@ class RollbackController:
         await self._bus.publish(
             Error(
                 code="workspace_primary_missing",
-                message=f"Primary folder does not exist: {missing}.",
-                display_message=_ROLLBACK_PRIMARY_MISSING.bind(path=DisplayPath(missing)),
+                message=str(MissingWorkspacePrimary(missing, workspace_name=workspace.name)),
+                display_message=_ROLLBACK_PRIMARY_MISSING.bind(name=workspace.name, path=DisplayPath(missing)),
                 session_id=session_id,
             )
         )

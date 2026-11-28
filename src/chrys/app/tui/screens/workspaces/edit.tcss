@@ -1,0 +1,44 @@
+WorkspaceEditDialog { align: center middle; }
+#workspace-edit-container {
+    width: 64; max-width: 90%; height: auto; max-height: 90%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary; border-title-style: bold;
+    background: $surface;
+}
+#workspace-edit-inner {
+    width: 100%; height: auto; max-height: 100%;
+    padding: 1 2 0 2; scrollbar-size: 1 1;
+}
+#workspace-edit-inner > Static { height: auto; }
+/* Single flat line, like the model profile form's inputs. */
+#workspace-edit-inner Input {
+    height: 1; border: none; background: $foreground 8%; padding: 0 1;
+}
+#workspace-edit-inner Input:focus { border: none; background: $foreground 12%; }
+/* A blank line before the next label, as the model profile form leaves one above each label. */
+#workspace-name { width: 100%; margin-bottom: 1; }
+_FolderChoice { padding: 0 1; text-overflow: ellipsis; text-wrap: nowrap; pointer: pointer; }
+_FolderChoice:hover, _FolderChoice:focus { background: $primary 18%; }
+.workspace-primary-readonly { padding: 0 1; }
+#workspace-primary-hint { color: $text-muted; margin-bottom: 1; padding: 0 1; }
+/* Keep the ✕ column still when the list starts to scroll. */
+#workspace-folders { height: auto; max-height: 5; scrollbar-size: 1 1; scrollbar-gutter: stable; }
+.workspace-folder-path { width: 1fr; height: auto; padding: 0 1; }
+.workspace-folder-remove {
+    min-width: 3;
+    height: 1;
+    border: none;
+    background: transparent;
+    color: $error;
+    text-style: none;
+}
+.workspace-folder-remove:hover, .workspace-folder-remove:focus, .workspace-folder-remove.-active {
+    border: none;
+    background: transparent;
+    background-tint: transparent;
+    tint: transparent;
+}
+.workspace-folder-remove:focus { text-style: bold underline; }
+#workspace-error { width: 100%; height: auto; min-height: 1; padding: 0 1; color: $error; }
+#workspace-buttons { align: right top; }
+#workspace-delete { dock: left; }

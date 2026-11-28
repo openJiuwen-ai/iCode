@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -40,10 +41,12 @@ from chrys.app.tui.widgets.chrome.commands import (
 from chrys.app.tui.widgets.chrome.file_index import WorkdirPathIndex, WorkspacePathIndex
 from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft, ShortcutIntent
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
+from chrys.app.workspace_commands import COMMAND_UNAVAILABLE_RUNNING
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar, sanitize_terminal_block
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.text.draft_references import labels_as_words, labels_from_words
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.service.profiles.models.schema import is_model_profile_selectable
 from chrys.service.prompt_shortcuts import (
     PromptShortcut,
@@ -121,10 +124,6 @@ _SUGGESTIONS_INDEX_COUNTS = msg(
     fallback="{file_count} files / {suggestion_count} rows indexed",
 )
 _COMMAND_DISABLED_TITLE = msg("tui.commands.title.disabled", fallback="Command Disabled")
-_COMMAND_UNAVAILABLE_RUNNING = msg(
-    "tui.commands.unavailable_while_running",
-    fallback="/{name} is not available while agent is running",
-)
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +217,7 @@ class SuggestionHandler:
         self._prompt_history_deferred_keys: list[tuple[str, str]] = []
         self._slash_commands: list[SlashCommandDef] = []
         self._active_command: SlashCommandDef | None = None
+        self._active_subcommand: str | None = None
         # Read off the event loop, refreshed whenever ``/`` opens the list; only
         # ever used for the folders it was read from (``_shortcuts``).
         self._prompt_shortcuts: list[PromptShortcut] = []
@@ -263,7 +263,7 @@ class SuggestionHandler:
     def abort_gc_freeze(self) -> None:
         """Suggestion state has no detached container to restore."""
 
-    def dispatch_slash_command(self, text: str) -> bool:
+    def dispatch_slash_command(self, text: str, *, draft: ChatDraft | None = None) -> bool:
         """Try to match and execute a slash command. Returns True if handled."""
         parts = text[1:].split(None, 1)
         if not parts:
@@ -272,9 +272,17 @@ class SuggestionHandler:
         arg = parts[1] if len(parts) > 1 else ""
         for cmd in self._slash_commands:
             if cmd.name == name or name in cmd.aliases:
+                if cmd.prepare_dispatch is not None:
+                    prepared = cmd.prepare_dispatch(arg, draft)
+                    if prepared is None:
+                        return False
+                    if prepared.restored_draft is not None:
+                        self._view.restore_input_draft(prepared.restored_draft)
+                        return True
+                    arg = prepared.arguments
                 if cmd.name in self._disabled_commands():
                     self._callbacks.notify_warning(
-                        _COMMAND_UNAVAILABLE_RUNNING.bind(name=cmd.name),
+                        COMMAND_UNAVAILABLE_RUNNING.bind(name=cmd.name),
                         _COMMAND_DISABLED_TITLE.bind(),
                         3,
                     )
@@ -349,6 +357,8 @@ class SuggestionHandler:
         self._invalidate_prompt_history_results()
         self._view.hide_suggestions()
         self._suggestion_mode = None
+        self._active_command = None
+        self._active_subcommand = None
 
     def _invalidate_prompt_history_results(self) -> None:
         """Invalidate an in-flight prompt-history load or query and drop loaded entries."""
@@ -741,6 +751,20 @@ class SuggestionHandler:
             group="prompt-shortcuts",
         )
 
+    def refresh_open_choices(self) -> None:
+        """Refilter an open subcommand argument list after what it lists was reread."""
+        if (
+            self._suggestion_mode == "subcommands"
+            and self._active_subcommand is not None
+            and self._view.suggestions_active
+        ):
+            self.on_text_changed(self._view.input_value(), keep_selection=True)
+
+    def follow_prompt_shortcut_folders(self) -> None:
+        """Start a read when the folders in force differ from those last read, so a pasted ``/name`` expands at once."""
+        if self._view.is_attached and self._prompt_shortcut_folders() != self._prompt_shortcuts_folders:
+            self.refresh_prompt_shortcuts()
+
     def _shortcuts(self) -> list[PromptShortcut] | None:
         """The shortcuts read for the current workspace; None while they are still being read.
 
@@ -794,13 +818,17 @@ class SuggestionHandler:
 
     def _prompt_shortcut_folders(self) -> dict[str, Any]:
         """Where the loader reads shortcuts from for the current workspace."""
-        return prompt_shortcut_folders(self._current_file_root())
+        workspace = self._state.workspace.membership
+        return prompt_shortcut_folders(
+            self._current_file_root(),
+            [directory.path for directory in workspace.working_dirs] if workspace is not None else (),
+        )
 
     async def _load_prompt_shortcuts(
         self, generation: int, folders: dict[str, Any], load: Callable[[], list[PromptShortcut]]
     ) -> None:
         try:
-            commands = await asyncio.to_thread(load)
+            commands = await run_abandonable("icode-prompt-shortcuts", load)
         except asyncio.CancelledError:
             # A read that never lands is not one out: the next ask for these folders starts another.
             if generation == self._prompt_shortcuts_generation:
@@ -1163,7 +1191,7 @@ class SuggestionHandler:
         *,
         index: WorkdirPathIndex | None = None,
     ) -> list[SuggestionItem]:
-        """Build suggestion rows for project file and directory paths."""
+        """Build suggestion rows for workspace file and directory paths."""
         items = [SuggestionItem(value=path.path, label=path.path, kind=path.kind) for path in paths]
         if index is not None and index.truncated:
             items.append(
@@ -1281,6 +1309,55 @@ class SuggestionHandler:
     # Filtering as user types
     # -------------------------------------------------------------- #
 
+    def _show_subcommands(
+        self, cmd: SlashCommandDef, arguments: str, *, opening: bool = False, keep_selection: bool = False
+    ) -> None:
+        from chrys.app.tui.widgets.chrome.file_scanner import fuzzy_filter
+
+        action, *argument = re.split(r"\s+", arguments, maxsplit=1)
+        spec = cmd.subcommand_arguments.get(action) if argument else None
+        choices = spec.choices if spec is not None else None
+        if choices is None:
+            items = cmd.subcommands() if cmd.subcommands else ()
+            query = arguments
+        else:
+            items = choices()
+            query = arguments[len(action) + 1 :] if spec is not None and spec.literal else argument[0].strip()
+        rereads = spec is not None and choices is not None and spec.on_open is not None
+        if not items and not rereads:
+            self.dismiss_suggestions()
+            return
+        opened = choices is not None and (self._active_command is not cmd or self._active_subcommand != action)
+        self._suggestion_mode = "subcommands"
+        self._active_command = cmd
+        self._active_subcommand = action if choices is not None else None
+        if opened and spec is not None and spec.on_open is not None:
+            spec.on_open()
+        shown = self._view.suggestions_active
+        if not items:
+            # Keep the list open on its no-results row, so the reread it asked for can fill it in place.
+            title = self._suggestion_title("subcommands")
+            if not shown:
+                self._view.show_suggestions("subcommands", [], title=title)
+            elif not (keep_selection and self._view.chosen_suggestion() is not None):
+                self._view.update_suggestions([], title=title)
+            return
+        if query:
+            by_value = dict(items)
+            items = [(value, by_value[value]) for value in fuzzy_filter(query.lstrip(), list(by_value))]
+        if shown and keep_selection:
+            chosen = self._view.chosen_suggestion()
+            if chosen is not None and all(value != chosen for value, _ in items):
+                # A reread dropped the row the user moved to: replacing the rows would hand Enter to another one.
+                return
+            self._view.update_suggestions(items, title=self._suggestion_title("subcommands"), keep_selection=True)
+            return
+        if query and shown and not opening:
+            self._view.update_suggestions(items, title=self._suggestion_title("subcommands"))
+            return
+        initial = cmd.initial() if cmd.initial and not query else None
+        self._view.show_subcommand_suggestions(items, initial=initial)
+
     def on_text_changed(self, text: str, *, keep_selection: bool = False) -> None:
         """Re-filter suggestion list as user types."""
         if self._suggestion_mode is None:
@@ -1308,19 +1385,7 @@ class SuggestionHandler:
                 if not cmd or not cmd.subcommands:
                     self.dismiss_suggestions()
                     return
-                self._suggestion_mode = "subcommands"
-                self._active_command = cmd
-                from chrys.app.tui.widgets.chrome.file_scanner import fuzzy_filter
-
-                all_subs = cmd.subcommands()
-                if sub_query:
-                    matches = fuzzy_filter(sub_query, [v for v, _ in all_subs])
-                    sub_by_value = dict(all_subs)
-                    items = [(m, sub_by_value[m]) for m in matches if m in sub_by_value]
-                    self._view.show_subcommand_suggestions(items)
-                else:
-                    initial = cmd.initial() if cmd.initial else None
-                    self._view.show_subcommand_suggestions(all_subs, initial=initial)
+                self._show_subcommands(cmd, sub_query, opening=True)
                 return
             from chrys.app.tui.widgets.chrome.file_scanner import fuzzy_filter
 
@@ -1366,18 +1431,17 @@ class SuggestionHandler:
                 self.dismiss_suggestions()
                 return
             parts = text.split(None, 1)
+            name = parts[0].lstrip("/\uff0f")
+            if (name != cmd.name and name not in cmd.aliases) or text == parts[0]:
+                # The draft no longer names this command: filter commands again, as after typing
+                # ``/``, so Enter never applies a candidate of a command that is not in the draft.
+                self._active_command = None
+                self._active_subcommand = None
+                self._show_suggestions("commands", self._all_command_items(), disabled=self._disabled_commands())
+                self.on_text_changed(text)
+                return
             query = parts[1] if len(parts) > 1 else ""
-            from chrys.app.tui.widgets.chrome.file_scanner import fuzzy_filter
-
-            all_subs = cmd.subcommands()
-            if query:
-                matches = fuzzy_filter(query, [v for v, _ in all_subs])
-                sub_by_value = dict(all_subs)
-                items = [(m, sub_by_value[m]) for m in matches if m in sub_by_value]
-                self._view.update_suggestions(items, title=self._suggestion_title("subcommands"))
-            else:
-                initial = cmd.initial() if cmd.initial else None
-                self._view.show_subcommand_suggestions(all_subs, initial=initial)
+            self._show_subcommands(cmd, query, keep_selection=keep_selection)
 
         elif self._suggestion_mode == "files":
             # The token a pick replaces (``replace_trigger_text``): the same span, so nothing typed is left behind.
@@ -1481,11 +1545,12 @@ class SuggestionHandler:
                 return
             if cmd.name in self._disabled_commands():
                 return
-            if cmd.subcommands:
+            sub_items = cmd.subcommands() if cmd.subcommands else ()
+            if sub_items:
                 self._view.replace_input_trigger_text("/", f"/{text} ")
                 self._suggestion_mode = "subcommands"
                 self._active_command = cmd
-                sub_items = cmd.subcommands()
+                self._active_subcommand = None
                 initial = cmd.initial() if cmd.initial else None
                 self._view.show_subcommand_suggestions(sub_items, initial=initial)
                 return
@@ -1502,11 +1567,27 @@ class SuggestionHandler:
             if not cmd or cmd.name in self._disabled_commands():
                 self.dismiss_suggestions()
                 return
-            # For subcommands that require parameters (e.g., "name"), keep input open
-            if text == "name":
-                self._view.replace_input_trigger_text(f"/{cmd.name} ", f"/{cmd.name} name ")
-                self._suggestion_mode = None
-                self._active_command = None
+            if (action := self._active_subcommand) is not None:
+                spec = cmd.subcommand_arguments.get(action)
+                if execute and spec is not None and spec.exact:
+                    draft = parse_slash_draft(self._view.input_value())
+                    if draft is None or draft.name != cmd.name:
+                        execute = False
+                    elif (matches := spec.matches) is not None:
+                        execute = matches(draft.arguments, text)
+                    else:
+                        execute = draft.arguments.split(maxsplit=1) == [action, text]
+                self.dismiss_suggestions()
+                if not execute:
+                    self._view.replace_input_trigger_text("/", f"/{cmd.name} {action} {text}")
+                    return
+                self._view.set_input_value("")
+                cmd.action(f"{action} {text}")
+            elif (spec := cmd.subcommand_arguments.get(text)) is not None and spec.choices is not None:
+                self._view.replace_input_trigger_text("/", f"/{cmd.name} {text} ")
+                # The input change opens the argument list once, with the updated draft.
+            elif text in cmd.subcommand_arguments:
+                self._view.replace_input_trigger_text("/", f"/{cmd.name} {text} ")
                 self.dismiss_suggestions()
             else:
                 # Execute immediately for parameterless subcommands

@@ -204,6 +204,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
         "  /sessions     - Browse saved sessions or open one by ID\n"
         "  /theme        - Set color theme\n"
         "  /language     - Set display language\n"
+        "  /workspace    - Switch, create, edit or delete workspaces\n"
         "  /chdir        - Change working directory\n"
         "  /copy         - Copy agent, user, or all turns to clipboard\n"
         "  /fold         - Toggle collapse on activity, tool groups, thinking, text between tool calls and compaction summaries\n"

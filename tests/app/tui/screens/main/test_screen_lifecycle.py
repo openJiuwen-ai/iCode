@@ -49,6 +49,7 @@ def test_unmount_shuts_down_buddy_before_flushing_notifications() -> None:
         calls.append("workspace_branch_close")
 
     screen = SimpleNamespace(
+        app=SimpleNamespace(screen_change_signal=SimpleNamespace(unsubscribe=lambda _owner: None)),
         _events=SimpleNamespace(close_approval_waits=lambda: calls.append("approval_waits_close")),
         _workflow_timer=None,
         _workflow=SimpleNamespace(close=close_workflow),

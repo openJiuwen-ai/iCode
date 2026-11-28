@@ -73,6 +73,7 @@ from chrys.foundation.i18n import DisplayPath, MessageRef, msg
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.foundation.util.session_ids import session_id_key, session_short_id
 from chrys.service.state.session_listing import SESSION_PAGE_SIZE, SessionListing, page_slice
 from chrys.service.workspaces.registry import UNSPECIFIED
@@ -445,7 +446,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
                 names[session_id_key(current_id)] = current_name
             return WorkspaceNames(names, unspecified, has_workspaces=True, primary_dirs=folders), None
 
-        names, error = await asyncio.to_thread(read_names)
+        names, error = await run_abandonable("icode-sessions-workspaces", read_names)
         if error is not None and self._composed_live:
             self.notify(self._render_message(error), severity="warning", markup=False)
         return names

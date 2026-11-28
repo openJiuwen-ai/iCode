@@ -31,6 +31,7 @@ from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets.text_area import Document
 
+from chrys.app.tui import workspace_text
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin, cancel_textual_mouse_chain
 from chrys.app.tui.binding_display import BACK_BINDING, QUIT_BINDING, localized_binding
 from chrys.app.tui.copy_messages import COPIED_TITLE
@@ -86,6 +87,7 @@ from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.screens.main.workflow_controller import WorkflowController
 from chrys.app.tui.screens.main.workspace_actions import WorkspaceCallbacks, WorkspaceController
 from chrys.app.tui.screens.main.workspace_branch import WorkspaceBranchController
+from chrys.app.tui.screens.main.workspace_picker_actions import WorkspacePickerController
 from chrys.app.tui.screens.settings import GENERAL_TAB_ID
 from chrys.app.tui.support.gc_freeze import (
     GcFreezeBlockReason,
@@ -101,6 +103,7 @@ from chrys.app.tui.util.diff_entries import DiffFocus
 from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.util.placement import pin_fixed_placement
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
+from chrys.app.tui.util.workspace_order import WorkspaceOrder, read_workspace_order
 from chrys.app.tui.widgets.btw import BtwPage, BtwPanel, ChatColumn
 from chrys.app.tui.widgets.chat.messages import (
     ConversationStatusAction,
@@ -166,6 +169,7 @@ from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 from chrys.foundation.platform import get_platform, safe_getcwd
 from chrys.foundation.text.draft_references import iter_reference_labels
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.models.resolver import model_for_agent
 from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, is_model_profile_selectable
@@ -181,6 +185,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.notifications import NotificationService
     from chrys.app.tui.notifications.settings import NotificationSettings
     from chrys.app.tui.screens.dialogs.editor import EditorDialogResult
+    from chrys.app.tui.screens.main.workspace_actions import WorkspaceSwitchChoice
     from chrys.app.tui.screens.sessions import WorkflowSessionPick
     from chrys.app.tui.screens.themes import ThemeEditorPanel
     from chrys.app.tui.screens.themes.picker import ThemesScreen
@@ -189,8 +194,10 @@ if TYPE_CHECKING:
     from chrys.app.update_check import UpdateNotice
     from chrys.foundation.config.settings_store import PersistResult, SettingsHandle
     from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.events.types import SessionNew
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_runs import HookRunDetail, HookRunRecord
+    from chrys.foundation.models.workspace import Workspace
     from chrys.foundation.text.draft_references import DraftReference
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -437,6 +444,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             set_interval=self.set_interval,
             call_from_thread=lambda callback: self.app.call_from_thread(callback),  # noqa: PLW0108 — app bound later
         )
+        self._workspace_order: WorkspaceOrder | None = None
+        self._workspace_refresh_pending = False
+        self._workspace_refresh_requested = False
+        self._workspace_indicator_folder_key: tuple[str, tuple[str, ...]] | None = None
+        self._missing_workspace_folders: frozenset[str] = frozenset()
         self._runtime_info = RegistryRuntimeInfoProvider(self._services)
         self._config_actions = RuntimeConfigController(
             state=self._state,
@@ -463,12 +475,31 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 debug=self._debug,
                 allow_change=lambda: self._workflow.browser.request_workspace_change(),  # noqa: PLW0108 — constructed later
                 selected_cwd=lambda: self._workflow.workdir if self._workflow.workflow_mode else "",
+                is_topmost=lambda: self.app.screen is self,
                 apply_workflow_cwd=self._apply_workflow_cwd,
                 workflow_mode=lambda: self._workflow.workflow_mode,
                 start_new_session=lambda event, check: self._sessions.create_new_session(
                     event, confirmation_is_current=check
                 ),
             ),
+            locale_controller=self._locale_controller,
+        )
+        self._workspace_picker = WorkspacePickerController(
+            state=self._state,
+            services=self._services,
+            view=self._view_adapter,
+            start_worker=self._start_worker,
+            cwd=self._workspace_cwd,
+            refresh=self._refresh_workspace,
+            snapshot=lambda: self._workspace_snapshot,
+            order=lambda: self._workspace_order,
+            apply_order=self._workspace_picker_read,
+            allow_change=lambda: self._workflow.browser.request_workspace_change(),  # noqa: PLW0108 — constructed later
+            start_session=self._start_workspace_session,
+            confirm_switch=self._confirm_workspace_switch,
+            workflow_mode=lambda: self._workflow.workflow_mode,
+            is_topmost=lambda: self.app.screen is self,
+            wait_after_edit=self._wait_after_workspace_edit,
             locale_controller=self._locale_controller,
         )
         self._copy_actions = CopyActionController(view=self._view_adapter, debug=self._debug)
@@ -533,6 +564,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 refresh_rollback_targets=lambda: self._start_worker(self._rollback_controller.refresh_rollback_targets),
                 refresh_notification_settings=self._refresh_notification_settings,
                 refresh_trajectory_verify_commands=self._refresh_trajectory_verify_commands,
+                refresh_workspace=self._refresh_session_workspace,
                 settings_reloaded=self._on_settings_reloaded_for_panel,
                 approval_default_saved=self._on_approval_default_saved,
                 save_approval_default=self._save_approval_default,
@@ -563,6 +595,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 refresh_model_indicator=self._refresh_model_indicator,
                 refresh_diff_preview=self._refresh_diff_preview,
                 reset_rollback_request=self._rollback_controller.reset_pending,
+                refresh_workspace=self._refresh_session_workspace,
                 choose_missing_working_dir=partial(self._workspace_actions.choose_replacement_dir, reason="restore"),
                 confirm_workspace_leave=self._workspace_actions.confirm_workspace_leave,
                 confirm_stopping_background_tasks=self._confirm_stopping_background_tasks,
@@ -881,6 +914,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def refresh_localization(self) -> None:
         """Recompute screen-owned localized chrome text in place."""
         self._refresh_model_indicator()
+        self._refresh_workspace_indicator()
         self.query_one(PromptCard).refresh_localization()
         if self._workflow.workflow_mode:
             self._workflow.request_refresh()
@@ -926,6 +960,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             edit_session_title=self._session_title.open_editor,
             apply_session_title=self._session_title.apply_custom_title,
             change_directory=self._workspace_actions.start_chdir,
+            run_workspace_command=self._workspace_picker.run_command,
+            is_workspace_assigned=lambda: self._state.workspace.membership is not None,
+            list_workspace_choices=self._workspace_picker.argument_choices,
+            refresh_workspace_choices=self._refresh_workspace,
             copy_conversation=self._copy_agent_responses,
             fold_tools=self._toggle_fold,
             open_diff=self.action_show_diff,
@@ -1407,7 +1445,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def watch_chat_workspace_cwd(self, old_cwd: str, cwd: str) -> None:
         self._workspace_branch.displayed_cwd_changed(old_cwd, cwd)
         if old_cwd != cwd and self.is_mounted:
-            # Project shortcuts come from the new workspace.
+            # The working-directory chain may have changed.
             self._suggestions.refresh_prompt_shortcuts()
 
     def watch_shell_mode_state(self, active: bool) -> None:
@@ -1703,6 +1741,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     async def on_mount(self) -> None:
         """Subscribe to backend events when the screen mounts."""
+        self.app.screen_change_signal.subscribe(self, self._on_picker_screen_change, immediate=True)
         chat_panel = self.query_one(ChatPanel)
         chat_panel.set_replay_progress_callback(self._events.update_session_history_progress)
         self._gc_freeze_participants = (
@@ -1735,11 +1774,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._refresh_model_indicator()
         self._update_subtitle()
         self._workspace_branch.start(self._workspace_cwd())
+        self._refresh_workspace()
         # Read prompt shortcuts now so a pasted ``/name arguments`` can expand before ``/`` was ever typed.
         self._suggestions.refresh_prompt_shortcuts()
 
     async def on_unmount(self) -> None:
         """Flush pending UI-owned settings before the screen is torn down."""
+        self.app.screen_change_signal.unsubscribe(self)
         self._events.close_approval_waits()
         if self._locale_controller is not None:
             self._locale_controller.unregister_surface(self)
@@ -1798,7 +1839,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             if self._state.run.agent_loading:
                 self.query_one(InputBar).restore_draft(draft)
                 return
-            if self._suggestions.dispatch_slash_command(text):
+            if self._suggestions.dispatch_slash_command(text, draft=draft):
                 return
         if draft.owner is not None and self._prompt_card.route(draft, continue_button=False) == "keep":
             # The router sent this shortcut's prompt as a new message at the keypress, and a turn
@@ -2448,6 +2489,182 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Open the approval mode picker modal."""
         self._config_actions.on_approval_badge_clicked()
 
+    def _refresh_session_workspace(self) -> None:
+        self._workspace_indicator_folder_key = None
+        self._refresh_workspace()
+
+    def _refresh_workspace(self) -> None:
+        if not composed_live(self) or self._services.state_store is None:
+            return
+        if self._state.workspace.workspace_known:
+            self._sync_workspace_indicator()
+            # Reference folders hold shortcuts too: a workspace change that keeps the primary folder must read them now.
+            self._suggestions.follow_prompt_shortcut_folders()
+        self._workspace_refresh_requested = True
+        if not self._workspace_refresh_pending:
+            self._workspace_refresh_pending = True
+            self._start_worker(self._read_workspace_snapshot)
+
+    async def _read_workspace_snapshot(self) -> None:
+        try:
+            # A refresh requested during a read may follow a registry write, so read again before publishing.
+            while self._workspace_refresh_requested and composed_live(self):
+                self._workspace_refresh_requested = False
+                cwd, current_id = self._workspace_cwd(), self._state.workspace.workspace_id
+                order = await run_abandonable(
+                    "icode-workspace-order",
+                    read_workspace_order,
+                    self._services.workspaces,
+                    cwd,
+                    current_id,
+                    self._workspace_order,
+                )
+                if composed_live(self) and not self._workspace_refresh_requested:
+                    if (cwd, current_id) != (self._workspace_cwd(), self._state.workspace.workspace_id):
+                        self._workspace_refresh_requested = True
+                        continue
+                    self._apply_workspace_order(order)
+        except Exception:
+            logger.warning("Could not read workspace order", exc_info=True)
+        finally:
+            self._workspace_refresh_pending = False
+
+    def _workspace_picker_read(self, order: WorkspaceOrder) -> None:
+        if order is self._workspace_order:
+            return
+        self._apply_workspace_order(order)
+        # An older in-flight read must reread before publishing over this picker snapshot.
+        if self._workspace_refresh_pending:
+            self._workspace_refresh_requested = True
+
+    @property
+    def _workspace_snapshot(self) -> RegistrySnapshot | None:
+        """The registry read the current workspace order was built from."""
+        return self._workspace_order.snapshot if self._workspace_order is not None else None
+
+    def _apply_workspace_order(self, order: WorkspaceOrder) -> None:
+        if not composed_live(self) or (order.cwd, order.current_id) != (
+            self._workspace_cwd(),
+            self._state.workspace.workspace_id,
+        ):
+            return
+        previous, listed = self._workspace_snapshot, self._workspace_order
+        self._workspace_order = order
+        self._apply_workspace_snapshot(order.snapshot, previous)
+        if listed is None or (listed.workspaces, listed.current_id) != (order.workspaces, order.current_id):
+            self._suggestions.refresh_open_choices()
+
+    def _apply_workspace_snapshot(self, snapshot: RegistrySnapshot, previous: RegistrySnapshot | None) -> None:
+        if not self._state.workspace.workspace_known:
+            return
+        if (
+            (previous.error if previous is not None else None) != snapshot.error
+            or previous is None
+            or previous.workspaces != snapshot.workspaces
+        ):
+            self._sync_workspace_indicator()
+
+    def _sync_workspace_indicator(self) -> None:
+        """Probe the indicator's folders again when they changed, then repaint it."""
+        folder_key = self._workspace_folder_key()
+        if folder_key != self._workspace_indicator_folder_key:
+            self._workspace_indicator_folder_key = folder_key
+            self._missing_workspace_folders = frozenset()
+            if folder_key[1]:
+                self._check_workspace_indicator_folders(folder_key)
+        self._refresh_workspace_indicator()
+
+    def _workspace_folder_key(self) -> tuple[str, tuple[str, ...]]:
+        workspace = self._state.workspace.membership
+        if workspace is None:
+            return "", ()
+        snapshot = self._workspace_snapshot
+        saved = snapshot.workspace(workspace.id) if snapshot is not None else None
+        folders = dict.fromkeys(
+            (
+                workspace.primary_cwd,
+                *(directory.path for directory in workspace.working_dirs),
+                *((directory.path for directory in saved.working_dirs) if saved is not None else ()),
+            )
+        )
+        return workspace.id, tuple(folders)
+
+    def _refresh_workspace_indicator(self) -> None:
+        if not self._state.workspace.workspace_known:
+            return
+        workspace = self._state.workspace.membership
+        snapshot = self._workspace_snapshot
+        key = self._workspace_folder_key()
+        missing = self._missing_workspace_folders if key == self._workspace_indicator_folder_key else frozenset()
+        installed = (
+            {workspace.primary_cwd, *(directory.path for directory in workspace.working_dirs)}
+            if workspace is not None
+            else set()
+        )
+        state = workspace_text.compute_workspace_indicator_state(
+            self._language_localizer(),
+            workspace.name if workspace is not None else None,
+            tuple(folder for folder in key[1] if folder in installed or folder in missing),
+            missing,
+            snapshot.error.display_message if snapshot is not None and snapshot.error is not None else None,
+        )
+        self.query_one(StatusBar).set_workspace(state)
+
+    @work(exclusive=True, group="workspace-tooltip", exit_on_error=False)
+    async def _check_workspace_indicator_folders(self, key: tuple[str, tuple[str, ...]]) -> None:
+        missing = await run_abandonable("icode-workspace-folders", workspace_text.find_missing_tooltip_folders, key[1])
+        if (
+            key == self._workspace_indicator_folder_key
+            and missing != self._missing_workspace_folders
+            and composed_live(self)
+        ):
+            self._missing_workspace_folders = missing
+            self._refresh_workspace_indicator()
+
+    async def _start_workspace_session(self, event: SessionNew, is_current: Callable[[], bool]) -> bool:
+        previous = self.chat_session_id
+        await self._sessions.create_new_session(event, confirmation_is_current=is_current)
+        return bool(self.chat_session_id and self.chat_session_id != previous)
+
+    def _on_picker_screen_change(self, _screen: Screen) -> None:
+        self._workspace_picker.screen_changed()
+
+    async def _wait_after_workspace_edit(self) -> bool:
+        """Let a successful rebuild's final frame clear before preparing the picker again."""
+        from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
+
+        if not self._view_adapter.is_attached:
+            return False
+        top = self.app.screen
+        if top is self:
+            return True
+        if not isinstance(top, AgentLoadDialog) or not top.has_class("-success"):
+            return False
+
+        changed: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        signal = self.app.screen_change_signal
+
+        def settle(screen: Screen) -> None:
+            if not changed.done():
+                changed.set_result(screen is self)
+
+        signal.subscribe(top, settle, immediate=True)
+        try:
+            return await changed
+        finally:
+            signal.unsubscribe(top)
+
+    async def _confirm_workspace_switch(self, target: Workspace | None, created: bool) -> WorkspaceSwitchChoice:
+        if created:
+            # The definition is already saved while the user decides whether to enter it.
+            self._refresh_workspace()
+        return await self._workspace_actions.confirm_workspace_switch(target, created)
+
+    @on(StatusBar.WorkspaceTagClicked)
+    def _on_workspace_tag_clicked(self, _event: StatusBar.WorkspaceTagClicked) -> None:
+        if not self._workflow.workflow_mode:
+            self._workspace_picker.open()
+
     @on(StatusBar.ProfileTagClicked)
     def _on_profile_tag_clicked(self, _event: StatusBar.ProfileTagClicked) -> None:
         """Open the agent picker modal."""
@@ -2463,7 +2680,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _on_selector_busy(self, event: StatusBar.SelectorBusy) -> None:
         """Explain why a selector ignored a click during a run."""
         if not self._workflow.workflow_mode:
-            self._config_actions.on_selector_busy(event.selector)
+            if event.selector == "workspace":
+                self._workspace_picker.busy()
+            else:
+                self._config_actions.on_selector_busy(event.selector)
 
     @work(thread=False)
     async def _switch_model_profile(self, profile_id: str) -> None:

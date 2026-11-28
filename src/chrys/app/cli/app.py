@@ -25,6 +25,7 @@ _PLURAL_ALIASES: Final = {
     "approvals": "approval",
     "hooks": "hook",
     "workflows": "workflow",
+    "workspaces": "workspace",
     "trajectories": "trajectory",
 }
 """Noun commands are shown in the singular and also accepted in the plural; neither form is deprecated."""
@@ -133,14 +134,15 @@ def build_parser() -> argparse.ArgumentParser:
             "  approval    List, revoke or clear remembered approvals\n"
             "  hook        List hooks and check hook configuration files\n"
             "  workflow    List, validate and run workflows headlessly\n"
+            "  workspace   List, create, edit or delete workspaces\n"
             "  trajectory  Export recorded trajectory analytics (perfetto/json/csv)\n"
             "  rsi         Experimental RSI eval and profile optimize\n"
             "  acp         Run an Agent Client Protocol stdio server\n"
             f"  serve       Host the {APP_DISPLAY_NAME} TUI in a browser\n"
             f"  install     Install {APP_DISPLAY_NAME} to PATH\n"
             f"  uninstall   Remove {APP_DISPLAY_NAME} (--purge also deletes your data)\n\n"
-            "agent, model, approval, hook, workflow and trajectory also work in the plural;\n"
-            "agent, model, approval, hook and workflow list when given no subcommand.\n\n"
+            "agent, model, approval, hook, workflow, workspace and trajectory also work in the plural;\n"
+            "agent, model, approval, hook, workflow and workspace list when given no subcommand.\n\n"
             f"Default: '{APP_COMMAND}' launches the TUI. Run '{APP_COMMAND} <command> --help' for command options."
         ),
         formatter_class=WorkspaceHelpFormatter,
@@ -228,6 +230,10 @@ def main() -> int:
         from chrys.app.cli.workflow import main as workflow_main
 
         return workflow_main(argv[1:])
+    if argv and argv[0] == "workspace":
+        from chrys.app.cli.workspaces import main as workspaces_main
+
+        return workspaces_main(argv[1:])
     if argv and argv[0] == "rsi":
         from chrys.app.cli.rsi import main as rsi_main
 

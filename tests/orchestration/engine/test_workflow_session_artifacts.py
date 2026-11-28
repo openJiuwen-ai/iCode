@@ -40,14 +40,14 @@ def _plant_run(session_dir: Path) -> Path:
     return path
 
 
-def test_cleanup_empty_session_dir_removes_a_session_whose_workflows_dir_holds_no_run(tmp_path: Path) -> None:
+async def test_cleanup_empty_session_dir_removes_a_session_whose_workflows_dir_holds_no_run(tmp_path: Path) -> None:
     store = JsonFileStateStore(tmp_path)
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "aborted-only"
     session_dir = store.session_dir("aborted-only")
     (session_dir / WORKFLOWS_DIR / "aborted").mkdir(parents=True)
 
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     assert not session_dir.exists()
 
@@ -69,6 +69,6 @@ async def test_workflow_session_checkpoint_preserves_its_run_artifacts(tmp_path:
     _plant_run(session_dir)
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "workflow"
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
     assert session_dir.exists()
     assert session_dir_candidates(tmp_path) == [session_dir]

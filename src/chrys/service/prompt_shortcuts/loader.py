@@ -25,11 +25,14 @@ import stat as stat_mod
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from chrys.foundation.platform import get_platform
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.service.skills.loader import FRONTMATTER_RE, parse_frontmatter
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -109,20 +112,22 @@ def shortcut_search_dirs(workspace: str) -> list[Path]:
     return [start]
 
 
-def prompt_shortcut_folders(workspace: str | None) -> dict[str, Any]:
-    """Where shortcuts are read from for *workspace*: :func:`load_prompt_shortcuts`'s arguments.
+def prompt_shortcut_folders(cwd: str | None, workspace_folders: Sequence[str] = ()) -> dict[str, Any]:
+    """Share the shortcut search arguments between TUI discovery and engine validation.
 
-    The user's folder and the working folder, always: which folders are read is
-    not a setting. The one definition both readers use: the ``/`` list, and the
-    engine when it checks that a message's shortcut is still one it would load.
+    Read the user folder, working-directory chain and committed workspace folders.
     """
-    return {"config_dir": get_platform().config_dir, "workspace": workspace}
+    folders: dict[str, Any] = {"config_dir": get_platform().config_dir, "workspace": cwd}
+    if workspace_folders:
+        folders["workspace_folders"] = tuple(workspace_folders)
+    return folders
 
 
 def load_prompt_shortcuts(
     *,
     config_dir: Path,
     workspace: str | None,
+    workspace_folders: Sequence[str] = (),
 ) -> list[PromptShortcut]:
     """Load prompt shortcuts, each name once, sorted by name (case-insensitively).
 
@@ -131,7 +136,9 @@ def load_prompt_shortcuts(
     """
     commands = [
         command
-        for _folder, found in prompt_shortcut_sources(config_dir=config_dir, workspace=workspace)
+        for _folder, found in prompt_shortcut_sources(
+            config_dir=config_dir, workspace=workspace, workspace_folders=workspace_folders
+        )
         for command in found
     ]
     # The list shows shortcuts in this order; where a file came from is not shown, so it is no key.
@@ -142,6 +149,7 @@ def prompt_shortcut_sources(
     *,
     config_dir: Path,
     workspace: str | None,
+    workspace_folders: Sequence[str] = (),
 ) -> list[tuple[Path, list[PromptShortcut]]]:
     """Load prompt shortcuts by the folder they came from, folders in reading order.
 
@@ -150,7 +158,8 @@ def prompt_shortcut_sources(
 
     Folders are read in this order: the user folder (``<config_dir>/shortcuts``),
     then the working folder: ``.chrys/shortcuts`` of *workspace* and its
-    parents up to the Git repository's top, nearest first. Each holds ``*.md``
+    parents up to the Git repository's top, nearest first, then each reference
+    folder's own ``.chrys/shortcuts`` in workspace order. Each holds ``*.md``
     files, its subfolders included (``git/commit-msg.md`` is ``/git/commit-msg``).
 
     Like skills, the first shortcut loaded with a name (compared
@@ -160,45 +169,48 @@ def prompt_shortcut_sources(
     folder is never read a second time as a local source (a workspace at the user's home
     on macOS/Linux).
     """
-    user_dirs = [global_shortcuts_dir(config_dir)]
-    sources: list[tuple[list[Path], _SourceKind]] = [(user_dirs, "global")]
-    # A local directory reads nothing a link leads out of its Git repository: the folder itself
-    # (``working_folder_dirs``) and each linked file in it (``_load_file``).
-    shortcut_boundary: Path | None = None
+    user_dir = global_shortcuts_dir(config_dir)
+    sources: list[tuple[Path, Path | None]] = [(user_dir, None)]
     if workspace:
-        shortcut_boundary = shortcut_search_dirs(workspace)[-1]
-        sources.extend(([directory], "workdir") for directory in working_folder_dirs(workspace))
+        boundary = shortcut_search_dirs(workspace)[-1]
+        sources.extend((directory, boundary) for directory in working_folder_dirs(workspace))
+    for folder in workspace_folders:
+        directory = workdir_shortcuts_dir(Path(folder))
+        if not directory.is_dir():
+            continue
+        boundary = shortcut_search_dirs(folder)[-1]
+        if _inside(directory, boundary):
+            sources.append((directory, boundary))
     seen_dirs: list[Path] = []
     kept: dict[str, PromptShortcut] = {}
     by_folder: dict[Path, list[PromptShortcut]] = {}
     read: set[tuple[str, str, str]] = set()
     duplicates: set[tuple[str, str]] = set()
-    for dirs, scope in sources:
-        for directory in dirs:
-            skip = (*seen_dirs, *user_dirs) if scope == "workdir" else seen_dirs
-            if not directory.is_dir() or any(_same_directory(directory, other) for other in skip):
+    for directory, inside in sources:
+        scope: _SourceKind = "global" if inside is None else "workdir"
+        skip = (*seen_dirs, user_dir) if inside is not None else seen_dirs
+        if not directory.is_dir() or any(_same_directory(directory, other) for other in skip):
+            continue
+        seen_dirs.append(directory)
+        for command in _load_directory(directory, scope, read, inside):
+            key = command.name.casefold()
+            if key in kept:
+                # The list reloads each time it opens: say so once per pair, not on every open.
+                pair = (command.path, kept[key].path)
+                duplicates.add(pair)
+                with _CACHE_LOCK:
+                    warn = pair not in _WARNED_DUPLICATES
+                    _WARNED_DUPLICATES.add(pair)
+                if warn:
+                    logger.warning(
+                        "Prompt shortcuts: skipping %s: /%s is already defined by %s",
+                        command.path,
+                        command.name,
+                        kept[key].path,
+                    )
                 continue
-            seen_dirs.append(directory)
-            inside = shortcut_boundary if scope == "workdir" else None
-            for command in _load_directory(directory, scope, read, inside):
-                key = command.name.casefold()
-                if key in kept:
-                    # The list reloads each time it opens: say so once per pair, not on every open.
-                    pair = (command.path, kept[key].path)
-                    duplicates.add(pair)
-                    with _CACHE_LOCK:
-                        warn = pair not in _WARNED_DUPLICATES
-                        _WARNED_DUPLICATES.add(pair)
-                    if warn:
-                        logger.warning(
-                            "Prompt shortcuts: skipping %s: /%s is already defined by %s",
-                            command.path,
-                            command.name,
-                            kept[key].path,
-                        )
-                    continue
-                kept[key] = command
-                by_folder.setdefault(directory, []).append(command)
+            kept[key] = command
+            by_folder.setdefault(directory, []).append(command)
     # Keep only what this load read, so files and folders left behind are not held for the whole run.
     with _CACHE_LOCK:
         for stale in [key for key in _PARSED if key not in read]:

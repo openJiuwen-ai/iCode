@@ -6083,6 +6083,12 @@ msgstr "设置配色主题"
 msgid "tui.commands.description.usage"
 msgstr "查看所有会话的 token 用量和速度"
 
+#. English: Switch, create, edit or delete workspaces
+#. chrys-meta={"fingerprint":"ea55e2b1c2256171bdf3e892bbf4392846fb835e9ec31291098da79e64dd9e92","multiline":false,"placeholders":[]}
+#: src/chrys/app/workspace_commands.py
+msgid "tui.commands.description.workspace"
+msgstr "切换、新建、编辑或删除工作区"
+
 #. English: Show help for /{name}
 #. chrys-meta={"fingerprint":"df2f841cd072593f47ac017908fec4bba0bf4a4a9b63698b72a1fb72c5b8ebbb","multiline":false,"placeholders":["name"]}
 #: src/chrys/app/tui/screens/main/commands.py
@@ -6109,7 +6115,7 @@ msgstr "手册页"
 
 #. English: /{name} is not available while agent is running
 #. chrys-meta={"fingerprint":"847f36dc3e845baadefdcd0ad664833ac6894925eab8bd76c391f8603fc82ff3","multiline":false,"placeholders":["name"]}
-#: src/chrys/app/tui/screens/main/suggestions.py
+#: src/chrys/app/workspace_commands.py
 msgid "tui.commands.unavailable_while_running"
 msgstr "智能体运行时无法使用 /{name}"
 
@@ -12290,12 +12296,12 @@ msgstr "加载各会话主工作目录中 .chrys/settings.yaml 的设置。"
 msgid "tui.settings.hint.workdir.hooks_enabled"
 msgstr "加载各会话主工作目录中 .chrys/hooks 定义的钩子，与全局钩子一起生效。"
 
-#. English: Allow agents to load skills from .agents/skills in each session's
-#. primary working directory.
-#. chrys-meta={"fingerprint":"a866d875384076ef00937500ad83d33b97d58542755f3b2ddf42ab7d06a60821","multiline":false,"placeholders":[]}
+#. English: Allow agents to load skills from .agents/skills in the working
+#. directory and workspace folders.
+#. chrys-meta={"fingerprint":"89af5442438eac612ccf3d6f966c898a027d7ac44d1145094214c7e04d6ec6c1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.workdir.skills_enabled"
-msgstr "允许智能体加载各会话主工作目录中 .agents/skills 的 Skills。"
+msgstr "允许智能体加载工作目录和工作区文件夹中 .agents/skills 的 Skills。"
 
 #. English: Tell the agent about files changed outside the conversation at turn
 #. boundaries.
@@ -17852,30 +17858,18 @@ msgstr "智能体运行时无法更改目录"
 msgid "tui.workspace.invalid_directory"
 msgstr "不是有效目录：{path}"
 
-#. English: Switch to {path}?  Move: This session leaves workspace “{name}” and
-#. opens in the selected folder. New session: This session stays in the
-#. workspace. A new Unspecified session opens in the selected folder. Cancel:
-#. Keep working in this session.
-#. chrys-meta={"fingerprint":"4ebe3d57425086612c18da27cc3a1766d3e71cf35b94b44c3d85d61b6f1c4f33","multiline":true,"placeholders":["name","path"]}
-#: src/chrys/app/tui/screens/main/workspace_actions.py
-msgid "tui.workspace.leave_workspace.choices"
-msgstr ""
-"切换到\n"
-"{path}？\n"
-"\n"
-"移动：此会话离开工作区“{name}”，并在所选文件夹中打开。\n"
-"新会话：此会话留在工作区，在所选文件夹中打开新会话，其工作区为“未指定”。\n"
-"取消：继续使用当前会话。"
-
-#. English: Switch to {path}?  This session will leave workspace “{name}”.
-#. chrys-meta={"fingerprint":"c3fbb1df1ad084630ca83c510ed0ae14e67ad0673ffc37c591e026222a0e438a","multiline":true,"placeholders":["name","path"]}
+#. English: • Move this session: open it in {path} as Unspecified.
+#. chrys-meta={"fingerprint":"6d89fea4e8355fb4b595c4407ba5e52a9a75352c4f754fdfde3ef70b012082a0","multiline":false,"placeholders":["path"]}
 #: src/chrys/app/tui/screens/main/workspace_actions.py
 msgid "tui.workspace.leave_workspace.message"
-msgstr ""
-"切换到\n"
-"{path}？\n"
-"\n"
-"此会话将离开工作区“{name}”。"
+msgstr "• 移动这个会话：在 {path} 打开这个会话，变为未指定。"
+
+#. English: • Move this session: change its working directory to this folder
+#. and make it Unspecified.
+#. chrys-meta={"fingerprint":"5ec34ad9f39eabdbcb4571800d8945be21632c84c736d6429ed3e48e6e9105cf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.move_result"
+msgstr "• 移动这个会话：工作目录改为这个文件夹，变为未指定。"
 
 #. English: New session
 #. chrys-meta={"fingerprint":"9131b5c344492c08b08bbf6a49f91c895f10bcff24befb5b52732f32a07cb299","multiline":false,"placeholders":[]}
@@ -17883,17 +17877,59 @@ msgstr ""
 msgid "tui.workspace.leave_workspace.new"
 msgstr "新会话"
 
-#. English: Move
-#. chrys-meta={"fingerprint":"caa4e97314afab58a626e01110ad4aac02e343a3738dca6749007df925eccde9","multiline":false,"placeholders":[]}
+#. English: • New session: open a new Unspecified session in this folder. The
+#. current session stays where it is.
+#. chrys-meta={"fingerprint":"3d704ec62b95f6229601cf12eb3c1746b4ecfff588ca7af31be1ef161ca596c6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.new_result"
+msgstr "• 新会话：在这个文件夹新开一个未指定的会话，当前会话留在原处。"
+
+#. English: {path} is not in workspace “{name}”.
+#. chrys-meta={"fingerprint":"0f6a3aa08fee4da1ad1fa0ed0c3308a3e7c7256978cfed0a5bc0d0039cb6dd19","multiline":false,"placeholders":["name","path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.outside"
+msgstr "{path} 不在工作区“{name}”中。"
+
+#. English: {path} is already in workspace “{name}” (inside the primary
+#. folder). This session can already use it without changing its working
+#. directory.
+#. chrys-meta={"fingerprint":"780bb654bfe55e2b716881b14fb0a0295bd3429714f71ec2ff1a34479d12f073","multiline":true,"placeholders":["name","path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.primary_child"
+msgstr ""
+"{path} 已在工作区“{name}”中（位于主文件夹内）。\n"
+"当前会话不切换工作目录也能使用它。"
+
+#. English: {path} is already in workspace “{name}” (a reference folder). This
+#. session can already use it without changing its working directory.
+#. chrys-meta={"fingerprint":"ed3350cdbcbbfdd34c4d8ae36dd8cb864060317ae1a3bbc986be3367e651b5aa","multiline":true,"placeholders":["name","path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.reference"
+msgstr ""
+"{path} 已在工作区“{name}”中（是参考文件夹）。\n"
+"当前会话不切换工作目录也能使用它。"
+
+#. English: {path} is already in workspace “{name}” (inside a reference
+#. folder). This session can already use it without changing its working
+#. directory.
+#. chrys-meta={"fingerprint":"53421aa2e10e2d427fc2f11cad22b043a5cd6bf812de99f3e3a3c7c32f1011d3","multiline":true,"placeholders":["name","path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.leave_workspace.reference_child"
+msgstr ""
+"{path} 已在工作区“{name}”中（位于参考文件夹内）。\n"
+"当前会话不切换工作目录也能使用它。"
+
+#. English: Move this session
+#. chrys-meta={"fingerprint":"8e11430e95fc96ee626a20836fd085b6bb25688961af3902fc37399d121c768a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/workspace_actions.py
 msgid "tui.workspace.leave_workspace.switch"
-msgstr "移动"
+msgstr "移动这个会话"
 
-#. English: Leave workspace?
-#. chrys-meta={"fingerprint":"32622679321e54e0c529c9b949ed6a459642af8121d3964ad000ce19330671c9","multiline":false,"placeholders":[]}
+#. English: Leave workspace “{name}”?
+#. chrys-meta={"fingerprint":"4f22e4385f8343b12838dbc6d849615b77a56f0b365b525209e8227cb19d5542","multiline":false,"placeholders":["name"]}
 #: src/chrys/app/tui/screens/main/workspace_actions.py
 msgid "tui.workspace.leave_workspace.title"
-msgstr "离开工作区？"
+msgstr "离开工作区“{name}”？"
 
 #. English: Choose Folder…
 #. chrys-meta={"fingerprint":"6ed767badd06759198c1333a77ae9d7ed112831b73c05fdb083e1ec53cb2d04e","multiline":false,"placeholders":[]}
@@ -17927,13 +17963,67 @@ msgstr "{path} 已被删除或移动。请选择一个文件夹后再继续。�
 msgid "tui.workspace.missing.title"
 msgstr "工作文件夹不存在"
 
-#. English: The workspace's primary folder, {path}, no longer exists. Restore
-#. it at its original path. Choosing another folder will open this session
-#. there and leave the workspace.
-#. chrys-meta={"fingerprint":"c4cf69a638b2c29bfab8a784110bf34ec94cbea160eba6484d8a41af451fe534","multiline":false,"placeholders":["path"]}
+#. English: The primary folder {path} of workspace “{name}” no longer exists.
+#. Restore {path} to keep the saved session in “{name}”.  • Choose Folder…:
+#. select a replacement working directory and open the saved session as
+#. Unspecified. • Cancel: keep the current session open.
+#. chrys-meta={"fingerprint":"9b9efd0f3780ecfd063ea433d3b0e73d937e4b6826626d8a2437f4a83e37a4c1","multiline":true,"placeholders":["name","path"]}
 #: src/chrys/app/tui/screens/main/workspace_actions.py
 msgid "tui.workspace.missing.workspace_restore"
-msgstr "工作区的主文件夹 {path} 已不存在。请将它恢复到原路径。选择其他文件夹会在那里打开此会话，并离开当前工作区。"
+msgstr ""
+"工作区“{name}”的主文件夹 {path} 已不存在。恢复 {path} 可让已保存的会话留在“{name}”中。\n"
+"\n"
+"• 选择文件夹…：选择替代工作目录，并将已保存的会话以未指定状态打开。\n"
+"• 取消：保持当前会话打开。"
+
+#. English: Created workspace “{name}”
+#. chrys-meta={"fingerprint":"e5f4abcf2a906dbc77c0ed55bca9a25a74e44d032075a36e3dbc5ded2e046007","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.switch.created"
+msgstr "已创建工作区“{name}”"
+
+#. English: • Move this session: bring the conversation along. Its working
+#. directory changes to {path}.
+#. chrys-meta={"fingerprint":"78a59f941208e956baa35e216914e27dc91fd675ca9a122e2def02291c4bc111","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.switch.move"
+msgstr "• 移动这个会话：带着对话移入，工作目录改为 {path}。"
+
+#. English: • Move this session: bring the conversation along. Its working
+#. directory stays the same.
+#. chrys-meta={"fingerprint":"3c14a9560206ec09351b70367d1674fd96bae6118b39911a0f2c544e4779f9c9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.switch.move_same"
+msgstr "• 移动这个会话：带着对话移入，工作目录不变。"
+
+#. English: Move the current session into “{name}”?
+#. chrys-meta={"fingerprint":"d0ebd4c5b3a30cd1fe33a457cc36cce72b749c1d176916e9a5f6df5088731bb3","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.switch.move_to_created"
+msgstr "把当前会话移入“{name}”吗？"
+
+#. English: • New session: open a new session in “{name}”. The current session
+#. stays where it is.
+#. chrys-meta={"fingerprint":"9cc26c646ce91b592834debc476924c602d7f8fc72d188512ab8683cbaa9823f","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.switch.new"
+msgstr "• 新会话：在“{name}”中新开会话，当前会话留在原处。"
+
+#. English: Switch to workspace “{name}”?
+#. chrys-meta={"fingerprint":"fbc81f12f9740fbf8fd2a28db9aa5b7b861265fb9c510fff04235e8294a8e36a","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.switch.title"
+msgstr "切换到工作区“{name}”？"
+
+#. English: • Move this session: make it Unspecified. Its working directory
+#. stays the same. • New session: open a new Unspecified session. The current
+#. session stays where it is.
+#. chrys-meta={"fingerprint":"5c9a9cdc784e46938c3ee13b76b1cceb0f344a7cb3c3292e37571f624c927f6e","multiline":true,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.switch.unspecified"
+msgstr ""
+"• 移动这个会话：变为未指定，工作目录不变。\n"
+"• 新会话：新开一个未指定的会话，当前会话留在原处。"
 
 #. English: Busy
 #. chrys-meta={"fingerprint":"a9c58612686934ef18a443da044d7a0d81b9c35390dfc9ef9acc91d62a95c5fb","multiline":false,"placeholders":[]}
@@ -17947,11 +18037,493 @@ msgstr "忙碌"
 msgid "tui.workspace.title.invalid_path"
 msgstr "路径无效"
 
+#. English: + Add folder…
+#. chrys-meta={"fingerprint":"d9534017903b586aa19f0947bd19d43fc4ef32fba171c72a56194de4970c192f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.add_folder"
+msgstr "+ 添加文件夹…"
+
+#. English: Add reference folder
+#. chrys-meta={"fingerprint":"f075ce2c49758a8085f282eb0a09e1100125aad547b74a1bd839554247476ea0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.add_reference"
+msgstr "添加参考文件夹"
+
+#. English: Cannot change workspace while agent is busy
+#. chrys-meta={"fingerprint":"cbbdb9d524f7e537b827bf2b206363cf81273b47fd210bf751ea4e9fcd293591","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.busy"
+msgstr "智能体忙碌时无法更改工作区"
+
+#. English: Busy
+#. chrys-meta={"fingerprint":"a9c58612686934ef18a443da044d7a0d81b9c35390dfc9ef9acc91d62a95c5fb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.busy_title"
+msgstr "忙碌"
+
+#. English: Cancel
+#. chrys-meta={"fingerprint":"ee3eb6e02cd8772be8786b7d714f54bf90abe5d0f0523aebf9c292a1e48c7d3d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.cancel"
+msgstr "取消"
+
+#. English: Create
+#. chrys-meta={"fingerprint":"3652670dc82bbf917d06335e5e3e17a77758cc25db3fc9e23ac899f0194b5390","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.create"
+msgstr "创建"
+
+#. English: Created workspace “{name}”. You can enter it from the workspace
+#. picker.
+#. chrys-meta={"fingerprint":"da577fea575b29b9e4c9a1b69052f35b09f93b95a6dc7b922652f4f957bb082a","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.created_picker"
+msgstr "已创建工作区“{name}”。可以从工作区选择器进入。"
+
+#. English: Delete
+#. chrys-meta={"fingerprint":"b97a11a66ef7ce18c7aba25e143ede41f2f0eac80ae1529f01c9ff8938188cd5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.delete"
+msgstr "删除"
+
+#. English: Delete workspace "{name}"?  Its sessions and folders are kept; the
+#. sessions become Unspecified.
+#. chrys-meta={"fingerprint":"ed35f6a6a454f6334daaffaf51c2b0a7744e0e32a0de0033d53a69fba892e41f","multiline":true,"placeholders":["name"]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.delete_message"
+msgstr ""
+"删除工作区\n"
+"“{name}”？\n"
+"\n"
+"会话和文件夹都会保留，\n"
+"属于它的会话将显示为未指定。"
+
+#. English: Delete Workspace
+#. chrys-meta={"fingerprint":"72330fe1b68f6d1c77b395a859f20c20aa4d4ec85301c4e938bb1a5150b28ad7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.delete_title"
+msgstr "删除工作区"
+
+#. English: Edit
+#. chrys-meta={"fingerprint":"bfae2b0cd1f29383075dc578f077e20bc8bc53eb5166a7c77df66aeff6d39865","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.edit"
+msgstr "编辑"
+
+#. English: This workspace was edited elsewhere. Close and reopen this dialog
+#. to edit it. Your draft is still here to copy.
+#. chrys-meta={"fingerprint":"f7b8c45502bcdbf6b7aef1b1d2f8edf5ca24a9e3b0ce78a828a8970f310d409d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/workspaces/edit.py
+msgid "tui.workspaces.edit_conflict"
+msgstr "此工作区已在别处修改。请关闭并重新打开此窗口后再编辑。草稿仍在输入框中，可供复制。"
+
+#. English: This workspace was deleted elsewhere. You can copy your draft
+#. before closing this dialog.
+#. chrys-meta={"fingerprint":"a50d847271b5b87b6c36ac7451b313e4045ef20e16d91f67593dca3d917fc4b1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/workspaces/edit.py
+msgid "tui.workspaces.edit_deleted"
+msgstr "此工作区已在别处删除。你可以在关闭此对话框前复制草稿。"
+
+#. English: Edit Workspace
+#. chrys-meta={"fingerprint":"e2c808a01bb200470f07a12210ec27541f192d8687fe083275c3e53725148431","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.edit_title"
+msgstr "编辑工作区"
+
+#. English: Folder was deleted or moved
+#. chrys-meta={"fingerprint":"00fcd38f5bc0e4b4c6e1e81af717aa86bd9d404fe0a9a82e2ac32427ea56a75a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.folder_missing"
+msgstr "文件夹已删除或移动"
+
+#. English: {count} reference folder
+#. English-plural: {count} reference folders
+#. chrys-meta={"fingerprint":"e6b3df0102310331005c236529c6ab1defe7a0dcf686eb3e32c7cbbb34613635","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.folders"
+msgid_plural "tui.workspaces.folders#plural"
+msgstr[0] "{count} 个参考文件夹"
+
+#. English: missing
+#. chrys-meta={"fingerprint":"f9b18616c27539ba099c63387787a044fa36db5c03842f33b2d54a744e5032d9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.missing"
+msgstr "已丢失"
+
+#. English: +{count} more reference folder
+#. English-plural: +{count} more reference folders
+#. chrys-meta={"fingerprint":"6cde36db48b4a2dec6d42738cf0fea33c1cfd87c159d0bed608195265f8fb163","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.more"
+msgid_plural "tui.workspaces.more#plural"
+msgstr[0] "另有 {count} 个参考文件夹"
+
+#. English: Name
+#. chrys-meta={"fingerprint":"4cb17b0cbe6b5b3b3f48eebe53381b8dff2453283d21d5ccbd53233b9dda31f6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.name"
+msgstr "名称"
+
+#. English: Workspace name
+#. chrys-meta={"fingerprint":"390bb7b611f12424f7018d553d889d46ccffefd90349fb57463e4b0284afee48","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.name_placeholder"
+msgstr "工作区名称"
+
+#. English: + New workspace…
+#. chrys-meta={"fingerprint":"91e6ef9c9713a9db1238af890e0fecfb65391a531561e47e436158f5304df249","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.new"
+msgstr "+ 新建工作区…"
+
+#. English: New Workspace
+#. chrys-meta={"fingerprint":"bd6acdd2f20b2a68950f304e8a729ab47dca0f9c885a3c88a0da95f6d3e03f83","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.new_title"
+msgstr "新建工作区"
+
+#. English: No workspace
+#. chrys-meta={"fingerprint":"c29ebf436453e7472dc2da061e013e4b432aed3186ebdd9563b605490d057961","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.none_description"
+msgstr "无工作区"
+
+#. English: Primary folder
+#. chrys-meta={"fingerprint":"a36a0bc7d3a80cd2cf57c5d353b2a3d5ab94b74629e635eef21b8cdabebb8bf3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.primary"
+msgstr "主文件夹"
+
+#. English: Sessions in this workspace use the primary folder as their working
+#. directory.
+#. chrys-meta={"fingerprint":"23aec85da9b0cad6050bc997613fc7d5d70053390f8d8403bf16e4f979274e15","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.primary_hint"
+msgstr "此工作区中的会话以主文件夹为工作目录。"
+
+#. English: primary
+#. chrys-meta={"fingerprint":"b3cb0ed886b8e270b1fc60f81572c431fc001a9e0ba2bb890e0f4e0b2fb68d8b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.primary_mark"
+msgstr "主文件夹"
+
+#. English: Primary folder missing
+#. chrys-meta={"fingerprint":"7d10c9bbe4a82879c496928305ef1dd56d3812fabf076af2b38052f923a25277","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.primary_missing"
+msgstr "主文件夹不存在"
+
+#. English: Reference folders
+#. chrys-meta={"fingerprint":"2d4918973f7bbc3888a0804e049e0ebc261f0c411c641eedaf27ef6307730732","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.reference_folders"
+msgstr "参考文件夹"
+
+#. English: Save
+#. chrys-meta={"fingerprint":"c412f9116c212d2749697d0fce560e880e82ef767c87d9614d341b4ce1ee2061","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.save"
+msgstr "保存"
+
+#. English: Select primary folder
+#. chrys-meta={"fingerprint":"d94821678480c3b8bcecab1c971c91f42de8a1d84e01403e226e9e375767da96","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.select_primary"
+msgstr "选择主文件夹"
+
+#. English: Workspaces
+#. chrys-meta={"fingerprint":"ad32618f84bb30f51ed795e09bbfb3f3056913cb3f4032cdce431f147159788a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.title"
+msgstr "工作区"
+
+#. English: Workspace
+#. chrys-meta={"fingerprint":"3f3902d9426921206aca4f1dffdcc3696a5c89dcd4cf503153f6e6c1aa1ee7dd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "tui.workspaces.workspace"
+msgstr "工作区"
+
 #. English: Prompt blocked by hook.
 #. chrys-meta={"fingerprint":"c421553758dff5cbef6a67694b64c777c61eaa0c317b4940cd32cc3d6c75c20c","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/run/turn_hooks.py
 msgid "turn_hooks.prompt_blocked"
 msgstr "提示已被钩子阻止。"
+
+#. English: To add reference folders, run: {command}
+#. chrys-meta={"fingerprint":"dc97a01839d6f2e8c65a5e720051d17e541c880dd7c1cb789db8719e10d64008","multiline":false,"placeholders":["command"]}
+#: src/chrys/app/cli/workspaces.py
+msgid "workspaces.cli.add_folders_hint"
+msgstr "如需添加参考文件夹，请运行：{command}"
+
+#. English: Add a reference folder
+#. chrys-meta={"fingerprint":"87d3e22297754679adec70f4845441626161dcb61ce175757aae9ab09107ab04","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "workspaces.commands.action.add_folder"
+msgstr "添加参考文件夹"
+
+#. English: Delete a workspace
+#. chrys-meta={"fingerprint":"31dc94afda86acbb8a5e01c2a215f9c8c4eb759d07a791c3b00dcaa2f4a7f4d9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "workspaces.commands.action.delete"
+msgstr "删除工作区"
+
+#. English: Create a workspace
+#. chrys-meta={"fingerprint":"cfc19a8feedfd3dc7bfd93f6d58ffde690897866a2a25a4deae5ceab6a6a5be1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "workspaces.commands.action.new"
+msgstr "新建工作区"
+
+#. English: Remove a reference folder
+#. chrys-meta={"fingerprint":"ddba10b825bd04e997f33de8fbb3549f10a9ab8e7b7c092fedc7c29d78549a66","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "workspaces.commands.action.remove_folder"
+msgstr "移除参考文件夹"
+
+#. English: Rename the current workspace
+#. chrys-meta={"fingerprint":"393c3d853e0e756a88a26ec00db68dc223eff4f0ff29396cc7186edb080b7450","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "workspaces.commands.action.rename"
+msgstr "重命名当前工作区"
+
+#. English: Switch to a workspace
+#. chrys-meta={"fingerprint":"544e0e4df838114f15ad25442eb8fb7e18bf74eb11bfe85ab92117f9c2d9c6fa","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/commands.py
+msgid "workspaces.commands.action.switch"
+msgstr "切换到工作区"
+
+#. English: Usage: /workspace {syntax}
+#. chrys-meta={"fingerprint":"c2542da044058509f090d13d7da3647f1e5a0148e06e2b76640b2e83920df46d","multiline":false,"placeholders":["syntax"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.action_usage"
+msgstr "用法：/workspace {syntax}"
+
+#. English: To add reference folders, use /workspace add-folder <path>.
+#. chrys-meta={"fingerprint":"3af627eea1ab33511a6d482c7d7570b21e2f427fed9e2fb81cc5b0af14ace805","multiline":false,"placeholders":[]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.add_reference_folders_hint"
+msgstr "要添加参考文件夹，可以用 /workspace add-folder <路径>。"
+
+#. English: Workspace “{name}” is already absent.
+#. chrys-meta={"fingerprint":"2c3ec50076e6ca0adb3c7c6b6ef57aa5271e7fabca7efa3c2019f16aa2722ff8","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.already_absent"
+msgstr "工作区“{name}”已不存在。"
+
+#. English: This session is already in workspace “{name}”.
+#. chrys-meta={"fingerprint":"07e79e1e16f7e62945bdcd30336b954a4c7ee0787cda42b95fb08c4c72df3f08","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.already_in_workspace"
+msgstr "当前会话已在工作区“{name}”中。"
+
+#. English: Created workspace “{name}” and moved this session into it.
+#. chrys-meta={"fingerprint":"36d2154393ff8d6757e97d7ff191c7598ec450b8afa7f9e05eca9f03a1a1239f","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.created"
+msgstr "已创建工作区“{name}”，并把这个会话移了进去。"
+
+#. English: Created workspace “{name}”.
+#. chrys-meta={"fingerprint":"a0e0170489ec952f392433d7777a7852d3b2a187611ec606d5000d2d5d9a0f13","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.created_only"
+msgstr "已创建工作区“{name}”。"
+
+#. English: {name} ({path}) — current workspace
+#. chrys-meta={"fingerprint":"2a1652b67c96b3ea7d5d08ef5a269acdb448664f6f82b62e52ce10c6b13e79ec","multiline":false,"placeholders":["name","path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.current_list_entry"
+msgstr "{name}（{path}）— 当前工作区"
+
+#. English: Unspecified — current
+#. chrys-meta={"fingerprint":"09c3575b7c2382c3c74dcaaf7cf5c5f8a960e3088a0ceae1f6e8232ec50a7503","multiline":false,"placeholders":[]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.current_unspecified"
+msgstr "未指定（当前）"
+
+#. English: Deleted workspace “{name}”.
+#. chrys-meta={"fingerprint":"f025e039750740e02a0159253c716b1800bba9784e092002e09a2e744c2a64b8","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.deleted"
+msgstr "已删除工作区“{name}”。"
+
+#. English: Deleted workspace “{name}”. This session is now Unspecified.
+#. chrys-meta={"fingerprint":"e58502a32f7005a4916f990bdbbffd8f1155ea0b5df25aea3bab4bcbad78bf35","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.deleted_current"
+msgstr "已删除工作区“{name}”。这个会话现在是“未指定”。"
+
+#. English: Workspace changes will take effect the next time you open this
+#. session.
+#. chrys-meta={"fingerprint":"0d003e20da2a85b14326da31e115ca11ced3b7b7538c69f837ff57dc12af0410","multiline":false,"placeholders":[]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.edit_applies_on_reopen"
+msgstr "工作区改动将在下次打开这个会话时生效。"
+
+#. English: Added reference folder {path}.
+#. chrys-meta={"fingerprint":"37edd83ac8a2644e1fd972b395adda3976c10e9ba94bb9b4fba7efa8a6c61257","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.folder_added"
+msgstr "已添加参考文件夹 {path}。"
+
+#. English: {path} is already a reference folder.
+#. chrys-meta={"fingerprint":"409c80b77fd4d5a596ee2132133a6b0d5bd43f41c0f4c784296bb977eb29a20c","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.folder_already_registered"
+msgstr "{path} 已在参考文件夹列表中。"
+
+#. English: Several reference folders point to {path}. Enter the folder as the
+#. workspace lists it.
+#. chrys-meta={"fingerprint":"40b61793265e7b652428c30660044713e0c5c0ec6f62dc78784f0b914349ab46","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.folder_ambiguous"
+msgstr "有多个参考文件夹指向 {path}。请按工作区中列出的路径输入。"
+
+#. English: {path} is already the primary folder.
+#. chrys-meta={"fingerprint":"409ad27b8c52aeaad92ecab97d6436c1adb918e55eeac91df2e51663890e06ee","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.folder_is_primary"
+msgstr "{path} 已是主文件夹。"
+
+#. English: Folder does not exist: {path}.
+#. chrys-meta={"fingerprint":"0454c714b5896fd775c039baa6985fd57d8abb9a2cddd4a825d6a54268dc1fc6","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.folder_missing"
+msgstr "文件夹不存在：{path}。"
+
+#. English: No reference folder matches {path}.
+#. chrys-meta={"fingerprint":"c30e78d7e22de280f5537d3173470478293918d970b6a8ad22ffcdbda8efad9e","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.folder_not_registered"
+msgstr "没有找到与 {path} 匹配的参考文件夹。"
+
+#. English: {path} overlaps with the primary folder {primary}.
+#. chrys-meta={"fingerprint":"a70cbac2f5d5e994ba25bcaf0a4d5bf4e545bc489cbd8b9aa505c6d155994b6d","multiline":false,"placeholders":["path","primary"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.folder_overlaps_primary"
+msgstr "{path} 与主文件夹 {primary} 重叠。"
+
+#. English: {path} overlaps with the reference folder {reference}.
+#. chrys-meta={"fingerprint":"cffc0713bd58a1275d8211b21fc0bc7ce25df0289ce292aa33a926174e9442fd","multiline":false,"placeholders":["path","reference"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.folder_overlaps_reference"
+msgstr "{path} 与参考文件夹 {reference} 重叠。"
+
+#. English: Removed reference folder {path}.
+#. chrys-meta={"fingerprint":"d7ff48e41e38be19c574c37dd10028185b4fb9d55edf26e0dd77f21224ba3477","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.folder_removed"
+msgstr "已移除参考文件夹 {path}。"
+
+#. English: {name} ({path})
+#. chrys-meta={"fingerprint":"6a5ad8e3832203d2034aa5c82b15907ef42478fb1b376b684a708054e5c09c36","multiline":false,"placeholders":["name","path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.list_entry"
+msgstr "{name}（{path}）"
+
+#. English: Run /workspace for usage.
+#. chrys-meta={"fingerprint":"89f5827eada671c7f6af8b5c6b5a1a22fc1e3e261970894698f79393d02fd456","multiline":false,"placeholders":[]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.list_footer"
+msgstr "输入 /workspace 查看用法。"
+
+#. English: Moved to workspace “{name}”.
+#. chrys-meta={"fingerprint":"55d6a26c207b7804344153a9bab1a1ad18cc2c68208708b9bee2dd07340b2b1d","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.moved"
+msgstr "已移到工作区“{name}”。"
+
+#. English: This session is Unspecified.
+#. chrys-meta={"fingerprint":"e3ea1269d7ffa234defbd351eb9e34f7f2a904419ad8867c367d225745fb899d","multiline":false,"placeholders":[]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.moved_to_unspecified"
+msgstr "当前会话为未指定。"
+
+#. English: Moved this session to workspace “{name}”. To start a new session in
+#. this workspace, start a new conversation in your editor, then enter
+#. /workspace switch {name}.
+#. chrys-meta={"fingerprint":"9b37ea901abb5210071fb9caf2146896d50a57dcae0885ec9fd820b161c6bc65","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.moved_with_history"
+msgstr "已把这个会话移到工作区“{name}”。要在工作区里开始新会话，请在编辑器里新建对话，再输入 /workspace switch {name}。"
+
+#. English: This session is not in a workspace. Use /workspace switch <name> to
+#. enter one.
+#. chrys-meta={"fingerprint":"a21af098c90d413616b38a816508d430a69183749a906ec56d3c4db645dd279a","multiline":false,"placeholders":[]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.not_in_workspace"
+msgstr "这个会话不在工作区里。输入 /workspace switch <名称> 进入工作区。"
+
+#. English: The primary folder of workspace “{name}” is {path}. Open this
+#. folder in your editor, start a new conversation, then enter /workspace
+#. switch {name}.
+#. chrys-meta={"fingerprint":"c1437bfced0b512f5269d92a83db1e9188e192a9c964606f7349696644916f09","multiline":false,"placeholders":["name","path"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.open_primary_in_editor"
+msgstr "工作区“{name}”的主文件夹是 {path}。在编辑器里打开这个文件夹，新建对话，再输入 /workspace switch {name}。"
+
+#. English: Renamed the workspace to “{name}”.
+#. chrys-meta={"fingerprint":"75e761f746e5347e8315333d4e122b60aa598ec221f77567eee0310e1c9e8137","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.renamed"
+msgstr "已将工作区改名为“{name}”。"
+
+#. English: Workspace “{name}” was replaced elsewhere, so nothing was deleted.
+#. Check the workspace list and try again.
+#. chrys-meta={"fingerprint":"9f6d2045798f87eb41ac192391353f6bd787201559cd98bf761ea70cceb8ad76","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.replaced_elsewhere"
+msgstr "工作区“{name}”已在别处被替换，没有删除任何工作区。请查看工作区列表后重试。"
+
+#. English: Saved workspace “{name}”.
+#. chrys-meta={"fingerprint":"6e47d330cefb77fc6d720e274c891bed87d8af92d47c755faaade366e1058507","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/workspace_text.py
+msgid "workspaces.commands.saved"
+msgstr "已保存工作区“{name}”。"
+
+#. English: Unknown workspace action “{action}”. Run /workspace for usage.
+#. chrys-meta={"fingerprint":"063cf62513dbe41785664692c74d802b54a8c1e3e461ba3dcaa20f57a160dd30","multiline":false,"placeholders":["action"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.unknown_action"
+msgstr "未知的工作区动作“{action}”。输入 /workspace 查看用法。"
+
+#. English: Unspecified is a reserved item and cannot be deleted.
+#. chrys-meta={"fingerprint":"14d0c4398f1226c355ef22b5c6405b18fc0fb75b9640b1c88e8d27e0156efd9f","multiline":false,"placeholders":[]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.unspecified_delete"
+msgstr "未指定是保留项，不能删除。"
+
+#. English: Workspace update failed.
+#. chrys-meta={"fingerprint":"aef01c5d2e7605a5d7f4720dde594a9aa5a5a3c9c3a8f8393f49587475084290","multiline":false,"placeholders":[]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.update_failed"
+msgstr "工作区更新失败。"
+
+#. English: Usage {commands}
+#. chrys-meta={"fingerprint":"8791cfafef69d9f17d06afb8102c1381c966beb8e7767f0d3dc3b79ea6d4b3a9","multiline":true,"placeholders":["commands"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.usage"
+msgstr ""
+"用法\n"
+"{commands}"
+
+#. English: {actions} …
+#. chrys-meta={"fingerprint":"5a0c4a62767ff42f4e3429dc1023bc021cd6e9ceb9b0c1082f65e8aab9069a14","multiline":false,"placeholders":["actions"]}
+#: src/chrys/app/workspace_commands.py
+msgid "workspaces.commands.workspace_hint"
+msgstr "{actions} …"
+
+#. English: The definition of workspace “{target}” was saved, but applying it
+#. to this session failed: {detail}
+#. chrys-meta={"fingerprint":"11353f9c1c557a103a5eb76b0d98b70b4745576fa32f3db97fa98dcc1b27f03a","multiline":false,"placeholders":["detail","target"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.definition_saved_open_failed"
+msgstr "工作区“{target}”的定义已保存，但无法将变更应用到当前会话：{detail}"
+
+#. English: Workspace “{target}” was deleted, but applying it to this session
+#. failed: {detail}
+#. chrys-meta={"fingerprint":"41b76c0dfa1beaa233c5afa5cae6aabe46bcdedb3a6722524aa0eac909423ed2","multiline":false,"placeholders":["detail","target"]}
+#: src/chrys/orchestration/engine/workspaces.py
+msgid "workspaces.deleted_open_failed"
+msgstr "工作区“{target}”已删除，但无法将变更应用到当前会话：{detail}"
 
 #. English: Workspace folders must use absolute paths.
 #. chrys-meta={"fingerprint":"eed9410aa1099e29ad9a20bac35d27cc55e4e47cf1e262f7181605940d9d507b","multiline":false,"placeholders":[]}
@@ -18039,6 +18611,18 @@ msgstr "请输入工作区名称。"
 msgid "workspaces.name_exists"
 msgstr "已存在名为 {name} 的工作区。"
 
+#. English: The workspace name {name} is reserved.
+#. chrys-meta={"fingerprint":"86638b185c3031f3f24be419cb597161a6c7e871e8fc98ffc91a88db1a8ccc15","multiline":false,"placeholders":["name"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.name_reserved"
+msgstr "工作区名称“{name}”为保留名称。"
+
+#. English: The primary folder of workspace “{name}”, {path}, does not exist.
+#. chrys-meta={"fingerprint":"c1b4e5c6f34f492c2688f5eadb6f392908ebe8741a968e3612b402e7a255c81d","multiline":false,"placeholders":["name","path"]}
+#: src/chrys/service/workspaces/paths.py
+msgid "workspaces.named_primary_missing"
+msgstr "工作区“{name}”的主文件夹 {path} 不存在。"
+
 #. English: This session stays in workspace “{name}”, but its membership could
 #. not be saved; it will reopen as Unspecified.
 #. chrys-meta={"fingerprint":"ac4fa34e5e51f955d3eaa7ec7e27b90333b70cd0af85de21e4695e7a3340c56b","multiline":false,"placeholders":["name"]}
@@ -18051,12 +18635,6 @@ msgstr "此会话本次仍属于工作区“{name}”，但归属未能保存；
 #: src/chrys/service/workspaces/registry.py
 msgid "workspaces.not_found"
 msgstr "该工作区已不存在。"
-
-#. English: Overlaps with {path}
-#. chrys-meta={"fingerprint":"c1d53dce8144ce44a89280dfb4d6bad3532b50e792489ed2d6a64b4bf5157681","multiline":false,"placeholders":["path"]}
-#: src/chrys/service/workspaces/registry.py
-msgid "workspaces.overlap"
-msgstr "与 {path} 重叠"
 
 #. English: The primary folder cannot be changed. Create a new workspace to use
 #. a different primary folder.
@@ -18071,6 +18649,13 @@ msgstr "主文件夹不能修改。要使用其他主文件夹，请新建工作
 msgid "workspaces.primary_missing"
 msgstr "主文件夹不存在：{path}。"
 
+#. English: Reference folder {folder} overlaps with the primary folder
+#. {primary}.
+#. chrys-meta={"fingerprint":"ccc42c34f3e8178ab94d46032cd71cc71570237649743c0525a6e1bd6cc7dc8d","multiline":false,"placeholders":["folder","primary"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.primary_overlap"
+msgstr "参考文件夹 {folder} 与主文件夹 {primary} 重叠。"
+
 #. English: Workspace “{name}” has a missing reference folder: {paths}
 #. English-plural: Workspace “{name}” has {count} missing reference folders:
 #. {paths}
@@ -18079,6 +18664,12 @@ msgstr "主文件夹不存在：{path}。"
 msgid "workspaces.reference_missing"
 msgid_plural "workspaces.reference_missing#plural"
 msgstr[0] "工作区“{name}”有 {count} 个参考文件夹不存在：{paths}"
+
+#. English: Reference folders {first} and {second} overlap.
+#. chrys-meta={"fingerprint":"4fb75179e2ffea495ab22ceb43491b4d28b07ecb9d45360e44d3db9ded8eb9f3","multiline":false,"placeholders":["first","second"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.reference_overlap"
+msgstr "参考文件夹 {first} 与 {second} 重叠。"
 
 #. English: Cannot read the workspace list at {path}. Entry {row}, field
 #. {field}: Expected ws_ followed by 32 lowercase hexadecimal digits.
@@ -18155,13 +18746,20 @@ msgstr "此工作区列表由更高版本的 {app} 写入：{path}"
 msgid "workspaces.registry_unreadable"
 msgstr "工作区列表无法读取：{path}"
 
-#. English: The workspace's primary folder, {path}, no longer exists. Restore
-#. the folder at its original path before rolling back, or reopen the session
-#. in another folder to leave the workspace.
-#. chrys-meta={"fingerprint":"e4c7b4798fa8414de8bb7fa363025cba5ecafe2d92ef53b61beb5b6b6e3c80a7","multiline":false,"placeholders":["path"]}
+#. English: The primary folder of workspace “{name}”, {path}, no longer exists.
+#. Restore the folder at its original path before rolling back, or reopen the
+#. session in another folder to leave the workspace.
+#. chrys-meta={"fingerprint":"ac05f7ab92bed9f097a35ec2a320a43283a05c0cc116c38187be20adfbcf914b","multiline":false,"placeholders":["name","path"]}
 #: src/chrys/orchestration/engine/rollback.py
 msgid "workspaces.rollback_primary_missing"
-msgstr "工作区的主文件夹 {path} 已不存在。请先将文件夹恢复到原路径再回滚，或在其他文件夹中重新打开会话以离开该工作区。"
+msgstr "工作区“{name}”的主文件夹 {path} 已不存在。请先将文件夹恢复到原路径再回滚，或在其他文件夹中重新打开会话以离开该工作区。"
+
+#. English: Workspace “{name}” already has the same primary and reference
+#. folders. Add or remove a reference folder, or use “{name}”.
+#. chrys-meta={"fingerprint":"8cac43c34b53b2db80347c2d694fb3e51e350c5e46c2468542dde55ce0942293","multiline":false,"placeholders":["name"]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.same_folders"
+msgstr "工作区“{name}”的主文件夹和参考文件夹与此完全相同。请增删参考文件夹，或直接使用“{name}”。"
 
 #. English: Moved this session from workspace “{previous}” to workspace
 #. “{selected}”.
@@ -18172,7 +18770,7 @@ msgstr "已将此会话从工作区“{previous}”移至工作区“{selected}�
 
 #. English: The workspace changed. Try again.
 #. chrys-meta={"fingerprint":"848086fd841e8ad3eeb65ad6b4d75470899e52872ffe9bd64a4b69de70e585cc","multiline":false,"placeholders":[]}
-#: src/chrys/orchestration/engine/workspaces.py
+#: src/chrys/service/workspaces/registry.py
 msgid "workspaces.selection_changed"
 msgstr "工作区已变化，请重试。"
 
@@ -18194,12 +18792,12 @@ msgstr "找不到工作区：{selector}"
 msgid "workspaces.unspecified"
 msgstr "未指定"
 
-#. English: The working directory does not exist. Choose a replacement
-#. directory first.
-#. chrys-meta={"fingerprint":"7fc013672f7cef5d1d62ee241cf3d1cdf8c6894ec4145c0343e56abd26ff4420","multiline":false,"placeholders":[]}
+#. English: The primary folder of workspace “{name}”, {path}, does not exist.
+#. Choose a replacement directory first.
+#. chrys-meta={"fingerprint":"b42ff8796cdc1dcf31d7f10ee548c911704f6e6d8ee93911c178fd5fb59b9dca","multiline":false,"placeholders":["name","path"]}
 #: src/chrys/orchestration/engine/workspaces.py
 msgid "workspaces.working_dir_missing"
-msgstr "工作目录不存在，先选一个替代目录。"
+msgstr "工作区“{name}”的主文件夹 {path} 不存在。请先选择替代目录。"
 
 #. English: Workspace list could not be saved: {reason}
 #. chrys-meta={"fingerprint":"93d267f0d0bd69af4c5d7596eba0e82b374090ce9b7b244606283c83595ab746","multiline":false,"placeholders":["reason"]}

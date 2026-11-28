@@ -150,7 +150,7 @@ class _RestoreAttempt:
     request: SessionRestore | None = None
 
 
-async def _decline_missing_working_dir(_missing: str, _workspace_restore: bool) -> str | None:
+async def _decline_missing_working_dir(_missing: str, _workspace_name: str | None) -> str | None:
     return None
 
 
@@ -182,7 +182,8 @@ class SessionCallbacks:
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]
     debug: Callable[[str, str], None]
     refresh_model_indicator: Callable[[], None]
-    choose_missing_working_dir: Callable[[str, bool], Awaitable[str | None]] = _decline_missing_working_dir
+    choose_missing_working_dir: Callable[[str, str | None], Awaitable[str | None]] = _decline_missing_working_dir
+    refresh_workspace: Callable[[], None] = lambda: None
     confirm_workspace_leave: Callable[
         [str, str, Workspace | None], Awaitable[tuple[bool, WorkspaceConfirmation | None]]
     ] = _confirm_workspace_leave_unasked
@@ -726,7 +727,10 @@ class SessionHandler:
             path, saved_workspace_id = saved
             try:
                 if saved_workspace_id is not None:
-                    opened_cwd = validate_workspace_primary(path)
+                    saved_workspace = snapshot.workspace(saved_workspace_id)
+                    opened_cwd = validate_workspace_primary(
+                        path, workspace_name=saved_workspace.name if saved_workspace is not None else None
+                    )
                 elif not os.path.isdir(path):
                     raise MissingWorkspacePrimary(path)
             except MissingWorkspacePrimary:
@@ -930,7 +934,10 @@ class SessionHandler:
         # Replace this attempt's loading dialog with the directory prompt.
         self._cancel_restore_load(attempt)
         owner = self._workspace_action_owner()
-        chosen = await self._callbacks.choose_missing_working_dir(path, workspace_id is not None)
+        workspace = snapshot.workspace(workspace_id) if workspace_id is not None else None
+        chosen = await self._callbacks.choose_missing_working_dir(
+            path, workspace.name if workspace is not None else None
+        )
         if chosen is None or not self._can_restore(attempt) or owner != self._workspace_action_owner():
             return RestoreRequest.DECLINED
         return await self._restore_chat_session(
@@ -1085,6 +1092,7 @@ class SessionHandler:
         ui.update_welcome(profile=display, cwd=cwd)
         ui.set_chat_session_id(event.session_id)
         ui.reset_session_title_state()
+        self._callbacks.refresh_workspace()
 
         loaded_state: dict[str, Any] | None = None
         transcript: SessionTranscript | None = None
@@ -1475,6 +1483,7 @@ class SessionHandler:
 
     def _refresh_workspace_diff(self, cwd: str) -> None:
         self.chdir_current_cwd = cwd
+        self._callbacks.refresh_workspace()
         self._callbacks.refresh_diff_preview(True)
 
     def _finish_workspace_update(self, event: WorkspaceUpdated, roots: list[str] | None) -> None:

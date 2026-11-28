@@ -524,9 +524,9 @@ async def test_system_command_wins_over_same_named_shortcut_when_typed(
         dispatched: list[str] = []
         original = main._suggestions.dispatch_slash_command
 
-        def record(text: str) -> bool:
+        def record(text: str, *, draft: ChatDraft | None = None) -> bool:
             dispatched.append(text)
-            return original(text)
+            return original(text, draft=draft)
 
         monkeypatch.setattr(main._suggestions, "dispatch_slash_command", record)
 
@@ -833,9 +833,9 @@ async def test_a_long_pasted_command_runs_as_the_command(tmp_path: Path, monkeyp
         dispatched: list[str] = []
         original = main._suggestions.dispatch_slash_command
 
-        def record(text: str) -> bool:
+        def record(text: str, *, draft: ChatDraft | None = None) -> bool:
             dispatched.append(text)
-            return original(text)
+            return original(text, draft=draft)
 
         monkeypatch.setattr(main._suggestions, "dispatch_slash_command", record)
         await chat._on_paste(events.Paste(f"/help {_LONG.strip()}"))

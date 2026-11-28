@@ -14,21 +14,25 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, WorkspaceActionOwner
 from chrys.foundation.events.types import SessionNew
-from chrys.foundation.i18n import DisplayPath, msg
+from chrys.foundation.i18n import DisplayPath, MessageRef, msg
 from chrys.foundation.models.workspace import Workspace, WorkspaceConfirmation, path_identity, same_directory
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.platform.paths import resolve_workspace_path
+from chrys.foundation.util.abandonable import run_abandonable
+from chrys.service.workspaces.paths import contains
 
 if TYPE_CHECKING:
-    from textual.screen import Screen
-
     from chrys.app.tui.i18n import LocaleController
+    from chrys.app.tui.screens.dialogs.base import BaseDialog
+    from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog, ConfirmMessage
     from chrys.app.tui.screens.dialogs.file_picker import FilePicker
     from chrys.app.tui.screens.main.ports import StartWorker, WorkspaceView
+
+type WorkspaceSwitchChoice = Literal["move", "new", "cancel"]
 
 type MissingDirReason = Literal["submit", "turn_end", "restore"]
 
@@ -43,23 +47,73 @@ _INVALID_DIRECTORY = msg(
     fallback="Not a valid directory: {path}",
 )
 _CHANGE_DIRECTORY = msg("tui.workspace.change_directory", fallback="Change Directory")
-_LEAVE_WORKSPACE_TITLE = msg("tui.workspace.leave_workspace.title", fallback="Leave workspace?")
-_LEAVE_WORKSPACE_MESSAGE = msg(
+_LEAVE_WORKSPACE_TITLE = msg("tui.workspace.leave_workspace.title", fallback="Leave workspace “{name}”?")
+_RESTORE_WORKSPACE_MOVE = msg(
     "tui.workspace.leave_workspace.message",
-    fallback="Switch to\n{path}?\n\nThis session will leave workspace “{name}”.",
-    multiline=True,
+    fallback="• Move this session: open it in {path} as Unspecified.",
 )
-_LEAVE_WORKSPACE_CHOICES = msg(
-    "tui.workspace.leave_workspace.choices",
+_LEAVE_WORKSPACE_OUTSIDE = msg(
+    "tui.workspace.leave_workspace.outside",
+    fallback="{path} is not in workspace “{name}”.",
+)
+_LEAVE_WORKSPACE_PRIMARY_CHILD = msg(
+    "tui.workspace.leave_workspace.primary_child",
     fallback=(
-        "Switch to\n{path}?\n\n"
-        "Move: This session leaves workspace “{name}” and opens in the selected folder.\n"
-        "New session: This session stays in the workspace. A new Unspecified session opens in the selected folder.\n"
-        "Cancel: Keep working in this session."
+        "{path} is already in workspace “{name}” (inside the primary folder).\n"
+        "This session can already use it without changing its working directory."
     ),
     multiline=True,
 )
-_LEAVE_WORKSPACE_SWITCH = msg("tui.workspace.leave_workspace.switch", fallback="Move")
+_LEAVE_WORKSPACE_REFERENCE = msg(
+    "tui.workspace.leave_workspace.reference",
+    fallback=(
+        "{path} is already in workspace “{name}” (a reference folder).\n"
+        "This session can already use it without changing its working directory."
+    ),
+    multiline=True,
+)
+_LEAVE_WORKSPACE_REFERENCE_CHILD = msg(
+    "tui.workspace.leave_workspace.reference_child",
+    fallback=(
+        "{path} is already in workspace “{name}” (inside a reference folder).\n"
+        "This session can already use it without changing its working directory."
+    ),
+    multiline=True,
+)
+_LEAVE_WORKSPACE_MOVE_RESULT = msg(
+    "tui.workspace.leave_workspace.move_result",
+    fallback="• Move this session: change its working directory to this folder and make it Unspecified.",
+)
+_LEAVE_WORKSPACE_NEW_RESULT = msg(
+    "tui.workspace.leave_workspace.new_result",
+    fallback="• New session: open a new Unspecified session in this folder. The current session stays where it is.",
+)
+_LEAVE_WORKSPACE_SWITCH = msg("tui.workspace.leave_workspace.switch", fallback="Move this session")
+_SWITCH_WORKSPACE_TITLE = msg("tui.workspace.switch.title", fallback="Switch to workspace “{name}”?")
+_SWITCH_WORKSPACE_MOVE = msg(
+    "tui.workspace.switch.move",
+    fallback="• Move this session: bring the conversation along. Its working directory changes to {path}.",
+)
+_SWITCH_WORKSPACE_MOVE_SAME = msg(
+    "tui.workspace.switch.move_same",
+    fallback="• Move this session: bring the conversation along. Its working directory stays the same.",
+)
+_SWITCH_WORKSPACE_NEW = msg(
+    "tui.workspace.switch.new",
+    fallback="• New session: open a new session in “{name}”. The current session stays where it is.",
+)
+_UNSPECIFY_WORKSPACE_MESSAGE = msg(
+    "tui.workspace.switch.unspecified",
+    fallback=(
+        "• Move this session: make it Unspecified. Its working directory stays the same.\n"
+        "• New session: open a new Unspecified session. The current session stays where it is."
+    ),
+    multiline=True,
+)
+_WORKSPACE_CREATED = msg("tui.workspace.switch.created", fallback="Created workspace “{name}”")
+_MOVE_TO_CREATED_WORKSPACE = msg(
+    "tui.workspace.switch.move_to_created", fallback="Move the current session into “{name}”?"
+)
 _LEAVE_WORKSPACE_NEW = msg("tui.workspace.leave_workspace.new", fallback="New session")
 _MISSING_TITLE = msg("tui.workspace.missing.title", fallback="Working Folder Not Found")
 _MISSING_MESSAGE = msg(
@@ -77,9 +131,11 @@ _MISSING_MESSAGE_RESTORE = msg(
 _MISSING_WORKSPACE_RESTORE = msg(
     "tui.workspace.missing.workspace_restore",
     fallback=(
-        "The workspace's primary folder, {path}, no longer exists. Restore it at its original path. "
-        "Choosing another folder will open this session there and leave the workspace."
+        "The primary folder {path} of workspace “{name}” no longer exists. Restore {path} to keep the saved session in “{name}”.\n\n"
+        "• Choose Folder…: select a replacement working directory and open the saved session as Unspecified.\n"
+        "• Cancel: keep the current session open."
     ),
+    multiline=True,
 )
 _MISSING_CHOOSE = msg("tui.workspace.missing.choose", fallback="Choose Folder…")
 _MISSING_MESSAGES = {
@@ -97,6 +153,7 @@ class WorkspaceCallbacks:
     debug: Callable[[str, str], None]
     allow_change: Callable[[], bool] = lambda: True
     selected_cwd: Callable[[], str] = lambda: ""
+    is_topmost: Callable[[], bool] = lambda: True
     apply_workflow_cwd: Callable[[str], Awaitable[bool]] | None = None
     workflow_mode: Callable[[], bool] = lambda: False
     start_new_session: Callable[[SessionNew, Callable[[], bool]], Awaitable[None]] | None = None
@@ -128,7 +185,7 @@ class WorkspaceController:
 
     def start_chdir(self, arg: str) -> object:
         """Run :meth:`chdir` in a screen worker."""
-        return self._callbacks.start_worker(partial(self.chdir, arg))
+        return self._callbacks.start_worker(partial(self.chdir, arg)) if self._can_change_workspace() else None
 
     async def chdir(self, arg: str) -> None:
         """Handle /chdir slash command — change the working directory."""
@@ -183,12 +240,12 @@ class WorkspaceController:
         if apply_workflow is not None and await apply_workflow(resolved):
             self._callbacks.debug("Chdir", resolved)
             return
-        if current != self._workspace_action_owner():
+        if current != self._workspace_action_owner() or not self._can_change_workspace():
             return
         confirmation = None
         if self._state.workspace.workspace_id is not None:
             allowed, confirmation = await self.confirm_workspace_leave(resolved)
-            if not allowed or current != self._workspace_action_owner():
+            if not allowed or current != self._workspace_action_owner() or not self._can_change_workspace():
                 return
         await self._services.bus.publish(WorkspaceChange(primary_cwd=resolved, confirmation=confirmation))
         self._callbacks.debug("Chdir", resolved)
@@ -199,37 +256,33 @@ class WorkspaceController:
         """Confirm the source membership and destination for a switch or restore."""
 
         owner = self._workspace_action_owner()
-        if session_id:
-            workspace_id = workspace.id if workspace is not None else None
-            name = workspace.name if workspace is not None else ""
-            baseline = workspace.primary_cwd if workspace is not None else resolved
-        else:
-            workspace_id = self._state.workspace.workspace_id
-            name = self._state.workspace.workspace_name
-            baseline = self.workspace_cwd()
-        if workspace_id is None:
+        source = workspace if session_id else self._state.workspace.membership
+        if source is None:
             return True, None
-        confirmation = WorkspaceConfirmation.capture(workspace_id, resolved)
-        if path_identity(baseline) == confirmation.identity:
+        offer_new = not session_id and self._state.run.has_messages
+
+        def prepare() -> tuple[WorkspaceConfirmation, bool, tuple[MessageRef, ...]]:
+            confirmation = WorkspaceConfirmation.capture(source.id, resolved)
+            same = path_identity(source.primary_cwd) == confirmation.identity
+            message = (
+                (_RESTORE_WORKSPACE_MOVE.bind(path=DisplayPath(resolved)),)
+                if session_id
+                else self._chdir_leave_message(resolved, source, offer_new=offer_new)
+            )
+            return confirmation, same, message
+
+        confirmation, same, message = await run_abandonable("icode-workspace-folders", prepare)
+        if owner != self._workspace_action_owner() or not self._view.is_attached or not self._callbacks.is_topmost():
+            return False, None
+        if same:
             return True, confirmation
 
         def confirmation_is_current() -> bool:
             return owner == self._workspace_action_owner()
 
-        if not session_id and not self._state.run.has_messages:
-            return True, confirmation
-        from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
-
-        dialog = ConfirmDialog(
-            title=_LEAVE_WORKSPACE_TITLE.bind(),
-            message=(_LEAVE_WORKSPACE_MESSAGE if session_id else _LEAVE_WORKSPACE_CHOICES).bind(
-                path=DisplayPath(resolved), name=name
-            ),
-            confirm_label=_LEAVE_WORKSPACE_SWITCH.bind(),
-            alternate_label=_LEAVE_WORKSPACE_NEW.bind() if not session_id else None,
-            locale_controller=self._locale_controller,
+        dialog = self._workspace_switch_dialog(
+            _LEAVE_WORKSPACE_TITLE.bind(name=source.name), message, offer_new=offer_new
         )
-        dialog.add_class("-warning-border")
         confirmed = await self._ask(dialog)
         if not confirmation_is_current():
             return False, None
@@ -242,10 +295,78 @@ class WorkspaceController:
             return False, None
         return confirmed is True, confirmation if confirmed is True else None
 
+    @staticmethod
+    def _chdir_leave_message(resolved: str, workspace: Workspace, *, offer_new: bool) -> tuple[MessageRef, ...]:
+        definition = _LEAVE_WORKSPACE_OUTSIDE
+        if contains(workspace.primary_cwd, resolved):
+            definition = _LEAVE_WORKSPACE_PRIMARY_CHILD
+        else:
+            for directory in workspace.working_dirs:
+                if same_directory(directory.path, resolved):
+                    definition = _LEAVE_WORKSPACE_REFERENCE
+                    break
+                if contains(directory.path, resolved):
+                    definition = _LEAVE_WORKSPACE_REFERENCE_CHILD
+                    break
+        message = (
+            definition.bind(path=DisplayPath(resolved), name=workspace.name),
+            _LEAVE_WORKSPACE_MOVE_RESULT.bind(),
+        )
+        return (*message, _LEAVE_WORKSPACE_NEW_RESULT.bind()) if offer_new else message
+
+    async def confirm_workspace_switch(self, target: Workspace | None, created: bool) -> WorkspaceSwitchChoice:
+        """Ask whether an existing conversation should move to the selected workspace."""
+        owner = self._workspace_action_owner()
+        current = self._state.workspace.membership
+        if not self._state.run.has_messages:
+            return "move"
+        if target is not None:
+            title = (_WORKSPACE_CREATED if created else _SWITCH_WORKSPACE_TITLE).bind(name=target.name)
+            move = (
+                _SWITCH_WORKSPACE_MOVE_SAME.bind()
+                if await run_abandonable(
+                    "icode-workspace-folders", same_directory, self.workspace_cwd(), target.primary_cwd
+                )
+                else _SWITCH_WORKSPACE_MOVE.bind(path=DisplayPath(target.primary_cwd))
+            )
+            message = (move, _SWITCH_WORKSPACE_NEW.bind(name=target.name))
+            if created:
+                message = (_MOVE_TO_CREATED_WORKSPACE.bind(name=target.name), *message)
+        elif current is not None:
+            title = _LEAVE_WORKSPACE_TITLE.bind(name=current.name)
+            message = (_UNSPECIFY_WORKSPACE_MESSAGE.bind(),)
+        else:
+            return "cancel"
+        if owner != self._workspace_action_owner() or not self._view.is_attached or not self._callbacks.is_topmost():
+            return "cancel"
+        dialog = self._workspace_switch_dialog(title, message, offer_new=True)
+        if await self._ask(dialog) is not True:
+            return "cancel"
+        return "new" if dialog.selected_alternate else "move"
+
+    def _workspace_switch_dialog(self, title: MessageRef, message: ConfirmMessage, *, offer_new: bool) -> ConfirmDialog:
+        from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+
+        dialog = ConfirmDialog(
+            title=title,
+            message=message,
+            confirm_label=_LEAVE_WORKSPACE_SWITCH.bind(),
+            alternate_label=_LEAVE_WORKSPACE_NEW.bind() if offer_new else None,
+            message_align="left" if isinstance(message, tuple) else "center",
+            locale_controller=self._locale_controller,
+        )
+        dialog.add_class("-warning-border")
+        return dialog
+
     def _can_change_workspace(self) -> bool:
         if not self._callbacks.allow_change():
             return False
-        if self._state.run.agent_running or self._state.run.agent_loading or self._services.execution_busy():
+        if (
+            self._state.run.agent_running
+            or self._state.run.agent_loading
+            or self._state.submit.active
+            or self._services.execution_busy()
+        ):
             self._view.notify(_CHANGE_DIRECTORY_BUSY.bind(), title=_BUSY_TITLE.bind(), severity="warning")
             return False
         return True
@@ -286,7 +407,7 @@ class WorkspaceController:
         )
 
     async def choose_replacement_dir(
-        self, missing: str, workspace_restore: bool = False, *, reason: MissingDirReason
+        self, missing: str, workspace_name: str | None = None, *, reason: MissingDirReason
     ) -> str | None:
         """Ask for a folder in place of *missing*; ``None`` when the user declines or a prompt is open."""
         if self._missing_prompt_active:
@@ -296,11 +417,16 @@ class WorkspaceController:
         try:
             from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 
-            message = _MISSING_WORKSPACE_RESTORE if workspace_restore else _MISSING_MESSAGES[reason]
+            path = DisplayPath(missing)
+            message = (
+                _MISSING_WORKSPACE_RESTORE.bind(path=path, name=workspace_name)
+                if workspace_name is not None
+                else _MISSING_MESSAGES[reason].bind(path=path)
+            )
             confirmed = await self._ask(
                 ConfirmDialog(
                     title=_MISSING_TITLE.bind(),
-                    message=message.bind(path=DisplayPath(missing)),
+                    message=message,
                     confirm_label=_MISSING_CHOOSE.bind(),
                     locale_controller=self._locale_controller,
                 )
@@ -338,16 +464,10 @@ class WorkspaceController:
         if chosen is not None:
             await self.apply_chdir(chosen)
 
-    async def _ask(self, screen: Screen[Any]) -> object:
-        """Push *screen* and wait for its dismissal result."""
-        result: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+    async def _ask[ResultT](self, dialog: BaseDialog[ResultT]) -> ResultT | None:
+        from chrys.app.tui.screens.dialogs.base import ask_dialog
 
-        def settle(value: object) -> None:
-            if not result.done():
-                result.set_result(value)
-
-        self._view.push_screen(screen, settle)
-        return await result
+        return await ask_dialog(self._view.push_screen, dialog)
 
     def _push_directory_picker(self) -> None:
         owner = self._workspace_action_owner()

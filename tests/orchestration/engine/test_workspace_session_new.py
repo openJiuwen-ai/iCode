@@ -22,6 +22,7 @@ from chrys.foundation.events.types import (
     SessionRestore,
     Warning,
 )
+from chrys.foundation.i18n import DisplayPath
 from chrys.foundation.models.workspace import WorkspaceConfirmation
 from chrys.orchestration.engine import session_lifecycle
 from chrys.service.mcp.adapter import MCPAdapter
@@ -87,6 +88,24 @@ async def test_empty_session_cleanup_removes_membership_from_its_own_registry(wo
 
     assert not session_dir.exists()
     assert not workspace_case.registry.snapshot().maps_session(session_id)
+
+
+async def test_consecutive_new_sessions_record_workspace_use_once_each(workspace_case, tmp_path, monkeypatch):
+    engine, workspace = await workspace_case.start_selected(tmp_path)
+    registry = workspace_case.registry
+    touch = create_autospec(registry.touch, side_effect=registry.touch)
+    monkeypatch.setattr(registry, "touch", touch)
+
+    for count in (1, 2):
+        previous_id = engine.session_id
+        previous_use = registry.snapshot().last_used_at[workspace.id]
+        await engine.event_bus.publish(SessionNew(), raise_handler_errors=True)
+        assert engine.session_id != previous_id
+        snapshot = registry.snapshot()
+        assert snapshot.workspace_id_for_session(engine.session_id) == workspace.id
+        assert snapshot.last_used_at[workspace.id] > previous_use
+        assert touch.call_count == count
+        touch.assert_called_with(workspace.id)
 
 
 @pytest.mark.parametrize("failure", ["missing", "broken", "settings", "replaced"])
@@ -208,10 +227,42 @@ async def test_missing_workspace_primary_refuses_replacement_before_closing(work
     assert [event.code for event in errors] == [f"session_{action}_failed"]
     (error,) = errors
     assert error.display_message is not None
-    assert error.display_message.definition.key == "workspaces.primary_missing"
+    assert error.display_message.definition.key == "workspaces.named_primary_missing"
+    assert dict(error.display_message.args)["name"] == workspace.name
     assert engine.session_id == session_id
     assert workspace_case.registry.snapshot().workspace_id_for_session(session_id) == workspace.id
     assert await workspace_case.store.load_session(session_id) is not None
+
+
+@pytest.mark.parametrize("destination", ["current", "explicit-current", "other"])
+async def test_new_unspecified_names_a_missing_primary_only_for_the_source_directory(
+    workspace_case, tmp_path, destination
+):
+    primary, other = make_workdirs(tmp_path, "primary", "other")
+    engine, workspace = await workspace_case.start_selected(primary)
+    session_id = engine.session_id
+    primary.rmdir()
+    other.rmdir()
+    path = other if destination == "other" else primary
+    event = SessionNew(start_unspecified=True, primary_cwd="" if destination == "current" else str(path))
+
+    async with capture_event_sequence(engine.event_bus, Error) as errors:
+        with pytest.raises(MissingWorkspacePrimary):
+            await engine.event_bus.publish(event, raise_handler_errors=True)
+
+    (error,) = errors
+    assert isinstance(error, Error) and error.code == "session_new_failed"
+    assert error.display_message is not None
+    args = {"path": DisplayPath(str(path))}
+    if destination == "other":
+        key = "workspaces.primary_missing"
+    else:
+        key = "workspaces.named_primary_missing"
+        args["name"] = workspace.name
+    assert error.display_message.definition.key == key
+    assert dict(error.display_message.args) == args
+    assert engine.session_id == session_id
+    assert workspace_case.registry.snapshot().workspace_id_for_session(session_id) == workspace.id
 
 
 @pytest.mark.parametrize("action", ["new", "clear", "fork"])
@@ -256,6 +307,7 @@ async def test_explicit_new_installs_one_target_after_commit(workspace_case, tmp
     engine, first, target, directory = await _session_with_options(workspace_case, tmp_path)
     registry = workspace_case.registry
     outgoing = engine.session_id
+    last_used_at = registry.snapshot().last_used_at
     if mode == "inherit":
         event = SessionNew()
         expected = first
@@ -267,7 +319,7 @@ async def test_explicit_new_installs_one_target_after_commit(workspace_case, tmp
         expected = target
     if mode == "write-failure":
 
-        def fail_write(registry, session_id, workspace_id):
+        def fail_write(registry, session_id, workspace_id, **_kwargs):
             raise WorkspaceRegistryError("mapping failed", session_lifecycle.NEW_MEMBERSHIP_WRITE_FAILED.bind(name="B"))
 
         monkeypatch.setattr(
@@ -288,6 +340,8 @@ async def test_explicit_new_installs_one_target_after_commit(workspace_case, tmp
             await engine.event_bus.publish(event, raise_handler_errors=True)
     assert engine.session_id != outgoing
     assert registry.snapshot().workspace_id_for_session(outgoing) == first.id
+    if mode in {"unspecified", "unspecified-with-directory", "write-failure", "build-failure"}:
+        assert registry.snapshot().last_used_at == last_used_at
     ready = [item for item in events if isinstance(item, SessionReady)]
     if mode == "build-failure":
         assert ready == []

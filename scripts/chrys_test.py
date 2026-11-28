@@ -118,6 +118,7 @@ class Selection:
 # rule below rather than by a filesystem-wide watch.
 ARCHITECTURE_RULES = (
     TestRule("tests/architecture/test_hygiene_workspace_plans.py", ("src/chrys/**",)),
+    TestRule("tests/architecture/test_hygiene_workspace_reads.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_analytics_facts.py", ("src/chrys/service/analytics/**",)),
     TestRule(
         "tests/architecture/test_chrys_test.py",

@@ -10,6 +10,7 @@ import sys
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,6 +40,27 @@ from tests.support.workspace_registry import workspace_store as workspace_store
 
 TARGET = "0f1e2d3c-4b5a-4968-8776-655443322110"
 MISSING = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_run_warns_on_stderr_when_workspace_opens_without_a_reference(
+    registry, store, monkeypatch, tmp_path, capsys, as_json
+) -> None:
+    primary, reference = make_workdirs(tmp_path, "primary", "reference")
+    registry.create("Team", str(primary), [str(reference)])
+    reference.rmdir()
+    mock_headless_workspace_restore(monkeypatch, store)
+    args = ["hello", "-a", "Headless", "--workspace", "Team"]
+    args.append("--json" if as_json else "--quiet")
+    assert run_cli.main(args) == 0
+    out = capsys.readouterr()
+    message = f"Workspace “Team” has a missing reference folder: {reference}"
+    if as_json:
+        assert json.loads(out.err) == {"warning": message, "code": "workspace_reference_missing"}
+        assert json.loads(out.out)["result"] == "done"
+    else:
+        assert out.err.splitlines() == [f"Warning: {message}"]
+        assert out.out.strip() == "done"
 
 
 @pytest.mark.parametrize("where", ["start", "turn"])
@@ -243,6 +265,8 @@ def test_run_reports_workspace_launch_error_code(registry, monkeypatch, tmp_path
     monkeypatch.chdir(tmp_path)
     primary = tmp_path / "primary"
     primary.mkdir()
+    ids = iter(["a" * 31 + "1", "a" * 31 + "2"])
+    monkeypatch.setattr(registry_module, "uuid4", lambda: SimpleNamespace(hex=next(ids)))
     if failure != "workspace_not_found":
         registry.create("Team", str(primary))
     if failure == "workspace_registry_unreadable":
@@ -255,7 +279,7 @@ def test_run_reports_workspace_launch_error_code(registry, monkeypatch, tmp_path
         other = tmp_path / "other"
         other.mkdir()
         registry.create("Other", str(other))
-        selector = "ws_"
+        selector = "ws_" + "a" * 31
     assert run_cli.main(["hello", "-a", "Headless", "--workspace", selector, "-s", MISSING, "--json"]) == 1
 
     out = capsys.readouterr()
@@ -264,6 +288,8 @@ def test_run_reports_workspace_launch_error_code(registry, monkeypatch, tmp_path
     if failure == "workspace_not_found":
         # A mistyped selector is the user's own input, so the message names it.
         assert json.loads(out.err)["error"] == f"No workspace matches {selector}."
+    elif failure == "workspace_primary_missing":
+        assert json.loads(out.err)["error"] == f"The primary folder of workspace “Team”, {primary}, does not exist."
     assert not FakeHost.instances
     assert Path.cwd() == tmp_path
 

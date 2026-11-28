@@ -7,8 +7,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import pytest
+from rich.cells import cell_len
 from textual import on
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.timer import Timer, TimerCallback
 from textual.widgets import Static
 
@@ -23,16 +25,20 @@ from chrys.app.tui.widgets.chrome.status_bar import (
     StatusBar,
     TrailCount,
 )
+from chrys.app.tui.workspace_text import WorkspaceIndicatorState, compute_workspace_indicator_state
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import (
     AgentRuntimeDetails,
     RuntimeHookDetails,
     RuntimeHookSourceDetails,
 )
+from chrys.foundation.i18n import Localizer
 from chrys.foundation.text.tokenizer import TOKEN_UNITS_PER_TOKEN, MixedLanguageTokenizer
 from tests.support.tui_helpers import (
     WidgetApp,
+    click_when_settled,
     make_click,
+    resize_when_settled,
 )
 from tests.support.waiting import wait_for
 
@@ -714,6 +720,34 @@ async def test_status_bar_posts_details_clicked(reveal_trail: Callable[[StatusBa
     assert len(app.details_clicks) == 1
 
 
+# Main shortens these details below 72 columns too.
+@pytest.mark.parametrize("width", [72, 80])
+async def test_idle_workspace_details_fit_and_can_be_clicked(width):
+    from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState
+
+    app = _DetailsClickApp()
+    async with app.run_test(size=(width, 3)) as pilot:
+        status = app.query_one(StatusBar)
+        status.set_profile("Code Agent")
+        status.set_model(ModelIndicatorState("Claude Sonnet 4.5", "", "select", "", True))
+        status.set_workspace(WorkspaceIndicatorState("frontend-platform", Content("frontend-platform"), "Workspace"))
+        status.set_tool_info(("3 tools", "2 skills"))
+        status.clear_status()
+        details = status.query_one("#status-tool-info", Static)
+        await wait_for(lambda: details.content_size.width >= cell_len("3 tools · 2 skills"), pilot=pilot)
+        assert details.region.right <= status.size.width
+        assert "3 tools · 2 skills" in _status_line(status)
+        await click_when_settled(pilot, details, offset=(1, 0))
+        assert len(app.details_clicks) == 1
+
+
+def test_workspace_tooltip_encodes_a_surrogateescaped_path() -> None:
+    path = "/project/reference-\udcff"
+    workspace = compute_workspace_indicator_state(Localizer("en"), "Team", ("/project", path), frozenset({path}))
+
+    assert rb"/project/reference-\udcff (missing)" in workspace.tooltip.plain.encode("utf-8")
+
+
 async def test_status_bar_spinner_ticks_only_while_it_is_painted() -> None:
     """The bar swaps faces through layout-free visibility flips; their Show/Hide park and restart the spinner's timer."""
     async with WidgetApp(StatusBar).run_test() as pilot:
@@ -770,3 +804,151 @@ async def test_a_trail_too_wide_keeps_its_count_short_at_the_end(
 
         sb.set_tool_info((TrailCount("2 background tasks", "2 tasks"),))
         assert await shown_at(10) == "2 tasks"
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        pytest.param("\u263a", id="emoji-text-presentation"),
+        pytest.param("\u263a\ufe0f", id="emoji-vs16"),
+        pytest.param("\U0001f469\u200d\U0001f4bb", id="zwj"),
+        pytest.param("\U0001f1e8\U0001f1f3", id="flag"),
+        pytest.param("\U0001fae0", id="new-emoji"),
+        pytest.param("ab\u00ad", id="soft-hyphen"),
+        pytest.param("e\u0301", id="combining"),
+    ],
+)
+@pytest.mark.parametrize(("width", "limit"), [(220, 18), (60, 7)])
+async def test_workspace_tag_fits_its_tier_for_every_kind_of_character(tmp_path, width, limit, unit):
+    workspace = compute_workspace_indicator_state(Localizer("en"), unit * 20, (str(tmp_path),))
+    async with WidgetApp(StatusBar).run_test(size=(width, 10)) as pilot:
+        status = pilot.app.query_one(StatusBar)
+        status.set_workspace(workspace)
+        await pilot.pause()
+        tag = status.query_one("#workspace-tag", Static)
+        text = tag.render().plain
+        assert text.endswith("…")
+        assert limit - 2 <= cell_len(text) <= limit
+        assert tag.region.width >= cell_len(text)
+
+
+@pytest.mark.parametrize("name", ["[red]Long\x1bWorkspaceName" * 2, "[red]研发\x1b工作区名字很长🛠️" * 2])
+@pytest.mark.parametrize(("width", "limit"), [(220, 18), (90, 10), (60, 7)])
+async def test_workspace_tag_sanitizes_and_shortens_the_name_by_tier(tmp_path, width, limit, name):
+    from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState
+
+    workspace = compute_workspace_indicator_state(Localizer("en"), name, (str(tmp_path),))
+    async with WidgetApp(StatusBar).run_test(size=(width, 10)) as pilot:
+        status = pilot.app.query_one(StatusBar)
+        status.set_profile("A very long agent profile name")
+        status.set_model(
+            ModelIndicatorState(
+                label="A very long model name with response", tooltip="", mode="select", profile_id="", visible=True
+            )
+        )
+        status.set_workspace(workspace)
+        await pilot.pause()
+        tag = status.query_one("#workspace-tag", Static).render().plain
+        # A wide character that does not fit leaves one cell empty.
+        assert limit - 1 <= cell_len(tag) <= limit and tag.endswith("…")
+        assert "[" in tag
+        assert "\x1b" not in tag
+        assert status.query_one("#workspace-label", Static).display is (width >= 64)
+        assert "\x1b" not in status.query_one("#workspace-tag", Static).tooltip.plain
+        status.shell_mode = True
+        assert status.query_one(".status-selectors").display is False
+
+
+def _start_status_run(status: StatusBar, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(status, "_format_elapsed", lambda: "2m 3s")
+    status.show("Running: explore_agent")
+    status.start_run()
+    for _ in range(14):
+        status.add_tool_call()
+    status.query_one(ChrysLoadingIndicator).pause_animation()
+
+
+def _status_line(status: StatusBar) -> str:
+    return status.screen._compositor.render_strips()[status.region.y].text.rstrip()
+
+
+@pytest.mark.parametrize(
+    ("known", "workspace_name", "running", "wide_from"),
+    [
+        (False, None, False, 82),
+        (False, None, True, 82),
+        (True, None, True, 107),
+        (True, "frontend-platform", True, 113),
+    ],
+    ids=["before-ready-idle", "before-ready-running", "unspecified", "named"],
+)
+async def test_status_line_and_workspace_tiers_at_width_boundaries(
+    monkeypatch, known, workspace_name, running, wide_from
+):
+    from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState
+
+    async with _DetailsClickApp().run_test(size=(60, 3)) as pilot:
+        status = pilot.app.query_one(StatusBar)
+        status.set_profile("Code")
+        status.set_model(ModelIndicatorState("Claude Sonnet 4.5", "", "select", "", True))
+        if running:
+            status.set_tool_info(("3 tools", "2 skills") if known else "R")
+            _start_status_run(status, monkeypatch)
+        else:
+            status.clear_status()
+        if known:
+            status.set_workspace(compute_workspace_indicator_state(Localizer("en"), workspace_name))
+        await pilot.pause()
+        assert status.query_one("#workspace-tag").display is known
+
+        label_ids = ("#workspace-label", "#agent-label", "#model-label")
+        workspace_tag = status.query_one("#workspace-tag", Static)
+        model_tag = status.query_one("#model-tag", Static)
+        details = status.query_one("#status-tool-info")
+        for width in (50, 60, 63, 64, 80, 81, 82, 99, 100, wide_from - 1, wide_from, 119, 120, 150, 160):
+            await resize_when_settled(pilot, width, 3)
+            if not known:
+                if width < 64:
+                    line = "  Code   Claude So…"
+                elif width < 82:
+                    line = "  Agent  Code   Model  Claude Sonn…"
+                else:
+                    line = "  Agent  Code   Model  Claude Sonnet 4.5"
+                if running:
+                    line += "   ● ● ●  Running: explore_agent  (2m 3s · 14 tool calls)"
+                    if width >= 100:
+                        line = line.ljust(width - 2) + "R"
+                assert _status_line(status) == line[:width].rstrip(), width
+                continue
+            assert status.query_one("#workspace-label", Static).render().plain == "Workspace"
+            assert [status.query_one(label).display for label in label_ids] == [width >= 81] * 3, width
+            if width < 64:
+                assert cell_len(workspace_tag.render().plain) == 7
+                assert model_tag.render().plain == "Claude So…"
+                assert not details.display, width
+            elif width < wide_from:
+                # Below the label width the names keep main's narrow lengths; only the labels go.
+                assert cell_len(workspace_tag.render().plain) == 10
+                assert model_tag.render().plain == "Claude Sonn…"
+            else:
+                assert workspace_tag.render().plain == (workspace_name or "Unspecified")
+                assert model_tag.render().plain == "Claude Sonnet 4.5"
+
+
+async def test_workspace_selector_group_fits_at_60_to_70_columns(monkeypatch):
+    from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState
+
+    async with WidgetApp(StatusBar).run_test(size=(60, 3)) as pilot:
+        status = pilot.app.query_one(StatusBar)
+        status.set_profile("Code Agent")
+        status.set_model(ModelIndicatorState("Claude Sonnet 4.5", "", "select", "", True))
+        status.set_workspace(WorkspaceIndicatorState("frontend-platform", Content("frontend-platform"), "Workspace"))
+        _start_status_run(status, monkeypatch)
+        await pilot.pause()
+
+        selectors = status.query_one(".status-selectors")
+        for width in (60, 63, 64, 70):
+            if width != 60:
+                await resize_when_settled(pilot, width, 3)
+            assert selectors.region.right <= status.region.right, width
+            assert status.query_one("#model-tag").region.right <= status.region.right, width

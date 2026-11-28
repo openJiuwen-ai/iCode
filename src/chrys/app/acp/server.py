@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import functools
 import json
+import re
 import uuid
 import weakref
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -35,6 +36,16 @@ from chrys.app.acp.history import compressed_context_payload, replay_session_his
 from chrys.app.acp.hook_confirmations import AcpSessionHookConfirmations
 from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager, ManagedSession, jsonable_dataclass
+from chrys.app.workspace_commands import (
+    COMMAND_UNAVAILABLE_RUNNING,
+    WORKSPACE,
+    WORKSPACE_ACTIONS,
+    WORKSPACE_DESCRIPTION,
+    WORKSPACE_HINT,
+    WorkspaceCommand,
+    WorkspaceCommandReply,
+    parse_workspace_command,
+)
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_APPROVAL_TIMEOUT_SECONDS
 from chrys.foundation.events.types import (
@@ -85,7 +96,10 @@ from chrys.foundation.events.types import (
     Warning,
     WorkspaceUpdated,
 )
+from chrys.foundation.i18n import DisplayPath, MessageRef
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
 from chrys.foundation.models.ask_user import AskUserQuestion, validate_request_input_response
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.text.encoding import EncodingDetector, decode_bytes
 from chrys.orchestration.session_host import Cancelled, EndTurn, Errored, Refused, TurnOutcome
 from chrys.service.mutations.types import FileMutationTextSnapshot
@@ -484,6 +498,7 @@ class ChrysAcpServer:
                 await self._send_warning(session.session_id, warning)
             await self._send_runtime_update(session.session_id)
             await self._send_plan_update(session.session_id)
+            await self._send_workspace_commands(session.session_id)
         except BaseException:
             with contextlib.suppress(Exception):
                 await self._manager.close(session.session_id)
@@ -553,6 +568,8 @@ class ChrysAcpServer:
                 await self._send_runtime_update(session.session_id)
                 check_active()
                 await self._send_plan_update(session.session_id)
+                check_active()
+                await self._send_workspace_commands(session.session_id)
             check_active()
             return acp_schema.LoadSessionResponse(
                 modes=self._session_mode_state(session.session_id),
@@ -595,6 +612,10 @@ class ChrysAcpServer:
         if self._client is None:
             raise internal_error({"details": "ACP client connection is not ready."})
         user_message_id = _validated_message_id(message_id)
+        if len(prompt) == 1 and isinstance(prompt[0], acp_schema.TextContentBlock):
+            command = parse_workspace_command(prompt[0].text)
+            if command is not None:
+                return await self._run_workspace_command(session_id, command)
 
         async def start(session: ManagedSession) -> AsyncIterator[Event]:
             cancels = session.cancels_requested
@@ -653,6 +674,59 @@ class ChrysAcpServer:
                 **turn.response_meta(),
             }
         )
+
+    async def _run_workspace_command(
+        self, session_id: str, command: WorkspaceCommand | WorkspaceCommandReply
+    ) -> acp_schema.PromptResponse:
+        try:
+            session = self._manager.get(session_id)
+            if session.host.engine.execution_busy() or not session.reserve_turn():
+                reply = WorkspaceCommandReply((COMMAND_UNAVAILABLE_RUNNING.bind(name=WORKSPACE),), error=True)
+                return await self._send_workspace_reply(session_id, reply)
+            # A Stop sent while the command waits for the session's locks drops it, as for a prompt.
+            cancels = session.cancels_requested
+            try:
+                async with self._manager.workspace_command_session(session):
+                    if session.cancels_requested != cancels:
+                        return acp_schema.PromptResponse(stopReason="cancelled")
+                    if isinstance(command, WorkspaceCommandReply):
+                        return await self._send_workspace_reply(session_id, command)
+                    warnings: list[Warning] = []
+                    try:
+                        result = await self._manager.run_workspace_command_locked(
+                            session, command, warnings=warnings, cancels=cancels
+                        )
+                    finally:
+                        for warning in warnings:
+                            with contextlib.suppress(Exception):
+                                await self._send_warning(session_id, warning)
+                    if result is None:
+                        return acp_schema.PromptResponse(stopReason="cancelled")
+                    reply, updated = result
+                    if updated is not None:
+                        await self._handle_chrys_extension_event(session_id, updated)
+                        await self._send_runtime_update(session_id)
+                    return await self._send_workspace_reply(session_id, reply)
+            finally:
+                session.release_turn()
+        except Exception as exc:
+            raise _request_error(exc) from exc
+
+    async def _send_workspace_reply(self, session_id: str, reply: WorkspaceCommandReply) -> acp_schema.PromptResponse:
+        rendered = [_workspace_markdown(message) for message in reply.messages]
+        paragraphs = rendered[reply.list_count :]
+        if reply.list_count:
+            paragraphs.insert(0, "\n".join(f"- {row}" for row in rendered[: reply.list_count]))
+        text = "\n\n".join(paragraphs)
+        await self._client_or_error().session_update(
+            session_id=session_id,
+            update=acp_schema.AgentMessageChunk(
+                sessionUpdate="agent_message_chunk",
+                content=acp_schema.TextContentBlock(type="text", text=text),
+                messageId=str(uuid.uuid4()),
+            ),
+        )
+        return acp_schema.PromptResponse(stopReason="end_turn")
 
     async def retry(
         self,
@@ -1793,6 +1867,25 @@ class ChrysAcpServer:
             update=plan_update_for_todos(items),
         )
 
+    async def _send_workspace_commands(self, session_id: str) -> None:
+        await self._client_or_error().session_update(
+            session_id=session_id,
+            update=acp_schema.AvailableCommandsUpdate(
+                sessionUpdate="available_commands_update",
+                availableCommands=[
+                    acp_schema.AvailableCommand(
+                        name=WORKSPACE,
+                        description=format_message(WORKSPACE_DESCRIPTION.bind()),
+                        input=acp_schema.AvailableCommandInput(
+                            acp_schema.UnstructuredCommandInput(
+                                hint=format_message(WORKSPACE_HINT.bind(actions=" | ".join(WORKSPACE_ACTIONS)))
+                            )
+                        ),
+                    ),
+                ],
+            ),
+        )
+
     async def _send_warning(self, session_id: str | None, warning: Warning) -> None:
         """Send one ``chrys/warning``, whether it came from a turn or an RPC.
 
@@ -2240,6 +2333,27 @@ class ChrysAcpServer:
             raise invalid_params(
                 {"details": f"additionalDirectories are not supported by {APP_DISPLAY_NAME} ACP phase 1."}
             )
+
+
+def _workspace_markdown(message: MessageRef) -> str:
+    if message.definition.multiline:
+        heading, _, commands = format_message(message).partition("\n")
+        return f"{heading}\n\n```text\n{commands}\n```"
+    args: dict[str, Any] = {}
+    for key, value in message.args:
+        if isinstance(value, DisplayPath):
+            text = sanitize_legacy_scalar(surrogate_safe_text(value.value))
+            ticks = "`" * (1 + max((len(run) for run in re.findall(r"`+", text)), default=0))
+            args[key] = (
+                f"{ticks} {text} {ticks}" if text.startswith("`") or text.endswith("`") else f"{ticks}{text}{ticks}"
+            )
+        elif isinstance(value, str):
+            escaped = re.sub(r"[\\`*_<>\[\]#&!~|]", r"\\\g<0>", value)
+            args[key] = re.sub(r"^(\d*)([.+)-])(?=\s)", r"\1\\\2", escaped)
+        else:
+            args[key] = value
+    template = re.sub(r"[<>]", r"\\\g<0>", message.definition.fallback)
+    return format_message(message.definition.bind(**args), template)
 
 
 def _request_error(

@@ -187,11 +187,11 @@ async def test_app_mode_and_workflow_are_separate_menus(tmp_path: Path, monkeypa
 
 
 async def test_workflow_frame_and_controls_center_after_resize(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = make_workdir(tmp_path)
-    monkeypatch.chdir(project)
+    workspace = make_workdir(tmp_path)
+    monkeypatch.chdir(workspace)
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
     write_workflow(
-        project,
+        workspace,
         "centered",
         python_workflow(
             "# Scrollable source\n" * 60 + "def fn(value):\n    return value\n", "fn", title="A [workflow]"
@@ -461,9 +461,9 @@ async def test_workflow_realigns_the_sidebar_after_scroll_reflow(
 async def test_slow_source_read_does_not_switch_back_to_code_tab(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_workdir(tmp_path)
-    monkeypatch.chdir(project)
-    write_workflow(project, "tabs", python_workflow("def fn(value):\n    return value\n", "fn"))
+    workspace = make_workdir(tmp_path)
+    monkeypatch.chdir(workspace)
+    write_workflow(workspace, "tabs", python_workflow("def fn(value):\n    return value\n", "fn"))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 36)) as pilot:
         main = app._main_screen
@@ -498,10 +498,10 @@ async def test_slow_source_read_does_not_switch_back_to_code_tab(
 async def test_a_workflow_title_is_shown_without_terminal_controls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = make_workdir(tmp_path)
-    monkeypatch.chdir(project)
+    workspace = make_workdir(tmp_path)
+    monkeypatch.chdir(workspace)
     write_workflow(
-        project, "esc", python_workflow("def fn(value):\n    return value\n", "fn", title="Review\x1b[2JInjected")
+        workspace, "esc", python_workflow("def fn(value):\n    return value\n", "fn", title="Review\x1b[2JInjected")
     )
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:

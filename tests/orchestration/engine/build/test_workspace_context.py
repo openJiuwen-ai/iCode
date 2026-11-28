@@ -46,6 +46,7 @@ async def _build(probe, workspace):
         settings=Settings(model_profile="mock-model", workspace_change_notice=False),
         workspace=plan.workspace,
         missing_working_dirs=plan.missing_working_dirs,
+        workspace_folders=plan.workspace_folders,
         session_id="project-scope",
         bus=probe.bus,
         agent_registry=probe.registry,
@@ -353,6 +354,8 @@ async def test_service_session_continuation_follows_the_effective_scope(
         if scenario.endswith("reference"):
             target = registry.update(workspace.id, name="Renamed", primary=str(primary), folders=[str(second)])
         elif scenario.endswith("identity"):
+            # Replace the registration while preserving the exact set of folder roots.
+            registry.delete(workspace.id, expected=workspace)
             target = registry.create("Replacement", str(primary), [str(first)])
             if not hot:
                 registry.set_session_workspace(sid, target.id)

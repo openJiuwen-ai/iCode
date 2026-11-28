@@ -5,8 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import threading
 from contextlib import asynccontextmanager
+from itertools import pairwise
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -23,20 +27,31 @@ from chrys.foundation.events.types import (
     WorkspaceChange,
     WorkspaceChangeFinished,
     WorkspaceOperation,
+    WorkspaceUpdated,
 )
+from chrys.foundation.i18n import Localizer
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace, WorkspaceConfirmation, session_workdirs
+from chrys.foundation.models.workspace_operations import WorkspaceDefinitionEdit
+from chrys.foundation.util.lock import FileLock
 from chrys.kernel import Message
+from chrys.orchestration.engine import workspaces as engine_workspaces
 from chrys.service.llm import side_question
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.state.store import JsonFileStateStore
+from chrys.service.workspaces import registry as registry_module
 from chrys.service.workspaces.paths import MissingWorkspacePrimary
 from tests.support.components import plan_workspace
 from tests.support.event_capture import capture_event_sequence
 from tests.support.rollback_spec import PROFILE, ask, drain
 from tests.support.symlinks import symlink_or_skip
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
-from tests.support.workspace_engine import side_answer_settled, start_workspace_engine, workspace_selection
+from tests.support.workspace_engine import (
+    capture_async_results,
+    side_answer_settled,
+    start_workspace_engine,
+    workspace_selection,
+)
 from tests.support.workspace_engine import workspace_case as workspace_case
 from tests.support.workspace_registry import (
     corrupt_workspace_registry,
@@ -63,6 +78,42 @@ async def test_workspace_plan_rejects_a_missing_matching_target_cwd(workspace_ca
             target_cwd=workspace.primary_cwd,
             use_target_cwd=True,
         )
+
+
+@pytest.mark.parametrize(
+    "invalid", ["other-workspace", "unspecified", "foreign-session", "no-runtime", "no-session-id"]
+)
+async def test_membership_alignment_refuses_a_stale_or_unavailable_runtime(
+    workspace_case, tmp_path, monkeypatch, invalid
+):
+    engine, workspace = await workspace_case.start_selected(tmp_path)
+    original = engine.current.require_loaded()
+    before = workspace_case.registry.path.read_bytes()
+    request = WorkspaceChange(
+        workspace_operation=WorkspaceOperation.ALIGN_MEMBERSHIP,
+        workspace_id=workspace.id,
+        session_id=engine.session_id,
+        report_error=False,
+    )
+    with monkeypatch.context() as patch:
+        if invalid == "other-workspace":
+            request.workspace_id = "ws_" + "f" * 32
+        elif invalid == "unspecified":
+            request.workspace_id = None
+        elif invalid == "foreign-session":
+            request.session_id = "another-session"
+        elif invalid == "no-runtime":
+            patch.setattr(engine.current, "loaded", None)
+        else:
+            patch.setattr(engine.session, "session_id", None)
+            request.session_id = None
+        async with capture_event_sequence(engine.event_bus, WorkspaceChangeFinished) as events:
+            await engine.event_bus.publish(request, raise_handler_errors=True)
+    (terminal,) = events
+    assert terminal.error is not None
+    assert terminal.workspace_update is None
+    assert workspace_case.registry.path.read_bytes() == before
+    assert engine.current.require_loaded() is original
 
 
 async def test_reselect_and_new_session_resolve_registry_links_without_changing_live_roots(workspace_case, tmp_path):
@@ -340,10 +391,376 @@ async def test_precommit_workspace_failure_reports_once(workspace_case, tmp_path
         assert reported.code == "workspace_change_failed"
 
 
+@asynccontextmanager
+async def _hold_registry_lock(registry, monkeypatch, *, duration=None):
+    path = registry.path.with_suffix(".json.lock")
+    loop = asyncio.get_running_loop()
+    held = asyncio.Event()
+    attempted = loop.create_future()
+    attempted_in_thread = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with FileLock(path):
+            loop.call_soon_threadsafe(held.set)
+            if attempted_in_thread.wait(ENGINE_TURN_TIMEOUT):
+                release.wait(duration if duration is not None else ENGINE_TURN_TIMEOUT)
+
+    acquire = FileLock.acquire
+
+    def observe(lock: FileLock) -> None:
+        if lock.path == path and not attempted.done():
+            attempted.set_result(loop.time())
+            attempted_in_thread.set()
+        acquire(lock)
+
+    holder = asyncio.create_task(asyncio.to_thread(hold))
+    try:
+        await wait_for(lambda: held.is_set() or holder.done(), timeout=ENGINE_TURN_TIMEOUT)
+        if holder.done():
+            await holder
+        assert held.is_set()
+        with monkeypatch.context() as patch:
+            patch.setattr(FileLock, "acquire", observe)
+            yield attempted, release
+    finally:
+        release.set()
+        attempted_in_thread.set()
+        await holder
+
+
+def _rename_workspace(workspace: Workspace, name: str = "Renamed") -> WorkspaceChange:
+    return workspace_selection(workspace.id, edit_workspace=WorkspaceDefinitionEdit(workspace, name, ()))
+
+
+@pytest.mark.parametrize("operation", ["rename", "same_name", "delete", "switch", "unspecify", "align"])
+async def test_workspace_write_keeps_the_loop_responsive_under_lock_contention(
+    workspace_case, tmp_path, monkeypatch, operation
+):
+    primary, other_primary = tmp_path / "team", tmp_path / "other"
+    primary.mkdir()
+    other_primary.mkdir()
+    engine, workspace = await workspace_case.start_selected(primary)
+    registry = workspace_case.registry
+    other = registry.create("Other", str(other_primary))
+    original = engine.current.require_loaded()
+    if operation == "align":
+        registry.set_session_workspace(engine.session_id, other.id)
+    name = workspace.name if operation == "same_name" else "Renamed"
+    request = {
+        "delete": lambda: WorkspaceChange(workspace_operation=WorkspaceOperation.UNSPECIFY, delete_workspace=workspace),
+        "switch": lambda: workspace_selection(other.id),
+        "unspecify": lambda: WorkspaceChange(workspace_operation=WorkspaceOperation.UNSPECIFY),
+        "align": lambda: WorkspaceChange(
+            workspace_operation=WorkspaceOperation.ALIGN_MEMBERSHIP, workspace_id=workspace.id
+        ),
+    }.get(operation, lambda: _rename_workspace(workspace, name))()
+    loop = asyncio.get_running_loop()
+    async with _hold_registry_lock(registry, monkeypatch, duration=0.3) as (attempted, _):
+        ticks = []
+
+        def tick() -> None:
+            nonlocal timer
+            if attempted.done():
+                ticks.append(loop.time())
+            timer = loop.call_later(0.005, tick)
+
+        timer = loop.call_soon(tick)
+        try:
+            async with capture_event_sequence(engine.event_bus, WorkspaceChangeFinished) as events:
+                await engine.event_bus.publish(request, raise_handler_errors=True)
+        finally:
+            timer.cancel()
+        finished_at = loop.time()
+
+    assert attempted.done()
+    samples = [attempted.result(), *ticks, finished_at]
+    max_gap = max(after - before for before, after in pairwise(samples))
+    assert max_gap < 0.03, f"Maximum event-loop gap: {max_gap * 1000:.1f} ms"
+    (terminal,) = events
+    assert terminal.error is None
+    assert (engine.current.require_loaded() is original) == (operation in ("same_name", "align"))
+    snapshot = registry.snapshot()
+    if operation in ("switch", "unspecify", "align"):
+        expected = other if operation == "switch" else workspace if operation == "align" else None
+        assert engine.session.session_workspace == expected
+        assert snapshot.sessions.get(engine.session.session_id) == (expected.id if expected else None)
+        return
+    saved = snapshot.workspace(workspace.id)
+    assert engine.session.session_workspace == saved
+    assert (saved.name if saved is not None else None) == (None if operation == "delete" else name)
+
+
+async def test_editing_the_current_workspace_probes_its_folders_once_off_the_loop(
+    workspace_case, tmp_path, monkeypatch
+):
+    primary = tmp_path / "team"
+    primary.mkdir()
+    engine, workspace = await workspace_case.start_selected(primary)
+    registry = workspace_case.registry
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    probes: list[int] = []
+    held, release = threading.Event(), threading.Event()
+    probe = registry_module._probe_folders
+
+    def held_probe(*args, **kwargs):
+        probes.append(threading.get_ident())
+        held.set()
+        release.wait(ENGINE_TURN_TIMEOUT)
+        return probe(*args, **kwargs)
+
+    monkeypatch.setattr(registry_module, "_probe_folders", held_probe)
+    async with capture_event_sequence(engine.event_bus, WorkspaceChangeFinished) as events:
+        change = asyncio.create_task(engine.event_bus.publish(_rename_workspace(workspace), raise_handler_errors=True))
+        await wait_for(held.is_set, timeout=ENGINE_TURN_TIMEOUT)
+        # The loop keeps running while a slow mount holds the folder check.
+        ticks = []
+        for _ in range(5):
+            ticks.append(loop.time())
+            await asyncio.sleep(0.005)
+        assert max(after - before for before, after in pairwise(ticks)) < 0.05
+        assert not change.done()
+        release.set()
+        await change
+    (terminal,) = events
+    assert terminal.error is None
+    assert probes and loop_thread not in probes
+    assert len(probes) == 1
+    assert registry.snapshot().workspace(workspace.id).name == "Renamed"
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "closing", "disk-full"])
+async def test_membership_alignment_fails_strictly_without_changing_runtime(
+    workspace_case, tmp_path, monkeypatch, outcome
+):
+    primary, other_primary = make_workdirs(tmp_path, "primary", "other")
+    engine, workspace = await workspace_case.start_selected(primary)
+    registry = workspace_case.registry
+    other = registry.create("Other", str(other_primary))
+    registry.set_session_workspace(engine.session_id, other.id)
+    before = registry.path.read_bytes()
+    installed = engine.current.require_loaded()
+    request = WorkspaceChange(
+        workspace_operation=WorkspaceOperation.ALIGN_MEMBERSHIP,
+        workspace_id=workspace.id,
+        session_id=engine.session_id,
+        report_error=False,
+    )
+    with monkeypatch.context() as patch:
+        if outcome == "disk-full":
+
+            def fail_write(*args, **kwargs):
+                raise OSError("registry disk full")
+
+            patch.setattr(registry_module, "atomic_write_text", fail_write)
+        async with (
+            capture_event_sequence(engine.event_bus, WorkspaceChangeFinished) as events,
+            _hold_registry_lock(registry, monkeypatch) as (attempted, release),
+            asyncio.TaskGroup() as group,
+        ):
+            task = group.create_task(engine.event_bus.publish(request, raise_handler_errors=True))
+            await wait_for(lambda: attempted.done() or task.done(), timeout=ENGINE_TURN_TIMEOUT)
+            assert attempted.done() and not task.done()
+            if outcome == "closing":
+                patch.setattr(engine.session, "shutting_down", True)
+                release.set()
+            elif outcome == "disk-full":
+                release.set()
+            await task
+    (terminal,) = events
+    assert terminal.error is not None
+    assert terminal.workspace_update is None
+    if outcome == "timeout":
+        assert "Timed out acquiring lock" in terminal.error.message
+    elif outcome == "disk-full":
+        assert "registry disk full" in terminal.error.message
+    else:
+        assert "session changed" in terminal.error.message.lower()
+    assert registry.path.read_bytes() == before
+    assert engine.current.require_loaded() is installed
+    assert engine.workspace == workspace
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "cancel", "stale_baseline"])
+async def test_current_workspace_rename_refuses_to_commit_after_waiting_on_the_lock(
+    workspace_case, tmp_path, monkeypatch, engine_services, outcome
+):
+    engine, workspace = await workspace_case.start_selected(tmp_path)
+    registry = workspace_case.registry
+    original = engine.current.require_loaded()
+    before = registry.path.read_bytes()
+    discarded = []
+    capture_async_results(monkeypatch, engine.loader, "discard_candidate", lambda _, build: discarded.append(build))
+    loop = asyncio.get_running_loop()
+    async with (
+        capture_event_sequence(engine.event_bus, WorkspaceChangeFinished) as events,
+        _hold_registry_lock(registry, monkeypatch) as (attempted, release),
+        asyncio.TaskGroup() as group,
+    ):
+        task = group.create_task(engine.event_bus.publish(_rename_workspace(workspace)))
+        await wait_for(lambda: attempted.done() or task.done(), timeout=ENGINE_TURN_TIMEOUT)
+        assert attempted.done() and not task.done()
+        if outcome == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            if outcome == "stale_baseline":
+                engine_services(engine).workspace_change_tracker.invalidate()
+                release.set()
+            await task
+        elapsed = loop.time() - attempted.result()
+
+    (terminal,) = events
+    assert terminal.workspace_update is None
+    assert terminal.error is not None
+    if outcome == "timeout":
+        lock_path = registry.path.with_suffix(".json.lock")
+        assert 0.99 <= elapsed < 1.5
+        assert terminal.error.code == "workspace_selection_failed"
+        assert terminal.error.message == f"Workspace list could not be saved: Timed out acquiring lock {lock_path}"
+    elif outcome == "cancel":
+        assert terminal.error.code == "workspace_change_cancelled"
+    else:
+        assert terminal.error.message == "Workspace changes changed during preparation."
+    (candidate,) = discarded
+    assert candidate.loaded is not original
+    assert engine.current.require_loaded() is original
+    assert registry.path.read_bytes() == before
+
+
+async def test_cancelling_at_registry_publication_keeps_the_renamed_runtime(workspace_case, tmp_path, monkeypatch):
+    engine, workspace = await workspace_case.start_selected(tmp_path)
+    registry = workspace_case.registry
+    original = engine.current.require_loaded()
+    write = registry_module.atomic_write_text
+    published = False
+
+    def cancel_after_write(path, text):
+        nonlocal published
+        write(path, text)
+        if path == registry.path and not published:
+            published = True
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+
+    monkeypatch.setattr(registry_module, "atomic_write_text", cancel_after_write)
+    task = asyncio.create_task(engine.event_bus.publish(_rename_workspace(workspace)))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    saved = registry.snapshot().workspace(workspace.id)
+    assert saved is not None and saved.name == "Renamed"
+    assert engine.session.session_workspace == saved
+    assert engine.current.require_loaded() is not original
+
+
+async def test_cancelling_while_recording_use_does_not_wait_and_still_announces(workspace_case, tmp_path, monkeypatch):
+    primary, target_primary = make_workdirs(tmp_path, "team", "other")
+    engine, _ = await workspace_case.start_selected(primary)
+    target = workspace_case.registry.create("Other", str(target_primary))
+    entered, release = threading.Event(), threading.Event()
+    abandonable = engine_workspaces.run_abandonable
+
+    def held_isdir(path):
+        entered.set()
+        release.wait(ENGINE_TURN_TIMEOUT)
+        return os.path.isdir(path)
+
+    async def hold_use_check(name, fn, *args):
+        if fn is os.path.isdir and args == (str(target_primary),):
+            return await abandonable(name, held_isdir, *args)
+        return await abandonable(name, fn, *args)
+
+    monkeypatch.setattr(engine_workspaces, "run_abandonable", hold_use_check)
+    try:
+        async with capture_event_sequence(engine.event_bus, WorkspaceUpdated) as events:
+            task = asyncio.create_task(engine.event_bus.publish(workspace_selection(target.id)))
+            await wait_for(entered.is_set)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+            assert not release.is_set()
+            assert engine.session.session_workspace == target
+            assert [event.workspace for event in events if isinstance(event, WorkspaceUpdated)][-1] == target
+    finally:
+        release.set()
+
+
+async def test_switch_plans_reference_folders_off_the_event_loop(workspace_case, tmp_path, monkeypatch):
+    primary, target_primary, reference = make_workdirs(tmp_path, "team", "other", "slow-mount")
+    engine, _ = await workspace_case.start_selected(primary)
+    target = workspace_case.registry.create("Other", str(target_primary), [str(reference)])
+    loop_thread = threading.get_ident()
+    entered, release = threading.Event(), threading.Event()
+    on_loop: list[bool] = []
+    resolve = engine_workspaces.resolve_workspace_directory
+
+    def held_resolve(path):
+        if path == str(reference):
+            on_loop.append(threading.get_ident() == loop_thread)
+            entered.set()
+            release.wait(ENGINE_TURN_TIMEOUT)
+        return resolve(path)
+
+    monkeypatch.setattr(engine_workspaces, "resolve_workspace_directory", held_resolve)
+    try:
+        task = asyncio.create_task(engine.event_bus.publish(workspace_selection(target.id)))
+        await wait_for(lambda: entered.is_set() or task.done())
+        assert entered.is_set()
+        # The loop keeps answering while the reference folder does not.
+        await asyncio.wait_for(asyncio.sleep(0.01), 1)
+        assert on_loop == [False]
+        release.set()
+        await asyncio.wait_for(task, ENGINE_TURN_TIMEOUT)
+    finally:
+        release.set()
+    assert engine.session.session_workspace == target
+    assert [directory.path for directory in engine.workspace.working_dirs] == [str(reference)]
+
+
 def _last_user_text(client: MockChatClient) -> str:
     """The newest user message of the newest request, where catalogs ride."""
     messages, _options = client.call_history[-1]
     return [message.text for message in messages if message.role == "user"][-1]
+
+
+@pytest.mark.parametrize("operation", ["rename", "delete"])
+async def test_failed_open_after_edit_reports_that_the_definition_was_saved(
+    workspace_case, tmp_path, monkeypatch, operation
+):
+    engine, workspace = await workspace_case.start_selected(tmp_path)
+    runtime = engine.current.require_loaded()
+    monkeypatch.setattr(
+        engine.loader, "install", create_autospec(engine.loader.install, side_effect=RuntimeError("opening failed"))
+    )
+    request = (
+        WorkspaceChange(workspace_operation=WorkspaceOperation.UNSPECIFY, delete_workspace=workspace)
+        if operation == "delete"
+        else _rename_workspace(workspace)
+    )
+    async with capture_event_sequence(engine.event_bus, Error) as errors:
+        await engine.event_bus.publish(request)
+    (reported,) = errors
+    assert reported.code == "workspace_membership_saved_open_failed"
+    english, chinese = {
+        "rename": (
+            "The definition of workspace “Renamed” was saved, but applying it to this session failed: opening failed",
+            "工作区“Renamed”的定义已保存",
+        ),
+        "delete": (
+            "Workspace “Team” was deleted, but applying it to this session failed: opening failed",
+            "工作区“Team”已删除",
+        ),
+    }[operation]
+    assert reported.message == english
+    assert reported.display_message is not None
+    assert Localizer("zh-Hans").render(reported.display_message).startswith(chinese)
+    saved = workspace_case.registry.snapshot().workspace(workspace.id)
+    assert (saved.name if saved is not None else None) == ("Renamed" if operation == "rename" else None)
+    assert engine.current.require_loaded() is runtime
 
 
 @pytest.mark.parametrize("entry", ["chdir", "restore"])
@@ -387,7 +804,13 @@ async def test_failed_open_reports_that_implicit_departure_was_saved(workspace_c
 @pytest.mark.parametrize("name", ["Team", "Unspecified", 'Unspecified (left workspace "Team")'])
 async def test_a_recorded_workspace_departure_is_not_added_to_the_next_runtime_reminder(workspace_case, tmp_path, name):
     primary, other = make_workdirs(tmp_path, "primary", "other")
-    workspace = workspace_case.registry.create(name, str(primary))
+    registry = workspace_case.registry
+    workspace = registry.create("Team" if name == "Unspecified" else name, str(primary))
+    if name == "Unspecified":
+        # Definitions written before this name was reserved can still be opened and left.
+        data = json.loads(await asyncio.to_thread(registry.path.read_bytes))
+        data["workspaces"][0]["name"] = name
+        await asyncio.to_thread(registry.path.write_text, json.dumps(data), encoding="utf-8")
     client = MockChatClient(
         responses=[
             MockResponse(text="first"),

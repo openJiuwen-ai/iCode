@@ -201,6 +201,7 @@ async def test_workspace_rollback_at_the_commit_boundary(
         await engine.event_bus.publish(command, raise_handler_errors=True)
         assert [error.code for error in errors] == ["workspace_primary_missing"]
         assert str(primary) in errors[0].message
+        assert dict(errors[0].display_message.args)["name"] == "App"
         assert engine.session.turn_number == 2
         assert primary_file.read_bytes() == stored
         assert registry.path.read_bytes() == registry_bytes
@@ -689,3 +690,45 @@ async def test_only_workspace_selection_rejects_a_baseline_changed_at_install(
         "save the session before selecting a workspace",
         "continue in the original chat",
     ]
+
+
+async def test_restore_completes_with_old_recent_use_while_another_writer_holds_lock(
+    workspace_case, tmp_path, monkeypatch
+):
+    from chrys.foundation.util.lock import FileLock
+    from tests.support.async_tasks import running_task
+
+    monkeypatch.setattr(registry_module, "_LOCK_TIMEOUT", 30)
+    store, registry = workspace_case.store, workspace_case.registry
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    workspace = registry.create("Target", str(primary))
+    await save_chat_session(store, "target", primary, profile=PROFILE.name)
+    registry.set_session_workspace("target", workspace.id)
+    engine = await workspace_case(tmp_path)
+    before = registry.snapshot().last_used_at
+    entered, release = threading.Event(), threading.Event()
+
+    def writer():
+        with FileLock(registry._lock_path, timeout=0):
+            entered.set()
+            if not release.wait(ENGINE_TURN_TIMEOUT + 5):
+                raise TimeoutError("registry writer was not released")
+
+    async with running_task(asyncio.to_thread(writer)) as holder:
+        try:
+            await wait_for(lambda: entered.is_set() or holder.done())
+            if holder.done():
+                await holder
+            assert entered.is_set()
+            async with running_task(
+                engine.event_bus.publish(SessionRestore(session_id="target"), raise_handler_errors=True)
+            ) as restore:
+                await wait_for(restore.done, timeout=ENGINE_TURN_TIMEOUT)
+                await restore
+                assert engine.session_id == "target" and engine.session.workspace_id == workspace.id
+                assert not release.is_set() and not holder.done()
+                assert registry.snapshot().last_used_at == before
+        finally:
+            release.set()
+        await holder

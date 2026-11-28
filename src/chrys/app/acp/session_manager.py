@@ -11,9 +11,10 @@ import os
 import tempfile
 import threading
 import uuid
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Final, TypeGuard, TypeVar, cast
 
@@ -22,6 +23,26 @@ from acp import schema as acp_schema
 from chrys.app.acp.hook_confirmations import AcpSessionHookConfirmations
 from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.features.session_title.updater import SessionTitleUpdater
+from chrys.app.workspace_commands import (
+    ACP_ALREADY_IN_WORKSPACE,
+    ACP_CREATED_AND_MOVED,
+    ACP_CURRENT_LIST_ENTRY,
+    ACP_CURRENT_UNSPECIFIED,
+    ACP_LIST_ENTRY,
+    ACP_LIST_FOOTER,
+    ACP_MOVED,
+    ACP_MOVED_TO_UNSPECIFIED,
+    ACP_MOVED_WITH_HISTORY,
+    ACP_OPEN_PRIMARY_IN_EDITOR,
+    ADD_REFERENCE_FOLDERS_HINT,
+    WORKSPACE_CREATED,
+    WORKSPACE_UPDATE_FAILED,
+    WorkspaceCommand,
+    WorkspaceCommandReply,
+    find_workspace_by_name,
+    manage_workspace,
+    workspace_change,
+)
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.context import EvalContext
 from chrys.foundation.config.process_settings import reattribute_command_line, route_restart_settings
@@ -58,18 +79,22 @@ from chrys.foundation.events.types import (
     Warning,
     WorkspaceChange,
     WorkspaceChangeFinished,
+    WorkspaceOperation,
     WorkspaceUpdated,
 )
+from chrys.foundation.i18n import DisplayPath
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.i18n.messages import MessageRef
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import (
     WorkingDir,
     Workspace,
+    WorkspaceConfirmation,
     same_directory,
 )
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.text.yaml_io import dump_yaml
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.foundation.util.once_close import finish_close
 from chrys.foundation.util.session_ids import SESSION_SHORT_ID_LEN, session_short_id
 from chrys.orchestration.engine.workspaces import registry_unreadable_warning
@@ -98,8 +123,14 @@ from chrys.service.state.store import (
 )
 from chrys.service.tools.names import chrys_reserved_tool_names
 from chrys.service.trajectory.state import TurnRecord
-from chrys.service.workspaces.paths import resolve_workspace_directory
-from chrys.service.workspaces.registry import RegistrySnapshot
+from chrys.service.workspaces.paths import NAMED_PRIMARY_MISSING, MissingWorkspacePrimary, resolve_workspace_directory
+from chrys.service.workspaces.registry import (
+    UNSPECIFIED,
+    RegistrySnapshot,
+    WorkspaceRegistry,
+    WorkspaceRegistryError,
+    is_unspecified_workspace_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +171,12 @@ class AcpSessionError(RuntimeError):
     """Raised when an ACP session request cannot be fulfilled."""
 
 
+class _WorkspaceChangeError(AcpSessionError):
+    def __init__(self, error: Error) -> None:
+        super().__init__(error.message or error.code or "Workspace update failed.")
+        self.error = error
+
+
 FULL_RELOAD_BUDGET_SECONDS: Final = 300.0
 """How long a full reload may take, starting before the wait for the session's mutation lock."""
 
@@ -175,6 +212,8 @@ class ManagedSession:
     # Counts every cancel requested for the session: a prompt reads it before
     # its turn starts, since the host drops a cancel sent before then.
     cancels_requested: int = 0
+    # Set by Stop while a workspace switch runs; the switch is abandoned unless it already writes or installs.
+    switch_stop: asyncio.Event | None = None
     closing: bool = False
     # The messages each answer segment of the last turn went out as, live
     # (``AcpEventBridge.answer_message_ids``) or replayed: a bare retry that
@@ -793,15 +832,21 @@ class AcpSessionManager:
             warnings: Same contract as :meth:`new_session`; empty when an
                 already-active session is reused, because nothing was loaded.
         """
-        async with self._lock:
+        async with contextlib.AsyncExitStack() as locks:
+            await locks.enter_async_context(self._lock)
             self.load_registries()
             resolved_cwd = self._resolve_requested_cwd(cwd)
             mcp_overlay = _mcp_overlay(mcp_servers)
             existing = self._resolve_active_session(session_id)
             if existing is not None:
+                if additional_directories is not None and not mcp_overlay:
+                    # Rebuilds hold the session lock. Release the manager lock before waiting.
+                    await locks.aclose()
+                    await locks.enter_async_context(existing.mutation_lock)
+                    if self._resolve_active_session(session_id) is not existing:
+                        msg = f"ACP session is no longer active: {session_id}"
+                        raise AcpSessionError(msg)
                 installed = self._validate_active_cwd(existing, resolved_cwd)
-                # Overlays (MCP servers / extra directories) cannot be applied to a
-                # running host, so reject rather than silently dropping them.
                 if mcp_overlay:
                     msg = (
                         f"Session '{session_short_id(existing.session_id)}' is already active. "
@@ -827,27 +872,13 @@ class AcpSessionManager:
             canonical_id, meta = await self._resolve_session_meta(session_id)
             snapshot = store_workspace_snapshot(self._state_store)
             try:
-                registered = self._validate_saved_cwd(meta, resolved_cwd, snapshot=snapshot)
-                if registered is not None:
-                    if additional_directories is not None:
-                        override = _workspace_from_dirs(resolved_cwd, additional_directories)
-                        # The cold load's explicit roots apply to this runtime. The registry keeps its definition.
-                        effective = replace(
-                            registered, working_dirs=[d for d in override.working_dirs if not d.is_primary]
-                        )
-                        snapshot = replace(
-                            snapshot,
-                            workspaces=tuple(
-                                effective if item.id == effective.id else item for item in snapshot.workspaces
-                            ),
-                        )
-                    additional_directories = None
-                session_loaded = await asyncio.to_thread(self._session_loaded_settings, resolved_cwd)
+                self._validate_saved_cwd(meta, resolved_cwd, snapshot=snapshot)
                 workspace = (
                     _workspace_from_dirs(resolved_cwd, additional_directories)
                     if additional_directories is not None
                     else None
                 )
+                session_loaded = await asyncio.to_thread(self._session_loaded_settings, resolved_cwd)
             except Exception:
                 if warnings is not None and snapshot.error is not None:
                     warnings.append(registry_unreadable_warning(canonical_id, snapshot.error))
@@ -901,11 +932,12 @@ class AcpSessionManager:
     ) -> tuple[list[acp_schema.SessionInfo], str | None]:
         """List saved sessions scoped to this ACP workspace.
 
-        ``additional_directories`` is an exact, ordered additional-root filter (ACP
-        workspace identity). When supplied with at least one root, a session matches
-        only if its saved extra roots equal the request exactly; when omitted or
-        empty, all sessions for ``cwd`` are returned (their roots are reported back
-        via ``additionalDirectories``).
+        ``additional_directories`` is an exact, ordered additional-root filter for
+        Unspecified sessions: when supplied with at least one root, such a session
+        matches only if its saved extra roots equal the request exactly. Workspace
+        sessions skip this filter because their roots come from the workspace
+        definition. When omitted or empty, all sessions for ``cwd`` are returned
+        (their roots are reported back via ``additionalDirectories``).
         """
         if cwd is None and self._process_cwd is None:
             return [], None
@@ -1001,6 +1033,9 @@ class AcpSessionManager:
             msg = f"ACP session is not active: {session_id}"
             raise AcpSessionError(msg)
         session.cancels_requested += 1
+        if session.switch_stop is not None:
+            # A switch still reading has changed nothing: stop it now, not when a slow folder answers.
+            session.switch_stop.set()
         await session.host.cancel_current_turn()
 
     async def inject(self, session_id: str, text: str) -> None:
@@ -1427,21 +1462,29 @@ class AcpSessionManager:
         session = self.get(session_id)
         # Validate strictly (must exist, be a dir, resolve absolutely) like new/load.
         resolved_cwd = _resolve_dir(primary_cwd)
+        command = WorkspaceChange(
+            primary_cwd=resolved_cwd, session_id=session.session_id, require_leave_confirmation=False
+        )
         async with self._mutating_session(session):
-            command = WorkspaceChange(
-                primary_cwd=resolved_cwd, session_id=session.session_id, require_leave_confirmation=False
-            )
-            if _installed_workspace(session) is not None:
-                return await self._set_workspace_locked(session, command, warnings)
-            result = await self._await_runtime_mutation_locked(
-                session,
-                command,
-                WorkspaceUpdated,
-                timeout_message=f"Timed out waiting for workspace update: {resolved_cwd}",
-                failure_message="Workspace update failed.",
-            )
-            session.cwd = result.primary_cwd or resolved_cwd
-            return result
+            try:
+                if _installed_workspace(session) is not None:
+                    return await self._set_workspace_locked(session, command, warnings)
+                return await self._await_runtime_mutation_locked(
+                    session,
+                    command,
+                    WorkspaceUpdated,
+                    timeout_message=f"Timed out waiting for workspace update: {resolved_cwd}",
+                    failure_message="Workspace update failed.",
+                )
+            finally:
+                self._sync_workspace_cwd(session)
+
+    @staticmethod
+    def _sync_workspace_cwd(session: ManagedSession) -> None:
+        """Read the committed cwd, including when post-install work was cancelled."""
+        workspace = session.host.engine.workspace
+        if workspace is not None:
+            session.cwd = workspace.primary_cwd
 
     async def _set_workspace_locked(
         self, session: ManagedSession, command: WorkspaceChange, warnings: list[Warning] | None
@@ -1465,15 +1508,120 @@ class AcpSessionManager:
         finally:
             await bus.unsubscribe(Warning, receive)
             await bus.unsubscribe(WorkspaceChangeFinished, receive)
-            # Cancellation during post-install cleanup can leave a committed cwd.
-            if (workspace := session.host.engine.workspace) is not None:
-                session.cwd = workspace.primary_cwd
         if isinstance(terminal, Error):
-            raise AcpSessionError(terminal.message or terminal.code or "Workspace update failed.")
+            raise _WorkspaceChangeError(terminal)
         if terminal is None:
             logger.debug("No WorkspaceChangeFinished for request %s", command.event_id)
             raise AcpSessionError("Workspace update failed.")
         return terminal
+
+    @contextlib.asynccontextmanager
+    async def workspace_command_session(self, session: ManagedSession) -> AsyncGenerator[None]:
+        # Runtime mutations may have to acquire prompt_lock to retire the host.
+        async with self._mutating_session(session), session.prompt_lock:
+            if self.get(session.session_id) is not session:
+                raise AcpSessionError(f"ACP session is not active: {session.session_id}")
+            yield
+
+    async def run_workspace_command_locked(
+        self, session: ManagedSession, command: WorkspaceCommand, *, warnings: list[Warning], cancels: int
+    ) -> tuple[WorkspaceCommandReply, WorkspaceUpdated | None] | None:
+        """Apply a workspace command under the session's runtime mutation lock.
+
+        Returns ``None`` if cancelled before dispatch, or if Stop came while a switch had changed nothing.
+        """
+        stop = asyncio.Event() if command.action == "switch" else None
+        session.switch_stop = stop
+        try:
+            return await self._run_workspace_command(session, command, warnings=warnings, cancels=cancels, stop=stop)
+        finally:
+            if session.switch_stop is stop:
+                session.switch_stop = None
+
+    async def _run_workspace_command(
+        self,
+        session: ManagedSession,
+        command: WorkspaceCommand,
+        *,
+        warnings: list[Warning],
+        cancels: int,
+        stop: asyncio.Event | None,
+    ) -> tuple[WorkspaceCommandReply, WorkspaceUpdated | None] | None:
+        if session.cancels_requested != cancels:
+            return None
+        registry = self._state_store.workspace_registry
+        if registry is None:
+            return WorkspaceCommandReply((WORKSPACE_UPDATE_FAILED.bind(),), error=True), None
+        current = _installed_workspace(session)
+        if stop is not None:
+            if not command.argument:
+                listed = await _unless_stopped(
+                    stop, run_abandonable("icode-workspace-registry", list_workspaces, registry, current), abandon=True
+                )
+                return None if listed is None else (listed, None)
+            reply = await _unless_stopped(
+                stop,
+                run_abandonable(
+                    "icode-workspace-command",
+                    select_workspace_for_acp,
+                    registry,
+                    command.argument,
+                    current=current,
+                    cwd=session.cwd,
+                    session_id=session.session_id,
+                    has_messages=bool(session.host.engine.history_messages),
+                ),
+                abandon=True,
+            )
+            if reply is None or session.cancels_requested != cancels:
+                return None
+        else:
+            prepare = partial(
+                manage_workspace,
+                registry,
+                command,
+                current=current,
+                cwd=session.cwd,
+                session_id=session.session_id,
+            )
+            # Only `new` writes here and runs through to its reply; the other actions read and build a request.
+            if command.action == "new":
+                reply = await asyncio.to_thread(prepare)
+            else:
+                reply = await run_abandonable("icode-workspace-command", prepare)
+        if reply.created is not None:
+            reply = replace(reply, messages=(ACP_CREATED_AND_MOVED.bind(name=reply.created.name),))
+        if reply.change is None:
+            return reply, None
+        # Abandon the change if the session closed while the registry was being read.
+        self.get(session.session_id)
+        try:
+            if stop is None:
+                updated = await self._set_workspace_locked(session, reply.change, warnings)
+            else:
+                # The engine decides: it abandons the switch on Stop only before the switch writes or installs.
+                change = replace(reply.change, stop=stop)
+                stopped_or_updated = await _unless_stopped(
+                    stop, self._set_workspace_locked(session, change, warnings), abandon=False
+                )
+                if stopped_or_updated is None:
+                    return None
+                updated = stopped_or_updated
+        except _WorkspaceChangeError as error:
+            display = error.error.display_message or WORKSPACE_UPDATE_FAILED.bind()
+            # The workspace was saved before entering it failed: report both, as the TUI does.
+            saved = (WORKSPACE_CREATED.bind(name=reply.created.name),) if reply.created is not None else ()
+            return WorkspaceCommandReply((*saved, display), error=True), None
+        finally:
+            self._sync_workspace_cwd(session)
+        if (
+            reply.created is not None
+            and updated is not None
+            and updated.workspace is not None
+            and updated.workspace.id == reply.created.id
+        ):
+            reply = replace(reply, messages=(*reply.messages, ADD_REFERENCE_FOLDERS_HINT.bind()))
+        return reply, updated
 
     async def begin_close(self, session_id: str) -> None:
         """Stop prompt admission for a session about to be closed.
@@ -1647,6 +1795,8 @@ class AcpSessionManager:
             raise AcpSessionError(msg)
         resolved = resolve_workspace_directory(saved_cwd) if workspace is not None else saved_cwd
         if resolved is None or not os.path.isdir(resolved):
+            if workspace is not None:
+                raise AcpSessionError(str(MissingWorkspacePrimary(saved_cwd, workspace_name=workspace.name)))
             msg = (
                 f"working directory of session '{session_short_id(meta.session_id)}' no longer exists: "
                 f"{surrogate_safe_text(saved_cwd)}"
@@ -1973,6 +2123,96 @@ def _extra_dirs_match(requested: list[str], roots: list[str]) -> bool:
     return len(requested) == len(roots) and all(
         _same_dir(req, have) for req, have in zip(requested, roots, strict=True)
     )
+
+
+def list_workspaces(registry: WorkspaceRegistry, current: Workspace | None) -> WorkspaceCommandReply:
+    snapshot = registry.snapshot()
+    if snapshot.error is not None:
+        return WorkspaceCommandReply((snapshot.error.display_message,), error=True)
+    rows = [
+        (ACP_CURRENT_LIST_ENTRY if current is not None and current.id == item.id else ACP_LIST_ENTRY).bind(
+            name=item.name, path=DisplayPath(item.primary_cwd)
+        )
+        for item in snapshot.workspaces
+    ]
+    rows.append((ACP_CURRENT_UNSPECIFIED if current is None else UNSPECIFIED).bind())
+    return WorkspaceCommandReply((*rows, ACP_LIST_FOOTER.bind()), list_count=len(rows))
+
+
+def select_workspace_for_acp(
+    registry: WorkspaceRegistry,
+    name: str,
+    *,
+    current: Workspace | None,
+    cwd: str,
+    session_id: str,
+    has_messages: bool,
+) -> WorkspaceCommandReply:
+    """Switch the workspace in the editor's existing working directory."""
+    snapshot = registry.snapshot()
+    if snapshot.error is not None:
+        return WorkspaceCommandReply((snapshot.error.display_message,), error=True)
+    saved_id = snapshot.workspace_id_for_session(session_id)
+    if is_unspecified_workspace_name(name):
+        change = (
+            workspace_change(None, session_id)
+            if current is not None
+            else WorkspaceChange(workspace_operation=WorkspaceOperation.ALIGN_MEMBERSHIP, session_id=session_id)
+            if saved_id is not None
+            else None
+        )
+        return WorkspaceCommandReply((ACP_MOVED_TO_UNSPECIFIED.bind(),), change)
+    try:
+        target = find_workspace_by_name(snapshot, name)
+    except WorkspaceRegistryError as error:
+        return WorkspaceCommandReply((error.display_message,), error=True)
+    if current is not None and current.id == target.id:
+        change = (
+            WorkspaceChange(
+                workspace_operation=WorkspaceOperation.ALIGN_MEMBERSHIP, workspace_id=current.id, session_id=session_id
+            )
+            if saved_id != target.id
+            else None
+        )
+        return WorkspaceCommandReply((ACP_ALREADY_IN_WORKSPACE.bind(name=target.name),), change)
+    if (missing := target.missing_primary()) is not None:
+        return WorkspaceCommandReply(
+            (NAMED_PRIMARY_MISSING.bind(name=target.name, path=DisplayPath(missing)),), error=True
+        )
+    if not same_directory(cwd, target.primary_cwd):
+        return WorkspaceCommandReply(
+            (ACP_OPEN_PRIMARY_IN_EDITOR.bind(name=target.name, path=DisplayPath(target.primary_cwd)),)
+        )
+    message = ACP_MOVED_WITH_HISTORY if has_messages else ACP_MOVED
+    confirmation = WorkspaceConfirmation.capture(current.id if current is not None else None, cwd)
+    return WorkspaceCommandReply(
+        (message.bind(name=target.name),),
+        workspace_change(target.id, session_id, confirmation=confirmation),
+    )
+
+
+async def _unless_stopped[T](stop: asyncio.Event, work: Coroutine[Any, Any, T], *, abandon: bool) -> T | None:
+    """Run a step of a workspace switch; ``None`` when Stop ended it.
+
+    With *abandon*, Stop cancels the step here; otherwise the step itself decides
+    (the engine cancels it on Stop only while the switch has changed nothing).
+    """
+    task = asyncio.ensure_future(work)
+    stopped = asyncio.ensure_future(stop.wait()) if abandon else None
+    try:
+        await asyncio.wait([step for step in (task, stopped) if step is not None], return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        if stopped is not None:
+            stopped.cancel()
+        # Cancelling this command, or Stop with *abandon*, ends the step with it.
+        if not task.done():
+            task.cancel()
+    # A read and Stop ready in the same turn: Stop wins, as it would a moment later.
+    if abandon and stop.is_set():
+        if task.done() and not task.cancelled():
+            task.exception()  # Retrieved, so a failed read Stop discards is not reported as unhandled.
+        return None
+    return None if not task.done() or task.cancelled() else task.result()
 
 
 def _installed_workspace(session: ManagedSession) -> Workspace | None:

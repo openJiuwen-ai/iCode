@@ -167,7 +167,7 @@ async def test_startup_enter_spam_does_not_send_or_show_input_loading(tmp_path) 
             self.release = asyncio.Event()
             self.ready = asyncio.Event()
 
-        async def start(self, _profile: AgentProfile) -> None:
+        async def start(self, _profile: AgentProfile, *, workspace_id: str | None = None) -> None:
             await self._bus.publish(
                 AgentLoadStarted(operation="startup", to_profile=profile.name, to_display_name=profile.display_name)
             )
@@ -399,7 +399,11 @@ async def test_shell_mode_transitions_never_paint_half_applied_layout(tmp_path: 
                 description="leaving shell mode completes its refresh",
             )
             assert app.screen.shell_mode_state is False
-            assert app.screen.query_one(StatusBar).query_one(".status-selectors").display is False
+            # Nothing was committed to this screen's chrome, so leaving shell
+            # mode restores the same hidden selectors it entered with.
+            status = app.screen.query_one(StatusBar)
+            assert status.query_one(".status-selectors").display is False
+            assert status.query_one("#workspace-tag").display is False
         finally:
             del app._display
 

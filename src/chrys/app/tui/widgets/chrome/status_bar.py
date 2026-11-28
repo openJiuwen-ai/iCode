@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""StatusBar — profile/model selectors and agent activity above the InputBar.
+"""StatusBar with workspace, agent, and model selectors and agent activity above the InputBar.
 
-Layout: Agent [profile] Model [model] [LoadingIndicator] [status text] [run trail] ... [tool info]
-Flash:  Agent [profile] Model [model] [message text] ... [tool counts]
+Layout: Workspace [workspace] Agent [profile] Model [model] [LoadingIndicator] [status text] [run trail] ... [tool info]
+Flash:  Workspace [workspace] Agent [profile] Model [model] [message text] ... [tool counts]
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState
+    from chrys.app.tui.workspace_text import WorkspaceIndicatorState
 
 
 type StatusMessage = MessageRef | str
@@ -135,6 +136,8 @@ STATUS_AGENT_STARTUP_FAILED = msg(
 )
 
 _MIN_WIDE_STATUS_BODY_CELLS = 40
+# The narrow tier keeps this many cells for the status text; with fewer, the selector label words hide.
+_MIN_NARROW_STATUS_BODY_CELLS = 20
 _SELECTOR_GROUP_HORIZONTAL_PADDING_CELLS = 2
 _SELECTOR_LABEL_HORIZONTAL_PADDING_CELLS = 2
 _SELECTOR_TAG_HORIZONTAL_PADDING_CELLS = 2
@@ -160,6 +163,10 @@ class _FlashState:
 
 class _StatusBarChromeLabel(NonSelectableStatic):
     """Status chrome excluded from terminal drag selection and copy."""
+
+    def update_label(self, text: Text) -> None:
+        if self.content != text:
+            self.update(text)
 
 
 class _TrailInfo(Static):
@@ -188,7 +195,10 @@ class _TrailInfo(Static):
 
 
 class StatusBar(Widget):
-    """Single-line profile/model controls followed by status and trail info."""
+    """Single-line workspace, agent, and model controls followed by status and trail info."""
+
+    class WorkspaceTagClicked(Message):
+        """Posted when the workspace tag is clicked."""
 
     class ProfileTagClicked(Message):
         """Posted when the profile tag is clicked."""
@@ -203,7 +213,7 @@ class StatusBar(Widget):
     class SelectorBusy(Message):
         """Posted when a selector is clicked while a run keeps it read-only."""
 
-        def __init__(self, selector: Literal["profile", "model"]) -> None:
+        def __init__(self, selector: Literal["workspace", "profile", "model"]) -> None:
             self.selector = selector
             super().__init__()
 
@@ -276,6 +286,10 @@ class StatusBar(Widget):
     StatusBar.-compact > .status-selectors > .model-tag {
         margin-left: 1;
     }
+    StatusBar.-with-workspace > .status-selectors > .agent-selector-label,
+    StatusBar.-with-workspace.-compact > .status-selectors > #profile-tag {
+        margin-left: 1;
+    }
     StatusBar > .status-body {
         width: 1fr;
         height: 1;
@@ -335,8 +349,8 @@ class StatusBar(Widget):
         text-overflow: ellipsis;
         text-wrap: nowrap;
     }
-    StatusBar.-compact > .status-body > .status-run > .status-tool-info,
-    StatusBar.-compact > .status-body > .status-flash-bar > .status-flash-trail {
+    StatusBar.-narrow > .status-body > .status-run > .status-tool-info,
+    StatusBar.-narrow > .status-body > .status-flash-bar > .status-flash-trail {
         display: none;
     }
     StatusBar.-warn > .status-body > .status-flash-bar > .status-flash {
@@ -374,6 +388,7 @@ class StatusBar(Widget):
         self._pending_status_timer: Timer | None = None
         self._tool_trail: StatusTrail = ""
         self._last_formatted_elapsed_seconds: int | None = None
+        self._workspace_indicator: WorkspaceIndicatorState | None = None
         self._current_profile: str = ""
         self._current_profile_description: str = ""
         self._current_model: str = ""
@@ -386,6 +401,8 @@ class StatusBar(Widget):
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="status-selectors"):
+            yield _StatusBarChromeLabel("", id="workspace-label", classes="selector-label")
+            yield _StatusBarChromeLabel("", id="workspace-tag", classes="profile-tag workspace-tag")
             yield _StatusBarChromeLabel("", id="agent-label", classes="selector-label agent-selector-label")
             yield _StatusBarChromeLabel("", id="profile-tag", classes="profile-tag")
             yield _StatusBarChromeLabel("", id="model-label", classes="selector-label model-selector-label")
@@ -406,6 +423,8 @@ class StatusBar(Widget):
         self._timer = self.set_interval(1.0, self._tick)
         self._sync_selector_visibility()
         self._refresh_tags()
+        if self._workspace_indicator is not None:
+            self.query_one("#workspace-tag", Static).tooltip = self._workspace_indicator.tooltip
         self._sync_visibility(self.visible)
         self.refresh_localization()
 
@@ -435,6 +454,21 @@ class StatusBar(Widget):
             self._refresh_tags()
             self._sync_selector_visibility()
             self._show_selectors_only_if_hidden()
+
+    def set_workspace(self, state: WorkspaceIndicatorState) -> None:
+        """Update the workspace selector label and tooltip."""
+        previous, self._workspace_indicator = self._workspace_indicator, state
+        if not self.is_mounted:
+            return
+        if previous is None or not state.tooltip.is_same(previous.tooltip):
+            self.query_one("#workspace-tag", Static).tooltip = state.tooltip
+        if previous == state:
+            return
+        self._refresh_tags()
+        self._sync_selector_visibility()
+        self._show_selectors_only_if_hidden()
+        if previous is None and self._tool_trail and self._flash is None:
+            self._refresh_trail()
 
     def set_model(self, state: ModelIndicatorState) -> None:
         """Update the model selector label, tooltip and interaction state."""
@@ -475,25 +509,35 @@ class StatusBar(Widget):
             return Text(description)
         return Text(f"{label}\n{description}")
 
-    def _tag_cell_limits(self, available_columns: int) -> tuple[int, int]:
+    def _tag_cell_limits(self, available_columns: int) -> tuple[int, int, bool]:
+        """Return the name limits and whether the labels fit, keeping main's name tiers."""
         if available_columns < _COMPACT_LAYOUT_MIN_COLUMNS:
-            return _COMPACT_PROFILE_TAG_CELLS, _COMPACT_MODEL_TAG_CELLS
+            return _COMPACT_PROFILE_TAG_CELLS, _COMPACT_MODEL_TAG_CELLS, False
         wide_selector_cells = self._selector_cells_for_limits(
             _WIDE_PROFILE_TAG_CELLS,
             _WIDE_MODEL_TAG_CELLS,
         )
-        wide = (
+        if (
             available_columns >= _WIDE_TAG_LAYOUT_MIN_COLUMNS
             and available_columns - wide_selector_cells >= _MIN_WIDE_STATUS_BODY_CELLS
-        )
-        if wide:
-            return _WIDE_PROFILE_TAG_CELLS, _WIDE_MODEL_TAG_CELLS
-        return _NARROW_PROFILE_TAG_CELLS, _NARROW_MODEL_TAG_CELLS
+        ):
+            return _WIDE_PROFILE_TAG_CELLS, _WIDE_MODEL_TAG_CELLS, True
+        narrow_selector_cells = self._selector_cells_for_limits(_NARROW_PROFILE_TAG_CELLS, _NARROW_MODEL_TAG_CELLS)
+        labels = available_columns - narrow_selector_cells >= _MIN_NARROW_STATUS_BODY_CELLS
+        return _NARROW_PROFILE_TAG_CELLS, _NARROW_MODEL_TAG_CELLS, labels
 
     def _selector_cells_for_limits(self, profile_limit: int, model_limit: int) -> int:
         """Project selector width while reserving room for status content."""
         cells = _SELECTOR_GROUP_HORIZONTAL_PADDING_CELLS
+        workspace_indicator = self._workspace_indicator
+        if workspace_indicator is not None:
+            cells += cell_len(workspace_indicator.selector_label)
+            cells += _SELECTOR_LABEL_HORIZONTAL_PADDING_CELLS
+            cells += min(cell_len(workspace_indicator.label), profile_limit)
+            cells += _SELECTOR_TAG_HORIZONTAL_PADDING_CELLS
         if self._current_profile:
+            if workspace_indicator is not None:
+                cells += _MODEL_SELECTOR_LEFT_MARGIN_CELLS
             cells += cell_len(self._render_message(STATUS_AGENT_SELECTOR_LABEL.bind()))
             cells += _SELECTOR_LABEL_HORIZONTAL_PADDING_CELLS
             cells += min(cell_len(self._current_profile), profile_limit)
@@ -507,34 +551,53 @@ class StatusBar(Widget):
         return cells
 
     def _refresh_tags(self) -> None:
-        """Render both selectors from their original text at the current width."""
+        """Render the workspace, agent, and model selectors at the current width."""
         available_columns = self.size.width or self.app.size.width
-        compact = available_columns < _COMPACT_LAYOUT_MIN_COLUMNS
-        self.set_class(compact, "-compact")
-        profile_limit, model_limit = self._tag_cell_limits(available_columns)
+        profile_limit, model_limit, labels = self._tag_cell_limits(available_columns)
+        compact = not labels
+        workspace_indicator = self._workspace_indicator
+        workspace_visible = workspace_indicator is not None
+        # Short tags drop the labels; only a terminal below the compact width also drops the details.
+        self.update_classes(
+            {
+                "-compact": compact,
+                "-narrow": available_columns < _COMPACT_LAYOUT_MIN_COLUMNS,
+                "-with-workspace": workspace_visible,
+            }
+        )
+        workspace_label = self.query_one("#workspace-label", _StatusBarChromeLabel)
+        workspace_label.display = workspace_visible and not compact
+        workspace_label.update_label(
+            Text(workspace_indicator.selector_label if workspace_indicator is not None else "")
+        )
+        workspace_tag = self.query_one("#workspace-tag", _StatusBarChromeLabel)
+        workspace_tag.display = workspace_visible
+        workspace_tag.update_label(
+            self._truncate_tag(workspace_indicator.label if workspace_indicator is not None else "", profile_limit)
+        )
         profile_visible = bool(self._current_profile)
-        agent_label = self.query_one("#agent-label", Static)
+        agent_label = self.query_one("#agent-label", _StatusBarChromeLabel)
         agent_label.display = profile_visible and not compact
-        agent_label.update(Text(self._render_message(STATUS_AGENT_SELECTOR_LABEL.bind())))
+        agent_label.update_label(Text(self._render_message(STATUS_AGENT_SELECTOR_LABEL.bind())))
 
-        profile_tag = self.query_one("#profile-tag", Static)
+        profile_tag = self.query_one("#profile-tag", _StatusBarChromeLabel)
         profile_tag.display = profile_visible
-        profile_tag.update(self._truncate_tag(self._current_profile, profile_limit))
+        profile_tag.update_label(self._truncate_tag(self._current_profile, profile_limit))
         profile_tag.tooltip = self._full_tag_tooltip(self._current_profile, self._current_profile_description)
 
-        model_label = self.query_one("#model-label", Static)
+        model_label = self.query_one("#model-label", _StatusBarChromeLabel)
         model_label.display = self._current_model_visible and not compact
-        model_label.update(Text(self._render_message(STATUS_MODEL_SELECTOR_LABEL.bind())))
+        model_label.update_label(Text(self._render_message(STATUS_MODEL_SELECTOR_LABEL.bind())))
 
-        model_tag = self.query_one("#model-tag", Static)
+        model_tag = self.query_one("#model-tag", _StatusBarChromeLabel)
         model_tag.display = self._current_model_visible
-        model_tag.update(self._truncate_tag(self._current_model, model_limit))
+        model_tag.update_label(self._truncate_tag(self._current_model, model_limit))
         model_tag.tooltip = self._full_tag_tooltip(self._current_model, self._current_model_tooltip)
         self._refresh_tag_interaction_state()
 
     def _show_selectors_only_if_hidden(self) -> None:
         """Expose configured selectors without inventing an idle status message."""
-        if self.visible or self.shell_mode or not (self._current_profile or self._current_model_visible):
+        if self.visible or self.shell_mode or not self._has_selectors():
             return
         set_widgets_visibility_without_layout(
             [
@@ -545,6 +608,9 @@ class StatusBar(Widget):
         )
         self._refresh_tag_interaction_state()
 
+    def _has_selectors(self) -> bool:
+        return self._workspace_indicator is not None or bool(self._current_profile) or self._current_model_visible
+
     def _tags_busy(self) -> bool:
         """Return whether a run, from loading through its queued input, holds the selectors."""
         return self._execution_busy or self.agent_running or self.agent_loading or self.input_locked
@@ -554,10 +620,12 @@ class StatusBar(Widget):
         return not self._tags_busy() and not self.shell_mode
 
     def _refresh_tag_interaction_state(self) -> None:
-        """Keep both selector pointers and locked styling in sync with guards."""
+        """Keep the selector pointers and locked styling in sync with guards."""
         if not self.is_mounted or not self.visible:
             return
         interactive = self._tags_interactive()
+        workspace_tag = self.query_one("#workspace-tag", Static)
+        workspace_tag.styles.pointer = "pointer" if workspace_tag.display and interactive else "default"
         profile_tag = self.query_one("#profile-tag", Static)
         profile_clickable = bool(self._current_profile) and profile_tag.display and interactive
         profile_tag.styles.pointer = "pointer" if profile_clickable else "default"
@@ -586,7 +654,7 @@ class StatusBar(Widget):
         if not self.is_attached:
             return
         selectors = self.query_one(".status-selectors")
-        display = not self.shell_mode and bool(self._current_profile or self._current_model_visible)
+        display = not self.shell_mode and self._has_selectors()
         if selectors.display != display:
             selectors.display = display
 
@@ -604,9 +672,7 @@ class StatusBar(Widget):
         self._tool_trail = trail
         if self.is_mounted:
             if self._idle_shown:
-                idle_shown = not self.shell_mode and bool(
-                    self._current_profile or self._current_model_visible or self._tool_trail
-                )
+                idle_shown = not self.shell_mode and (self._has_selectors() or bool(self._tool_trail))
                 set_widgets_visibility_without_layout(
                     [
                         (self, idle_shown),
@@ -744,9 +810,7 @@ class StatusBar(Widget):
         self._content_shown = False
         self._idle_shown = True
         self._refresh_trail()
-        idle_shown = not self.shell_mode and bool(
-            self._current_profile or self._current_model_visible or self._tool_trail
-        )
+        idle_shown = not self.shell_mode and (self._has_selectors() or bool(self._tool_trail))
         set_widgets_visibility_without_layout(
             [
                 (self, idle_shown),
@@ -1009,7 +1073,20 @@ class StatusBar(Widget):
         return Text(self._render_message(STATUS_DETAILS_TOOLTIP.bind()))
 
     def on_click(self, event: Click) -> None:
-        """Handle profile/model selectors and the right-side runtime details."""
+        """Handle workspace/profile/model selectors and the right-side runtime details."""
+        workspace_tag = self.query_one("#workspace-tag", Static)
+        if (
+            not self.shell_mode
+            and workspace_tag.display
+            and workspace_tag.region.contains(event.screen_x, event.screen_y)
+        ):
+            event.prevent_default()
+            event.stop()
+            if self._tags_interactive():
+                self.post_message(self.WorkspaceTagClicked())
+            elif self._tags_busy():
+                self.post_message(self.SelectorBusy("workspace"))
+            return
         profile_tag = self.query_one("#profile-tag", Static)
         if profile_tag.display and profile_tag.region.contains(event.screen_x, event.screen_y):
             event.prevent_default()

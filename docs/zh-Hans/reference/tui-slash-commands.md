@@ -13,11 +13,19 @@
 
 输入 `/` 后，输入栏上方会显示命令建议列表。继续输入字符可以筛选命令；按 **Tab** 可以补全当前选中的命令。如果命令不显示参数建议列表，补全后可直接按 **Enter** 执行；命令接受参数时，也可以继续输入参数，再按 **Enter** 执行。
 
-以下命令会显示参数建议列表：`/theme`、`/language`、`/approval`、`/buddy`、`/agents`、`/settings` 和 `/man`。按 **Tab** 补全这些命令时，或输入完整命令后按空格键或 **Enter**，都会打开列表。
+以下命令会显示参数建议列表：`/theme`、`/workspace`、`/language`、`/approval`、`/buddy`、`/agents`、`/settings` 和 `/man`。按 **Tab** 补全这些命令时，或输入完整命令后按空格键或 **Enter**，都会打开列表。
 
 - 示例：输入 `/approval` 后按空格键，会显示 `Manual`、`Auto` 和 `Bypass`。
 
 参数建议列表出现后，可以使用上下方向键选择并按 **Enter** 执行，也可以用鼠标点击所需选项。
+
+在未指定的会话中，`/workspace` 会建议 **switch**、**new** 和 **delete**。会话属于工作区时，还会建议 **rename**、**add-folder** 和 **remove-folder**，这三项作用于当前工作区。
+
+对于 `/workspace switch`、`/workspace delete` 和 `/workspace remove-folder`，如果输入与高亮参数不完全一致，按 **Enter** 会补全参数供你核对。再按 **Enter** 执行。
+
+如果 `/workspace` 命令包含折叠的粘贴内容，按 **Enter** 会在输入框中展开内容。核对或编辑命令后，再按 **Enter** 执行。
+
+使用 `/workspace add-folder` 和 `/workspace remove-folder` 时，在动作后输入一个空格，再原样输入或粘贴路径。路径首尾的空格会保留，粘贴路径末尾的换行会被忽略。如果 `/workspace` 草稿在换行后还有文字，按 **Enter** 会将它作为聊天消息发送。
 
 ## 查看命令说明
 
@@ -48,6 +56,13 @@
 | `/sessions [session_id]` | — | 浏览已保存的会话，或按 ID 直接打开。详见[管理和恢复会话](../guides/daily-use/sessions.md)。 | 可填写 12 位短 ID 或完整 UUID。省略时打开会话列表。 |
 | `/theme [theme]` | — | 切换界面主题。详见[外观设置](../guides/configuration/settings.md#外观)。 | `theme`：直接切换到指定主题。省略参数时，按空格键或 **Enter** 显示可用主题。 |
 | `/language [locale]` | — | 切换界面显示语言。详见[外观设置](../guides/configuration/settings.md#外观)。 | `locale`：直接切换到指定语言。当前支持 `system`（跟随系统）、`en`（英文）和 `zh-Hans`（简体中文）。省略参数时，按空格键或 **Enter** 显示可用值。 |
+| `/workspace` | — | 显示[工作区命令](../guides/daily-use/workspaces.md#在终端和编辑器中使用工作区命令)的用法。 | 提交前按 **Esc** 关闭补全。 |
+| `/workspace switch [名称]` | — | 切换到指定工作区。省略名称时打开选择器。 | 名称不区分大小写。输入 `Unspecified` 或当前界面的显示名（如 `未指定`），可保留工作目录并切换到未指定。 |
+| `/workspace new <名称>` | — | 以当前工作目录为主文件夹新建工作区。 | — |
+| `/workspace rename <新名称>` | — | 重命名当前工作区。 | — |
+| `/workspace add-folder <路径>` | — | 为当前工作区添加参考文件夹。 | — |
+| `/workspace remove-folder <路径>` | — | 从当前工作区移除参考文件夹。 | — |
+| `/workspace delete <名称>` | — | 删除指定工作区，保留文件夹和会话。 | — |
 | `/chdir [path]` | `/cd` | 切换当前会话的工作目录。详见[在会话中切换工作目录](../guides/daily-use/workspaces.md#在会话中切换工作目录)。 | `path`：已存在的目标目录，可以使用绝对路径或相对于当前工作目录的路径。省略时打开目录选择器。 |
 | `/copy [N]`<br>`/copy agent [N\|all]`<br>`/copy user [N\|all]`<br>`/copy all` | — | 将对话内容复制到剪贴板。 | 省略参数：复制最近一条智能体消息（智能体在工具调用之间显示的文本也算作单独一条）。<br>`N`：要复制的最近智能体消息数，必须是正整数；`/copy N` 是 `/copy agent N` 的简写。<br>`agent [N\|all]`：复制最近 `N` 条或全部智能体消息；省略数量时复制最近一条。<br>`user [N\|all]`：复制最近 `N` 条或全部用户消息；省略数量时复制最近一条。<br>`all`：复制完整对话记录。 |
 | `/fold` | — | 统一切换执行过程块、工具调用组、**思考**、工具调用之间的文字和压缩摘要。有展开的内容就全部收起，否则全部展开，包括过程块里的详情；仍在写出的思考和等待你输入的控件除外。 | — |

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
     from textual.content import Content
 
+    from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft
     from chrys.foundation.i18n import MessageRef
 
 _SLASH_COMMAND_CANDIDATE_RE = re.compile(r"^[/\uff0f][A-Za-z][A-Za-z0-9_-]*(?:\s|$)")
@@ -115,6 +116,26 @@ def completion_token_start(text: str, trigger: str) -> int | None:
     return start if start >= 0 else None
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedSlashCommand:
+    """Arguments to dispatch, or an expanded draft to return to the composer first."""
+
+    arguments: str
+    restored_draft: ChatDraft | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SubcommandArgument:
+    """An argument-taking subcommand, with optional suggestions and matching policy."""
+
+    choices: Callable[[], Sequence[tuple[str, str | Content]]] | None = None
+    exact: bool = False
+    matches: Callable[[str, str], bool] | None = None
+    literal: bool = False
+    # Called when the choices open, e.g. to reread what they list; the list follows ``refresh_open_choices``.
+    on_open: Callable[[], None] | None = None
+
+
 @dataclass
 class SlashCommandDef:
     """A slash command definition.
@@ -126,6 +147,10 @@ class SlashCommandDef:
             Receives an optional argument string (e.g. theme name).
         subcommands: Optional callable that returns ``(value, label)`` pairs
             for a second-level suggestion list (e.g. available themes).
+        subcommand_arguments: Argument-taking subcommands and their suggestion/matching policy.
+            Exact arguments fill the input first unless they match the selected suggestion;
+            literal arguments preserve whitespace in the suggestion query.
+        prepare_dispatch: Optional draft preparation; None rejects dispatch, a restored draft defers it.
         synopsis: Optional command usage shown in the man page.
         options_help: Optional structured OPTIONS rows. Each row pairs an
             untranslated, alignment-preserving syntax prefix with localized prose.
@@ -144,3 +169,5 @@ class SlashCommandDef:
     synopsis: str | None = None
     options_help: tuple[tuple[str, MessageRef], ...] | None = None
     man_page: MessageRef | tuple[ManPageSegment, ...] | None = None
+    subcommand_arguments: dict[str, SubcommandArgument] = field(default_factory=dict)
+    prepare_dispatch: Callable[[str, ChatDraft | None], PreparedSlashCommand | None] | None = None

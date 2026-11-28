@@ -249,31 +249,43 @@ def test_session_restored_schedules_mru_touches_for_all_roots(monkeypatch: pytes
     ]
 
 
-def test_workspace_updated_schedules_mru_touches_with_event_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("directory_changed", [False, True], ids=["same-directory", "new-directory"])
+def test_workspace_updated_schedules_mru_touches_with_event_timestamp(
+    monkeypatch: pytest.MonkeyPatch, directory_changed
+) -> None:
+    from chrys.app.tui.support.gc_freeze import GcAbsorbReason
+
     captured: list[dict[str, object]] = []
     monkeypatch.setattr(
         "chrys.app.tui.screens.main.session_handlers.schedule_workspace_mru_touches",
         _capture_mru_touches(captured),
     )
-    screen = _make_mru_workspace_screen([])
+    calls = []
+    screen = _make_mru_workspace_screen(calls)
+    screen._gc_messages = []
+    cwd = "/repo/next" if directory_changed else "/repo/current"
     event = WorkspaceUpdated(
-        primary_cwd="/repo/next",
-        working_dirs=["/repo/next", "/repo/extra"],
+        primary_cwd=cwd,
+        working_dirs=[cwd, "/repo/extra"],
         session_id="session-1",
     )
 
     handler = make_session_handler(screen)
     asyncio.run(handler.on_workspace_updated(event))
 
-    assert screen._state.workspace.roots == ["/repo/next", "/repo/next", "/repo/extra"]
+    assert screen._state.workspace.roots == [cwd, cwd, "/repo/extra"]
     assert captured == [
         {
-            "paths": ["/repo/next", "/repo/next", "/repo/extra"],
+            "paths": [cwd, cwd, "/repo/extra"],
             "max_entries": 20,
             "session_id": "session-1",
             "used_at": event.timestamp,
         }
     ]
+
+    assert [message.reason for message in screen._gc_messages] == [GcAbsorbReason.WORKSPACE_UI_UPDATED]
+    assert any(key == "welcome" for key, _value in calls)
+    assert not any(key == "shell_cwd" for key, _value in calls)
 
 
 def test_same_unspecified_directory_update_refreshes_surfaces(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

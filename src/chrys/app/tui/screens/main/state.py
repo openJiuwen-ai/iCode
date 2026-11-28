@@ -38,10 +38,12 @@ if TYPE_CHECKING:
         UnansweredInputDropped,
         WorkspaceUpdated,
     )
+    from chrys.foundation.models.workspace import Workspace
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.state.store import StateStore
+    from chrys.service.workspaces.registry import WorkspaceRegistry
 
     DeferredTurnEvent = (
         InvocationMessage
@@ -72,6 +74,16 @@ class MainScreenServices:
     engine_provider: Callable[[], AgentEngine] | None = None
     workspace_mru_max_entries: int = DEFAULT_WORKSPACE_MRU_MAX_ENTRIES
 
+    @property
+    def workspaces(self) -> WorkspaceRegistry:
+        """Use the same registry that stores this chat's membership."""
+        if self.state_store is None:
+            raise RuntimeError("Workspace services require a state store")
+        registry = self.state_store.workspace_registry
+        if registry is None:
+            raise RuntimeError("State store does not provide a workspace registry")
+        return registry
+
     def apply_workspace(
         self, view: WorkspaceViewState, event: SessionReady | SessionRestored | WorkspaceUpdated
     ) -> bool:
@@ -86,8 +98,8 @@ class MainScreenServices:
             if event.workspace is not None
             else roots
         )
-        view.workspace_id = event.workspace.id if event.workspace is not None else None
-        view.workspace_name = event.workspace.name if event.workspace is not None else ""
+        view.membership = event.workspace
+        view.workspace_known = True
         return changed
 
     def execution(self) -> ExecutionSnapshot:
@@ -223,11 +235,15 @@ class WorkspaceViewState:
 
     current_cwd: str = field(default_factory=safe_getcwd)
     current_git_branch: str = ""
-    workspace_id: str | None = None
-    workspace_name: str = ""
+    membership: Workspace | None = None
+    workspace_known: bool = False
     roots: list[str] = field(default_factory=lambda: [safe_getcwd()])
     session_roots: list[str] = field(default_factory=lambda: [safe_getcwd()])
     """Session directories alone; workspace scope changes must not touch the workspace MRU."""
+
+    @property
+    def workspace_id(self) -> str | None:
+        return self.membership.id if self.membership is not None else None
 
 
 @dataclass
