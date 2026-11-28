@@ -663,9 +663,8 @@ class MainScreenViewAdapter:
                 surfaces=self._session_surfaces.get(workflow_mode),
                 on_surfaces_changed=remember,
                 workspaces=state_store.workspace_registry,
-                current_workspace_name=self._state.workspace.workspace_name
-                if self._state.workspace.workspace_id is not None
-                else None,
+                current_workspace_name=membership.name if (membership := self._state.workspace.membership) else None,
+                on_session_deleted=None if workflow_mode else self._screen._workspace_sessions_changed,
             ),
             on_result,
         )
@@ -1652,7 +1651,9 @@ class MainScreenViewAdapter:
     ) -> None:
         from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 
-        self._screen.query_one(SuggestionList).show("subcommands", list(items), initial=initial)
+        with contextlib.suppress(NoMatches):
+            self._screen.query_one(SuggestionList).show("subcommands", list(items), initial=initial)
+            self._screen.query_one(InputBar).set_suggestions_active(True, mode="subcommands")
 
     def input_value(self) -> str:
         return str(self._screen.query_one(InputBar).value)

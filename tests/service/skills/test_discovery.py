@@ -8,6 +8,7 @@ import asyncio
 import gc
 import logging
 import threading
+import time
 import weakref
 from pathlib import Path
 from unittest.mock import create_autospec
@@ -229,44 +230,32 @@ async def test_cancelled_waiter_does_not_cancel_a_shared_scan(
             await asyncio.gather(first, *([] if second is None else [second]), return_exceptions=True)
 
 
-async def test_closing_a_scope_drains_its_thread_even_when_the_waiter_left(
+def test_closing_a_scope_abandons_a_held_scan_so_exit_does_not_wait(
     skill_tree: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-    original = discovery_module._discover
+    entered, release = threading.Event(), threading.Event()
 
-    def held(key: discovery_module._DiscoveryKey) -> discovery_module._Snapshot:
+    def held(_key: discovery_module._DiscoveryKey) -> discovery_module._Snapshot:
         entered.set()
-        if not release.wait(timeout=5):
-            raise TimeoutError("test did not release discovery")
-        try:
-            return original(key)
-        finally:
-            finished.set()
+        release.wait(timeout=30)
+        return discovery_module._Snapshot((), ())
 
     monkeypatch.setattr(discovery_module, "_discover", held)
-    scope = SkillDiscoveryScope()
-    consumer = asyncio.create_task(scope.discover([str(skill_tree)], script_extensions=[]))
-    closing = None
-    try:
-        await wait_for(lambda: entered.is_set() or consumer.done(), description="skill scan started")
-        if consumer.done():
-            await consumer
+
+    async def build_and_quit() -> None:
+        scope = SkillDiscoveryScope()
+        consumer = asyncio.create_task(scope.discover([str(skill_tree)], script_extensions=[]))
+        await asyncio.to_thread(entered.wait, 5)
         consumer.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await consumer
-        closing = asyncio.create_task(scope.aclose())
-        await wait_for(lambda: scope._closed or closing.done(), description="scope close started")
-        assert not closing.done()
+        await scope.aclose()
         with pytest.raises(RuntimeError, match="closed"):
             await scope.discover([str(skill_tree)], script_extensions=[])
-        release.set()
-        await closing
-        assert finished.is_set()
         assert scope._tasks == {}
-        await scope.aclose()
+
+    begun = time.monotonic()
+    try:
+        asyncio.run(build_and_quit())
+        assert entered.is_set()
+        assert time.monotonic() - begun < 3
     finally:
         release.set()
-        consumer.cancel()
-        await asyncio.gather(consumer, *([] if closing is None else [closing]), return_exceptions=True)
-        await scope.aclose()

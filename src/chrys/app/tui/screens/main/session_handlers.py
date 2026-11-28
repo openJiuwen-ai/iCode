@@ -51,6 +51,7 @@ from chrys.foundation.events.types import (
     AgentRuntimeDetails,
     Error,
     ProfileSwitched,
+    SessionDeleted,
     SessionFork,
     SessionForked,
     SessionRestore,
@@ -81,7 +82,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import SessionNew
-    from chrys.service.state.store import SessionTranscript, StateStore
+    from chrys.service.state.store import SessionMeta, SessionTranscript, StateStore
 
 
 logger = logging.getLogger(__name__)
@@ -150,7 +151,7 @@ class _RestoreAttempt:
     request: SessionRestore | None = None
 
 
-async def _decline_missing_working_dir(_missing: str, _workspace_restore: bool) -> str | None:
+async def _decline_missing_working_dir(_missing: str, _workspace_name: str | None) -> str | None:
     return None
 
 
@@ -182,7 +183,11 @@ class SessionCallbacks:
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]
     debug: Callable[[str, str], None]
     refresh_model_indicator: Callable[[], None]
-    choose_missing_working_dir: Callable[[str, bool], Awaitable[str | None]] = _decline_missing_working_dir
+    choose_missing_working_dir: Callable[[str, str | None], Awaitable[str | None]] = _decline_missing_working_dir
+    refresh_workspace: Callable[[], None] = lambda: None
+    session_saved: Callable[[SessionSaved], None] = lambda _event: None
+    session_loaded: Callable[[str, SessionMeta], None] = lambda _session_id, _meta: None
+    session_list_changed: Callable[[], None] = lambda: None
     confirm_workspace_leave: Callable[
         [str, str, Workspace | None], Awaitable[tuple[bool, WorkspaceConfirmation | None]]
     ] = _confirm_workspace_leave_unasked
@@ -462,7 +467,7 @@ class SessionHandler:
         self._callbacks.reset_rollback_request()
         s.set_agent_loading(True)
         s.creating_new_session = True
-        from chrys.foundation.events.types import SessionClear, SessionDeleted
+        from chrys.foundation.events.types import SessionClear
 
         deleted = False
 
@@ -687,6 +692,7 @@ class SessionHandler:
             attempt.source == self._session_action_owner()
             and self._state.session.load_owner is (attempt if attempt.loading else None)
             and not self.agent_running
+            and not self._state.submit.active
             and not self._services.execution_busy()
             and (not self.agent_loading or attempt.loading or allow_while_loading)
         )
@@ -726,7 +732,10 @@ class SessionHandler:
             path, saved_workspace_id = saved
             try:
                 if saved_workspace_id is not None:
-                    opened_cwd = validate_workspace_primary(path)
+                    saved_workspace = snapshot.workspace(saved_workspace_id)
+                    opened_cwd = validate_workspace_primary(
+                        path, workspace_name=saved_workspace.name if saved_workspace is not None else None
+                    )
                 elif not os.path.isdir(path):
                     raise MissingWorkspacePrimary(path)
             except MissingWorkspacePrimary:
@@ -930,7 +939,10 @@ class SessionHandler:
         # Replace this attempt's loading dialog with the directory prompt.
         self._cancel_restore_load(attempt)
         owner = self._workspace_action_owner()
-        chosen = await self._callbacks.choose_missing_working_dir(path, workspace_id is not None)
+        workspace = snapshot.workspace(workspace_id) if workspace_id is not None else None
+        chosen = await self._callbacks.choose_missing_working_dir(
+            path, workspace.name if workspace is not None else None
+        )
         if chosen is None or not self._can_restore(attempt) or owner != self._workspace_action_owner():
             return RestoreRequest.DECLINED
         return await self._restore_chat_session(
@@ -1085,6 +1097,7 @@ class SessionHandler:
         ui.update_welcome(profile=display, cwd=cwd)
         ui.set_chat_session_id(event.session_id)
         ui.reset_session_title_state()
+        self._callbacks.refresh_workspace()
 
         loaded_state: dict[str, Any] | None = None
         transcript: SessionTranscript | None = None
@@ -1118,6 +1131,12 @@ class SessionHandler:
             except Exception:
                 logger.debug("Session restore: failed to load replay for %s", event.session_id, exc_info=True)
         s.set_has_messages(restored_has_messages)
+        if loaded is not None and loaded.meta is not None:
+            # The sidebar row update must not cut the replay below short.
+            try:
+                self._callbacks.session_loaded(event.session_id, loaded.meta)
+            except Exception:
+                logger.warning("Session restore: failed to update the workspace page row", exc_info=True)
 
         # Reseed the Tasks panel from the restored state (covers session
         # switch AND rollback-to-N) via the shared tolerant decoder — an
@@ -1177,7 +1196,11 @@ class SessionHandler:
     async def on_session_saved(self, event: SessionSaved) -> None:
         self.debug("SessionSaved", session_short_id(event.session_id or ""))
         if event.session_id == self._ui().chat_session_id():
+            self._callbacks.session_saved(event)
             self._callbacks.refresh_diff_preview(True)
+
+    async def on_session_deleted(self, _event: SessionDeleted) -> None:
+        self._callbacks.session_list_changed()
 
     async def apply_custom_session_title(self, custom_title: str, session_id: str) -> None:
         """Persist a user-edited custom title (empty clears it) and refresh the UI.
@@ -1241,6 +1264,7 @@ class SessionHandler:
     async def on_session_forked(self, event: SessionForked) -> None:
         s = self
         ui = self._ui()
+        self._callbacks.session_list_changed()
 
         current_session_id = ui.chat_session_id()
         if event.session_id != current_session_id:
@@ -1475,6 +1499,7 @@ class SessionHandler:
 
     def _refresh_workspace_diff(self, cwd: str) -> None:
         self.chdir_current_cwd = cwd
+        self._callbacks.refresh_workspace()
         self._callbacks.refresh_diff_preview(True)
 
     def _finish_workspace_update(self, event: WorkspaceUpdated, roots: list[str] | None) -> None:

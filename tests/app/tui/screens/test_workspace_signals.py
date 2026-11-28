@@ -13,6 +13,7 @@ from textual.widgets import Static
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.file_picker import FilePicker
 from chrys.app.tui.screens.main.session_handlers import RestoreRequest
+from chrys.app.tui.screens.main.workspace_branch import WorkspaceBranchController
 from chrys.foundation.events import types as ev
 from chrys.kernel import Message
 from chrys.service.workspaces import registry as registry_module
@@ -26,6 +27,12 @@ from tests.support.waiting import wait_for
 from tests.support.workspace_engine import WorkspaceBoundary, select_workspace
 from tests.support.workspace_engine import workspace_case as workspace_case
 from tests.support.workspace_registry import make_workdirs
+
+
+@pytest.fixture(autouse=True)
+def _without_git_branch_monitor(monkeypatch):
+    """Workspace session transitions don't depend on the native Git branch watcher."""
+    monkeypatch.setattr(WorkspaceBranchController, "start", lambda _self, _cwd: None)
 
 
 def _dialog_text(dialog: ConfirmDialog) -> str:
@@ -122,7 +129,7 @@ async def test_directory_entries_confirm_workspace_departure(
         else:
             main._workspace_actions.start_chdir(str(target))
         dialog = await _top_screen(pilot, ConfirmDialog)
-        assert dialog._title == "Leave workspace?"
+        assert dialog.query_one("#confirm-container").border_title == "Leave workspace “Team”?"
         message = _dialog_text(dialog)
         assert "Team" in message and str(target) in message
         assert registry.snapshot().workspace_id_for_session(sid) == workspace.id
@@ -192,16 +199,16 @@ async def test_empty_tui_same_directory_keeps_definition_until_reselected(
         workspace = registry.create("Original", primary, [str(first)])
         await _select(session, workspace.id)
         session.bar.value = "unsubmitted draft"
-        registry.update(workspace.id, name="Renamed", primary=primary, folders=[str(second)])
+        renamed = registry.update(workspace.id, name="Renamed", primary=primary, folders=[str(second)])
 
         worker = main._workspace_actions.start_chdir(primary)
         if worker is not None:
             await worker.wait()
-        assert main._state.workspace.workspace_name == "Original"
+        assert main._state.workspace.membership == workspace
         assert [directory.path for directory in engine.workspace.working_dirs] == [str(first)]
 
         await _select(session, workspace.id)
-        assert main._state.workspace.workspace_name == "Renamed"
+        assert main._state.workspace.membership == renamed
         assert [directory.path for directory in engine.workspace.working_dirs] == [str(second)]
         assert session.bar.value == "unsubmitted draft"
         assert engine.history_messages == []
@@ -241,3 +248,25 @@ async def test_tui_shows_a_missing_workspace_reference_on_each_load(
                     await turn_finished(session)
                     assert sum(event.code == "workspace_reference_missing" for event in warnings) == 1
                 await _select(session, registry.create("Other workspace", str(primary)).id)
+
+
+async def test_switching_to_a_workspace_on_the_same_primary_reads_its_reference_shortcuts(
+    workspace_case, agent_engine, tmp_path, monkeypatch
+):
+    async with running_session(agent_engine, tmp_path, monkeypatch) as session:
+        engine, main = session.engine, session.main
+        registry = workspace_case.attach(engine).registry
+        (reference,) = make_workdirs(tmp_path, "reference")
+        shortcut = reference / ".chrys" / "shortcuts" / "zzref.md"
+        shortcut.parent.mkdir(parents=True)
+        shortcut.write_text("From the reference folder", encoding="utf-8")
+        workspace = registry.create("Team", engine.workspace.primary_cwd, [str(reference)])
+
+        await _select(session, workspace.id)
+
+        # Nothing typed yet: the read starts with the workspace, so a pasted /zzref expands on the first Enter.
+        await wait_for(
+            lambda: "zzref" in [item.name for item in main._suggestions._prompt_shortcuts or []],
+            pilot=session.pilot,
+            description="the reference folder's shortcut was read",
+        )

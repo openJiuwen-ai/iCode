@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from rich.cells import cell_len
@@ -54,10 +55,9 @@ from chrys.app.tui.screens.sessions.presenter import (
     profile_display,
     rank_search_matches,
     surface_label,
-    title_display,
     workflow_status_labels,
 )
-from chrys.app.tui.util.formatting import elide_end, take_cells
+from chrys.app.tui.util.formatting import elide_end, take_cells, title_display
 from chrys.app.tui.util.rich_style import rich_style_from_textual_color
 from chrys.app.tui.widgets import (
     Checkbox,
@@ -73,12 +73,13 @@ from chrys.foundation.i18n import DisplayPath, MessageRef, msg
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.foundation.util.session_ids import session_id_key, session_short_id
-from chrys.service.state.session_listing import SESSION_PAGE_SIZE, SessionListing, page_slice
+from chrys.service.state.session_listing import DEFAULT_SURFACES, SESSION_PAGE_SIZE, SessionListing, page_slice
 from chrys.service.workspaces.registry import UNSPECIFIED
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Awaitable, Callable, Collection
 
     from textual import events
     from textual.app import ComposeResult
@@ -106,8 +107,6 @@ _TITLE_MIN_WIDTH = 20
 _EVERY_SURFACE = frozenset(SessionSurface)
 """A search result listing is filtered already: page it whatever surfaces its sessions have."""
 
-DEFAULT_SURFACES = frozenset({SessionSurface.TUI})
-"""Surfaces listed until the user picks others; sessions from before surfaces were recorded count as TUI."""
 WORKFLOW_SURFACES = frozenset({SessionSurface.TUI, SessionSurface.CLI})
 """Where workflow runs start: the TUI and ``icode workflow run``; ACP clients start none."""
 
@@ -260,6 +259,12 @@ class _SearchInput(EnhancedInput):
             self.post_message(self.Escaped())
 
 
+def _notify_deleted(notify: Callable[[], None], deletion: asyncio.Future[None]) -> None:
+    """Report a deletion that reached the store, whether or not F1 is still open."""
+    if not deletion.cancelled() and deletion.exception() is None:
+        notify()
+
+
 def _next_cursor_row_after_delete(deleted_row: int, remaining_count: int) -> int | None:
     """Return the row to highlight after deleting one row from a table."""
     if remaining_count <= 0:
@@ -307,6 +312,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         on_surfaces_changed: Callable[[frozenset[SessionSurface]], None] | None = None,
         workspaces: WorkspaceRegistry | None = None,
         current_workspace_name: str | None = None,
+        on_session_deleted: Callable[[], None] | None = None,
     ) -> None:
         self._state_store = state_store
         self._current_session_id = current_session_id
@@ -317,6 +323,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         """The running session's effective workspace; ``None`` is Unspecified."""
         self._workspace_names = WorkspaceNames()
         """What the Workspace column shows, from the one registry read this browser makes."""
+        self._on_session_deleted = on_session_deleted
         self._kind: Literal["chat", "workflow"] = "workflow" if workflow_mode else "chat"
         self._columns = WORKFLOW_COLUMNS if workflow_mode else COLUMNS
         self._offered_surfaces = tuple(
@@ -445,7 +452,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
                 names[session_id_key(current_id)] = current_name
             return WorkspaceNames(names, unspecified, has_workspaces=True, primary_dirs=folders), None
 
-        names, error = await asyncio.to_thread(read_names)
+        names, error = await run_abandonable("icode-sessions-workspaces", read_names)
         if error is not None and self._composed_live:
             self.notify(self._render_message(error), severity="warning", markup=False)
         return names
@@ -1139,8 +1146,14 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
             # so shutdown() won't re-save the file.
             self.dismiss(f"{self.DELETE_AND_NEW_PREFIX}{session_id}")
         else:
+            deletion: Awaitable[None] = self._state_store.delete_session(session_id)
+            if self._on_session_deleted is not None:
+                # Closing F1 cancels this worker, not a deletion the sidebar still has to hear about.
+                task = asyncio.ensure_future(deletion)
+                task.add_done_callback(partial(_notify_deleted, self._on_session_deleted))
+                deletion = asyncio.shield(task)
             try:
-                await self._state_store.delete_session(session_id)
+                await deletion
             except TimeoutError:
                 self.notify(
                     render_str(

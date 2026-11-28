@@ -1850,6 +1850,10 @@ def test_background_tasks_have_declared_owners() -> None:
             1,
             "the terminal reply is drained after the workspace permit is released, even on cancellation",
         ),
+        ("workspaces", "_StopGate", "__init__"): (
+            1,
+            "owned by the workspace request that started it; its first write, its install or its end cancels it",
+        ),
         ("state/controls", "RuntimeControls", "on_settings_reload"): (
             1,
             "a reload without an active agent drains profile normalization before releasing the rebuild permit",

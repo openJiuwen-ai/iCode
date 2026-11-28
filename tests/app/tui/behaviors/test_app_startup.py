@@ -717,11 +717,15 @@ def _attach_startup_facade(screen: object) -> object:
     def cancel_startup_session_restore() -> None:
         return
 
+    def set_startup_workspace_pending(_pending: bool) -> None:
+        return
+
     screen.set_startup_agent_loading = set_startup_agent_loading  # type: ignore[attr-defined]
     screen.is_startup_agent_loading = is_startup_agent_loading  # type: ignore[attr-defined]
     screen.restore_startup_session = restore_startup_session  # type: ignore[attr-defined]
     screen.dismiss_startup_load_dialog_before_restore = dismiss_startup_load_dialog_before_restore  # type: ignore[attr-defined]
     screen.cancel_startup_session_restore = cancel_startup_session_restore  # type: ignore[attr-defined]
+    screen.set_startup_workspace_pending = set_startup_workspace_pending  # type: ignore[attr-defined]
     return screen
 
 
@@ -984,6 +988,77 @@ def test_main_screen_cancel_startup_restore_clears_restoring_state() -> None:
     assert calls == [("cancel", None), ("restoring", False)]
 
 
+@pytest.mark.parametrize(
+    ("start_new", "start_fails"),
+    [(False, False), (True, False), (True, True)],
+    ids=["retry", "start-new", "start-new-fails"],
+)
+async def test_startup_sidebar_waits_for_reset_and_choice_without_changing_loading(start_new, start_fails):
+    from unittest.mock import AsyncMock
+
+    from chrys.app.tui import app as tui_app
+    from chrys.app.tui.screens.main.screen import MainScreen
+    from chrys.app.tui.widgets.sidebar.workspaces import WorkspacePanel
+    from tests.support.tui_helpers import WidgetApp
+
+    panel = WorkspacePanel()
+    main = object.__new__(MainScreen)
+    calls = []
+    loading = False
+    main._workspace_panel = panel
+    main._events = SimpleNamespace(cancel_agent_load=lambda: calls.append("cancel"))
+    main._set_restoring_session = lambda _active: None
+
+    def set_loading(active):
+        nonlocal loading
+        loading = active
+
+    main._set_agent_loading = set_loading
+    main.is_startup_agent_loading = lambda: loading
+    app = object.__new__(ChrysApp)
+    app._startup_session_id = "saved"
+    app._startup_workspace_id = None
+    app._deferred_settings_warnings = []
+    app._restore_startup_session = AsyncMock(side_effect=[tui_app._SESSION_NOTIFICATION_TITLE.bind(), None])
+    app._flush_deferred_settings_warnings = AsyncMock()
+
+    def failed(_screen, error):
+        raise error
+
+    if not start_fails:
+        app._show_startup_failure = failed
+
+    async def reset():
+        assert loading is True
+        assert str(panel.query_one(".workspace-empty").render()) == "Loading workspaces"
+        calls.append("reset")
+
+    async def choose(_screen, _problem):
+        assert loading is True
+        assert "reset" in calls
+        assert str(panel.query_one(".workspace-empty").render()) == (
+            "Workspaces you create with /workspace new will appear here"
+        )
+        calls.append("choice")
+        return start_new
+
+    app._engine = SimpleNamespace(
+        prepare=AsyncMock(),
+        reset_after_failed_startup_restore=reset,
+        start=AsyncMock(side_effect=RuntimeError("startup exploded") if start_fails else None),
+    )
+    app._choose_new_startup_session = choose
+    async with WidgetApp(lambda: panel).run_test():
+        await app._start_engine(object(), main)
+        assert calls.index("cancel") < calls.index("reset") < calls.index("choice")
+        assert loading is not start_fails
+        assert str(panel.query_one(".workspace-empty").render()) == (
+            "Workspaces you create with /workspace new will appear here" if start_fails else "Loading workspaces"
+        )
+        assert app._startup_session_id == ""
+        assert app._engine.start.await_count == int(start_new)
+
+
 async def test_start_engine_dismisses_startup_modal_before_startup_session_restore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1217,6 +1292,9 @@ async def test_start_engine_flushes_deferred_settings_warnings_when_falling_back
         def cancel_startup_session_restore(self) -> None:
             return
 
+        def set_startup_workspace_pending(self, pending: bool) -> None:
+            return
+
         def query_one(self, cls: type) -> _StatusBar:
             return _StatusBar()
 
@@ -1344,11 +1422,11 @@ def test_missing_tui_workspace_primary_exits_before_bootstrap_in_the_ui_locale(
     assert caught.value.code == 1
     error, hint = capsys.readouterr().err.splitlines()
     if locale == "en":
-        assert "Primary folder does not exist" in error
+        assert error == f"The primary folder of workspace “Team”, {primary}, does not exist."
         assert "primary folder" in hint and "main folder" not in hint
         assert ("start again with --workspace and -s" in hint) == restore
     else:
-        assert "主文件夹" in error and "Primary folder" not in error
+        assert error == f"工作区“Team”的主文件夹 {primary} 不存在。"
         assert "主文件夹" in hint and "start again" not in hint
         assert ("再用 --workspace 和 -s 重新启动" in hint) == restore
     if not restore:
@@ -1440,9 +1518,13 @@ def test_tui_argv_restore_ignores_workdir_until_replacement_is_chosen(
     async def examine(app, pilot):
         if entry in {"choose-replacement", "cancel"}:
             dialog = await _top_screen(pilot, ConfirmDialog)
-            message = str(dialog.query_one("#confirm-message", Static).content).lower()
-            assert "primary folder" in message
-            assert "leave" in message
+            message = dialog.query_one("#confirm-message", Static).render().plain
+            assert message == (
+                f"The primary folder {primary} of workspace “Team” no longer exists. "
+                f"Restore {primary} to keep the saved session in “Team”.\n\n"
+                "• Choose Folder…: select a replacement working directory and open the saved session as Unspecified.\n"
+                "• Cancel: keep the current session open."
+            )
             assert not report.exists()
             if entry == "cancel":
                 from chrys.app.tui.screens.dialogs.confirm import StartupSessionChoiceDialog
@@ -1470,7 +1552,9 @@ def test_tui_argv_restore_ignores_workdir_until_replacement_is_chosen(
     launch(["-s", TARGET_SESSION, "-C", str(override)], examine)
 
 
-@pytest.mark.parametrize("outcome", ["missing", "move", "refused", "saved-open-failed", "installed-restore-failed"])
+@pytest.mark.parametrize(
+    "outcome", ["new", "missing", "move", "refused", "saved-open-failed", "installed-restore-failed"]
+)
 def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, outcome):
     from chrys.foundation.config.spec import Source
     from chrys.kernel import Message
@@ -1484,11 +1568,13 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
     store, launch, messages = workspace_argv
     primary, old, extra = make_workdirs(tmp_path, "primary", "old", "extra")
     report = tmp_path / "workspace-hook.txt"
-    write_launch_settings(primary, report, event="session_start" if outcome == "missing" else "session_restored")
+    write_launch_settings(
+        primary, report, event="session_start" if outcome in {"new", "missing"} else "session_restored"
+    )
     workspace = registry.create("Team", str(primary))
     previous = registry.create("Previous", str(old))
     before = None
-    if outcome != "missing":
+    if outcome not in {"new", "missing"}:
         asyncio.run(
             save_chat_session(
                 store,
@@ -1546,10 +1632,13 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
         engine = app._engine
         assert Path.cwd().samefile(primary)
         assert engine.workspace.primary_cwd == str(primary)
+        tag = app._main_screen.query_one("#workspace-tag", Static)
+        assert tag.display
+        assert tag.render().plain == "Team"
         assert engine.settings_handle.base.source_for("context.warn_threshold_pct").layer == Source.WORKDIR
         assert Path(report.read_text(encoding="utf-8")).samefile(primary)
         assert registry.snapshot().workspace_id_for_session(engine.session_id) == workspace.id
-        if outcome == "missing":
+        if outcome in {"new", "missing"}:
             assert engine.session_id != MISSING_SESSION
         else:
             assert engine.session_id == TARGET_SESSION
@@ -1562,7 +1651,9 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
                 description="workspace move notice",
             )
 
-    args = ["--workspace", "Team", "-s", MISSING_SESSION if outcome == "missing" else TARGET_SESSION]
+    args = ["--workspace", "Team"]
+    if outcome != "new":
+        args.extend(("-s", MISSING_SESSION if outcome == "missing" else TARGET_SESSION))
     if failing:
         with pytest.raises(SystemExit) as failed:
             launch(args, examine)
@@ -1580,3 +1671,52 @@ def test_tui_workspace_argv(registry, workspace_argv, monkeypatch, tmp_path, out
             assert registry.snapshot().workspace_id_for_session(TARGET_SESSION) == workspace.id
     else:
         launch(args, examine)
+
+
+async def test_failed_startup_build_settles_workspace_sidebar_after_dismissal(tmp_path):
+    from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
+    from chrys.app.tui.screens.main.screen import MainScreen
+    from chrys.app.tui.widgets.sidebar.workspaces import WorkspacePanel
+    from chrys.foundation.events.types import AgentLoadFailed, AgentLoadStarted
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.state.store import JsonFileStateStore
+    from tests.support.tui_app_harness import ShutdownOnlyEngine, make_chrys_app
+    from tests.support.tui_helpers import click_when_settled
+    from tests.support.waiting import MAIN_SCREEN_BUILD_TIMEOUT, wait_for
+
+    bus = EventBus()
+    profiles = AgentProfileRegistry()
+    profile = AgentProfile(name="Code")
+    profiles.register(profile)
+
+    class FailingEngine(ShutdownOnlyEngine):
+        async def start(self, profile):
+            await bus.publish(AgentLoadStarted(operation="startup", to_profile=profile.name))
+            await bus.publish(AgentLoadFailed(operation="startup", agent_profile=profile.name, message="build failed"))
+            raise RuntimeError("build failed")
+
+    store = JsonFileStateStore(tmp_path / "sessions")
+    app = make_chrys_app(
+        tmp_path / "sessions", engine=FailingEngine(), event_bus=bus, agent_registry=profiles, state_store=store
+    )
+    async with app.run_test(size=(150, 36)) as pilot:
+        await wait_for(
+            lambda: isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            timeout=MAIN_SCREEN_BUILD_TIMEOUT,
+        )
+        await await_engine_startup(app)
+        main = next(screen for screen in app.screen_stack if isinstance(screen, MainScreen))
+        assert main.is_startup_agent_loading() is False
+        await click_when_settled(pilot, "#agent-load-ok")
+        await wait_for(lambda: app.screen is main, pilot=pilot)
+        panel = main.query_one(WorkspacePanel)
+        await wait_for(
+            lambda: (
+                str(panel.query_one(".workspace-empty").render())
+                == "Workspaces you create with /workspace new will appear here"
+            ),
+            pilot=pilot,
+        )
+        assert not any(notice.title == "Agent startup failed" for notice in app._notifications)

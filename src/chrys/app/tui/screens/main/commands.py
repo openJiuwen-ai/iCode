@@ -7,6 +7,7 @@ from __future__ import annotations
 import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Protocol
 
 from textual.content import Content
@@ -20,11 +21,41 @@ from chrys.app.tui.widgets.chrome.commands import (
     ManPageSegment,
     ManPageSpec,
     ManPageVerbatimBlock,
+    PreparedSlashCommand,
     SlashCommandDef,
+    SubcommandArgument,
+    is_slash_command_candidate,
+    parse_slash_draft,
+)
+from chrys.app.tui.widgets.chrome.prompt_draft import ChatDraft, expand_draft
+from chrys.app.workspace_commands import (
+    WORKSPACE,
+    WORKSPACE_ACTIONS,
+    WORKSPACE_DESCRIPTION,
+    WorkspaceCommand,
+    parse_workspace_command,
 )
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
+
+
+def prepare_workspace_dispatch(argument: str, draft: ChatDraft | None) -> PreparedSlashCommand | None:
+    """Check the expanded command and return references to the composer before dispatch."""
+    expanded = expand_draft(draft, len(draft.text)) if draft is not None else None
+    if expanded is not None:
+        raw = parse_slash_draft(expanded.text.lstrip())
+        if raw is not None:
+            argument = raw.arguments
+    if not is_slash_command_candidate(f"/{WORKSPACE} {argument}".rstrip()):
+        return None
+    return PreparedSlashCommand(argument, expanded.draft if expanded is not None and expanded.references else None)
+
+
+def workspace_folder_argument_matches(arguments: str, selected: str) -> bool:
+    """Compare folder paths through the command parser, preserving literal whitespace."""
+    return parse_workspace_command(f"/{WORKSPACE} {arguments}") == WorkspaceCommand("remove-folder", selected)
+
 
 INVALID_COMMAND_TITLE = msg("tui.commands.title.invalid", fallback="Invalid Command")
 INVALID_COMMAND_TITLE_REF = INVALID_COMMAND_TITLE.bind()
@@ -119,6 +150,25 @@ _DESCRIPTION_USAGE = msg(
     fallback="Show token usage and speed across all sessions",
 )
 _DESCRIPTION_SETTINGS = msg("tui.commands.description.settings", fallback="Open the Settings panel")
+_SWITCH_ACTION = msg("workspaces.commands.action.switch", fallback="Switch to a workspace")
+_NEW_ACTION = msg("workspaces.commands.action.new", fallback="Create a workspace")
+_RENAME_ACTION = msg("workspaces.commands.action.rename", fallback="Rename the current workspace")
+_ADD_FOLDER_ACTION = msg("workspaces.commands.action.add_folder", fallback="Add a reference folder")
+_REMOVE_FOLDER_ACTION = msg("workspaces.commands.action.remove_folder", fallback="Remove a reference folder")
+_DELETE_ACTION = msg("workspaces.commands.action.delete", fallback="Delete a workspace")
+
+# Actions whose argument is picked from a list and must match it exactly before Enter runs.
+_LISTED_ARGUMENTS = frozenset({"switch", "delete", "remove-folder"})
+
+_WORKSPACE_ACTION_DESCRIPTIONS = {
+    "switch": _SWITCH_ACTION,
+    "new": _NEW_ACTION,
+    "rename": _RENAME_ACTION,
+    "add-folder": _ADD_FOLDER_ACTION,
+    "remove-folder": _REMOVE_FOLDER_ACTION,
+    "delete": _DELETE_ACTION,
+}
+
 _DESCRIPTION_MAN = msg("tui.commands.description.man", fallback="Show manual page for a command")
 
 _APPROVAL_MANUAL = msg(
@@ -503,6 +553,10 @@ class SlashCommandActionPort(Protocol):
     def open_guide(self) -> None: ...
     def rename_session(self, arg: str = "") -> None: ...
     def chdir(self, arg: str) -> None: ...
+    def workspace(self, arg: str) -> None: ...
+    def has_named_workspace(self) -> bool: ...
+    def workspace_choices(self, action: str) -> list[tuple[str, str]]: ...
+    def reread_workspace_choices(self) -> None: ...
     def copy_agent_responses(self, arg: str) -> None: ...
     def toggle_fold(self) -> None: ...
     def show_diff(self) -> None: ...
@@ -567,6 +621,10 @@ class SlashCommandActions:
     configure_settings: Callable[[str], None]
     show_manual_pages: Callable[[list[ManPageSpec], int], None]
     warn: Callable[[MessageRef | str, MessageRef | str, float | None], None]
+    run_workspace_command: Callable[[str], None] = lambda _arg: None
+    is_workspace_assigned: Callable[[], bool] = lambda: False
+    list_workspace_choices: Callable[[str], list[tuple[str, str]]] = lambda _action: []
+    refresh_workspace_choices: Callable[[], None] = lambda: None
 
     def open_workflows(self) -> None:
         self.workflow_selection()
@@ -631,6 +689,19 @@ class SlashCommandActions:
 
     def chdir(self, arg: str) -> None:
         self.change_directory(arg)
+
+    def workspace(self, arg: str) -> None:
+        self.run_workspace_command(arg)
+
+    def has_named_workspace(self) -> bool:
+        return self.is_workspace_assigned()
+
+    def workspace_choices(self, action: str) -> list[tuple[str, str]]:
+        return self.list_workspace_choices(action)
+
+    def reread_workspace_choices(self) -> None:
+        # Another window may have created or renamed a workspace since this one last read the list.
+        self.refresh_workspace_choices()
 
     def copy_agent_responses(self, arg: str) -> None:
         self.copy_conversation(arg)
@@ -707,6 +778,20 @@ class MainSlashCommandRegistry:
         def _available_themes() -> list[tuple[str, str]]:
             current = actions.current_theme()
             return [(theme, f"{'● ' if theme == current else '  '}{theme}") for theme in actions.available_themes()]
+
+        def _workspace_subcommands() -> list[tuple[str, Content]]:
+            # Actions on the current workspace do not apply to Unspecified.
+            named = actions.has_named_workspace()
+            return [
+                (
+                    action,
+                    Content.assemble(
+                        action, ("  " + self._render_message(_WORKSPACE_ACTION_DESCRIPTIONS[action].bind()), "dim")
+                    ),
+                )
+                for action in WORKSPACE_ACTIONS
+                if named or action not in ("rename", "add-folder", "remove-folder")
+            ]
 
         def _set_theme(arg: str) -> None:
             name = arg.strip()
@@ -984,6 +1069,28 @@ class MainSlashCommandRegistry:
                 man_page=_MAN_LANGUAGE_BODY.bind(app=APP_DISPLAY_NAME),
             ),
             SlashCommandDef(
+                WORKSPACE,
+                WORKSPACE_DESCRIPTION.bind(),
+                action=actions.workspace,
+                subcommands=_workspace_subcommands,
+                subcommand_arguments={
+                    action: SubcommandArgument(
+                        choices=partial(actions.workspace_choices, action) if action in _LISTED_ARGUMENTS else None,
+                        exact=action in _LISTED_ARGUMENTS,
+                        matches=workspace_folder_argument_matches if action == "remove-folder" else None,
+                        literal=action == "remove-folder",
+                        on_open=actions.reread_workspace_choices if action in _LISTED_ARGUMENTS else None,
+                    )
+                    for action in WORKSPACE_ACTIONS
+                },
+                prepare_dispatch=prepare_workspace_dispatch,
+                synopsis="/workspace [action] …",
+                options_help=tuple(
+                    (f"{action} {syntax}".rstrip().ljust(24), _WORKSPACE_ACTION_DESCRIPTIONS[action].bind())
+                    for action, syntax in WORKSPACE_ACTIONS.items()
+                ),
+            ),
+            SlashCommandDef(
                 "chdir",
                 _DESCRIPTION_CHDIR.bind(),
                 action=actions.chdir,
@@ -1085,6 +1192,7 @@ class MainSlashCommandRegistry:
                 _DESCRIPTION_BUDDY.bind(),
                 action=self._buddy.handle,
                 subcommands=self._buddy.subcommands,
+                subcommand_arguments={"name": SubcommandArgument()},
                 man_page=_MAN_BUDDY_BODY.bind(),
             ),
             SlashCommandDef(

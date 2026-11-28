@@ -11,6 +11,7 @@ Skill 是一组可复用的操作说明，可以附带参考资料和脚本，�
 | iCode 用户 Skill 目录 | 希望 iCode 中所有“内置”类型的智能体都能使用           | 始终自动加载 |
 | Agent Skills 共享目录 | 希望在 iCode 与其他支持 Agent Skills 的工具之间共享 | 默认自动加载，可针对智能体关闭 |
 | `<working-directory>/.agents/skills` | 只希望在当前工作目录中使用                         | 勾选“加载工作目录 Skills”后才加载，也可针对智能体关闭 |
+| 工作区文件夹中的 `.agents/skills` | 供该工作区的会话使用 | 受“加载工作目录 Skills”和智能体的工作文件夹 Skill 开关控制 |
 | 自定义目录 | 希望从指定位置加载                            | 需要在相应智能体配置中手动添加 |
 
 其中，`<working-directory>` 表示当前工作目录。工作目录中的 Skill 随仓库而来，因此需要先在“设置 → 安全管控 → 工作目录信任”中勾选“加载工作目录 Skills”（`workdir.skills_enabled`），iCode 才会加载。工作目录中有未加载的 Skill 时，iCode 会弹出提示。切换工作目录后，iCode 会重新加载新工作目录中的 Skill。
@@ -22,7 +23,7 @@ Skill 是一组可复用的操作说明，可以附带参考资料和脚本，�
 | iCode 用户 Skill 目录 | `~/.chrys/skills` | `%APPDATA%\chrys\skills` |
 | Agent Skills 共享目录 | `~/.agents/skills` | `%USERPROFILE%\.agents\skills` |
 
-对于前三种安装位置，将 Skill 目录复制或移动到对应位置即可。使用自定义目录时，无需移动 Skill，只需在相应智能体的配置中添加 Skill 所在目录。
+对于默认安装位置，将 Skill 目录复制或移动到对应位置即可。使用自定义目录时，无需移动 Skill，只需在相应智能体的配置中添加 Skill 所在目录。
 
 iCode 会在已配置的 Skill 目录及其最多两层子目录中查找 `SKILL.md` 文件。找到 `SKILL.md` 后，将所在目录识别为一个 Skill 目录，不再继续查找其中嵌套的 Skill。
 
@@ -102,7 +103,8 @@ Skill 通常无需手动调用。当任务与某个 Skill 的描述匹配时，�
 2. iCode 用户 Skill 目录；
 3. Agent Skills 共享目录；
 4. 当前工作目录中的 Skill；
-5. 智能体配置文件中的内嵌 Skill，按其定义顺序。
+5. 当前[工作区已登记的参考文件夹](../daily-use/workspaces.md#工作区)中的 Skill，按工作区中的文件夹顺序。如果 ACP 编辑器重新打开会话时提供了目录列表，只有列表中已登记为参考文件夹的目录才提供 Skill。工作流节点不加载工作区参考文件夹中的 Skill。
+6. 智能体配置文件中的内嵌 Skill，按其定义顺序。
 
 如果同一个安装位置或自定义目录中存在多个同名 Skill，其发现顺序不确定。为确保加载指定版本，请仅保留其中一个。
 

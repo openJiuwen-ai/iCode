@@ -167,6 +167,7 @@ def _run_existing_session_ready(
             calls.append(("welcome", (profile, cwd)))
 
         def set_session_id(self, session_id: str) -> None:
+            self.session_id = session_id
             calls.append(("session_id", session_id))
 
         def set_workspace_cwd(self, cwd: str) -> None:
@@ -358,6 +359,7 @@ def test_session_ready_for_new_session_resets_terminal_title_to_cwd(tmp_path: Pa
             calls.append(("welcome", (profile, cwd)))
 
         def set_session_id(self, session_id: str) -> None:
+            self.session_id = session_id
             calls.append(("session_id", session_id))
 
         def set_workspace_cwd(self, cwd: str) -> None:
@@ -572,6 +574,7 @@ def test_session_ready_for_new_session_clears_todo_state() -> None:
             return
 
         def set_session_id(self, session_id: str) -> None:
+            self.session_id = session_id
             return
 
         def set_workspace_cwd(self, cwd: str) -> None:

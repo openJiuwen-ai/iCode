@@ -1313,7 +1313,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 screen.cancel_startup_session_restore()
                 screen.set_startup_agent_loading(True)
                 await self._engine.reset_after_failed_startup_restore()
-                if await self._choose_new_startup_session(screen, problem):
+                screen.set_startup_workspace_pending(False)
+                start_new = await self._choose_new_startup_session(screen, problem)
+                screen.set_startup_workspace_pending(True)
+                if start_new:
                     self._startup_session_id = ""
                     await self._flush_deferred_settings_warnings()
             if self._startup_workspace_id is None:
@@ -1328,6 +1331,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            screen.set_startup_workspace_pending(False)
             if self._startup_workspace_id is not None:
                 display = workspace_error_display(exc)
                 message = render_str(self.localizer, display) if display is not None else str(exc)

@@ -16,6 +16,12 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 
+class KeepFocusButton(Button):
+    """A button that keeps keyboard focus where it was when clicked."""
+
+    FOCUS_ON_CLICK = False
+
+
 @dataclass(frozen=True, slots=True)
 class DialogButtonSpec:
     """Button configuration for :class:`DialogButtonRow`."""
@@ -25,6 +31,7 @@ class DialogButtonSpec:
     variant: Literal["default", "primary", "success", "warning", "error"] = "primary"
     flat: bool = True
     disabled: bool = False
+    focus_on_click: bool = True
 
 
 class DialogButtonRow(HorizontalGroup):
@@ -49,7 +56,8 @@ class DialogButtonRow(HorizontalGroup):
 
     def compose(self) -> ComposeResult:
         for button in self._buttons:
-            yield Button(
+            button_type = Button if button.focus_on_click else KeepFocusButton
+            yield button_type(
                 button.label,
                 id=button.id,
                 variant=button.variant,

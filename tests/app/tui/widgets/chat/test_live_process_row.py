@@ -1325,7 +1325,7 @@ async def test_a_paused_sub_agent_shows_its_group_until_it_resumes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.5 the end of the turn
+# Live rows at turn completion
 # ---------------------------------------------------------------------------
 
 
@@ -1519,7 +1519,7 @@ async def test_continuing_a_recovered_turn_folds_only_new_steps_until_it_succeed
 
 
 # ---------------------------------------------------------------------------
-# §4.5 segment boundaries
+# Live row boundaries between messages
 # ---------------------------------------------------------------------------
 
 

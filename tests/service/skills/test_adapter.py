@@ -13,12 +13,15 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from html import escape as xml_escape
 from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
 
+from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.service.profiles.agents.loader import load_profile_from_yaml
 from chrys.service.profiles.agents.schema import SkillConfig, SkillResourceConfig, SkillsConfig, SkillScriptConfig
@@ -35,6 +38,7 @@ from chrys.service.skills.provider import (
     _create_static_instructions,
     _render_catalog_block,
 )
+from tests.support.symlinks import symlink_or_skip
 
 
 def test_build_inline_skill_basic() -> None:
@@ -324,6 +328,57 @@ def _isolate_auto_skill_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     fake_platform = type("P", (), {"config_dir": fake_chrys_dir})()
     monkeypatch.setattr("chrys.foundation.platform.get_platform", lambda: fake_platform)
     monkeypatch.setattr("chrys.service.skills.adapter.user_agents_dir", lambda: fake_agents_root)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("profile_enabled", [False, True])
+def test_workspace_skill_paths_follow_workspace_gates_and_keep_unspecified_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool, profile_enabled: bool
+) -> None:
+    from chrys.service.skills.adapter import _collect_skill_paths
+
+    cwd, primary, related = (tmp_path / name for name in ("cwd", "primary", "related"))
+    runtime = SessionEnvironment.capture(workspace=Workspace.from_cwd(str(cwd)))
+    _isolate_auto_skill_dirs(tmp_path, monkeypatch)
+    config = SkillsConfig(paths=["configured"], auto_load_cwd_agents_skills=profile_enabled)
+    expected = [
+        str(cwd / "configured"),
+        str(tmp_path / "chrys-config" / "skills"),
+        str(tmp_path / "agents-root" / "skills"),
+    ]
+    if enabled and profile_enabled:
+        expected.append(str(cwd / ".agents" / "skills"))
+    # The old directory list is unchanged, including optional missing roots.
+    assert _collect_skill_paths(config, runtime, workdir_skills_enabled=enabled) == expected
+    primary.mkdir()
+    related.mkdir()
+    workspace_runtime = replace(runtime, workspace_folders=(str(primary), str(related)))
+    workspace_expected = [*expected]
+    if enabled and profile_enabled:
+        workspace_expected.extend(str(root / ".agents" / "skills") for root in (primary, related))
+    assert _collect_skill_paths(config, workspace_runtime, workdir_skills_enabled=enabled) == workspace_expected
+
+
+def test_workspace_skill_paths_read_workspace_and_alias_roots_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chrys.service.skills.adapter import _collect_skill_paths
+
+    cwd, related, alias = (tmp_path / name for name in ("cwd", "related", "alias"))
+    for root in (cwd, related):
+        (root / ".agents" / "skills").mkdir(parents=True)
+    symlink_or_skip(alias, related, target_is_directory=True)
+    runtime = replace(
+        SessionEnvironment.capture(workspace=Workspace.from_cwd(str(cwd))),
+        workspace_folders=(str(cwd), str(related), str(alias)),
+    )
+    _isolate_auto_skill_dirs(tmp_path, monkeypatch)
+    assert _collect_skill_paths(SkillsConfig(), runtime, workdir_skills_enabled=True) == [
+        str(tmp_path / "chrys-config" / "skills"),
+        str(tmp_path / "agents-root" / "skills"),
+        str(cwd / ".agents" / "skills"),
+        str(related / ".agents" / "skills"),
+    ]
 
 
 def test_collect_skill_paths_auto_loads_cwd_agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

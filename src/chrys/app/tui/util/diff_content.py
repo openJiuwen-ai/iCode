@@ -4,16 +4,14 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import re
-import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from chrys.app.tui.util.diff_entries import MAX_COUNTED_LINES, DiffFileEntry
 from chrys.foundation.text.encoding import EncodingDetector, decode_bytes
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.service.mutations.store import SnapshotStore
 
 if TYPE_CHECKING:
@@ -100,34 +98,8 @@ def compute_preview_counts(entry: DiffFileEntry, directory: Path | None) -> Diff
 
 
 async def count_preview_entry(entry: DiffFileEntry, directory: Path | None) -> DiffFileEntry:
-    """Let cancellation/exit abandon a count without joining difflib's thread.
-
-    Neither asyncio's default executor nor ThreadPoolExecutor(wait=False)
-    suffices: both join running work at shutdown. This daemon only reads
-    snapshots; the event loop alone owns cache and widget updates.
-    """
-    loop = asyncio.get_running_loop()
-    answer: asyncio.Future[DiffFileEntry] = loop.create_future()
-
-    def deliver(result: DiffFileEntry | Exception) -> None:
-        if answer.done():
-            return
-        if isinstance(result, Exception):
-            answer.set_exception(result)
-        else:
-            answer.set_result(result)
-
-    def work() -> None:
-        result: DiffFileEntry | Exception
-        try:
-            result = compute_preview_counts(entry, directory)
-        except Exception as exc:
-            result = exc
-        with contextlib.suppress(RuntimeError):  # The app may already have closed its loop.
-            loop.call_soon_threadsafe(deliver, result)
-
-    threading.Thread(target=work, name="icode-preview-count", daemon=True).start()
-    return await answer
+    """Count off the loop; cancellation or exit abandons difflib's thread instead of joining it."""
+    return await run_abandonable("icode-preview-count", compute_preview_counts, entry, directory)
 
 
 class PreviewCountCache:

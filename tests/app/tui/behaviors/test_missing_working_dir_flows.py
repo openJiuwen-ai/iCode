@@ -84,7 +84,7 @@ class _Engine(SessionGenerationEngine):
         )
         self.turn_lifecycle_task: asyncio.Task[None] | None = None
 
-    async def start(self, _profile: AgentProfile) -> None:
+    async def start(self, _profile: AgentProfile, *, workspace_id: str | None = None) -> None:
         await self._bus.publish(
             SessionReady(
                 agent_profile=_PROFILE.name,
@@ -110,7 +110,7 @@ def _make_app(tmp_path: Path, bus: EventBus, engine: _Engine) -> ChrysApp:
 
 def _folders(tmp_path: Path) -> tuple[Path, Path, Path]:
     """The workspace that will be deleted, its parent, and another folder beside it."""
-    parent = tmp_path / "projects"
+    parent = tmp_path / "workspaces"
     workspace = parent / "doomed"
     replacement = parent / "replacement"
     workspace.mkdir(parents=True)

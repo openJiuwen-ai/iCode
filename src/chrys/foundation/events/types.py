@@ -25,6 +25,7 @@ from chrys.foundation.models.hook_confirmations import (
 )
 from chrys.foundation.models.hook_executions import HookExecutionView
 from chrys.foundation.models.invocations import ContentChannel, ContentStatus, InvocationOrigin
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.models.workflow_session import (
@@ -43,6 +44,9 @@ if TYPE_CHECKING:
     # the real dataclass it carries.  ``from __future__ import annotations``
     # (top of file) keeps all annotations as strings, so this import never
     # executes at runtime.
+    import asyncio
+
+    from chrys.foundation.models.workspace_operations import WorkspaceDefinitionEdit
     from chrys.service.mutations.types import RestoreResult
     from chrys.service.state.store import SessionReplay
     from chrys.service.workspaces.registry import RegistrySnapshot
@@ -433,9 +437,18 @@ class WorkspaceChange(Event):
     primary_cwd: str = ""
     workspace_operation: WorkspaceOperation = field(default_factory=default_workspace_operation)
     workspace_id: str | None = None
+    """For ALIGN_MEMBERSHIP, the installed workspace ID the requester observed; None means Unspecified."""
     require_leave_confirmation: bool = True
     confirmation: WorkspaceConfirmation | None = None
     workspace_snapshot: RegistrySnapshot | None = None
+    delete_workspace: Workspace | None = None
+    """Delete this exact definition at the live workspace's install boundary."""
+    edit_workspace: WorkspaceDefinitionEdit | None = None
+    """Save this edit when the runtime can adopt it."""
+    report_error: bool = True
+    """Also publish the failure separately if the requester does not present its own reply."""
+    stop: asyncio.Event | None = None
+    """Set by the requester to abandon the change. It acts only until the change first writes the registry or installs."""
 
 
 @dataclass
@@ -1465,6 +1478,8 @@ class AgentLoadFailed(Event):
     """Locale-neutral display reference for future migrated failure producers."""
     display_hint: MessageRef | None = None
     """Shown after ``display_message``; never without it."""
+    report_error: bool = True
+    """Whether the load UI owns the error presentation."""
 
 
 @dataclass
@@ -1629,6 +1644,10 @@ class SessionSaved(Event):
     """A session has been auto-saved (backend → frontend, triggers history refresh)."""
 
     session_id: str | None = ""
+    updated_at: datetime | None = None
+    """The persisted ordering time. A save can preserve the previous value."""
+    last_surface: SessionSurface | None = None
+    """The persisted surface; ``None`` when the session records none (it then counts as TUI)."""
 
 
 @dataclass

@@ -22,13 +22,14 @@ provider is built, even though discovery is otherwise lazy/per-refresh.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from chrys.foundation.models.workspace import path_identity
 from chrys.foundation.platform.paths import is_absolute_path, resolve_cross_platform_path
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.service.skills.loader import (
     SKILL_FILE_NAME,
     build_inline_skill_content,
@@ -202,7 +203,7 @@ def _collect_skill_paths(
 ) -> list[str]:
     """Merge profile skill paths with the default user/working directory skills directories.
 
-    Three auto-loaded locations:
+    Auto-loaded locations:
 
     * ``~/.chrys/skills/`` — always included so Chrys-specific skills added
       later in a session can be discovered without an agent rebuild.
@@ -212,8 +213,10 @@ def _collect_skill_paths(
     * ``<runtime.cwd>/.agents/skills/`` — included when ``runtime`` is provided,
       the user's ``workdir.skills_enabled`` setting (*workdir_skills_enabled*)
       is on AND ``config.auto_load_cwd_agents_skills`` is True.  Reloaded
-      automatically when the workspace cwd changes because the agent is rebuilt
-      with a fresh ``SessionEnvironment``.
+      automatically when the working directory or workspace changes because the agent
+      is rebuilt with a fresh ``SessionEnvironment``.
+    * Each existing reference folder's own ``.agents/skills/`` follows
+      the working directory under the same gates, in committed workspace order.
     """
     # Local import: tests monkeypatch chrys.foundation.platform.get_platform, and a
     # module-level from-import would pin the unpatched function at import time.
@@ -248,8 +251,41 @@ def _collect_skill_paths(
     if runtime is not None and workdir_skills_enabled and config.auto_load_cwd_agents_skills and runtime.cwd:
         cwd_dir = Path(runtime.cwd) / ".agents" / "skills"
         append_unique(str(cwd_dir.expanduser().resolve()))
+        # A reference folder may alias an existing source through links or filesystem casing.
+        identities = {path_identity(path) for path in paths}
+        for folder in runtime.workspace_folders:
+            if not Path(folder).is_dir():
+                continue
+            skill_dir = str((Path(folder) / ".agents" / "skills").expanduser().resolve())
+            identity = path_identity(skill_dir)
+            if identity not in identities:
+                append_unique(skill_dir)
+                identities.add(identity)
 
     return paths
+
+
+def _prepare_skill_paths(
+    config: SkillsConfig, runtime: SessionEnvironment | None, *, workdir_skills_enabled: bool
+) -> tuple[list[str], list[SkillProviderWarning]]:
+    paths = _collect_skill_paths(config, runtime, workdir_skills_enabled=workdir_skills_enabled)
+    warnings: list[SkillProviderWarning] = []
+    missing_seen: set[str] = set()
+    for raw in config.paths:
+        resolved = _resolve_config_path(raw, runtime)
+        if resolved in missing_seen:
+            continue
+        missing_seen.add(resolved)
+        # Relative skill paths are cwd-scoped and often optional across session
+        # restores or directory changes; warn only for stable absolute config.
+        if not Path(resolved).is_dir() and _is_absolute_config_path(raw):
+            warnings.append(
+                SkillProviderWarning(
+                    code="skill_path_missing",
+                    message=f"Skill path '{raw}' (resolved to '{resolved}') does not exist; skipping.",
+                )
+            )
+    return paths, warnings
 
 
 async def create_skills_provider(
@@ -268,7 +304,7 @@ async def create_skills_provider(
             default subprocess cwd when the agent does not supply ``cwd``.
         session_dir: Current session directory for recoverable script-output spills.
         workdir_skills_enabled: The user's ``workdir.skills_enabled`` setting;
-            the working folder's ``.agents/skills`` loads only when it is on.
+            the working directory and workspace reference folders' ``.agents/skills`` load only when it is on.
         discovery_scope: Optional build-local initial file discovery. It is
             never retained by the provider's runtime refresh callback.
 
@@ -279,26 +315,12 @@ async def create_skills_provider(
     return ``None``.
 
     Async because discovery runs eagerly once (off the event loop via
-    ``asyncio.to_thread``) so callers can query ``skill_names`` /
+    a reader thread) so callers can query ``skill_names`` /
     ``skill_sources`` / ``skill_details`` synchronously during startup.
     """
-    paths = _collect_skill_paths(config, runtime, workdir_skills_enabled=workdir_skills_enabled)
-    warnings: list[SkillProviderWarning] = []
-    missing_seen: set[str] = set()
-    for raw in config.paths:
-        resolved = _resolve_config_path(raw, runtime)
-        if resolved in missing_seen:
-            continue
-        missing_seen.add(resolved)
-        # Relative skill paths are cwd-scoped and often optional across session
-        # restores or directory changes; warn only for stable absolute config.
-        if not Path(resolved).is_dir() and _is_absolute_config_path(raw):
-            warnings.append(
-                SkillProviderWarning(
-                    code="skill_path_missing",
-                    message=f"Skill path '{raw}' (resolved to '{resolved}') does not exist; skipping.",
-                )
-            )
+    paths, warnings = await run_abandonable(
+        "icode-skill-paths", _prepare_skill_paths, config, runtime, workdir_skills_enabled=workdir_skills_enabled
+    )
 
     inline_skills: list[Skill] = []
     for s in config.inline:
@@ -337,7 +359,8 @@ async def create_skills_provider(
         file_skills: list[Skill] = []
         failures: list[SkillLoadFailure] = []
         if paths:
-            file_skills, failures = await asyncio.to_thread(
+            file_skills, failures = await run_abandonable(
+                "icode-skills",
                 discover_file_skills,
                 paths,
                 script_extensions=script_ext,

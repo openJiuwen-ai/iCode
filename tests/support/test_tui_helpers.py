@@ -178,3 +178,55 @@ def test_suggestion_screen_refuses_a_removed_field() -> None:
     with pytest.raises(TypeError, match="_agent_running"):
         screen._agent_running = True  # type: ignore[attr-defined]
     assert screen.state.run.agent_running is True
+
+
+async def test_workspace_read_settler_waits_for_a_read_requested_during_one(tmp_path, monkeypatch):
+    """A refresh asked for while a read runs becomes one more read; the settler waits for it too."""
+    import asyncio
+
+    from chrys.app.tui.theme import TuiVariableDefaultsMixin
+    from chrys.app.tui.widgets.sidebar.workspaces import WorkspacePanel
+    from chrys.service.state.store import JsonFileStateStore
+    from chrys.service.workspaces.registry import WorkspaceRegistry
+    from tests.support.async_tasks import running_task
+    from tests.support.tui_helpers import WidgetApp, settle_workspace_page_reads
+    from tests.support.waiting import wait_for
+
+    registry = WorkspaceRegistry(tmp_path / "workspaces.json")
+    store = JsonFileStateStore(tmp_path / "sessions", workspace_registry=registry)
+    original = store.open_session_listing
+    started: list[asyncio.Event] = [asyncio.Event(), asyncio.Event()]
+    releases: list[asyncio.Event] = [asyncio.Event(), asyncio.Event()]
+    reads = 0
+
+    async def gated(*, kind):
+        nonlocal reads
+        index = min(reads, 1)
+        reads += 1
+        started[index].set()
+        await releases[index].wait()
+        return await original(kind=kind)
+
+    monkeypatch.setattr(store, "open_session_listing", gated)
+    panel = WorkspacePanel()
+
+    class WorkspaceReadApp(TuiVariableDefaultsMixin, WidgetApp):
+        pass
+
+    async with WorkspaceReadApp(lambda: panel).run_test() as pilot:
+        panel.set_session(None, store, "current", "", registry=registry)
+        await wait_for(started[0].is_set, pilot=pilot)
+        # Refreshes asked for during a read become one more read after it.
+        panel.refresh_sessions()
+        panel.refresh_sessions()
+        panel.refresh_sessions()
+        async with running_task(settle_workspace_page_reads(panel)) as task:
+            try:
+                releases[0].set()
+                await wait_for(started[1].is_set, pilot=pilot)
+                assert not task.done()
+            finally:
+                releases[0].set()
+                releases[1].set()
+            await task
+        assert reads == 2

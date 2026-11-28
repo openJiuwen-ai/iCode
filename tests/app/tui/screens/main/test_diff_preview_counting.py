@@ -27,6 +27,7 @@ from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 from tests.app.tui.screens.main.test_diff_preview import RefreshHarness, data, entry
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
+from tests.support.tui_helpers import show_sidebar_tab
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
@@ -376,6 +377,7 @@ async def test_count_completion_only_repaints_a_populated_main_screen(
         async with app.run_test(size=(140, 40)) as pilot:
             main = app._main_screen
             assert main is not None
+            await show_sidebar_tab(pilot, main, "tab-toc")
             transcript = [
                 widget for i in range(24) for widget in (UserMessage(f"Question {i}"), AgentMessage(f"Answer {i}"))
             ]
@@ -459,7 +461,10 @@ def exit_probe() -> None:
 
         bus = EventBus()
         app = make_chrys_app(Path.cwd() / "sessions", event_bus=bus)
-        async with app.run_test(size=(120, 36)):
+        async with app.run_test(size=(120, 36)) as pilot:
+            main = app._main_screen
+            assert main is not None
+            await show_sidebar_tab(pilot, main, "tab-toc")
             await bus.publish(SessionReady(session_id="s1", agent_profile="Code"), raise_handler_errors=True)
             await wait_for(started.is_set, description="real app is counting in a thread")
             if finished.is_set():

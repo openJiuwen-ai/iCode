@@ -141,6 +141,7 @@ def test_build_slash_commands_uses_agents_and_no_legacy_entries() -> None:
     assert "fork" in names
     assert "clear" in names
     assert "rename" in names
+    assert "workspace" in names
     assert "agent" not in names  # "agent" is now an alias, not a primary name
     assert "agent_config" not in names
     assert "mcp" not in names
@@ -598,3 +599,15 @@ async def test_opening_the_list_under_new_folders_starts_one_shortcut_read() -> 
     for worker in started:
         await asyncio.wait_for(worker.wait(), ENGINE_TURN_TIMEOUT)
     assert len(started) == 1
+
+
+def test_enter_runs_a_command_when_its_argument_suggestions_are_empty():
+    screen = make_suggestion_screen()
+    handler = make_suggestion_handler(screen)
+    command = next(item for item in handler.build_slash_commands() if item.name == "workspace")
+    called = []
+    command.action = called.append
+    command.subcommands = list
+    handler.on_suggestion_selected("commands", "workspace", execute=True)
+    assert called == [""]
+    assert not screen.suggestion_list.is_visible

@@ -13,6 +13,22 @@ if TYPE_CHECKING:
 
     from rich.text import Text
 
+    from chrys.service.state.store import SessionMeta
+
+
+_SESSION_ID_PREVIEW_LEN = 8
+"""Characters to show when a session has no title."""
+
+
+def fallback_title(session_id: str) -> str:
+    """The preview an unsaved or untitled session lists under."""
+    return f"{session_id[:_SESSION_ID_PREVIEW_LEN]}.."
+
+
+def title_display(meta: SessionMeta) -> str:
+    """User-facing title, falling back to the same session-id preview F1 shows."""
+    return meta.display_title or fallback_title(meta.session_id)
+
 
 def format_token_count(n: int) -> str:
     """Format a token count with compact human-friendly units."""

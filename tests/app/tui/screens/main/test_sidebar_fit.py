@@ -229,7 +229,7 @@ async def test_restoring_the_sidebar_during_startup_keeps_the_active_tab_underli
 @pytest.mark.asyncio
 async def test_restoring_the_sidebar_refits_the_tab_strip_after_a_hidden_resize(tmp_path: Path) -> None:
     app = make_chrys_app(tmp_path / "sessions")
-    async with app.run_test(size=(148, 24)) as pilot:
+    async with app.run_test(size=(190, 24)) as pilot:
         sidebar = app.screen.query_one(SidebarPanel)
         tabs = sidebar.query_one(Tabs)
         strip = tabs.query_one("#tabs-scroll")
@@ -244,8 +244,9 @@ async def test_restoring_the_sidebar_refits_the_tab_strip_after_a_hidden_resize(
                 and strip.region.right == sidebar.content_region.right - int(overflow)
             )
 
-        await wait_for(lambda: sidebar.region.width == 44 and not right.visible, pilot=pilot)
-        for width, overflow, tight in ((120, True, False), (40, True, True), (55, True, False), (148, False, False)):
+        # With the Workspace tab every tab fits from a 57-cell sidebar (30% of 190 columns).
+        await wait_for(lambda: sidebar.region.width == 57 and not right.visible, pilot=pilot)
+        for width, overflow, tight in ((120, True, False), (40, True, True), (55, True, False), (190, False, False)):
             await pilot.press("ctrl+g")
             await wait_for(lambda: not sidebar.display, pilot=pilot)
             await resize_when_settled(pilot, width, 24)

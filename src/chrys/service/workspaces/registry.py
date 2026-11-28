@@ -4,24 +4,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
+import functools
 import json
 import logging
 import os
 import re
 import stat as stat_mod
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
-from chrys.foundation.i18n import DisplayPath, msg
+from chrys.foundation.i18n import SUPPORTED_LOCALES, DisplayPath, Localizer, msg
 from chrys.foundation.i18n.formatting import format_message
-from chrys.foundation.models.workspace import WorkingDir, Workspace, control_chars_as_spaces
+from chrys.foundation.models.workspace import WorkingDir, Workspace, control_chars_as_spaces, path_identity
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import atomic_write_text
 from chrys.foundation.util.lock import FileLock
@@ -44,9 +48,18 @@ _SELECTOR_NOT_FOUND = msg("workspaces.selector_not_found", fallback="No workspac
 _SELECTOR_AMBIGUOUS = msg("workspaces.selector_ambiguous", fallback="Workspace selector is ambiguous: {selector}")
 _NAME_EMPTY = msg("workspaces.name_empty", fallback="Enter a workspace name.")
 _NAME_EXISTS = msg("workspaces.name_exists", fallback="A workspace with the name {name} already exists.")
+_NAME_RESERVED = msg("workspaces.name_reserved", fallback="The workspace name {name} is reserved.")
 _NAME_CONTROL_CHAR = msg("workspaces.name_control_char", fallback="A workspace name can't contain control characters.")
 UNSPECIFIED = msg("workspaces.unspecified", fallback="Unspecified")
-_OVERLAP = msg("workspaces.overlap", fallback="Overlaps with {path}")
+_PRIMARY_OVERLAP = msg(
+    "workspaces.primary_overlap", fallback="Reference folder {folder} overlaps with the primary folder {primary}."
+)
+_REFERENCE_OVERLAP = msg("workspaces.reference_overlap", fallback="Reference folders {first} and {second} overlap.")
+_SAME_FOLDERS = msg(
+    "workspaces.same_folders",
+    fallback="Workspace “{name}” already has the same primary and reference folders. "
+    "Add or remove a reference folder, or use “{name}”.",
+)
 _FOLDER_INVALID = msg("workspaces.folder_invalid", fallback="Workspace folders must use absolute paths.")
 _EXPECTED_OBJECT = msg(
     "workspaces.registry_expected_object",
@@ -103,8 +116,9 @@ _REGISTRY_NAME_ERRORS = {
 
 
 _LOCK_TIMEOUT = 1.0
-_WORKSPACE_ID_PREFIX = "ws_"
-_WORKSPACE_ID = re.compile(rf"{_WORKSPACE_ID_PREFIX}[0-9a-f]{{32}}")
+_LOCK_RETRY_INTERVAL = 0.05
+WORKSPACE_ID_PREFIX = "ws_"
+_WORKSPACE_ID = re.compile(rf"{WORKSPACE_ID_PREFIX}[0-9a-f]{{32}}")
 
 
 def is_workspace_id(value: str) -> bool:
@@ -118,6 +132,30 @@ def _write_failed(error: OSError) -> WorkspaceRegistryError:
         _WRITE_FAILED.bind(reason=str(error)),
         code="workspace_registry_write_failed",
     )
+
+
+class _RegistryLockBusy(Exception):
+    """A one-shot write attempt could not acquire the registry lock."""
+
+    def __init__(self, error: TimeoutError) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+async def retry_workspace_write(write: Callable[[], object]) -> None:
+    """Retry lock acquisition, with validation and the write in one synchronous attempt."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _LOCK_TIMEOUT
+    while True:
+        try:
+            write()
+        except _RegistryLockBusy as busy:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise _write_failed(busy.error) from busy.error
+            await asyncio.sleep(min(_LOCK_RETRY_INTERVAL, remaining))
+        else:
+            return
 
 
 def _read_regular_text(path: Path) -> str:
@@ -136,6 +174,19 @@ def _file_signature(stat: os.stat_result) -> tuple[int, int, int, int, int]:
 
 def _name_key(name: str) -> str:
     return name.strip().casefold()
+
+
+def is_unspecified_workspace_name(name: str, localizer: Localizer | None = None) -> bool:
+    """Match the English name and the *localizer*'s; without one, any supported language's."""
+    key = _name_key(name)
+    if localizer is None:
+        return key in _reserved_workspace_names()
+    return key in (_name_key(UNSPECIFIED.fallback), _name_key(localizer.render(UNSPECIFIED.bind())))
+
+
+@cache
+def _reserved_workspace_names() -> frozenset[str]:
+    return frozenset(_name_key(Localizer(locale).render(UNSPECIFIED.bind())) for locale in SUPPORTED_LOCALES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +239,10 @@ class WorkspaceRegistryError(ValueError):
         self.code = code
 
 
+class WorkspaceNameError(WorkspaceRegistryError):
+    """A rejected workspace name."""
+
+
 def workspace_not_found(workspace_id: str | None) -> WorkspaceRegistryError:
     """A workspace id missing from the list; the id is internal, so only the log names it."""
     return WorkspaceRegistryError(
@@ -229,7 +284,15 @@ class _NewerRegistry(WorkspaceRegistryError):
         )
 
 
-_PRIMARY_IMMUTABLE = msg(
+WORKSPACE_CHANGED = msg("workspaces.selection_changed", fallback="The workspace changed. Try again.")
+
+
+def _check_expected_workspace(workspace: Workspace | None, expected: Workspace | None) -> None:
+    if expected is not None and workspace != expected:
+        raise WorkspaceRegistryError("The workspace changed. Try again.", WORKSPACE_CHANGED.bind())
+
+
+PRIMARY_IMMUTABLE = msg(
     "workspaces.primary_immutable",
     fallback="The primary folder cannot be changed. Create a new workspace to use a different primary folder.",
 )
@@ -243,14 +306,41 @@ def _tidy_path(path: str) -> str:
     return drive + (os.sep if rest[:1] in separators and rest else "") + os.sep.join(parts)
 
 
-def _validate_name(name: str, workspaces: tuple[Workspace, ...], workspace_id: str | None) -> str:
+def workspace_folder_path(cwd: str, path: str) -> str:
+    """Return the entered path's absolute realpath, resolving symlinks.
+
+    Unlike ``workspace_folder_spelling``, this returns the physical path rather than keeping symlinks.
+    """
+    try:
+        return _tidy_path(os.path.realpath(os.path.join(cwd, os.path.expanduser(path))))
+    except (OSError, ValueError) as error:
+        raise WorkspaceRegistryError("Invalid workspace folder path.", _FOLDER_INVALID.bind()) from error
+
+
+def workspace_folder_spelling(cwd: str, path: str) -> str:
+    """The entered path made absolute, symlinks kept, to compare with registered spellings."""
+    return _tidy_path(os.path.join(cwd, os.path.expanduser(path)))
+
+
+def validate_workspace_name(
+    name: str, workspaces: tuple[Workspace, ...], workspace_id: str | None = None, *, check_reserved: bool = True
+) -> str:
+    """Validate a workspace name against a definition snapshot."""
     name = name.strip()
     if not name:
-        raise WorkspaceRegistryError("Enter a workspace name.", _NAME_EMPTY.bind())
+        raise WorkspaceNameError("Enter a workspace name.", _NAME_EMPTY.bind())
     if control_chars_as_spaces(name) != name:
-        raise WorkspaceRegistryError("A workspace name can't contain control characters.", _NAME_CONTROL_CHAR.bind())
-    if any(workspace.id != workspace_id and _name_key(workspace.name) == _name_key(name) for workspace in workspaces):
-        raise WorkspaceRegistryError(f"A workspace with the name {name} already exists.", _NAME_EXISTS.bind(name=name))
+        raise WorkspaceNameError("A workspace name can't contain control characters.", _NAME_CONTROL_CHAR.bind())
+    key = _name_key(name)
+    if (
+        check_reserved
+        and key in _reserved_workspace_names()
+        and not any(workspace.id == workspace_id and workspace.name == name for workspace in workspaces)
+    ):
+        message = _NAME_RESERVED.bind(name=name)
+        raise WorkspaceNameError(format_message(message), message)
+    if any(workspace.id != workspace_id and _name_key(workspace.name) == key for workspace in workspaces):
+        raise WorkspaceNameError(f"A workspace with the name {name} already exists.", _NAME_EXISTS.bind(name=name))
     return name
 
 
@@ -267,25 +357,76 @@ def _validate_folder(path: str) -> str:
     return _tidy_path(path)
 
 
-def _validate_entry(
-    name: str,
-    primary: str,
-    folders: Sequence[str],
-    *,
-    workspaces: tuple[Workspace, ...],
-    previous: Workspace | None = None,
-) -> tuple[str, str, tuple[str, ...]]:
-    """Validate a proposed entry. Only a new primary must exist."""
-    name = _validate_name(name, workspaces, previous.id if previous is not None else None)
-    primary = _validate_folder(primary)
-    related = tuple(_validate_folder(path) for path in folders)
-    if previous is not None and primary != previous.primary_cwd:
-        raise WorkspaceRegistryError("The primary folder cannot be changed.", _PRIMARY_IMMUTABLE.bind())
-    if previous is None and not os.path.isdir(primary):
+def _validate_folders(primary: str, folders: Sequence[str]) -> tuple[str, tuple[str, ...]]:
+    return _validate_folder(primary), tuple(_validate_folder(path) for path in folders)
+
+
+def _probe_folders(primary: str, folders: Sequence[str], *, new: bool) -> None:
+    """The folder checks that read the filesystem; writers run them before taking the registry lock.
+
+    A folder on a mount that stops answering then holds up only this edit, not
+    every process waiting to write the registry.
+    """
+    primary, related = _validate_folders(primary, folders)
+    if new and not os.path.isdir(primary):
         raise WorkspaceRegistryError(
             f"Primary folder does not exist: {primary}", PRIMARY_MISSING.bind(path=DisplayPath(primary))
         )
-    return name, primary, related
+    # Each path and its ancestors are resolved once, so checking a pair is a set lookup.
+    identity_of, realpath = functools.cache(path_identity), functools.cache(os.path.realpath)
+
+    @functools.cache
+    def lineage(path: str) -> frozenset[tuple[int, int] | str]:
+        resolved = Path(realpath(path))
+        return frozenset(identity_of(candidate) for candidate in (resolved, *resolved.parents))
+
+    def inside(folder: str, directory: str) -> bool:
+        identity = identity_of(folder)
+        if isinstance(identity, str):  # A missing folder compares through its existing ancestor.
+            return contains(folder, directory, identity_of=identity_of, realpath=realpath)
+        return identity in lineage(directory)
+
+    def overlap(first: str, second: str) -> bool:
+        return inside(first, second) or inside(second, first)
+
+    for index, path in enumerate(related):
+        if overlap(path, primary):
+            message = _PRIMARY_OVERLAP.bind(folder=DisplayPath(path), primary=DisplayPath(primary))
+            raise WorkspaceRegistryError(format_message(message), message)
+        for other in related[:index]:
+            if overlap(path, other):
+                message = _REFERENCE_OVERLAP.bind(first=DisplayPath(other), second=DisplayPath(path))
+                raise WorkspaceRegistryError(format_message(message), message)
+
+
+def validate_workspace_folders(
+    primary: str,
+    folders: Sequence[str],
+    previous: Workspace | None,
+    *,
+    workspaces: Sequence[Workspace] = (),
+    probed: bool = False,
+) -> tuple[str, tuple[str, ...]]:
+    """Check the proposed folder set independently of its name; *probed* when :func:`_probe_folders` already ran."""
+    if not probed:
+        _probe_folders(primary, folders, new=previous is None)
+    primary, related = _validate_folders(primary, folders)
+    if previous is not None and primary != previous.primary_cwd:
+        raise WorkspaceRegistryError("The primary folder cannot be changed.", PRIMARY_IMMUTABLE.bind())
+    # Other definitions are compared by spelling: checking this workspace never reads another workspace's
+    # folders, which may sit on a mount that stopped answering.
+    key = os.path.normcase
+    related_keys = {key(path) for path in related}
+    for workspace in workspaces:
+        if previous is not None and workspace.id == previous.id:
+            continue
+        if (
+            key(workspace.primary_cwd) == key(primary)
+            and {key(directory.path) for directory in workspace.working_dirs} == related_keys
+        ):
+            message = _SAME_FOLDERS.bind(name=workspace.name)
+            raise WorkspaceRegistryError(format_message(message), message)
+    return primary, related
 
 
 def _definition(workspace_id: str, name: str, primary_cwd: str, folders: Sequence[str]) -> Workspace:
@@ -355,8 +496,8 @@ class WorkspaceRegistry:
             if not isinstance(name, str):
                 raise self._invalid_row(row, "name", _EXPECTED_STRING)
             try:
-                name = _validate_name(name, tuple(workspaces), None)
-            except WorkspaceRegistryError as error:
+                name = validate_workspace_name(name, tuple(workspaces), check_reserved=False)
+            except WorkspaceNameError as error:
                 reason = error.display_message.definition
                 duplicate_name = name.strip() if reason == _NAME_EXISTS else None
                 raise self._invalid_row(row, "name", _REGISTRY_NAME_ERRORS[reason], name=duplicate_name) from error
@@ -406,21 +547,6 @@ class WorkspaceRegistry:
                 error=error if isinstance(error, WorkspaceRegistryError) else _registry_unreadable(self.path)
             )
 
-    def validate(
-        self,
-        name: str,
-        primary: str,
-        folders: Sequence[str] = (),
-        *,
-        workspaces: tuple[Workspace, ...],
-        workspace_id: str | None = None,
-    ) -> tuple[str, str, tuple[str, ...]]:
-        """The same validation serves the dialog and all locked write interfaces."""
-        previous = next((workspace for workspace in workspaces if workspace.id == workspace_id), None)
-        if workspace_id is not None and previous is None:
-            raise workspace_not_found(workspace_id)
-        return self._validate_proposed(name, primary, folders, workspaces=workspaces, previous=previous)
-
     @staticmethod
     def _validate_proposed(
         name: str,
@@ -429,24 +555,29 @@ class WorkspaceRegistry:
         *,
         workspaces: tuple[Workspace, ...],
         previous: Workspace | None,
+        probed: bool = False,
     ) -> tuple[str, str, tuple[str, ...]]:
-        name, primary, related = _validate_entry(name, primary, folders, workspaces=workspaces, previous=previous)
-        paths = (primary, *related)
-        for index, path in enumerate(paths):
-            for other in paths[:index]:
-                if contains(path, other) or contains(other, path):
-                    raise WorkspaceRegistryError(f"Overlaps with {other}", _OVERLAP.bind(path=DisplayPath(other)))
+        name = validate_workspace_name(name, workspaces, previous.id if previous is not None else None)
+        primary, related = validate_workspace_folders(primary, folders, previous, workspaces=workspaces, probed=probed)
         return name, primary, related
 
     @property
     def _lock_path(self) -> Path:
         return self.path.with_suffix(".json.lock")
 
-    def _mutate[T](self, change: Callable[[builtins.list[Workspace], dict[str, str], dict[str, str]], T]) -> T:
+    def _mutate[T](
+        self, change: Callable[[builtins.list[Workspace], dict[str, str], dict[str, str]], T], *, try_lock: bool = False
+    ) -> T:
         """Commit definitions and membership in one locked read-merge-write."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with FileLock(self._lock_path, timeout=_LOCK_TIMEOUT):
+            with ExitStack() as stack:
+                try:
+                    stack.enter_context(FileLock(self._lock_path, timeout=0 if try_lock else _LOCK_TIMEOUT))
+                except TimeoutError as error:
+                    if try_lock:
+                        raise _RegistryLockBusy(error) from error
+                    raise
                 try:
                     snapshot = self._read()
                     entries = list(snapshot.workspaces)
@@ -485,50 +616,103 @@ class WorkspaceRegistry:
 
     def create(self, name: str, primary: str, folders: Sequence[str] = ()) -> Workspace:
         def change(entries: list[Workspace], _sessions: dict[str, str], used: dict[str, str]) -> Workspace:
-            valid_name, valid_primary, related = self.validate(name, primary, folders, workspaces=tuple(entries))
-            workspace = _definition(_WORKSPACE_ID_PREFIX + uuid4().hex, valid_name, valid_primary, related)
+            valid_name, valid_primary, related = self._validate_proposed(
+                name, primary, folders, workspaces=tuple(entries), previous=None, probed=True
+            )
+            workspace = _definition(WORKSPACE_ID_PREFIX + uuid4().hex, valid_name, valid_primary, related)
             entries.append(workspace)
             used[workspace.id] = ""
             return workspace
 
+        _probe_folders(primary, folders, new=True)
         return self._mutate(change)
 
-    def update(self, workspace_id: str, *, name: str, primary: str, folders: Sequence[str] = ()) -> Workspace:
+    @staticmethod
+    def check_folders(primary: str, folders: Sequence[str]) -> None:
+        """Run an edit's folder checks that read the filesystem, outside the registry lock."""
+        _probe_folders(primary, folders, new=False)
+
+    def preview_update(
+        self, snapshot: RegistrySnapshot, workspace: Workspace, name: str, folders: Sequence[str]
+    ) -> Workspace:
+        """Validate an edit before building the runtime that would use it."""
+        if snapshot.error is not None:
+            raise snapshot.error
+        _check_expected_workspace(snapshot.workspace(workspace.id), workspace)
+        valid_name, primary, related = self._validate_proposed(
+            name, workspace.primary_cwd, folders, workspaces=snapshot.workspaces, previous=workspace
+        )
+        return _definition(workspace.id, valid_name, primary, related)
+
+    def update(
+        self,
+        workspace_id: str,
+        *,
+        name: str,
+        primary: str,
+        folders: Sequence[str] = (),
+        expected: Workspace | None = None,
+        try_lock: bool = False,
+        folders_checked: bool = False,
+    ) -> Workspace:
+        """Replace a definition; *folders_checked* when :meth:`check_folders` already ran for these folders."""
+
         def proposed(workspaces: tuple[Workspace, ...], previous: Workspace) -> Workspace:
             valid_name, valid_primary, related = self._validate_proposed(
-                name, primary, folders, workspaces=workspaces, previous=previous
+                name, primary, folders, workspaces=workspaces, previous=previous, probed=True
             )
             return _definition(workspace_id, valid_name, valid_primary, related)
 
         def change(entries: list[Workspace], _sessions: dict[str, str], _used: dict[str, str]) -> Workspace:
             for index, previous in enumerate(entries):
                 if previous.id == workspace_id:
+                    _check_expected_workspace(previous, expected)
                     workspace = proposed(tuple(entries), previous)
                     entries[index] = workspace
                     return workspace
+            _check_expected_workspace(None, expected)
             raise workspace_not_found(workspace_id)
 
-        snapshot = self.snapshot()
-        previous = snapshot.workspace(workspace_id)
-        if previous is not None and previous == proposed(snapshot.workspaces, previous):
-            return previous
-        return self._mutate(change)
+        if not folders_checked:
+            self.check_folders(primary, folders)
+        return self._mutate(change, try_lock=try_lock)
 
-    def delete(self, workspace_id: str) -> None:
+    def delete(
+        self,
+        workspace_id: str,
+        *,
+        expected: Workspace | None = None,
+        clear_session_id: str | None = None,
+        try_lock: bool = False,
+    ) -> None:
+        clear_key = session_id_key(clear_session_id) if clear_session_id is not None else None
+
         def change(entries: list[Workspace], sessions: dict[str, str], used: dict[str, str]) -> None:
             for index, workspace in enumerate(entries):
                 if workspace.id == workspace_id:
+                    _check_expected_workspace(workspace, expected)
                     del entries[index]
                     used.pop(workspace_id, None)
-                    for session_id in [session_id for session_id, record in sessions.items() if record == workspace_id]:
+                    for session_id in [
+                        session_id
+                        for session_id, record in sessions.items()
+                        if record == workspace_id or (clear_key is not None and session_id_key(session_id) == clear_key)
+                    ]:
                         del sessions[session_id]
                     return
+            _check_expected_workspace(None, expected)
             raise workspace_not_found(workspace_id)
 
-        self._mutate(change)
+        self._mutate(change, try_lock=try_lock)
 
     def set_session_workspace(
-        self, session_id: str, workspace_id: str | None, *, if_absent: bool = False, leaving: str | None = None
+        self,
+        session_id: str,
+        workspace_id: str | None,
+        *,
+        if_absent: bool = False,
+        leaving: str | None = None,
+        try_lock: bool = False,
     ) -> bool:
         """Save membership and report whether the background-write conditions were met."""
         if not session_id:
@@ -564,7 +748,7 @@ class WorkspaceRegistry:
                 sessions[session_id] = workspace_id
             return True
 
-        return self._mutate(change)
+        return self._mutate(change, try_lock=try_lock)
 
     def remove_session_workspace(self, session_id: str) -> None:
         """Forget a deleted session's mapping if one was recorded."""
@@ -579,6 +763,6 @@ class WorkspaceRegistry:
             raise workspace_not_found(workspace_id)
 
         try:
-            self._mutate(change)
-        except OSError, ValueError:
+            self._mutate(change, try_lock=True)
+        except _RegistryLockBusy, OSError, ValueError:
             logger.debug("Could not record workspace use for %s", workspace_id, exc_info=True)

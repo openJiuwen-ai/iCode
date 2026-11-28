@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, ClassVar
 
@@ -22,6 +21,7 @@ from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetai
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.util.abandonable import run_abandonable
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -362,7 +362,7 @@ class RuntimeDetailsDialog(BaseDialog[None]):
         sources: ShortcutSources = []
         if self._load_shortcuts is not None:
             try:
-                sources = await asyncio.to_thread(self._load_shortcuts)
+                sources = await run_abandonable("icode-prompt-shortcuts", self._load_shortcuts)
             except Exception:
                 logger.exception("Runtime details: reading prompt shortcuts failed")
         # The dialog may have closed while the folders were read.

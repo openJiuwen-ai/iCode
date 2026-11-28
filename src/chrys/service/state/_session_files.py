@@ -5,17 +5,22 @@
 from __future__ import annotations
 
 import errno
+import glob
 import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import datetime
+
+    from chrys.foundation.models.session_surface import SessionSurface
 
 from chrys.foundation.models.workdir_migration import BackupOriginal, ReportReadError, source_edit
 from chrys.foundation.platform.files import _atomic_write_bytes as _common_atomic_write_bytes
@@ -66,6 +71,10 @@ class SessionCheckpoint:
 
     session_checkpoint_id: str
     content_hash: str
+    updated_at: datetime | None = field(default=None, compare=False)
+    """The saved envelope's ordering time, when returned by a session save."""
+    last_surface: SessionSurface | None = field(default=None, compare=False)
+    """The saved envelope's surface, when returned by a session save; ``None`` when it records none."""
 
 
 class SessionNotFoundError(FileNotFoundError):
@@ -232,32 +241,57 @@ def session_checkpoint_of(envelope: dict[str, Any], written: bytes) -> SessionCh
     return SessionCheckpoint(session_checkpoint_id=checkpoint_id, content_hash=digest)
 
 
-def session_dir_has_artifacts(session_dir: Path) -> bool:
+def session_dir_has_artifacts(session_dir: str | os.PathLike[str]) -> bool:
     """Whether *session_dir* holds a primary, backup, recovery or snapshot envelope."""
+    folder = os.fspath(session_dir)
     return (
-        (session_dir / SESSION_FILE_NAME).exists()
-        or (session_dir / SESSION_BACKUP_FILE_NAME).exists()
-        or (session_dir / SESSION_RECOVERY_FILE_NAME).exists()
-        or any(parse_snapshot_turn(snap) >= 1 for snap in (session_dir / "snapshots").glob("*.json"))
+        os.path.exists(os.path.join(folder, SESSION_FILE_NAME))
+        or os.path.exists(os.path.join(folder, SESSION_BACKUP_FILE_NAME))
+        or os.path.exists(os.path.join(folder, SESSION_RECOVERY_FILE_NAME))
+        or any(parse_snapshot_turn(snap) >= 1 for snap in Path(folder, "snapshots").glob("*.json"))
     )
+
+
+# ``Path`` orders children of one directory by name, case-folded where paths compare case-insensitively.
+_path_sort_key = str.lower if os.name == "nt" else str
+# The name test ``Path.glob("*.json")`` applies, hidden names included, case-insensitive where paths are.
+_is_legacy_name = re.compile(
+    glob.translate("*.json", include_hidden=True), re.IGNORECASE if os.name == "nt" else 0
+).match
+
+
+def _is_legacy_file_name(name: str) -> bool:
+    return name != SESSION_MRU_FILE_NAME and _is_legacy_name(name) is not None
 
 
 def session_dir_candidates(sessions_dir: Path) -> list[Path]:
-    """Session folders under *sessions_dir* that plausibly hold a restorable session.
+    """Session folders under *sessions_dir* that plausibly hold a restorable session, sorted as paths sort.
 
     Dot-prefixed entries (``.locks``, temp/partial dirs) are never sessions.
+    As ``iterdir`` + ``sorted`` did, the root is read whole, each entry is
+    checked in the order the listing returned it, and only the candidates
+    are sorted. Raises ``OSError`` when the root cannot be listed.
     """
-    # New format: {session_id}/session.json
-    return sorted(
-        p
-        for p in sessions_dir.iterdir()
-        if p.is_dir() and p.name != ".locks" and not p.name.startswith(".") and session_dir_has_artifacts(p)
-    )
+    with os.scandir(os.fspath(sessions_dir)) as scan:
+        entries = list(scan)
+    candidates = [
+        entry.path
+        for entry in entries
+        if not entry.name.startswith(".") and os.path.isdir(entry.path) and session_dir_has_artifacts(entry.path)
+    ]
+    candidates.sort(key=lambda folder: _path_sort_key(os.path.basename(folder)))
+    return [Path(folder) for folder in candidates]
 
 
 def legacy_session_files(sessions_dir: Path) -> list[Path]:
-    """Root-level ``*.json`` legacy flat-file sessions (never the MRU index)."""
-    return sorted(p for p in sessions_dir.glob("*.json") if p.name != SESSION_MRU_FILE_NAME)
+    """Root-level ``*.json`` legacy flat-file sessions (never the MRU index); none when the root cannot be listed."""
+    try:
+        with os.scandir(os.fspath(sessions_dir)) as entries:
+            paths = [entry.path for entry in entries if _is_legacy_file_name(entry.name)]
+    except OSError:
+        return []
+    paths.sort(key=lambda path: _path_sort_key(os.path.basename(path)))
+    return [Path(path) for path in paths]
 
 
 def make_junction_dropping_ignore() -> Callable[[str, list[str]], set[str]]:

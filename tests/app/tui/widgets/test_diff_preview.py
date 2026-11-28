@@ -24,7 +24,7 @@ from chrys.app.tui.widgets.sidebar.diff_preview import DiffPreview, SidebarChatP
 from chrys.app.tui.widgets.sidebar.toc import ConversationToc
 from chrys.service.mutations.types import MutationOp
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import click_when_settled, resize_when_settled
+from tests.support.tui_helpers import click_when_settled, resize_when_settled, show_sidebar_tab
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -296,6 +296,8 @@ async def test_preview_hover_shell_border_and_live_chinese_text(monkeypatch: pyt
 
     async with SidebarApp().run_test(size=(120, 35)) as pilot:
         sidebar = pilot.app.query_one(SidebarPanel)
+        # The sidebar opens on the Workspace page; this test watches the Chat tab.
+        await show_sidebar_tab(pilot, pilot.app.screen, "tab-toc")
         sidebar.query_one(SidebarChatPanel).set_entries(
             (replace(entry("one.py"), content_omitted="binary"), entry("two.py"))
         )

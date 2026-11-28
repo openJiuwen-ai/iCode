@@ -23,10 +23,10 @@ from chrys.app.tui.screens.sessions.presenter import (
     format_tokens,
     rank_search_matches,
     row_cells,
-    time_ago,
     workflow_status_labels,
 )
 from chrys.app.tui.util.formatting import elide_middle
+from chrys.app.tui.util.time_ago import time_ago
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.service.state.session_listing import SessionListingEntry
 from chrys.service.state.store import ChatSessionMeta, SessionMeta, WorkflowSessionMeta

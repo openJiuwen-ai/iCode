@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from chrys.service.workspaces.paths import MissingWorkspacePrimary, resolve_workspace_directory
 from chrys.service.workspaces.registry import (
+    WORKSPACE_ID_PREFIX,
     RegistrySnapshot,
     WorkspaceRegistry,
     workspace_selector_ambiguous,
@@ -54,7 +55,10 @@ def launch_cwd_missing_message(*, workdir_flag: bool, workdir: str = "") -> str 
 
 
 def resolve_workspace_selector(selector: str) -> tuple[Workspace, RegistrySnapshot]:
-    """Resolve a workspace by exact ID, case-insensitive name or ID prefix."""
+    """Resolve a workspace by exact ID, then case-insensitive name, then ID prefix.
+
+    Every ID starts with the same prefix, so a selector no longer than it names no workspace by ID.
+    """
     if not selector.strip():
         raise workspace_selector_not_found(selector)
     registry = WorkspaceRegistry()
@@ -62,18 +66,17 @@ def resolve_workspace_selector(selector: str) -> tuple[Workspace, RegistrySnapsh
     if snapshot.error:
         raise snapshot.error
     selected = snapshot.workspace(selector)
-    if selected is None:
-        matches = [
-            workspace
-            for workspace in snapshot.workspaces
-            if workspace.name.casefold() == selector.casefold() or workspace.id.startswith(selector)
-        ]
-        if len(matches) > 1:
-            raise workspace_selector_ambiguous(selector)
-        if not matches:
-            raise workspace_selector_not_found(selector)
-        selected = matches[0]
-    return selected, snapshot
+    if selected is not None:
+        return selected, snapshot
+    folded = selector.casefold()
+    matches = [workspace for workspace in snapshot.workspaces if workspace.name.casefold() == folded]
+    if not matches and len(selector) > len(WORKSPACE_ID_PREFIX):
+        matches = [workspace for workspace in snapshot.workspaces if workspace.id.startswith(selector)]
+    if len(matches) > 1:
+        raise workspace_selector_ambiguous(selector)
+    if not matches:
+        raise workspace_selector_not_found(selector)
+    return matches[0], snapshot
 
 
 def open_launch_workspace(selector: str) -> tuple[Workspace, RegistrySnapshot, str]:
@@ -81,11 +84,11 @@ def open_launch_workspace(selector: str) -> tuple[Workspace, RegistrySnapshot, s
     selected, snapshot = resolve_workspace_selector(selector)
     resolved = resolve_workspace_directory(selected.primary_cwd)
     if resolved is None:
-        raise MissingWorkspacePrimary(selected.primary_cwd)
+        raise MissingWorkspacePrimary(selected.primary_cwd, workspace_name=selected.name)
     try:
         # Windows can keep the link spelling as the cwd. Enter the target so
         # relative paths still resolve there if the registry's link is retargeted.
         os.chdir(resolved)
     except (FileNotFoundError, NotADirectoryError) as exc:
-        raise MissingWorkspacePrimary(selected.primary_cwd) from exc
+        raise MissingWorkspacePrimary(selected.primary_cwd, workspace_name=selected.name) from exc
     return selected, snapshot, os.getcwd()

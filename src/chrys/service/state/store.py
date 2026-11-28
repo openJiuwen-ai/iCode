@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 from chrys.foundation.config.settings import resolve_sessions_dir
 from chrys.foundation.i18n import MessageRef, msg
-from chrys.foundation.models.session_surface import SessionSurface
+from chrys.foundation.models.session_surface import SessionSurface, parse_session_surface
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.platform.files import atomic_write_text as _common_atomic_write_text
 from chrys.foundation.platform.files import open_binary_read_with_retry
@@ -412,6 +412,10 @@ def store_workspace_snapshot(store: StateStore | None) -> RegistrySnapshot:
     """The current workspace list of *store*; empty without a store or registry."""
     registry = store.workspace_registry if store is not None else None
     return registry.snapshot() if registry is not None else RegistrySnapshot()
+
+
+class _ListingStopped(Exception):
+    """The caller of a session listing stopped waiting for it."""
 
 
 class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
@@ -1163,12 +1167,15 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
 
             # Index first, commit second: a save that kept ``updated_at``
             # (unchanged visible count) is a no-op for the index.
-            self._record_mru(session_id, self._envelope_updated_at(data))
+            updated_at = self._envelope_updated_at(data)
+            self._record_mru(session_id, updated_at)
             checkpoint = self._write_session_envelope_unlocked(session_id, data)
             # The primary envelope now owns the title; a stale pending entry
             # must not resurrect it after a later clear.
             self._pending_custom_titles.pop(session_id_key(session_id), None)
-            return checkpoint
+            meta = data.get("meta")
+            surface = parse_session_surface(meta.get("last_surface")) if isinstance(meta, dict) else None
+            return replace(checkpoint, updated_at=updated_at, last_surface=surface)
 
     async def save_session(
         self,
@@ -1992,22 +1999,9 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """Hide an unfinished delete recorded for this entry or its physical archive."""
         from chrys.service.trajectory.tombstone import pending_delete_intents
 
-        def matches(folder: Path, names: frozenset[str]) -> bool:
-            if folder.name in names:
-                return True
-            for name in names:
-                if name.lower() == folder.name.lower():
-                    with contextlib.suppress(OSError):
-                        if folder.samefile(folder.with_name(name)):
-                            return True
-            return False
-
-        if matches(directory, pending if pending is not None else pending_delete_intents(self._dir)):
-            return True
-        if directory.is_symlink() or directory.is_junction():
-            archive = directory.resolve()
-            return matches(archive, pending_delete_intents(archive.parent))
-        return False
+        return self._pending_delete_check(pending if pending is not None else pending_delete_intents(self._dir))(
+            directory
+        )
 
     def _startup_folder_meta(self, name: str, selector: str) -> SessionMeta | None:
         checkpoint, _, busy = self._select_checkpoint(name)
@@ -2203,8 +2197,40 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         # A folder a delete could not finish removing (its trajectory file was
         # still open) is already gone as far as the user is concerned; listing
         # its remains would resurrect a deleted session.
-        pending = pending_delete_intents(self._dir)
-        return [candidate for candidate in candidates if not self._session_is_pending_delete(candidate, pending)]
+        is_pending = self._pending_delete_check(pending_delete_intents(self._dir))
+        return [candidate for candidate in candidates if not is_pending(candidate)]
+
+    def _pending_delete_check(self, pending: frozenset[str]) -> Callable[[str | Path], bool]:
+        """Whether a folder of this root (a path without a trailing separator) is an unfinished delete.
+
+        The delete is recorded in *pending* for the folder's name, or under
+        its archive's own root when the folder is a symlink or junction. A
+        folder whose name no intent spells in any case, and that is not a
+        link, costs only the link checks and no ``Path``.
+        """
+        from chrys.service.trajectory.tombstone import pending_delete_intents
+
+        folded = {name.lower() for name in pending}
+
+        def matches(folder: Path, names: frozenset[str]) -> bool:
+            if folder.name in names:
+                return True
+            for name in names:
+                if name.lower() == folder.name.lower():
+                    with contextlib.suppress(OSError):
+                        if folder.samefile(folder.with_name(name)):
+                            return True
+            return False
+
+        def is_pending(folder: str | Path) -> bool:
+            if os.path.basename(folder).lower() in folded and matches(Path(folder), pending):
+                return True
+            if os.path.islink(folder) or os.path.isjunction(folder):
+                archive = Path(folder).resolve()
+                return matches(archive, pending_delete_intents(archive.parent))
+            return False
+
+        return is_pending
 
     @staticmethod
     def _has_session_artifacts(session_dir: Path) -> bool:
@@ -2238,8 +2264,9 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         exists.
         """
         short_id = session_dir.name
-        primary = session_dir / SESSION_FILE_NAME
-        recovery = session_dir / SESSION_RECOVERY_FILE_NAME
+        folder = os.fspath(session_dir)
+        primary = os.path.join(folder, SESSION_FILE_NAME)
+        recovery = os.path.join(folder, SESSION_RECOVERY_FILE_NAME)
         signature = file_signature(primary)
         recovery_present = file_signature(recovery) is not None
         if signature is not None and not recovery_present:
@@ -2392,19 +2419,17 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """
         from chrys.service.trajectory.tombstone import pending_delete_intents
 
-        deleted: frozenset[str] | None = None
+        root = os.fspath(self._dir)
+        is_pending: Callable[[str | Path], bool] | None = None
 
         def is_live(short_id: str) -> bool:
-            nonlocal deleted
+            nonlocal is_pending
             if not short_id or short_id.startswith(".") or "/" in short_id or "\\" in short_id:
                 return False
-            if deleted is None:
-                deleted = pending_delete_intents(self._dir)
-            directory = self._dir / short_id
-            return (
-                not self._session_is_pending_delete(directory, deleted)
-                and file_signature(directory / SESSION_FILE_NAME) is not None
-            )
+            if is_pending is None:
+                is_pending = self._pending_delete_check(pending_delete_intents(self._dir))
+            directory = os.path.join(root, short_id)
+            return not is_pending(directory) and file_signature(os.path.join(directory, SESSION_FILE_NAME)) is not None
 
         return is_live
 
@@ -2422,6 +2447,17 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             self._catalog_removals_owed.add(short_id)
         self._settle_catalog_removals()
 
+    def _stop_listing_if_asked(self, stop: threading.Event | None) -> None:
+        """End a listing between sessions, never inside one session's reads and repairs.
+
+        The catalog merge waits for a later listing, but a removal still owed
+        (a delete the catalog lock held up) is settled first, so a session's
+        prompts never outlive its delete because a listing was cut short.
+        """
+        if stop is not None and stop.is_set():
+            self._settle_catalog_removals()
+            raise _ListingStopped
+
     def _settle_catalog_removals(self) -> None:
         with self._meta_cache_lock:
             owed = frozenset(self._catalog_removals_owed)
@@ -2434,12 +2470,15 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """Metas for legacy flat-file sessions not yet migrated to folders."""
         return [meta for _path, meta in self._legacy_session_metas_with_paths(seen_session_ids)]
 
-    def _legacy_session_metas_with_paths(self, seen_session_ids: set[str]) -> list[tuple[Path, SessionMeta]]:
+    def _legacy_session_metas_with_paths(
+        self, seen_session_ids: set[str], stop: threading.Event | None = None
+    ) -> list[tuple[Path, SessionMeta]]:
         """Legacy flat-file sessions not yet migrated to folders, with their files.
 
         Duplicate ``meta.session_id`` values — across flat files, or against
         the folder-format ids in *seen_session_ids* — keep only the first
-        occurrence, matching the pre-cache listing behavior.
+        occurrence, matching the pre-cache listing behavior. A set *stop* ends
+        the scan before the next file, as :meth:`_stop_listing_if_asked` does.
         """
         from chrys.service.trajectory.tombstone import pending_delete_intents
 
@@ -2448,6 +2487,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         paths = self._legacy_session_files()
         pending = pending_delete_intents(self._dir) if paths else frozenset()
         for path in paths:
+            self._stop_listing_if_asked(stop)
             meta = self._legacy_meta_for_file(path)
             if meta is None or meta.session_id in seen:
                 continue
@@ -2791,11 +2831,14 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             return self._workflow_listed_at(source, meta, entry)
         return meta.updated_at
 
-    def _open_session_listing_sync(self, kind: Literal["chat", "workflow"]) -> SessionListing:
+    def _open_session_listing_sync(
+        self, kind: Literal["chat", "workflow"], stop: threading.Event | None = None
+    ) -> SessionListing:
         self._refresh_catalog()
         entries: list[SessionListingEntry] = []
         seen: set[str] = set()
         for session_dir in self._session_dir_candidates():
+            self._stop_listing_if_asked(stop)
             try:
                 resolved = self._listing_meta(session_dir)
             except KeyError, ValueError, TypeError, OSError:
@@ -2816,7 +2859,8 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                         meta=self._with_workflow_status(meta),
                     )
                 )
-        for path, meta in self._legacy_session_metas_with_paths(seen):
+        for path, meta in self._legacy_session_metas_with_paths(seen, stop):
+            self._stop_listing_if_asked(stop)
             if meta.kind != kind:
                 continue
             # A legacy file is migrated to its folder on first load; until then
@@ -2833,6 +2877,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                         meta=self._with_workflow_status(meta),
                     )
                 )
+        self._stop_listing_if_asked(stop)
         self._settle_listing_caches()
         entries.sort(key=lambda item: (item.listed_at, item.session_id), reverse=True)
         return SessionListing(kind, tuple(entries))
@@ -2840,15 +2885,24 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
     async def open_session_listing(self, *, kind: Literal["chat", "workflow"]) -> SessionListing:
         """Snapshot the displayable sessions of *kind*, newest first, for paging and searching.
 
-        Costs a ``stat`` per session folder plus a parse for each session
+        Costs a few ``stat`` calls per session folder plus a parse for each session
         changed since it was last listed (by any process, through the
         persisted catalog). Each entry keeps the meta read: a workflow
         session's with its latest run's summary (title, input excerpt and
         status, a header and log-tail read per session), so every session can
         be searched by what its row shows; folder sizes are left to
-        :meth:`load_session_page`.
+        :meth:`load_session_page`. Cancelling the call (quitting cancels it)
+        ends the scan at the next session: the session being read and its
+        repair complete, and a catalog removal still owed is tried once. A
+        cancel seen before the scan's last check skips merging the catalog,
+        which waits for a later listing; one that comes later lets it finish.
         """
-        return await asyncio.to_thread(self._open_session_listing_sync, kind)
+        stop = threading.Event()
+        try:
+            return await asyncio.to_thread(self._open_session_listing_sync, kind, stop)
+        except asyncio.CancelledError:
+            stop.set()
+            raise
 
     def _load_session_page_sync(
         self, listing: SessionListing, surfaces: Collection[SessionSurface], page: int, page_size: int

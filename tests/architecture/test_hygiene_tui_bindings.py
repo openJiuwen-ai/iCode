@@ -41,6 +41,16 @@ _TUI_BINDING_CONSTRUCTION_ALLOWLIST = {
         None,
         False,
     ),
+    # Workspace editor: the primary folder and add-folder rows open the picker on Enter.
+    (
+        Path("src/chrys/app/tui/screens/workspaces/edit.py"),
+        "_FolderChoice",
+        "Binding",
+        "enter",
+        "choose",
+        None,
+        False,
+    ),
     # Theme controls: non-displayed focus, movement and transaction shortcuts.
     (
         Path("src/chrys/app/tui/screens/themes/palette.py"),
@@ -651,7 +661,7 @@ def test_tui_binding_display_guard_allowlist_entries_are_live_and_unambiguous() 
                 if isinstance(item, ast.Tuple) and len(item.elts) in {2, 3}
             )
 
-    assert len(_TUI_BINDING_CONSTRUCTION_ALLOWLIST) == 55
+    assert len(_TUI_BINDING_CONSTRUCTION_ALLOWLIST) == 56
     assert len(observed) == len(set(observed))
     assert set(observed) == _TUI_BINDING_CONSTRUCTION_ALLOWLIST
 

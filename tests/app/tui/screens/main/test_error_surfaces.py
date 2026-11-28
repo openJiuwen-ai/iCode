@@ -11,11 +11,13 @@ from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 from textual.widgets import Button, Static
 
 from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.main.event_handlers import (
     _UNKNOWN_ERROR,
@@ -33,19 +35,23 @@ from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
-from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar
 from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import (
+    AgentLoadFailed,
     Error,
     Warning,
 )
 from chrys.foundation.i18n import Localizer, MessageRef
+from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.text.draft_references import EMPTY_REFERENCES, DraftReferences
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ
 from chrys.kernel import Content, Message
 from chrys.orchestration.engine.workspaces import LeaveConfirmationRequired
+from chrys.service.workspaces import registry as workspace_registry
+from tests.support.event_capture import capture_events
 from tests.support.tui_helpers import (
     ChatPanelApp,
     fake_session_title,
@@ -54,6 +60,8 @@ from tests.support.tui_helpers import (
     make_session_handler,
     status_text,
 )
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.workspace_registry import registry_disk_full
 
 
 def test_session_in_use_error_uses_modal_not_chat_or_status() -> None:
@@ -643,7 +651,9 @@ def test_directory_error_outside_submit_keeps_the_existing_retry_surface(
         return {"InputBar": input_bar, "StatusBar": _FakeStatusBar(), "ChatPanel": _FakeChatPanel()}[cls.__name__]
 
     state = MainScreenState()
-    state.workspace.workspace_id = "project-id" if with_workdir else None
+    state.workspace.membership = (
+        Workspace(primary_cwd=state.workspace.current_cwd, id="workspace-id") if with_workdir else None
+    )
     screen = SimpleNamespace(
         _state=state,
         _set_agent_running=running.append,
@@ -1238,3 +1248,31 @@ def test_error_event_during_agent_loading_clears_loading_if_dialog_update_fails(
     assert probe.running == [False]
     assert [status_text(message) for message in probe.flashes] == ["Error: Agent failed to load."]
     assert probe.chat_errors == ["Agent failed to load."]
+
+
+async def test_workspace_slash_rename_write_failure_has_one_error_surface(live_workspace_chat, monkeypatch):
+    pilot, main, engine, registry, current, _ = live_workspace_chat
+    app = pilot.app
+    failed = await capture_events(engine.event_bus, AgentLoadFailed)
+    errors = await capture_events(engine.event_bus, Error)
+    write = create_autospec(workspace_registry.atomic_write_text, side_effect=registry_disk_full)
+    composer = main.query_one(InputBar)
+    composer.value = "/workspace rename Renamed"
+    expected = "Workspace list could not be saved: registry disk full"
+    with monkeypatch.context() as patch:
+        patch.setattr(workspace_registry, "atomic_write_text", write)
+        await composer.action_submit()
+        await wait_for(
+            lambda: any(notice.message == expected for notice in app._notifications),
+            pilot=pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
+        )
+
+    write.assert_called_once()
+    assert [notice.message for notice in app._notifications if notice.message == expected] == [expected]
+    (load_failure,) = failed
+    assert not load_failure.report_error
+    assert not errors
+    assert not main._state.run.agent_loading
+    assert not any(isinstance(screen, AgentLoadDialog) for screen in app.screen_stack)
+    assert registry.snapshot().workspace(current.id) == current

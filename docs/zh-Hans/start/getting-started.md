@@ -2,6 +2,8 @@
 
 本教程介绍如何安装 iCode、配置模型，并在项目中使用智能体完成一次开发任务。
 
+输入 `/workspace new <名称>` 可以新建工作区，把主文件夹、参考文件夹和相关会话归在一起。底部状态栏显示当前工作区，侧栏的 **工作区** 页按归属列出会话。
+
 ## 1. 安装 iCode
 
 使用 [uv](https://docs.astral.sh/uv/getting-started/installation/) 安装 iCode。如果系统中没有 Python 3.14，uv 会自动下载：

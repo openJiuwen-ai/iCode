@@ -27,7 +27,7 @@ from chrys.foundation.models.todos import TodoItem
 from tests.support.buddies import a_buddy
 from tests.support.paths import SRC_ROOT
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, show_sidebar_tab
 from tests.support.waiting import wait_for, wait_until
 
 
@@ -144,7 +144,7 @@ async def test_sidebar_relabels_tabs_and_current_child_chrome_in_place(monkeypat
         tabs_widget = sidebar.query_one(TabbedContent).query_one(Tabs)
         tabs_before = tuple(tabs_widget.query(Tab).results(Tab))
         assert sidebar in controller._surfaces
-        assert _tab_labels(sidebar) == ["Chat", "Tasks", "Context", "Hooks", "Debug", "Buddy"]
+        assert _tab_labels(sidebar) == ["Workspace", "Chat", "Tasks", "Context", "Hooks", "Debug", "Buddy"]
         assert str(sidebar.debug_panel.query_one(".debug-title", Static).render()) == "Event Stream"
 
         sidebar.todo_state = TodoListState(items=(TodoItem(content="done", status="completed"),))
@@ -167,7 +167,7 @@ async def test_sidebar_relabels_tabs_and_current_child_chrome_in_place(monkeypat
         assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
         tabs_after = tuple(tabs_widget.query(Tab).results(Tab))
         assert tabs_after == tabs_before
-        assert _tab_labels(sidebar) == ["对话", "任务", "上下文", "钩子", "调试", "伙伴"]
+        assert _tab_labels(sidebar) == ["工作区", "对话", "任务", "上下文", "钩子", "调试", "伙伴"]
         assert sidebar.tasks_panel.query_one("#tasks-todos").border_title == "待办 (1/1)"
         assert str(sidebar.tasks_panel.query_one("#tasks-empty", Static).render()) == "暂无待办"
         assert str(sidebar.toc_panel.query_one(".toc-empty", Static).render()) == "你的对话将显示在这里"
@@ -234,7 +234,7 @@ async def test_the_wheel_over_a_narrow_tab_strip_slides_it_to_the_cut_off_tabs()
         await wait_for(lambda: strip.scroll_x > 0, pilot=pilot, description="a sideways wheel slides it too")
         await _scroll(pilot, tabs, events.MouseScrollUp, strip)
         await wait_for(lambda: strip.scroll_x == 0, pilot=pilot, description="up slides it back")
-        assert content.active == "tab-toc", "sliding the strip picks no tab"
+        assert content.active == "tab-workspace", "sliding the strip picks no tab"
 
 
 async def test_the_wheel_over_a_tab_pane_leaves_the_tab_strip_alone() -> None:
@@ -243,7 +243,7 @@ async def test_the_wheel_over_a_tab_pane_leaves_the_tab_strip_alone() -> None:
         tabs = sidebar.query_one(TabbedContent).query_one(Tabs)
         strip = tabs.query_one("#tabs-scroll")
         await _wait_for_overflow(pilot, sidebar)
-        pane_child = sidebar.toc_panel
+        pane_child = sidebar.query_one(TabbedContent).get_pane("tab-workspace")
         # A positive control first: the same event over the strip does move it.
         await _scroll(pilot, tabs, events.MouseScrollRight, strip)
         await wait_for(lambda: strip.scroll_x > 0, pilot=pilot, description="the strip moved")
@@ -303,6 +303,7 @@ async def test_a_narrow_tab_strip_marks_each_side_with_a_hidden_tab(monkeypatch:
         strip = tabs.query_one("#tabs-scroll")
         await _wait_for_overflow(pilot, sidebar)
         left, right = _marks(sidebar)
+        await show_sidebar_tab(pilot, pilot.app.screen, "tab-toc")
         # At 120 columns the baseline sidebar is 42 cells, with 40 inside its border.
         assert sidebar.toc_panel.region.width == sidebar.content_region.width == 40
         assert sidebar.toc_panel.region.x == sidebar.content_region.x
@@ -441,14 +442,19 @@ async def test_on_a_narrow_strip_each_click_shows_one_whole_label(monkeypatch: p
         sidebar = pilot.app.query_one(SidebarPanel)
         tabs = sidebar.query_one(TabbedContent).query_one(Tabs)
         strip = tabs.query_one("#tabs-scroll")
-        # 11 cells leave 7 with both marks. Context's label (7) fits, its tab (9) does not.
-        sidebar.fit_beside(11)
-        await wait_for(lambda: sidebar.region.width == 11, pilot=pilot)
+        # 13 cells leave 10 with one mark and 9 with both. Workspace, the first tab, starts
+        # whole; once both marks show, its label (9) fits and its padded tab (11) does not.
+        sidebar.fit_beside(13)
+        await wait_for(lambda: sidebar.region.width == 13, pilot=pilot)
         await _wait_for_overflow(pilot, sidebar)
         left, right = _marks(sidebar)
-        assert strip.content_region.width == 8
+        assert strip.content_region.width == 10
 
-        for direction, mark, clipped in (("right", right, _clipped_right), ("left", left, _clipped_left)):
+        labels = _tab_labels(sidebar)
+        for direction, mark, clipped, expected in (
+            ("right", right, _clipped_right, labels[1:]),
+            ("left", left, _clipped_left, labels[-2::-1]),
+        ):
             seen: list[str] = []
             while (target := clipped(tabs, strip)) is not None:
                 await click_when_settled(pilot, mark)
@@ -461,10 +467,10 @@ async def test_on_a_narrow_strip_each_click_shows_one_whole_label(monkeypatch: p
                     description=f"{target.label_text} whole after a click on the {direction} mark",
                 )
                 seen.append(str(target.label_text))
-            assert len(seen) == 5, seen
+            assert seen == expected
 
 
-_CHINESE_LABELS = ("对话", "任务", "上下文", "钩子", "调试", "伙伴")
+_CHINESE_LABELS = ("工作区", "对话", "任务", "上下文", "钩子", "调试", "伙伴")
 
 
 def _shown_characters(tabs: Tabs, strip: Widget) -> set[tuple[int, int]]:
@@ -591,16 +597,16 @@ async def test_marks_follow_resize_locale_and_workflow_mode(monkeypatch: pytest.
         await wait_for(lambda: _mark_text(left) == "" and _mark_text(right) == "", pilot=pilot)
 
         # Just wide enough for every English label: no marks, and no cells kept for them.
-        await pilot.resize_terminal(150, 30)
-        await _wait_for_sidebar_width(pilot, sidebar, 45)
+        await pilot.resize_terminal(187, 30)
+        await _wait_for_sidebar_width(pilot, sidebar, 56)
         await wait_for(lambda: _fits_without_marks(sidebar), pilot=pilot)
         # One cell narrower, only Buddy's trailing padding is cut, as on main: still no marks.
-        await pilot.resize_terminal(148, 30)
-        await _wait_for_sidebar_width(pilot, sidebar, 44)
+        await pilot.resize_terminal(184, 30)
+        await _wait_for_sidebar_width(pilot, sidebar, 55)
         await wait_for(lambda: strip.max_scroll_x == 1 and _fits_without_marks(sidebar), pilot=pilot)
 
-        await pilot.resize_terminal(120, 30)
-        await _wait_for_sidebar_width(pilot, sidebar, 42)
+        await pilot.resize_terminal(160, 30)
+        await _wait_for_sidebar_width(pilot, sidebar, 48)
         await wait_for(lambda: _mark_text(right) == "\u276f", pilot=pilot)
 
         # Wide enough for the Chinese labels but not the English ones. A scroll reflow
