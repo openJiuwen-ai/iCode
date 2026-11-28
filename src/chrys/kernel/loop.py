@@ -1733,6 +1733,16 @@ class _LoopRun:
             if self._load_tool_history_prefix is not None:
                 self._tool_history_prefix = await self._load_tool_history_prefix()
             self._approval_history = (*self._tool_history_prefix, *self._messages)
+            if self._session is not None:
+                snapshot = self._session._continuation_tool_history
+                if snapshot is not None and snapshot[0] == self._options.get("continuation_token"):
+                    self._approval_history = snapshot[1]
+                else:
+                    self._session._continuation_tool_history = None
+
+    def _remember_continuation_history(self, token: Any) -> None:
+        if self._capture_tool_history and self._session is not None:
+            self._session._continuation_tool_history = None if token is None else (token, self._approval_history)
 
     def _land(self, response: ChatResponse) -> None:
         self._next_tool_ordinal = _land_response_contents(
@@ -2393,6 +2403,11 @@ class ToolLoopLayer:
             else None
         )
 
+        def observe_continuation(token: Any) -> None:
+            run._remember_continuation_history(token)
+            if continuation_token_observer is not None:
+                continuation_token_observer(token)
+
         run_trajectory = _LoopTrajectory(trajectory, retry_policy=wire_retry_policy)
         wire = _WireCaller(
             self.inner,
@@ -2404,7 +2419,7 @@ class ToolLoopLayer:
             policy=wire_retry_policy,
             recorder=recorder,
             injection_probe=injection_probe,
-            continuation_token_observer=continuation_token_observer,
+            continuation_token_observer=observe_continuation,
             trajectory=run_trajectory,
         )
         run = _LoopRun(

@@ -495,6 +495,9 @@ class AgentSession:
         self.service_session_id = service_session_id
         self.state: dict[str, Any] = {}
         self.invalidated_service_session_ids: set[str] = set()
+        # Runtime only: a whole-run retry may retrieve a background response
+        # whose creation input never entered the persisted transcript.
+        self._continuation_tool_history: tuple[Any, tuple[Message, ...]] | None = None
 
     @property
     def session_id(self) -> str:

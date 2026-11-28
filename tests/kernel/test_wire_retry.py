@@ -1809,8 +1809,9 @@ async def test_preseeded_token_cleared_on_first_terminal_so_tool_results_post_fr
 
 
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("outer_retry", [False, True], ids=["wire-retry", "new-loop"])
 @pytest.mark.asyncio
-async def test_poll_retry_preserves_consumed_injection_for_the_next_create(stream: bool) -> None:
+async def test_poll_retry_preserves_consumed_injection_for_the_next_create(stream: bool, outer_retry: bool) -> None:
     injection = InjectionMiddleware()
     injection.queue("pre-create note", injection_id="pre")
     token = {"response_id": "bg-injected"}
@@ -1846,23 +1847,40 @@ async def test_poll_retry_preserves_consumed_injection_for_the_next_create(strea
         injection.commit_logical_call,
     )
 
-    result = layer.get_response(
-        [_user()],
-        stream=stream,
-        middleware=ReadApprovalHistory(),
-        options={"tools": [_echo_tool(runs)]},
-        client_kwargs={
-            "wire_retry_policy": policy,
-            "consumed_injection_message_probe": probe,
-        },
-    )
+    session = AgentSession()
+    options = {"tools": [_echo_tool(runs)], "store": outer_retry}
 
-    if stream:
-        async for _ in result:
-            pass
-        response = await result.get_final_response()
-    else:
-        response = await result
+    def observe_token(value: Any) -> None:
+        if value is None:
+            options.pop("continuation_token", None)
+        else:
+            options["continuation_token"] = value
+
+    async def attempt() -> ChatResponse:
+        result = layer.get_response(
+            [_user()],
+            stream=stream,
+            middleware=ReadApprovalHistory(),
+            options=options,
+            client_kwargs={
+                "session": session,
+                "wire_retry_policy": policy,
+                "consumed_injection_message_probe": probe,
+                "continuation_token_observer": observe_token,
+            },
+        )
+        if stream:
+            async for _ in result:
+                pass
+            return await result.get_final_response()
+        return await result
+
+    if outer_retry:
+        with pytest.raises(ConnectionError, match="poll dropped"):
+            await attempt()
+        assert options["continuation_token"] == token
+        assert approval_history == []
+    response = await attempt()
 
     assert response.text == "done"
     assert approval_history == ["go", "pre-create note"]
@@ -1872,6 +1890,8 @@ async def test_poll_retry_preserves_consumed_injection_for_the_next_create(strea
     # consumption, and the terminal commit would then destroy the stranded
     # batch and its retained-message mirror.
     assert policy.before_retry_calls == 0
+    assert [call["options"].get("continuation_token") for call in wire.calls] == [None, token, token, None]
+    assert session._continuation_tool_history is None
     assert _injected_texts(wire.calls[0]) == ["pre-create note"]
     assert _injected_texts(wire.calls[1]) == []
     assert _injected_texts(wire.calls[2]) == []
