@@ -17,7 +17,7 @@ iCode loads only non-hidden files with the `.yaml` or `.yml` extension in this d
 
 UTF-8 is recommended. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. Files that cannot be decoded using the detected encoding are treated as invalid, without replacing bytes with `�`. Profiles saved or rewritten by iCode use UTF-8.
 
-iCode loads these files at startup. After manually adding, editing, or deleting a profile, restart iCode for the change to take effect.
+iCode loads these files at startup and again on `/reload`. After manually adding, editing, or deleting a profile, run `/reload` while iCode is idle, or restart iCode, for the change to take effect.
 
 ## Profile naming and normalization
 
