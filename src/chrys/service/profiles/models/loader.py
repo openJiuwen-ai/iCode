@@ -12,7 +12,13 @@ import yaml
 
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.service.profiles.coercion import coerce_bool
-from chrys.service.profiles.file_scan import ProfileDirScan, ProfileLoadError, read_profile_mapping, scan_profiles
+from chrys.service.profiles.file_scan import (
+    ProfileDirScan,
+    ProfileLoadError,
+    is_filename_safe_profile_name,
+    read_profile_mapping,
+    scan_profiles,
+)
 from chrys.service.profiles.models.options import OUTPUT_CAP_OPTION_ALIASES, output_cap_option_value
 from chrys.service.profiles.models.schema import (
     API_STYLE_CHAT_COMPLETIONS,
@@ -214,6 +220,13 @@ def _parse_profile(path: Path, text: str) -> ModelProfile:
     for field, value in (("id", profile_id), ("name", data["name"])):
         if not isinstance(value, str) or not value.strip():
             raise ModelProfileLoadError(f"Model profile {field} must be nonempty text in {path}", field=field)
+    if not is_filename_safe_profile_name(profile_id):
+        hint = "name the file <safe-id>.yaml; if an explicit 'id' is set, make it match the filename without '.yaml'"
+        raise ModelProfileLoadError(
+            f"Model profile id {profile_id!r} is not filename-safe in {path}; {hint}",
+            field="id",
+            log_reason=f"Model profile id {profile_id!r} is not filename-safe; {hint}",
+        )
     # Empty optional connection fields have always selected the client defaults.
     for field in ("base_url", "api_key", "http_headers"):
         if data.get(field) is None:

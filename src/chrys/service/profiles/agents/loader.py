@@ -6,9 +6,7 @@ from __future__ import annotations
 
 import logging
 import math
-import ntpath
 import re
-from pathlib import PurePath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
@@ -43,7 +41,13 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.profiles.coercion import coerce_bool
-from chrys.service.profiles.file_scan import ProfileDirScan, ProfileLoadError, read_profile_mapping, scan_profiles
+from chrys.service.profiles.file_scan import (
+    ProfileDirScan,
+    ProfileLoadError,
+    is_filename_safe_profile_name,
+    read_profile_mapping,
+    scan_profiles,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -721,33 +725,6 @@ def _parse_sub_agents(raw: object) -> SubAgentsConfig:
         max_total_concurrency=raw_map.get("max_total_concurrency", DEFAULT_SUB_AGENT_CONCURRENCY),
         agents=agents,
     )
-
-
-def is_filename_safe_profile_name(name: str) -> bool:
-    """Return True when ``name`` can serve as a bare ``<name>.yaml`` stem.
-
-    Every persistence path resolves a user profile as ``<name>.yaml`` under
-    the profiles directory, so a name carrying separators, drive or root
-    prefixes, ``.``/``..``, or NUL would escape that directory.  The
-    resulting filename must also be legal on every platform a config
-    directory can be shared with: Windows device names (``CON``, ``NUL``,
-    ``COM1`` …), NTFS stream syntax (``foo:bar``), wildcard and control
-    characters are rejected regardless of the current OS.  The ACP write
-    path uses the same predicate.
-    """
-    if not name or name != name.strip() or name in {".", ".."} or "\0" in name:
-        return False
-    posix_path = PurePath(name)
-    windows_path = PureWindowsPath(name)
-    if (
-        posix_path.is_absolute()
-        or windows_path.is_absolute()
-        or windows_path.drive
-        or posix_path.name != name
-        or windows_path.name != name
-    ):
-        return False
-    return not ntpath.isreserved(f"{name}.yaml")
 
 
 def load_profile_from_yaml(path: Path) -> AgentProfile:

@@ -185,6 +185,113 @@ def test_delete_profile_false_when_dir_missing(fake_config_dir: Path) -> None:
     assert delete_profile("anything") is False
 
 
+@pytest.mark.parametrize(
+    "unsafe_id",
+    [
+        "../evil",
+        "sub/dir",
+        "..",
+        ".",
+        "a\\b",
+        "/abs",
+        "C:\\drive",
+        "a:b",
+        "CON",
+        "NUL",
+        "COM1",
+        " padded",
+        "",
+    ],
+)
+def test_save_profile_rejects_unsafe_id(fake_config_dir: Path, unsafe_id: str) -> None:
+    """A path-shaped id must not resolve ``<id>.yaml`` outside the models directory."""
+    with pytest.raises(ValueError, match="filename-safe"):
+        save_profile(ModelProfile(id=unsafe_id, name="Unsafe"))
+
+
+def test_save_profile_traversal_writes_nothing(fake_config_dir: Path) -> None:
+    """The ``../`` id raises before any file lands outside the models directory."""
+    with pytest.raises(ValueError):
+        save_profile(ModelProfile(id="../escaped", name="Escape"))
+    assert not (fake_config_dir / "escaped.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "unsafe_id",
+    [
+        "../evil",
+        "sub/dir",
+        "..",
+        ".",
+        "a\\b",
+        "/abs",
+        "C:\\drive",
+        "a:b",
+        "CON",
+        "NUL",
+        "COM1",
+        " padded",
+        "",
+    ],
+)
+def test_delete_profile_rejects_unsafe_id(fake_config_dir: Path, unsafe_id: str) -> None:
+    """A path-shaped id must not unlink anything outside the models directory."""
+    with pytest.raises(ValueError, match="filename-safe"):
+        delete_profile(unsafe_id)
+
+
+def test_delete_profile_refuses_path_traversal_and_leaves_prey_behind(fake_config_dir: Path) -> None:
+    """delete_profile('../evil') must not touch a file the id path would resolve to."""
+    prey = fake_config_dir / "evil.yaml"
+    marker = "PREY_UNTOUCHED"
+    prey.write_text(marker, encoding="utf-8")
+    with pytest.raises(ValueError, match="filename-safe"):
+        delete_profile("../evil")
+    assert prey.read_text(encoding="utf-8") == marker
+    assert prey.exists()
+
+
+def test_save_profile_rejects_unsafe_id_before_any_filesystem_access(
+    fake_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """save_profile must raise before touching the filesystem at all.
+
+    The ``_user_profiles_dir`` accessor is monkeypatched to fail the test the
+    moment it is called.  If validation ever moves below that call, this
+    catches the regression immediately.
+    """
+    import chrys.service.profiles.models.serializer as ser
+
+    def _must_not_be_called():
+        pytest.fail("_user_profiles_dir was called - validation must run before filesystem access")
+
+    monkeypatch.setattr(ser, "_user_profiles_dir", _must_not_be_called)
+    with pytest.raises(ValueError, match="filename-safe"):
+        save_profile(ModelProfile(id="../escaped", name="Escape"))
+    with pytest.raises(ValueError, match="filename-safe"):
+        save_profile(ModelProfile(id="/abs", name="Abs"))
+    with pytest.raises(ValueError, match="filename-safe"):
+        save_profile(ModelProfile(id="CON", name="Reserved"))
+
+
+def test_delete_profile_rejects_unsafe_id_before_any_filesystem_access(
+    fake_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """delete_profile must raise before touching the filesystem at all (same probe as save)."""
+    import chrys.service.profiles.models.serializer as ser
+
+    def _must_not_be_called():
+        pytest.fail("_user_profiles_dir was called - validation must run before filesystem access")
+
+    monkeypatch.setattr(ser, "_user_profiles_dir", _must_not_be_called)
+    with pytest.raises(ValueError, match="filename-safe"):
+        delete_profile("../evil")
+    with pytest.raises(ValueError, match="filename-safe"):
+        delete_profile("a:b")
+    with pytest.raises(ValueError, match="filename-safe"):
+        delete_profile("NUL")
+
+
 def test_stream_requires_finish_reason_round_trips(tmp_path: Path) -> None:
     data = profile_to_dict(ModelProfile(id="glm", name="GLM", stream_requires_finish_reason=True))
     path = tmp_path / "glm.yaml"
