@@ -31,6 +31,7 @@ ANONYMOUS_SEARCH_ENDPOINTS = {
     "exa_mcp": "https://mcp.exa.ai/mcp",
     **HTML_SEARCH_ENDPOINTS,
     "keenable": "https://api.keenable.ai/v1/search/public",
+    "youcom": "https://api.you.com/v1/agents/search",
 }
 INPUT_NAMES = {"query", "limit", "allowed_domains", "blocked_domains"}
 # custom_http shorthands: a profile names one and overrides only what differs.
