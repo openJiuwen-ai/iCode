@@ -810,7 +810,7 @@ icode workflow validate <path> [--json]
 
 #### 文本报告
 
-每个问题显示为 `文件:行:列: error: 消息 [代码]`，下方是该行源码并标出位置。`note:` 行说明代码是如何执行到此处的，`help:` 行给出修改建议。加载期间工作流打印的内容显示在 `captured output (load):` 之下。最后一行是结果：
+每个问题显示为 `文件:行:列: error: 消息 [代码]`，下方是该行源码并标出位置。`note:` 行说明代码是如何执行到此处的，`help:` 行给出修改建议。校验失败时，加载期间工作流打印的内容显示在 `captured output (load):` 之下；使用 `--json` 时，该内容始终位于 `output`。最后一行是结果：
 
 ```text
 ./.chrys/workflows/code-review/steps.py:2:10: error: NameError: name 'summarise' is not defined [load_error]
@@ -822,7 +822,7 @@ captured output (load):
 FAIL code-review (package): 1 error
 ```
 
-通过校验时只输出一行，例如 `PASS code-review (package) · 1 node · 0 edges`。警告列在其上方，不会导致校验失败。只有工作流使用 Python 3.11 及以上版本时才显示列号。
+通过校验时只输出一行，例如 `PASS code-review (package) · 1 node · 0 edges`。警告列在其上方，不会导致校验失败。Python 报错与回溯的列号只在工作流使用 Python 3.11 及以上版本时显示；`read` 和 `metadata` 两类诊断始终带上 iCode 计算出的列号。
 
 #### JSON 报告
 

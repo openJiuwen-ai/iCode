@@ -810,7 +810,7 @@ The checks run in this order and stop at the first one that fails:
 
 #### Text report
 
-Each problem is shown as `file:line:column: error: message [code]`, followed by the source line with the place marked. `note:` lines show how the code was reached, and a `help:` line suggests a fix. Text the workflow printed while loading follows under `captured output (load):`. The last line is the result:
+Each problem is shown as `file:line:column: error: message [code]`, followed by the source line with the place marked. `note:` lines show how the code was reached, and a `help:` line suggests a fix. When validation fails, text the workflow printed while loading follows under `captured output (load):`; with `--json`, `output` always holds it. The last line is the result:
 
 ```text
 ./.chrys/workflows/code-review/steps.py:2:10: error: NameError: name 'summarise' is not defined [load_error]
@@ -822,7 +822,7 @@ captured output (load):
 FAIL code-review (package): 1 error
 ```
 
-A workflow that passes prints one line, such as `PASS code-review (package) · 1 node · 0 edges`. Warnings are listed above it and do not fail validation. Columns appear only when the workflow's Python is 3.11 or later.
+A workflow that passes prints one line, such as `PASS code-review (package) · 1 node · 0 edges`. Warnings are listed above it and do not fail validation. Columns for Python errors and tracebacks appear only when the workflow's Python is 3.11 or later; the `read` and `metadata` checks always report the column iCode computed.
 
 #### JSON report
 
