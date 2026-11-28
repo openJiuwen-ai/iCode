@@ -19,6 +19,7 @@ from chrys.foundation.platform.files import (
     fsync_directory,
     secure_open_owner_only,
     secure_unlink_owner_verified,
+    strip_inherited_directory_acl,
 )
 from chrys.foundation.platform.key_files import publish_owner_only_key, read_owner_only_key
 from chrys.foundation.trajectory.fingerprint import FINGERPRINT_KEY_BYTES
@@ -28,7 +29,7 @@ TRAJECTORY_KEY_FILE_NAME = "trajectory-hmac.key"
 
 
 def ensure_owner_only_directory(path: Path) -> None:
-    """Create *path* privately (0700) and tighten an existing POSIX mode; a link there is a SecureFileError."""
+    """Create *path* privately (0700 on POSIX) and tighten an existing POSIX mode; a link there is a SecureFileError."""
     from chrys.foundation.platform import get_platform
 
     try:
@@ -54,6 +55,10 @@ def ensure_owner_only_directory(path: Path) -> None:
         os.fchmod(fd, 0o700)
     finally:
         os.close(fd)
+    # A parent's inheritable ACL survives fchmod, so on macOS the directory is
+    # still listable by an inherited group entry. Strip it before anything is
+    # created inside: a directory without an ACL passes none on.
+    strip_inherited_directory_acl(path)
 
 
 def _refuse_a_link(path: Path, exc: OSError) -> None:
