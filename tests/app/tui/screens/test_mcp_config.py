@@ -106,6 +106,7 @@ def test_mcp_card_get_config_preserves_seed_before_children_mount(
         args=["server"],
         encoding="utf-16",
         env={"TOKEN": "abc"},
+        resolve_env_templates=False,
         enabled=False,
         tool_name_prefix="local",
         request_timeout=9,
@@ -128,6 +129,7 @@ def test_mcp_card_get_config_preserves_seed_before_children_mount(
     assert config.args == ["server"]
     assert config.encoding == "utf-16"
     assert config.env == {"TOKEN": "abc"}
+    assert config.resolve_env_templates is False
     assert config.enabled is False
     assert config.tool_name_prefix == "local"
     assert config.request_timeout == 9

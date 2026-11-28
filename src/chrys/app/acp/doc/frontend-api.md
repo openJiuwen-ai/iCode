@@ -364,7 +364,7 @@ A sub-agent pauses only for a client that declared `subAgentPause` (see
 | `profiles/models/delete` | `id` | Delete a model profile. |
 | `providers/models/list` | `connection`, optional `profileId` | Fetch model IDs from an unsaved provider connection. See [Model discovery](#model-discovery). |
 | `settings/reload` | `sessionId`, optional `scope` | Reload registries + soft-restart. Awaits the rebuild: a failed reload returns an error, success pushes `chrys/runtime_update`. Without `scope` (also what `session/set_config_option` runs) it returns `{}`, and an MCP server whose configuration is unchanged keeps its connection. `scope: "full"` is described below; any other `scope` is an invalid-params error. |
-| `mcp/test` | `server` | One-shot HTTP MCP connection test. Client-supplied stdio is rejected. |
+| `mcp/test` | `server` | One-shot MCP connection test for an HTTP or stdio server. The client's HTTP headers and stdio `env` stay literal. |
 
 ### Model discovery
 
@@ -874,9 +874,14 @@ application defaults*.
   reject unresolved masked MCP values after server rename/add.
 - **Profile path safety.** Agent profile names and model profile ids accepted over
   ACP must be filename-safe stems, not absolute or relative paths.
-- **No client stdio execution.** `mcp/test` accepts HTTP MCP configs only and keeps
-  client-supplied HTTP headers literal; stdio MCP execution remains limited to
-  trusted profile configuration.
+- **Client-supplied MCP servers, literal input.** Both `session/new`/`session/load`
+  overlays and `mcp/test` accept HTTP and stdio servers, and keep the client's HTTP
+  headers and stdio `env` literal (`resolve_header_templates`/`resolve_env_templates`
+  off): text such as `{{API_KEY}}` reaches the server or the child process as
+  written. ACP requires agents to support the stdio transport, so a client-supplied
+  stdio server is started like a profile-configured one — inheriting this process's
+  environment plus the client's variables, running in the session's cwd, and released
+  with the session's MCP connection. SSE overlays stay rejected (`sse=False`).
 
 ## Gaps vs. the full ACP protocol
 
