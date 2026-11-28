@@ -211,7 +211,16 @@ async def test_a_failed_spill_keeps_the_note_and_exit_code(tmp_path: Path, monke
 async def test_a_timed_out_result_keeps_the_note_last(monkeypatch: pytest.MonkeyPatch) -> None:
     shell = ShellTools(SessionEnvironment.capture())
 
-    async def timed_out(command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = "") -> Any:
+    async def timed_out(
+        command: str,
+        shell: ShellInfo,
+        cwd: str,
+        timeout: int | float,
+        reason: str = "",
+        *,
+        argv: tuple[str, ...] | None = None,
+        sanitized: bool = False,
+    ) -> Any:
         raise _Timeout((CapturedOutput(b"started\n", b"still going\n", 5000),))
 
     monkeypatch.setattr(shell, "_execute_pty" if IS_UNIX else "_execute_pipe", timed_out)
@@ -231,7 +240,16 @@ async def test_a_timed_out_result_keeps_its_error_line_under_a_small_budget(
     head = "".join(f"started {i}\n" for i in range(100)).encode()
     tail = "".join(f"still going {i}\n" for i in range(200)).encode()
 
-    async def timed_out(command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = "") -> Any:
+    async def timed_out(
+        command: str,
+        shell: ShellInfo,
+        cwd: str,
+        timeout: int | float,
+        reason: str = "",
+        *,
+        argv: tuple[str, ...] | None = None,
+        sanitized: bool = False,
+    ) -> Any:
         raise _Timeout((CapturedOutput(head, tail, 100_000),))
 
     monkeypatch.setattr(shell, "_execute_pty" if IS_UNIX else "_execute_pipe", timed_out)

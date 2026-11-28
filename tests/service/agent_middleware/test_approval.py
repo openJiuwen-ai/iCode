@@ -619,14 +619,6 @@ def _safe_shell_case(tmp_path: Path) -> tuple[dict[str, Any], MagicMock]:
     )
 
 
-def _powershell_null_redirect_case(tmp_path: Path) -> tuple[dict[str, Any], MagicMock]:
-    """PowerShell null redirection stays on the read-only auto-approval path."""
-    return (
-        {"approval_policy": _require_all_policy("shell", tool_names=("pwsh",))},
-        _ctx("pwsh", "shell", {"command": "Get-ChildItem 2> $null"}),
-    )
-
-
 def _workspace_git_file_case(tmp_path: Path) -> tuple[dict[str, Any], MagicMock]:
     """A ``write_file`` inside a workspace root that carries ``.git``."""
     root = _git_root(tmp_path)
@@ -710,7 +702,6 @@ _AUTO_APPROVAL_REPLACED_ROOT_CASES = {
     ("build_case", "replace_root"),
     [
         pytest.param(_safe_shell_case, False, id="safe_shell"),
-        pytest.param(_powershell_null_redirect_case, False, id="powershell_null_redirect"),
         *(pytest.param(case, False, id=name) for name, case in _AUTO_APPROVAL_REPLACED_ROOT_CASES.items()),
         *(
             pytest.param(case, True, id=f"replaced-root-{name}")

@@ -9,10 +9,8 @@ import re
 from chrys.service.tools.builtins.shell_command_filtering.readonly.git import _is_safe_git
 
 _VERSION_HELP_ARGS_BY_COMMAND = {
-    "cargo": frozenset({("--version",), ("-V",), ("--help",), ("-h",), ("help",), ("version",)}),
     "curl": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "dotnet": frozenset({("--version",), ("--info",), ("--list-sdks",), ("--list-runtimes",), ("--help",), ("-h",)}),
-    "go": frozenset({("version",), ("help",)}),
     "java": frozenset({("-version",), ("--version",), ("-help",), ("--help",), ("-h",)}),
     "mypy": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "node": frozenset({("--version",), ("-v",), ("--help",), ("-h",)}),
@@ -20,7 +18,8 @@ _VERSION_HELP_ARGS_BY_COMMAND = {
     "npx": frozenset({("--version",), ("-v",), ("--help",), ("-h",)}),
     "pip": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "pip3": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
-    "pytest": frozenset({("--version",), ("--help",), ("-h",)}),
+    # pytest --help/-h runs plugin and conftest loading; only the version probe is inert.
+    "pytest": frozenset({("--version",), ("-V",)}),
     "python": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "python3": frozenset({("--version",), ("-V",), ("--help",), ("-h",)}),
     "ruby": frozenset({("--version",), ("-v",), ("--help",), ("-h",)}),
@@ -32,6 +31,8 @@ _VERSION_HELP_ARGS_BY_COMMAND = {
 _PIP_READONLY_SUBCOMMANDS = frozenset({"freeze", "show"})
 _PIP_LIST_BLOCKED_ARGS = frozenset({"--outdated", "-o", "--uptodate", "-u"})
 _PIP_LIST_BLOCKED_LONG_ARGS = frozenset({"--outdated", "--uptodate"})
+_PIP_WRITE_OR_EXEC_OPTIONS = ("--log", "--log-file", "--python")
+"""``--log*`` writes an arbitrary path; ``--python`` runs an arbitrary program."""
 _RUFF_MUTATING_ARGS = frozenset({"--fix", "--fix-only", "--add-noqa", "--unsafe-fixes"})
 _RUFF_MUTATING_PREFIXES = ("--fix=", "--fix-only=", "--add-noqa=", "--unsafe-fixes=")
 _RUFF_NO_CACHE_ARGS = frozenset({"--no-cache", "-n"})
@@ -55,6 +56,8 @@ _UNIQ_OPTIONS_NO_VALUE = frozenset(
     }
 )
 _UNIQ_OPTIONS_WITH_VALUE = frozenset({"-f", "--skip-fields", "-s", "--skip-chars", "-w", "--check-chars"})
+_PS_SAFE_ARGS = frozenset({(), ("aux",), ("-f",), ("-l",)})
+"""``ps`` forms that only list process metadata; ``e``/``E``/``-o`` can print environments."""
 _UNIQ_OPTION_PREFIXES_WITH_VALUE = ("-f", "-s", "-w", "--skip-fields=", "--skip-chars=", "--check-chars=")
 _SED_PRINT_SCRIPT_RE = re.compile(r"^(?:\d+|\$)?(?:,(?:\d+|\$))?[p=]$")
 _SED_SAFE_SUBSTITUTION_FLAGS = frozenset("0123456789gpiImM")
@@ -94,10 +97,6 @@ _XARGS_OPTION_PREFIXES_WITH_VALUE = (
 )
 
 
-def _has_arg(args: list[str], value: str) -> bool:
-    return value in args
-
-
 def _has_arg_with_prefix(args: list[str], prefixes: tuple[str, ...]) -> bool:
     return any(any(arg.startswith(prefix) for prefix in prefixes) for arg in args)
 
@@ -106,13 +105,22 @@ def _is_safe_version_help_command(command: str, args: list[str]) -> bool:
     return tuple(args) in _VERSION_HELP_ARGS_BY_COMMAND.get(command, frozenset())
 
 
+def _is_pip_blocked_option(arg: str) -> bool:
+    """Return whether *arg* can write a file or launch another program through pip."""
+    name = _option_name(arg)
+    return name.startswith("--") and any(option.startswith(name) for option in _PIP_WRITE_OR_EXEC_OPTIONS)
+
+
 def _is_safe_pip(args: list[str]) -> bool:
     if not args:
         return False
     subcommand = args[0]
+    if any(_is_pip_blocked_option(arg) for arg in args[1:]):
+        return False
     if subcommand == "list":
         return not any(
             arg in _PIP_LIST_BLOCKED_ARGS
+            or _has_single_dash_option_char(arg, frozenset({"o", "u"}))
             or any(_is_long_option_abbreviation(arg, blocked) for blocked in _PIP_LIST_BLOCKED_LONG_ARGS)
             for arg in args[1:]
         )
@@ -136,7 +144,9 @@ def _is_safe_ruff(args: list[str]) -> bool:
             sub_args, _RUFF_NON_FIXING_CHECK_ARGS
         )
     if subcommand == "format":
-        return _has_arg(sub_args, "--check") or _has_arg(sub_args, "--diff")
+        return _has_any_ruff_arg(sub_args, frozenset({"--check", "--diff"})) and _has_any_ruff_arg(
+            sub_args, _RUFF_NO_CACHE_ARGS
+        )
     return False
 
 
@@ -235,7 +245,7 @@ def _is_safe_uniq(args: list[str]) -> bool:
         if positionals > 1:
             return False
         i += 1
-    return True
+    return positionals <= 1
 
 
 def _is_safe_readonly_arg_command(command: str, args: list[str]) -> bool:
@@ -279,6 +289,11 @@ def _is_safe_find(args: list[str]) -> bool:
 
 def _is_safe_env(args: list[str]) -> bool:
     return all(_ENV_ASSIGNMENT_RE.fullmatch(arg) is not None for arg in args)
+
+
+def _is_safe_ps(args: list[str]) -> bool:
+    """Only exact process-listing forms; environment/field options go to approval."""
+    return tuple(args) in _PS_SAFE_ARGS
 
 
 def _xargs_command_start(args: list[str]) -> int | None:
@@ -403,6 +418,8 @@ def _is_safe_special_command(command: str, args: list[str]) -> bool:
         return _is_safe_git(args)
     if command in {"pip", "pip3"}:
         return _is_safe_version_help_command(command, args) or _is_safe_pip(args)
+    if command == "ps":
+        return _is_safe_ps(args)
     if command == "ruff":
         return _is_safe_ruff(args)
     if command == "sed":

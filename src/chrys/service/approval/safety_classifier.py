@@ -10,12 +10,15 @@ import re
 import shlex
 from typing import Any
 
+from chrys.service.approval.command_identity import normalize_simple_command
+
 _SENSITIVE_TARGET_RE = re.compile(
     r"""(?ix)
-    (^|[\s'"`=:/\\])
+    (^|[\s'"`=:/\\*?])
     (
         \.env(?:\.(?!example|sample|template)\w[\w.-]*)?
         | \.envrc
+        | proc[/\\](?:self|thread-self|\d+)[/\\]environ
         | \.git[/\\](?:config(?:\.worktree)?|hooks)
         | \.git-credentials
         | \.config[/\\]git[/\\]credentials
@@ -35,7 +38,7 @@ _SENSITIVE_TARGET_RE = re.compile(
         | bank[_-]?account|credit[_-]?card|card[_-]?number|payment[_-]?method
         | crypto[_-]?wallet|wallet\.dat
     )
-    (?=$|[\s'"`;|&<>/\\])
+    (?=$|[\s'"`;|&<>/\\*?])
     """
 )
 _ENV_DUMP_RE = re.compile(
@@ -44,8 +47,8 @@ _ENV_DUMP_RE = re.compile(
     (
         printenv(?:$|[\s;&|])
         | env(?:$|[\s;&|](?![A-Za-z_][A-Za-z0-9_]*=))
-        | env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|(?:\\.|[^\s;&|])+))+\s*(?:$|[;&|])
-        | env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|(?:\\.|[^\s;&|])+))+\s+(?:env|printenv)(?:$|[\s;&|])
+        | env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|(?:\\.|[^\s;&|])*))+\s*(?:$|[;&|])
+        | env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|(?:\\.|[^\s;&|])*))+\s+(?:env|printenv)(?:$|[\s;&|])
     )
     """
 )
@@ -85,6 +88,7 @@ _WINDOWS_ENV_REFERENCE_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
 _POSIX_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _POSIX_COMMAND_OPERATORS = frozenset({";", "&", "&&", "|", "|&", "||", "\n"})
 _POSIX_SHELL_NAMES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "tcsh", "csh"})
+_KNOWN_SHELL_NAMES = _POSIX_SHELL_NAMES | frozenset({"", "git_bash", "cmd", "powershell", "pwsh"})
 _POSIX_SHELL_LONG_OPTIONS_WITH_VALUES = frozenset({"--init-file", "--rcfile"})
 _POSIX_SHELL_SHORT_OPTIONS_WITH_VALUES = frozenset({"-O", "-o", "+O", "+o"})
 _SUDO_OPTIONS_WITH_VALUES = frozenset(
@@ -485,9 +489,25 @@ def _posix_command_indirection_may_access_sensitive_data(command: str, *, shell_
 
 def _shell_command_may_access_sensitive_data(command: str, *, shell_name: str, depth: int) -> bool:
     """Recursive implementation for shell sensitive-data classification."""
-    powershell_env_access = shell_name in ("pwsh", "powershell") and _POWERSHELL_ENV_ACCESS_RE.search(command)
-    posix_env_access = shell_name in ("", "bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "git_bash")
-    windows_env_access = shell_name in ("", "cmd")
+    # An executor whose dialect is unknown (for example an extension's custom
+    # KIND_SHELL tool) still gets every dialect's sensitive-access checks.
+    unknown_shell = shell_name not in _KNOWN_SHELL_NAMES
+    powershell_env_access = (unknown_shell or shell_name in ("pwsh", "powershell")) and (
+        _POWERSHELL_ENV_ACCESS_RE.search(command)
+    )
+    posix_env_access = unknown_shell or shell_name in (
+        "",
+        "bash",
+        "zsh",
+        "fish",
+        "sh",
+        "dash",
+        "ksh",
+        "tcsh",
+        "csh",
+        "git_bash",
+    )
+    windows_env_access = unknown_shell or shell_name in ("", "cmd")
     return bool(
         _ENV_DUMP_RE.search(command)
         or powershell_env_access
@@ -530,7 +550,22 @@ def path_arg_may_access_sensitive_data(raw_args: Any) -> bool:
 
 
 def shell_arg_may_access_sensitive_data(raw_args: Any, *, shell_name: str = "") -> bool:
-    """Return True when shell tool arguments access sensitive data."""
+    """Return True when shell tool arguments access sensitive data.
+
+    The raw text check keeps shell operators and substitutions visible. A
+    second check reads the same static tokens session reuse normalizes, so
+    quote concatenation (``cat .en''v``) cannot hide a target from this gate
+    while matching a reusable grant for ``cat .env``.
+    """
     parsed_args = _parsed_args(raw_args)
     command = parsed_args.get("command", "") if isinstance(parsed_args, dict) else ""
-    return isinstance(command, str) and shell_command_may_access_sensitive_data(command, shell_name=shell_name)
+    if not isinstance(command, str):
+        return False
+    if shell_command_may_access_sensitive_data(command, shell_name=shell_name):
+        return True
+    normalized = normalize_simple_command(command, shell_name)
+    if normalized is None:
+        return False
+    if any(target_may_access_sensitive_data(token) for token in normalized):
+        return True
+    return shell_command_may_access_sensitive_data(shlex.join(normalized), shell_name=shell_name)

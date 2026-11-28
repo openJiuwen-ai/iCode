@@ -70,7 +70,7 @@ from chrys.foundation.tool_result_metadata import (
     result_text_without_exit_code,
 )
 from chrys.foundation.util.once_close import OnceClose
-from chrys.kernel.tools import SyncToolCancelledAfterCompletion
+from chrys.kernel.tools import FunctionTool, SyncToolCancelledAfterCompletion
 from chrys.service.mutations.trace import discard_trace_file, prefix_trace_file, shell_trace_argv
 from chrys.service.tools.approval_targets import (
     CHANGED_AFTER_APPROVAL,
@@ -79,6 +79,7 @@ from chrys.service.tools.approval_targets import (
     physical_dir,
 )
 from chrys.service.tools.background import MAX_RUNNING_TASKS, current_scope, stop_command
+from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval
 from chrys.service.tools.kinds import KIND_SHELL, set_tool_kind, tool
 from chrys.service.tools.result_metadata import record_tool_success, tool_error
 from chrys.service.tools.spill import bound_process_output
@@ -319,6 +320,120 @@ def _prepare_pipe_command(command: str, shell: ShellInfo) -> str:
     if shell.name not in ("pwsh", "powershell"):
         return command
     return f"{_POWERSHELL_UTF8_PREAMBLE}\n{command}"
+
+
+_APPROVAL_SAFE_ENV_DROP = frozenset(
+    {
+        # Shell startup/expansion hooks.
+        "BASH_ENV",
+        "BASHOPTS",
+        "CDPATH",
+        "ENV",
+        "GLOBIGNORE",
+        "IFS",
+        "SHELLOPTS",
+        "ZDOTDIR",
+        # Tool configuration that can turn a read-only command into an exec.
+        "GIT_ASKPASS",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_EXTERNAL_DIFF",
+        "LESS",
+        "LESSCLOSE",
+        "LESSOPEN",
+        "RIPGREP_CONFIG_PATH",
+        "SSH_ASKPASS",
+        # Language startup hooks that run before the requested program.
+        "JAVA_TOOL_OPTIONS",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "PERL5LIB",
+        "PERL5OPT",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "RUBYLIB",
+        "RUBYOPT",
+        "_JAVA_OPTIONS",
+        # Dynamic-loader injection.
+        "DYLD_FRAMEWORK_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+    }
+)
+"""Variables removed for commands the approval layer classified as safe.
+
+The sanitized environment applies whether that decision was automatic or the
+user explicitly approved the command: the classifier is the boundary, and the
+same argv/environment must be used on both paths. Commands outside the boundary
+keep the normal shell environment.
+"""
+
+
+def _approval_safe_env() -> dict[str, str]:
+    """The environment for an approval-safe command, without startup/config hooks."""
+    env = build_shell_subprocess_env()
+    for name in _APPROVAL_SAFE_ENV_DROP:
+        env.pop(name, None)
+    for name in tuple(env):
+        if name.startswith(("BASH_FUNC_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            env.pop(name, None)
+    # A pager would block on the PTY and, worse, its command is configurable.
+    # build_shell_subprocess_env already sets cat; pin it again after cleanup.
+    env["PAGER"] = "cat"
+    env["GIT_PAGER"] = "cat"
+    # Pip's read-only queries must stay local even when the environment or a
+    # config file enables an index-backed mode.
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    env["PIP_NO_INDEX"] = "1"
+    # Auto-approved Git queries must not start on-demand fetches for missing
+    # objects in a partial clone.
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    # Keep Git's global/system config for read-only semantics (core.excludesFile,
+    # safe.directory), including the user's GIT_CONFIG_GLOBAL/SYSTEM/NOSYSTEM,
+    # but pin every key that can execute another program. The inherited
+    # GIT_CONFIG_PARAMETERS channel is removed above so it cannot override these
+    # pins. The environment config below wins over every file scope, including a
+    # repository's own .git/config.
+    env["GIT_CONFIG_COUNT"] = "7"
+    env["GIT_CONFIG_KEY_0"] = "core.fsmonitor"
+    env["GIT_CONFIG_VALUE_0"] = "false"
+    env["GIT_CONFIG_KEY_1"] = "core.pager"
+    env["GIT_CONFIG_VALUE_1"] = "cat"
+    env["GIT_CONFIG_KEY_2"] = "core.hooksPath"
+    env["GIT_CONFIG_VALUE_2"] = os.devnull
+    env["GIT_CONFIG_KEY_3"] = "log.showSignature"
+    env["GIT_CONFIG_VALUE_3"] = "false"
+    env["GIT_CONFIG_KEY_4"] = "gpg.program"
+    env["GIT_CONFIG_VALUE_4"] = os.devnull
+    env["GIT_CONFIG_KEY_5"] = "gpg.ssh.program"
+    env["GIT_CONFIG_VALUE_5"] = os.devnull
+    env["GIT_CONFIG_KEY_6"] = "gpg.x509.program"
+    env["GIT_CONFIG_VALUE_6"] = os.devnull
+    return env
+
+
+def _permission_error_is_working_dir(exc: PermissionError, cwd: str) -> bool:
+    """Return whether *exc* came from entering *cwd*, not from starting a program."""
+    filename = exc.filename
+    if not isinstance(filename, (str, bytes)):
+        return False
+    try:
+        return os.path.samefile(filename, cwd)
+    except OSError:
+        return os.path.abspath(os.fspath(filename)) == os.path.abspath(cwd)
+
+
+def _direct_argv_variants(argv: Sequence[str]) -> list[tuple[str, ...]]:
+    """Launch argvs for a validated argv, keeping the optional fsatrace wrapper."""
+    base = tuple(argv)
+    prefix = shell_trace_argv.get()
+    if prefix:
+        return [(*prefix, *base), base]
+    return [base]
 
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -600,8 +715,20 @@ class _Command:
             del self._line[:-_PROGRESS_LINE_LIMIT]
 
 
-async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
-    """Start *command* with its output on a PTY (Unix only)."""
+async def _spawn_pty(
+    command: str,
+    shell: ShellInfo,
+    cwd: str,
+    *,
+    direct_argv: Sequence[str] | None = None,
+    sanitized: bool = False,
+) -> _Command:
+    """Start *command* with its output on a PTY (Unix only).
+
+    *direct_argv*, when given, is a validated command to exec without a shell.
+    A *sanitized* environment is used for commands the approval layer
+    classified as safe, whether the decision was automatic or user-approved.
+    """
     master, slave = pty.openpty()
     try:
         # Set terminal size to 80x24
@@ -613,7 +740,7 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
         flags = fcntl.fcntl(master, fcntl.F_GETFL)
         fcntl.fcntl(master, fcntl.F_SETFL, flags | posix_os.O_NONBLOCK)
 
-        env = build_shell_subprocess_env()
+        env = _approval_safe_env() if sanitized else build_shell_subprocess_env()
 
         def _setup_pty() -> None:
             posix_os.setsid()
@@ -622,12 +749,15 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
         # stdio fds are inherited, ``setsid`` applies to fsatrace, and
         # the shell inherits its process group — draining and
         # group-kill behave exactly as untraced.
-        argv_variants = _shell_argv_variants(shell, command)
+        argv_variants = (
+            _direct_argv_variants(direct_argv) if direct_argv is not None else _shell_argv_variants(shell, command)
+        )
         proc: asyncio.subprocess.Process | None = None
-        for index, argv in enumerate(argv_variants):
+        chosen_argv: tuple[str, ...] | None = None
+        for index, launch_argv in enumerate(argv_variants):
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *argv,
+                    *launch_argv,
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=slave,
                     stderr=slave,
@@ -635,13 +765,14 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
                     env=env,
                     preexec_fn=_setup_pty,
                 )
+                chosen_argv = launch_argv
                 break
             except OSError as exc:
                 raise_if_missing_cwd(cwd, exc)
                 if index == len(argv_variants) - 1:
                     raise
                 logger.debug("Traced shell spawn failed; degrading to untraced", exc_info=True)
-        if proc is None:
+        if proc is None or chosen_argv is None:
             raise RuntimeError("No shell process was created by the configured spawn variants.")
     except BaseException:
         # Clean up both fds if subprocess creation fails
@@ -691,7 +822,7 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
         live=functools.partial(session_processes, proc.pid),
         stop=stop,
         after_exit=drained,
-        trace_file=_trace_file(argv),
+        trace_file=_trace_file(chosen_argv),
     )
     try:
         # Async reader on PTY master (same pattern as TUI shell)
@@ -705,19 +836,32 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
     return run
 
 
-async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
+async def _spawn_pipe(
+    command: str,
+    shell: ShellInfo,
+    cwd: str,
+    *,
+    direct_argv: Sequence[str] | None = None,
+    sanitized: bool = False,
+) -> _Command:
     """Start *command* with its output on pipes (the Windows backend).
 
     In a Job of its own on Windows, joined as it is created, and in a session
     of its own elsewhere: every process the command starts can be listed and
-    stopped with it.
+    stopped with it. *direct_argv* and *sanitized* have the same meaning as in
+    :func:`_spawn_pty`.
     """
-    env = build_shell_subprocess_env()
-    argv_variants = _shell_argv_variants(shell, _prepare_pipe_command(command, shell))
+    env = _approval_safe_env() if sanitized else build_shell_subprocess_env()
+    prepared = command if direct_argv is not None else _prepare_pipe_command(command, shell)
+    argv_variants = (
+        _direct_argv_variants(direct_argv) if direct_argv is not None else _shell_argv_variants(shell, prepared)
+    )
     proc: ManagedStdioProcess | None = None
-    for index, argv in enumerate(argv_variants):
+    chosen_argv: tuple[str, ...] | None = None
+    for index, launch_argv in enumerate(argv_variants):
         try:
-            proc = await spawn_managed_stdio_process(*argv, cwd=cwd, env=env, limit=_READ_CHUNK_BYTES)
+            proc = await spawn_managed_stdio_process(*launch_argv, cwd=cwd, env=env, limit=_READ_CHUNK_BYTES)
+            chosen_argv = launch_argv
             break
         except MissingWorkingDirectoryError:
             raise
@@ -725,7 +869,7 @@ async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
             if index == len(argv_variants) - 1:
                 raise
             logger.debug("Traced shell spawn failed; degrading to untraced", exc_info=True)
-    if proc is None:
+    if proc is None or chosen_argv is None:
         raise RuntimeError("No shell process was created by the configured spawn variants.")
     # Its input is a pipe that ends at once, never the console of the outer
     # chrys: a grandchild TUI (e.g. ``uv run icode`` inside PowerShell) could
@@ -746,7 +890,7 @@ async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
         cleanup,
         live=proc.live_processes,
         stop=stop,
-        trace_file=_trace_file(argv),
+        trace_file=_trace_file(chosen_argv),
     )
 
 
@@ -995,16 +1139,35 @@ class ShellTools:
             # could still be retargeted between this check and the spawn.
             cwd = pinned_cwd
 
+        decision = classify_shell_for_approval(command, shell_name=self._shell.name)
+        argv = None
+        sanitized = False
+        if decision.safe and decision.command is not None:
+            sanitized = True
+            if decision.command.execution == "exec":
+                argv = decision.command.argv
+
         if tasks is None:
-            return await self._run(command, reason, cwd, timeout, budget, workdir)
+            return await self._run(command, reason, cwd, timeout, budget, workdir, argv=argv, sanitized=sanitized)
         # A stop file may come from another tool: stop its task before a new
         # command can reach for the same port or files.
         stopped = await tasks.stop_requested()
-        result = await self._run(command, reason, cwd, timeout, budget, workdir)
+        result = await self._run(command, reason, cwd, timeout, budget, workdir, argv=argv, sanitized=sanitized)
         stopped += [task for task in await tasks.stop_requested() if task not in stopped]
         return _with_stop_notes(result, stopped)
 
-    async def _run(self, command: str, reason: str, cwd: str, timeout: int, budget: int, workdir: str | None) -> str:
+    async def _run(
+        self,
+        command: str,
+        reason: str,
+        cwd: str,
+        timeout: int,
+        budget: int,
+        workdir: str | None,
+        *,
+        argv: Sequence[str] | None = None,
+        sanitized: bool = False,
+    ) -> str:
         shell = self._shell
         try:
             if sys.platform == "win32":
@@ -1013,10 +1176,14 @@ class ShellTools:
                 # outer chrys without mouse/keyboard input after it exits.
                 # See ``preserve_console_mode`` for the full rationale.
                 with preserve_console_mode():
-                    stdout, returncode, stderr = await self._execute_pipe(command, shell, cwd, timeout, reason)
+                    stdout, returncode, stderr = await self._execute_pipe(
+                        command, shell, cwd, timeout, reason, argv=argv, sanitized=sanitized
+                    )
                 captures: tuple[CapturedOutput, ...] = (stdout, stderr)
             else:
-                merged, returncode = await self._execute_pty(command, shell, cwd, timeout, reason)
+                merged, returncode = await self._execute_pty(
+                    command, shell, cwd, timeout, reason, argv=argv, sanitized=sanitized
+                )
                 captures = (merged,)
             _record_shell_exit_code(returncode)
             parts = [*_output_parts(captures), f"[exit_code: {returncode}]"]
@@ -1051,8 +1218,42 @@ class ShellTools:
             if workdir:
                 return _workdir_not_found(exc.path, workdir)
             return working_dir_missing_error(exc.path)
+        except PermissionError as exc:
+            _record_shell_error()
+            if _permission_error_is_working_dir(exc, cwd):
+                return tool_error(
+                    "working_dir_permission_denied",
+                    f"cannot enter working directory — {cwd}",
+                    details={"working_dir": cwd},
+                )
+            if argv:
+                # Direct exec reports an unexecutable file at spawn time. The
+                # shell path would print ``permission denied`` and exit 126.
+                executable = argv[0]
+                _record_shell_exit_code(126)
+                return tool_error(
+                    "command_not_executable",
+                    f"command not executable — {executable}\n[exit_code: 126]",
+                    details={"command": command, "executable": executable},
+                )
+            return tool_error(
+                "shell_not_executable",
+                f"shell not executable at {shell.path}",
+                details={"shell_path": shell.path},
+            )
         except FileNotFoundError:
             _record_shell_error()
+            if argv:
+                # Direct exec reports a missing executable at spawn time. The
+                # shell path would instead print ``command not found`` and exit
+                # 127; keep the same semantics instead of blaming the shell.
+                executable = argv[0]
+                _record_shell_exit_code(127)
+                return tool_error(
+                    "command_not_found",
+                    f"command not found — {executable}\n[exit_code: 127]",
+                    details={"command": command, "executable": executable},
+                )
             return tool_error("shell_not_found", f"shell not found at {shell.path}", details={"shell_path": shell.path})
         except Exception as e:
             _record_shell_error()
@@ -1112,19 +1313,35 @@ class ShellTools:
     # ------------------------------------------------------------------
 
     async def _execute_pty(
-        self, command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
+        self,
+        command: str,
+        shell: ShellInfo,
+        cwd: str,
+        timeout: int | float,
+        reason: str = "",
+        *,
+        argv: Sequence[str] | None = None,
+        sanitized: bool = False,
     ) -> tuple[CapturedOutput, int]:
         """Run *command* in a PTY (Unix only). Returns ``(output, returncode)``."""
-        run = await _spawn_pty(command, shell, cwd)
+        run = await _spawn_pty(command, shell, cwd, direct_argv=argv, sanitized=sanitized)
         returncode = await self._follow(run, command, reason, cwd, timeout)
         (output,) = run.captured()
         return output, returncode
 
     async def _execute_pipe(
-        self, command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
+        self,
+        command: str,
+        shell: ShellInfo,
+        cwd: str,
+        timeout: int | float,
+        reason: str = "",
+        *,
+        argv: Sequence[str] | None = None,
+        sanitized: bool = False,
     ) -> tuple[CapturedOutput, int, CapturedOutput]:
         """Run *command* with pipes (Windows fallback). Returns ``(stdout, returncode, stderr)``."""
-        run = await _spawn_pipe(command, shell, cwd)
+        run = await _spawn_pipe(command, shell, cwd, direct_argv=argv, sanitized=sanitized)
         returncode = await self._follow(run, command, reason, cwd, timeout)
         stdout, stderr = run.captured()
         return stdout, returncode, stderr
@@ -1211,6 +1428,40 @@ class ShellTools:
             lines.append(f"  {model_path(wd.path)}{label}{marker}{exists}")
         lines.extend(f"  {model_path(path)} MISSING" for path in self._runtime.missing_working_dirs)
         return "\n".join(lines)
+
+
+SHELL_NAME_MISMATCH = "__mismatched__"
+"""A shell tool whose display name and bound shell disagree; never auto-approve it."""
+
+
+def shell_name_for_tool(tool: object, *, fallback: str = "") -> str:
+    """Return the bound shell's dialect only while the tool name still matches.
+
+    Approval and execution must classify with the same shell. ``ShellTools.tools``
+    names each tool after its shell, but a wrapper or extension could rename it;
+    that mismatch is a fail-closed condition, not a hint to trust the display name.
+    Non-tool test doubles may pass *fallback*.
+    """
+    if not isinstance(tool, FunctionTool):
+        return fallback
+    bound = tool.bound_instance
+    if not isinstance(bound, ShellTools):
+        return SHELL_NAME_MISMATCH
+    shell_name = bound.shell.name
+    return shell_name if tool.name == shell_name else SHELL_NAME_MISMATCH
+
+
+def shell_identity_is_renamed(tool: object) -> bool:
+    """Return whether a ShellTools executor's name no longer matches its bound shell.
+
+    Only the built-in executor has a shell identity to protect. A custom
+    ``KIND_SHELL`` tool (an extension or an engine test double) has no bound
+    shell name to compare, so it is not treated as a renamed executor.
+    """
+    if not isinstance(tool, FunctionTool):
+        return False
+    bound = tool.bound_instance
+    return isinstance(bound, ShellTools) and tool.name != bound.shell.name
 
 
 class _Timeout(Exception):

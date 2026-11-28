@@ -7,7 +7,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
+import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -69,6 +71,8 @@ _REMEMBER_FAILED = msg(
 )
 
 _GITDIR_POINTER_PREFIX = "gitdir:"
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -343,9 +347,40 @@ class ApprovalMiddleware(FunctionMiddleware):
         dev_sub_agent_review = (
             self._dev_mode and tool_kind == KIND_SUB_AGENT and self._approval_mode != ApprovalMode.BYPASS
         )
-        sensitive_shell = tool_kind == KIND_SHELL and shell_arg_may_access_sensitive_data(
-            context.arguments,
-            shell_name=tool_name,
+        shell_name = ""
+        shell_command = ""
+        approval_safe = None
+        shell_identity_unknown = False
+        if tool_kind == KIND_SHELL:
+            from chrys.service.tools.builtins.shell import shell_identity_is_renamed, shell_name_for_tool
+            from chrys.service.tools.builtins.shell_filter import classify_shell_for_approval, simple_command_argv
+
+            raw = context.arguments
+            shell_command = raw.get("command", "") if isinstance(raw, dict) else ""
+            if shell_command:
+                shell_name = shell_name_for_tool(context.function, fallback=tool_name)
+                shell_identity_unknown = shell_identity_is_renamed(context.function)
+                approval_safe = classify_shell_for_approval(shell_command, shell_name=shell_name)
+        # The simple-command parser returns the executor's tokens even for a
+        # command that is not eligible for auto-approval. Check those tokens
+        # directly, since neither the raw-text regex nor the session-reuse
+        # normalizer accepts every character the parser does.
+        parsed_argv = simple_command_argv(shell_command, shell_name=shell_name) if shell_command else None
+        if parsed_argv is None and shell_command:
+            # Unknown or unmodeled dialect: a POSIX simple-command parse is a
+            # conservative extra sensitivity check (it can only require approval).
+            parsed_argv = simple_command_argv(shell_command, shell_name="bash")
+        argv_sensitive = parsed_argv is not None and (
+            any(target_may_access_sensitive_data(arg) for arg in parsed_argv)
+            or shell_command_may_access_sensitive_data(shlex.join(parsed_argv), shell_name=shell_name)
+        )
+        # Sensitive targets run before the policy fast path and the reuse offer:
+        # both must see the normalized argv the command will actually execute,
+        # not only the raw text.
+        sensitive_shell = bool(shell_command) and (
+            shell_identity_unknown
+            or argv_sensitive
+            or shell_arg_may_access_sensitive_data(context.arguments, shell_name=shell_name)
         )
         sensitive_filesystem_read = tool_kind == KIND_FILESYSTEM_READ and path_arg_may_access_sensitive_data(
             context.arguments
@@ -366,28 +401,25 @@ class ApprovalMiddleware(FunctionMiddleware):
             await call_next()
             return
 
-        # Auto-approve safe read-only shell commands (e.g. ls, cat, grep)
-        # without showing the approval dialog.
-        if tool_kind == KIND_SHELL:
-            raw = context.arguments
-            cmd = raw.get("command", "") if isinstance(raw, dict) else ""
-            if cmd:
-                from chrys.service.tools.builtins.shell_filter import is_safe_readonly_command
-
-                if is_safe_readonly_command(cmd, shell_name=tool_name) and not shell_command_may_access_sensitive_data(
-                    cmd, shell_name=tool_name
-                ):
-                    self._decisions.append(
-                        _decision(
-                            request_id="",
-                            tool_name=tool_name,
-                            status="auto_approved",
-                            call_id=call_id,
-                            tool_order=tool_order,
-                        )
+        # Auto-approve only commands the approval-safe classifier can turn into
+        # an exact argv; anything with shell expansion goes through the normal
+        # approval/judge path. This is deliberately separate from the
+        # best-effort ``read_only`` shell filter.
+        if tool_kind == KIND_SHELL and shell_command:
+            if approval_safe is not None and approval_safe.safe and not sensitive_shell:
+                self._decisions.append(
+                    _decision(
+                        request_id="",
+                        tool_name=tool_name,
+                        status="auto_approved",
+                        call_id=call_id,
+                        tool_order=tool_order,
                     )
-                    await call_next()
-                    return
+                )
+                await call_next()
+                return
+            if approval_safe is not None and not approval_safe.safe:
+                logger.debug("Shell command requires approval (%s)", approval_safe.reason)
 
         # Auto-approve file writes inside workspace git repos.
         if tool_kind == KIND_FILESYSTEM_WRITE and self._workspace_roots:

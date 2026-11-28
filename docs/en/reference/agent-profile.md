@@ -216,7 +216,7 @@ Available presets:
 
 | Value | Behavior |
 | --- | --- |
-| `read_only` | Allows only commands in the built-in command list and blocks unquoted redirection and command substitution. Examples include `ls`, `cat`, `rg`, `git`, `python`, `curl`, and PowerShell's `Get-Content`. It does not inspect arguments, subcommands, or script contents, so it does not guarantee read-only execution and is not a security sandbox. |
+| `read_only` | Allows only commands in the built-in command list and blocks unquoted redirection and command substitution. Examples include `ls`, `cat`, `rg`, `git`, `python`, `curl`, and PowerShell's `Get-Content`. It does not inspect arguments, subcommands, or script contents, so it does not guarantee read-only execution and is not a security sandbox. Approval auto-approval is a separate, stricter security boundary and does not use this filter; see [Understand automatic approval and safety protections](../guides/configuration/approval.md#understand-automatic-approval-and-safety-protections). |
 | `unrestricted` | Does not filter shell commands. Usually, you can simply omit `shell_filter`. |
 
 Only the names in this table are valid. Any other name, in either form, makes the whole profile invalid: iCode skips the file instead of loading it with shell filtering switched off, and names `tools.shell_filter.preset` as the field to fix. To switch filtering off, write `unrestricted` or omit `shell_filter`.

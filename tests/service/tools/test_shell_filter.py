@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.service.tools.builtins.shell import ShellTools
 from chrys.service.tools.builtins.shell_filter import (
@@ -260,6 +262,29 @@ async def test_execute_without_filter() -> None:
 # ──────────────────── Safe read-only detection ──────────────────────────
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg --pre ./x.sh -e y .",
+        "rg --pre=./x.sh -e y .",
+        "rg --pre$IFS./x.sh -e y .",
+        "rg -n foo .",
+        "less README.md",
+        "more README.md",
+        "tree -o out .",
+        "date -s 2020-01-01",
+        "hostname evil",
+    ],
+)
+def test_legacy_readonly_check_rejects_exec_or_mutation_commands(command: str) -> None:
+    """The legacy best-effort predicate must not label exec/mutation surfaces as read-only.
+
+    Approval no longer uses this function, but keeping it permissive would invite a
+    future caller to reintroduce the same bypass.
+    """
+    assert not is_safe_readonly_command(command)
+
+
 def test_safe_readonly_simple_ls() -> None:
     assert is_safe_readonly_command("ls -la")
 
@@ -503,8 +528,6 @@ def test_safe_readonly_allows_dev_version_help_probes() -> None:
     assert is_safe_readonly_command("uv --version")
     assert is_safe_readonly_command("pytest --version")
     assert is_safe_readonly_command("mypy --help")
-    assert is_safe_readonly_command("cargo --version")
-    assert is_safe_readonly_command("go version")
     assert is_safe_readonly_command("java -version")
     assert is_safe_readonly_command("dotnet --info")
     assert is_safe_readonly_command("wget --version")
@@ -522,6 +545,8 @@ def test_safe_readonly_rejects_bare_version_help_targets() -> None:
     assert not is_safe_readonly_command("npm version")
     assert not is_safe_readonly_command("npx version")
     assert not is_safe_readonly_command("mypy help")
+    assert not is_safe_readonly_command("go version")
+    assert not is_safe_readonly_command("cargo --version")
 
 
 def test_safe_readonly_rejects_arbitrary_dev_execution() -> None:
@@ -535,8 +560,10 @@ def test_safe_readonly_rejects_arbitrary_dev_execution() -> None:
 def test_safe_readonly_allows_ruff_check_only() -> None:
     assert is_safe_readonly_command("ruff check --no-cache --no-fix src tests")
     assert is_safe_readonly_command("ruff check --no-cache --diff src tests")
-    assert is_safe_readonly_command("ruff format --check src tests")
-    assert is_safe_readonly_command("ruff format --diff src tests")
+    assert is_safe_readonly_command("ruff format --check --no-cache src tests")
+    assert is_safe_readonly_command("ruff format --diff --no-cache src tests")
+    assert not is_safe_readonly_command("ruff format --check src tests")
+    assert not is_safe_readonly_command("ruff format --diff src tests")
     assert not is_safe_readonly_command("ruff check --no-cache src tests")
     assert not is_safe_readonly_command("ruff check --no-cache --config fix=true src")
     assert not is_safe_readonly_command("ruff check --no-cache --no-fix -o report.txt src")
@@ -559,6 +586,7 @@ def test_safe_readonly_allows_pip_readonly_inspection() -> None:
     assert not is_safe_readonly_command("pip list --outdated")
     assert not is_safe_readonly_command("pip list --out")
     assert not is_safe_readonly_command("pip list --upt")
+    assert not is_safe_readonly_command("pip list -ou")
     assert not is_safe_readonly_command("pip install chrys")
 
 

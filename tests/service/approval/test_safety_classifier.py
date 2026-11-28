@@ -72,6 +72,45 @@ def test_env_template_exclusions_are_not_sensitive_but_env_is(path: str) -> None
     assert target_may_access_sensitive_data(".env") is True
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat .env*",
+        "cat .env?",
+        "cat *.env",
+        "cat '*.env'",
+        "cat ~/.ssh/id_rsa*",
+        "grep secret .env*",
+    ],
+)
+def test_shell_classification_flags_globbed_sensitive_targets(command: str) -> None:
+    """Globs must not hide .env or private-key reads from the approval gate."""
+    assert shell_command_may_access_sensitive_data(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat /proc/self/environ",
+        "cat /proc/thread-self/environ",
+        "cat /proc/1234/environ",
+    ],
+)
+def test_shell_classification_flags_proc_environ(command: str) -> None:
+    assert shell_command_may_access_sensitive_data(command) is True
+
+
+@pytest.mark.parametrize("command", ["env A=", "env A= B=", "env A=0 B="])
+def test_env_empty_assignment_still_dumps_the_environment(command: str) -> None:
+    assert shell_command_may_access_sensitive_data(command) is True
+
+
+@pytest.mark.parametrize("command", ["cat .en''v", "rg secret .en''v", "en''v", "'env'"])
+def test_shell_args_normalize_quote_concatenation(command: str) -> None:
+    """Some approvals show a normalized command; sensitivity must read the same tokens."""
+    assert shell_arg_may_access_sensitive_data({"command": command}, shell_name="bash") is True
+
+
 def test_shell_args_json_payload_classifies_and_malformed_json_fails_open() -> None:
     assert shell_arg_may_access_sensitive_data('{"command": "echo $API_KEY"}') is True
     assert shell_arg_may_access_sensitive_data('{"command":') is False
