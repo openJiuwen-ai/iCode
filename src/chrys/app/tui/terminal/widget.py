@@ -26,7 +26,8 @@ from textual.selection import Selection
 from textual.strip import Strip
 from textual.timer import Timer
 
-from chrys.app.tui.clipboard import copy_text_to_clipboards, paste_text_from_clipboards
+from chrys.app.tui.behaviors.right_click_copy import copy_screen_selection
+from chrys.app.tui.clipboard import paste_text_from_clipboards
 from chrys.app.tui.support.gc_freeze import DetachedLruCache, detach_lru_cache, renew_lru_cache
 from chrys.app.tui.terminal import emulator as vt
 from chrys.app.tui.terminal.emulator import PointerAction, TerminalEmulator, encode_key, encode_paste, encode_pointer
@@ -451,9 +452,9 @@ class Terminal(ScrollView, can_focus=True):
         event.prevent_default()
         event.stop()
         key = event.key
-        if key in ("ctrl+c", "ctrl+insert") and (selected := self.screen.get_selected_text()):
-            copy_text_to_clipboards(self.app, selected)
-        elif key == "ctrl+insert":
+        if key in ("ctrl+c", "ctrl+insert") and copy_screen_selection(self.screen):
+            return
+        if key == "ctrl+insert":
             pass
         elif key == "shift+insert":
             if text := paste_text_from_clipboards(self.app):

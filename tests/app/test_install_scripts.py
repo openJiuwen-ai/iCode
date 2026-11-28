@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -383,6 +384,7 @@ def test_install_sh_refuses_what_it_cannot_install(tmp_path: Path, args: tuple[s
 # takes the stall timeouts of pwsh 7.4 and later, as the real cmdlet there does.
 _PS_STUBS = r"""
 $ErrorActionPreference = 'Stop'
+if ($env:FAKE_PS_STARTED) { [IO.File]::WriteAllText($env:FAKE_PS_STARTED, '') }
 # Only the shell's own modules, so looking up a command reads none of the machine's others.
 $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 function Get-Served([string]$Uri) {
@@ -410,6 +412,23 @@ function Start-Process([string]$FilePath, [string[]]$ArgumentList, [switch]$NoNe
     $exitCode = if ($env:FAKE_EXIT_CODE) { [int]$env:FAKE_EXIT_CODE } else { 0 }
     [pscustomobject]@{ Handle = 1; ExitCode = $exitCode } |
         Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { } -PassThru
+}
+"""
+
+# Release discovery starts with no conflicting command on PATH. Searching for
+# an absent application in Windows PowerShell can consume most of the process
+# budget even with isolated module paths. Tests for PATH conflicts keep the
+# real application lookup.
+_PS_CLEAN_PATH = r"""
+function Get-Command {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position=0)][string]$Name,
+        [System.Management.Automation.CommandTypes]$CommandType,
+        [switch]$All
+    )
+    if ($Name -eq 'icode' -and $CommandType -eq 'Application') { return }
+    Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
 }
 """
 
@@ -451,33 +470,76 @@ class _PsMachine:
     env: dict[str, str]
     server: _Server
 
-    def run(self, **env: str) -> subprocess.CompletedProcess[str]:
+    def run(self, *, assume_clean_path: bool = False, **env: str) -> subprocess.CompletedProcess[str]:
         """Run it as ``irm ... | iex`` does: the script's text, under the default execution policy.
 
         Windows PowerShell's default policy loads no script module, which is what Get-FileHash and
         Expand-Archive come from there; an installer that needs one fails only when run this way.
         """
-        command = _PS_STUBS + "Get-Content -Raw -LiteralPath $env:INSTALL_PS1 | Invoke-Expression\n"
+        stubs = _PS_STUBS + _PS_CLEAN_PATH if assume_clean_path else _PS_STUBS
+        command = stubs + "Get-Content -Raw -LiteralPath $env:INSTALL_PS1 | Invoke-Expression\n"
         encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
         argv = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted", "-EncodedCommand", encoded]
-        return self._run(argv, env)
+        return self._run(argv, env, observe_startup=True)
 
     def run_file(self, *args: str) -> subprocess.CompletedProcess[str]:
         """Run the file with parameters, as ``install.ps1 -Version ...`` does."""
         runner = self.tmp_path / "run.ps1"
         runner.write_text(_PS_STUBS + "& $env:INSTALL_PS1 @args\n", encoding="utf-8")
-        return self._run(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(runner), *args])
+        return self._run(
+            ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(runner), *args],
+            observe_startup=True,
+        )
 
-    def _run(self, argv: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self, argv: list[str], env: dict[str, str] | None = None, *, observe_startup: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        command = [self.shell, *argv]
+        child_env = self.env | (env or {})
+        if observe_startup and Path(self.shell).stem.casefold() == "powershell":
+            return self._run_windows_powershell(command, child_env)
         return subprocess.run(
-            [self.shell, *argv],
-            env={**self.env, **(env or {})},
+            command,
+            env=child_env,
             cwd=self.tmp_path,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=25,
             check=False,
+        )
+
+    def _run_windows_powershell(self, command: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        # Give Windows PowerShell 5.1 its own startup budget. Loading the
+        # runtime on a busy runner can otherwise spend the fixture's timeout
+        # before the first statement of the installer test runs. The two
+        # waits leave time for cleanup before pytest's 60-second timeout.
+        started = self.tmp_path / "powershell-started"
+        started.unlink(missing_ok=True)
+        with subprocess.Popen(
+            command,
+            env=env | {"FAKE_PS_STARTED": str(started)},
+            cwd=self.tmp_path,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as process:
+            deadline = time.monotonic() + 25
+            while process.poll() is None and not started.is_file() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            shell_started = started.is_file() or process.poll() is not None
+            try:
+                stdout, stderr = process.communicate(timeout=25 if shell_started else 0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+            else:
+                return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        phase = "installer execution" if shell_started else "shell startup"
+        pytest.fail(
+            f"Windows PowerShell timed out during {phase}. Requests: {self.server.requests()}\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
         )
 
     def install_old_copy(self, version: str, *, alias: bool = True) -> None:
@@ -548,7 +610,7 @@ def test_install_ps1_installs_the_latest_github_release(tmp_path: Path, shell: s
     latest_sums = f"{_GITHUB}/latest/download/SHA256SUMS.txt"
     machine.server.release(_GITHUB, f"v{_LATEST}", _windows_packages(), sums_at=latest_sums)
 
-    result = machine.run()
+    result = machine.run(assume_clean_path=True)
 
     assert result.returncode == 0, result.stdout + result.stderr
     requests = machine.server.requests()
@@ -572,7 +634,7 @@ def test_install_ps1_falls_back_to_gitcode_and_finds_its_latest_release(
         machine.server.serve(_GITCODE_PYPROJECT, f'[project]\nname = "iCode-TUI"\nversion = "{_LATEST}"\n'.encode())
     machine.server.release(_GITCODE, f"v{_LATEST}", _windows_packages())
 
-    result = machine.run()
+    result = machine.run(assume_clean_path=True)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Could not install from GitHub." in result.stdout

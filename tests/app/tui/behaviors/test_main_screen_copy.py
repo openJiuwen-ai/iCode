@@ -292,28 +292,32 @@ async def test_right_click_input_selection_wins_over_stale_chat_selection(monkey
 
 
 @pytest.mark.asyncio
-async def test_forward_event_discards_detached_markdown_selection_hit(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("target_kind", ["markdown", "editor"])
+async def test_forward_event_discards_detached_selection_hit(monkeypatch: pytest.MonkeyPatch, target_kind: str) -> None:
     app = _MainScreenApp()
     async with app.run_test() as pilot:
         panel = app.main_screen.query_one(ChatPanel)
-        await panel.add_agent_message("stale markdown")
-        await pilot.pause()
-
-        markdown = app.main_screen.query_one(VirtualizedMarkdown)
-        await markdown.remove()
+        if target_kind == "editor":
+            target: Widget = EnhancedTextArea()
+            await panel.mount(target)
+        else:
+            await panel.add_agent_message("stale markdown")
+            await pilot.pause()
+            target = app.main_screen.query_one(VirtualizedMarkdown)
+        await target.remove()
         await pilot.pause()
 
         screen = app.main_screen
-        screen.selections = {markdown: SELECT_ALL}
+        screen.selections = {target: SELECT_ALL}
         screen._mouse_down_offset = Offset(1, 1)
         screen._selecting = True
-        app._mouse_down_widget = markdown
+        app._mouse_down_widget = target
 
         def stale_content_hit(_x: int, _y: int) -> tuple[Widget | None, Offset | None]:
-            return markdown, Offset(0, 0)
+            return target, Offset(0, 0)
 
         def stale_hit(_x: int, _y: int) -> tuple[Widget, Region]:
-            return markdown, Region(1, 1, 10, 1)
+            return target, Region(1, 1, 10, 1)
 
         # The layout before the removal answers both, as the screen's one map does.
         monkeypatch.setattr(screen, "get_widget_and_offset_at", stale_content_hit)
@@ -321,7 +325,7 @@ async def test_forward_event_discards_detached_markdown_selection_hit(monkeypatc
 
         screen._forward_event(
             MouseDown(
-                markdown,
+                target,
                 x=1,
                 y=1,
                 delta_x=0,

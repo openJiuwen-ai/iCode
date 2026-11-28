@@ -9,20 +9,28 @@ from unittest.mock import create_autospec
 
 from tests.app.tui.screens import test_prompt_shortcut_send as harness
 from tests.support.async_tasks import running_task
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, ENGINE_TURN_TIMEOUT, wait_for, with_wait_deadline
 
 
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_cold_sdk_preparation_finishes_before_the_app_starts(agent_engine, tmp_path, monkeypatch) -> None:
     importing = threading.Event()
     release_import = threading.Event()
+    prepared = threading.Event()
     preload = harness.preload_sdks
+    make_chrys_app = harness.make_chrys_app
 
     def held_preload() -> None:
         importing.set()
         assert release_import.wait(ENGINE_TURN_TIMEOUT), "test did not release SDK preparation"
         preload()
+        prepared.set()
 
-    make_app = create_autospec(harness.make_chrys_app, side_effect=harness.make_chrys_app)
+    def open_after_preload(*args, **kwargs):
+        assert prepared.is_set(), "app started before SDK preparation finished"
+        return make_chrys_app(*args, **kwargs)
+
+    make_app = create_autospec(make_chrys_app, side_effect=open_after_preload)
     monkeypatch.setattr(harness, "preload_sdks", held_preload)
     monkeypatch.setattr(harness, "make_chrys_app", make_app)
 
@@ -41,6 +49,5 @@ async def test_cold_sdk_preparation_finishes_before_the_app_starts(agent_engine,
             make_app.assert_not_called()
         finally:
             release_import.set()
-        await wait_for(task.done, timeout=ENGINE_TURN_TIMEOUT, description="session startup after SDK preparation")
         await task
     make_app.assert_called_once()

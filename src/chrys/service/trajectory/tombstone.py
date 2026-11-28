@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from chrys.foundation.platform.files import SecureFileError, secure_open_owner_only
+from chrys.foundation.platform.files import SecureFileError, secure_open_owner_only, unlink_with_retry
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.keys import ensure_owner_only_directory
 from chrys.foundation.trajectory.lease import WRITER_LEASE_FILE_NAME, WriterLease
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 TOMBSTONES_DIR_NAME: Final = ".tombstones"
 INTENT_SUFFIX: Final = ".intent"
 _TRAJECTORY_DIR_NAME: Final = "trajectory"
+_ERROR_SHARING_VIOLATION: Final = 32
 
 
 class DeleteOutcome:
@@ -130,9 +131,15 @@ def _remove_holding_lease(directory: Path) -> bool:
     pinned = {lease_path.parent: [lease_path.name], directory: [lease_path.parent.name]}
     deferred: list[Path] = []
 
-    def defer_pinned(function: Callable[..., object], path: str, error: BaseException) -> None:
+    def handle_remove_error(function: Callable[..., object], path: str, error: BaseException) -> None:
+        if function is os.unlink and getattr(error, "winerror", None) == _ERROR_SHARING_VIOLATION:
+            # Windows readers, including the sidebar's snapshot counter, can
+            # briefly hold a file without delete sharing. Retry with the lease held.
+            with contextlib.suppress(FileNotFoundError):
+                unlink_with_retry(path)
+            return
         not_empty = isinstance(error, OSError) and error.errno == errno.ENOTEMPTY
-        # Anything else still there (a file another program holds open) fails the removal here.
+        # Other failures still stop removal at the affected path.
         if function is not os.rmdir or not not_empty or pinned.get(Path(path)) != os.listdir(path):
             raise error
         deferred.append(Path(path))
@@ -140,7 +147,7 @@ def _remove_holding_lease(directory: Path) -> bool:
     with _writer_lease_taken(directory) as taken:
         if not taken:
             return False
-        shutil.rmtree(directory, onexc=defer_pinned)
+        shutil.rmtree(directory, onexc=handle_remove_error)
     # Bottom-up, as the removal reported them.
     for path in deferred:
         os.rmdir(path)

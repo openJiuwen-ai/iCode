@@ -12,6 +12,7 @@ from textual._xterm_parser import XTermParser
 from textual.binding import Binding, BindingType
 from textual.geometry import Offset
 
+from chrys.app.tui.behaviors import right_click_copy
 from chrys.app.tui.clipboard import ClipboardApp, ClipboardReadApp
 from chrys.app.tui.terminal import widget as widget_module
 from chrys.app.tui.terminal.leaked_reports import MAX_HELD_LENGTH
@@ -45,7 +46,7 @@ class _Clipboards:
 
 def _replace_clipboards(monkeypatch: pytest.MonkeyPatch, contents: str = "") -> _Clipboards:
     clipboards = _Clipboards(contents)
-    monkeypatch.setattr(widget_module, "copy_text_to_clipboards", clipboards.copy)
+    monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", clipboards.copy)
     monkeypatch.setattr(widget_module, "paste_text_from_clipboards", clipboards.paste)
     return clipboards
 
@@ -492,11 +493,19 @@ async def test_copy_key_copies_a_selection_instead_of_reaching_the_program(
         assert stdin.writes == []
 
 
-async def test_ctrl_c_without_a_selection_interrupts_the_program(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("select_empty_cells", [False, True])
+async def test_ctrl_c_without_selected_text_interrupts_the_program(
+    monkeypatch: pytest.MonkeyPatch, select_empty_cells: bool
+) -> None:
     clipboards = _replace_clipboards(monkeypatch)
     app = TerminalApp()
     async with app.run_test(size=(40, 11)) as pilot:
-        stdin = connect_stdin(app.terminal)
+        terminal = app.terminal
+        stdin = connect_stdin(terminal)
+        if select_empty_cells:
+            await terminal.write("some text\r\n")
+            select_text(terminal, Offset(0, 1), Offset(4, 1))
+            assert app.screen.get_selected_text() == ""
 
         await pilot.press("ctrl+c")
 

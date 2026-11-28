@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import gc
+from dataclasses import dataclass
 from typing import Any
 
 from textual._arrange import DockArrangeResult
@@ -151,6 +152,14 @@ class ManualScrollGcGuard:
         self.resume(schedule_collect=False)
 
 
+@dataclass(slots=True)
+class _GuideFold:
+    header: Widget
+    viewport_row: int
+    initially_offscreen: bool
+    placing: bool = False
+
+
 class ChatScrollController:
     """Own chat scroll-follow state, timers, and bottom-anchor policy."""
 
@@ -192,7 +201,7 @@ class ChatScrollController:
         """Where that layout put the top of ``_reveal``, margin included; -1 until one does."""
         self._fold_shrink = False
         """An entry folded, or gave rows up, since the last layout: the transcript shrinks in that layout."""
-        self._guide_fold: tuple[Widget, int] | None = None
+        self._guide_fold: _GuideFold | None = None
         """The header to place at the mouse's viewport row if folding would leave it offscreen."""
 
     def entry_folded(self) -> None:
@@ -205,11 +214,40 @@ class ChatScrollController:
         """
         self._fold_shrink = True
 
+    @property
+    def fold_layout_pending(self) -> bool:
+        return self._fold_shrink
+
+    def fold_scroll_target(self, result: DockArrangeResult, height: int, bottom: int, scroll_y: float) -> float:
+        """Project the fold destination into this layout before choosing visible pages."""
+        scroll_y = min(scroll_y, bottom)
+        fold = self._guide_fold
+        if fold is not None and fold.initially_offscreen:
+            # A shrinking page can shift the numeric anchor into view even
+            # though its header was above the viewport at the time of the click.
+            fold.placing = True
+        target = self._guide_fold_target(result, height, bottom, scroll_y)
+        if target is None:
+            return scroll_y
+        if fold is not None:
+            # Measuring a cold neighbor can move the header again. Keep its
+            # pointer row until all the pages needed by that landing are ready.
+            fold.placing = True
+        return target
+
     def place_guide_fold_at(self, header: Widget, viewport_row: int) -> None:
         """Keep an offscreen fold header under the mouse in the layout that folds it."""
         if self._host.is_anchored and not self._host.is_anchor_released():
             return
-        self._guide_fold = (header, viewport_row)
+        previous = self._arrangement
+        row = None if previous is None else self._guide_header_row(previous, header)
+        top = round(self._host.scroll_y)
+        offscreen = row is not None and not top <= row < top + self._host.size.height
+        self._guide_fold = _GuideFold(header, viewport_row, offscreen)
+
+    def cancel_pending_guide_fold(self) -> None:
+        """A later scroll displaces a guide placement still waiting on layout."""
+        self._guide_fold = None
 
     def set_agent_running(self, running: bool) -> None:
         """Mirror current run state and reset the final gate only on run start."""
@@ -340,12 +378,14 @@ class ChatScrollController:
         return self._host.call_super_scroll_to_region(region, **kwargs)
 
     def check_anchor(self) -> None:
-        """Re-engage bottom-follow only at exact bottom."""
-        if (
-            self._host.is_anchored
-            and self._host.is_anchor_released()
-            and self._host.scroll_y >= self._host.max_scroll_y
-        ):
+        """Re-engage a released anchor at the bottom."""
+        if self._host.is_anchor_released():
+            self.resume_following_at_bottom()
+
+    def resume_following_at_bottom(self, *, maximum: int | None = None) -> None:
+        """Resume following when a history navigation lands at the bottom."""
+        bottom = self._host.max_scroll_y if maximum is None else maximum
+        if self._host.is_anchored and self._host.scroll_y >= bottom:
             self._host.set_anchor_released(False)
             self.auto_scroll_paused_by_user = False
 
@@ -365,6 +405,8 @@ class ChatScrollController:
             self._entries_bottom = self._last_entry_bottom(result)
             if self._reveal is not None:
                 self._place_reveal(result)
+        if not optimal and self._host.history_layout_is_held():
+            return result
         virtual_h = result.spatial_map.total_region.bottom
         if virtual_h < size.height and self._host.scroll_y < 0:
             if self._host.is_anchored and not self._host.is_anchor_released():
@@ -378,37 +420,55 @@ class ChatScrollController:
         ):
             self._host.set_anchor_released(True)
             self._host.call_after_refresh(self._reanchor_after_settle_unless_jumped, self._settle_reanchor_generation)
-        if not optimal and self._fold_shrink:
-            self._show_fold_shrink(virtual_h - size.height)
-        if not optimal and (self.view_hold_active or self._view_hold_child is not None):
-            self._hold_view(result)
-        if not optimal and self._guide_fold is not None:
-            self._place_guide_fold(result, size.height, max(0, virtual_h - size.height))
+        if not optimal:
+            if self._host.history_layout_is_windowed():
+                # The window was chosen with the fold's final scroll offset.
+                self._guide_fold = None
+            else:
+                if self._fold_shrink:
+                    self._show_fold_shrink(virtual_h - size.height)
+                if self.view_hold_active or self._view_hold_child is not None:
+                    self._hold_view(result)
+                if self._guide_fold is not None:
+                    self._place_guide_fold(result, size.height, max(0, virtual_h - size.height))
         return result
 
     def _place_guide_fold(self, result: DockArrangeResult, viewport_height: int, max_scroll_y: int) -> None:
-        request, self._guide_fold = self._guide_fold, None
-        if request is None or not self._fold_shrink:
+        target = self._guide_fold_target(result, viewport_height, max_scroll_y, self._host.scroll_y)
+        self._guide_fold = None
+        if target is None:
             return
+        self._host.set_scroll_y_reactive(target)
+        self._host.set_scroll_target_y_reactive(target)
+        self._host.set_vertical_scrollbar_position(target)
+        if self.view_hold_active:
+            self._view_hold_child = self._first_visible_child(result, target)
+
+    def _guide_fold_target(
+        self, result: DockArrangeResult, viewport_height: int, max_scroll_y: int, scroll_y: float
+    ) -> int | None:
+        fold = self._guide_fold
+        if fold is None or not self._fold_shrink:
+            return None
         if self._host.is_anchored and not self._host.is_anchor_released():
-            return
-        header, viewport_row = request
+            return None
+        row = self._guide_header_row(result, fold.header)
+        top = round(scroll_y)
+        if row is None or (not fold.placing and top <= row < top + viewport_height):
+            return None
+        pointer_row = min(max(0, fold.viewport_row), max(0, viewport_height - 1))
+        return min(max_scroll_y, max(0, row - pointer_row))
+
+    @staticmethod
+    def _guide_header_row(result: DockArrangeResult, header: Widget) -> int | None:
         for placement in result.placements:
             if placement.widget is not header:
                 continue
             row = placement.region.y + header.styles.gutter.top
             if isinstance(header, FoldGap) and header.gap_above:
                 row += FOLD_GAP_ROWS
-            scroll_y = round(self._host.scroll_y)
-            if scroll_y <= row < scroll_y + viewport_height:
-                return
-            new_y = min(max_scroll_y, max(0, row - viewport_row))
-            self._host.set_scroll_y_reactive(new_y)
-            self._host.set_scroll_target_y_reactive(new_y)
-            self._host.set_vertical_scrollbar_position(new_y)
-            if self.view_hold_active:
-                self._view_hold_child = self._first_visible_child(result, new_y)
-            return
+            return row
+        return None
 
     def _show_fold_shrink(self, max_scroll_y: int) -> None:
         """Bring a view below the transcript's new bottom, *max_scroll_y*, up to it in the arrangement a fold shrank.
@@ -448,6 +508,13 @@ class ChatScrollController:
                 # The spacer ends the transcript: this arrangement left it out already.
                 break
         return 0
+
+    def history_scroll_bottom(self, result: DockArrangeResult, size: Size) -> int:
+        """Use the same bottom for a measured history step and the painted layout."""
+        self._host.place_fixed_scroll_button(result, size)
+        self._arrange_bottom_spacer(result, size)
+        self._drop_bottom_margin(result)
+        return max(0, result.total_region.bottom - size.height)
 
     def _last_entry_bottom(self, result: DockArrangeResult) -> int:
         """Where *result* ends the last transcript entry."""
@@ -585,7 +652,7 @@ class ChatScrollController:
     def size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
         """Hold one anchored shrink frame before validator clamping, unless a fold made it."""
         fold_shrink = self._fold_shrink
-        if layout:
+        if layout and not self._host.history_layout_is_held():
             self._fold_shrink = False
         if (
             not fold_shrink

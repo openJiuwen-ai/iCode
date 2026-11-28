@@ -972,6 +972,11 @@ class StreamedMarkdownMessage(GuideFoldMixin, FoldGap, ProcessMember):
         """
         self.run_worker(self._sync_folded_body, group="folded-body")
 
+    async def wait_for_replay_body(self) -> None:
+        """Finish opening a cold message before the archive page is shown."""
+        if not self.collapsed and not self._shows_body() and self._builds_body_on_opening():
+            await self._sync_folded_body()
+
     def stream_update(self, text: str, is_final: bool = False) -> None:
         """Update the message text (for streaming).
 

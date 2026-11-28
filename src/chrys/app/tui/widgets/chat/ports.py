@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from fractions import Fraction
 from typing import Any, Protocol, Self
 
 from rich.text import Text
@@ -110,8 +111,8 @@ class TranscriptReadPort(ChatWidgetQueryPort, Protocol):
         """Replayed entries not mounted yet, in document order."""
         ...
 
-    def transcript_entry_after(self, widget: Widget) -> Widget | None:
-        """The oldest mounted entry newer than a pending ``widget``; None when none is."""
+    def transcript_seq(self, widget: Widget) -> Fraction | None:
+        """The document order of a mounted or pending transcript entry."""
         ...
 
 
@@ -189,6 +190,10 @@ class ChatScrollHost(Protocol):
     def scrollbar_size_horizontal(self) -> int: ...
 
     def call_super_arrange(self, size: Size, *, optimal: bool = False) -> DockArrangeResult: ...
+
+    def history_layout_is_held(self) -> bool: ...
+
+    def history_layout_is_windowed(self) -> bool: ...
 
     def call_super_scroll_to_region(self, region: Region, **kwargs: Any) -> Offset: ...
 

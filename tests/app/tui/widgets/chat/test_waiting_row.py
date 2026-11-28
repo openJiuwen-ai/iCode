@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+from textual.geometry import Size
 from textual.screen import Screen
 
 from chrys.app.tui.widgets.chat.chrome import ChatBottomSpacer
@@ -257,15 +258,26 @@ async def test_the_row_showing_lays_the_transcript_out_once(monkeypatch: pytest.
         )
         # Taller than the view: the transcript's own rows, not the spacer under a short one, give the row its place.
         assert panel.max_scroll_y > 0
-        with patch.object(screen, "_refresh_layout", autospec=True, side_effect=screen._refresh_layout) as layout:
+        row = _row(panel)
+        refresh_layout = screen._refresh_layout
+        shown_layouts = 0
+
+        def count_shown_layout(size: Size | None = None, scroll: bool = False) -> None:
+            nonlocal shown_layouts
+            # The timer can still be waiting when the screen handles a queued layout.
+            if row.display:
+                shown_layouts += 1
+            refresh_layout(size, scroll)
+
+        with patch.object(screen, "_refresh_layout", autospec=True, side_effect=count_shown_layout):
             _start_the_moment(panel)
             await wait_for(
-                lambda: _row(panel).display and screen_is_settled(pilot.app, screen),
+                lambda: row.display and screen_is_settled(pilot.app, screen),
                 pilot=pilot,
                 description="the row shows",
             )
         # The layout that shows it gives it its rows: Textual's own size update would ask for another.
-        assert layout.call_count == 1
+        assert shown_layouts == 1
 
 
 async def test_a_turn_that_ends_as_the_row_shows_moves_the_view_in_the_frame_that_hides_the_row(

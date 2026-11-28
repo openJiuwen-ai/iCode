@@ -17,6 +17,7 @@ import pytest
 from textual.widget import Widget
 
 from chrys.app.tui.widgets.chat import process_controller as process_controller_module
+from chrys.app.tui.widgets.chat import replay_mount as replay_mount_module
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
@@ -32,6 +33,7 @@ from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import Content, Message
+from tests.app.tui.widgets.chat.replay_fixtures import _turns
 from tests.app.tui.widgets.chat.test_live_process_row import (
     _READ_KIND,
     _finish,
@@ -257,6 +259,38 @@ async def test_continuing_runs_the_stopped_title_at_once_with_no_waiting_row_bel
         assert block.collapsed and block.tool_count == 4
         assert not _rows(panel)
         assert all(group in block.members and not group.display for group in panel.query(ToolGroup))
+
+
+@pytest.mark.parametrize("drain_history", [False, True], ids=["cold-archive", "drained-archive"])
+async def test_continuing_a_restored_stopped_turn_keeps_its_own_fold_state(drain_history: bool) -> None:
+    history = _turns(96)
+    history.append(
+        {"role": "system", "contents": [], "additional_properties": {HistoryMarkerKind.KEY: HistoryMarkerKind.TURN}}
+    )
+    history.extend(_stopped_history(3))
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(history)
+        await _settled(pilot)
+        oldest = next(widget for widget in panel.pending_transcript_widgets() if widget.id == "turn-1")
+        assert panel.query_one(ProcessBlock).tool_count == 3
+        assert panel.toggle_fold_all() is False
+        if drain_history:
+            await panel.wait_replay_complete()
+            assert panel.toggle_fold_all() is True
+
+        panel.capture_settled_status()
+        panel.agent_running = True
+        await panel.clear_settled_status()
+        assert _row(panel).tally.total == 3
+        await _read(panel, "next", "/tmp/next.py")
+        await _finish(panel)
+        await _settled(pilot)
+
+        completed = panel.query_one(ProcessBlock)
+        assert completed.tool_count == 4 and completed.collapsed
+        assert not panel.query(InterruptedMessage)
+        assert panel._replay_mount.windowed and oldest.is_attached is drain_history
 
 
 @pytest.mark.parametrize("note", ["sent-with-continue", "sent-before-the-first-step"])
@@ -761,13 +795,17 @@ async def test_interrupt_before_the_prompt_mounts_folds_the_continued_turn(
 async def test_continue_waits_for_the_replayed_stop_title_before_taking_it_over(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    calls = 4
+    # Keep the prompt and original process title in the prepend without
+    # mounting a large tool history to reach the held title.
+    monkeypatch.setattr(replay_mount_module, "REPLAY_FOREGROUND_ENTRY_LIMIT", 4)
     mounting_title = asyncio.Event()
     release_title = asyncio.Event()
     continuing = asyncio.Event()
 
     class HeldProcessBlock(ProcessBlock):
         async def on_mount(self) -> None:
-            if self.tool_count == 181:
+            if self.tool_count == calls + 1:
                 mounting_title.set()
                 await release_title.wait()
 
@@ -776,7 +814,8 @@ async def test_continue_waits_for_the_replayed_stop_title_before_taking_it_over(
         panel = pilot.app.query_one(ChatPanel)
 
         async def stop_before_prompt() -> None:
-            async with _hold_replay_before_prompt(panel, monkeypatch, calls=180):
+            async with _hold_replay_before_prompt(panel, monkeypatch, calls=calls):
+                assert not panel.query(ProcessBlock)
                 panel.capture_settled_status()
                 panel.agent_running = True
                 await panel.clear_settled_status()
@@ -810,9 +849,9 @@ async def test_continue_waits_for_the_replayed_stop_title_before_taking_it_over(
                 release_title.set()
 
         (block,) = panel.query(ProcessBlock)
-        assert block.tool_count == 182 and block.collapsed
+        assert block.tool_count == calls + 2 and block.collapsed
         groups = list(panel.query(ToolGroup))
-        assert len(groups) == 182 and all(group in block.members and not group.display for group in groups)
+        assert len(groups) == calls + 2 and all(group in block.members and not group.display for group in groups)
 
 
 async def test_continuing_keeps_a_step_the_user_opened_under_the_folded_title_open() -> None:

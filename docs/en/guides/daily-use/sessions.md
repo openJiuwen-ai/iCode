@@ -85,7 +85,7 @@ To find and resume another session, press **F1**, click `f1 Sessions`, or enter 
 
 A resumed session continues on the agent and model it was saved with. That doesn't change the agent and model a new session (`/new`) starts on: the agent you last chose with `#` (or started with) and your default model.
 
-When you resume a long conversation, iCode shows its most recent part first so you can continue right away; earlier messages keep loading above it for a few seconds.
+When you resume a long conversation, iCode shows the most recent messages first. Scroll up or jump from the message list to load earlier messages as you need them.
 
 A resumed conversation shows the model's saved thinking folded to one line above the reply it led to: **Thought:**, followed by how the thinking begins; click it to unfold it. Thinking inside a folded process appears once you open the process. If a reply was interrupted or failed, the thinking shown for the request that was cut off is not saved, so it does not appear.
 

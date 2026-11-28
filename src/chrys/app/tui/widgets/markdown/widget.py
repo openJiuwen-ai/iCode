@@ -566,6 +566,8 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         block index keeps that walk to at most once per block per layout."""
         self._width_at_last_layout: int = 0
         """Width when blocks were last laid out."""
+        self._last_measured_width = 0
+        """Last positive content width, retained when a style change invalidates the layout."""
         self._plain_selection_cache: tuple[list[str], list[tuple[str, int]]] | None = None
         """Cached plain text rows and inter-row separators for text selection / copy.
         Built lazily from rendered strips on first get_selection call."""
@@ -887,7 +889,9 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         """Measure the changed blocks, keeping same-width metadata for the identical prefix."""
         if width is None:
             width = self.scrollable_content_region.width
-        if width <= 0:
+        if width > 0:
+            self._last_measured_width = width
+        else:
             width = 80
 
         if width != self._width_at_last_layout:
@@ -2209,6 +2213,13 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         positions (indentation, prefixes, borders, wrapping) match the
         screen layout exactly.
         """
+        if self._width_at_last_layout <= 0 and self.is_attached:
+            # A windowed-out message has no current compositor region. Its
+            # selection offsets still refer to the last measured layout.
+            if self.scrollable_content_region.width > 0:
+                self._converge_layout()
+            elif self._last_measured_width > 0:
+                self._layout_blocks(self._last_measured_width)
         if self._total_lines == 0:
             return None
         if self._plain_selection_cache is None:

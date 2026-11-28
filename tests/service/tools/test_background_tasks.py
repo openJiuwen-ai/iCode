@@ -16,6 +16,7 @@ from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.platform.output_capture import CapturedOutput
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.service.tools.background import MAIN_SCOPE, BackgroundTask, BackgroundTasks, TaskScope, stop_command
+from chrys.service.tools.background import crash as crash_mod
 from chrys.service.tools.background import log as log_mod
 from chrys.service.tools.background import registry as registry_mod
 from chrys.service.tools.background.log import TaskLog
@@ -128,6 +129,8 @@ async def test_task_ids_never_repeat_a_used_id_or_an_existing_file(
 
 async def test_only_the_newest_finished_logs_are_kept(tasks: BackgroundTasks, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(registry_mod, "_KEPT_FINISHED_LOGS", 2)
+    # Exercise a live recovery record on POSIX without consulting the process table.
+    monkeypatch.setattr(crash_mod, "_members", lambda session: ((session, 1.0),))
     tasks.directory.mkdir(parents=True)
     old = time.time() - 100
     for index, name in enumerate(("bg-old001", "bg-old002", "bg-old003")):
@@ -144,7 +147,9 @@ async def test_only_the_newest_finished_logs_are_kept(tasks: BackgroundTasks, mo
     process.exit(0)
 
     kept = {f"{finished.id}.log", f"{running.id}.log", "bg-old003.log", "bg-old003.log.1"}
-    await wait_for(lambda: {path.name for path in tasks.directory.iterdir()} == kept, description="old logs pruned")
+    await wait_for(
+        lambda: {path.name for path in tasks.directory.glob("*.log*")} == kept, description="old logs pruned"
+    )
 
 
 @pytest.mark.parametrize(
