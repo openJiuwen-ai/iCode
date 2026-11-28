@@ -45,7 +45,7 @@ from chrys.foundation.trajectory.finalizers import RecordingFinalizers
 from chrys.foundation.trajectory.fingerprint import DOMAIN_WORKSPACE, fingerprint_text
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.keys import ensure_owner_only_directory, load_or_create_fingerprint_key
-from chrys.foundation.trajectory.lease import WRITER_LEASE_FILE_NAME, WriterLease
+from chrys.foundation.trajectory.lease import WRITER_LEASE_FILE_NAME, WriterLease, describe_holder
 from chrys.foundation.trajectory.recovery import (
     RecoveryScan,
     scan_for_recovery,
@@ -61,6 +61,7 @@ from chrys.foundation.trajectory.writer import (
     TrajectoryWriter,
 )
 from chrys.foundation.util.lock import FileLock
+from chrys.service.trajectory.health import TrajectoryHealthState, write_health
 
 logger = logging.getLogger(__name__)
 
@@ -520,7 +521,7 @@ class SessionTrajectory:
                     logger.warning("Trajectory activation failed for session %s", self._session_id, exc_info=True)
                     if self._reset_failed_activation() and self._activation_attempts < MAX_ACTIVATION_ATTEMPTS:
                         continue
-                    self._disable(_activation_failure_reason(exc))
+                    self._disable(_activation_failure_reason(exc), detail=f"{type(exc).__name__}: {exc}")
                 except BaseException:
                     # Preserve cancellation/interrupt propagation, but do not
                     # strand the private failed writer and its file lease.
@@ -565,7 +566,14 @@ class SessionTrajectory:
         except Exception:
             logger.debug("Trajectory activation failure callback failed", exc_info=True)
 
-    def _disable(self, reason: str) -> None:
+    def _record_health(self, state: str, *, reason: str = "", detail: str = "") -> None:
+        """Publish the current activation verdict to ``trajectory/health.json``."""
+        session_dir = self._session_dir
+        if session_dir is None:
+            return
+        write_health(session_dir, session_id=self._session_id, state=state, reason=reason, detail=detail)
+
+    def _disable(self, reason: str, detail: str = "") -> None:
         """Stop recording for *reason*; the emit paths refuse from here on.
 
         Failed activation cleanup can leave a writer whose worker did not
@@ -574,6 +582,7 @@ class SessionTrajectory:
         """
         state = self._activation
         self._activation = replace(state, disabled_reason=reason)
+        self._record_health(TrajectoryHealthState.DEGRADED, reason=reason, detail=detail)
         if state.writer is not None:
             # The lease belongs to the worker, and a started writer still has
             # the descriptor: handing it back here would let a second writer
@@ -591,12 +600,18 @@ class SessionTrajectory:
         ensure_owner_only_directory(directory)
         lease = WriterLease.try_acquire(trajectory_lease_path(session_dir))
         if lease is None:
+            detail = describe_holder(trajectory_lease_path(session_dir))
             logger.info(
-                "Trajectory writer lease for session %s is held elsewhere; recording disabled", self._session_id
+                "Trajectory writer lease for session %s is held elsewhere (%s); recording disabled",
+                self._session_id,
+                detail or "holder unknown",
             )
-            self._disable(TrajectoryDisabledReason.LEASE_HELD)
+            self._disable(TrajectoryDisabledReason.LEASE_HELD, detail=detail)
             return
         self._lease = lease
+        # Only a run that holds the lease is recovering: a refused activation
+        # records its final verdict alone, never a transient state it is not in.
+        self._record_health(TrajectoryHealthState.RECOVERING)
         try:
             self._key = self._load_key()
         except SecureFileError, OSError, TimeoutError:
@@ -712,6 +727,7 @@ class SessionTrajectory:
             # sequence ahead of the events that say which runtime and coverage
             # it belongs to. Failed attempts are never published here.
             self._activation = _Activation(writer=writer)
+            self._record_health(TrajectoryHealthState.HEALTHY)
 
     def _load_key(self) -> bytes:
         config_dir = self._config_dir
