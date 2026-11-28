@@ -286,6 +286,7 @@ async def build_agent(
     *,
     # -- optional -----------------------------------------------------
     missing_working_dirs: tuple[str, ...] = (),
+    workspace_folders: tuple[str, ...] = (),
     model_registry: ModelProfileRegistry | None = None,
     on_sub_agent_usage: Callable[..., None] | None = None,
     on_side_call_usage: Callable[[Mapping[str, Any]], None] | None = None,
@@ -432,6 +433,7 @@ async def build_agent(
         )
         runtime = SessionEnvironment.capture(
             workspace=workspace,
+            workspace_folders=workspace_folders,
             workspace_index=workspace_index,
             missing_working_dirs=missing_working_dirs,
         )

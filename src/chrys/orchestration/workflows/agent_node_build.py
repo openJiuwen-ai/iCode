@@ -253,6 +253,7 @@ async def _build_kernel_node(
         tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens,
     )
     await conversation.own_or_release(client.aclose)
+    # Workflow nodes load no skills from workspace reference folders.
     environment = SessionEnvironment.capture(session_id=res.session_id, workspace=res.workspace)
     tool_build = tool_packs.ToolBuild(
         tools=profile.tools,
@@ -704,6 +705,7 @@ def build_acp_node(
         raise RuntimeError("An ACP workflow node requires ACP configuration.")
     if binding.model is not None:
         config = replace(config, model_id=binding.model.model_id)
+    # Workflow nodes load no skills from workspace reference folders.
     environment = SessionEnvironment.capture(session_id=res.session_id, workspace=res.workspace)
     roots = [environment.cwd, *(directory.path for directory in environment.working_dirs)]
     turn_context = TurnContextHolder()

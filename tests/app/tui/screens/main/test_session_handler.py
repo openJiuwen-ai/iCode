@@ -204,9 +204,9 @@ async def test_declining_startup_workspace_keeps_the_legacy_checkpoint_in_place(
     resolved = await store.resolve_startup_session(session_id)
     assert resolved is not None
 
-    async def decline(path: str, workspace_restore: bool) -> None:
+    async def decline(path: str, workspace_name: str | None) -> None:
         assert path == str(missing_cwd)
-        assert not workspace_restore
+        assert workspace_name is None
         assert legacy.is_file() and not primary.exists()
 
     async def unexpected_publish(event: object) -> None:

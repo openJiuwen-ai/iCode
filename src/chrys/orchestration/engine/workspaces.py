@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -15,34 +17,40 @@ from chrys.foundation.events.types import Warning, WorkspaceOperation, Workspace
 from chrys.foundation.i18n import DisplayPath, DisplaySequence, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.workspace import (
+    WorkingDir,
     Workspace,
     WorkspaceConfirmation,
     WorkspaceDeparture,
+    path_identity,
     same_directory,
 )
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.foundation.util.once_close import finish_close
 from chrys.service.workspaces.paths import MissingWorkspacePrimary, resolve_workspace_directory
+from chrys.service.workspaces.registry import WORKSPACE_CHANGED as WORKSPACE_CHANGED
 from chrys.service.workspaces.registry import (
     RegistrySnapshot,
     WorkspaceRegistryError,
+    retry_workspace_write,
     workspace_not_found,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
 
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.i18n import MessageRef
+    from chrys.foundation.models.workspace_operations import WorkspaceDefinitionEdit
     from chrys.orchestration.engine.state.active_session import ActiveSession
     from chrys.service.workspaces.registry import WorkspaceRegistry
 
 logger = logging.getLogger(__name__)
 
 
-def validate_workspace_primary(path: str) -> str:
+def validate_workspace_primary(path: str, *, workspace_name: str | None = None) -> str:
     """Resolve the primary directory of the workspace for this open."""
     if (resolved := resolve_workspace_directory(path)) is None:
-        raise MissingWorkspacePrimary(path)
+        raise MissingWorkspacePrimary(path, workspace_name=workspace_name)
     return resolved
 
 
@@ -87,10 +95,19 @@ WORKSPACE_SELECTED = msg(
     "workspaces.selected_from_other",
     fallback="Moved this session from workspace “{previous}” to workspace “{selected}”.",
 )
-WORKSPACE_CHANGED = msg("workspaces.selection_changed", fallback="The workspace changed. Try again.")
 WORKSPACE_CWD_MISSING = msg(
     "workspaces.working_dir_missing",
-    fallback="The working directory does not exist. Choose a replacement directory first.",
+    fallback="The primary folder of workspace “{name}”, {path}, does not exist. Choose a replacement directory first.",
+)
+
+_DEFINITION_SAVED_OPEN_FAILED = msg(
+    "workspaces.definition_saved_open_failed",
+    fallback="The definition of workspace “{target}” was saved, but applying it to this session failed: {detail}",
+)
+
+_DELETED_OPEN_FAILED = msg(
+    "workspaces.deleted_open_failed",
+    fallback="Workspace “{target}” was deleted, but applying it to this session failed: {detail}",
 )
 
 _MEMBERSHIP_SAVED_OPEN_FAILED = msg(
@@ -140,6 +157,8 @@ class _WorkspacePlan:
     noop: bool = field(default=False, compare=False)
     left_workspace: bool = field(default=False, compare=False)
     missing_working_dirs: tuple[str, ...] = ()
+    workspace_folders: tuple[str, ...] = ()
+    """Registered skill roots present among this plan's effective directories."""
 
     def __post_init__(self) -> None:
         if bool(self.workspace.id) != bool(self.workspace.name):
@@ -157,6 +176,65 @@ class StaleWorkspacePlan(WorkspaceRegistryError):
     """A candidate was superseded before it could be installed."""
 
 
+class _StopGate:
+    """Abandons a workspace change on the requester's stop, until the change first writes or installs."""
+
+    def __init__(self, stop: asyncio.Event | None) -> None:
+        self._stop = stop
+        self._watch: asyncio.Task[None] | None = None
+        if stop is not None:
+            requester = asyncio.current_task()
+
+            async def cancel_requester() -> None:
+                await stop.wait()
+                if requester is not None:
+                    requester.cancel()
+
+            # Interrupts the awaits before the commit: folder planning, settings staging, lock retries.
+            self._watch = asyncio.create_task(cancel_requester())
+
+    def check(self) -> None:
+        """Called synchronously right before each write attempt: the watch may not have run yet this tick."""
+        if self._stop is not None and self._stop.is_set():
+            raise asyncio.CancelledError
+
+    def close(self) -> None:
+        """The change wrote or is about to install: from here on it completes."""
+        if self._watch is not None:
+            self._watch.cancel()
+            self._watch = None
+        self._stop = None
+
+    def commit(self) -> None:
+        self.check()
+        self.close()
+
+
+_STOP_GATE: ContextVar[_StopGate | None] = ContextVar("workspace_change_stop", default=None)
+
+
+@contextlib.contextmanager
+def stoppable_workspace_change(stop: asyncio.Event | None) -> Generator[None]:
+    """Let *stop* abandon the workspace change run inside, until it first writes the registry or installs.
+
+    The owners of those steps enforce the boundary: every ``MembershipWrite`` attempt checks the stop
+    and its first success ends it; writing off the loop and installing call ``commit_workspace_change``.
+    """
+    gate = _StopGate(stop)
+    token = _STOP_GATE.set(gate)
+    try:
+        yield
+    finally:
+        gate.close()
+        _STOP_GATE.reset(token)
+
+
+def commit_workspace_change() -> None:
+    """Honor a stop already requested, then let the change complete: it is about to write off the loop or install."""
+    if (gate := _STOP_GATE.get()) is not None:
+        gate.commit()
+
+
 class MembershipWrite:
     """Save one session's membership at the installation boundary."""
 
@@ -167,28 +245,106 @@ class MembershipWrite:
         *,
         best_effort: bool = False,
         leaving: str | None = None,
+        delete: Workspace | None = None,
+        edit: WorkspaceDefinitionEdit | None = None,
+        report_error: bool = True,
+        folders_checked: bool = False,
     ) -> None:
         self.registry = registry
         self.workspace = workspace
         self.best_effort = best_effort
         self.leaving = leaving
+        self.delete = delete
+        self.edit = edit
+        self.report_error = report_error
+        # The edit's folders were already probed off the event loop (the engine's preview).
+        self.folders_checked = folders_checked
         self.failure: WorkspaceRegistryError | None = None
         self.saved = False
 
-    def save(self, session_id: str) -> None:
+    @property
+    def edits_definition(self) -> bool:
+        return self.delete is not None or self.edit is not None
+
+    async def save_async(self, validate: Callable[[], str | None]) -> None:
+        """Yield only while another process holds the lock; validate and write in each attempt."""
+        validated = False
+        gate = _STOP_GATE.get()
+
+        def attempt() -> None:
+            nonlocal validated
+            validated = False
+            session_id = validate()
+            validated = True
+            if gate is not None:
+                gate.check()
+            self.save(session_id, try_lock=True, folders_checked=self.edit is not None)
+
         try:
-            if self.leaving is None:
-                self.registry.set_session_workspace(session_id, self.workspace.id or None)
+            if self.edit is not None and not self.folders_checked:
+                # For callers that did not preview the edit. The folders are the same in every attempt:
+                # read them once, not once per lock retry.
+                self.registry.check_folders(self.edit.expected.primary_cwd, self.edit.folders)
+            await retry_workspace_write(attempt)
+        except WorkspaceRegistryError as error:
+            # A validation failure is the caller's; only a lock timeout is best-effort.
+            if not validated or not self.best_effort:
+                raise
+            self.failure = error
+        else:
+            # Only a write that changed the list commits; a best-effort failure or a no-op leaves Stop armed.
+            if gate is not None and self.saved:
+                gate.close()
+
+    async def save_off_loop(self, session_id: str | None) -> None:
+        """Write on a thread, waiting for the lock there; the write completes even if the caller stops."""
+        commit_workspace_change()
+        await asyncio.to_thread(self.save, session_id)
+
+    def save(self, session_id: str | None, *, try_lock: bool = False, folders_checked: bool = False) -> None:
+        try:
+            if self.delete is not None:
+                self.registry.delete(
+                    self.delete.id, expected=self.delete, clear_session_id=session_id, try_lock=try_lock
+                )
+                self.saved = True
+            elif self.edit is not None:
+                expected = self.edit.expected
+                self.registry.update(
+                    expected.id,
+                    name=self.edit.name,
+                    primary=expected.primary_cwd,
+                    folders=self.edit.folders,
+                    expected=expected,
+                    try_lock=try_lock,
+                    folders_checked=folders_checked,
+                )
+                self.saved = True
+            elif session_id is None:
+                raise ValueError("Saving workspace membership requires a session ID.")
+            elif self.leaving is None:
+                self.registry.set_session_workspace(session_id, self.workspace.id or None, try_lock=try_lock)
                 self.saved = True
             else:
-                self.saved = self.registry.set_session_workspace(session_id, None, leaving=self.leaving)
+                self.saved = self.registry.set_session_workspace(
+                    session_id, None, leaving=self.leaving, try_lock=try_lock
+                )
         except WorkspaceRegistryError as error:
             if not self.best_effort:
                 raise
             self.failure = error
 
+    async def record_use(self) -> None:
+        """Record a named workspace's use once its runtime has been installed."""
+        if self.failure is None:
+            await record_workspace_use(self.registry, self.workspace)
+
     def open_failure(self, current: Workspace | None, cause: Exception) -> WorkspaceRegistryError:
-        if self.workspace.id:
+        if self.delete is not None:
+            detail = _DELETED_OPEN_FAILED.bind(target=self.delete.name, detail=str(cause))
+        elif self.edit is not None:
+            detail = _DEFINITION_SAVED_OPEN_FAILED.bind(target=self.workspace.name, detail=str(cause))
+        elif self.workspace.id:
             target = self.workspace.name
             if current is None:
                 detail = _MEMBERSHIP_SAVED_NO_RUNTIME.bind(target=target, detail=str(cause))
@@ -201,6 +357,13 @@ class MembershipWrite:
         else:
             detail = _MEMBERSHIP_CLEARED_OPEN_FAILED.bind(running=DisplayPath(current.primary_cwd), detail=str(cause))
         return WorkspaceRegistryError(format_message(detail), detail, code="workspace_membership_saved_open_failed")
+
+
+async def record_workspace_use(registry: WorkspaceRegistry | None, workspace: Workspace | None) -> None:
+    if registry is None or workspace is None or not workspace.id:
+        return
+    if await run_abandonable("icode-workspace-folders", os.path.isdir, workspace.primary_cwd):
+        await asyncio.to_thread(registry.touch, workspace.id)
 
 
 def _workspace_warning(
@@ -270,7 +433,7 @@ class SessionWorkspaces:
 
     async def warn_missing_references(self, session_id: str | None, plan: WorkspacePlan) -> None:
         """Report missing references together when the workspace is opened."""
-        if plan.missing_working_dirs:
+        if plan.workspace_id is not None and plan.missing_working_dirs:
             paths = DisplaySequence(DisplayPath(path) for path in plan.missing_working_dirs)
             display = _REFERENCE_MISSING.bind(
                 name=plan.workspace.name, paths=paths, count=len(plan.missing_working_dirs)
@@ -330,12 +493,6 @@ class SessionWorkspaces:
             return MembershipWrite(self.registry, plan.workspace, best_effort=True, leaving=source_id)
         return None
 
-    async def touch(self, session_workspace: Workspace, cwd: str, *, is_current: Callable[[], bool]) -> None:
-        """Record the workspace's use for the picker's order."""
-        if self.registry is None or not is_current() or not os.path.isdir(cwd):
-            return
-        await asyncio.to_thread(self.registry.touch, session_workspace.id)
-
     @staticmethod
     def plan(
         *,
@@ -351,6 +508,7 @@ class SessionWorkspaces:
         confirmation: WorkspaceConfirmation | None = None,
         opened_cwd: str = "",
         use_target_cwd: bool = False,
+        reference_override: list[str] | None = None,
     ) -> WorkspacePlan:
         """Plan one explicit workspace operation against the committed baseline."""
         session_workspace = (
@@ -387,14 +545,22 @@ class SessionWorkspaces:
             if opened_cwd:
                 target = replace(selected, primary_cwd=opened_cwd)
             else:
-                target = replace(selected, primary_cwd=validate_workspace_primary(selected.primary_cwd))
+                target = replace(
+                    selected, primary_cwd=validate_workspace_primary(selected.primary_cwd, workspace_name=selected.name)
+                )
             departure = None
         elif operation is WorkspaceOperation.UNSPECIFY:
             noop = session_workspace is None
             target = workspace if session_workspace is None else Workspace(primary_cwd=baseline_cwd)
             if session_workspace is not None:
-                if (live_plan is None and registered_cwd is None) or target.missing_primary():
-                    raise MissingWorkspacePrimary(baseline_cwd, display_message=WORKSPACE_CWD_MISSING.bind())
+                if live_plan is None and (registered_cwd is None or target.missing_primary()):
+                    raise MissingWorkspacePrimary(
+                        baseline_cwd,
+                        workspace_name=session_workspace.name,
+                        display_message=WORKSPACE_CWD_MISSING.bind(
+                            name=session_workspace.name, path=DisplayPath(baseline_cwd)
+                        ),
+                    )
                 departure = WorkspaceDeparture(session_workspace.name)
                 leaving = True
         elif session_workspace is not None:
@@ -413,11 +579,15 @@ class SessionWorkspaces:
                 departure = None if restoring else WorkspaceDeparture(session_workspace.name)
                 leaving = True
             elif target_cwd and use_target_cwd:
-                target = replace(session_workspace, primary_cwd=validate_workspace_primary(target_cwd))
+                target = replace(
+                    session_workspace,
+                    primary_cwd=validate_workspace_primary(target_cwd, workspace_name=session_workspace.name),
+                )
             elif restoring and not opened_cwd:
                 target = replace(
                     session_workspace,
-                    primary_cwd=registered_cwd or validate_workspace_primary(session_workspace.primary_cwd),
+                    primary_cwd=registered_cwd
+                    or validate_workspace_primary(session_workspace.primary_cwd, workspace_name=session_workspace.name),
                 )
             elif live_plan is not None and not restoring:
                 return live_plan
@@ -425,8 +595,32 @@ class SessionWorkspaces:
             target = workspace
 
         missing = ()
+        workspace_folders = ()
         if target.id:
+            registered_dirs = target.working_dirs
+            if reference_override is not None:
+                target = replace(target, working_dirs=[WorkingDir(path) for path in reference_override])
             target, missing = _resolve_reference_dirs(target)
+            if reference_override is None:
+                workspace_folders = tuple(directory.path for directory in target.working_dirs)
+            else:
+                effective = {path_identity(directory.path): directory.path for directory in target.working_dirs}
+                workspace_folders = tuple(
+                    effective[identity]
+                    for directory in registered_dirs
+                    if (identity := path_identity(directory.path)) in effective
+                )
         if selected is not None and live_plan is not None and not restoring:
-            noop = live_plan.workspace == target and live_plan.missing_working_dirs == missing
-        return _WorkspacePlan(target, departure, noop=noop, left_workspace=leaving, missing_working_dirs=missing)
+            noop = (
+                live_plan.workspace == target
+                and live_plan.missing_working_dirs == missing
+                and live_plan.workspace_folders == workspace_folders
+            )
+        return _WorkspacePlan(
+            target,
+            departure,
+            noop=noop,
+            left_workspace=leaving,
+            missing_working_dirs=missing,
+            workspace_folders=workspace_folders,
+        )

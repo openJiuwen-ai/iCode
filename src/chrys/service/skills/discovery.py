@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.foundation.util.once_close import OnceClose
 from chrys.service.skills.loader import DEFAULT_RESOURCE_EXTENSIONS, DEFAULT_SEARCH_DEPTH, discover_file_skills
 from chrys.service.skills.provider import StagedSkillRefresh
@@ -89,14 +90,15 @@ class SkillDiscoveryScope:
     """Share initial file discovery for one build, including completed failures.
 
     Ordered paths preserve first-wins skill precedence. Cancelling a consumer
-    cannot cancel a shared scan; closing the scope drains its worker tasks,
-    since cancelling an asyncio waiter does not stop filesystem IO in a thread.
+    cannot cancel a shared scan; closing the scope abandons the scans still
+    running, so a skill folder on an unresponsive mount cannot hold up exit.
+    A scan only reads, and an abandoned one delivers nothing.
     """
 
     def __init__(self) -> None:
         self._tasks: dict[_DiscoveryKey, asyncio.Task[_Snapshot]] = {}
         self._closed = False
-        self._close_once = OnceClose(self._drain)
+        self._close_once = OnceClose(self._abandon)
 
     async def __aenter__(self) -> SkillDiscoveryScope:
         if self._closed:
@@ -122,7 +124,7 @@ class SkillDiscoveryScope:
         key = _DiscoveryKey(tuple(paths), tuple(script_extensions), tuple(resource_extensions), search_depth)
         task = self._tasks.get(key)
         if task is None:
-            task = asyncio.create_task(asyncio.to_thread(_discover, key))
+            task = asyncio.create_task(run_abandonable("icode-skills", _discover, key))
             task.add_done_callback(_consume_result)
             self._tasks[key] = task
         else:
@@ -133,12 +135,14 @@ class SkillDiscoveryScope:
         return [_copy_skill(skill) for skill in snapshot.skills], list(snapshot.failures)
 
     async def aclose(self) -> None:
-        """Reject new consumers and drain all owned scans, including after cancellation."""
+        """Reject new consumers and abandon the scans still running, including after cancellation."""
         self._closed = True
         await self._close_once()
 
-    async def _drain(self) -> None:
+    async def _abandon(self) -> None:
         try:
+            for task in self._tasks.values():
+                task.cancel()
             if self._tasks:
                 await asyncio.gather(*self._tasks.values(), return_exceptions=True)
         finally:

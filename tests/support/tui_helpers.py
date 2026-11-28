@@ -1287,6 +1287,7 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         edit_session_title=screen.open_title_editor,
         apply_session_title=screen.apply_custom_title,
         change_directory=screen.start_chdir,
+        is_workspace_assigned=lambda: screen.state.workspace.membership is not None,
         copy_conversation=screen._copy_agent_responses,
         fold_tools=screen._toggle_fold,
         open_diff=screen.action_show_diff,

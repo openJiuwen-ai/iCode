@@ -244,8 +244,9 @@ def test_chrys_help_shows_top_level_modes(monkeypatch, capsys) -> None:
     assert "  hook        List hooks and check hook configuration files" in out.out
     assert "  workflow    List, validate and run workflows headlessly" in out.out
     assert "  rsi         Experimental RSI eval and profile optimize" in out.out
-    assert "agent, model, approval, hook, workflow and trajectory also work in the plural;" in out.out
-    assert "agent, model, approval, hook and workflow list when given no subcommand." in out.out
+    assert "  workspace   List, create, edit or delete workspaces" in out.out
+    assert "agent, model, approval, hook, workflow, workspace and trajectory also work in the plural;" in out.out
+    assert "agent, model, approval, hook, workflow and workspace list when given no subcommand." in out.out
     assert "acp" in out.out
     assert "serve" in out.out
     assert f"Host the {APP_DISPLAY_NAME} TUI in a browser" in out.out

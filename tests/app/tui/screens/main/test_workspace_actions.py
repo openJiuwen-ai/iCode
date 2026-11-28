@@ -13,12 +13,14 @@ from chrys.app.tui.screens.main.workspace_actions import _CHANGE_DIRECTORY, Work
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.workspace import Workspace
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.tui_helpers import discard_worker
 
 
 class _RecordingView:
     def __init__(self) -> None:
+        self.is_attached = True
         self.pushed: list[object] = []
 
     def push_screen(self, screen: object, _callback: object | None = None) -> None:
@@ -39,7 +41,8 @@ def _make_controller(
     state = MainScreenState()
     state.workspace.current_cwd = cwd
     state.workspace_marker.current_cwd = cwd
-    state.workspace.workspace_id = workspace_id
+    if workspace_id is not None:
+        state.workspace.membership = Workspace(primary_cwd=cwd, id=workspace_id)
     return WorkspaceController(
         state=state,
         services=services,

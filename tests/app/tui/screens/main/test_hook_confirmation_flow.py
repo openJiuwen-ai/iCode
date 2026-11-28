@@ -52,7 +52,7 @@ class _Engine(SessionGenerationEngine):
         self.hook_runs = None
         self.turn_lifecycle_task = None
 
-    async def start(self, _profile: AgentProfile) -> None:
+    async def start(self, _profile: AgentProfile, *, workspace_id: str | None = None) -> None:
         await self._bus.publish(
             SessionReady(
                 agent_profile=_PROFILE.name,

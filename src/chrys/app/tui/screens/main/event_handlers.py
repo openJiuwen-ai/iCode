@@ -256,6 +256,7 @@ class BackendEventCallbacks:
     follow_manual_reload: Callable[[], None] = lambda: None
     accept_approval_update: Callable[[ApprovalModeUpdated], bool] = lambda _event: True
     route_session_error: Callable[[Error], bool] = lambda _event: False
+    refresh_workspace: Callable[[], None] = lambda: None
     prompt_missing_working_dir: Callable[[MissingDirReason], None] = lambda _reason: None
 
     refresh_diff_preview: Callable[[bool], None] = lambda _reread: None
@@ -905,7 +906,9 @@ class BackendEventHandler:
             with contextlib.suppress(Exception):
                 s.update_subtitle()
 
-        if event.display_message is None:
+        if not event.report_error:
+            self.cancel_agent_load()
+        elif event.display_message is None:
             self._agent_load().on_failed(event)
         else:
             self._agent_load().on_failed(
@@ -1062,6 +1065,7 @@ class BackendEventHandler:
                 session_id=event.session_id or "",
                 used_at=event.timestamp,
             )
+        self._callbacks.refresh_workspace()
         self._callbacks.refresh_diff_preview(True)
         s.debug("SessionReady", f"{event.agent_profile} [{session_short_id(event.session_id or '')}]")
         if not s.restoring_session:

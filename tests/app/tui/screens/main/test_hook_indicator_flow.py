@@ -95,7 +95,7 @@ class _Engine(SessionGenerationEngine):
         self._start_session = start_session
         self.turn_lifecycle_task = None
 
-    async def start(self, _profile: AgentProfile) -> None:
+    async def start(self, _profile: AgentProfile, *, workspace_id: str | None = None) -> None:
         if self._start_session:
             await self._bus.publish(
                 SessionReady(

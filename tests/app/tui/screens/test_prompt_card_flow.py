@@ -158,9 +158,9 @@ async def test_replacing_the_draft_with_a_slash_command_runs_it_and_drops_the_ca
         dispatched: list[str] = []
         original = main._suggestions.dispatch_slash_command
 
-        def record(text: str) -> bool:
+        def record(text: str, *, draft: ChatDraft | None = None) -> bool:
             dispatched.append(text)
-            return original(text)
+            return original(text, draft=draft)
 
         monkeypatch.setattr(main._suggestions, "dispatch_slash_command", record)
         await _expand_with_card(pilot, main, chat, "zzqa", "Review this")

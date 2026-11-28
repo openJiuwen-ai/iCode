@@ -133,7 +133,7 @@ _HINT_WORKDIR_HOOKS_ENABLED = msg(
 )
 _HINT_WORKDIR_SKILLS_ENABLED = msg(
     "tui.settings.hint.workdir.skills_enabled",
-    fallback="Allow agents to load skills from .agents/skills in each session's primary working directory.",
+    fallback="Allow agents to load skills from .agents/skills in the working directory and workspace folders.",
 )
 HINT_WORKDIR_CONFIG_DORMANT = msg(
     "tui.settings.hint.workdir.config_dormant",

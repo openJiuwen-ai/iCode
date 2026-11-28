@@ -50,6 +50,8 @@ class SessionEnvironment:
     # Working directories from Workspace
     working_dirs: tuple[WorkingDir, ...] = ()  # tuple for frozen dataclass
     workspace_name: str = ""
+    workspace_folders: tuple[str, ...] = ()
+    """A registered workspace's reference folders; empty for Unspecified and workflow nodes."""
     workspace_index: tuple[str, ...] = ()
     """The workspace section's lines, computed at build time from the loaded memory files."""
     missing_working_dirs: tuple[str, ...] = ()
@@ -61,6 +63,7 @@ class SessionEnvironment:
         session_id: str = "",
         workspace: Workspace | None = None,
         *,
+        workspace_folders: tuple[str, ...] = (),
         workspace_index: tuple[str, ...] = (),
         missing_working_dirs: tuple[str, ...] = (),
     ) -> SessionEnvironment:
@@ -68,6 +71,7 @@ class SessionEnvironment:
 
         If *workspace* is provided, uses its cwd and working dirs.
         Otherwise falls back to ``os.getcwd()``.
+        The workspace plan supplies the effective registered skill roots.
         """
         if workspace is not None:
             cwd = workspace.primary_cwd
@@ -88,6 +92,7 @@ class SessionEnvironment:
             env=_safe_env_snapshot(),
             working_dirs=working_dirs,
             workspace_name=control_chars_as_spaces(workspace.name) if workspace is not None else "",
+            workspace_folders=workspace_folders,
             workspace_index=workspace_index,
             missing_working_dirs=missing_working_dirs,
         )

@@ -11,6 +11,7 @@ Choose an installation location based on where the skill should be available and
 | iCode user skills directory | Make skills available to all agents of the "Built-in" type in iCode | Always loaded automatically |
 | Agent Skills shared directory | Share skills between iCode and other tools that support Agent Skills | Loaded automatically by default; can be disabled per agent |
 | `<working-directory>/.agents/skills` | Make skills available only in the current working directory | Loaded only after you turn on “Load working directory skills”; can also be disabled per agent |
+| `.agents/skills` in a workspace folder | Available to conversations in the workspace | Requires “Load working directory skills” and the agent’s working-folder skills option |
 | Custom directory | Load skills from a specific location | Must be added manually to the corresponding agent's configuration |
 
 Here, `<working-directory>` is the current working directory. Skills in a working directory come with the repository, so iCode does not load them until you turn on “Load working directory skills” under “Settings → Safety → Working directory trust” (`workdir.skills_enabled`). When the working directory has skills that are not loaded, iCode shows a notice. When you switch working directories, iCode reloads the skills from the new working directory.
@@ -22,7 +23,7 @@ The two user-level skills directories have the following paths on each platform:
 | iCode user skills directory | `~/.chrys/skills` | `%APPDATA%\chrys\skills` |
 | Agent Skills shared directory | `~/.agents/skills` | `%USERPROFILE%\.agents\skills` |
 
-For the first three installation locations, copy or move the skill directory to the corresponding location. For a custom directory, there is no need to move the skill; add its directory to the corresponding agent's configuration.
+For the default installation locations, copy or move the skill directory to the corresponding location. For a custom directory, there is no need to move the skill; add its directory to the corresponding agent's configuration.
 
 iCode searches for `SKILL.md` files in configured skills directories and up to two levels of subdirectories. Once it finds a `SKILL.md`, it recognizes the containing directory as a skill directory and stops searching for nested skills within it.
 
@@ -102,7 +103,8 @@ If multiple skills have the same name, iCode loads only the one with the highest
 2. The iCode user skills directory.
 3. The Agent Skills shared directory.
 4. Skills in the current working directory.
-5. Inline skills in the agent profile, in their definition order.
+5. Skills in the [workspace’s registered reference folders](../daily-use/workspaces.md#workspaces), in workspace folder order. If an ACP editor supplies its own directory list when reopening a session, only registered reference folders from that list supply skills. Workflow nodes skip skills from workspace reference folders.
+6. Inline skills in the agent profile, in their definition order.
 
 If multiple skills with the same name exist within one installation location or custom directory, their discovery order is unspecified. To ensure that a particular version loads, keep only that version.
 

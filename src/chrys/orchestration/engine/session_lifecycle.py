@@ -13,6 +13,7 @@ import shutil
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -45,6 +46,7 @@ from chrys.foundation.models.workspace import (
     WorkingDir,
     Workspace,
     path_identity,
+    same_directory,
     session_workdirs,
     workspace_scope_fingerprint,
 )
@@ -67,6 +69,7 @@ from chrys.orchestration.engine.workspaces import (
     SessionWorkspaces,
     StaleWorkspacePlan,
     WorkspacePlan,
+    record_workspace_use,
     validate_workspace_primary,
     workspace_error_display,
     workspace_left_warning,
@@ -106,7 +109,7 @@ from chrys.service.state.store import (
 from chrys.service.todos.tracker import TodoTracker
 from chrys.service.trajectory.preparation import PreparationOutcome
 from chrys.service.workspaces.paths import MissingWorkspacePrimary, resolve_workspace_directory
-from chrys.service.workspaces.registry import RegistrySnapshot, WorkspaceRegistryError
+from chrys.service.workspaces.registry import RegistrySnapshot, WorkspaceRegistryError, retry_workspace_write
 
 if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import LoadedSettings, PreparedSettings, SettingsHandle
@@ -303,33 +306,27 @@ def _reset_restore_history_state(history_state: dict) -> dict:
     return copy.deepcopy(history_state)
 
 
-def cleanup_empty_session_dir_path(
-    session_dir: Path | None,
-    *,
-    session_id: str | None = None,
-    state_store: StateStore | None = None,
-    path_reused: bool = False,
-) -> None:
+def cleanup_empty_session_dir_path(session_dir: Path | None, *, path_reused: bool = False) -> bool:
     """Remove *session_dir* when it has no restorable session files.
 
-    Also forget its membership in the store's paired registry, even if no
-    directory was created. A caller that restarts on this same directory sets
-    ``path_reused`` to keep membership.
+    Return whether the session was discarded, even if no directory was
+    created, so its membership should be forgotten. A caller that restarts on
+    this same directory sets ``path_reused`` to keep membership.
     """
     if session_dir is None:
-        return
+        return False
     if (session_dir / SESSION_FILE_NAME).exists():
-        return
+        return False
     if (session_dir / SESSION_BACKUP_FILE_NAME).exists():
-        return
+        return False
     if (session_dir / SESSION_RECOVERY_FILE_NAME).exists():
-        return
+        return False
     if _has_restorable_rollback_snapshots(session_dir):
-        return
+        return False
     if _has_committed_sub_agent_artifacts(session_dir):
-        return
+        return False
     if _has_recorded_trajectory(session_dir):
-        return
+        return False
     from chrys.service.trajectory.tombstone import DeleteOutcome, delete_session_directory
 
     try:
@@ -339,11 +336,22 @@ def cleanup_empty_session_dir_path(
         result = delete_session_directory(session_dir, sessions_root=session_dir.parent, path_reused=path_reused)
     except OSError:
         logger.debug("Failed to remove empty session directory %s", session_dir, exc_info=True)
-        return
+        return False
     if result.outcome in (DeleteOutcome.INTENT_FAILED, DeleteOutcome.MISSING) and session_dir.exists():
+        return False
+    return not path_reused
+
+
+async def forget_discarded_membership(state_store: StateStore | None, session_id: str | None) -> None:
+    """Forget a discarded session's membership without holding the loop on another process's registry lock."""
+    if session_id is None or not isinstance(state_store, JsonFileStateStore):
         return
-    if not path_reused and session_id is not None and isinstance(state_store, JsonFileStateStore):
-        state_store.forget_workspace_membership(session_id)
+    try:
+        await retry_workspace_write(
+            partial(state_store.workspace_registry.set_session_workspace, session_id, None, try_lock=True)
+        )
+    except WorkspaceRegistryError:
+        logger.warning("Could not remove workspace membership for %s", session_id, exc_info=True)
 
 
 def _delete_reset_session_files(session_dir: Path) -> None:
@@ -654,7 +662,7 @@ class SessionLifecycle:
                 self._settings_handle.check_prepared(settings)
                 profiles = await self._loader.stage_restore_profiles()
                 profile = profiles.updated_agent(profile) or profile
-                commit_workspace.save(session_id)
+                await commit_workspace.save_async(lambda: session_id)
                 await self._loader.normalize_candidate_profiles(profiles)
                 profiles.install()
 
@@ -695,12 +703,6 @@ class SessionLifecycle:
             raise
         if operation in {"startup", "new_session"}:
             await self.workspaces.warn_missing_references(session_id, workspace_plan)
-        if (
-            workspace_plan.workspace_id is not None
-            and (workspace_id is not None or operation == "new_session")
-            and (commit_workspace is None or commit_workspace.failure is None)
-        ):
-            await self.touch_opened_workspace(staged_workspace, staged_workspace.primary_cwd)
         await self._publish_settings_warnings(reloaded_settings)
 
     def _prepare_background_tasks(self, session: ActiveSession, session_id: str) -> None:
@@ -764,12 +766,6 @@ class SessionLifecycle:
             session_start_info=self._loader.trajectory_session_start_info,
             on_activation_failed=_report_trajectory_activation_failure,
         )
-
-    async def touch_opened_workspace(
-        self, workspace: Workspace, cwd: str, *, token: lifecycle_permits.RebuildControlToken | None = None
-    ) -> None:
-        owner = token if token is not None else self._permits.capture_control_token()
-        await self.workspaces.touch(workspace, cwd, is_current=lambda: owner == self._permits.capture_control_token())
 
     async def start_with_rebuild_permit(
         self,
@@ -1042,7 +1038,7 @@ class SessionLifecycle:
             ),
         )
         # Clean up empty session directory (no messages were sent)
-        self.cleanup_empty_session_dir(path_reused=not release_lock)
+        await self.cleanup_empty_session_dir(path_reused=not release_lock)
         await self._loader.release_current()
         self._turn_state.paused_sub_agents.clear()
         if close_mcp:
@@ -1238,7 +1234,15 @@ class SessionLifecycle:
                 fork_registry = state_store.workspace_registry
                 if session_workspace is not None and fork_registry is not None:
                     try:
-                        fork_registry.set_session_workspace(forked, session_workspace.id, if_absent=True)
+                        await retry_workspace_write(
+                            partial(
+                                fork_registry.set_session_workspace,
+                                forked,
+                                session_workspace.id,
+                                if_absent=True,
+                                try_lock=True,
+                            )
+                        )
                     except WorkspaceRegistryError as error:
                         await self.workspaces.warn_membership_write(
                             active_session_id,
@@ -1621,14 +1625,11 @@ class SessionLifecycle:
             if transition_owner is not None:
                 self._permits.finish_session_transition(transition_owner)
 
-    def cleanup_empty_session_dir(self, *, path_reused: bool = False) -> None:
+    async def cleanup_empty_session_dir(self, *, path_reused: bool = False) -> None:
         """Dispose of an unsaved directory and forget membership unless restarting on it."""
-        cleanup_empty_session_dir_path(
-            self._session.session_dir,
-            session_id=self._session.session_id,
-            state_store=self._persistence.state_store,
-            path_reused=path_reused,
-        )
+        session_id = self._session.session_id
+        if cleanup_empty_session_dir_path(self._session.session_dir, path_reused=path_reused):
+            await forget_discarded_membership(self._persistence.state_store, session_id)
 
     async def _restart_after_failed_reset(
         self,
@@ -1767,7 +1768,13 @@ class SessionLifecycle:
             if event.primary_cwd or workspace.id:
                 workspace = Workspace.from_cwd(event.primary_cwd or workspace.primary_cwd)
             if missing := workspace.missing_primary():
-                raise MissingWorkspacePrimary(missing)
+                source = self._session.session_workspace
+                workspace_name = (
+                    source.name
+                    if source is not None and same_directory(source.primary_cwd, missing, realpath_fallback=True)
+                    else None
+                )
+                raise MissingWorkspacePrimary(missing, workspace_name=workspace_name)
             if confirmation is not None:
                 if not confirmation.matches(source_id, workspace.primary_cwd):
                     raise LeaveConfirmationRequired()
@@ -1781,7 +1788,7 @@ class SessionLifecycle:
         if installed is None:
             return self._session.workspace_plan
         if missing := installed.missing_primary():
-            raise MissingWorkspacePrimary(missing)
+            raise MissingWorkspacePrimary(missing, workspace_name=installed.name)
         latest = await self.workspaces.inherited_workspace(installed, session_id)
         if latest is installed:
             # A failed registry read preserves the installed plan, including its missing entries.
@@ -2036,10 +2043,13 @@ class SessionLifecycle:
                     # A checkpoint can become unreadable between selection and the active lock.
                     raise ConfigValueError(_RESTORE_NO_CHECKPOINT.bind(session_id=repr(event.session_id)))
                 # A workspace restore that fails leaves the target's files as they were.
-                if event.ignore_recovery and not restoring_current and not defer_file_repairs:
-                    cleanup_empty_session_dir_path(
-                        state_store.session_dir(event.session_id), session_id=event.session_id, state_store=state_store
-                    )
+                if (
+                    event.ignore_recovery
+                    and not restoring_current
+                    and not defer_file_repairs
+                    and cleanup_empty_session_dir_path(state_store.session_dir(event.session_id))
+                ):
+                    await forget_discarded_membership(state_store, event.session_id)
                 await reject_restore(
                     Error(
                         code="session_not_found",
@@ -2064,15 +2074,21 @@ class SessionLifecycle:
                 await refuse_missing_cwd(path)
                 return False
 
-            async def refuse_missing_cwd(path: str) -> None:
+            async def refuse_missing_cwd(path: str, *, primary_error: MissingWorkspacePrimary | None = None) -> None:
                 await reject_restore(
                     Error(
                         code="session_cwd_missing",
-                        message=(
+                        message=str(primary_error)
+                        if primary_error is not None
+                        else (
                             f"Working directory of session {session_short_id(requested_session_id)} "
                             f"no longer exists: {surrogate_safe_text(path)}"
                         ),
-                        display_message=_RESTORE_SESSION_CWD_MISSING.bind(path=DisplayPath(path)),
+                        display_message=(
+                            primary_error.display_message
+                            if primary_error is not None
+                            else _RESTORE_SESSION_CWD_MISSING.bind(path=DisplayPath(path))
+                        ),
                         session_id=event.session_id,
                     )
                 )
@@ -2106,9 +2122,11 @@ class SessionLifecycle:
                 and confirmation is None
             ):
                 try:
-                    opened_cwd = validate_workspace_primary(early_workspace.primary_cwd)
-                except MissingWorkspacePrimary:
-                    await refuse_missing_cwd(early_workspace.primary_cwd)
+                    opened_cwd = validate_workspace_primary(
+                        early_workspace.primary_cwd, workspace_name=early_workspace.name
+                    )
+                except MissingWorkspacePrimary as exc:
+                    await refuse_missing_cwd(early_workspace.primary_cwd, primary_error=exc)
                     return
 
             profile_name = event.profile_name or (meta.agent_profile if meta else "")
@@ -2243,15 +2261,16 @@ class SessionLifecycle:
                 baseline_cwd = saved_cwd or self._workspace_cwd()
                 live_plan = self._session.workspace_plan if for_rollback else None
                 requested_workspace = restore_workspace(event.primary_cwd or baseline_cwd)
-                prevalidated_cwd = (
-                    event.workspace_operation is WorkspaceOperation.SELECT
-                    and self._session.session_id is None
-                    and self._session.surface in (SessionSurface.CLI, SessionSurface.TUI)
-                ) or (
+                acp_cold_load = (
                     early_workspace is not None
                     and event.workspace_snapshot is not None
                     and self._session.surface is SessionSurface.ACP
                 )
+                prevalidated_cwd = (
+                    event.workspace_operation is WorkspaceOperation.SELECT
+                    and self._session.session_id is None
+                    and self._session.surface in (SessionSurface.CLI, SessionSurface.TUI)
+                ) or acp_cold_load
                 try:
                     workspace_plan = (
                         live_plan
@@ -2269,6 +2288,7 @@ class SessionLifecycle:
                             confirmation=confirmation,
                             opened_cwd=(event.primary_cwd if prevalidated_cwd else "") or opened_cwd,
                             use_target_cwd=self._session.surface is SessionSurface.CLI,
+                            reference_override=event.working_dirs if acp_cold_load else None,
                         )
                     )
                 except LeaveConfirmationRequired as exc:
@@ -2396,7 +2416,7 @@ class SessionLifecycle:
                         )
                         profiles = await self._loader.stage_restore_profiles() if profile is not None else None
                         if strict:
-                            commit_workspace.save(membership_session_id)
+                            await commit_workspace.save_async(lambda: membership_session_id)
                         if profile is not None:
                             load_started = True
                             await self._loader.begin_load(profile, operation="restore", session_id=event.session_id)
@@ -2406,7 +2426,7 @@ class SessionLifecycle:
                         if prepared.build is not None:
                             profile = prepared.build.staged.agent_profile
                         if not strict:
-                            commit_workspace.save(membership_session_id)
+                            await commit_workspace.save_async(lambda: membership_session_id)
                     if transition_owner is not None:
                         self._permits.commit_session_transition(transition_owner)
                     if prepared is None:
@@ -2676,14 +2696,22 @@ class SessionLifecycle:
                     resolve_scope=staged_loaded.settings.workspace_change_notice,
                     freeze_baseline=True,
                 )
-                if self._session.shutting_down or owner != self._permits.capture_control_token():
-                    raise ConfigError(_RESTORE_SESSION_CHANGED.bind())
-                if commit_workspace is not None:
-                    self._settings_handle.check_prepared(prepared)
-                if not self._workspace_change_tracker.retarget_is_current(retarget):
-                    raise StaleWorkspacePlan("Workspace changes changed during preparation.", WORKSPACE_CHANGED.bind())
-                if commit_workspace is not None:
-                    commit_workspace.save(membership_session_id)
+
+                def validate_restore() -> str | None:
+                    if self._session.shutting_down or owner != self._permits.capture_control_token():
+                        raise ConfigError(_RESTORE_SESSION_CHANGED.bind())
+                    if commit_workspace is not None:
+                        self._settings_handle.check_prepared(prepared)
+                    if not self._workspace_change_tracker.retarget_is_current(retarget):
+                        raise StaleWorkspacePlan(
+                            "Workspace changes changed during preparation.", WORKSPACE_CHANGED.bind()
+                        )
+                    return membership_session_id
+
+                if commit_workspace is None:
+                    validate_restore()
+                else:
+                    await commit_workspace.save_async(validate_restore)
             self._session.install_workspace(workspace_plan)
             self._settings_handle.install_prepared(prepared)
             self._workspace_change_tracker.apply_retarget(retarget)
@@ -2844,11 +2872,9 @@ class SessionLifecycle:
 
         target_cwd = workspace_plan.workspace.primary_cwd
         session_workspace = self._session.session_workspace
-        token = (
-            self._permits.capture_control_token()
-            if session_workspace is not None and not self._session.suppress_save
-            else None
-        )
+        record_open = session_workspace is not None and not self._session.suppress_save
+        if record_open and profile is None:
+            await record_workspace_use(self.workspaces.registry, session_workspace)
         await self._bus.publish(
             SessionRestored(
                 workspace=session_workspace,
@@ -2870,13 +2896,6 @@ class SessionLifecycle:
                 working_dirs=[working_dir.path for working_dir in session_workdirs(self._session.workspace)],
             ),
         )
-        # Rollback restores with saves suppressed and does not record another workspace use.
-        if token is not None and session_workspace is not None:
-            await self.touch_opened_workspace(
-                session_workspace,
-                target_cwd,
-                token=token,
-            )
         # Restore-time UsageUpdate must follow SessionRestored so the TUI has
         # already bound the new ``main_usage_source_id`` before classifying it as
         # the session window — otherwise the chat panel keeps stale window tokens

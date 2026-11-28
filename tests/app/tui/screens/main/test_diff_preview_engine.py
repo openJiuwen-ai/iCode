@@ -10,10 +10,12 @@ from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
+from textual.widgets import Tree
 
 import chrys.orchestration.engine.build.builder as builder_module
 import chrys.orchestration.sub_agents.tools as sub_agent_module
-from chrys.app.tui.screens.diff.screen import load_diff_entries_by_period
+from chrys.app.tui.screens.diff.rollback_modal import RollbackModal
+from chrys.app.tui.screens.diff.screen import DiffPeriodPane, DiffScreen, load_diff_entries_by_period
 from chrys.app.tui.screens.main.diff_controller import sorted_preview_entries
 from chrys.app.tui.util.diff_entries import DiffFileEntry
 from chrys.app.tui.util.diff_labels import entry_display_key, entry_source_suffix, filter_and_dedupe_entries
@@ -38,6 +40,7 @@ from chrys.service.state.store import JsonFileStateStore
 from tests.support.engines import AgentEngineFactory
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
 from tests.support.tui_app_harness import make_chrys_app
+from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
 
 pytestmark = pytest.mark.usefixtures("frozen_earlier_heap")
@@ -48,9 +51,15 @@ def _display_keys(rows: Sequence[DiffFileEntry]) -> tuple[str, ...]:
 
 
 @pytest.mark.parametrize(
-    ("revert", "interrupt", "delegate"),
-    [(False, False, False), (True, False, False), (None, False, False), (False, True, False), (False, False, True)],
-    ids=["conversation-only", "revert-files", "clear", "interrupted", "sub-agent"],
+    ("revert", "interrupt", "delegate", "reference_workspace"),
+    [
+        pytest.param(False, False, False, False, id="conversation-only"),
+        pytest.param(True, False, False, False, id="revert-files"),
+        pytest.param(None, False, False, False, id="clear"),
+        pytest.param(False, True, False, False, id="interrupted"),
+        pytest.param(False, False, True, False, id="sub-agent"),
+        pytest.param(True, False, False, True, id="reference-folder-external-discard"),
+    ],
 )
 async def test_engine_edit_restore_and_rollback_refresh_the_preview(
     tmp_path: Path,
@@ -59,11 +68,16 @@ async def test_engine_edit_restore_and_rollback_refresh_the_preview(
     revert: bool | None,
     interrupt: bool,
     delegate: bool,
+    reference_workspace: bool,
 ) -> None:
     settings, models = make_mock_settings_and_registry(stream=False)
-    target = tmp_path / "edited.txt"
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    primary = tmp_path / "primary" if reference_workspace else tmp_path
+    primary.mkdir(exist_ok=True)
+    target = (reference if reference_workspace else primary) / "edited.txt"
     target.write_text("before\n", encoding="utf-8")
-    later_target = tmp_path / "z-later.txt"
+    later_target = primary / "z-later.txt"
     later_target.write_text("before\n", encoding="utf-8")
     profile = AgentProfile(
         name="Editor",
@@ -149,6 +163,14 @@ async def test_engine_edit_restore_and_rollback_refresh_the_preview(
     if delegate:
         registry.register(child_profile)
     store = JsonFileStateStore(tmp_path / "sessions")
+    startup = {}
+    if reference_workspace:
+        selected = store.workspace_registry.create("Review", str(primary), [str(reference)])
+        startup = {
+            "startup_workspace_id": selected.id,
+            "startup_workspace_snapshot": store.workspace_registry.snapshot(),
+            "startup_workspace_cwd": str(primary),
+        }
     engine = agent_engine(
         bus,
         settings=settings,
@@ -169,6 +191,8 @@ async def test_engine_edit_restore_and_rollback_refresh_the_preview(
         agent_registry=registry,
         model_registry=models,
         profile_name="Editor",
+        state_store=store,
+        **startup,
     )
     async with app.run_test(size=(140, 40)) as pilot:
         await wait_for(
@@ -243,8 +267,23 @@ async def test_engine_edit_restore_and_rollback_refresh_the_preview(
         assert target.read_text(encoding="utf-8") == "after\n"
         assert later_target.read_text(encoding="utf-8") == "later\n"
         assert [entry.path for entry in preview.entries] == expected_order
+        if reference_workspace:
+            assert preview._row(preview.entries[1]).path == str(target)
+            await click_when_settled(pilot, "#diff-preview-rows", offset=(2, 1))
+            await wait_for(
+                lambda: isinstance(app.screen, DiffScreen) and app.screen.is_mounted and app.screen._content_ready,
+                pilot=pilot,
+                description="persisted Changes ready",
+            )
+            external = app.screen.query_one(".external-tree", Tree)
+            assert external.root.label.plain == "External"
+            assert [node.label.plain for node in external.root.children] == [f"[+-] {target}"]
+            changes_pane = app.screen.query_one(DiffPeriodPane)
+            await wait_for(lambda: changes_pane._active_path == str(target), pilot=pilot)
+            app.pop_screen()
+            await wait_for(lambda: app.screen is main, pilot=pilot)
         session_id = engine.session.session_id
-        persisted = load_diff_entries_by_period(store, session_id, str(tmp_path), include_content=False)
+        persisted = load_diff_entries_by_period(store, session_id, str(primary), include_content=False)
         assert {entry.path: entry.last_changed_at for entry in persisted.all_entries} == recorded_times
         assert [entry.path for entry in sorted_preview_entries(persisted)] == expected_order
         await main._sessions.create_new_session()
@@ -263,7 +302,31 @@ async def test_engine_edit_restore_and_rollback_refresh_the_preview(
         )
         assert {entry.path: entry.last_changed_at for entry in preview.entries} == recorded_times
         assert [entry.path for entry in preview.entries] == expected_order
-        if revert is None:
+        if reference_workspace:
+            main.action_show_rollback()
+            await wait_for(
+                lambda: isinstance(app.screen, RollbackModal) and app.screen.is_mounted and app.screen._content_ready,
+                pilot=pilot,
+                description="Discard ready",
+            )
+            discard = app.screen
+            assert isinstance(discard, RollbackModal)
+            pane = discard._pane
+            assert pane is not None
+            external = discard.query_one(".external-tree", Tree)
+            assert str(target) in external.root.children[0].label.plain
+            workspace_tree = discard.query_one(".workspace-tree", Tree)
+            discard.set_focus(external)
+            external.move_cursor(external.root.children[0])
+            await pilot.press("x")
+            assert pane.selected_paths() == [str(later_target)]
+            await pilot.press("x")
+            discard.set_focus(workspace_tree)
+            workspace_tree.move_cursor(workspace_tree.root.children[0])
+            await pilot.press("x")
+            assert pane.selected_paths() == [str(target)]
+            await click_when_settled(pilot, "#btn-rollback")
+        elif revert is None:
             await main._sessions.delete_current_and_new(session_id)
         else:
             await bus.publish(UserRollback(target_turn=0, revert_changes=revert), raise_handler_errors=True)
@@ -274,7 +337,9 @@ async def test_engine_edit_restore_and_rollback_refresh_the_preview(
             description="rollback removes discarded changes",
         )
         assert target.read_text(encoding="utf-8") == ("before\n" if revert else "after\n")
-        assert later_target.read_text(encoding="utf-8") == ("before\n" if revert else "later\n")
+        assert later_target.read_text(encoding="utf-8") == (
+            "before\n" if revert and not reference_workspace else "later\n"
+        )
 
 
 async def test_same_height_preview_refresh_does_not_relayout_or_restyle_a_populated_main_screen(

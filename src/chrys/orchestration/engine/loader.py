@@ -44,6 +44,7 @@ from chrys.orchestration.engine.workspaces import (
     SessionWorkspaces,
     StaleWorkspacePlan,
     WorkspacePlan,
+    record_workspace_use,
     workspace_updated_event,
 )
 from chrys.orchestration.invoker.resources import PreparedAgent
@@ -531,11 +532,14 @@ class AgentLoader:
                 self._session.workspace_id is not None or staged.workspace_plan.workspace_id is not None
             )
             replaced = await self._install_candidate(completed, owner=owner, commit_workspace=commit_workspace)
-            await self._finish_workspace_install(replaced, announce=announce)
+            await self._finish_workspace_install(
+                replaced, announce=announce, commit=commit_workspace if operation != "restore" else None
+            )
         except Exception as exc:
             await self._settle_failed_build(old=old_hook_manager, staged=hook_manager)
-            if operation != "workspace_change" or not isinstance(exc, StaleWorkspacePlan):
-                await self.publish_load_failed(operation=operation, profile=profile, exc=exc)
+            report_error = commit_workspace is None or commit_workspace.report_error
+            if not report_error or operation != "workspace_change" or not isinstance(exc, StaleWorkspacePlan):
+                await self.publish_load_failed(operation=operation, profile=profile, exc=exc, report_error=report_error)
             raise
         except BaseException:
             await self._settle_failed_build(old=old_hook_manager, staged=hook_manager)
@@ -563,6 +567,10 @@ class AgentLoader:
             await self.commit_hook_manager_replacement(old_hook_manager)
         else:
             self.start_outbox_recovery()
+
+        if operation == "restore" and not self._session.suppress_save:
+            store = self._persistence.state_store
+            await record_workspace_use(store.workspace_registry if store is not None else None, self._session.workspace)
 
         self._permits.finish_agent_load()
         await self._bus.publish(
@@ -678,6 +686,7 @@ class AgentLoader:
         profile: AgentProfile,
         exc: Exception,
         session_id: str | None = None,
+        report_error: bool = True,
     ) -> None:
         """Publish an agent load failure event."""
         display_message, display_hint = (
@@ -692,6 +701,7 @@ class AgentLoader:
                 session_id=session_id if session_id is not None else self._session.session_id,
                 display_message=display_message,
                 display_hint=display_hint,
+                report_error=report_error,
             ),
         )
 
@@ -836,7 +846,7 @@ class AgentLoader:
                 preserved_history=preserved_state,
             )
             replaced = await self._install_candidate(completed, owner=owner, commit_workspace=commit_workspace)
-            await self._finish_workspace_install(replaced, announce=announce_workspace)
+            await self._finish_workspace_install(replaced, announce=announce_workspace, commit=commit_workspace)
             if staged_hook_manager is not old_hook_manager:
                 await self.commit_hook_manager_replacement(old_hook_manager)
                 hook_manager_replacement_committed = True
@@ -902,8 +912,11 @@ class AgentLoader:
                 staged=staged_hook_manager,
                 retire_staged_hooks=not hook_manager_replacement_committed,
             )
-            if operation != "workspace_change" or not isinstance(exc, StaleWorkspacePlan):
-                await self.publish_load_failed(operation=operation, profile=new_profile, exc=exc)
+            report_error = commit_workspace is None or commit_workspace.report_error
+            if not report_error or operation != "workspace_change" or not isinstance(exc, StaleWorkspacePlan):
+                await self.publish_load_failed(
+                    operation=operation, profile=new_profile, exc=exc, report_error=report_error
+                )
             raise
         except BaseException:
             await self._settle_failed_build(
@@ -967,17 +980,25 @@ class AgentLoader:
             workspace_updated_event(self._session, session_id=self._session.session_id),
         )
 
-    async def _finish_workspace_install(self, replaced: ReplacedBuild, *, announce: bool) -> None:
+    async def _finish_workspace_install(
+        self, replaced: ReplacedBuild, *, announce: bool, commit: MembershipWrite | None
+    ) -> None:
         try:
             try:
                 await self._commit_mcp_refresh()
             finally:
                 await self.release(replaced)
         finally:
-            # A committed workspace selection must reach frontends
-            # even if the request was cancelled while retiring its old build.
-            if announce:
-                await finish_close(asyncio.create_task(self._publish_workspace_update()))
+            try:
+                # Recording the use stays cancellable, so exit never waits on a primary that stopped answering;
+                # a finish that is already being cancelled does not start the read at all.
+                task = asyncio.current_task()
+                if commit is not None and (task is None or not task.cancelling()):
+                    await commit.record_use()
+            finally:
+                # The sidebar reads the use time in the same update that changes its highlight.
+                if announce:
+                    await finish_close(asyncio.create_task(self._publish_workspace_update()))
 
     async def stage_restore_profiles(self) -> ProfileReload:
         """Capture the disk inputs before a strict restore builds from them."""
@@ -1007,10 +1028,10 @@ class AgentLoader:
         profiles = restore_profiles if restore_profiles is not None else self._permits.staged_profiles()
         profiles_before_install = commit_workspace is not None or restore_profiles is not None
         launch_agent = None
-        try:
+
+        def validate_candidate() -> str | None:
+            nonlocal launch_agent
             if profiles is not None:
-                if restore_profiles is None:
-                    await self.normalize_candidate_profiles(profiles)
                 profiles.check_versions()
                 launch_agent = profiles.updated_launch_agent(
                     self._session.new_session_agent, completed.settings.effective.settings.default_agent
@@ -1024,13 +1045,21 @@ class AgentLoader:
                     )
                 if not self._workspace_change_tracker.retarget_is_current(completed.workspace_retarget):
                     raise StaleWorkspacePlan("Workspace changes changed during preparation.", WORKSPACE_CHANGED.bind())
-            if commit_workspace is not None:
-                self._settings_handle.check_prepared(completed.settings)
-                session_id = self._session.membership_session_id
-                if session_id is None:
-                    raise RuntimeError("Saving workspace membership requires a session ID.")
-                if not commit_workspace.saved:
-                    commit_workspace.save(session_id)
+            if commit_workspace is None:
+                return None
+            self._settings_handle.check_prepared(completed.settings)
+            session_id = self._session.membership_session_id
+            if session_id is None:
+                raise RuntimeError("Saving workspace membership requires a session ID.")
+            return session_id
+
+        try:
+            if profiles is not None and restore_profiles is None:
+                await self.normalize_candidate_profiles(profiles)
+            if commit_workspace is not None and not commit_workspace.saved:
+                await commit_workspace.save_async(validate_candidate)
+            else:
+                validate_candidate()
             if profiles_before_install and profiles is not None and launch_agent is not None:
                 self._install_candidate_profiles(profiles, launch_agent)
             replaced = self.install(completed)

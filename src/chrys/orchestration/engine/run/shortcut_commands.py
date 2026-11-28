@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from chrys.foundation.events.types import Error, PromptCommandsEnded, PromptCommandsRunning
 from chrys.foundation.i18n import msg
 from chrys.foundation.trajectory.event_types import WaitCategory
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.foundation.util.once_close import finish_close
 from chrys.service.prompt_shortcuts import load_prompt_shortcuts, prompt_shortcut_folders
 from chrys.service.prompt_shortcuts.shell import (
@@ -120,7 +121,10 @@ class ShortcutCommands:
         session_id = self._session.session_id
         workspace = self._session.workspace
         cwd = workspace.primary_cwd if workspace is not None else ""
-        available = bool(cwd) and await self._still_loaded(ref, cwd)
+        # The plan's reference folders: the ones skills load from too.
+        plan = self._session.workspace_plan
+        folders = prompt_shortcut_folders(cwd, plan.workspace_folders if plan is not None else ())
+        available = bool(cwd) and await self._still_loaded(ref, folders)
         if not operation.pending:
             return ExpandedMessage(None, PreparationOutcome.CANCELLED)
         if not available:
@@ -205,11 +209,10 @@ class ShortcutCommands:
         """
         await finish_close(asyncio.create_task(self._bus.publish(event)))
 
-    async def _still_loaded(self, ref: PromptShortcutRef, cwd: str) -> bool:
-        """Whether the shortcut list for *cwd* has *ref*, from the same file."""
-        folders = prompt_shortcut_folders(cwd)
+    async def _still_loaded(self, ref: PromptShortcutRef, folders: dict[str, Any]) -> bool:
+        """Whether the shortcut list for the current working directory and workspace has *ref*, from the same file."""
         try:
-            shortcuts = await asyncio.to_thread(load_prompt_shortcuts, **folders)
+            shortcuts = await run_abandonable("icode-prompt-shortcuts", load_prompt_shortcuts, **folders)
         except Exception:
             logger.warning("Prompt shortcuts: reading them for a message failed", exc_info=True)
             return False

@@ -46,7 +46,7 @@ _DEFAULT_CONFIRM_LABEL = _CONFIRM_LABEL.bind()
 _DEFAULT_CANCEL_LABEL = _CANCEL_LABEL.bind()
 
 type ConfirmLabel = MessageRef | str
-type ConfirmMessage = ConfirmLabel | Text
+type ConfirmMessage = ConfirmLabel | Text | tuple[MessageRef, ...]
 
 
 class ConfirmDialog(BaseDialog[bool]):
@@ -141,7 +141,11 @@ class ConfirmDialog(BaseDialog[bool]):
     def _render_dialog_message(self, message: ConfirmMessage) -> str | Text:
         if isinstance(message, Text):
             return message
-        rendered = self._render_message(message)
+        rendered = (
+            "\n".join(self._render_message(line) for line in message)
+            if isinstance(message, tuple)
+            else self._render_message(message)
+        )
         if not self._bold_message_prefix:
             return rendered
         text = Text(rendered)

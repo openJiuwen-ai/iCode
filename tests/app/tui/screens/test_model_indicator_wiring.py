@@ -17,7 +17,7 @@ from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.screens.models.picker import ModelsScreen
 from chrys.app.tui.widgets.chat.messages import ConversationStatusAction
-from chrys.app.tui.widgets.chrome.input_bar import InputBar, _ChatTextArea
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, _ChatTextArea
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.foundation.config.settings import Settings
@@ -428,6 +428,7 @@ async def test_session_ready_and_runtime_update_confirm_and_refresh_model_tag() 
 
         assert screen._state.runtime.details_confirmed is True
         assert tag.render().plain == "Updated Model"
+        assert "Updated Model" in tag.tooltip.plain
 
 
 @pytest.mark.asyncio
@@ -460,11 +461,13 @@ async def test_load_operation_state_machine_resets_only_destructive_confirmation
             # flash "Select Model" between the old and new model names. Only
             # the terminal confirmation or failure event repaints the tag.
             assert tag.render().plain == "Confirmed Old Model", operation
+            assert "Confirmed Old Model" in tag.tooltip.plain, operation
 
         for operation in ("switch", "settings_reload", "workspace_change", "model_switch"):
             await run_started(operation)
             assert screen._state.runtime.details_confirmed is True, operation
             assert tag.render().plain == "Confirmed Old Model", operation
+            assert "Confirmed Old Model" in tag.tooltip.plain, operation
 
 
 @pytest.mark.asyncio
@@ -508,6 +511,8 @@ async def test_started_then_failed_sequence_settles_per_operation_kind(
         assert screen._state.runtime.details_confirmed is confirmed_after, operation
         assert tag.display is visible_after, operation
         assert tag.render().plain == label_after, operation
+        if visible_after:
+            assert "Confirmed Old Model" in tag.tooltip.plain, operation
 
 
 @pytest.mark.asyncio
@@ -849,7 +854,7 @@ async def test_slash_command_dispatch_bypasses_model_guard(
         submitted: list[str] = []
         dispatched: list[str] = []
 
-        def record_dispatch(text: str) -> bool:
+        def record_dispatch(text: str, *, draft: ChatDraft | None = None) -> bool:
             dispatched.append(text)
             return True
 

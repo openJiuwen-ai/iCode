@@ -21,7 +21,7 @@ from chrys.service.prompt_shortcuts import (
     prompt_shortcut_sources,
     shortcut_search_dirs,
 )
-from chrys.service.prompt_shortcuts.loader import working_folder_dirs
+from chrys.service.prompt_shortcuts.loader import prompt_shortcut_folders, working_folder_dirs
 from tests.support.symlinks import symlink_or_skip
 
 
@@ -432,6 +432,137 @@ def test_load_prompt_shortcuts_is_the_sorted_union_of_the_sources(config_dir: Pa
         (c.name, c.path, c.template) for c in sorted(union, key=lambda c: c.name.casefold())
     ]
     assert next(c for c in loaded if c.name == "dup").template == "Global dup"
+
+
+def test_workspace_folders_follow_workspace_sources_without_searching_their_parents(
+    config_dir: Path, tmp_path: Path
+) -> None:
+    repo = tmp_path / "work-repo"
+    workspace = repo / "package"
+    (repo / ".git").mkdir(parents=True)
+    primary = tmp_path / "primary-repo" / "root"
+    related = tmp_path / "related-repo" / "root"
+    for parent in (primary.parent, related.parent):
+        (parent / ".git").mkdir(parents=True)
+        _write(parent / ".chrys" / "shortcuts" / "parent-only.md", "Do not search this parent")
+    for root, name in (
+        (config_dir, "user"),
+        (workspace / ".chrys", "cwd"),
+        (repo / ".chrys", "ancestor"),
+        (primary / ".chrys", "primary"),
+        (related / ".chrys", "related"),
+    ):
+        _write(root / "shortcuts" / f"{name}.md", name)
+        _write(root / "shortcuts" / "shared.md", name)
+    _write(workspace / ".chrys" / "shortcuts" / "local.md", "cwd")
+    _write(primary / ".chrys" / "shortcuts" / "LOCAL.md", "primary")
+    _write(primary / ".chrys" / "shortcuts" / "workspace-order.md", "primary")
+    _write(related / ".chrys" / "shortcuts" / "WORKSPACE-ORDER.md", "related")
+
+    sources = prompt_shortcut_sources(
+        config_dir=config_dir, workspace=str(workspace), workspace_folders=(str(primary), str(related))
+    )
+
+    assert [(folder, [command.name for command in found]) for folder, found in sources] == [
+        (config_dir / "shortcuts", ["shared", "user"]),
+        (workspace / ".chrys" / "shortcuts", ["cwd", "local"]),
+        (repo / ".chrys" / "shortcuts", ["ancestor"]),
+        (primary / ".chrys" / "shortcuts", ["primary", "workspace-order"]),
+        (related / ".chrys" / "shortcuts", ["related"]),
+    ]
+    commands = {command.name: command.template for _folder, found in sources for command in found}
+    assert commands["shared"] == "user"
+    assert commands["local"] == "cwd"
+    assert commands["workspace-order"] == "primary"
+
+
+def test_workspace_folder_directory_aliases_are_loaded_once(config_dir: Path, tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    primary = tmp_path / "primary"
+    alias = tmp_path / "alias"
+    _write(workspace / ".chrys" / "shortcuts" / "local.md", "Local")
+    _write(primary / ".chrys" / "shortcuts" / "primary.md", "Primary")
+    symlink_or_skip(alias, primary, target_is_directory=True)
+
+    sources = prompt_shortcut_sources(
+        config_dir=config_dir,
+        workspace=str(workspace),
+        workspace_folders=(str(workspace), str(primary), str(alias)),
+    )
+
+    assert _sources_view(sources) == [
+        ((workspace / ".chrys" / "shortcuts").resolve(), ["local"]),
+        ((primary / ".chrys" / "shortcuts").resolve(), ["primary"]),
+    ]
+
+
+@pytest.mark.parametrize("kind", ["directory", "file"])
+def test_each_workspace_source_uses_its_own_repository_boundary(config_dir: Path, tmp_path: Path, kind: str) -> None:
+    workspace = tmp_path / "workspace"
+    other_repo = tmp_path / "other-repo"
+    workspace_folder = other_repo / "package"
+    (workspace / ".git").mkdir(parents=True)
+    (other_repo / ".git").mkdir(parents=True)
+    inside = _write(other_repo / "shared" / "inside.md", "Inside the workspace source's repository")
+    outside = _write(workspace / "outside.md", "Inside cwd's repository, outside the workspace source's")
+    directory = workspace_folder / ".chrys" / "shortcuts"
+    if kind == "directory":
+        directory.parent.mkdir(parents=True)
+        symlink_or_skip(directory, inside.parent, target_is_directory=True)
+        symlink_or_skip(inside.parent / "outside.md", outside)
+    else:
+        directory.mkdir(parents=True)
+        symlink_or_skip(directory / "inside.md", inside)
+        symlink_or_skip(directory / "outside.md", outside)
+
+    commands = load_prompt_shortcuts(
+        config_dir=config_dir, workspace=str(workspace), workspace_folders=(str(workspace_folder),)
+    )
+
+    assert [(command.name, command.template) for command in commands] == [
+        ("inside", "Inside the workspace source's repository")
+    ]
+
+
+def test_a_workspace_shortcuts_directory_cannot_link_into_the_working_folders_repository(
+    config_dir: Path, tmp_path: Path
+) -> None:
+    workspace, other_repo = tmp_path / "workspace", tmp_path / "other-repo"
+    (workspace / ".git").mkdir(parents=True)
+    (other_repo / ".git").mkdir(parents=True)
+    outside = _write(workspace / "shared" / "outside.md", "Outside the workspace source's repository")
+    (other_repo / ".chrys").mkdir()
+    symlink_or_skip(other_repo / ".chrys" / "shortcuts", outside.parent, target_is_directory=True)
+
+    assert (
+        load_prompt_shortcuts(config_dir=config_dir, workspace=str(workspace), workspace_folders=(str(other_repo),))
+        == []
+    )
+
+
+def test_unspecified_workspace_preserves_the_existing_folder_arguments_and_source_order(
+    config_dir: Path, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    workspace = repo / "package"
+    (repo / ".git").mkdir(parents=True)
+    _write(config_dir / "shortcuts" / "user.md", "User")
+    _write(workspace / ".chrys" / "shortcuts" / "cwd.md", "Cwd")
+    _write(repo / ".chrys" / "shortcuts" / "ancestor.md", "Ancestor")
+    kwargs = {"config_dir": config_dir, "workspace": str(workspace)}
+
+    assert prompt_shortcut_folders(str(workspace)) == {
+        "config_dir": loader_module.get_platform().config_dir,
+        "workspace": str(workspace),
+    }
+    expected = [
+        (config_dir / "shortcuts", ["user"]),
+        (workspace / ".chrys" / "shortcuts", ["cwd"]),
+        (repo / ".chrys" / "shortcuts", ["ancestor"]),
+    ]
+    for sources in (prompt_shortcut_sources(**kwargs), prompt_shortcut_sources(**kwargs, workspace_folders=())):
+        assert [(folder, [command.name for command in found]) for folder, found in sources] == expected
+    assert load_prompt_shortcuts(**kwargs) == load_prompt_shortcuts(**kwargs, workspace_folders=())
 
 
 # -- what a shortcut carries ---------------------------------------------------

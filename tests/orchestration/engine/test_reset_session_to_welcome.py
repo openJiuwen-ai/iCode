@@ -470,10 +470,10 @@ async def test_reset_session_to_welcome_success_releases_external_lock_after_cle
     async def after_delete() -> None:
         assert_lock_is_held("after_delete")
 
-    def cleanup(path: Path | None, *, path_reused: bool = False, **kwargs) -> None:
+    def cleanup(path: Path | None, *, path_reused: bool = False) -> bool:
         if path is not None and not (path / "session.json").exists():
             assert_lock_is_held("cleanup")
-        real_cleanup(path, path_reused=path_reused, **kwargs)
+        return real_cleanup(path, path_reused=path_reused)
 
     def release_external_lock() -> None:
         lifecycle.append("released")
@@ -573,14 +573,14 @@ async def test_reset_session_to_welcome_delete_failure_restores_mutation_tracker
         engine.session.guard.release()
 
 
-def test_cleanup_empty_session_dir_removes_only_unsaved_session(tmp_path: Path) -> None:
+async def test_cleanup_empty_session_dir_removes_only_unsaved_session(tmp_path: Path) -> None:
     store = JsonFileStateStore(tmp_path)
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "empty"
     empty_dir = store.session_dir("empty")
     empty_dir.mkdir(parents=True)
 
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     assert not empty_dir.exists()
 
@@ -589,7 +589,7 @@ def test_cleanup_empty_session_dir_removes_only_unsaved_session(tmp_path: Path) 
     recovery_dir.mkdir(parents=True)
     (recovery_dir / SESSION_RECOVERY_FILE_NAME).write_text("{}", encoding="utf-8")
 
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     assert recovery_dir.exists()
 
@@ -598,12 +598,12 @@ def test_cleanup_empty_session_dir_removes_only_unsaved_session(tmp_path: Path) 
     saved_dir.mkdir(parents=True)
     (saved_dir / "session.json").write_text("{}", encoding="utf-8")
 
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     assert saved_dir.exists()
 
 
-def test_cleanup_empty_session_dir_preserves_restorable_rollback_snapshots(tmp_path: Path) -> None:
+async def test_cleanup_empty_session_dir_preserves_restorable_rollback_snapshots(tmp_path: Path) -> None:
     store = JsonFileStateStore(tmp_path)
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "snapshot-only"
@@ -612,7 +612,7 @@ def test_cleanup_empty_session_dir_preserves_restorable_rollback_snapshots(tmp_p
     snap_dir.mkdir(parents=True)
     (snap_dir / "turn_1.json").write_text("{}", encoding="utf-8")
 
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     assert session_dir.exists()
 
@@ -627,7 +627,7 @@ def test_cleanup_empty_session_dir_preserves_restorable_rollback_snapshots(tmp_p
         "sub_agents/sessions/Explore_a1b2c3d4e5f6.json",
     ],
 )
-def test_cleanup_empty_session_dir_preserves_sub_agent_artifacts(tmp_path: Path, relative_path: str) -> None:
+async def test_cleanup_empty_session_dir_preserves_sub_agent_artifacts(tmp_path: Path, relative_path: str) -> None:
     store = JsonFileStateStore(tmp_path)
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "sub-agent-only"
@@ -636,12 +636,12 @@ def test_cleanup_empty_session_dir_preserves_sub_agent_artifacts(tmp_path: Path,
     artifact.parent.mkdir(parents=True)
     artifact.write_text("{}", encoding="utf-8")
 
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     assert session_dir.exists()
 
 
-def test_cleanup_empty_session_dir_preserves_a_recorded_trajectory(tmp_path: Path) -> None:
+async def test_cleanup_empty_session_dir_preserves_a_recorded_trajectory(tmp_path: Path) -> None:
     store = JsonFileStateStore(tmp_path)
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "log-only"
@@ -650,19 +650,19 @@ def test_cleanup_empty_session_dir_preserves_a_recorded_trajectory(tmp_path: Pat
     events.parent.mkdir(parents=True)
     events.write_text("{}\n", encoding="utf-8")
 
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     # Only an explicit clear or delete takes a session's log with it.
     assert session_dir.exists()
 
     events.write_text("", encoding="utf-8")
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     # A file the writer opened and never wrote to records nothing.
     assert not session_dir.exists()
 
 
-def test_cleanup_empty_session_dir_keeps_a_trajectory_it_cannot_stat(
+async def test_cleanup_empty_session_dir_keeps_a_trajectory_it_cannot_stat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = JsonFileStateStore(tmp_path)
@@ -677,13 +677,13 @@ def test_cleanup_empty_session_dir_keeps_a_trajectory_it_cannot_stat(
 
     monkeypatch.setattr("chrys.service.trajectory.session.trajectory_events_path", lambda _dir: _Unreadable())
 
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     # "I could not look" is not "there is nothing there".
     assert session_dir.exists()
 
 
-def test_cleanup_empty_session_dir_ignores_sub_agent_tmp_files(tmp_path: Path) -> None:
+async def test_cleanup_empty_session_dir_ignores_sub_agent_tmp_files(tmp_path: Path) -> None:
     store = JsonFileStateStore(tmp_path)
     engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
     engine.session.session_id = "tmp-only"
@@ -692,7 +692,7 @@ def test_cleanup_empty_session_dir_ignores_sub_agent_tmp_files(tmp_path: Path) -
     tmp_file.parent.mkdir(parents=True)
     tmp_file.write_text("{}", encoding="utf-8")
 
-    engine.lifecycle.cleanup_empty_session_dir()
+    await engine.lifecycle.cleanup_empty_session_dir()
 
     assert not session_dir.exists()
 

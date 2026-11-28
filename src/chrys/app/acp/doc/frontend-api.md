@@ -118,15 +118,14 @@ For Unspecified sessions, on `session/load` of an inactive session, supplied `ad
 **authoritative** and replace the saved additional roots, with the primary cwd kept
 first so an unchanged scope still reuses an OpenAI Responses service session. A
 non-empty list narrows/swaps scope; an explicit empty list `[]` clears the saved roots
-entirely; omitting the field (`null`/absent) keeps the saved roots. A moved cwd also
-drops them. Reloading an already-active session with `additionalDirectories` at all
-(any list, including `[]`, or MCP overlays) is rejected — roots can't be rebuilt on a
-running host, so the session must be closed first rather than silently keeping the old
-scope. `session/list` treats a non-empty `additionalDirectories` list as an exact,
-ordered additional-root filter (roots validated absolute like new/load): only
-sessions whose saved extra roots match exactly are returned. When omitted or empty,
-all sessions for the `cwd` are returned (each session reports its own roots via
-`additionalDirectories` in the response).
+entirely. Unspecified chat sessions save their installed roots with the conversation.
+Omitting the field (`null`/absent) restores those roots for an inactive session.
+When a load reuses an active Unspecified session, omit the field to keep its
+installed roots: any explicit list, including `[]`, or MCP overlays is rejected,
+so close the session first. For Unspecified sessions, `session/list` treats a non-empty
+`additionalDirectories` list as an exact, ordered filter on the saved extra roots.
+Omitting the filter or sending an empty list includes all sessions for the `cwd`.
+Each session reports its own roots via `additionalDirectories` in the response.
 
 For Unspecified sessions, list and delete use the saved cwd. Load, history and
 turn details for an active Unspecified session check its current cwd.
@@ -150,8 +149,46 @@ workspace and the directory stays the same, it keeps the workspace and skips
 the soft restart. For an Unspecified session, the agent soft-restarts on every
 call. The returned `primaryCwd` uses the installed path spelling.
 The returned `workingDirs` lists the session's installed reference folders.
+Once an Unspecified session's current scope is saved, `session/list`
+reports the same folders in `additionalDirectories`.
 After a move makes the session Unspecified, reload the active session under
-its new cwd. List and delete use the cwd from its latest save.
+its new cwd. List and delete continue to use the saved cwd until the next save.
+
+### Workspace slash commands (standard)
+
+`session/new` and `session/load` publish an
+`available_commands_update` with `workspace` and its action hint.
+
+A prompt that is one text block whose only line of text starts with `/workspace` is handled as a workspace command and is not sent to the model. Whitespace and blank lines around the command are ignored. Path arguments keep their spaces as typed. Any other prompt, such as one with text before the command, a second line of text or more blocks, goes to the model as usual.
+
+Send a workspace command as one text block in `session/prompt`. iCode replies
+with an `agent_message_chunk` and returns `end_turn`. The reply explains errors.
+These requests carry no turn usage or turn metadata. History replay omits the
+command and its reply. During a turn, the command replies immediately that the
+agent is busy.
+
+| Command | Effect |
+| --- | --- |
+| `/workspace` | Show usage and available actions. |
+| `/workspace switch` | List workspaces with their primary folders, include Unspecified, and mark the current selection. |
+| `/workspace switch <name>` | Join the named workspace if its primary folder is the current cwd. |
+| `/workspace switch Unspecified` | Switch the current session to Unspecified and keep its cwd. |
+| `/workspace new <name>` | Create a workspace at the current cwd and join it. |
+| `/workspace rename <new name>` | Rename the current workspace. |
+| `/workspace add-folder <path>` | Add a reference folder to the current workspace. |
+| `/workspace remove-folder <path>` | Remove a reference folder from the current workspace. |
+| `/workspace delete <name>` | Delete the named workspace. |
+
+If a workspace's primary folder is missing, the switch reply names the workspace
+and its primary folder. If the folder exists at a different cwd, the reply identifies
+the folder to open in the editor and gives the command to use in a new conversation.
+Editor-supplied directories apply when creating or loading a session. As in the
+TUI, joining a workspace or editing its folders through a workspace command
+installs the workspace definition. Switching to Unspecified keeps only the current
+folder. Missing-reference-folder warnings cover the folders checked for that open
+or change. Reopening an active session keeps its installed folders. A cold load
+checks the editor-supplied folders when present; an edit with the same missing-folder
+set does not repeat the warning.
 
 ### Session modes — approval mode (standard)
 
@@ -894,8 +931,7 @@ Standard client capabilities Chrys does **not** use (server → client):
 - Terminal suite (`create_terminal`, `terminal_output`, `release_terminal`,
   `wait_for_terminal_exit`, `kill_terminal`) — no shell/terminal delegation yet.
 
-Standard `session/update` variants Chrys does **not** emit:
-`available_commands_update`, `current_config_option_update`.
+Standard `session/update` variant Chrys does **not** emit: `current_config_option_update`.
 
 ## Remaining feature gaps / TODO
 

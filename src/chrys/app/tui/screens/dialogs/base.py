@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from typing import Any, ClassVar, TypeVar
 
 from textual import events
@@ -88,3 +90,20 @@ class BaseDialog(
     def _before_dismiss(self, _result: object | None = None) -> None:
         """Hook for subclasses that need cleanup before the modal closes."""
         return
+
+
+async def ask_dialog[ResultT](
+    push_screen: Callable[[object, object | None], object], dialog: BaseDialog[ResultT]
+) -> ResultT | None:
+    """Push *dialog* and wait for its result; a cancelled wait closes the dialog when it is on top."""
+    result: asyncio.Future[ResultT | None] = asyncio.get_running_loop().create_future()
+
+    def settle(value: ResultT | None) -> None:
+        if not result.done():
+            result.set_result(value)
+
+    push_screen(dialog, settle)
+    try:
+        return await result
+    finally:
+        dialog.dismiss_when_topmost()

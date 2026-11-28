@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import functools
 import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -41,9 +42,10 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import DisplayPath, DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.session_surface import SessionSurface
-from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.models.workspace import Workspace, same_directory
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.util.abandonable import run_abandonable
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine.reload_resources import (
     ReloadResources,
@@ -59,6 +61,8 @@ from chrys.orchestration.engine.workspaces import (
     MembershipWrite,
     StaleWorkspacePlan,
     WorkspacePlan,
+    commit_workspace_change,
+    stoppable_workspace_change,
     workspace_error_display,
     workspace_left_warning,
     workspace_updated_event,
@@ -595,6 +599,8 @@ class RuntimeControls:
         session: Mapping[str, Any] | None = None,
         commit_workspace: MembershipWrite | None = None,
     ) -> None:
+        # Installing commits a stoppable workspace change.
+        commit_workspace_change()
         rebuild = (
             self._lifecycle.start_with_rebuild_permit
             if self._current.loaded is None
@@ -1129,10 +1135,12 @@ class RuntimeControls:
         error = None
         update = None
         try:
-            result = await self._change_workspace(event)
+            with stoppable_workspace_change(event.stop):
+                result = await self._change_workspace(event)
             if isinstance(result, Error):
                 error = result
-                await self._bus.publish(error)
+                if event.report_error:
+                    await self._bus.publish(error)
             else:
                 update = result
         except asyncio.CancelledError:
@@ -1185,10 +1193,7 @@ class RuntimeControls:
                 permit,
                 self._session.agent_profile,
                 operation="workspace_change",
-                workspace_plan=self._lifecycle.workspaces.plan(
-                    workspace=new_workspace,
-                    snapshot=RegistrySnapshot(),
-                ),
+                workspace_plan=self._lifecycle.workspaces.plan(workspace=new_workspace, snapshot=RegistrySnapshot()),
                 staged_loaded=staged_loaded,
             )
             if starting_without_executor:
@@ -1208,6 +1213,8 @@ class RuntimeControls:
                 isinstance(permit, RebuildPermitDenied)
                 and _denial_allows_already_satisfied_success(permit)
                 and token.session_id == self._session.session_id
+                and event.delete_workspace is None
+                and event.edit_workspace is None
                 and (operation is WorkspaceOperation.NONE or event.workspace_id == self._session.workspace_id)
             ):
                 superseded = permit
@@ -1230,23 +1237,89 @@ class RuntimeControls:
                         session_id=event.session_id,
                     )
                 workspaces = self._lifecycle.workspaces
+                deleting, editing = event.delete_workspace, event.edit_workspace
+                registry = workspaces.registry
+                if operation is WorkspaceOperation.ALIGN_MEMBERSHIP:
+                    installed = self._current.loaded
+                    live_plan = self._session.workspace_plan
+                    if installed is None or live_plan is None or registry is None:
+                        return self._workspace_refusal()
+                    if event.workspace_id != live_plan.workspace_id:
+                        raise RuntimeError(format_message(_WORKSPACE_SESSION_CHANGED.bind()))
+
+                    def validate_membership() -> str:
+                        if (
+                            self._session.shutting_down
+                            or self._permits.capture_control_token() != token
+                            or self._session.workspace_plan is not live_plan
+                            or self._current.loaded is not installed
+                        ):
+                            raise RuntimeError(format_message(_WORKSPACE_SESSION_CHANGED.bind()))
+                        session_id = self._session.membership_session_id
+                        if session_id is None:
+                            raise RuntimeError("Saving workspace membership requires a session ID.")
+                        return session_id
+
+                    await MembershipWrite(registry, live_plan.workspace).save_async(validate_membership)
+                    # Membership alone changed: cwd-dependent frontends must not refresh the runtime projection.
+                    return workspace_updated_event(self._session, session_id=token.session_id)
+                workspace = self._session.workspace or Workspace.from_cwd()
+                definition = editing.expected if editing is not None else deleting
+                if definition is not None:
+                    if registry is None:
+                        return self._workspace_refusal()
+                    if definition.id != self._session.workspace_id or (
+                        editing is not None
+                        and not same_directory(workspace.primary_cwd, definition.primary_cwd, realpath_fallback=True)
+                    ):
+                        commit = MembershipWrite(registry, workspace, delete=deleting, edit=editing)
+                        await commit.save_off_loop(None)
+                        return workspace_updated_event(self._session, session_id=token.session_id)
                 snapshot = event.workspace_snapshot
                 if snapshot is None:
-                    snapshot = await workspaces.read_and_warn(self._session.session_id)
-                workspace = self._session.workspace or Workspace.from_cwd()
+                    # Explicit changes report a failed read through their terminal result.
+                    if operation is not WorkspaceOperation.NONE or event.confirmation is not None:
+                        snapshot = workspaces.snapshot()
+                    else:
+                        snapshot = await workspaces.read_and_warn(self._session.session_id)
+                if editing is not None and registry is not None:
+                    candidate = await run_abandonable(
+                        "icode-workspace-registry",
+                        registry.preview_update,
+                        snapshot,
+                        editing.expected,
+                        editing.name,
+                        editing.folders,
+                    )
+                    snapshot = dataclasses.replace(
+                        snapshot,
+                        workspaces=tuple(
+                            candidate if item.id == candidate.id else item for item in snapshot.workspaces
+                        ),
+                    )
                 if operation is WorkspaceOperation.NONE and self._session.workspace_id is None and event.primary_cwd:
                     workspace = Workspace.from_cwd(event.primary_cwd)
-                plan = workspaces.plan(
+                live_plan = self._session.workspace_plan
+                planned = functools.partial(
+                    workspaces.plan,
                     workspace=workspace,
-                    live_plan=self._session.workspace_plan,
+                    live_plan=live_plan,
                     snapshot=snapshot,
                     operation=operation,
                     workspace_id=event.workspace_id,
                     target_cwd=event.primary_cwd,
                     require_leave_confirmation=event.require_leave_confirmation,
                     confirmation=event.confirmation,
+                    opened_cwd=workspace.primary_cwd if editing is not None else "",
                 )
-                if operation is WorkspaceOperation.NONE and (missing := plan.workspace.missing_primary()) is not None:
+
+                def plan_with_primary() -> tuple[WorkspacePlan, str | None]:
+                    plan = planned()
+                    return plan, plan.workspace.missing_primary() if operation is WorkspaceOperation.NONE else None
+
+                # Planning probes every folder of the workspace; one on a mount that stops answering must not hold the loop.
+                plan, missing = await run_abandonable("icode-workspace-plan", plan_with_primary)
+                if missing is not None:
                     return self._workspace_refusal(missing=missing)
                 already_loaded = self._current.loaded is not None and (
                     plan is self._session.workspace_plan or plan.noop
@@ -1258,13 +1331,34 @@ class RuntimeControls:
                         display_message=superseded.display_message,
                         session_id=token.session_id,
                     )
-                commit = workspaces.membership_write(plan, operation, source_id=self._session.workspace_id)
+                commit = (
+                    MembershipWrite(
+                        registry,
+                        plan.workspace,
+                        delete=deleting,
+                        edit=editing,
+                        report_error=event.report_error,
+                        folders_checked=editing is not None,  # The preview above probed them on a thread.
+                    )
+                    if (deleting is not None or editing is not None) and registry is not None
+                    else workspaces.membership_write(plan, operation, source_id=self._session.workspace_id)
+                )
                 if already_loaded:
                     if commit is not None:
-                        session_id = self._session.membership_session_id
-                        if session_id is None:
-                            raise RuntimeError("Saving workspace membership requires a session ID.")
-                        commit.save(session_id)
+
+                        def validate_membership() -> str:
+                            if (
+                                self._session.shutting_down
+                                or self._permits.capture_control_token() != token
+                                or self._session.workspace_plan is not live_plan
+                            ):
+                                raise RuntimeError(format_message(_WORKSPACE_SESSION_CHANGED.bind()))
+                            session_id = self._session.membership_session_id
+                            if session_id is None:
+                                raise RuntimeError("Saving workspace membership requires a session ID.")
+                            return session_id
+
+                        await commit.save_async(validate_membership)
                     if plan is self._session.workspace_plan or superseded is not None:
                         return await self._publish_workspace_updated_snapshot(token.session_id)
                     return workspace_updated_event(self._session, session_id=token.session_id)
@@ -1273,7 +1367,7 @@ class RuntimeControls:
             except Exception as exc:
                 return self._workspace_change_failure(exc, session_id=event.session_id)
             else:
-                # The rebuild reports its own load failures.
+                # The rebuild settles its own load lifecycle.
                 return await self._rebuild_workspace(permit, plan, commit, operation=operation)
             finally:
                 self._permits.release_rebuild_permit(permit)
@@ -1305,6 +1399,7 @@ class RuntimeControls:
         if profile is None:
             return self._workspace_refusal()
         before = self._current.loaded
+        previous_plan = self._session.workspace_plan
         update: WorkspaceUpdated | None = None
 
         async def record_update(event: WorkspaceUpdated) -> None:
@@ -1327,15 +1422,21 @@ class RuntimeControls:
                     session_id=self._session.session_id,
                 )
 
-            if commit is not None and not commit.best_effort:
+            if commit is not None and not commit.best_effort and not commit.edits_definition:
                 try:
                     self._settings_handle.check_prepared(self._settings_handle.prepare(staged_loaded))
                     if self._session.session_id is None:
                         self._session.begin(agent_profile=profile)
-                    session_id = self._session.membership_session_id
-                    if session_id is None:
-                        raise RuntimeError("Saving workspace membership requires a session ID.")
-                    commit.save(session_id)
+
+                    def validate_membership() -> str:
+                        if self._session.shutting_down:
+                            raise RuntimeError(format_message(_WORKSPACE_SESSION_CHANGED.bind()))
+                        session_id = self._session.membership_session_id
+                        if session_id is None:
+                            raise RuntimeError("Saving workspace membership requires a session ID.")
+                        return session_id
+
+                    await commit.save_async(validate_membership)
                 except WorkspaceRegistryError:
                     raise
                 except Exception as exc:
@@ -1349,7 +1450,13 @@ class RuntimeControls:
                 staged_loaded=staged_loaded,
                 commit_workspace=commit,
             )
-            await self._lifecycle.workspaces.warn_missing_references(self._session.session_id, plan)
+            if (
+                commit is None
+                or commit.edit is None
+                or previous_plan is None
+                or plan.missing_working_dirs != previous_plan.missing_working_dirs
+            ):
+                await self._lifecycle.workspaces.warn_missing_references(self._session.session_id, plan)
             departure = plan.departure
             if plan.left_workspace and departure is not None and self._session.surface is SessionSurface.CLI:
                 await self._bus.publish(workspace_left_warning(self._session.session_id, departure.name))
@@ -1370,13 +1477,10 @@ class RuntimeControls:
         finally:
             await self._bus.unsubscribe(WorkspaceUpdated, record_update)
             committed = self._current.loaded is not before and self._current.loaded is not None
-            if committed:
-                if operation is WorkspaceOperation.SELECT and plan.workspace_id is not None:
-                    await self._lifecycle.touch_opened_workspace(workspace, workspace.primary_cwd)
-                # The mapping error belongs to the installed workspace even if the request was cancelled.
-                if commit is not None and commit.failure is not None and plan.departure is not None:
-                    await self._lifecycle.workspaces.warn_membership_write(
-                        self._session.session_id or "",
-                        LEAVE_MEMBERSHIP_WRITE_FAILED.bind(name=plan.departure.name),
-                        commit.failure,
-                    )
+            # The mapping error belongs to the installed workspace even if the request was cancelled.
+            if committed and commit is not None and commit.failure is not None and plan.departure is not None:
+                await self._lifecycle.workspaces.warn_membership_write(
+                    self._session.session_id or "",
+                    LEAVE_MEMBERSHIP_WRITE_FAILED.bind(name=plan.departure.name),
+                    commit.failure,
+                )

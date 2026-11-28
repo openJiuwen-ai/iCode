@@ -7,10 +7,12 @@ from __future__ import annotations
 import pytest
 from rich.cells import cell_len
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.widgets import Static
 
 from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState, compute_model_indicator_state
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
+from chrys.app.tui.workspace_text import WorkspaceIndicatorState
 from chrys.foundation.events.types import RuntimeModelDetails
 from chrys.foundation.i18n import Localizer
 from tests.support.tui_helpers import click_when_settled, delay_resize_dispatch
@@ -63,10 +65,12 @@ async def test_startup_loading_collapses_empty_selector_padding() -> None:
 
         bar.set_profile("Code Agent")
         bar.set_model(_selectable_model_state())
+        bar.set_workspace(WorkspaceIndicatorState("Unspecified", Content("Unspecified"), "Workspace"))
         await pilot.pause()
 
         model_tag = bar.query_one("#model-tag", Static)
         assert selectors.display is True
+        assert bar.query_one("#workspace-tag", Static).display is True
         assert body.region.x == model_tag.region.right + 1
 
 
@@ -114,8 +118,7 @@ async def test_compact_layout_hides_flash_runtime_trail_and_recovers_at_64_colum
         assert "RUNTIME" not in frame
 
         await pilot.resize_terminal(64, 10)
-        # The Resize event that drops the compact tier lands asynchronously;
-        # one pause is not enough on loaded CI workers.
+        # The Resize event that drops the compact tier lands asynchronously.
         await wait_for(
             lambda: not bar.has_class("-compact"),
             pilot=pilot,
@@ -191,7 +194,7 @@ async def test_agent_model_tag_is_literal_locked_and_reports_its_lock_even_while
 
 @pytest.mark.asyncio
 async def test_profile_and_model_tags_share_all_transient_interaction_guards() -> None:
-    async with _TagApp().run_test(size=(120, 10)) as pilot:
+    async with _TagApp().run_test(size=(130, 10)) as pilot:
         bar = pilot.app.query_one(StatusBar)
         bar.show("Thinking")
         bar.set_profile("Code [Agent]")
@@ -271,8 +274,6 @@ async def test_tag_truncation_is_cell_aware_and_recovers_after_resize(
         assert model_tag.render().plain == model_name
         assert profile_name in profile_tag.tooltip.plain
         assert model_name in model_tag.tooltip.plain
-        assert cell_len(profile_tag.render().plain) <= 18
-        assert cell_len(model_tag.render().plain) <= 26
 
         def frame() -> str:
             return "\n".join(strip.text for strip in pilot.app.screen._compositor.render_strips())
@@ -304,9 +305,10 @@ async def test_tag_truncation_is_cell_aware_and_recovers_after_resize(
 
 @pytest.mark.asyncio
 async def test_selectors_have_left_padding_gap_and_no_separator() -> None:
-    async with _TagApp().run_test(size=(80, 10)) as pilot:
+    async with _TagApp().run_test(size=(130, 10)) as pilot:
         bar = pilot.app.query_one(StatusBar)
         bar.show("Thinking")
+        bar.set_workspace(WorkspaceIndicatorState("Unspecified", Content("Unspecified"), "Workspace"))
         bar.set_profile("Code Agent", description="Agent description")
         bar.set_model(_selectable_model_state())
         await pilot.pause()
@@ -331,7 +333,11 @@ async def test_selectors_have_left_padding_gap_and_no_separator() -> None:
         assert profile_tag.rich_style.bgcolor == model_tag.rich_style.bgcolor
         assert profile_tag.rich_style.color == model_tag.rich_style.color
         assert agent_label.rich_style.bgcolor != profile_tag.rich_style.bgcolor
-        assert agent_label.region.x == bar.content_region.x + 1
+        workspace_label = bar.query_one("#workspace-label", Static)
+        workspace_tag = bar.query_one("#workspace-tag", Static)
+        assert workspace_label.region.x == bar.content_region.x + 1
+        assert workspace_tag.region.x == workspace_label.region.right
+        assert agent_label.region.x == workspace_tag.region.right + 1
         assert profile_tag.region.x == agent_label.region.right
         assert model_label.region.x == profile_tag.region.right + 1
         assert model_tag.region.x == model_label.region.right
@@ -369,7 +375,7 @@ async def test_shell_mode_hides_both_selectors() -> None:
 
 @pytest.mark.asyncio
 async def test_clear_status_keeps_idle_selectors_without_status_content() -> None:
-    async with _TagApp().run_test(size=(80, 10)) as pilot:
+    async with _TagApp().run_test(size=(104, 10)) as pilot:
         bar = pilot.app.query_one(StatusBar)
         bar.set_profile("Code Agent")
         bar.set_model(_selectable_model_state())

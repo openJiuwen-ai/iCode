@@ -67,6 +67,7 @@ class _DialogView:
 
     def __init__(self) -> None:
         self.pushed: list[_Pushed] = []
+        self.is_attached = True
 
     def push_screen(self, screen: object, callback: object | None = None) -> object:
         if not callable(callback):
@@ -196,7 +197,9 @@ async def test_declining_the_missing_folder_dialog_opens_no_picker(
     missing, _parent, _replacement = _layout(tmp_path)
     h = await _harness(missing)
 
-    task = asyncio.create_task(h.controller.choose_replacement_dir(str(missing), text is None, reason=reason))
+    task = asyncio.create_task(
+        h.controller.choose_replacement_dir(str(missing), "Team" if text is None else None, reason=reason)
+    )
     confirm = await h.dialog(1, task)
 
     dialog = confirm.screen
@@ -206,9 +209,12 @@ async def test_declining_the_missing_folder_dialog_opens_no_picker(
     assert _message_key(dialog) == key
     assert _message_path(dialog) == str(missing)
     if text is None:
-        assert "Restore it at its original path." in dialog._message
-        assert "create a new workspace" not in dialog._message
-        assert "Choosing another folder will open this session there and leave the workspace." in dialog._message
+        assert dialog._message == (
+            f"The primary folder {missing} of workspace “Team” no longer exists. "
+            f"Restore {missing} to keep the saved session in “Team”.\n\n"
+            "• Choose Folder…: select a replacement working directory and open the saved session as Unspecified.\n"
+            "• Cancel: keep the current session open."
+        )
     else:
         assert dialog._message == text.format(path=missing)
     assert h.controller._missing_prompt_active is True
@@ -388,8 +394,7 @@ async def test_prompt_missing_working_dir_makes_the_chosen_folder_the_workspace(
         workspace = registry.create("App", str(missing))
         missing.rmdir()
         missing.parent.rmdir()
-        h.state.workspace.workspace_id = workspace.id
-        h.state.workspace.workspace_name = workspace.name
+        h.state.workspace.membership = workspace
         h.state.run.has_messages = change != "workspace_empty"
         if change == "workspace_alias":
             chosen = parent / "chosen-link"
@@ -445,13 +450,13 @@ async def test_prompt_missing_working_dir_makes_the_chosen_folder_the_workspace(
     elif change == "shell_mode":
         h.state.shell.active = True
     release.set()
-    if change.startswith("workspace_") and change != "workspace_empty":
+    if change.startswith("workspace_"):
         leave = await h.dialog(3, worker)
+        if change == "workspace_empty":
+            assert leave.screen._alternate_label_message is None
         if change == "workspace_session":
             h.engine.session_generation += 1
         leave.answer(change != "workspace_cancel")
-    elif change == "workspace_empty":
-        await h.finish(worker, screens=2)
     await worker
 
     accepted = change in {"none", "workspace_empty", "workspace_confirm", "workspace_alias"}
@@ -776,7 +781,7 @@ async def _restore_probe(store: JsonFileStateStore, choice: str | None) -> _Rest
     async def publish(event: object) -> None:
         published.append(event)
 
-    async def choose(missing: str, _workspace_restore: bool) -> str | None:
+    async def choose(missing: str, _workspace_name: str | None) -> str | None:
         # What the screen looks like while the user is asked.
         calls.append(("choose", (missing, state.run.agent_loading, state.session.restoring_session)))
         return choice
@@ -819,8 +824,9 @@ async def test_restore_with_a_missing_saved_folder_restores_in_the_chosen_one(tm
 
         choose = probe.handler._callbacks.choose_missing_working_dir
 
-        async def choose_folder(path: str, workspace_restore: bool) -> str | None:
-            result = await choose(path, workspace_restore)
+        async def choose_folder(path: str, workspace_name: str | None) -> str | None:
+            assert workspace_name == "Team"
+            result = await choose(path, workspace_name)
             if change == "picker_owner":
                 probe.state.runtime.main_usage_source_id = "other-session"
             return result
@@ -1018,7 +1024,7 @@ async def test_reopening_current_workspace_session_checks_snapshot_primary_after
     probe = await _restore_probe(store, None)
     probe.state.runtime.main_usage_source_id = "saved"
     probe.state.workspace.current_cwd = str(installed)
-    probe.state.workspace.workspace_id = workspace.id
+    probe.state.workspace.membership = workspace
     link.unlink()
     installed.rmdir()
     symlink_or_skip(link, moved, target_is_directory=True)

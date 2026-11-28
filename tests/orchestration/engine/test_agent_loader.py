@@ -110,7 +110,7 @@ async def test_candidate_cleanup_preserves_the_install_failure_contract(
         installs.append(candidate)
         raise error
 
-    def write_membership(_cid, _wid):
+    def write_membership(_cid, _wid, **_kwargs):
         if failure == "membership":
             raise error
 

@@ -4,18 +4,19 @@ A shortcut is a prompt you save once as a Markdown file and reuse by typing `/` 
 
 ## Where shortcut files go
 
-iCode reads shortcuts from two places:
+iCode looks for shortcut files in these locations.
 
 | Folder | macOS and Linux | Windows |
 | --- | --- | --- |
 | Your shortcuts | `~/.chrys/shortcuts` | `%APPDATA%\chrys\shortcuts` |
-| Working directory and ancestors | `.chrys/shortcuts` in the working directory and its parent directories up to the Git repository root | Same |
+| Working directory shortcuts | `.chrys/shortcuts` in the working directory and its parent directories up to the Git repository root | Same |
+| Workspace shortcuts | Each reference folder’s own `.chrys/shortcuts` | Same |
 
 New and changed files show the next time you type `/`, or after `/reload`.
 
-iCode skips shortcut directories that link outside the Git repository. Outside a Git repository, iCode searches only the working directory for local shortcuts.
+iCode skips shortcut directories that link outside the Git repository. Outside a Git repository, iCode checks the working directory itself. For [reference folders](../daily-use/workspaces.md#workspaces), iCode reads only each folder’s own shortcut directory.
 
-The file name is the shortcut's name: `review.md` is `/review`. A file in a subfolder keeps the folder in its name: `git/commit-msg.md` is `/git/commit-msg`. When two folders hold a shortcut with the same name, the first one read is used: your own shortcuts, then the closest matching directory, starting at the working directory.
+The file name is the shortcut's name: `review.md` is `/review`. A file in a subfolder keeps the folder in its name: `git/commit-msg.md` is `/git/commit-msg`. When two folders hold a shortcut with the same name, the first one read is used: your own shortcuts, then the closest matching directory, starting at the working directory, and then the reference folders, in workspace folder order.
 
 Some files are not loaded: a name with spaces (it could not be typed after `/`), a file or folder whose name starts with `.`, and a subfolder that is a link. If a shortcut you expect is missing, check its file name.
 

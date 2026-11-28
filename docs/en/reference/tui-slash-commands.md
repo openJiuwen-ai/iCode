@@ -13,11 +13,19 @@ A slash command must start at the beginning of the input, with the command and i
 
 After you type `/`, a command suggestion list appears above the input field. Keep typing to filter commands; press **Tab** to complete the selected command. If a command does not show argument suggestions, you can press **Enter** immediately after completing it to run it. If it accepts arguments, you can also continue typing arguments before pressing **Enter**.
 
-The following commands show argument suggestions: `/theme`, `/language`, `/approval`, `/buddy`, `/agents`, `/settings`, and `/man`. The list opens when you complete one of these commands with **Tab**, or when you type the full command and press **Space** or **Enter**.
+The following commands show argument suggestions: `/theme`, `/workspace`, `/language`, `/approval`, `/buddy`, `/agents`, `/settings`, and `/man`. The list opens when you complete one of these commands with **Tab**, or when you type the full command and press **Space** or **Enter**.
 
 - Example: type `/approval` and press **Space** to see `Manual`, `Auto`, and `Bypass`.
 
 Once the argument suggestion list appears, use the up and down arrow keys to select an item and press **Enter** to run it, or click the item with the mouse.
+
+In an Unspecified session, `/workspace` suggests **switch**, **new**, and **delete**. In a named workspace, it also suggests **rename**, **add-folder**, and **remove-folder**, which act on the current workspace.
+
+For `/workspace switch`, `/workspace delete`, and `/workspace remove-folder`, if the highlighted argument differs from what you typed, **Enter** fills it in for review. Press **Enter** again to execute.
+
+If a `/workspace` command contains a folded paste, **Enter** expands the paste in the input box. Review or edit the command, then press **Enter** again to execute.
+
+For `/workspace add-folder` and `/workspace remove-folder`, type one space after the action, then enter or paste the path exactly. Leading and trailing spaces in the path are kept, and a newline at the end of a pasted path is ignored. If a `/workspace` draft contains a line break followed by more text, Enter sends it as a chat message.
 
 ## View command help
 
@@ -48,6 +56,13 @@ In this table:
 | `/sessions [session_id]` | — | Browse saved sessions or open one by ID. See [Manage and resume sessions](../guides/daily-use/sessions.md). | A 12-character short ID or full UUID. Omit it to open the session browser. |
 | `/theme [theme]` | — | Switch the interface theme. See [Appearance](../guides/configuration/settings.md#appearance). | `theme`: switch directly to the specified theme. With no argument, press **Space** or **Enter** to show available themes. |
 | `/language [locale]` | — | Switch the interface language. See [Appearance](../guides/configuration/settings.md#appearance). | `locale`: switch directly to the specified language. Supported values are `system` (follow the system), `en` (English), and `zh-Hans` (Simplified Chinese). With no argument, press **Space** or **Enter** to show available values. |
+| `/workspace` | — | Show usage for [workspace commands](../guides/daily-use/workspaces.md#workspace-commands-in-the-terminal-and-editor). | Press **Esc** to close suggestions before submitting. |
+| `/workspace switch [name]` | — | Switch to the named workspace or open the picker when the name is omitted. | Names are case-insensitive. Use `Unspecified` or its current display label to switch to Unspecified and keep the working directory. |
+| `/workspace new <name>` | — | Create a workspace using the current working directory as its primary folder. | — |
+| `/workspace rename <new name>` | — | Rename the current workspace. | — |
+| `/workspace add-folder <path>` | — | Add a reference folder to the current workspace. | — |
+| `/workspace remove-folder <path>` | — | Remove a reference folder from the current workspace. | — |
+| `/workspace delete <name>` | — | Delete the named workspace and keep its folders and conversations. | — |
 | `/chdir [path]` | `/cd` | Switch the working directory for the current session. See [Switch working directories in a session](../guides/daily-use/workspaces.md#change-the-working-directory-during-a-session). | `path`: an existing target directory, specified as an absolute path or a path relative to the current working directory. Omit it to open the directory picker. |
 | `/copy [N]`<br>`/copy agent [N\|all]`<br>`/copy user [N\|all]`<br>`/copy all` | — | Copy conversation content to the clipboard. | No argument: copy the most recent agent message (text the agent shows between tool calls counts as a separate message).<br>`N`: the number of recent agent messages to copy; must be a positive integer. `/copy N` is shorthand for `/copy agent N`.<br>`agent [N\|all]`: copy the most recent `N` agent messages or all agent messages. If no count is given, copy the most recent one.<br>`user [N\|all]`: copy the most recent `N` user messages or all user messages. If no count is given, copy the most recent one.<br>`all`: copy the full conversation history. |
 | `/fold` | — | Toggle activity sections, tool call groups, **Thinking** blocks, text between tool calls and compaction summaries together. If any are open, collapse them all; otherwise expand them all, including details inside activity sections. Thinking that is still being written and controls waiting for your input are left as they are. | — |
