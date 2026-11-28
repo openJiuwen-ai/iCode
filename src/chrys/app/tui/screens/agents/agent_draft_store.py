@@ -936,6 +936,7 @@ def mcp_draft_errors_by_server(
                 allowed_tools=server.allowed_tools,
                 use_progressive_disclosure=server.use_progressive_disclosure,
                 always_load=server.always_load,
+                tool_name_prefix=server.tool_name_prefix,
             )
         )
     return by_server

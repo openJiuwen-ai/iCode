@@ -211,6 +211,27 @@ def test_validate_mcp_draft_enforces_loading_policy_hierarchy() -> None:
     assert any("always_load tools must also appear in allowed_tools: write" in error for error in errors)
 
 
+def test_validate_mcp_draft_accepts_either_tool_name_spelling() -> None:
+    profile = _profile("Progressive")
+    profile.tools = ToolsConfig(
+        mcp=[
+            MCPServerConfig(
+                name="remote",
+                transport="http",
+                url="https://api.example.com/mcp",
+                tool_name_prefix="gh",
+                allowed_tools=["gh_search"],
+                use_progressive_disclosure=True,
+                always_load=["search"],
+            )
+        ]
+    )
+
+    errors = validate_mcp_draft("Progressive Test", profile)
+
+    assert not any("must also appear in allowed_tools" in error for error in errors)
+
+
 def test_validate_acp_draft_accepts_secondary_workspace_root_and_empty_instructions(tmp_path) -> None:
     primary = tmp_path / "primary"
     secondary = tmp_path / "secondary"
