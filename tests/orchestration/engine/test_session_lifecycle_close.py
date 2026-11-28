@@ -82,6 +82,32 @@ async def test_close_failure_keeps_cleared_resources_and_skips_later_steps(monke
     assert engine.turns.turn_state.paused_sub_agents == {"child"}
 
 
+async def test_the_last_live_engine_to_shut_down_stops_the_bundled_sandbox(
+    monkeypatch: pytest.MonkeyPatch, agent_engine
+) -> None:
+    """An engine counts once it takes events; one that never did cannot stop another's server."""
+    from chrys.service.sandbox import runtime_hold, supervisor
+
+    monkeypatch.setattr(runtime_hold, "_runtimes", 0)
+    stops: list[str] = []
+
+    async def shutdown() -> None:
+        stops.append("shutdown")
+
+    monkeypatch.setattr(supervisor, "shutdown", shutdown)
+    first = agent_engine(EventBus(), settings=Settings())
+    second = agent_engine(EventBus(), settings=Settings())
+    never_prepared = agent_engine(EventBus(), settings=Settings())
+    await first.prepare()
+    await second.prepare()
+
+    await never_prepared.shutdown()
+    await first.shutdown()
+    assert stops == []
+    await second.shutdown()
+    assert stops == ["shutdown"]
+
+
 @pytest.mark.parametrize("initial_suppression", [False, True])
 async def test_timeout_suppresses_save_and_restores_entry_value(
     initial_suppression: bool, monkeypatch: pytest.MonkeyPatch, agent_engine

@@ -1781,6 +1781,10 @@ def test_background_tasks_have_declared_owners() -> None:
             "loader injection notification set",
         ),
         ("engine", "AgentEngine", "_release"): (1, "engine release task"),
+        ("engine", "AgentEngine", "shutdown"): (
+            1,
+            "a shutdown cancelled before the release returns the sandbox claim, drained with finish_close",
+        ),
         ("execution", "ExecutionLease", "_notify_execution"): (
             1,
             "lease snapshot chain; each publication awaits its predecessor, drained at run completion and owner shutdown",

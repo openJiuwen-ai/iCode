@@ -1,0 +1,680 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Cancel and timeout each kill one foreground command's process group.
+
+The commands are in-process fakes. Nothing starts jiuwenbox, bubblewrap,
+or a real grandchild: Windows cannot signal a process group, so the tests
+patch ``os.killpg`` and hold the pipe write ends the way a descendant
+would. They fail if the daemon only counts in-flight execs, signals
+something other than that command's pid, or drops stdout already read.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+import types
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+_SIGKILL = getattr(signal, "SIGKILL", 9)
+_KEPT_STDOUT = b"kept-output\n"
+
+
+class _HoldingProc:
+    """A command-shim stand-in whose pipes stay open until the group is released.
+
+    ``communicate`` drops partial reads and does not notice ``killpg``.
+    That is the old timeout path: a test that still ends up there sees
+    empty stdout and no group signal.
+    """
+
+    def __init__(self, pid: int, stdout: bytes, *, running: bool) -> None:
+        self.pid = pid
+        self.args = ["fake", str(pid)]
+        self.returncode: int | None = None if running else 0
+        self.stdin = None
+        self.direct_killed = False
+        self.group_signaled = False
+        self.tree_kills = 0
+        self.finished = False
+        out_read, out_write = os.pipe()
+        err_read, err_write = os.pipe()
+        if stdout:
+            os.write(out_write, stdout)
+        self._write_fds = [out_write, err_write]
+        self.stdout = os.fdopen(out_read, "rb", buffering=0)
+        self.stderr = os.fdopen(err_read, "rb", buffering=0)
+        self._released = threading.Event()
+        if not running:
+            self._close_writes()
+            self._released.set()
+
+    @property
+    def pipes_open(self) -> bool:
+        return bool(self._write_fds)
+
+    def _close_writes(self) -> None:
+        for fd in self._write_fds:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        self._write_fds.clear()
+
+    def release_group(self) -> None:
+        """Close the write ends, as a killed process group would."""
+        self.group_signaled = True
+        if self.returncode is None:
+            self.returncode = -9
+        self._close_writes()
+        self._released.set()
+
+    def note_group_signal(self) -> None:
+        """Record the group signal and leave the pipes open.
+
+        Descendants that still hold stdout keep the drain from seeing EOF.
+        Bytes the daemon has already read must still be returned.
+        """
+        self.group_signaled = True
+        if self.returncode is None:
+            self.returncode = -9
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float) -> int | None:
+        self._released.wait(timeout)
+        return self.returncode
+
+    def kill(self) -> None:
+        self.direct_killed = True
+
+    def kill_tree(self) -> None:
+        self.tree_kills += 1
+
+    def finish(self) -> None:
+        self.finished = True
+
+    def communicate(
+        self,
+        input: bytes | None = None,
+        timeout: float | None = None,
+    ) -> tuple[bytes, bytes]:
+        del input
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        while self.returncode is None and not self._released.is_set():
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            remaining = 0.05
+            if deadline is not None:
+                remaining = min(remaining, max(0.0, deadline - time.monotonic()))
+            if self._released.wait(remaining):
+                break
+        return b"", b""
+
+    def close(self) -> None:
+        self.release_group()
+        for stream in (self.stdout, self.stderr):
+            with contextlib.suppress(OSError):
+                stream.close()
+
+
+class _ExecSession:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, on_signal: Callable[[_HoldingProc], None]) -> None:
+        from jiuwenbox.supervisor import sandbox_daemon
+
+        self.daemon = sandbox_daemon
+        self.calls: list[tuple[int, int]] = []
+        self.procs: dict[tuple[str, ...], _HoldingProc] = {}
+        self._ready: dict[tuple[str, ...], threading.Event] = {}
+        self._specs: dict[tuple[str, ...], tuple[int, bytes, bool]] = {}
+        self.threads: list[threading.Thread] = []
+        self.sockets: list[socket.socket] = []
+        self.errors: list[BaseException] = []
+        self._on_signal = on_signal
+
+        def killpg(pid: int, sig: int) -> None:
+            self.calls.append((pid, sig))
+            proc = next(item for item in self.procs.values() if item.pid == pid)
+            self._on_signal(proc)
+
+        def start_command(
+            command: list[str],
+            *,
+            env: dict[str, str],
+            workdir: str | None,
+            stdin: int,
+            output: int,
+            cgroup_procs: list[str],
+        ) -> _HoldingProc:
+            del env, workdir, stdin, output, cgroup_procs
+            key = tuple(command)
+            pid, stdout, running = self._specs[key]
+            proc = _HoldingProc(pid, stdout, running=running)
+            self.procs[key] = proc
+            self._ready[key].set()
+            return proc
+
+        monkeypatch.setattr(sandbox_daemon.os, "killpg", killpg, raising=False)
+        monkeypatch.setattr(sandbox_daemon, "_start_command", start_command)
+
+    def start(
+        self,
+        command: list[str],
+        *,
+        pid: int,
+        stdout: bytes,
+        running: bool,
+        timeout: float | None,
+        cgroup_procs: list[str] | None = None,
+    ) -> tuple[socket.socket, threading.Event]:
+        key = tuple(command)
+        self._specs[key] = (pid, stdout, running)
+        self._ready[key] = threading.Event()
+        daemon_end, client_end = socket.socketpair()
+        self.sockets.extend((daemon_end, client_end))
+        header: dict[str, object] = {"command": list(command)}
+        if timeout is not None:
+            header["timeout"] = timeout
+        if cgroup_procs is not None:
+            header["cgroup_procs"] = list(cgroup_procs)
+        done = threading.Event()
+
+        def run() -> None:
+            try:
+                self.daemon._handle_exec(daemon_end, header, self.daemon.DaemonState())
+            except Exception as exc:
+                self.errors.append(exc)
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=run, name=f"exec-{command[0]}")
+        self.threads.append(thread)
+        thread.start()
+        return client_end, done
+
+    def wait_ready(self, command: list[str]) -> _HoldingProc:
+        key = tuple(command)
+        if not self._ready[key].wait(3):
+            raise AssertionError(f"{command} was not spawned")
+        return self.procs[key]
+
+    def close(self) -> None:
+        for proc in self.procs.values():
+            proc.release_group()
+        for thread in self.threads:
+            thread.join(timeout=2)
+        for sock in self.sockets:
+            with contextlib.suppress(OSError):
+                sock.close()
+        for proc in self.procs.values():
+            proc.close()
+
+
+def _read_response(sock: socket.socket) -> dict[str, object]:
+    sock.settimeout(3)
+    header = _recv_exact(sock, 4)
+    (size,) = struct.unpack(">I", header)
+    body = _recv_exact(sock, size)
+    parsed = json.loads(body.decode("utf-8"))
+    if not isinstance(parsed, dict):
+        raise AssertionError(f"response was not an object: {parsed!r}")
+    return parsed
+
+
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < size:
+        chunk = sock.recv(size - len(buf))
+        if not chunk:
+            raise AssertionError(f"socket closed after {len(buf)}/{size} bytes")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _assert_group_signal(calls: list[tuple[int, int]], pid: int) -> None:
+    assert calls, "command process group was not signaled"
+    assert calls[0][0] == pid
+    assert calls[0][1] == _SIGKILL
+    assert pid != os.getpid()
+    if hasattr(os, "getpgrp"):
+        assert pid != os.getpgrp()
+
+
+def test_cancel_kills_only_that_command_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.release_group)
+    try:
+        first_client, first_done = session.start(
+            ["hold-a"],
+            pid=71001,
+            stdout=b"first\n",
+            running=True,
+            timeout=None,
+        )
+        _second_client, second_done = session.start(
+            ["hold-b"],
+            pid=71002,
+            stdout=b"second\n",
+            running=True,
+            timeout=None,
+        )
+        first = session.wait_ready(["hold-a"])
+        second = session.wait_ready(["hold-b"])
+        first_client.close()
+
+        assert first_done.wait(3), "cancelled exec did not finish"
+        _assert_group_signal(session.calls, first.pid)
+        assert [pid for pid, _sig in session.calls] == [first.pid]
+        assert first.group_signaled is True
+        assert first.tree_kills >= 1
+        assert first.finished is True
+        assert second.tree_kills == 0
+        assert second.finished is False
+        assert second.group_signaled is False
+        assert second.returncode is None
+        assert second.pipes_open is True
+        assert not second_done.is_set()
+        assert session.errors == []
+    finally:
+        session.close()
+
+
+def test_timeout_kills_command_group_and_keeps_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    # The real drain is 5s. Shorten only this wait: the pipes stay open, so
+    # the daemon must return the bytes it already read when the drain ends.
+    monkeypatch.setattr(sandbox_daemon, "_POST_KILL_DRAIN_SECONDS", 0.2)
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.note_group_signal)
+    try:
+        _second_client, second_done = session.start(
+            ["hold-b"],
+            pid=71012,
+            stdout=b"other\n",
+            running=True,
+            timeout=None,
+        )
+        second = session.wait_ready(["hold-b"])
+        first_client, first_done = session.start(
+            ["hold-a"],
+            pid=71011,
+            stdout=_KEPT_STDOUT,
+            running=True,
+            timeout=0.4,
+        )
+        first = session.wait_ready(["hold-a"])
+
+        assert first_done.wait(3), "timed-out exec did not finish"
+        response = _read_response(first_client)
+        _assert_group_signal(session.calls, first.pid)
+        assert [pid for pid, _sig in session.calls] == [first.pid]
+        assert response["exit_code"] == 124
+        assert response["stdout"] == _KEPT_STDOUT.decode("utf-8")
+        assert response["error"] == "timeout"
+        stderr = response["stderr"]
+        assert isinstance(stderr, str)
+        assert "Command timed out" in stderr
+        assert first.pipes_open is True
+        assert second.group_signaled is False
+        assert second.returncode is None
+        assert second.pipes_open is True
+        assert not second_done.is_set()
+        assert session.errors == []
+    finally:
+        session.close()
+
+
+def test_timeout_kills_the_group_after_its_leader_exited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backgrounded group member keeps the pipes open after the leader exits.
+
+    The exec is still running, so the timeout must signal the group even
+    though ``poll()`` already reports the leader's exit.
+    """
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.release_group)
+    try:
+        client, done = session.start(
+            ["leader-gone"],
+            pid=71071,
+            stdout=b"started\n",
+            running=True,
+            timeout=0.4,
+        )
+        proc = session.wait_ready(["leader-gone"])
+        proc.returncode = 0
+        assert done.wait(3), "timed-out exec did not finish"
+        response = _read_response(client)
+        _assert_group_signal(session.calls, proc.pid)
+        assert proc.tree_kills >= 1
+        assert proc.finished is True
+        assert response["exit_code"] == 124
+        assert response["stdout"] == "started\n"
+        assert session.errors == []
+    finally:
+        session.close()
+
+
+def test_completed_exec_returns_stdout_without_a_group_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.release_group)
+    try:
+        client, done = session.start(
+            ["echo-ok"],
+            pid=71021,
+            stdout=b"done\n",
+            running=False,
+            timeout=5,
+        )
+        session.wait_ready(["echo-ok"])
+        assert done.wait(3), "finished exec did not return"
+        response = _read_response(client)
+        assert response["exit_code"] == 0
+        assert response["stdout"] == "done\n"
+        assert session.calls == []
+        assert session.procs[("echo-ok",)].finished is True
+        assert session.errors == []
+    finally:
+        session.close()
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="write shutdown stays distinct from a full close only on Linux poll",
+)
+def test_write_shutdown_does_not_kill_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.release_group)
+    try:
+        client, done = session.start(
+            ["hold-c"],
+            pid=71031,
+            stdout=b"still-running\n",
+            running=True,
+            timeout=None,
+        )
+        proc = session.wait_ready(["hold-c"])
+        client.shutdown(socket.SHUT_WR)
+        assert not done.wait(0.3)
+        assert session.calls == []
+        assert proc.group_signaled is False
+        assert proc.returncode is None
+        assert session.errors == []
+    finally:
+        session.close()
+
+
+def test_timeout_writes_v2_cgroup_kill_for_a_setsid_pid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A double-fork is a pid in the command cgroup and not in the process group.
+
+    Timeout still killpg's the session leader, and writes ``cgroup.kill`` so
+    the setsid pid is stopped too. No real cgroup filesystem is required.
+    """
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    group = tmp_path / "cmd-timeout"
+    group.mkdir()
+    leader = 71041
+    stranger = 71042
+    (group / "cgroup.procs").write_text(f"{leader}\n{stranger}\n", encoding="utf-8")
+    (group / "cgroup.kill").write_text("", encoding="utf-8")
+    direct_kills: list[tuple[int, int]] = []
+
+    def kill(pid: int, sig: int) -> None:
+        direct_kills.append((pid, sig))
+
+    monkeypatch.setattr(sandbox_daemon, "_POST_KILL_DRAIN_SECONDS", 0.2)
+    monkeypatch.setattr(sandbox_daemon.os, "kill", kill, raising=False)
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.note_group_signal)
+    try:
+        client, done = session.start(
+            ["hold-setsid"],
+            pid=leader,
+            stdout=_KEPT_STDOUT,
+            running=True,
+            timeout=0.4,
+            cgroup_procs=[str(group / "cgroup.procs")],
+        )
+        session.wait_ready(["hold-setsid"])
+        assert done.wait(3), "timed-out exec did not finish"
+        response = _read_response(client)
+        _assert_group_signal(session.calls, leader)
+        assert [pid for pid, _sig in session.calls] == [leader]
+        assert stranger not in {pid for pid, _sig in session.calls}
+        assert (group / "cgroup.kill").read_text(encoding="utf-8") == "1"
+        assert direct_kills == []
+        assert response["error"] == "timeout"
+        assert session.errors == []
+    finally:
+        session.close()
+
+
+def test_cancel_kills_v1_cgroup_pids_outside_the_process_group(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    group = tmp_path / "cmd-cancel"
+    group.mkdir()
+    leader = 71051
+    stranger = 71052
+    (group / "cgroup.procs").write_text(f"{leader}\n{stranger}\n", encoding="utf-8")
+    direct_kills: list[tuple[int, int]] = []
+
+    def kill(pid: int, sig: int) -> None:
+        direct_kills.append((pid, sig))
+
+    monkeypatch.setattr("jiuwenbox.supervisor.sandbox_daemon.os.kill", kill, raising=False)
+    session = _ExecSession(monkeypatch, on_signal=_HoldingProc.release_group)
+    try:
+        client, done = session.start(
+            ["hold-setsid"],
+            pid=leader,
+            stdout=b"running\n",
+            running=True,
+            timeout=None,
+            cgroup_procs=[str(group / "cgroup.procs")],
+        )
+        session.wait_ready(["hold-setsid"])
+        client.close()
+        assert done.wait(3), "cancelled exec did not finish"
+        _assert_group_signal(session.calls, leader)
+        assert [pid for pid, _sig in session.calls] == [leader]
+        assert (leader, _SIGKILL) in direct_kills
+        assert (stranger, _SIGKILL) in direct_kills
+        assert not (group / "cgroup.kill").exists()
+        assert session.errors == []
+    finally:
+        session.close()
+
+
+def test_release_command_cgroup_removes_only_that_child(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from jiuwenbox.supervisor.cgroup import CgroupBackend, CommandCgroup, release_command_cgroup
+
+    parent = tmp_path / "sandbox"
+    supervisor_dir = parent / "supervisor"
+    supervisor_dir.mkdir(parents=True)
+    (supervisor_dir / "cgroup.procs").write_text("11\n", encoding="utf-8")
+    command_dir = parent / "cmd-one"
+    command_dir.mkdir()
+    (command_dir / "cgroup.procs").write_text("21\n22\n", encoding="utf-8")
+    (command_dir / "cgroup.kill").write_text("", encoding="utf-8")
+    removed: list[Path] = []
+
+    def rmdir(path: Path) -> None:
+        # A real cgroup directory rmdirs while its interface files still
+        # exist. A normal temp directory does not, so record the call.
+        removed.append(Path(path))
+
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    release_command_cgroup(CommandCgroup(backend=CgroupBackend.V2, paths=[command_dir]))
+
+    assert (command_dir / "cgroup.kill").read_text(encoding="utf-8") == "1"
+    assert command_dir in removed
+    assert supervisor_dir not in removed
+    assert (supervisor_dir / "cgroup.procs").read_text(encoding="utf-8") == "11\n"
+
+
+def test_v1_kill_cgroup_processes_signals_every_recorded_pid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from jiuwenbox.supervisor import cgroup as cgroup_module
+
+    group = tmp_path / "cmd-v1"
+    group.mkdir()
+    (group / "cgroup.procs").write_text("71061\n71062\n", encoding="utf-8")
+    seen: list[tuple[int, int]] = []
+
+    def kill(pid: int, sig: int) -> None:
+        seen.append((pid, sig))
+
+    monkeypatch.setattr(cgroup_module.os, "kill", kill)
+    cgroup_module.kill_cgroup_processes(group, cgroup_module.CgroupBackend.V1)
+
+    assert seen == [(71061, 9), (71062, 9)]
+    assert group.is_dir()
+
+
+def test_the_post_kill_drain_waits_on_the_pipe_still_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stdout at EOF and stderr held open: the drain blocks on stderr instead of spinning."""
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    monkeypatch.setattr(sandbox_daemon, "_POST_KILL_DRAIN_SECONDS", 0.3)
+    monkeypatch.setattr(sandbox_daemon, "_stop_command", lambda _proc, _paths: None)
+    clock_reads = 0
+
+    def monotonic() -> float:
+        nonlocal clock_reads
+        clock_reads += 1
+        return time.monotonic()
+
+    shadow = types.ModuleType("time")
+    shadow.__dict__.update(time.__dict__)
+    shadow.monotonic = monotonic  # type: ignore[attr-defined]
+    monkeypatch.setattr(sandbox_daemon, "time", shadow)
+    proc = _HoldingProc(71021, _KEPT_STDOUT, running=True)
+    os.close(proc._write_fds.pop(0))
+    local, peer = socket.socketpair()
+    try:
+        reason, stdout, _stderr = sandbox_daemon._collect_exec_output(
+            proc,  # type: ignore[arg-type]
+            local,
+            None,
+            0.05,
+        )
+    finally:
+        proc.close()
+        local.close()
+        peer.close()
+    assert reason == "timeout"
+    assert stdout == _KEPT_STDOUT
+    # One poll slice per read: a spin reads the clock thousands of times in 0.3 s.
+    assert clock_reads < 100
+
+
+def test_a_pumped_stream_keeps_its_limit_and_drains_the_rest() -> None:
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    read_fd, write_fd = os.pipe()
+    chunks: list[bytes] = []
+    finished = threading.Event()
+    pump = threading.Thread(
+        target=sandbox_daemon._pump_pipe,
+        args=(os.fdopen(read_fd, "rb", buffering=0), chunks, threading.Lock(), finished, 10),
+    )
+    pump.start()
+    try:
+        # More than a pipe buffer: a pump that stopped reading would block this write.
+        os.write(write_fd, b"0123456789abc")
+        with os.fdopen(write_fd, "wb", buffering=0) as writer:
+            writer.write(b"x" * (256 * 1024))
+        assert finished.wait(5)
+    finally:
+        pump.join(5)
+    assert b"".join(chunks) == b"0123456789" + sandbox_daemon._OUTPUT_TRUNCATED_NOTE
+
+
+_FASTPATH_CHILD = """
+import json, os, sys
+namespace = {"__name__": "fastpath_worker"}
+exec(compile(open(sys.argv[1], encoding="utf-8").read(), "worker", "exec"), namespace)
+namespace["STREAM_LIMIT_BYTES"] = int(sys.argv[2])
+control = os.open(os.devnull, os.O_RDONLY)
+timeout = float(sys.argv[5]) if sys.argv[5] else None
+result = namespace["_run_child"](sys.argv[3], b"", sys.argv[4] or None, {}, timeout, control, None)
+exit_code, out, err, timed_out = result
+print(json.dumps([exit_code, out.decode(), err.decode(), timed_out]))
+"""
+
+
+def _run_fastpath_child(tmp_path: Path, code: str, *, workdir: str = "", timeout: str = "", limit: int = 1 << 20):
+    """``_run_child`` in its own interpreter: it SIGKILLs every descendant of the process it runs in."""
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    worker = tmp_path / "worker.py"
+    worker.write_text(sandbox_daemon.FORKSERVER_WORKER_SOURCE, encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-c", _FASTPATH_CHILD, str(worker), str(limit), code, workdir, timeout],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def _truncated_note() -> str:
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    return sandbox_daemon._OUTPUT_TRUNCATED_NOTE.decode()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fastpath worker forks")
+def test_fastpath_reports_a_timeout_and_keeps_its_stream_limit(tmp_path: Path) -> None:
+    exit_code, out, err, timed_out = _run_fastpath_child(
+        tmp_path, "import time; print('x' * 64, flush=True); time.sleep(30)", timeout="0.3", limit=8
+    )
+    assert (exit_code, timed_out) == (124, True)
+    assert out == "x" * 8 + _truncated_note()
+    assert err.endswith("Command timed out")
+    exit_code, _out, _err, timed_out = _run_fastpath_child(tmp_path, "raise SystemExit(124)")
+    assert (exit_code, timed_out) == (124, False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fastpath worker forks")
+def test_fastpath_does_not_run_code_when_it_cannot_enter_the_workdir(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    exit_code, _out, err, timed_out = _run_fastpath_child(
+        tmp_path, f"open({str(marker)!r}, 'w').close()", workdir=str(tmp_path / "missing")
+    )
+    assert (exit_code, timed_out) == (127, False)
+    assert "failed to spawn command" in err
+    assert not marker.exists()
+
+
+def test_a_fastpath_timeout_is_a_timeout_response(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    submitted: list[object] = []
+
+    def submit(request: object) -> dict[str, object]:
+        submitted.append(request)
+        return {"exit_code": 124, "stdout": "", "stderr": "Command timed out", "timed_out": True}
+
+    monkeypatch.setattr(sandbox_daemon._FORK_POOL, "submit", submit)
+    monkeypatch.setattr(sandbox_daemon, "_fastpath_plan", lambda _command, _header: {"mode": "code", "code": "pass"})
+    local, peer = socket.socketpair()
+    try:
+        assert sandbox_daemon._try_fastpath_exec(local, ["python3", "-c", "pass"], {"workdir": str(tmp_path)}, b"")
+        response = _read_response(peer)
+        assert response["error"] == "timeout"
+        assert response["exit_code"] == 124
+        # A workdir that is gone takes the Popen path, which reports it as a failed spawn.
+        missing = {"workdir": str(tmp_path / "missing")}
+        assert sandbox_daemon._try_fastpath_exec(local, ["python3", "-c", "pass"], missing, b"") is False
+    finally:
+        local.close()
+        peer.close()
+    assert len(submitted) == 1

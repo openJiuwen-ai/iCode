@@ -229,6 +229,9 @@ def test_the_high_risk_keys_are_denied_to_projects() -> None:
         "mutations.trace.fsatrace_path",
         "log.raw_http_capture",
         "workdir.config_enabled",
+        "sandbox.enabled",
+        "sandbox.url",
+        "sandbox.token",
     ):
         assert specs[key].workdir_merge is WorkdirMerge.DENY, key
 
@@ -243,6 +246,30 @@ def test_a_denied_key_warns_and_does_not_apply(config_dir: Path, workdir: Path) 
     assert loaded.settings.default_agent == Settings().default_agent
     (warning,) = loaded.warnings
     assert warning.key == "agent.default_profile"
+    assert warning.origin.layer is Source.WORKDIR
+    assert warning.origin.path == path
+    assert warning.outcome.reason is CoerceReason.NOT_ALLOWED_IN_WORKDIR
+
+
+def test_sandbox_defaults_off_and_a_workdir_cannot_enable_it(config_dir: Path, workdir: Path) -> None:
+    """Shell stays on the host until the user turns the sandbox on."""
+    fresh = Settings()
+    assert fresh.sandbox_enabled is False
+    assert fresh.sandbox_url == ""
+    assert fresh.sandbox_token == ""
+
+    freeze_process_env()
+    _enable_gate(config_dir)
+    path = _write_workdir_yaml(workdir, "sandbox:\n  enabled: true\n")
+
+    loaded = load_settings(workdir=workdir)
+
+    assert loaded.settings.sandbox_enabled is False
+    assert loaded.settings.sandbox_enabled_was_rejected() is False
+    assert loaded.settings.sandbox_url == ""
+    assert loaded.settings.sandbox_token == ""
+    (warning,) = loaded.warnings
+    assert warning.key == "sandbox.enabled"
     assert warning.origin.layer is Source.WORKDIR
     assert warning.origin.path == path
     assert warning.outcome.reason is CoerceReason.NOT_ALLOWED_IN_WORKDIR

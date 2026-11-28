@@ -98,6 +98,28 @@ def test_every_regular_watch_target_exists() -> None:
     assert missing == []
 
 
+def test_vendored_sandbox_runtime_sources_select_their_tests() -> None:
+    process = "third_party/jiuwenbox/src/jiuwenbox/server/runtime/process.py"
+    daemon = "third_party/jiuwenbox/src/jiuwenbox/supervisor/sandbox_daemon.py"
+    expected = {
+        "tests/service/sandbox/test_root_sandbox_identity.py": {process, daemon},
+        "tests/service/sandbox/test_exec_cancel_closes_ipc.py": {process},
+        "tests/service/sandbox/test_daemon_cancel_and_timeout.py": {daemon},
+        "tests/service/sandbox/test_daemon_ipc_exec_retry.py": {process, daemon},
+        "tests/service/sandbox/test_server_auth.py": {
+            "third_party/jiuwenbox/src/jiuwenbox/server/auth.py",
+        },
+        "tests/service/sandbox/test_server_cors.py": {
+            "third_party/jiuwenbox/src/jiuwenbox/server/app.py",
+        },
+    }
+
+    for target, required in expected.items():
+        rules = [rule for rule in chrys_test.REGULAR_RULES if rule.target == target]
+        assert len(rules) == 1
+        assert required <= set(rules[0].patterns)
+
+
 def test_ci_workflows_never_execute_the_local_smart_test_selector() -> None:
     workflow_root = REPO_ROOT / ".github" / "workflows"
     workflows = [*workflow_root.glob("*.yml"), *workflow_root.glob("*.yaml")]
