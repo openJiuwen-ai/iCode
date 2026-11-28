@@ -77,6 +77,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.events.workflow import WORKFLOW_RUN_EVENTS
 from chrys.foundation.i18n import DisplayBlock, DisplaySequence, MessageRef, msg
+from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workflow_session import (
     WorkflowDraft,
@@ -95,8 +96,10 @@ from chrys.orchestration.workflows.catalog import WorkflowCatalog
 from chrys.orchestration.workflows.preview import PreparedWorkflow
 from chrys.orchestration.workflows.runner import WorkflowRunResult
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.profiles.agents.loader import read_profile_dir
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile, MCPServerConfig
+from chrys.service.profiles.file_scan import unreadable_notes
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.state.store import AmbiguousSessionIdError as AmbiguousSessionIdError
 from chrys.service.state.store import JsonFileStateStore, StartupSessionInUseError, StateStore
@@ -111,6 +114,15 @@ _AGENT_PROFILE_NOT_FOUND = msg(
 _AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE = msg(
     "session_host.agent_profile_not_found_with_available",
     fallback="Agent profile not found: {name}. Available profiles: {available}",
+)
+_AGENT_PROFILE_UNREADABLE = msg(
+    "session_host.agent_profile_unreadable",
+    fallback="Agent profile not found: {name}. Could not read these profile files: {files}",
+)
+_AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE_AND_UNREADABLE = msg(
+    "session_host.agent_profile_not_found_with_available_and_unreadable",
+    fallback="Agent profile not found: {name}. Available profiles: {available}. "
+    "Could not read these profile files: {files}",
 )
 _SESSION_NOT_FOUND = msg(
     "session_host.session_not_found",
@@ -329,6 +341,39 @@ def _normalize_cwd(cwd: str | None) -> str:
         return ""
     # Keep `..` for the OS to resolve after symlinks, as the workspace paths do.
     return str(Path(os.path.expanduser(cwd)).absolute())
+
+
+def agent_profile_not_found(name: str, registry: AgentProfileRegistry) -> AgentProfileNotFoundError:
+    """The error for a selector nothing resolved, naming any profile file that could not be read.
+
+    A file with a YAML error and a name nobody registered both read as "not found",
+    so the user rebuilds a profile that was never the problem.  The files are read
+    afresh rather than remembered: the registry drops them once it has loaded what
+    it could, and a stale list would name a file the user has already fixed.
+
+    The list and the unreadable files answer different questions — "which name did
+    you mean" and "why was my name not there" — so both are said when both apply.
+    """
+    # Only re-read a directory this registry actually loaded from. A pure in-memory
+    # registry has no user directory; scanning a host default would blame files that
+    # have nothing to do with the selector that missed.
+    user_dir = registry.user_directory
+    notes = unreadable_notes(read_profile_dir(user_dir)) if user_dir is not None else None
+    available_names = sorted(registry.list_names())
+    if available_names and notes is not None:
+        display_message = _AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE_AND_UNREADABLE.bind(
+            name=name, available=DisplaySequence(available_names), files=notes
+        )
+    elif notes is not None:
+        display_message = _AGENT_PROFILE_UNREADABLE.bind(name=name, files=notes)
+    elif available_names:
+        display_message = _AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE.bind(
+            name=name, available=DisplaySequence(available_names)
+        )
+    else:
+        display_message = _AGENT_PROFILE_NOT_FOUND.bind(name=name)
+    # The raw text is what --json, ACP and the logs carry; the display text is for people.
+    return AgentProfileNotFoundError(format_message(display_message), display_message=display_message)
 
 
 class ChrysSessionHost:
@@ -1000,18 +1045,7 @@ class ChrysSessionHost:
         profile = self._agent_registry.resolve_selector(name)
         if profile is not None:
             return profile
-        available_names = sorted(self._agent_registry.list_names())
-        available = ", ".join(available_names)
-        error_message = f"Agent profile not found: {name}"
-        if available_names:
-            error_message = f"{error_message}. Available profiles: {available}"
-            display_message = _AGENT_PROFILE_NOT_FOUND_WITH_AVAILABLE.bind(
-                name=name,
-                available=DisplaySequence(available_names),
-            )
-        else:
-            display_message = _AGENT_PROFILE_NOT_FOUND.bind(name=name)
-        raise AgentProfileNotFoundError(error_message, display_message=display_message)
+        raise agent_profile_not_found(name, self._agent_registry)
 
     async def _resolve_restore_session_id(self, session_id: str) -> str:
         raw = (session_id or "").strip()

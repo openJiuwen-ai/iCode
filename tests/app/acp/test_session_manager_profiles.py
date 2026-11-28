@@ -9,8 +9,11 @@ from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
+from acp import RequestError
 
 from chrys.app.acp import session_manager as session_manager_module
+from chrys.app.acp.errors import INVALID_PARAMS_CODE
+from chrys.app.acp.server import ChrysAcpServer
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager
 from chrys.service.profiles.agents.loader import load_profile_from_yaml
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -881,3 +884,89 @@ def test_web_profile_read_write_preserves_patch_absence_and_values(monkeypatch, 
     assert restored is not None
     assert restored.tools.web_search == original.tools.web_search
     assert restored.tools.web_fetch == original.tools.web_fetch
+
+
+def test_read_agent_profile_names_the_unreadable_file(tmp_path: Path) -> None:
+    """ACP used to hand clients only 'not found', hiding a broken profile file.
+
+    All three hand-written ACP "not found" sites now share the CLI's diagnostic,
+    so the invalid_params details carry the path and the parse reason.
+    """
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("name: [unclosed\n", encoding="utf-8")
+    registry = AgentProfileRegistry()
+    registry.load_user_profiles(tmp_path)
+    registry.register(_acp_profile())
+    manager = _profile_manager("WithAcp", registry)
+
+    with pytest.raises(AcpSessionError) as info:
+        manager.read_agent_profile("broken")
+
+    assert str(broken) in str(info.value)
+    assert "Could not read these profile files" in str(info.value)
+    assert info.value.display_message is not None
+
+
+def test_read_model_profile_names_the_unreadable_file(tmp_path: Path) -> None:
+    """A corrupt model file must not reach the client as a plain 'not found'.
+
+    The model side had no re-read at all, so a YAML error and an id nobody wrote
+    read the same; the whole sentence stays in ``str(exc)`` because that is also
+    the JSON-RPC message.
+    """
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("id: [unclosed\n", encoding="utf-8")
+    manager = _profile_manager("Code", AgentProfileRegistry(), _model_registry(tmp_path))
+
+    with pytest.raises(AcpSessionError) as info:
+        manager.read_model_profile("broken")
+
+    assert str(broken) in str(info.value)
+    assert "Could not read these profile files" in str(info.value)
+    assert "Model profile not found: broken" in str(info.value)
+
+
+def test_read_model_profile_still_lists_the_profiles_a_caller_could_pick(tmp_path: Path) -> None:
+    """The list answers "which id did you mean" and stays on the same one-line sentence."""
+    manager = _profile_manager("Code", AgentProfileRegistry(), _model_registry(tmp_path))
+
+    with pytest.raises(AcpSessionError) as info:
+        manager.read_model_profile("ghost")
+
+    assert str(info.value) == "Model profile not found: ghost. Available model profiles: Model (m1)."
+
+
+async def test_profiles_models_read_reports_a_broken_file_as_invalid_params(tmp_path: Path) -> None:
+    """The wire keeps its error class: -32602, with the full sentence in ``details``.
+
+    ``profiles/models/read`` is not caught inside the dispatcher, so the sentence
+    reaches both the JSON-RPC message (its first line) and ``data["details"]``.
+    """
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("id: [unclosed\n", encoding="utf-8")
+    manager = _profile_manager("Code", AgentProfileRegistry(), _model_registry(tmp_path))
+    server = ChrysAcpServer(manager, initial_vision=False)
+
+    with pytest.raises(RequestError) as failed:
+        await server.ext_method("profiles/models/read", {"id": "broken"})
+
+    assert failed.value.code == INVALID_PARAMS_CODE
+    details = failed.value.data["details"]
+    assert isinstance(details, str)
+    assert str(broken) in details
+    assert "Could not read these profile files" in details
+    # The message is the sentence's first line, so the whole sentence is visible.
+    assert str(broken) in str(failed.value)
+
+
+def _model_registry(directory: Path) -> ModelProfileRegistry:
+    """A registry loaded from *directory* that keeps it as its user directory.
+
+    One selectable profile keeps ``get_model_profile`` from falling back to
+    ``load_all()``, which would read (and record) the host's real directory.
+    """
+    registry = ModelProfileRegistry()
+    target, scan = registry.read_profiles(directory)
+    registry.install_profiles(target, scan)
+    registry.register(ModelProfile(id="m1", name="Model", provider="mock", model_id="m1-model"))
+    return registry

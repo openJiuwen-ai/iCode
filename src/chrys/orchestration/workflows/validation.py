@@ -35,8 +35,8 @@ from chrys.orchestration.workflows.preview import (
 from chrys.orchestration.workflows.settings import admission_settings
 from chrys.orchestration.workflows.worker_client import CapturedOutput, LoadDiagnostic, LoadNote
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
+from chrys.service.profiles.diagnostics import selectable_model_labels
 from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.profiles.models.schema import is_model_profile_selectable
 from chrys.service.workflows.admission import (
     REJECT_AGENT_PROFILE_MISSING,
     REJECT_MODEL_UNRESOLVABLE,
@@ -620,10 +620,9 @@ async def _check_bindings(preview: WorkflowPreview, settings: Settings) -> None:
 
 
 def _model_hint(models: ModelProfileRegistry) -> str:
-    usable = [profile for profile in models.list_profiles() if is_model_profile_selectable(profile)]
-    if not usable:
+    labels = selectable_model_labels(models.list_profiles())
+    if not labels:
         return "set up a model profile on this machine"
-    labels = sorted(f"{profile.name} ({profile.id})" for profile in usable)
     return "model= takes one of the model profiles here: " + ", ".join(labels)
 
 

@@ -12,7 +12,13 @@ import yaml
 
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.service.profiles.coercion import coerce_bool
-from chrys.service.profiles.file_scan import ProfileDirScan, ProfileLoadError, read_profile_mapping, scan_profiles
+from chrys.service.profiles.file_scan import (
+    ProfileDirScan,
+    ProfileLoadError,
+    read_profile_mapping,
+    scan_profiles,
+    silent_profile_read,
+)
 from chrys.service.profiles.models.options import OUTPUT_CAP_OPTION_ALIASES, output_cap_option_value
 from chrys.service.profiles.models.schema import (
     API_STYLE_CHAT_COMPLETIONS,
@@ -271,8 +277,18 @@ def _parse_profile(path: Path, text: str) -> ModelProfile:
         raise ModelProfileLoadError(f"Invalid model profile structure in {path}: {e}") from e
 
 
+def _scan(directory: Path) -> ProfileDirScan[ModelProfile]:
+    return scan_profiles(directory, _parse_profile, ModelProfileLoadError, skip_hidden=False)
+
+
+def read_profile_dir(directory: Path) -> ProfileDirScan[ModelProfile]:
+    """Read *directory* without reporting on it: for a "why did this miss" re-read."""
+    with silent_profile_read():
+        return _scan(directory)
+
+
 def scan_profile_dir(directory: Path) -> ProfileDirScan[ModelProfile]:
-    scan = scan_profiles(directory, _parse_profile, ModelProfileLoadError, skip_hidden=False)
+    scan = _scan(directory)
     for path, issue in scan.invalid.items():
         logger.warning("Skipping invalid model profile %s: %s", path, issue.reason)
     return scan

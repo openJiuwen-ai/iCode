@@ -43,7 +43,13 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.profiles.coercion import coerce_bool
-from chrys.service.profiles.file_scan import ProfileDirScan, ProfileLoadError, read_profile_mapping, scan_profiles
+from chrys.service.profiles.file_scan import (
+    ProfileDirScan,
+    ProfileLoadError,
+    read_profile_mapping,
+    scan_profiles,
+    silent_profile_read,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -860,8 +866,24 @@ def _parse_profile(path: Path, text: str) -> AgentProfile:
         raise AgentProfileLoadError(f"Invalid agent profile structure in {path}: {e}") from e
 
 
+def _scan(directory: Path) -> ProfileDirScan[AgentProfile]:
+    """The mechanical read both wrappers below share; logs whatever the parser logs."""
+    return scan_profiles(directory, _parse_profile, AgentProfileLoadError, skip_hidden=True)
+
+
+def read_profile_dir(directory: Path) -> ProfileDirScan[AgentProfile]:
+    """Read *directory* without reporting on it: what loaded, and what could not.
+
+    Callers that only need to know why a selector missed — an error message, not a
+    listing — must not repeat what :func:`scan_profile_dir` already logged, and that
+    includes the WARNINGs the parser emits while loading a file it keeps.
+    """
+    with silent_profile_read():
+        return _scan(directory)
+
+
 def scan_profile_dir(directory: Path) -> ProfileDirScan[AgentProfile]:
-    scan = scan_profiles(directory, _parse_profile, AgentProfileLoadError, skip_hidden=True)
+    scan = _scan(directory)
     for path, issue in scan.invalid.items():
         logger.error(
             "Skipping invalid agent profile %s: %s (any builtin with this name stays active)", path, issue.reason

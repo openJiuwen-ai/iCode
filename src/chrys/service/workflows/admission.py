@@ -19,8 +19,15 @@ from typing import Any, Final
 
 from chrys.foundation.config.settings import Settings
 from chrys.service.llm.clients import effective_model_base_url
+from chrys.service.profiles.agents.loader import read_profile_dir as read_agent_profile_dir
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile
+from chrys.service.profiles.diagnostics import (
+    profile_miss_facts,
+    profile_miss_sentence,
+    selectable_model_labels,
+)
+from chrys.service.profiles.models.loader import read_profile_dir as read_model_profile_dir
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import resolve_for_agent, resolve_selectable_profile
 from chrys.service.profiles.models.schema import ModelProfile, is_model_profile_selectable
@@ -122,9 +129,19 @@ def admit_manifest(
         selector = agent.profile
         profile = agent_registry.resolve_selector(selector)
         if profile is None:
+            user_dir = agent_registry.user_directory
+            scan = read_agent_profile_dir(user_dir) if user_dir is not None else None
+            facts = profile_miss_facts(selector, agent_registry.list_names(), scan)
             raise AdmissionError(
                 REJECT_AGENT_PROFILE_MISSING,
-                f"Node {node_id!r} names agent profile {selector!r}, which is not available.",
+                # The caller's hint line already lists the available agent
+                # profiles, so repeating them here would print one list twice.
+                # Unreadable files are still reported, since nothing else does.
+                profile_miss_sentence(
+                    facts,
+                    base=f"Node {node_id!r} names agent profile {selector!r}, which is not available",
+                    include_available=False,
+                ),
                 node_id=node_id,
             )
         model_selector = agent.model
@@ -134,18 +151,45 @@ def admit_manifest(
         if model_selector is not None:
             model = resolve_selectable_profile(model_registry, model_selector)
             if model is None:
+                user_dir = model_registry.user_directory if model_registry is not None else None
+                scan = read_model_profile_dir(user_dir) if user_dir is not None else None
+                facts = profile_miss_facts(model_selector, _selectable_model_labels(model_registry), scan)
                 raise AdmissionError(
                     REJECT_MODEL_UNRESOLVABLE,
-                    f"Node {node_id!r} names model profile {model_selector!r}, which is not available.",
+                    profile_miss_sentence(
+                        facts,
+                        base=f"Node {node_id!r} names model profile {model_selector!r}, which is not available",
+                        available_label="Available model profiles",
+                    ),
                     node_id=node_id,
                 )
         else:
             model = resolve_for_agent(model_registry, settings, profile)
             if not is_model_profile_selectable(model):
+                # A corrupt model file reads exactly like an unconfigured machine, so
+                # name it: the agent's own binding cannot be fixed by choosing another.
+                selector = profile.model.profile_id if profile.model else ""
+                user_dir = model_registry.user_directory if model_registry is not None else None
+                scan = read_model_profile_dir(user_dir) if user_dir is not None else None
+                facts = profile_miss_facts(selector, _selectable_model_labels(model_registry), scan)
                 raise AdmissionError(
                     REJECT_MODEL_UNRESOLVABLE,
-                    f"Node {node_id!r} has no usable model: agent profile {profile.name!r} resolves to no model.",
+                    profile_miss_sentence(
+                        facts,
+                        base=(
+                            f"Node {node_id!r} has no usable model: agent profile {profile.name!r} resolves to no model"
+                        ),
+                        available_label="Available model profiles",
+                        # The old message listed nothing; keep that shape so only the
+                        # unreadable-file notes are new.
+                        include_available=False,
+                    ),
                     node_id=node_id,
                 )
         bindings[node_id] = AgentBinding(node_id, profile, model, agent.instructions_suffix)
     return AdmittedManifest(graph, MappingProxyType(bindings))
+
+
+def _selectable_model_labels(model_registry: ModelProfileRegistry | None) -> list[str]:
+    """The labels a caller may pick from, or nothing when no registry was supplied."""
+    return selectable_model_labels(model_registry.list_profiles()) if model_registry is not None else []

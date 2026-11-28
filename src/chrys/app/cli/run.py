@@ -45,12 +45,13 @@ from chrys.orchestration.session_host import (
     collect_workspace_warnings,
 )
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.profiles.file_scan import ProfileDirScan, unreadable_notes
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import (
-    format_available_profile_labels,
     loaded_with_active_model_profile,
     resolve_profile_selector,
 )
+from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.workspaces.paths import MissingWorkspacePrimary
 from chrys.service.workspaces.registry import WorkspaceRegistryError
 
@@ -80,6 +81,15 @@ _MODEL_PROFILE_NOT_FOUND = msg(
 _MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE = msg(
     "run.model_profile_not_found_with_available",
     fallback="Model profile not found: {model}. Available model profiles: {available}",
+)
+_MODEL_PROFILE_UNREADABLE = msg(
+    "run.model_profile_unreadable",
+    fallback="Model profile not found: {model}. Could not read these profile files: {files}",
+)
+_MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE_AND_UNREADABLE = msg(
+    "run.model_profile_not_found_with_available_and_unreadable",
+    fallback="Model profile not found: {model}. Available model profiles: {available}. "
+    "Could not read these profile files: {files}",
 )
 
 
@@ -161,20 +171,36 @@ def _apply_active_model_selection(
     if not model:
         return loaded, None
     registry = ModelProfileRegistry()
-    registry.load_all()
+    target, scan = registry.read_profiles()
+    registry.install_profiles(target, scan)
     profile = resolve_profile_selector(registry, model)
     if profile is None:
-        error_message = f"Model profile not found: {model}"
-        available = format_available_profile_labels(registry)
-        if available:
-            error_message = f"{error_message}. Available model profiles: {available}"
-            profiles = sorted(registry.list_profiles(), key=lambda item: item.name.casefold())
-            labels = DisplaySequence(f"{item.name} ({item.id})" for item in profiles)
-            display_message = _MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE.bind(model=model, available=labels)
-        else:
-            display_message = _MODEL_PROFILE_NOT_FOUND.bind(model=model)
-        raise ModelProfileNotFoundError(error_message, display_message=display_message)
+        raise _model_profile_not_found(model, registry, scan)
     return loaded_with_active_model_profile(loaded, profile, Source.CLI), registry
+
+
+def _model_profile_not_found(
+    model: str, registry: ModelProfileRegistry, scan: ProfileDirScan[ModelProfile]
+) -> ModelProfileNotFoundError:
+    """The error for a model selector nothing resolved, naming any file that could not be read.
+
+    Two profiles may share a display name, and then the ids in the list are the only
+    way to pick one; naming the unreadable file instead of the list hides that choice.
+    """
+    notes = unreadable_notes(scan)
+    profiles = sorted(registry.list_profiles(), key=lambda item: item.name.casefold())
+    labels = DisplaySequence(f"{item.name} ({item.id})" for item in profiles)
+    if profiles and notes is not None:
+        display_message = _MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE_AND_UNREADABLE.bind(
+            model=model, available=labels, files=notes
+        )
+    elif notes is not None:
+        display_message = _MODEL_PROFILE_UNREADABLE.bind(model=model, files=notes)
+    elif profiles:
+        display_message = _MODEL_PROFILE_NOT_FOUND_WITH_AVAILABLE.bind(model=model, available=labels)
+    else:
+        display_message = _MODEL_PROFILE_NOT_FOUND.bind(model=model)
+    return ModelProfileNotFoundError(format_message(display_message), display_message=display_message)
 
 
 def _write_result(result: HeadlessRunResult, *, as_json: bool, duration: float) -> None:
