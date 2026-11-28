@@ -21,6 +21,7 @@ from textual import events
 from textual.binding import Binding
 from textual.widgets import Input, TextArea
 
+from chrys.app.tui.behaviors.right_click_copy import copy_screen_selection
 from chrys.app.tui.binding_display import COPY_BINDING, PASTE_BINDING, localized_binding
 from chrys.app.tui.clipboard import copy_text_to_clipboards, paste_text_from_clipboards
 
@@ -42,10 +43,10 @@ def copy_with_insert(app: App[Any]) -> None:
     """Copy the focused editor selection, then fall back to the screen selection."""
     focused = app.focused
     selected = focused.selected_text if isinstance(focused, Input | TextArea) else ""
-    if not selected:
-        selected = app.screen.get_selected_text() or ""
     if selected:
         copy_text_to_clipboards(app, selected)
+    else:
+        copy_screen_selection(app.screen)
 
 
 def paste_with_insert(app: App[Any]) -> None:

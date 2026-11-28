@@ -11,6 +11,7 @@ import pytest
 from textual import events
 from textual.widgets import Button, Input, TextArea
 
+from chrys.app.tui.clipboard import wait_for_clipboard
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from tests.app.tui.screens._agent_config_support import (
     _registry,
@@ -67,15 +68,15 @@ async def test_builtin_prompt_rejects_first_key_and_clone_is_editable(name, tab,
 
 
 async def test_builtin_viewer_allows_selection_copy_and_compaction_budget_edit(monkeypatch):
-    from chrys.app.tui.widgets import text_area
-
     copied = []
-    monkeypatch.setattr(text_area, "copy_text_to_clipboards", lambda app, text: copied.append(text))
+    monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
     registry = _registry()
     async with open_agent_config(registry, current_profile="Code", initial_tab="compaction") as (screen, pilot):
         area = screen.query_one("#cc-last-words-template", TextArea)
         area.focus()
         await pilot.press("ctrl+a", "ctrl+c")
+        await wait_for_clipboard(pilot.app)
+        assert pilot.app.clipboard == area.text
         assert copied == [area.text]
         assert pilot.app.screen is screen
         budget = screen.query_one("#cc-last-words-max-tokens", Input)
@@ -97,10 +98,8 @@ async def test_builtin_viewer_allows_selection_copy_and_compaction_budget_edit(m
 )
 @pytest.mark.parametrize("edit_intent", ["click", "type", "paste"])
 async def test_prompt_drag_copies_without_notice_but_later_edit_still_prompts(tab, selector, edit_intent, monkeypatch):
-    from chrys.app.tui.widgets import text_area
-
     copied = []
-    monkeypatch.setattr(text_area, "copy_text_to_clipboards", lambda app, text: copied.append(text))
+    monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
     async with open_agent_config(_registry(), current_profile="Code", initial_tab=tab) as (screen, pilot):
         area = screen.query_one(selector, TextArea)
         before = area.text
@@ -129,6 +128,8 @@ async def test_prompt_drag_copies_without_notice_but_later_edit_still_prompts(ta
         selected = area.selected_text
         assert selected
         await pilot.press("ctrl+c")
+        await wait_for_clipboard(pilot.app)
+        assert pilot.app.clipboard == selected
         assert copied == [selected]
         assert area.text == before
 

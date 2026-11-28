@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from textual.errors import NoWidget
@@ -18,8 +19,13 @@ _RightClickScreenCopyBase = Screen[Any] if TYPE_CHECKING else object
 
 def copy_screen_selection(screen: Screen, *, clear: bool = False) -> bool:
     """Copy the screen-level selected text and optionally clear it."""
+    defer = getattr(screen, "defer_selected_text", None)
+    if defer is not None and defer(
+        partial(copy_screen_selection, screen, clear=clear), key=(copy_screen_selection, clear)
+    ):
+        return True
     selected = screen.get_selected_text()
-    if selected is None:
+    if not selected:
         return False
     copy_text_to_clipboards(screen.app, selected)
     if clear:
@@ -68,13 +74,13 @@ def discard_detached_selection_hit(screen: Screen, event: Event) -> bool:
     return True
 
 
-def right_click_targets_text_area(screen: Screen, event: MouseDown) -> bool:
-    """Return true when a right-click should be handled by a text editor."""
+def _right_clicked_editor(screen: Screen, event: MouseDown) -> TextArea | None:
+    """Resolve the editor under a right-click, including its scrollbars."""
     try:
         widget, _region = screen.get_widget_at(event.screen_x, event.screen_y)
     except NoWidget:
-        return False
-    return any(isinstance(ancestor, TextArea) for ancestor in widget.ancestors_with_self)
+        return None
+    return next((ancestor for ancestor in widget.ancestors_with_self if isinstance(ancestor, TextArea)), None)
 
 
 class RightClickScreenCopyMixin(_RightClickScreenCopyBase):
@@ -88,9 +94,7 @@ class RightClickScreenCopyMixin(_RightClickScreenCopyBase):
 
     def on_mouse_down(self, event: MouseDown) -> None:
         """Copy selected screen text on right-click."""
-        if event.button != 3:
-            return
-        if self._right_click_targets_text_area(event):
+        if event.button != 3 or _right_clicked_editor(cast(Screen, self), event) is not None:
             return
         self._handle_right_click_copy(event)
 
@@ -105,21 +109,21 @@ class RightClickScreenCopyMixin(_RightClickScreenCopyBase):
         event.stop()
         return True
 
-    def _right_click_targets_text_area(self, event: MouseDown) -> bool:
-        return right_click_targets_text_area(cast(Screen, self), event)
-
     def _forward_event(self, event: Event) -> None:
         """Intercept right-click copy before Textual mutates selection state."""
         screen = cast(Screen, self)
         # Ahead of the detached-widget check, so a right-click over a widget just removed still copies.
-        if (
-            isinstance(event, MouseDown)
-            and not event.is_forwarded
-            and event.button == 3
-            and not self._right_click_targets_text_area(event)
-            and self._handle_right_click_copy(event)
-        ):
-            return
+        if isinstance(event, MouseDown) and not event.is_forwarded and event.button == 3:
+            editor = _right_clicked_editor(screen, event)
+            if editor is None:
+                if self._handle_right_click_copy(event):
+                    return
+            elif editor.is_attached and screen.app.mouse_captured is None:
+                # Textual starts a new screen selection before delivering the
+                # press. Give the editor the existing selection first.
+                handle_copy = getattr(editor, "handle_right_click_copy", None)
+                if handle_copy is not None and handle_copy(event):
+                    return
         if discard_detached_selection_hit(screen, event):
             return
         super()._forward_event(event)
@@ -137,13 +141,7 @@ def copy_text_area_or_screen_selection(text_area: TextArea, *, clear: bool = Fal
             _, end = text_area.selection
             text_area.selection = type(text_area.selection).cursor(end)
         return True
-    screen_selected = text_area.screen.get_selected_text()
-    if not screen_selected:
-        return False
-    copy_text_to_clipboards(text_area.app, screen_selected)
-    if clear:
-        text_area.screen.clear_selection()
-    return True
+    return copy_screen_selection(text_area.screen, clear=clear)
 
 
 def handle_text_area_right_click_copy(text_area: TextArea, event: MouseDown) -> bool:

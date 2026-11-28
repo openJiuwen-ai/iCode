@@ -21,7 +21,8 @@ from weakref import ref as weakref_ref
 
 from rich.text import Text
 from textual import events as textual_events
-from textual._arrange import DockArrangeResult
+from textual._animator import SimpleAnimation
+from textual._arrange import DockArrangeResult, arrange
 from textual.color import Color
 from textual.containers import VerticalScroll
 from textual.dom import NoScreen
@@ -66,6 +67,13 @@ from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotKey, FileSnapshotPayload
 from chrys.app.tui.widgets.chat.fold_gap import show_fold_gaps
 from chrys.app.tui.widgets.chat.guide_fold import GuideFoldRequested, GuideHoverMixin
+from chrys.app.tui.widgets.chat.history_scroll import (
+    HistoryRestoreTurn,
+    HistoryScrollController,
+    HistoryScrollRequest,
+    RelativeHistoryScroll,
+)
+from chrys.app.tui.widgets.chat.history_viewport import HistorySelectionRange, HistoryViewport, rebase_history_row
 from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
 from chrys.app.tui.widgets.chat.live_renderer import LiveTranscriptRenderer
 from chrys.app.tui.widgets.chat.messages import (
@@ -112,6 +120,11 @@ _transcript_seq_counter = itertools.count(1)
 _REPLAY_PLACEHOLDER_CLASS = "-replay-placeholder"
 _WAITING_ROW_DELAY_SECONDS = 0.3
 """How long a running turn waits with nothing moving before the waiting row shows."""
+
+
+def _history_turn_top(layout: DockArrangeResult, turn: UserMessage) -> int | None:
+    # Match Textual's scroll_to_widget, which keeps the target's margin in view.
+    return next((max(0, p.region.y - p.margin.top) for p in layout.placements if p.widget is turn), None)
 
 
 class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
@@ -222,6 +235,29 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         )
         self._transcript_reader = TranscriptReader(self)
         self._replay_mount = ReplayMountController(self)
+        self._replay_lock = Lock()
+        self._replay_generation = 0
+        self._history_viewport: HistoryViewport | None = None
+        self._history_window: tuple[int, int] | None = None
+        self._history_layout_entries: list[Widget] | None = None
+        self._arranging_history = False
+        self._history_jump: UserMessage | None = None
+        self._history_selection = False
+        self._history_selection_window: tuple[int, int] | None = None
+        self._history_selection_applied = False
+        self._history_scroll = HistoryScrollController(
+            self._replay_mount,
+            self._cancel_history_scroll_animation,
+            self._history_window_ready,
+            self._history_window_failed,
+        )
+        self._history_native_pending = False
+        self._history_native_failed = False
+        self._history_highlight: UserMessage | None = None
+        self._history_drag_pointer: float | None = None
+        self._history_drag_rebase = False
+        self._history_drag_geometry: tuple[int, int] | None = None
+        self._history_selection_needs_layout = False
         if cwd:
             self.workspace_cwd = cwd
 
@@ -319,7 +355,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def _check_anchor(self) -> None:
         """Re-engage bottom-follow only at exact bottom."""
-        self._scroll_controller.check_anchor()
+        if not self.history_layout_is_held() and self._history_scroll.relative is None:
+            self._scroll_controller.check_anchor()
 
     def entry_folded(self) -> None:
         self._scroll_controller.entry_folded()
@@ -709,11 +746,14 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         event.stop()
         self._toggle_process_block(event.block)
 
-    def _toggle_process_block(self, block: ProcessBlock) -> None:
+    def _toggle_process_block(self, block: ProcessBlock, *, guide_row: int | None = None) -> None:
         if block.parent is not self:
             return
+        was_following = self._anchored and not self._anchor_released
         self.pause_following()
         with self.app.batch_update():
+            if guide_row is not None and not was_following:
+                self._scroll_controller.place_guide_fold_at(block, guide_row)
             block.requested_collapsed = not block.requested_collapsed
             block.try_finalize_fold()
         self.process_members_changed()
@@ -750,11 +790,11 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         if target is None:
             return
         with self.app.batch_update():
-            self._scroll_controller.place_guide_fold_at(target, edge)
             if isinstance(target, LiveProcessRow):
+                self._scroll_controller.place_guide_fold_at(target, edge)
                 self._toggle_live_process_row(target)
             elif isinstance(target, ProcessBlock):
-                self._toggle_process_block(target)
+                self._toggle_process_block(target, guide_row=edge)
 
     def on_mount(self) -> None:
         if self._locale_controller is not None:
@@ -769,14 +809,26 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self.watch(self.vertical_scrollbar, "grabbed", self._on_scrollbar_grabbed_changed, init=False)
 
     def _on_scrollbar_grabbed_changed(self, grabbed: object) -> None:
-        """Map scrollbar grab state onto the gesture-scoped GC pause."""
+        """Hold GC for the whole gesture and preserve the pending thumb origin."""
+        self._history_drag_pointer = None
+        self._history_drag_rebase = False
+        self._history_drag_geometry = None
         if grabbed is not None:
-            self.note_user_scroll()
+            if self._history_scroll.pending is not None:
+                # The visible thumb already points to the pending page. Keep
+                # it as the grab origin if the page mounts during this drag.
+                self._history_drag_pointer = 0.0
+            elif not self._history_scroll.restoring_tail:
+                self.note_user_scroll()
             self._scroll_controller.on_scrollbar_grab()
         else:
             self._scroll_controller.on_scrollbar_release()
+            if self._history_scroll.mount_timer is not None and (viewport := self._history_viewport) is not None:
+                self._history_scroll.start_pending_mount(viewport)
+            self._check_anchor_after_history_scroll()
 
     def on_unmount(self) -> None:
+        self._history_scroll.stop_mount_timer()
         self._clear_rollback_preview()
         self._process_controller.clear()
         if self._locale_controller is not None:
@@ -790,7 +842,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._process_controller.refresh_localization()
 
     def pre_layout(self, layout: Layout) -> None:
-        entries = self.displayed_children
+        if self._history_layout_entries is None:
+            entries = self.displayed_children
+        else:
+            entries = [entry for entry in self._history_layout_entries if entry.display]
         waiting = self._chrome.waiting_row
         tail = next(
             (entry for entry in reversed(entries) if entry is waiting or not self.is_infrastructure(entry)), None
@@ -805,7 +860,48 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         spacer row past content that fills the viewport, and skip one
         anchored shrink frame; ``_size_updated`` handles the validator side.
         """
-        return self._scroll_controller.arrange(size, optimal=optimal)
+        if self._arranging_history:
+            # A descendant being measured can query the compositor and
+            # reenter this method. The outer pass alone commits row changes.
+            if (
+                self.history_layout_is_held() or self._history_scroll.relative is not None
+            ) and self._history_scroll.visible_layout is not None:
+                return self._held_history_layout(self._history_scroll.visible_layout)
+            viewport = self._history_viewport
+            if viewport is not None and (previous := viewport.last_layout) is not None:
+                return self._held_history_layout(previous)
+            return super().arrange(size, optimal=optimal)
+        self._arranging_history = self._history_viewport is not None
+        try:
+            result = self._scroll_controller.arrange(size, optimal=optimal)
+        finally:
+            self._arranging_history = False
+        if not optimal and (jump := self._history_jump) is not None and not self.history_layout_is_held():
+            self._history_jump = None
+            if (top := _history_turn_top(result, jump)) is not None:
+                max_y = max(0, result.total_region.bottom - size.height)
+                self._apply_history_scroll_offset(min(max_y, top) - self.scroll_y)
+                self._check_anchor_after_history_scroll(maximum=max_y)
+        if not optimal and self._history_viewport is not None and not self.history_layout_is_held():
+            self._publish_history_layout(result, self.scroll_y)
+        return result
+
+    def _publish_history_layout(self, result: DockArrangeResult, scroll_y: float) -> None:
+        self._history_scroll.publish(result, scroll_y, self._nodes._updates)
+
+    def history_layout_is_held(self) -> bool:
+        """Whether the last visible geometry is still waiting for its replacement."""
+        scroll = self._history_scroll
+        return (
+            scroll.pending is not None
+            or scroll.holding_failed_layout
+            or self._history_native_pending
+            or self._history_native_failed
+        )
+
+    def history_layout_is_windowed(self) -> bool:
+        """Whether the arrangement has a viewport-sized set of archive pages."""
+        return self._history_window is not None
 
     def _place_scroll_to_bottom_button(self, result: DockArrangeResult, size: Size) -> None:
         """Keep the scroll-bottom affordance fixed to the viewport bottom, centred.
@@ -836,16 +932,34 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def jump_to_bottom(self) -> None:
         """Scroll to the current bottom and resume bottom-follow."""
+        if self._history_scroll.restoring_tail:
+            self._history_scroll.startup = None
+            return
         self.note_user_scroll()
+        if self.scroll_y != self.max_scroll_y:
+            self._schedule_selection_reprojection()
         self._scroll_controller.jump_to_bottom()
 
-    def note_user_scroll(self) -> None:
+    def note_user_scroll(self, *, keep_history_mount: bool = False) -> None:
         """A scroll the user asked for supersedes a TOC jump still waiting for its turn to mount.
 
         Hooked on user intents (wheel, scrollbar, keys), never on ``scroll_y``:
         the prepend itself moves ``scroll_y`` to keep the view steady.
         """
         self._replay_mount.forget_jump()
+        self._retry_failed_history_layout()
+        self._history_scroll.restoring_tail = False
+        self._history_scroll.startup = None
+        self._history_scroll.check_bottom_after_layout = False
+        self._cancel_history_jump()
+        self._scroll_controller.cancel_pending_guide_fold()
+        if keep_history_mount:
+            self._history_scroll.relative = None
+            if self._history_scroll.pending is not None:
+                self._history_scroll.pending = None
+                self.vertical_scrollbar.position = self.scroll_y
+        else:
+            self._cancel_history_request()
 
     def on_resize(self, _event: object | None = None) -> None:
         """Refresh the bottom-jump affordance when viewport height changes."""
@@ -869,7 +983,41 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         smaller bottom.  Hold each shrink height once, refresh layout, then
         accept it if it persists.
         """
-        return self._scroll_controller.size_updated(size, virtual_size, container_size, layout)
+        changed = self._scroll_controller.size_updated(size, virtual_size, container_size, layout)
+        if layout and self._history_selection_needs_layout and self._history_selection_measured():
+            self._history_selection_needs_layout = False
+        viewport = self._history_viewport
+        scroll = self._history_scroll
+        if (
+            layout
+            and viewport is not None
+            and scroll.visible_layout is not None
+            and not self.history_layout_is_held()
+            and viewport.is_current(scroll.visible_layout)
+        ):
+            # Textual can pin or clamp the offset after arrange() publishes.
+            scroll.visible_row = self.scroll_y
+            if scroll.restoring_tail:
+                scroll.restoring_tail = False
+                self._anchor_released = False
+                if scroll.startup is not None:
+                    self._queue_restored_scroll_after_layout(self._replay_generation)
+        if self._history_drag_pointer is not None:
+            scrollbar = self.vertical_scrollbar
+            geometry = scrollbar.window_virtual_size, scrollbar.window_size
+            if self._history_drag_rebase or geometry != self._history_drag_geometry:
+                self._history_drag_geometry = geometry
+                self._rebase_history_drag()
+        if (
+            layout
+            and scroll.check_bottom_after_layout
+            and self.virtual_size == virtual_size
+            and not self.history_layout_is_held()
+            and scroll.relative is None
+        ):
+            scroll.check_bottom_after_layout = False
+            self._check_anchor_after_history_scroll()
+        return changed
 
     def _release_size_hold(self) -> None:
         """Force a layout pass that either recovers or accepts the held shrink."""
@@ -884,10 +1032,31 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         ticks only feed the controller's GC pause and follow-state
         bookkeeping, plus the selection reprojection below.
         """
+        # User events retire a pending request before choosing their next
+        # coordinate. Geometry reads and scroll clamps also run this watcher
+        # and can occur between the request and its first visible layout.
         self._scroll_controller.watch_scroll_y(old_value, new_value)
+        if self._history_window is not None and (viewport := self._history_viewport) is not None:
+            height = self.size.height
+            required = viewport.window(new_value, height, following=False, overscan=0)
+            first, stop = required
+            if (
+                viewport.last_layout is self._history_scroll.visible_layout
+                and self._history_window[0] <= first
+                and stop <= self._history_window[1]
+            ):
+                self._history_scroll.visible_row = new_value
+                if (
+                    self._history_scroll.relative is None
+                    and self._history_scroll.pending is None
+                    and self._history_scroll.has_request
+                ):
+                    self._cancel_history_request()
+            else:
+                self.refresh(layout=True)
         self._schedule_selection_reprojection()
 
-    def _schedule_selection_reprojection(self) -> None:
+    def _schedule_selection_reprojection(self, *, preserve_pending_quote: bool = False) -> None:
         """Let the owning screen re-align chat selection highlights.
 
         The chat drag-selection model keeps ``screen.selections`` bounded to
@@ -900,58 +1069,359 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             return
         schedule = getattr(screen, "schedule_chat_selection_reprojection", None)
         if schedule is not None:
-            schedule(self)
+            schedule(
+                self,
+                preserve_pending_quote=preserve_pending_quote or self._scroll_controller.programmatic_scroll,
+            )
+
+    def _history_selection_measured(self) -> bool:
+        if self.history_layout_is_held():
+            return False
+        window = self._history_window
+        selection = self._history_selection_window
+        viewport = self._history_viewport
+        return window is None or (
+            selection is not None
+            and (
+                selection[0] == selection[1]
+                or window[0] <= selection[0] <= selection[1] <= window[1]
+                or (
+                    viewport is not None
+                    and viewport.last_selection_window == selection
+                    and self._history_scroll.visible_layout is viewport.last_layout
+                )
+            )
+        )
+
+    def history_selection_changed(self, selecting: bool, *, selection: HistorySelectionRange | None = None) -> None:
+        """Use exact layout while a selection needs offscreen history."""
+        if selecting == self._history_selection:
+            return
+        self._history_selection = selecting
+        self._history_selection_applied = False
+        self._history_selection_needs_layout = selecting and self._history_window is not None
+        viewport = self._history_viewport
+        self._history_selection_window = (
+            viewport.selection_window(selection, self.transcript_seq)
+            if selecting and selection is not None and viewport is not None
+            else None
+        )
+        if viewport is not None:
+            self.refresh(layout=True)
+
+    async def prepare_history_selection(self) -> None:
+        """Mount the archive pages needed for the current selection."""
+        viewport = self._history_viewport
+        window = self._history_selection_window
+        if viewport is None or window is None:
+            await self.wait_replay_complete()
+        else:
+            await self._replay_mount.wait_complete(widgets=viewport.widgets_in(window))
+
+    def history_selection_applied(self) -> None:
+        """Release the range required for the completed selection's next action."""
+        self._history_selection_applied = True
+
+    def _refresh_history_layout(self) -> None:
+        self.refresh(layout=True)
 
     def _on_mouse_scroll_up(self, event: textual_events.MouseScrollUp) -> None:
-        """Pause cyclic GC before Textual mutates scroll state for wheel input."""
-        # Do not call super(): Textual will dispatch Widget._on_mouse_scroll_up
-        # later in the same MRO handler walk, and a manual super() scrolls twice.
-        self.note_user_scroll()
-        self._scroll_controller.pause_gc_for_manual_scroll()
+        self._scroll_history_wheel(event, -1)
 
     def _on_mouse_scroll_down(self, event: textual_events.MouseScrollDown) -> None:
-        """Pause cyclic GC before Textual mutates scroll state for wheel input."""
-        # Do not call super(): Textual will dispatch Widget._on_mouse_scroll_down
-        # later in the same MRO handler walk, and a manual super() scrolls twice.
-        self.note_user_scroll()
+        self._scroll_history_wheel(event, 1)
+
+    def _scroll_history_wheel(
+        self, event: textual_events.MouseScrollUp | textual_events.MouseScrollDown, direction: int
+    ) -> None:
+        if not (event.ctrl or event.shift) and self._scroll_history_lines(direction * self.app.scroll_sensitivity_y):
+            event.prevent_default()
+            event.stop()
+        elif isinstance(self._history_scroll.startup, HistoryRestoreTurn):
+            self._history_scroll.startup = None
+        elif not self._history_scroll.restoring_tail and self._history_scroll.startup is None:
+            # Textual applies ordinary wheel input later in the MRO.
+            self.note_user_scroll()
         self._scroll_controller.pause_gc_for_manual_scroll()
 
     def _on_scroll_to(self, message: ScrollTo) -> None:
         """Pause cyclic GC before scrollbar thumb drags update scroll state."""
         # Do not call super(): Textual will dispatch Widget._on_scroll_to
         # later in the same MRO handler walk, restarting the drag scroll work.
-        self.note_user_scroll()
+        viewport = self._history_viewport
+        if message.y is None or (viewport is None and self._history_drag_pointer is None):
+            self.note_user_scroll()
+        else:
+            scrollbar = self.vertical_scrollbar
+            position = self.validate_scroll_y(message.y)
+            if scrollbar.grabbed is not None and scrollbar.window_virtual_size:
+                # Keep the grab threshold at the edge when the pointer has
+                # overshot it. Otherwise a small move outside the track can
+                # move content after the virtual extent changes.
+                self._history_drag_pointer = (
+                    (position - scrollbar.grabbed_position) * scrollbar.window_size / scrollbar.window_virtual_size
+                )
+                self._history_drag_geometry = scrollbar.window_virtual_size, scrollbar.window_size
+            # ScrollTo messages can be delivered after ScrollBar has already
+            # released its grab. The queued coordinate remains a drag update.
+            if viewport is None:
+                self.note_user_scroll()
+            elif self._history_native_pending or self._history_native_failed:
+                # Once the index is abandoned, the thumb's fraction is the
+                # position that also makes sense in the native document.
+                fraction = position / self.max_scroll_y if self.max_scroll_y else 0.0
+                relative = RelativeHistoryScroll(position, native_origin_fraction=fraction)
+                self._stage_relative_history_scroll(relative, moving_up=position < self.scroll_y)
+                scrollbar.position = position
+            else:
+                self._scroll_to_history_intent(position, x=message.x)
+            if viewport is not None:
+                message.prevent_default()
+                message.stop()
         self._scroll_controller.pause_gc_for_manual_scroll()
 
+    def _check_anchor_after_history_scroll(self, *, maximum: int | None = None) -> None:
+        # Finish handling the gesture first: a no-op scroll can release the
+        # anchor even though the scroll_y watcher never gets another tick.
+        if (
+            self.scroll_y == self.scroll_target_y
+            and self.vertical_scrollbar.grabbed is None
+            and not self.history_layout_is_held()
+            and self._history_scroll.relative is None
+            and (maximum is not None or not self._history_scroll.check_bottom_after_layout)
+        ):
+            bottom = self.max_scroll_y if maximum is None else maximum
+            self._scroll_controller.resume_following_at_bottom(maximum=bottom)
+            if self.scroll_y >= bottom:
+                self._history_scroll.check_bottom_after_layout = False
+
     def _on_scroll_up(self, event: ScrollUp) -> None:
-        # Scrollbar track click; Widget._on_scroll_up pages later in the same MRO walk.
-        self.note_user_scroll()
+        self._scroll_history_track(event, -1)
 
     def _on_scroll_down(self, event: ScrollDown) -> None:
-        # Scrollbar track click; Widget._on_scroll_down pages later in the same MRO walk.
-        self.note_user_scroll()
+        self._scroll_history_track(event, 1)
+
+    def _scroll_history_track(self, event: ScrollUp | ScrollDown, direction: int) -> None:
+        if (
+            not self.allow_vertical_scroll
+            and not self._history_scroll.restoring_tail
+            and self._history_scroll.startup is None
+        ):
+            # Textual handles the track click later in its MRO dispatch.
+            self.note_user_scroll()
+            return
+        # Textual pages from the painted row. Include the request that is
+        # still waiting for its archive page before advancing another page.
+        self.user_scroll_page(direction, animate=True)
+        event.prevent_default()
+        event.stop()
+
+    def _scroll_to_history_intent(self, position: float, *, x: float | None = None) -> None:
+        """Cancel loading only when an input returns to the last published row."""
+        same_row = position == self._history_scroll.visible_row
+        already_painted = same_row and self.scroll_y == position
+        measuring = self.history_layout_is_held() or self._history_scroll.relative is not None
+        self.note_user_scroll(keep_history_mount=not same_row)
+        self._history_scroll.check_bottom_after_layout |= measuring
+        if x is not None or not already_painted:
+            self.scroll_to(x=x, y=None if already_painted else position, animate=False, immediate=True)
+        if same_row:
+            self._check_anchor_after_history_scroll()
+
+    def _scroll_history_lines(self, distance: float) -> bool:
+        """Advance from the requested row using Textual's rounded line target."""
+        if self._history_scroll.queue_startup_step(distance):
+            return True
+        if not self.allow_vertical_scroll:
+            return False
+        if self._request_relative_history_scroll(distance, use_target=True):
+            return True
+        pending = self._history_scroll.pending
+        if not self._history_scroll.has_request:
+            return False
+        row = self.scroll_target_y if pending is None else self.validate_scroll_target_y(pending.row)
+        self._scroll_to_history_intent(self.validate_scroll_y(row + distance))
+        return True
 
     def action_scroll_up(self) -> None:
-        self.note_user_scroll()
-        super().action_scroll_up()
+        if not self._scroll_history_lines(-1):
+            self.note_user_scroll()
+            super().action_scroll_up()
 
     def action_scroll_down(self) -> None:
-        self.note_user_scroll()
-        super().action_scroll_down()
+        if not self._scroll_history_lines(1):
+            self.note_user_scroll()
+            super().action_scroll_down()
 
     def action_page_up(self) -> None:
-        self.note_user_scroll()
-        super().action_page_up()
+        if self.allow_vertical_scroll or self._history_scroll.restoring_tail:
+            self.user_scroll_page(-1, animate=True)
+        else:
+            super().action_page_up()
 
     def action_page_down(self) -> None:
+        if self.allow_vertical_scroll or self._history_scroll.restoring_tail:
+            self.user_scroll_page(1, animate=True)
+        else:
+            super().action_page_down()
+
+    def user_scroll_page(self, direction: int, *, animate: bool = False) -> None:
+        """Page relative to the latest requested row, including a cold viewport."""
+        distance = direction * self.scrollable_content_region.height
+        if self._history_scroll.queue_startup_step(distance):
+            return
+        if self._request_relative_history_scroll(distance):
+            return
+        pending = self._history_scroll.pending
+        if self._history_scroll.has_request:
+            row = self._relative_scroll_base() if pending is None else pending.row
+            position = self.validate_scroll_y(row + distance)
+            self._scroll_to_history_intent(position)
+            return
+        target = self._relative_scroll_base() + distance
         self.note_user_scroll()
-        super().action_page_down()
+        self.scroll_to(y=target, animate=animate, immediate=True)
+
+    def _relative_scroll_base(self) -> float:
+        if self.app.animator.is_being_animated(self, "scroll_y"):
+            return self.scroll_target_y
+        return self.scroll_y
+
+    def _request_relative_history_scroll(self, distance: float, *, use_target: bool = False) -> bool:
+        viewport, window = self._history_viewport, self._history_window
+        if viewport is None or window is None:
+            return False
+        scroll = self._history_scroll
+        if self._history_jump is not None:
+            # A relative input cancels an unresolved TOC jump and starts
+            # from the view the user actually saw.
+            remeasure = viewport.last_layout is not scroll.visible_layout
+            visible = self._painted_row_in_history_index()
+            painted_origin = scroll.visible_anchor()
+            self.note_user_scroll()
+            self._commit_history_scroll(visible, visible)
+            if remeasure:
+                relative = RelativeHistoryScroll(visible, [distance], painted_origin=painted_origin)
+                self._stage_relative_history_scroll(relative, moving_up=distance < 0)
+                return True
+            if distance > 0 and visible >= self.max_scroll_y:
+                self._check_anchor_after_history_scroll(maximum=self.max_scroll_y)
+                return True
+        relative = scroll.relative
+        index_is_painted = viewport.last_layout is scroll.visible_layout
+        native_pending = self._history_native_pending or self._history_native_failed
+        height = self.scrollable_content_region.height
+        if relative is None:
+            if native_pending:
+                origin = self._painted_row_in_history_index()
+            elif (pending := scroll.pending) is not None:
+                # The pending row can already be in a newer index than Textual's scroll limits.
+                origin = pending.row
+            else:
+                # Landing and cancellation both commit their row before the next paint.
+                origin = self.scroll_target_y if use_target else self._relative_scroll_base()
+            if use_target:
+                origin = round(origin)
+            # Use Textual's scroll limits only when they describe this index.
+            # A newer index resolves the steps during arrangement instead.
+            if index_is_painted and not native_pending:
+                target = self.validate_scroll_y(origin + distance)
+                # Home needs its first page measured before committing the step.
+                first_row = 0.0 if origin == 0 else target
+                first, stop = viewport.window(
+                    first_row, height + round(target) - round(first_row), following=False, overscan=0
+                )
+                if window[0] <= first <= stop <= window[1]:
+                    if not scroll.has_request:
+                        return False
+                    self._scroll_to_history_intent(target)
+                    return True
+            relative = RelativeHistoryScroll(origin)
+            if native_pending or origin == self._painted_row_in_history_index():
+                relative.painted_origin = scroll.visible_anchor()
+        relative.steps.append(distance)
+        if (
+            not native_pending
+            and relative.origin == scroll.visible_row
+            and index_is_painted
+            and not relative.from_bottom
+        ):
+            target, _, _, clamped = relative.target_and_span(self.max_scroll_y, height)
+            if not clamped:
+                first, stop = viewport.window(target, height, following=False, overscan=0)
+                if window[0] <= first <= stop <= window[1]:
+                    self._scroll_to_history_intent(target)
+                    return True
+        self._stage_relative_history_scroll(relative, moving_up=distance < 0)
+        return True
+
+    def _stage_relative_history_scroll(self, relative: RelativeHistoryScroll, *, moving_up: bool) -> None:
+        self.note_user_scroll(keep_history_mount=True)
+        self._cancel_history_scroll_animation()
+        self.release_anchor()
+        if self._agent_running and moving_up:
+            self._auto_scroll_paused_by_user = True
+        self._history_scroll.relative = relative
+        self.refresh(layout=True)
+
+    async def _prepare_restore_scroll(self, generation: int, widgets: list[Widget]) -> None:
+        try:
+            await self._replay_mount.wait_for_visible_content(widgets)
+        except Exception:
+            logger.exception("Preparing expanded restored history for navigation failed")
+        if generation == self._replay_generation and self._history_scroll.startup is not None:
+            self.refresh(layout=True)
+            self._queue_restored_scroll_after_layout(generation, prepared_fold=self._replay_mount.fold_generation)
+
+    def _queue_restored_scroll_after_layout(self, generation: int, *, prepared_fold: int | None = None) -> None:
+        if not self.call_after_refresh(self._apply_restore_scroll, generation, prepared_fold):
+            self._history_scroll.startup = None
+
+    def _apply_restore_scroll(self, generation: int, prepared_fold: int | None) -> None:
+        scroll = self._history_scroll
+        if generation != self._replay_generation or scroll.restoring_tail or (pending := scroll.startup) is None:
+            return
+        viewport, window = self._history_viewport, self._history_window
+        if self._replay_mount.expanding_replay and prepared_fold != self._replay_mount.fold_generation:
+            # The last arrangement may omit folds that opened after it was published.
+            widgets = [child for child in self.children if viewport is None or viewport.includes(window, child)]
+            self.run_worker(
+                partial(self._prepare_restore_scroll, generation, widgets),
+                name="prepare expanded restored history scroll",
+                exit_on_error=False,
+            )
+            return
+        if isinstance(pending, HistoryRestoreTurn):
+            self.scroll_to_turn(pending.turn_id)
+            return
+        origin = float(self.max_scroll_y) if pending.from_bottom else 0.0
+        relative = RelativeHistoryScroll(origin, pending.steps, from_bottom=pending.from_bottom)
+        row, span_start, span_height, _ = relative.target_and_span(
+            self.max_scroll_y, self.scrollable_content_region.height
+        )
+        if pending.steps and viewport is not None and window is not None:
+            first, stop = viewport.window(span_start, span_height, following=False, overscan=0)
+            if not window[0] <= first <= stop <= window[1]:
+                self._stage_relative_history_scroll(relative, moving_up=row < self.scroll_y)
+                return
+        self._scroll_to_history_intent(row)
 
     def action_scroll_home(self) -> None:
+        if self._history_scroll.queue_startup_home():
+            return
+        if self._history_native_pending or self._history_native_failed:
+            self._stage_relative_history_scroll(RelativeHistoryScroll(0.0), moving_up=True)
+            return
         self.note_user_scroll()
-        super().action_scroll_home()
+        if self.allow_vertical_scroll:
+            self.scroll_home(animate=False, immediate=True, x_axis=self.scroll_y == 0)
+        else:
+            super().action_scroll_home()
 
     def action_scroll_end(self) -> None:
+        if self.allow_vertical_scroll or self._history_scroll.restoring_tail:
+            self.jump_to_bottom()
+            return
         self.note_user_scroll()
         super().action_scroll_end()
 
@@ -1051,28 +1521,73 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     ) -> None:
         """Mount replayed entries, newest first, and return once the view is filled.
 
-        Entries beyond the first few viewports are prepended above by a
-        panel-owned task after this returns (see ``replay_mount``);
-        :meth:`wait_replay_complete` waits for them.
+        Older entries mount on demand when a viewport index is available.
+        Otherwise a background task prepends them. :meth:`wait_replay_complete`
+        mounts any remaining entries and waits for them.
         """
-        self.record_transcript_occurrences(widgets)
-        self._process_controller.remember_replay_failures(process_failures_after)
-        widgets = self._process_controller.prepare_replay(widgets, protect_last_turn=self._replay_process_protect_last)
-        await self._replay_mount.mount(widgets)
+        generation = self._replay_generation
+        async with self._replay_lock:
+            if generation != self._replay_generation or not self.can_mount_replay():
+                return
+            can_start_windowed = self._replay_mount.can_start_windowed
+            if self._replay_mount.windowed:
+                await self._replay_mount.wait_complete()
+                if generation != self._replay_generation or not self.can_mount_replay():
+                    return
+            self.record_transcript_occurrences(widgets)
+            self._process_controller.remember_replay_failures(process_failures_after)
+            widgets = self._process_controller.prepare_replay(
+                widgets, protect_last_turn=self._replay_process_protect_last
+            )
+            viewport = HistoryViewport(widgets)
+            cold = viewport.prime(self.size) if can_start_windowed else None
+            self._drop_history_viewport()
+            if cold is None:
+                await self._replay_mount.mount(widgets)
+                if generation == self._replay_generation and viewport.available and self.can_mount_replay():
+                    self._history_viewport = viewport
+                    self.refresh(layout=True)
+                return
+            prefix_count, tail_start, initial_window = cold
+            if not await self._replay_mount.mount(
+                widgets, windowed_tail_start=tail_start, windowed_prefix_count=prefix_count
+            ):
+                return
+            self._history_viewport = viewport
+            self._history_scroll.restoring_tail = True
+            self._history_scroll.visible_row = self.scroll_y
+            self._set_history_window(initial_window)
+            self.refresh(layout=True)
 
     @property
     def replay_in_progress(self) -> bool:
         """Whether older replayed entries are still being prepended."""
-        return self._replay_mount.in_progress
+        return self._replay_mount.in_progress and not self._replay_mount.windowed
 
     async def wait_replay_complete(self) -> None:
         """Wait until every replayed entry is mounted (or the prepend stopped)."""
-        await self._replay_mount.wait_complete()
+        draining = self._replay_mount.windowed and self._replay_mount.has_pending
+        viewport = self._history_viewport
+        try:
+            await self._replay_mount.wait_complete()
+        finally:
+            if (
+                draining
+                and viewport is not None
+                and self._history_viewport is viewport
+                and not self._replay_mount.has_pending
+            ):
+                viewport.invalidate_measurements()
+                self.refresh(layout=True)
 
     async def mount_replay_batch(self, batch: list[Widget], *, before: Widget | None) -> None:
-        """Mount one bounded replay batch, hatched until its descendants are ready."""
-        for widget in batch:
-            widget.add_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
+        """Mount one bounded replay batch and wait for its descendants to be ready."""
+        # Archive windows stay outside the published layout until they are
+        # ready. Only progressive replay can show an initializing batch.
+        show_placeholder = not self._replay_mount.needs_mount(batch)
+        if show_placeholder:
+            for widget in batch:
+                widget.add_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
         precompose_tree(batch)
         try:
             # An explicit ``before=None`` would skip ``mount``'s default place above the waiting row.
@@ -1083,22 +1598,20 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             # AwaitMount only covers the roots passed to ``mount``. The
             # precomposed descendants run their own async Mount handlers;
             # in particular, VirtualizedMarkdown parses and lays out its
-            # document there. Keep the hatch visible and progress at the
-            # prior batch boundary until every descendant is actually
-            # ready to paint.
+            # document there. Keep the prior batch boundary until every
+            # descendant is actually ready to paint.
             descendants = [descendant for widget in batch for descendant in widget.walk_children()]
             for descendant in descendants:
                 await descendant._mounted_event.wait()
         finally:
-            attached: list[Widget] = []
-            for widget in batch:
-                widget.remove_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
-                if widget.is_attached:
-                    attached.append(widget)
-            if attached:
-                # Re-evaluate only these batch roots. Hatch is repaint-only,
-                # so this never invalidates MainScreen's transcript layout.
-                self.app.stylesheet.update_nodes(attached)
+            if show_placeholder:
+                attached: list[Widget] = []
+                for widget in batch:
+                    widget.remove_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
+                    if widget.is_attached:
+                        attached.append(widget)
+                if attached:
+                    self.app.stylesheet.update_nodes(attached)
         mounted_prompt = any(isinstance(widget, UserMessage) and not widget.is_injection for widget in batch)
         if mounted_prompt or any(isinstance(widget, ProcessBlock) for widget in batch):
             try:
@@ -1194,11 +1707,13 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def scroll_user_message_to_top(self, widget: Widget) -> None:
         """Scroll a newly mounted user message to the viewport top."""
         # The message is where the user looks now, not a turn a TOC jump still waits for.
-        self._replay_mount.forget_jump()
+        self.note_user_scroll()
         self._scroll_controller.scroll_user_message_to_top(widget)
 
     def on_final_response_started(self) -> None:
         """Run the final-response one-shot autoscroll policy."""
+        if not self._scroll_controller.final_response_started:
+            self.note_user_scroll()
         self._scroll_controller.on_final_response_started()
 
     def schedule_anchor_sync(self) -> None:
@@ -1207,10 +1722,12 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def on_status_message_mounted(self) -> None:
         """Force status messages to the bottom, matching current status rendering."""
+        self.note_user_scroll()
         self._scroll_controller.on_status_message_mounted()
 
     def scroll_inline_prompt_to_top_after_refresh(self, widget: Widget) -> None:
         """Schedule inline ask_user prompt scroll-to-top after refresh."""
+        self.note_user_scroll()
         self._scroll_controller.scroll_inline_prompt_to_top_after_refresh(widget)
 
     def on_inline_prompt_resized(self, group: ToolGroup | None) -> None:
@@ -1221,7 +1738,13 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def after_replay_history_mounted(self) -> None:
         """Schedule the final replay scroll-to-bottom call."""
-        self._scroll_controller.after_replay_history_mounted()
+        if self._replay_mount.windowed and self._history_viewport is not None:
+            # The mounted suffix's max_scroll_y can still be in effect here.
+            # Let the first indexed layout resolve the actual bottom.
+            self._anchor_released = False
+            self.refresh(layout=True)
+        else:
+            self._scroll_controller.after_replay_history_mounted()
 
     async def remove_trailing_status(self, *, replacing: bool = False) -> None:
         """StatusCleanupPort wrapper for trailing status removal."""
@@ -1274,8 +1797,35 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         return entries
 
     def pending_transcript_widgets(self) -> list[Widget]:
-        """Return replayed entries still waiting to be prepended, in document order."""
+        """Return replayed entries still waiting to mount, in document order."""
         return self._replay_mount.pending_widgets()
+
+    def selection_needs_history_layout(self, first: Fraction | int | None, last: Fraction | int | None) -> bool:
+        """Whether a logical selection would cross unmounted or unmeasured entries."""
+
+        if self._history_selection_needs_layout:
+            return True
+
+        def in_range(widget: Widget) -> bool:
+            stamp = self.transcript_seq(widget)
+            return stamp is not None and (first is None or first <= stamp) and (last is None or stamp <= last)
+
+        viewport = self._history_viewport
+        archived_end = viewport.last_archived_entry if viewport is not None else None
+        end_stamp = self.transcript_seq(archived_end) if archived_end is not None else None
+        tail_only = first is not None and end_stamp is not None and first > end_stamp
+        if not tail_only and self._replay_mount.has_cold_entry(in_range):
+            return True
+        if self._history_window is None or self._history_scroll.visible_layout is None:
+            return False
+        children: Iterable[Widget] = self.children
+        if tail_only:
+            # Skip the archive, but check live entries inserted after the last layout.
+            children = itertools.takewhile(lambda widget: widget is not archived_end, reversed(self.children))
+        laid_out = self._history_scroll.visible_layout.widgets
+        return any(
+            widget not in laid_out and widget.display and widget.visible and in_range(widget) for widget in children
+        )
 
     def set_border_title(self, title: Text | None) -> None:
         if title is None and self.border_title is None:
@@ -1303,7 +1853,462 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self.post_message(self.WorkingDirClicked())
 
     def call_super_arrange(self, size: Size, *, optimal: bool = False) -> DockArrangeResult:
-        return super().arrange(size, optimal=optimal)
+        viewport = self._history_viewport
+        if viewport is None or optimal or self.replay_in_progress:
+            return super().arrange(size, optimal=optimal)
+        relative = self._history_scroll.relative
+        jump = self._history_jump
+        following = (
+            relative is None
+            and jump is None
+            and (self._history_scroll.restoring_tail or (self._anchored and not self._anchor_released))
+        )
+        self._history_scroll.holding_failed_layout = False
+        cold_pending = self._replay_mount.windowed and self._replay_mount.has_pending
+        native_pending = self._history_native_pending or self._history_native_failed
+        if not cold_pending and not viewport.finish_mounting(self.children, self._nodes._updates):
+            return self._arrange_without_history_viewport(viewport, size)
+        if native_pending and cold_pending:
+            return self._history_layout_during_drain(viewport, size)
+        selection_window = self._history_selection_window
+        full_selection = self._history_selection and selection_window is None and not cold_pending
+        if not viewport.measured or full_selection or native_pending:
+            rebase = self._history_window is not None and not following
+            self._set_history_window(None)
+            result = super().arrange(size, optimal=optimal)
+            bottom = self._scroll_controller.history_scroll_bottom(result, size)
+            positioned = self._finish_native_history_scroll(viewport, result, bottom, size.height)
+            if not viewport.measured or not viewport.is_current(result):
+                delta = viewport.capture(
+                    result,
+                    size.width,
+                    round(self.scroll_y) if rebase and not positioned else None,
+                )
+                if not positioned:
+                    self._apply_history_scroll_offset(delta, maximum=bottom)
+            if following and self._history_scroll.pending is None:
+                # Selection reads this frame's geometry before Textual accepts
+                # the smaller virtual size, so keep the measured tail in view.
+                self._apply_history_scroll_offset(bottom - self.scroll_y)
+            if native_pending:
+                self._drop_history_viewport(after_native_layout=True)
+            return result
+        jump_row = viewport.page_row(jump) if jump is not None else None
+        scroll_row = self.scroll_y if jump_row is None else jump_row
+        if relative is not None:
+            last_layout = viewport.last_layout
+            bottom = self.max_scroll_y if last_layout is None else max(0, last_layout.total_region.bottom - size.height)
+            scroll_row, span_start, span_height, _ = relative.target_and_span(bottom, size.height)
+        elif jump_row is None and self._history_scroll.pending is not None:
+            scroll_row = self._history_scroll.pending.row
+        elif cold_pending and not following and jump_row is None:
+            scroll_row = self._cold_animation_destination(viewport, scroll_row, size.height)
+        previous_window = self._history_window
+        previous_layout = self._history_scroll.visible_layout
+        if relative is None:
+            span_start, span_height = scroll_row, size.height
+        required = viewport.window(span_start, span_height, following=following, overscan=0)
+        if self._history_selection_applied or (
+            selection_window is not None and viewport.needs_mount(selection_window, self._replay_mount.needs_mount)
+        ):
+            selection_window = None
+        key = (size, self._nodes._updates, optimal)
+        folding = self._scroll_controller.fold_layout_pending
+        if (
+            relative is None
+            and jump is None
+            and not folding
+            and not following
+            and not self._history_scroll.has_request
+            and previous_window is not None
+            and previous_window[0] <= required[0] <= required[1] <= previous_window[1]
+            and (cached := self._arrangement_cache.get(key)) is not None
+            and viewport.is_current(cached)
+            and viewport.last_selection_window == selection_window
+        ):
+            return cached
+        window = viewport.window(scroll_row, size.height, following=following)
+        if relative is not None:
+            window = min(window[0], required[0]), max(window[1], required[1])
+        if cold_pending and self._history_window is not None:
+            if self._defer_history_window(viewport, required, scroll_row, size, following=following):
+                if previous_layout is not None:
+                    # Keep both the published geometry and the corrected
+                    # destination until the requested window can be arranged.
+                    return self._held_history_layout(previous_layout)
+                window = self._history_window
+            else:
+                window = viewport.ready_window(required, window, self._replay_mount.needs_mount)
+        self._set_history_window(window)
+        cached = self._arrangement_cache.get(key)
+        if (
+            relative is None
+            and cached is not None
+            and jump is None
+            and not folding
+            and viewport.is_current(cached)
+            and viewport.last_selection_window == selection_window
+        ):
+            return cached
+        while True:
+            anchor_row = None if following or jump is not None else round(self.scroll_y)
+            if relative is not None:
+                anchor_row = None if relative.from_bottom else round(relative.origin)
+            measured = viewport.arrange(
+                self.children,
+                self._nodes._updates,
+                size.width,
+                window,
+                anchor_row,
+                partial(self._arrange_history_entries, size),
+                cold_count=self._replay_mount.unregistered_cold_count,
+                selection_window=selection_window,
+            )
+            if measured is None:
+                if cold_pending:
+                    self._history_native_pending = True
+                    self._cancel_history_request(keep_relative=relative is not None)
+                    self.run_worker(
+                        partial(self._drain_for_native_history_layout, viewport),
+                        name="drain history for native layout",
+                        exit_on_error=False,
+                    )
+                    return self._history_layout_during_drain(viewport, size)
+                return self._arrange_without_history_viewport(viewport, size)
+            result, delta = measured
+            bottom = self._scroll_controller.history_scroll_bottom(result, size)
+            # Remeasurement can shrink a previously estimated page enough to
+            # expose another page. Measure that page in this frame too.
+            if relative is not None:
+                if relative.origin:
+                    relative.origin += delta
+                top, span_start, span_height, _ = relative.target_and_span(bottom, size.height)
+            else:
+                self._apply_history_scroll_offset(delta, maximum=bottom)
+                top = bottom if following else min(bottom, self.scroll_y)
+                if jump is not None and (jump_top := _history_turn_top(result, jump)) is not None:
+                    top = min(bottom, jump_top)
+                elif folding:
+                    top = self._scroll_controller.fold_scroll_target(result, size.height, bottom, top)
+                elif (
+                    jump is None
+                    and not following
+                    and self.scroll_y > bottom
+                    and self.app.animator.is_being_animated(self, "scroll_y")
+                ):
+                    # Complete the rebased scroll when shrinking displaced its starting row.
+                    top = min(bottom, self.scroll_target_y)
+                span_start, span_height = top, size.height
+            first, stop = viewport.window(span_start, span_height, following=False, overscan=0)
+            expanded = min(window[0], first), max(window[1], stop)
+            if expanded == window:
+                break
+            requested_y = top if jump is None else scroll_row
+            if cold_pending and self._defer_history_window(viewport, expanded, requested_y, size, following=following):
+                if folding and jump is None and not following:
+                    # The fold can already have removed content from the
+                    # previous frame. Keep the folded header in a covered
+                    # viewport while the exact pointer row's pages mount.
+                    covered = viewport.covered_scroll_row(window, top, size.height, bottom)
+                    if covered is not None:
+                        self._publish_history_layout(result, covered)
+                        self._hold_history_view()
+                        return result
+                if previous_layout is not None:
+                    # Keep publishing the held arrangement. The request row
+                    # and its next anchor both use the new measurement.
+                    self._set_history_window(previous_window)
+                    return self._held_history_layout(previous_layout)
+                break
+            window = expanded
+            self._set_history_window(window)
+        self._arrangement_cache[key] = result
+        if relative is not None and self._history_scroll.pending is None:
+            self._finish_relative_history_scroll(relative, bottom, size.height)
+        elif jump is None and not following and self._history_scroll.pending is None:
+            self._apply_history_scroll_offset(top - self.scroll_y)
+        if following and (self._history_scroll.pending is None or previous_layout is None):
+            # Do not expose a frame below the estimated extent while the
+            # controller defers the final anchored shrink to the next layout.
+            self._apply_history_scroll_offset(bottom - self.scroll_y)
+            if self._history_scroll.pending is not None:
+                # The first indexed layout may still need to mount the page
+                # above this suffix. Hold the measured tail, not a stale row
+                # from before the archive was indexed.
+                self._publish_history_layout(result, self.scroll_y)
+        return result
+
+    def _history_layout_during_drain(self, viewport: HistoryViewport, size: Size) -> DockArrangeResult:
+        layout = self._history_scroll.visible_layout or viewport.last_layout
+        if layout is None:
+            return super().arrange(size)
+        self._hold_history_view()
+        return self._attached_history_layout(layout)
+
+    def _held_history_layout(self, layout: DockArrangeResult) -> DockArrangeResult:
+        if self._history_scroll.visible_nodes_version != self._nodes._updates:
+            return self._attached_history_layout(layout)
+        return layout
+
+    def _attached_history_layout(self, layout: DockArrangeResult) -> DockArrangeResult:
+        """Preserve held positions without publishing roots removed since measurement."""
+        widgets = {widget for widget in layout.widgets if widget.parent is self}
+        if len(widgets) == len(layout.widgets):
+            return layout
+        placements = [placement for placement in layout.placements if placement.widget.parent is self]
+        return DockArrangeResult(placements, widgets, layout.scroll_spacing)
+
+    async def _drain_for_native_history_layout(self, viewport: HistoryViewport) -> None:
+        if self._history_viewport is not viewport or not self._history_native_pending:
+            return
+        try:
+            await self._replay_mount.wait_complete()
+        except Exception:
+            if self._history_viewport is viewport:
+                self._history_window_failed()
+                self._history_native_failed = True
+            raise
+        if self._history_viewport is viewport and self.can_mount_replay():
+            self._refresh_history_layout()
+
+    def _cold_animation_destination(self, viewport: HistoryViewport, row: float, height: int) -> float:
+        """Keep the destination when an animation encounters unmounted history."""
+        target = self.scroll_target_y
+        if round(row) == round(target) or not self.app.animator.is_being_animated(self, "scroll_y"):
+            return row
+        current_window = viewport.window(row, height, following=False, overscan=0)
+        target_window = viewport.window(target, height, following=False, overscan=0)
+        target_is_cold = viewport.needs_mount(target_window, self._replay_mount.needs_mount)
+        if target_is_cold:
+            return target
+        if viewport.needs_mount(current_window, self._replay_mount.needs_mount):
+            self._apply_history_scroll_offset(target - self.scroll_y)
+            return target
+        return row
+
+    def _defer_history_window(
+        self, viewport: HistoryViewport, window: tuple[int, int], row: float, size: Size, *, following: bool
+    ) -> bool:
+        pending = self._history_scroll.pending
+        relative = self._history_scroll.relative
+        request = HistoryScrollRequest(window, row, following, size)
+        dragging = relative is None and self._history_jump is None and self.vertical_scrollbar.grabbed is not None
+        if not self._history_scroll.defer(viewport, request, dragging=dragging):
+            self._cancel_history_request(keep_relative=relative is not None)
+            if pending is not None and relative is None:
+                # A resize may make the destination ready before its callback.
+                self._land_history_scroll(row, following)
+            return False
+        self._hold_history_view()
+        if not self._history_scroll.holding_failed_layout:
+            self.vertical_scrollbar.position = min(self.max_scroll_y, max(0.0, row))
+        return True
+
+    def _hold_history_view(self) -> None:
+        self.set_scroll_y_reactive(self._history_scroll.visible_row)
+        self._history_drag_rebase = False
+
+    def _history_window_ready(self, request: HistoryScrollRequest) -> None:
+        if self._history_scroll.relative is None:
+            self._land_history_scroll(request.row, request.follow_tail)
+        self.refresh(layout=True)
+
+    def _finish_relative_history_scroll(self, relative: RelativeHistoryScroll, bottom: int, height: int) -> None:
+        row, _, _, _ = relative.target_and_span(bottom, height)
+        self._history_scroll.relative = None
+        self._commit_history_scroll(row, row)
+        self._check_anchor_after_history_scroll(maximum=bottom)
+
+    def _arrange_without_history_viewport(self, viewport: HistoryViewport, size: Size) -> DockArrangeResult:
+        self._set_history_window(None)
+        result = super().arrange(size)
+        bottom = self._scroll_controller.history_scroll_bottom(result, size)
+        self._finish_native_history_scroll(viewport, result, bottom, size.height)
+        self._drop_history_viewport(after_native_layout=True)
+        return result
+
+    def _finish_native_history_scroll(
+        self, viewport: HistoryViewport, result: DockArrangeResult, bottom: int, height: int
+    ) -> bool:
+        scroll = self._history_scroll
+        preserve_painted = (
+            (self._history_native_pending or self._history_native_failed)
+            and self._history_jump is None
+            and self._anchor_released
+        )
+        painted_layout, painted_row = scroll.visible_layout, scroll.visible_row
+        if scroll.relative is not None or preserve_painted:
+            # An animation's coordinates belong to the old layout.
+            self._cancel_history_scroll_animation()
+        self._history_native_pending = False
+        self._history_native_failed = False
+        if (relative := scroll.relative) is not None:
+            if relative.native_origin_fraction is None:
+                origin = None
+                if relative.painted_origin is not None:
+                    layout, row = relative.painted_origin
+                    origin = rebase_history_row(layout, result, row)
+                if origin is None:
+                    origin = rebase_history_row(viewport.last_layout, result, relative.origin)
+                if origin is not None:
+                    relative.origin = origin
+            else:
+                relative.origin = bottom * relative.native_origin_fraction
+            self._finish_relative_history_scroll(relative, bottom, height)
+            return True
+        if preserve_painted:
+            row = rebase_history_row(painted_layout, result, painted_row)
+            row = min(bottom, painted_row if row is None else row)
+            self._commit_history_scroll(row, row)
+            return True
+        return False
+
+    def _land_history_scroll(self, row: float, following: bool) -> None:
+        # The request uses measured history rows, while max_scroll_y still
+        # belongs to the painted layout. The next layout clamps and checks it.
+        self._history_scroll.check_bottom_after_layout = True
+        self._anchor_released = not following
+        row = self.max_scroll_y if following else max(0.0, row)
+        self._commit_history_scroll(row, row)
+
+    def _history_window_failed(self) -> None:
+        self._history_native_pending = False
+        self._history_scroll.restoring_tail = False
+        self._history_scroll.startup = None
+        self._cancel_history_jump()
+        self._cancel_history_request()
+        self.set_scroll_target_y_reactive(self.scroll_y)
+
+    def _retry_failed_history_layout(self) -> None:
+        if self._history_scroll.allow_mount_retry() or self._history_native_failed:
+            self._history_native_failed = False
+            self.refresh(layout=True)
+
+    def _painted_row_in_history_index(self) -> float:
+        scroll = self._history_scroll
+        viewport = self._history_viewport
+        return (
+            scroll.visible_row if viewport is None else viewport.row_in_index(scroll.visible_layout, scroll.visible_row)
+        )
+
+    def _cancel_history_request(self, *, keep_relative: bool = False) -> None:
+        scroll = self._history_scroll
+        had_request = scroll.has_request
+        held = scroll.pending is not None
+        recover = (held or scroll.relative is not None) and not keep_relative and not self._arranging_history
+        scroll.cancel(keep_relative=keep_relative)
+        if not had_request and not recover:
+            return
+        # A correction pass can update the page index before its layout is
+        # shown. Keep the painted anchor on cancellation.
+        if recover and self.scroll_y == scroll.visible_row:
+            scroll.check_bottom_after_layout |= scroll.visible_row == self.max_scroll_y
+            row = self._painted_row_in_history_index()
+            self._commit_history_scroll(row, row)
+        elif held or recover:
+            self.set_scroll_target_y_reactive(self.scroll_y)
+        self.vertical_scrollbar.position = self.scroll_y
+        self.call_after_refresh(self._sync_scroll_to_bottom_button)
+        if recover and self.can_mount_replay():
+            # Returning to a held row can be a no-op scroll after a resize.
+            self.refresh(layout=True)
+
+    def _cancel_history_jump(self) -> None:
+        if self._history_jump is not None:
+            self._history_jump.remove_class("-highlighted")
+            self._history_jump = None
+            self._history_highlight = None
+
+    def _arrange_history_entries(self, size: Size, entries: list[Widget]) -> DockArrangeResult:
+        self._history_layout_entries = entries
+        try:
+            return arrange(self, entries, size, self.screen.size)
+        finally:
+            self._history_layout_entries = None
+
+    def _set_history_window(self, window: tuple[int, int] | None) -> None:
+        if self._history_window != window:
+            self._history_window = window
+            self._clear_arrangement_cache()
+
+    def _drop_history_viewport(self, *, after_native_layout: bool = False) -> None:
+        self._cancel_history_request()
+        if self._history_jump is not None and self._history_jump.parent is not self:
+            self._cancel_history_jump()
+        self._set_history_window(None)
+        self._history_viewport = None
+        self._history_selection_window = None
+        self._history_scroll.visible_layout = None
+        self._history_scroll.allow_mount_retry()
+        self._history_scroll.check_bottom_after_layout = False
+        self._history_native_pending = False
+        self._history_native_failed = False
+        self._history_scroll.restoring_tail = False
+        if after_native_layout and isinstance(self._history_scroll.startup, HistoryRestoreTurn):
+            self._queue_restored_scroll_after_layout(self._replay_generation)
+        else:
+            self._history_scroll.startup = None
+        if not after_native_layout:
+            self._history_drag_pointer = None
+            self._history_drag_rebase = False
+            self._history_drag_geometry = None
+
+    def _apply_history_scroll_offset(self, delta: float, *, maximum: int | None = None) -> None:
+        if not delta:
+            return
+        # A measurement can move the first content row without moving the
+        # Home destination or the scrollbar's upper edge.
+        row = 0.0 if maximum is not None and self.scroll_y == 0 else max(0.0, self.scroll_y + delta)
+        target = row
+        animator = self.app.animator
+        animation = animator._animations.get((id(self), "scroll_y"))
+        if maximum is not None and isinstance(animation, SimpleAnimation):
+            # Rebase Textual's active scroll without losing its deadline or
+            # completion callback. Home and End still target the two edges.
+            previous_target = self.scroll_target_y
+            if previous_target == 0:
+                target = 0.0
+            elif previous_target == self.max_scroll_y:
+                target = float(maximum)
+            else:
+                target = min(maximum, max(0.0, previous_target + delta))
+            now = animator._get_time()
+            animation.duration = max(0.0, animation.start_time + animation.duration - now)
+            animation.start_time = now
+            animation.start_value = row
+            animation.end_value = animation.final_value = target
+        else:
+            self._cancel_history_scroll_animation()
+        self._commit_history_scroll(row, target)
+
+    def _commit_history_scroll(self, row: float, target: float) -> None:
+        changed = row != self.scroll_y
+        self.set_scroll_y_reactive(row)
+        self.set_scroll_target_y_reactive(target)
+        self.set_vertical_scrollbar_position(row)
+        if changed:
+            self._history_drag_rebase = self._history_drag_pointer is not None
+            self.call_after_refresh(self._sync_scroll_to_bottom_button)
+            self._schedule_selection_reprojection(preserve_pending_quote=True)
+
+    def _rebase_history_drag(self) -> None:
+        self._history_drag_rebase = False
+        pointer = self._history_drag_pointer
+        if pointer is None:
+            return
+        scrollbar = self.vertical_scrollbar
+        if scrollbar.grabbed is None or not scrollbar.window_size:
+            return
+        # Textual's next absolute drag target uses the current extent but the
+        # original grab position. Keep the last pointer row fixed as we learn
+        # more page heights and the extent changes under the thumb.
+        scale = scrollbar.window_virtual_size / scrollbar.window_size
+        pending = self._history_scroll.pending
+        row = self.scroll_y if pending is None else pending.row
+        position = min(self.max_scroll_y, max(0, row))
+        scrollbar.grabbed_position = position - pointer * scale
+        if pending is not None:
+            scrollbar.position = position
 
     def call_super_scroll_to_region(self, region: Region, **kwargs: Any) -> Offset:
         return super().scroll_to_region(region, **kwargs)
@@ -1337,6 +2342,16 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def stop_scroll_y_animation(self) -> None:
         self.app.animator.force_stop_animation(self, "scroll_y")
+
+    def _cancel_history_scroll_animation(self) -> None:
+        """Retire the active scroll without publishing its endpoint during layout."""
+        animator = self.app.animator
+        if (animation := animator._animations.pop((id(self), "scroll_y"), None)) is not None:
+            self.set_scroll_target_y_reactive(self.scroll_y)
+            # Textual queues this callback to release its realtime animation claim.
+            # Its animator timer signals idle on the next tick.
+            if animation.on_complete is not None:
+                animation.on_complete()
 
     def set_vertical_scrollbar_position(self, y: float) -> None:
         # Like the compositor's own anchor pin: move the thumb without watchers.
@@ -1388,8 +2403,20 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         await finish_shielded(self._clear_and_rebuild())
 
     async def _clear_and_rebuild(self) -> None:
+        self._replay_generation += 1
+        self._replay_mount.request_stop()
+        async with self._replay_lock:
+            await self._reset_transcript()
+
+    async def _reset_transcript(self) -> None:
         self._clear_rollback_preview()
-        # A prepend ends at a batch boundary first: never remove children
+        self._drop_history_viewport()
+        self._history_jump = None
+        self._history_selection = False
+        self._history_selection_needs_layout = False
+        self._history_highlight = None
+        self._history_scroll.visible_row = 0.0
+        # Replay ends at a batch boundary first: never remove children
         # around a mount that is still registering.
         await self._replay_mount.stop()
         self._process_controller.clear()
@@ -1452,6 +2479,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
         if not folds and pending_collapsed is None and processes_collapsed is None:
             return False
+        viewport = self._history_viewport
+        if viewport is not None:
+            viewport.invalidate_measurements(complete=False)
 
         any_expanded = (
             processes_collapsed is False
@@ -1470,15 +2500,15 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         return any_expanded
 
     def get_agent_responses(self) -> list[tuple[str, str]]:
-        """Return (profile_name, raw_text) of all agent messages in mount order."""
+        """Return (profile_name, raw_text) of all agent messages in document order."""
         return self._transcript_reader.get_agent_responses()
 
     def get_user_messages(self) -> list[tuple[str, str]]:
-        """Return (role_label, raw_text) of all user messages in mount order."""
+        """Return (role_label, raw_text) of all user messages in document order."""
         return self._transcript_reader.get_user_messages()
 
     def get_all_messages(self) -> list[tuple[str, str]]:
-        """Return (role_label, raw_text) of all user+agent messages in mount order."""
+        """Return (role_label, raw_text) of all user and agent messages in document order."""
         return self._transcript_reader.get_all_messages()
 
     # --- helpers ---
@@ -1524,11 +2554,15 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     async def apply_fresh_turn_cleanup(self, *, retired_previous_turn: bool, removed_item_ids: tuple[str, ...]) -> None:
         """Apply backend cleanup after replay so queued entries cannot reappear."""
-        if self.replay_in_progress:
+        viewport = self._history_viewport
+        if self._replay_mount.has_pending and (
+            not self._replay_mount.windowed or viewport is None or not viewport.tail_is_attached_to(self)
+        ):
             await self.wait_replay_complete()
-        await self._live_renderer.apply_fresh_turn_cleanup(
-            retired_previous_turn=retired_previous_turn, removed_item_ids=removed_item_ids
-        )
+        with self.app.batch_update():
+            await self._live_renderer.apply_fresh_turn_cleanup(
+                retired_previous_turn=retired_previous_turn, removed_item_ids=removed_item_ids
+            )
 
     def apply_turn_started(self, turn_number: int, *, opening_item_id: str | None = None) -> None:
         """Set the live opener's authoritative turn number and history item."""
@@ -2173,12 +3207,17 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
         """Remove the answer text a Continue, Retry or steer dropped from history: the messages these segments showed.
 
-        Tool cards stay, as they do for a retried attempt. Entries a replay has
-        yet to mount are mounted first, so none of them comes back.
+        Tool cards stay, as they do for a retried attempt. Complete replay
+        first if one of its pending entries might show a withdrawn answer.
         """
-        if self.replay_in_progress:
-            await self.wait_replay_complete()
         withdrawn = frozenset(segment_ids)
+        if self._replay_mount.has_pending and (
+            not self._replay_mount.windowed
+            or self._replay_mount.has_cold_entry(
+                lambda widget: isinstance(widget, AgentMessage) and bool(widget.segment_ids & withdrawn)
+            )
+        ):
+            await self.wait_replay_complete()
         with self.app.batch_update():
             self._live_renderer.withdraw_answer(withdrawn)
             self._clear_selection_touching(
@@ -2189,7 +3228,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             try:
                 await self._process_controller.withdraw_live_answers(withdrawn)
             finally:
-                removed = await remove_withdrawn_answer(self, segment_ids)
+                removed = await remove_withdrawn_answer(self, withdrawn)
                 await self._process_controller.forget_removed_members(removed)
         self._sync_waiting_row()
 
@@ -2367,19 +3406,58 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def scroll_to_turn(self, turn_id: str) -> None:
         # A turn older than the replayed tail, or in a batch not laid out yet, is jumped to once it lays out.
-        if self._replay_mount.jump_when_laid_out(turn_id):
+        if self._history_scroll.queue_startup_turn(turn_id):
+            self._scroll_controller.cancel_pending_guide_fold()
+            return
+        self._retry_failed_history_layout()
+        self._history_scroll.startup = None
+        self._history_scroll.check_bottom_after_layout = False
+        self._scroll_controller.cancel_pending_guide_fold()
+        self._cancel_history_jump()
+        self._cancel_history_request()
+        viewport = self._history_viewport
+        if self._replay_mount.windowed:
+            cold = viewport.turn(turn_id) if viewport is not None else None
+            if cold is not None and self._replay_mount.needs_mount((cold,)):
+                self._seek_history_turn(viewport, cold)
+                return
+        elif self._replay_mount.jump_when_laid_out(turn_id):
             return
         for child in self.children:
             if isinstance(child, UserMessage) and child.id == turn_id:
-                for c in self.query(UserMessage):
-                    c.remove_class("-highlighted")
-                child.add_class("-highlighted")
-                if self._agent_running:
-                    self._auto_scroll_paused_by_user = True
-                self.scroll_to_widget(child, animate=False, top=True, immediate=True)
-                # After the scroll: its geometry read can run the layout that queues a settle re-pin.
-                self._scroll_controller.note_toc_jump()
-                # Bypass the async widget → UpdateScroll → screen idle chain
-                # that can lose the race against the next render frame.
-                self.set_screen_scroll_required_and_check_idle()
+                if not self._seek_history_turn(viewport, child):
+                    self._land_turn(child)
                 return
+
+    def _seek_history_turn(self, viewport: HistoryViewport | None, child: UserMessage) -> bool:
+        if viewport is None or viewport.includes(self._history_window, child):
+            return False
+        row = viewport.page_row(child)
+        if row is None:
+            return False
+        self._history_scroll.restoring_tail = False
+        self._highlight_turn(child)
+        self._scroll_controller.note_toc_jump()
+        self._history_jump = child
+        self._anchor_released = True
+        self.scroll_to(y=row, animate=False, immediate=True)
+        self.refresh(layout=True)
+        return True
+
+    def _highlight_turn(self, child: UserMessage) -> None:
+        if self._history_highlight is not None and self._history_highlight is not child:
+            self._history_highlight.remove_class("-highlighted")
+        self._history_highlight = child
+        for message in self.query(UserMessage).filter(".-highlighted"):
+            message.remove_class("-highlighted")
+        child.add_class("-highlighted")
+        if self._agent_running:
+            self._auto_scroll_paused_by_user = True
+
+    def _land_turn(self, child: UserMessage) -> None:
+        self._history_scroll.restoring_tail = False
+        self._highlight_turn(child)
+        self.scroll_to_widget(child, animate=False, top=True, immediate=True)
+        # The geometry read above can queue a settle re-pin.
+        self._scroll_controller.note_toc_jump()
+        self.set_screen_scroll_required_and_check_idle()

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Read/copy helpers for mounted chat transcript widgets."""
+"""Read and copy chat transcript text in document order."""
 
 from __future__ import annotations
 
@@ -13,9 +13,8 @@ from chrys.app.tui.widgets.chat.ports import TranscriptReadPort
 class TranscriptReader:
     """Build copy payloads from chat message widgets in document order.
 
-    Replayed entries still waiting to be prepended count too: they sit right
-    above the oldest mounted entry newer than them, and an unmounted entry has
-    no nested messages.
+    Cold entries can sit between mounted ones. Their document-order stamps
+    establish their positions independently of viewport visits.
     """
 
     def __init__(self, query: TranscriptReadPort) -> None:
@@ -49,9 +48,20 @@ class TranscriptReader:
 
     def _document_children(self) -> list[Widget]:
         children = self._query.direct_children()
-        pending = self._query.pending_transcript_widgets()
-        if not pending:
+        pending = iter(self._query.pending_transcript_widgets())
+        unmounted = next(pending, None)
+        if unmounted is None:
             return children
-        anchor = self._query.transcript_entry_after(pending[-1])
-        at = len(children) if anchor is None else children.index(anchor)
-        return [*children[:at], *pending, *children[at:]]
+        seq = self._query.transcript_seq(unmounted)
+        document: list[Widget] = []
+        for child in children:
+            child_seq = self._query.transcript_seq(child)
+            while unmounted is not None and seq is not None and child_seq is not None and seq < child_seq:
+                document.append(unmounted)
+                unmounted = next(pending, None)
+                seq = self._query.transcript_seq(unmounted) if unmounted is not None else None
+            document.append(child)
+        if unmounted is not None:
+            document.append(unmounted)
+            document.extend(pending)
+        return document

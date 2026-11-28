@@ -42,7 +42,10 @@ from textual.actions import SkipAction
 from textual.strip import Strip
 from textual.widgets import TextArea
 
-from chrys.app.tui.behaviors.right_click_copy import handle_text_area_right_click_copy
+from chrys.app.tui.behaviors.right_click_copy import (
+    copy_text_area_or_screen_selection,
+    handle_text_area_right_click_copy,
+)
 from chrys.app.tui.binding_display import COPY_BINDING, PASTE_BINDING, localized_binding
 from chrys.app.tui.clipboard import copy_text_to_clipboards, paste_text_from_clipboards, uses_native_windows_clipboard
 from chrys.app.tui.i18n import render_str, widget_localizer
@@ -282,18 +285,18 @@ class EnhancedTextArea(TextArea):
         Falls through to the screen-level selection (e.g. text rendered
         in chat output) when nothing is selected inside this widget.
         """
-        selected = self.selected_text
-        if not selected:
-            selected = self.screen.get_selected_text()
-        if not selected:
+        if not copy_text_area_or_screen_selection(self):
             # Match stock TextArea semantics: with nothing to copy anywhere,
             # defer the key to the next namespace (ultimately the app-level
             # ctrl+c quit hint).
             raise SkipAction
-        copy_text_to_clipboards(self.app, selected)
+
+    def handle_right_click_copy(self, event: events.MouseDown) -> bool:
+        """Offer editor-first copy to the screen before selection bookkeeping."""
+        return handle_text_area_right_click_copy(self, event)
 
     async def _on_mouse_down(self, event: events.MouseDown) -> None:
-        if handle_text_area_right_click_copy(self, event):
+        if self.handle_right_click_copy(event):
             # The helper calls prevent_default(), so Textual's MRO dispatch
             # will not continue into TextArea._on_mouse_down for right-click.
             return

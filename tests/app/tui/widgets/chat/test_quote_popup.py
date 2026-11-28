@@ -4,65 +4,872 @@
 
 from __future__ import annotations
 
-from asyncio import Event
+from asyncio import Event, create_task
 from pathlib import Path
-from typing import ClassVar
 
 import pytest
-from textual.app import App, ComposeResult
 from textual.events import MouseDown, MouseUp
 from textual.geometry import Offset, Region
 from textual.pilot import Pilot
+from textual.scrollbar import ScrollTo
 from textual.selection import SELECT_ALL, SelectEnd, Selection, SelectStart, SelectState
-from textual.widgets import Static
+from textual.widget import Widget
+from textual.widgets import Static, TextArea
 
-import chrys.app.tui as tui_module
+import chrys.app.tui.behaviors.right_click_copy as right_click_copy
 from chrys.app.tui import i18n as tui_i18n
-from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.clipboard import ClipboardApp
-from chrys.app.tui.screens.main.screen import MainScreen
-from chrys.app.tui.theme import TuiVariableDefaultsMixin
 from chrys.app.tui.widgets.btw import BtwAnswer, BtwPage, BtwPanel, BtwQuestion
-from chrys.app.tui.widgets.chat.messages import AgentMessage, MessageCopyButton, ThinkingMessage, UserMessage
+from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
+from chrys.app.tui.widgets.chat.messages import (
+    AgentMessage,
+    MessageCopyButton,
+    SystemMessage,
+    ThinkingMessage,
+    UserMessage,
+)
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.quote_popup import QuoteSelectionPopup
+from chrys.app.tui.widgets.chrome.app_header import AppHeader
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
-from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.side_questions import SideQuestionEntry
 from chrys.foundation.text.draft_references import (
     EMPTY_REFERENCES,
     DraftReference,
     expand_references,
 )
+from tests.app.tui.widgets.chat.quote_popup_fixtures import _MainScreenApp, _open_history_turn
+from tests.app.tui.widgets.chat.replay_fixtures import _turns
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.toasts import shown_toasts
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, rich_plain
 from tests.support.waiting import wait_for
 
-
-class _MainScreenApp(TuiVariableDefaultsMixin, App):
-    # The app's own stylesheet lays the main screen out as iCode does: the side card gets its share of the column.
-    CSS_PATH: ClassVar = [Path(tui_module.__file__).parent / path for path in ChrysApp.CSS_PATH]
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.main_screen = MainScreen(EventBus(), engine_provider=None)
-
-    def compose(self) -> ComposeResult:
-        yield from ()
-
-    async def on_mount(self) -> None:
-        await self.push_screen(self.main_screen)
-
-
 _LINE_START = Offset(0, 0)
 
 
+async def test_drag_selection_does_not_extend_into_hidden_history_during_a_cold_scroll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot)
+        await panel.replay_history(_turns(120))
+        user = panel.query_one("#turn-120", UserMessage).query_one(VirtualizedMarkdown)
+        answer = panel.query(AgentMessage).last().query_one(VirtualizedMarkdown)
+        await wait_for(lambda: user.region.overlaps(panel.content_region), pilot=pilot)
+        state = _chat_drag_state(user, answer, end_offset=Offset(len("answer 119"), 0))
+        screen._select_state = state
+        await pilot.pause()
+        selected = screen.get_selected_text()
+        assert screen._selecting and selected
+
+        monkeypatch.setattr(panel._history_scroll, "request_widgets", lambda *_: None)
+        panel.release_anchor()
+        panel.vertical_scrollbar.post_message(ScrollTo(y=panel.scroll_y / 2, animate=False))
+        await wait_for(lambda: panel._history_scroll.pending is not None, pilot=pilot)
+        assert user.region.overlaps(panel.content_region)
+        assert answer.region.overlaps(panel.content_region)
+
+        assert screen._select_state is state
+        assert screen.get_selected_text() == selected
+
+
+async def test_selecting_the_visible_tail_keeps_the_archive_cold(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot, description="chat panel has a viewport")
+        await panel.replay_history(_turns(120))
+        user = panel.query_one("#turn-120", UserMessage).query_one(VirtualizedMarkdown)
+        answer = panel.query(AgentMessage).last().query_one(VirtualizedMarkdown)
+        await wait_for(
+            lambda: user.region.overlaps(panel.content_region) and answer.region.overlaps(panel.content_region),
+            pilot=pilot,
+            description="both selection endpoints are visible",
+        )
+        assert panel.pending_transcript_widgets()
+        request = panel._replay_mount.request_window
+        transcript_seq = panel.transcript_seq
+        cold = set(panel.pending_transcript_widgets())
+        cold_order_reads = 0
+        mount_requests = []
+
+        def record_request(widgets, ready, **kwargs):
+            mount_requests.append(len(widgets))
+            request(widgets, ready, **kwargs)
+
+        def record_transcript_seq(widget):
+            nonlocal cold_order_reads
+            if widget in cold:
+                cold_order_reads += 1
+            return transcript_seq(widget)
+
+        monkeypatch.setattr(panel._replay_mount, "request_window", record_request)
+        monkeypatch.setattr(panel, "transcript_seq", record_transcript_seq)
+        screen._watch__select_state(_chat_drag_state(user, answer, end_offset=Offset(len("answer 119"), 0)))
+        await pilot.pause()
+        screen._watch__selecting(False)
+        await pilot.pause()
+
+        selected = screen.get_selected_text()
+        assert selected is not None and "question 119" in selected and "answer 119" in selected
+        assert mount_requests == []
+        assert cold_order_reads == 0
+        assert panel.pending_transcript_widgets()
+
+
+@pytest.mark.parametrize("turn", [1, 120])
+async def test_copying_from_chat_into_the_input_includes_only_the_selected_history(
+    monkeypatch: pytest.MonkeyPatch, turn: int
+) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot, description="chat panel has a viewport")
+        await panel.replay_history(_turns(120))
+        await wait_for(
+            lambda: not panel._history_scroll.restoring_tail and panel.scroll_y == panel.max_scroll_y,
+            pilot=pilot,
+            description="indexed tail has settled",
+        )
+        selector = f"#turn-{turn}"
+        if turn == 1:
+            panel.scroll_to_turn(selector[1:])
+        await wait_for(
+            lambda: bool(panel.query(selector)) and panel.query_one(selector).region.overlaps(panel.content_region),
+            pilot=pilot,
+            description="selection start mounted and visible",
+        )
+        first = panel.query_one(selector).query_one(VirtualizedMarkdown)
+        await wait_for(
+            lambda: first.region.overlaps(panel.content_region) and screen_is_settled(app, screen),
+            pilot=pilot,
+            description="selection start text has layout",
+        )
+        assert not panel.query("#turn-60")
+        input_bar = screen.query_one(InputBar)
+        end = Offset(first.region.x, input_bar.region.y)
+        assert end.y >= panel.region.bottom
+        state = _chat_drag_state(first, first, end_offset=Offset(1, 0))
+        screen._watch__select_state(state.update_end(end, SelectEnd(input_bar, None, None)))
+        screen._watch__selecting(False)
+
+        copied: list[str] = []
+
+        def record_copy(_app: ClipboardApp, text: str) -> bool:
+            copied.append(text)
+            return True
+
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", record_copy)
+        screen.action_copy_text()
+        await wait_for(lambda: bool(copied), pilot=pilot, description="copy of the cross-panel drag")
+        assert f"question {turn - 1}" in copied[0]
+        assert "answer 119" in copied[0]
+        if turn == 120:
+            assert not panel.query("#turn-60")
+            return
+        assert "question 59" in copied[0]
+
+
+@pytest.mark.parametrize("towards_header", [True, False], ids=["to-header", "from-header"])
+async def test_cross_panel_copy_keeps_the_bottom_selection_boundary_during_history_shrink(
+    monkeypatch: pytest.MonkeyPatch,
+    towards_header: bool,
+) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot, description="chat panel has a viewport")
+        messages = _turns(120)
+        answers = [message for message in messages if message["role"] == "assistant"]
+        url = "https://example.com/" + "a" * 550
+        for index, message in enumerate(answers):
+            label = "final reply outside the selection" if index == 119 else "short link"
+            message["contents"] = [{"type": "text", "text": f"[{label}]({url})"}]
+        await panel.replay_history(messages)
+        leaf = panel.query_one("#turn-120").query_one(VirtualizedMarkdown)
+        await wait_for(
+            lambda: (
+                not panel._history_scroll.restoring_tail
+                and panel.scroll_y == panel.max_scroll_y
+                and leaf.region.overlaps(panel.content_region)
+                and screen_is_settled(app, screen)
+            ),
+            pilot=pilot,
+            description="the last turn is visible at the anchored bottom",
+        )
+        assert panel._anchored and not panel._anchor_released
+        assert not panel.query("#turn-1")
+        header = screen.query_one(AppHeader)
+        top = header.region.offset
+        assert top.y < panel.region.y
+        if towards_header:
+            start = _chat_drag_state(leaf, leaf, start_offset=Offset(2, 0), end_offset=Offset(2, 0))
+            state = start.update_end(top, SelectEnd(header, None, None))
+        else:
+            end = Offset(panel.region.x, leaf.content_region.y)
+            state = SelectState(
+                end,
+                SelectStart(header, _LINE_START, top, header.scroll_offset, None, None),
+                SelectEnd(panel, None, None),
+            )
+        copied: list[str] = []
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", lambda _app, text: copied.append(text) or True)
+        screen._select_state = state
+        screen._selecting = False
+        screen.action_copy_text()
+
+        await wait_for(lambda: bool(copied), pilot=pilot, description="cross-panel selection copied")
+        assert "question 0" in copied[0] and "question 118" in copied[0]
+        assert copied[0].splitlines()[-1] == ("qu" if towards_header else "question 119")
+        assert "final reply outside the selection" not in copied[0]
+
+
+@pytest.mark.parametrize("copy_first", [False, True], ids=["before-first-copy", "before-repeat-copy"])
+@pytest.mark.parametrize("on_message", [False, True], ids=["panel-gap", "message-gap"])
+async def test_copy_of_chat_gap_selection_survives_scroll(
+    monkeypatch: pytest.MonkeyPatch, copy_first: bool, on_message: bool
+) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot)
+        await panel.replay_history(_turns(120))
+        await wait_for(
+            lambda: not panel._history_scroll.restoring_tail and panel.scroll_y == panel.max_scroll_y, pilot=pilot
+        )
+        leaf = await _open_history_turn(pilot, panel, 20)
+        header = screen.query_one(AppHeader)
+        recorded: list[str] = []
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", lambda _app, s: recorded.append(s) or True)
+        if on_message:
+            prompt = panel.query_one("#turn-20", UserMessage)
+            point = Offset(prompt.region.right - 1, prompt.region.y)
+            assert screen.get_widget_and_offset_at(*point) == (prompt, None)
+            end = SelectEnd(prompt, None, None)
+        else:
+            point = Offset(panel.region.x, leaf.content_region.y)
+            end = SelectEnd(panel, None, None)
+        state = SelectState(
+            point,
+            SelectStart(header, Offset(), header.region.offset, header.scroll_offset, None, None),
+            end,
+        )
+        screen._select_state = state
+        screen._selecting = False
+        if copy_first:
+            screen.action_copy_text()
+            await wait_for(lambda: len(recorded) == 1, pilot=pilot)
+        # Textual retires its drag state when the scrollbar is pressed.
+        screen._select_state = None
+        panel.jump_to_bottom()
+        await wait_for(
+            lambda: (
+                panel.scroll_y == panel.max_scroll_y
+                and not leaf.region.overlaps(panel.content_region)
+                and screen._history_selection_panel is None
+            ),
+            pilot=pilot,
+        )
+        screen.action_copy_text()
+        await wait_for(lambda: len(recorded) == (2 if copy_first else 1), pilot=pilot)
+        assert "question 0" in recorded[-1] and "question 18" in recorded[-1] and "question 20" not in recorded[-1]
+        assert "question 119" not in recorded[-1]
+        assert ("question 19" in recorded[-1]) is not on_message
+        assert recorded[0] == recorded[-1]
+
+
+async def test_copy_offscreen_markdown_after_theme_change() -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot)
+        await panel.replay_history(_turns(120))
+        await wait_for(
+            lambda: not panel._history_scroll.restoring_tail and panel.scroll_y == panel.max_scroll_y, pilot=pilot
+        )
+        leaf = await _open_history_turn(pilot, panel, 20)
+        screen._select_state = _chat_drag_state(leaf, leaf, end_offset=Offset(8, 0))
+        screen._selecting = False
+        original = screen.get_selected_text()
+        assert original and "question" in original, original
+        panel.jump_to_bottom()
+        await wait_for(
+            lambda: (
+                panel.scroll_y == panel.max_scroll_y
+                and not leaf.region.overlaps(panel.content_region)
+                and screen_is_settled(app, screen)
+            ),
+            pilot=pilot,
+        )
+        assert screen.get_selected_text() == original
+        app.theme = "textual-light"
+        await pilot.pause()
+        await wait_for(lambda: screen_is_settled(app, screen), pilot=pilot)
+        copied = screen.get_selected_text()
+        assert copied == original
+
+
+async def test_copy_from_a_bottom_gap_includes_the_cold_page_below(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 32)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot)
+        await panel.replay_history(_turns(120))
+        await wait_for(
+            lambda: not panel._history_scroll.restoring_tail and panel.scroll_y == panel.max_scroll_y, pilot=pilot
+        )
+        await _open_history_turn(pilot, panel, 20)
+        viewport = panel._history_viewport
+        assert viewport is not None and panel._history_window is not None
+        stop = panel._history_window[1]
+        before, after = stop * 4 - 1, stop * 4
+        assert not panel.query(f"#turn-{after + 1}")
+        panel.scroll_to(
+            y=viewport._document_top + viewport._bounds.start(stop) - panel.content_region.height,
+            animate=False,
+            immediate=True,
+        )
+        await wait_for(lambda: screen_is_settled(app, screen), pilot=pilot)
+        assert not panel.query(f"#turn-{after + 1}")
+        point = Offset(panel.content_region.x, panel.content_region.bottom - 1)
+        assert screen.get_widget_and_offset_at(*point) == (panel, None)
+        input_bar = screen.query_one(InputBar)
+        screen._select_state = SelectState(
+            point,
+            SelectStart(input_bar, Offset(), input_bar.region.offset, input_bar.scroll_offset, None, None),
+            SelectEnd(panel, None, None),
+        )
+        screen._selecting = False
+        screen._select_state = None
+        panel.jump_to_bottom()
+        await wait_for(lambda: panel.scroll_y == panel.max_scroll_y, pilot=pilot)
+
+        copied: list[str] = []
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", lambda _app, text: copied.append(text) or True)
+        screen.action_copy_text()
+        await wait_for(lambda: bool(copied), pilot=pilot, description="copy includes the cold page below the gap")
+        assert f"question {before}" not in copied[0]
+        assert f"question {after}" in copied[0] and "question 119" in copied[0]
+
+
+@pytest.mark.parametrize("start_on_notice", [False, True], ids=["gap", "notice"])
+async def test_copy_from_chat_keeps_its_boundary_when_replay_heights_shrink(
+    monkeypatch: pytest.MonkeyPatch,
+    start_on_notice: bool,
+) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot, description="chat panel has a viewport")
+        messages = _turns(120)
+        url = "https://example.com/" + "a" * 550
+        for message in messages:
+            if message["role"] == "assistant":
+                message["contents"] = [{"type": "text", "text": f"[short link]({url})"}]
+        notice = SystemMessage("archive boundary notice") if start_on_notice else None
+        if notice is not None:
+            mount = panel.mount_transcript_widgets
+
+            async def mount_with_notice(widgets, **kwargs):
+                opener = next(i for i, widget in enumerate(widgets) if widget.id == "turn-80")
+                widgets.insert(opener + 1, notice)
+                await mount(widgets, **kwargs)
+
+            monkeypatch.setattr(panel, "mount_transcript_widgets", mount_with_notice)
+        await panel.replay_history(messages)
+        await wait_for(
+            lambda: not panel._history_scroll.restoring_tail and panel.scroll_y == panel.max_scroll_y,
+            pilot=pilot,
+            description="indexed tail has settled",
+        )
+        panel.scroll_to_turn("turn-80")
+        await wait_for(
+            lambda: (
+                bool(panel.query("#turn-80"))
+                and panel.query_one("#turn-80").region.overlaps(panel.content_region)
+                and screen_is_settled(app, screen)
+            ),
+            pilot=pilot,
+            description="the first selected turn has layout",
+        )
+        first_leaf = notice if notice is not None else panel.query_one("#turn-80").query_one(VirtualizedMarkdown)
+        start_point = (
+            first_leaf.content_region.offset
+            if notice is not None
+            else Offset(panel.region.x, first_leaf.content_region.y)
+        )
+        assert start_point.y >= panel.region.y
+        input_bar = screen.query_one(InputBar)
+        end_point = Offset(start_point.x, input_bar.region.y)
+        state = SelectState(
+            end_point,
+            SelectStart(
+                panel,
+                start_point - panel.region.offset,
+                panel.region.offset,
+                panel.scroll_offset,
+                notice,
+                _LINE_START if notice is not None else None,
+            ),
+            SelectEnd(input_bar, None, None),
+        )
+        before_height = panel.virtual_size.height
+        assert not panel.query("#turn-1")
+        screen._watch__select_state(state)
+        assert first_leaf in screen.selections
+        screen._watch__selecting(False)
+
+        copied: list[str] = []
+
+        def record_copy(_app: ClipboardApp, text: str) -> bool:
+            copied.append(text)
+            return True
+
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", record_copy)
+        screen.action_copy_text()
+        await wait_for(lambda: bool(copied), pilot=pilot, description="copy of a chat-to-input drag")
+        assert panel.virtual_size.height < before_height
+        if start_on_notice:
+            assert copied[0].splitlines()[0].endswith("archive boundary notice")
+            assert "question 79" not in copied[0]
+        else:
+            assert copied[0].splitlines()[0] == "question 79"
+        assert "question 78" not in copied[0]
+        assert "question 119" in copied[0]
+
+        panel.scroll_to_turn("turn-20")
+        await wait_for(
+            lambda: panel._history_window is not None and not first_leaf.region.overlaps(panel.content_region),
+            pilot=pilot,
+            description="exact layout released and the drag's start has scrolled out",
+        )
+        screen.action_copy_text()
+        await wait_for(lambda: len(copied) == 2, pilot=pilot, description="second copy of the same selection")
+        assert copied[1] == copied[0]
+
+
+async def test_copy_from_leading_summary_through_cold_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    summary = "Summary of the earlier conversation"
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot, description="chat panel has a viewport")
+        await panel.replay_history(_turns(104, leading_summary=summary))
+        await wait_for(lambda: not panel._history_scroll.restoring_tail, pilot=pilot)
+        assert panel._replay_mount.windowed
+        fold = panel.query_one(ContextFoldWidget)
+        panel.action_scroll_home()
+        fold.collapsed = False
+        first = fold.query_one("#summary", Static)
+        await wait_for(lambda: first.region.overlaps(panel.content_region), pilot=pilot)
+
+        panel.scroll_to_turn("turn-61")
+        await wait_for(
+            lambda: bool(panel.query("#turn-61")) and panel.query_one("#turn-61").region.overlaps(panel.content_region),
+            pilot=pilot,
+        )
+        last = panel.query_one("#turn-61").query_one(VirtualizedMarkdown)
+        assert not panel.query("#turn-40")
+        copied: list[str] = []
+
+        def record_copy(_app: ClipboardApp, text: str) -> bool:
+            copied.append(text)
+            return True
+
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", record_copy)
+        screen._select_state = _chat_drag_state(first, last, end_offset=Offset(len("question 60"), 0))
+        assert screen._selecting
+        screen._selecting = False
+        screen.action_copy_text()
+        await wait_for(lambda: bool(copied), pilot=pilot, description="copy including the leading summary")
+        text = copied[0]
+        assert text.index(summary) < text.index("question 0") < text.index("question 39") < text.index("question 60")
+        assert "question 61" not in text
+        assert not panel.query("#turn-80")
+
+
+@pytest.mark.parametrize(
+    "action", ["clear", "scroll", "copy", "copy_then_scroll", "repeat_copy", "scrollbar", "retry", "detach"]
+)
+async def test_history_selection_preparation_follows_the_remaining_actions(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot, description="chat panel has a viewport")
+        await panel.replay_history(_turns(120))
+        await wait_for(
+            lambda: not panel._history_scroll.restoring_tail and panel.scroll_y == panel.max_scroll_y,
+            pilot=pilot,
+            description="indexed tail has settled",
+        )
+        leaves = []
+        for turn in ("turn-17", "turn-61"):
+            panel.scroll_to_turn(turn)
+            await wait_for(
+                lambda turn=turn: (
+                    bool(panel.query(f"#{turn}")) and panel.query_one(f"#{turn}").region.overlaps(panel.content_region)
+                ),
+                pilot=pilot,
+                description=f"{turn} is mounted and visible",
+            )
+            leaves.append(panel.query_one(f"#{turn}").query_one(VirtualizedMarkdown))
+        first, last = leaves
+        assert not panel.query("#turn-90")
+
+        entered, release = Event(), Event()
+        mount = panel.mount_replay_batch
+        prepare = panel.prepare_history_selection
+        mounted_batches = 0
+        preparations = 0
+
+        async def gated_mount(batch, *, before):
+            nonlocal mounted_batches
+            mounted_batches += 1
+            entered.set()
+            await release.wait()
+            if action == "retry":
+                raise RuntimeError("test history mount interrupted")
+            await mount(batch, before=before)
+
+        async def record_preparation() -> None:
+            nonlocal preparations
+            preparations += 1
+            await prepare()
+
+        copied: list[str] = []
+
+        def record_copy(_app: ClipboardApp, text: str) -> bool:
+            copied.append(text)
+            return True
+
+        monkeypatch.setattr(panel, "mount_replay_batch", gated_mount)
+        monkeypatch.setattr(panel, "prepare_history_selection", record_preparation)
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", record_copy)
+        if action == "copy_then_scroll":
+            popup = screen.query_one(QuoteSelectionPopup)
+            place_near = popup.place_near
+
+            def place_while_layout_is_dirty(pointer: Offset, *, within: Region | None = None) -> None:
+                # The real popup reflows the screen while completing the queued actions.
+                panel.refresh(layout=True)
+                place_near(pointer, within=within)
+
+            monkeypatch.setattr(popup, "place_near", place_while_layout_is_dirty)
+        try:
+            screen._select_state = _chat_drag_state(first, last, end_offset=Offset(len("question 60"), 0))
+            assert screen._selecting
+            screen._selecting = False
+            if action == "scrollbar":
+                screen._select_state = None
+            if action in ("copy", "copy_then_scroll", "repeat_copy", "scrollbar", "detach"):
+                screen.action_copy_text()
+            await wait_for(entered.is_set, pilot=pilot, description="preparing the selection's cold history")
+            if action == "repeat_copy":
+                screen.action_copy_text()
+            if action == "clear":
+                screen.clear_selection()
+            elif action == "detach":
+                await first.remove()
+                assert not first.is_attached
+            elif action not in ("copy_then_scroll", "retry"):
+                panel.jump_to_bottom()
+                await wait_for(
+                    lambda: not last.region.overlaps(panel.content_region),
+                    pilot=pilot,
+                    description="the selection is outside the viewport",
+                )
+            await pilot.pause()
+        finally:
+            release.set()
+        await wait_for(
+            lambda: not panel._replay_mount.in_progress,
+            pilot=pilot,
+            description="history preparation has ended",
+        )
+        if action == "retry":
+            await wait_for(
+                lambda: not panel._history_selection,
+                pilot=pilot,
+                description="a failed preparation released exact layout",
+            )
+            assert mounted_batches == 1 and panel._replay_mount.has_pending
+            monkeypatch.setattr(panel, "mount_replay_batch", mount)
+            screen.action_copy_text()
+        if action in ("copy", "copy_then_scroll", "repeat_copy", "scrollbar", "retry"):
+            await wait_for(lambda: bool(copied), pilot=pilot, description="clipboard request finished")
+            assert preparations == (2 if action == "retry" else 1)
+            assert len(copied) == 1
+            assert "question 36" in copied[0] and "question 119" not in copied[0]
+            assert not panel.query("#turn-90")
+            if action == "copy_then_scroll":
+                assert panel._history_selection
+                assert last.region.overlaps(panel.content_region)
+                assert screen.query_one(QuoteSelectionPopup).is_shown
+                panel.jump_to_bottom()
+                await wait_for(
+                    lambda: not last.region.overlaps(panel.content_region),
+                    pilot=pilot,
+                    description="the completed selection scrolled out of the viewport",
+                )
+            if action in ("copy", "copy_then_scroll", "repeat_copy", "scrollbar"):
+                await wait_for(
+                    lambda: not panel._history_selection and panel._history_window is not None,
+                    pilot=pilot,
+                    description="offscreen copy released the full layout",
+                )
+        else:
+            assert mounted_batches == 1
+            assert panel._replay_mount.has_pending
+            assert not panel.query("#turn-36")
+            assert copied == []
+        assert not screen.query_one(QuoteSelectionPopup).is_shown
+
+
+@pytest.mark.parametrize(
+    "page_away, tall_estimate, detach_anchor",
+    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
+)
+async def test_copy_and_quote_wait_for_history_between_two_mounted_pages(
+    monkeypatch: pytest.MonkeyPatch, page_away: bool, tall_estimate: bool, detach_anchor: bool
+) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        cp = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(cp.size), pilot=pilot, description="chat panel has a viewport")
+        messages = _turns(120)
+        if tall_estimate:
+            url = "https://example.com/" + "a" * 550
+            for message in messages:
+                if message["role"] == "assistant":
+                    message["contents"] = [{"type": "text", "text": f"[short link]({url})"}]
+        await cp.replay_history(messages)
+        assert cp._replay_mount.windowed
+        await wait_for(
+            lambda: not cp._history_scroll.restoring_tail and cp.scroll_y == cp.max_scroll_y,
+            pilot=pilot,
+            description="indexed tail has settled",
+        )
+        cp.scroll_to_turn("turn-1")
+        await wait_for(
+            lambda: bool(cp.query("#turn-1")) and cp.query_one("#turn-1").region.overlaps(cp.content_region),
+            pilot=pilot,
+            description="oldest turn mounted",
+        )
+        first = cp.query_one("#turn-1").query_one(VirtualizedMarkdown)
+        cp.jump_to_bottom()
+        await wait_for(
+            lambda: cp.query_one("#turn-120").region.overlaps(cp.content_region),
+            pilot=pilot,
+            description="newest turn visible",
+        )
+        last = cp.query_one("#turn-120").query_one(VirtualizedMarkdown)
+        assert not cp.query("#turn-60")
+        estimated_height = cp.virtual_size.height
+        original_mount = cp.mount_replay_batch
+        ready = Event()
+        entered = Event()
+        copied: list[str] = []
+
+        async def delay_mount(batch, *, before):
+            entered.set()
+            await ready.wait()
+            await original_mount(batch, before=before)
+
+        monkeypatch.setattr(cp, "mount_replay_batch", delay_mount)
+
+        def record_copy(_app: ClipboardApp, text: str) -> bool:
+            copied.append(text)
+            return True
+
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", record_copy)
+        monkeypatch.setattr("chrys.app.tui.screens.main.view_adapter.copy_text_to_clipboards", record_copy)
+        monkeypatch.setattr("chrys.app.tui.clipboard.uses_native_windows_clipboard", lambda: False)
+
+        try:
+            screen._watch__select_state(_chat_drag_state(first, last, end_offset=Offset(len("question 119"), 0)))
+            screen._watch__selecting(False)
+            screen.action_copy_text()
+            await wait_for(entered.is_set, pilot=pilot, description="cold pages are still loading")
+            assert screen.get_selected_text() is None
+            assert screen._pending_quote_pick is None
+            assert copied == []
+            if page_away:
+                original_y = cp.scroll_y
+                cp.user_scroll_page(-1)
+                await wait_for(lambda: cp.scroll_y < original_y, pilot=pilot, description="scrolled while loading")
+        finally:
+            ready.set()
+
+        await wait_for(
+            lambda: bool(copied) and (page_away or screen._pending_quote_pick is not None),
+            pilot=pilot,
+            description="whole range available to clipboard and the quote pill",
+        )
+        assert "question 60" in copied[0]
+        if tall_estimate:
+            assert cp.virtual_size.height < estimated_height
+        popup = screen.query_one(QuoteSelectionPopup)
+        if page_away:
+            assert screen._pending_quote_pick is None
+            assert not popup.is_shown
+            return
+        text = copied[0]
+        assert screen._pending_quote_pick is not None
+        assert screen._pending_quote_pick[0] == text
+        await wait_for(lambda: popup.is_shown and popup.region == popup.target_region, pilot=pilot)
+        if detach_anchor:
+            # A renderer collapse can remove the last selected body before
+            # the screen receives the click that clears its highlight.
+            screen.selections = {first: SELECT_ALL}
+            await pilot.pause()
+            await first.remove()
+            assert not first.is_attached
+            assert cp._history_selection
+            screen.clear_selection()
+            assert not cp._history_selection
+            return
+        await _click_pill(app, pilot, popup, action="copy")
+        await wait_for(lambda: len(copied) == 2, pilot=pilot, description="the popup copied the full range")
+        assert copied == [text, text]
+
+
+async def test_copy_from_chat_into_input_leaves_unselected_history_cold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot, description="chat panel has a viewport")
+        await panel.replay_history(_turns(120, with_tools=True))
+        await wait_for(
+            lambda: (
+                not panel._history_scroll.restoring_tail
+                and panel.scroll_y == panel.max_scroll_y
+                and screen_is_settled(app, screen)
+            ),
+            pilot=pilot,
+            description="indexed tail has settled",
+        )
+        first = await _open_history_turn(pilot, panel, 72)
+        assert not panel.query("#turn-1")
+        assert not panel.query("#turn-90")
+
+        editor = screen.query_one("#chat-input", TextArea)
+        start = (first.content_region.x, first.content_region.y)
+        end = (start[0], editor.content_region.y)
+        assert end[1] >= panel.region.bottom
+
+        copied: list[str] = []
+
+        def record_copy(_app: ClipboardApp, text: str) -> bool:
+            copied.append(text)
+            return True
+
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", record_copy)
+        await pilot.mouse_down(offset=start)
+        await pilot.hover(offset=end)
+        await pilot.mouse_up(offset=end)
+        popup = screen.query_one(QuoteSelectionPopup)
+        await wait_for(lambda: popup.is_shown, pilot=pilot, description="the selected range is ready to quote")
+
+        screen.action_copy_text()
+        await wait_for(lambda: bool(copied), pilot=pilot, description="the selected range is copied")
+        copied_lines = copied[0].splitlines()
+        assert "question 71" in copied_lines
+        assert "question 89" in copied_lines
+        assert "answer 119" in copied_lines
+        assert "question 70" not in copied_lines
+        assert not panel.query("#turn-1")
+
+
+async def test_copy_is_complete_while_other_replay_batches_are_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _MainScreenApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        screen = app.main_screen
+        panel = screen.query_one(ChatPanel)
+        await wait_for(lambda: bool(panel.size), pilot=pilot)
+        await panel.replay_history(_turns(120, with_tools=True))
+        await wait_for(
+            lambda: not panel._history_scroll.restoring_tail and panel.scroll_y == panel.max_scroll_y, pilot=pilot
+        )
+        first = await _open_history_turn(pilot, panel, 72)
+        page_start = panel.transcript_seq(panel.query_one("#turn-69"))
+        assert page_start is not None
+        assert not panel.query("#turn-90")
+
+        selection_entered, selection_release = Event(), Event()
+        drain_started, drain_entered, drain_release = Event(), Event(), Event()
+        mount = panel.mount_replay_batch
+
+        async def gate_batch(batch: list[Widget], *, before: Widget | None) -> None:
+            if not selection_entered.is_set():
+                selection_entered.set()
+                await selection_release.wait()
+            last = panel.transcript_seq(batch[-1])
+            assert last is not None
+            if last < page_start:
+                drain_entered.set()
+                await drain_release.wait()
+            await mount(batch, before=before)
+
+        async def drain_other_history() -> None:
+            drain_started.set()
+            await panel.wait_replay_complete()
+
+        copied: list[str] = []
+        monkeypatch.setattr(panel, "mount_replay_batch", gate_batch)
+        monkeypatch.setattr(right_click_copy, "copy_text_to_clipboards", lambda _app, text: copied.append(text) or True)
+
+        drain = None
+        try:
+            editor = screen.query_one("#chat-input", TextArea)
+            start = (first.content_region.x, first.content_region.y)
+            end = (start[0], editor.content_region.y)
+            await pilot.mouse_down(offset=start)
+            await pilot.hover(offset=end)
+            await pilot.mouse_up(offset=end)
+            await wait_for(selection_entered.is_set, pilot=pilot)
+            drain = create_task(drain_other_history())
+            await drain_started.wait()
+            selection_release.set()
+
+            await wait_for(drain_entered.is_set, pilot=pilot)
+            await wait_for(lambda: not panel._history_selection_needs_layout, pilot=pilot)
+            screen.action_copy_text()
+            await wait_for(lambda: bool(copied), pilot=pilot)
+            assert "question 89" in copied[0].splitlines()
+            assert "answer 119" in copied[0].splitlines()
+            assert not panel.query("#turn-1")
+        finally:
+            selection_release.set()
+            drain_release.set()
+            if drain is not None:
+                await drain
+
+
 def _chat_drag_state(
-    start: VirtualizedMarkdown, end: VirtualizedMarkdown, *, end_offset: Offset, start_offset: Offset = _LINE_START
+    start: Widget, end: VirtualizedMarkdown, *, end_offset: Offset, start_offset: Offset = _LINE_START
 ) -> SelectState:
     assert start.parent is not None
     assert end.parent is not None

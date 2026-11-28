@@ -504,30 +504,41 @@ async def test_streamed_text_stays_muted_until_it_is_known_to_be_the_answer(answ
 
 async def test_a_growing_streamed_answer_never_shows_a_scrollbar_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
     """The body is laid out before the message grows to fit it: a scrollbar then would narrow it for a frame."""
-    scrollbar_after_layout: list[bool] = []
+    layouts: list[tuple[bool, int]] = []
     layout_blocks = VirtualizedMarkdown._layout_blocks
 
-    def layout_spy(self: VirtualizedMarkdown, width: int | None = None) -> None:
-        layout_blocks(self, width)
-        scrollbar_after_layout.append(self.show_vertical_scrollbar)
+    def layout_spy(self: VirtualizedMarkdown, width: int | None = None, *, unchanged_prefix: int = 0) -> None:
+        layout_blocks(self, width, unchanged_prefix=unchanged_prefix)
+        layouts.append((self.show_vertical_scrollbar, unchanged_prefix))
 
     monkeypatch.setattr(VirtualizedMarkdown, "_layout_blocks", layout_spy)
-    async with WidgetApp(lambda: AgentMessage("```", is_final=False)).run_test(size=(60, 20)) as pilot:
+    text = "An introduction.\n\n```"
+    async with WidgetApp(lambda: AgentMessage(text, is_final=False)).run_test(size=(60, 20)) as pilot:
         msg = pilot.app.query_one(AgentMessage)
         body = msg.query_one(VirtualizedMarkdown)
-        text = "```"
+        await wait_for(
+            lambda: body.shown_source == text and bool(body.size.width),
+            pilot=pilot,
+            description="the initial Markdown was laid out",
+        )
         for line in range(8):
-            layouts = len(scrollbar_after_layout)
+            earlier_layouts = len(layouts)
             text += f"\nline {line}"
             msg.stream_update(text)
             await wait_for(
-                lambda layouts=layouts: len(scrollbar_after_layout) > layouts,
+                lambda expected=text: body.source == expected and msg._body_parse is not None,
                 pilot=pilot,
-                description="the grown answer laid out",
+                description="the message handed the current text to Markdown",
             )
+            parse = msg._body_parse
+            assert parse is not None
+            await parse
+            assert body.shown_source == text
+            assert len(layouts) > earlier_layouts
         await wait_for(lambda: body.size.height > 8, pilot=pilot, description="the message grew to fit its answer")
 
-        assert True not in scrollbar_after_layout
+        assert any(prefix > 0 for _, prefix in layouts)
+        assert not any(scrollbar for scrollbar, _ in layouts)
 
 
 async def test_agent_message_shows_html_looking_text_as_written() -> None:

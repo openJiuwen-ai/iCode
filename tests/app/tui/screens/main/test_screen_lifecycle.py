@@ -49,6 +49,7 @@ def test_unmount_shuts_down_buddy_before_flushing_notifications() -> None:
         calls.append("workspace_branch_close")
 
     screen = SimpleNamespace(
+        _release_history_selection=lambda: calls.append("history_selection_release"),
         _events=SimpleNamespace(close_approval_waits=lambda: calls.append("approval_waits_close")),
         _workflow_timer=None,
         _workflow=SimpleNamespace(close=close_workflow),
@@ -64,6 +65,7 @@ def test_unmount_shuts_down_buddy_before_flushing_notifications() -> None:
     asyncio.run(MainScreen.on_unmount(screen))
 
     assert calls == [
+        "history_selection_release",
         "approval_waits_close",
         "workflow_close",
         "btw_close",

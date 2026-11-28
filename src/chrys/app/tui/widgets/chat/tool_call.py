@@ -30,6 +30,7 @@ from textual.selection import Selection
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Static
+from textual.worker import Worker, WorkerCancelled, WorkerFailed
 
 from chrys.app.tui.clipboard import (
     OSC52_COPY_MAX_BYTES,
@@ -1754,7 +1755,7 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
         self._activity_header_finalized = not live
         self._retained_activity_text = ""
         self._done = 0
-        self._pending_content_worker: Any | None = None
+        self._pending_content_worker: Worker[Any] | None = None
         self._content_structure_lock = asyncio.Lock()
         self._content_mounted = True
         """Whether every logical call has a card. A folded group may hold only its current cards."""
@@ -2442,6 +2443,38 @@ class ToolGroup(GuideFoldMixin, ToolCopyExcludedMixin, FoldGap, ProcessMember):
             self._schedule_pending_content_mounts()
         else:
             self.call_later(self._restore_completed_tool_widgets)
+
+    async def wait_for_replay_content(self) -> None:
+        """Wait for the visible cards of a cold archive group to finish opening."""
+        while self._cards_visible and self._accepts_tool_mounts():
+            if not self._content_mounted:
+                await self._restore_completed_tool_widgets()
+                if not self._content_mounted:
+                    return
+            worker = self._pending_content_worker
+            if worker is not None and not worker.is_finished:
+                # Replay cancellation must leave the widget-owned worker's
+                # cleanup to the group. A fold can replace that worker.
+                await asyncio.shield(self._wait_for_content_worker(worker))
+            if worker is not self._pending_content_worker:
+                continue
+            await self._wait_for_visible_card_mounts()
+            if worker is self._pending_content_worker:
+                return
+
+    @staticmethod
+    async def _wait_for_content_worker(worker: Worker[Any]) -> None:
+        # The worker logs renderer errors and keeps the base cards usable.
+        with suppress(WorkerCancelled, WorkerFailed):
+            await worker.wait()
+
+    async def _wait_for_visible_card_mounts(self) -> None:
+        nodes = list(self._tools.values())
+        while nodes and self._cards_visible and self._accepts_tool_mounts():
+            node = nodes.pop()
+            if node.is_attached and node.display and node.visible:
+                await node._mounted_event.wait()
+                nodes.extend(node.children)
 
     def _note_content_build_epoch(self) -> None:
         """Record the GC freeze epoch before building the first mounted tool widget.

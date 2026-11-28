@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from chrys.foundation.platform import files as platform_files
 from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory.envelope import EventDraft
 from chrys.foundation.trajectory.event_types import EventType, RuntimeFinishReason
@@ -107,6 +108,32 @@ def test_free_session_is_removed_physically(tmp_path: Path) -> None:
     assert result.tombstone_path is None
     assert not session_dir.exists()
     # Nothing is deferred, so no graveyard is created at all.
+    assert not tombstones_dir(sessions_root).exists()
+
+
+def test_session_delete_outlasts_a_snapshot_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sessions_root = tmp_path / "sessions"
+    session_dir = _session_dir(sessions_root)
+    blob = session_dir / "mutations" / "blob"
+    blob.parent.mkdir()
+    blob.write_bytes(b"snapshot")
+    retried: list[bool] = []
+
+    with blob.open("rb") as reader:
+
+        def release_reader(_seconds: float) -> None:
+            contender = WriterLease.try_acquire(session_lease_path(session_dir))
+            if contender is not None:
+                contender.release()
+            retried.append(contender is None)
+            reader.close()
+
+        monkeypatch.setattr(platform_files, "time", SimpleNamespace(sleep=release_reader))
+        result = delete_session_directory(session_dir, sessions_root=sessions_root)
+
+    assert retried == ([True] if get_platform().is_windows else [])
+    assert result.outcome == DeleteOutcome.REMOVED
+    assert not session_dir.exists()
     assert not tombstones_dir(sessions_root).exists()
 
 

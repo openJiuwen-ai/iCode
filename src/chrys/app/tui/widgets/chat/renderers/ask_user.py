@@ -9,6 +9,7 @@ inline, and the question plus the user's plain-text answer once complete.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import suppress
 from functools import partial
@@ -67,6 +68,7 @@ _ASK_USER_WAITING = msg("tui.tool_card.ask_user.waiting", fallback="waiting")
 if TYPE_CHECKING:
     from rich.console import RenderableType
     from textual.app import ComposeResult
+    from textual.await_complete import AwaitComplete
     from textual.await_remove import AwaitRemove
 
 _USER_RESPONSE_PREFIX = "User response:"
@@ -281,6 +283,9 @@ class AskUserToolCall(BaseToolCard):
         super().__init__(call_id, tool_name, args_summary, args=args)
         self._questions = _extract_questions(args_summary, self.args)
         self._question = self._questions[0].question if self._questions else ""
+        self._question_source = ""
+        """Text requested by compose or update, including before the Markdown mounts."""
+        self._question_parse: AwaitComplete | None = None
         self._spin_idx = 0
         self._timer: Timer | None = None
         self._inline_request_id = ""
@@ -303,8 +308,9 @@ class AskUserToolCall(BaseToolCard):
     def compose(self) -> ComposeResult:
         yield ToolCardHeader(self._label_text(), id="ask-label")
 
+        self._question_source = _questions_display_markdown(self._questions)
         panel = VerticalScroll(
-            VirtualizedMarkdown(_questions_display_markdown(self._questions), id="ask-question"),
+            VirtualizedMarkdown(self._question_source, id="ask-question"),
             id="ask-panel",
             can_focus=False,
         )
@@ -635,6 +641,27 @@ class AskUserToolCall(BaseToolCard):
         metadata = self.metadata or {}
         return metadata.get(TOOL_INTERRUPTED_METADATA_KEY) is True
 
+    def _update_question_markdown(self, questions: tuple[AskUserQuestion, ...]) -> None:
+        source = _questions_display_markdown(questions)
+        if source != self._question_source:
+            self._question_parse = self.query_one("#ask-question", VirtualizedMarkdown).update(source)
+            self._question_source = source
+
+    async def mount_pending_content(self) -> bool:
+        """Wait for any visible question update that started after the card mounted."""
+        if self._question_parse is None:
+            return False
+        question = self.query_one("#ask-question", VirtualizedMarkdown)
+        installed = False
+        while question.display and (pending := self._question_parse) is not None:
+            try:
+                await asyncio.shield(pending)
+            finally:
+                if self._question_parse is pending and pending.is_done:
+                    self._question_parse = None
+            installed = True
+        return installed
+
     def _render_interrupted(self) -> None:
         """Show the interrupt as the panel status; there is no answer to show.
 
@@ -642,7 +669,7 @@ class AskUserToolCall(BaseToolCard):
         of the card (it remains in ``result_text`` for the copy payload).
         """
         questions = _extract_questions(self.args_summary, self.args)
-        self.query_one("#ask-question", VirtualizedMarkdown).update(_questions_display_markdown(questions))
+        self._update_question_markdown(questions)
         self.add_class("-interrupted")
         self.query_one("#ask-panel").border_subtitle = render_text(widget_localizer(self), TOOL_CARD_INTERRUPTED.bind())
         self.query_one("#ask-answer", Static).update(Text(""))
@@ -650,7 +677,7 @@ class AskUserToolCall(BaseToolCard):
     def _render_completed(self, result: str) -> None:
         questions = _extract_questions(self.args_summary, self.args)
         answers = _answers_from_result(result, questions)
-        self.query_one("#ask-question", VirtualizedMarkdown).update(_questions_display_markdown(questions))
+        self._update_question_markdown(questions)
         if answers is None:
             self.query_one("#ask-answer", Static).update(Text(sanitize_source_text(_answer_from_result(result))))
             return

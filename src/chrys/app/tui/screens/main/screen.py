@@ -8,7 +8,8 @@ import asyncio
 import contextlib
 import logging
 import reprlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Hashable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from types import FunctionType, MethodType
@@ -102,6 +103,7 @@ from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.util.placement import pin_fixed_placement
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.btw import BtwPage, BtwPanel, ChatColumn
+from chrys.app.tui.widgets.chat.history_viewport import HistorySelectionRange
 from chrys.app.tui.widgets.chat.messages import (
     ConversationStatusAction,
     InterruptedMessage,
@@ -115,7 +117,7 @@ from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserInlineSubmitted
 from chrys.app.tui.widgets.chat.renderers.sleep import SleepSkipClicked
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentAbortClicked, SubAgentRetryClicked
 from chrys.app.tui.widgets.chat.scroll_controller import scroll_gc_paused
-from chrys.app.tui.widgets.chat.selection_controller import ChatSelectionController
+from chrys.app.tui.widgets.chat.selection_controller import ChatSelectionController, FallbackHistorySelection
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolViewRequested, is_tool_copy_excluded
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
@@ -298,6 +300,15 @@ def _folded() -> bool:
     return False
 
 
+@dataclass(slots=True)
+class _HistorySelectionPreparation:
+    panel: ChatPanel
+    selection: object
+    selection_range: HistorySelectionRange
+    actions: dict[Hashable, Callable[[], object]]
+    cancel: Callable[[], None] | None = None
+
+
 class MainScreen(RightClickScreenCopyMixin, Screen):
     """Primary chat screen with header, chat panel, side panel, input bar, and footer."""
 
@@ -473,6 +484,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         )
         self._copy_actions = CopyActionController(view=self._view_adapter, debug=self._debug)
         self._chat_selection = ChatSelectionController(self)
+        self._fallback_select_state: SelectState | None = None
+        self._fallback_select_snapshot: FallbackHistorySelection | None = None
+        self._history_selection_panel: ChatPanel | None = None
+        self._history_selection_preparation: _HistorySelectionPreparation | None = None
         # The text the pill offers to quote, snapshotted when its drag ended.
         self._pending_quote_pick: tuple[str, ChatPanel | BtwPage, int | None, tuple[Widget, ...]] | None = None
         # Where the drag is and the transcript it quotes, recorded on every selection update.
@@ -1457,9 +1472,16 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         The quote offer at the drag's end needs its pointer and the transcript
         it quotes on both paths, so they are recorded before the routing decision.
         """
+        self._chat_selection.remember_fallback_gap_start(select_state)
+        # A scrollbar press can end Textual's pointer state while keeping
+        # the completed selection, including its captured history boundary.
+        if select_state is not None or not self.selections:
+            self._fallback_select_state = None
+            self._fallback_select_snapshot = None
         if select_state is None or select_state.end is None:
+            if select_state is not None or (not self.selections and not self._chat_selection.active):
+                self._release_history_selection()
             if select_state is None:
-                self._chat_selection.clear()
                 self._quote_pointer = None
                 self._quote_area = None
             super()._watch__select_state(select_state)
@@ -1477,7 +1499,22 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if self._chat_selection.handle_select_state(select_state):
             return
         self._chat_selection.clear()
-        super()._watch__select_state(select_state)
+        self._fallback_select_state = select_state
+        normalized = self._chat_selection.normalize_fallback_start(select_state)
+        state = normalized.state
+        chat = start_area if isinstance(start_area, ChatPanel) else end_area
+        if not isinstance(chat, ChatPanel):
+            # A drag between siblings can still cover part of the transcript.
+            chat = self.query_one_optional(ChatPanel)
+        if chat is not None and chat.history_layout_is_windowed():
+            selection = self._chat_selection.fallback_history_range(chat, state, anchors=normalized.anchors)
+            if selection is not None:
+                self._selecting = True
+                self.selections = self._chat_selection.fallback_selections(
+                    chat, state, selection, excluded_leaf=normalized.excluded_leaf, anchors=normalized.anchors
+                )
+                return
+        super()._watch__select_state(state)
 
     async def _watch_selections(
         self,
@@ -1491,6 +1528,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         copy-text caches, so blanket notification re-renders every selected
         transcript widget on every mouse move of a drag.
         """
+        if (
+            (panel := self._history_selection_panel) is not None
+            and self._history_selection_preparation is None
+            and not any(panel in widget.ancestors_with_self for widget in self.selections)
+        ):
+            self._release_history_selection()
         for widget in old_selections.keys() | selections.keys():
             new_selection = selections.get(widget)
             if old_selections.get(widget) != new_selection:
@@ -1499,22 +1542,54 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def clear_selection(self) -> None:
         """Clear the chat logical selection along with screen selection state."""
         self._chat_selection.clear()
+        self._fallback_select_state = None
+        self._fallback_select_snapshot = None
+        self._release_history_selection()
         self._hide_quote_popup()
         super().clear_selection()
 
-    def schedule_chat_selection_reprojection(self, panel: ChatPanel) -> None:
+    def _release_history_selection(self) -> None:
+        panel, self._history_selection_panel = self._history_selection_panel, None
+        preparation, self._history_selection_preparation = self._history_selection_preparation, None
+        if preparation is not None and preparation.cancel is not None:
+            cancel, preparation.cancel = preparation.cancel, None
+            cancel()
+        if panel is not None:
+            panel.history_selection_changed(False)
+
+    def _cancel_preparing_quote(self) -> None:
+        preparation = self._history_selection_preparation
+        if preparation is None:
+            return
+        preparation.actions.pop(self._offer_quote_for_finished_selection, None)
+        if not preparation.actions:
+            self._release_history_selection()
+
+    def schedule_chat_selection_reprojection(self, panel: ChatPanel, *, preserve_pending_quote: bool = False) -> None:
         """Keep chat selection highlights aligned after the transcript scrolls."""
         # The quote pill sits at the drag's end; a scroll moves that away, unless it quotes the side question.
-        self._withdraw_quote_offer_from(panel)
+        if not (preserve_pending_quote and self._history_selection_panel is panel):
+            self._withdraw_quote_offer_from(panel)
         self._chat_selection.schedule_reproject(panel)
 
     def _watch__selecting(self, selecting: bool) -> None:
         """Offer to quote a transcript selection the moment its drag ends."""
         super()._watch__selecting(selecting)
         if selecting:
+            self._cancel_preparing_quote()
             self._hide_quote_popup()
             return
         self._chat_selection.finish_drag()
+        if self._fallback_select_state is not None:
+            pending = self._pending_selection_history()
+            if pending is None:
+                self._chat_selection.finish_ready_lateral_selection(self._fallback_select_state)
+                self._fallback_select_state = None
+                self._fallback_select_snapshot = None
+            elif self._fallback_select_snapshot is None:
+                self._fallback_select_snapshot = self._chat_selection.capture_fallback_selection(
+                    pending[0], self._fallback_select_state, pending[2]
+                )
         self._offer_quote_for_finished_selection()
 
     # -- quoting the conversation ---------------------------------------------
@@ -1537,6 +1612,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         Judged by the offer itself, not the current drag: a scrollbar press ends that without clearing the offer.
         """
         pick = self._pending_quote_pick
+        if self._quote_area is area:
+            self._cancel_preparing_quote()
         if pick is not None and pick[1] is area:
             self._hide_quote_popup()
 
@@ -1548,6 +1625,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return
         suggestions = self.query_one_optional(SuggestionList)
         if suggestions is not None and suggestions.is_visible:
+            return
+        if self.defer_selected_text(self._offer_quote_for_finished_selection):
             return
         # Never text of both transcripts: a drag from the card onto its counter or into the chat mixes theirs in.
         # Text the sidebar adds is let through, as before the card could be quoted.
@@ -1698,6 +1777,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # Now — and only now — the compositor's visible map matches the new
         # scroll offset, so a pending chat-highlight re-projection is safe.
         self._chat_selection.on_screen_layout_refreshed()
+        self._finish_history_selection()
+        if (panel := self._history_selection_panel) is not None:
+            self._release_invisible_history_selection(panel)
         # Likewise a workflow panel shown before this layout placed it.
         self._workflow.screen_layout_refreshed()
 
@@ -1740,6 +1822,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     async def on_unmount(self) -> None:
         """Flush pending UI-owned settings before the screen is torn down."""
+        self._release_history_selection()
         self._events.close_approval_waits()
         if self._locale_controller is not None:
             self._locale_controller.unregister_surface(self)
@@ -1988,15 +2071,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def action_chat_page_up(self) -> None:
         """Scroll the transcript up one page, even while the input is focused."""
-        panel = self.query_one(ChatPanel)
-        panel.note_user_scroll()
-        panel.scroll_page_up(animate=False)
+        self.query_one(ChatPanel).user_scroll_page(-1)
 
     def action_chat_page_down(self) -> None:
         """Scroll the transcript down one page, even while the input is focused."""
-        panel = self.query_one(ChatPanel)
-        panel.note_user_scroll()
-        panel.scroll_page_down(animate=False)
+        self.query_one(ChatPanel).user_scroll_page(1)
 
     def action_chat_scroll_bottom(self) -> None:
         """Scroll the transcript to the bottom, even while the input is focused."""
@@ -2812,6 +2891,157 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             # key to the next namespace (the app-level ctrl+c quit hint).
             raise SkipAction
 
+    def _pending_selection_history(self) -> tuple[ChatPanel, object, HistorySelectionRange] | None:
+        state = self._fallback_select_state
+        if state is None:
+            return self._chat_selection.pending_history()
+        panel = self.query_one_optional(ChatPanel)
+        if panel is not None:
+            snapshot = self._fallback_select_snapshot
+            if snapshot is not None and (selection := snapshot.selection_range) is not None:
+                if not self._matches_history_selection(state):
+                    self.clear_selection()
+                    return None
+                return panel, state, selection
+            if (selection := self._chat_selection.pending_fallback_history(panel, state)) is not None:
+                return panel, state, selection
+        return None
+
+    def _matches_history_selection(self, selection: object) -> bool:
+        if isinstance(selection, SelectState):
+            captured = self._fallback_select_snapshot
+            snapshot = selection if captured is None else captured.state
+            anchors = captured.anchors if captured is not None else None
+            return (
+                selection is self._fallback_select_state
+                and snapshot.is_attached_to_dom()
+                and snapshot.end is not None
+                and (anchors is None or anchors.is_attached)
+                and all(
+                    leaf is None or leaf.is_attached
+                    for leaf in (snapshot.start.content_widget, snapshot.end.content_widget)
+                )
+            )
+        return self._chat_selection.matches_history_selection(selection)
+
+    def _matching_history_preparation(self) -> _HistorySelectionPreparation | None:
+        preparation = self._history_selection_preparation
+        if preparation is not None and self._matches_history_selection(preparation.selection):
+            return preparation
+        return None
+
+    def defer_selected_text(self, action: Callable[[], object], *, key: Hashable | None = None) -> bool:
+        """Run a selection action after cold history has been laid out."""
+        action_key = action if key is None else key
+        if (preparation := self._matching_history_preparation()) is not None:
+            preparation.actions.setdefault(action_key, action)
+            return True
+        pending = self._pending_selection_history()
+        if pending is None:
+            return False
+        panel, selection, selection_range = pending
+        if isinstance(selection, SelectState) and self._fallback_select_snapshot is None:
+            snapshot = self._chat_selection.capture_fallback_selection(panel, selection, selection_range)
+            self._fallback_select_snapshot = snapshot
+            selection_range = snapshot.selection_range or selection_range
+        self._release_history_selection()
+        self._history_selection_panel = panel
+        panel.history_selection_changed(True, selection=selection_range)
+        preparation = _HistorySelectionPreparation(panel, selection, selection_range, {action_key: action})
+        self._history_selection_preparation = preparation
+
+        preparation.cancel = self.run_worker(
+            partial(self._prepare_history_selection, preparation),
+            name="prepare chat selection",
+            exit_on_error=False,
+        ).cancel
+        return True
+
+    async def _prepare_history_selection(self, preparation: _HistorySelectionPreparation) -> None:
+        try:
+            await preparation.panel.prepare_history_selection()
+        except Exception, asyncio.CancelledError:
+            if self._history_selection_preparation is preparation:
+                preparation.cancel = None
+                self._release_history_selection()
+            raise
+        if self._history_selection_preparation is preparation:
+            preparation.cancel = None
+            preparation.panel.refresh(layout=True)
+
+    def _finish_history_selection(self) -> None:
+        preparation = self._history_selection_preparation
+        if preparation is None:
+            return
+        selection = preparation.selection
+        if not self._matches_history_selection(selection):
+            self._release_history_selection()
+            return
+        if preparation.cancel is not None:
+            return
+        committed: dict[Widget, Selection] | None = None
+        if isinstance(selection, SelectState):
+            if not preparation.panel.region:
+                return
+            snapshot = self._fallback_select_snapshot
+            state = self._chat_selection.restore_fallback_selection(
+                preparation.panel, selection if snapshot is None else snapshot.state
+            )
+            anchors = snapshot.anchors if snapshot is not None else None
+            if preparation.panel.selection_needs_history_layout(*preparation.selection_range):
+                return
+            selections = self._chat_selection.fallback_selections(
+                preparation.panel,
+                state,
+                preparation.selection_range,
+                excluded_leaf=snapshot.excluded_leaf if snapshot is not None else None,
+                anchors=anchors,
+                complete=True,
+            )
+            if selections == self.selections:
+                # Dict equality ignores order, so Textual's reactive setter
+                # would retain the old visual ordering. Copy needs document order.
+                self.set_reactive(Screen.selections, selections)
+            else:
+                self.selections = selections
+            # The widget range now owns the selection. These pointer
+            # coordinates describe only the viewport where the drag ended.
+            committed = self.selections
+            self._fallback_select_state = None
+            self._fallback_select_snapshot = None
+        elif self._pending_selection_history() is not None:
+            return
+        self._history_selection_preparation = None
+        try:
+            for action in preparation.actions.values():
+                matches = (
+                    self.selections is committed
+                    if committed is not None
+                    else self._matches_history_selection(selection)
+                )
+                if not matches:
+                    break
+                action()
+        finally:
+            # Showing the quote popup can reflow synchronously. Keep the
+            # prepared range available until copy and quote have both run.
+            if self._history_selection_preparation is None and self._history_selection_panel is preparation.panel:
+                preparation.panel.history_selection_applied()
+
+    def _release_invisible_history_selection(self, panel: ChatPanel) -> None:
+        if self._history_selection_preparation is not None:
+            return
+        pick = self._pending_quote_pick
+        popup = self._quote_popup()
+        if pick is not None and pick[1] is panel and popup is not None and popup.is_shown:
+            # The pill may have appeared while an anchored shrink is still settling.
+            return
+        selections = self.selections
+        if not any(
+            widget in selections and panel in widget.ancestors_with_self for widget in self._compositor.visible_widgets
+        ):
+            self._release_history_selection()
+
     def get_selected_text(self) -> str | None:
         """Get selected text, excluding tool-renderer UI chrome and results.
 
@@ -2819,6 +3049,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         the transcript; the full anchored range is extracted here, once, from
         the logical selection model.
         """
+        if self._matching_history_preparation() is not None or self._pending_selection_history() is not None:
+            return None
         chat_text = self._chat_selection.extract_text()
         if chat_text is not None:
             return chat_text

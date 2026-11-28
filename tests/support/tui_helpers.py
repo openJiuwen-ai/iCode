@@ -37,19 +37,19 @@ from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.support.gc_freeze import GcAbsorbRequested, GcReclaimRequested
 from chrys.app.tui.widgets.chat.agent_transcript_surface import AgentTranscriptSurface
 from chrys.app.tui.widgets.chat.live_process_row import LiveProcessRow
-from chrys.app.tui.widgets.chat.panel import ChatPanel, _ChatBottomSpacer, _ScrollToBottomButton
+from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
-from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
 from chrys.app.tui.widgets.chrome import input_bar as input_bar_module
 from chrys.app.tui.widgets.chrome.file_scanner import WorkdirPathScanResult, WorkdirPathSuggestion
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.app.tui.widgets.loading import RunningTitle
 from chrys.app.tui.widgets.sidebar.panel import TabOverflowMark
+from chrys.app.tui.widgets.welcome import WelcomeWidget
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.i18n import MessageRef
@@ -713,12 +713,8 @@ def open_process_for(member: ProcessMember) -> None:
 
 
 def chat_content_children(panel: ChatPanel) -> list[object]:
-    """Return transcript children, excluding persistent chat-panel infrastructure."""
-    return [
-        child
-        for child in panel.children
-        if not isinstance(child, (WaitingRow, _ChatBottomSpacer, _ScrollToBottomButton))
-    ]
+    """Return transcript children and the welcome panel, excluding other chrome."""
+    return [child for child in panel.children if isinstance(child, WelcomeWidget) or not panel.is_infrastructure(child)]
 
 
 def inline_diff_mount_state(card: Widget) -> str:
