@@ -9,6 +9,7 @@ import asyncio
 import pytest
 from rich.cells import cell_len
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.content import Content
 from textual.selection import SELECT_ALL
@@ -105,9 +106,7 @@ async def test_pending_retry_disables_submission_without_consuming_draft(submit:
             if submit == "button":
                 input_bar.on_button_pressed(Button.Pressed(button))
             else:
-                input_bar.on__chat_text_area_submitted(
-                    _ChatTextArea.Submitted(input_bar.value, input_bar._button_action("chat-input"))
-                )
+                input_bar.on__chat_text_area_submitted(_ChatTextArea.Submitted(input_bar._button_action("chat-input")))
 
         attempt()
         await pilot.pause()
@@ -1850,7 +1849,7 @@ async def test_enter_during_history_loading_selects_the_first_result_once_loaded
 
 
 @pytest.mark.parametrize("width", [45, 80, 120])
-async def test_queue_actions_receive_clicks_and_repeated_enter_stays_in_the_draft(width: int) -> None:
+async def test_queue_actions_receive_clicks_and_enter_steers_once(width: int) -> None:
     actions: list[str] = []
 
     class QueueApp(_InputBarApp):
@@ -1870,28 +1869,65 @@ async def test_queue_actions_receive_clicks_and_repeated_enter_stays_in_the_draf
         ib.agent_running = True
         ib.value = "Keep this draft"
         ib.lock_with_text()
-        await pilot.press("enter", "enter", "up", "x", "ctrl+j")
-        assert ib.value == "Keep this draft"
-        assert actions == []
-        assert ib.query_one(TextArea).has_focus
+        await pilot.pause()
         send = ib.query_one("#send-btn", Button)
         cancel = ib.query_one("#cancel-btn", Button)
         group = ib.query_one("#btn-group")
         assert send.region.right < cancel.region.x
         assert cancel.region.right <= group.region.right <= ib.region.right
+        await pilot.press("enter")
+        assert actions == ["steer"]
+        assert ib.value == "Keep this draft"
+        assert ib.query_one(TextArea).has_focus
+        # Steering already: Enter neither steers again nor escalates to Interrupt.
+        await pilot.press("enter", "up", "x", "ctrl+j")
+        assert actions == ["steer"]
+        assert ib.value == "Keep this draft"
+        assert ib.query_one(TextArea).has_focus
+        ib.unlock_and_keep()
+        ib.lock_with_text()
+        await pilot.pause()
         await click_when_settled(pilot, "#cancel-btn")
-        assert actions == ["cancel"]
+        assert actions == ["steer", "cancel"]
         assert ib.value == "Keep this draft"
         assert str(send.label) == "Interrupt"
         ib.lock_with_text()
         await pilot.press("tab")
         assert send.has_focus
         await pilot.press("enter")
-        assert actions == ["cancel", "steer"]
+        assert actions == ["steer", "cancel", "steer"]
         assert ib.query_one(TextArea).has_focus
         assert str(send.label) == "Interrupt"
         assert not cancel.display
         await pilot.press("enter")
-        assert actions == ["cancel", "steer"]
+        assert actions == ["steer", "cancel", "steer"]
         await click_when_settled(pilot, "#send-btn")
-        assert actions == ["cancel", "steer", "interrupt"]
+        assert actions == ["steer", "cancel", "steer", "interrupt"]
+
+
+@pytest.mark.parametrize("transition", ["lock", "unlock"])
+async def test_enter_posted_before_the_queue_state_changes_neither_steers_nor_submits(transition: str) -> None:
+    steers: list[int] = []
+
+    class QueueApp(_InputBarApp):
+        def on_input_bar_steer_requested(self, event: InputBar.SteerRequested) -> None:
+            steers.append(event.queue_generation)
+
+    async with QueueApp().run_test() as pilot:
+        ib = pilot.app.query_one(InputBar)
+        area = ib.query_one(_ChatTextArea)
+        ib.agent_running = True
+        ib.value = "Keep this draft"
+        if transition == "unlock":
+            ib.lock_with_text()
+        await pilot.pause()
+        # Posted against the state before the transition: still send, or still queued.
+        area.post_message(events.Key("enter", None))
+        if transition == "lock":
+            ib.lock_with_text()
+        else:
+            ib.unlock_and_keep()
+        await pilot.pause()
+        assert steers == []
+        assert pilot.app.submitted == []
+        assert ib.value == "Keep this draft"
