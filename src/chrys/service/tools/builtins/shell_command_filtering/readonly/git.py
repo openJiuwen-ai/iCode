@@ -125,8 +125,8 @@ _GIT_LS_FILES_FLAGS = frozenset(
         "-z",
     }
 )
-_GIT_LS_FILES_OPTIONS_WITH_VALUE = frozenset({"--exclude", "--format", "--with-tree"})
-_GIT_LS_FILES_OPTION_PREFIXES = ("--abbrev=", "--exclude=", "--format=", "--with-tree=")
+_GIT_LS_FILES_OPTIONS_WITH_VALUE = frozenset({"--exclude", "--with-tree"})
+_GIT_LS_FILES_OPTION_PREFIXES = ("--abbrev=", "--exclude=", "--with-tree=")
 _GIT_GREP_FLAGS = frozenset(
     {
         "-n",

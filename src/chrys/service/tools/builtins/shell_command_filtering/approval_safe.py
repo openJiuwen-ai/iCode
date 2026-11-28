@@ -215,11 +215,17 @@ def classify_shell_for_approval(command: str, *, shell_name: str = "") -> Approv
         # GNU xargs has optional-value options and a child-command suffix whose
         # parsing differs by implementation; keep it behind approval.
         return ApprovalShellDecision(reason="not_approval_safe:xargs")
-    if name == "find" and any(arg.startswith(("-f", "--files0-from=")) or arg == "--files0-from" for arg in args):
-        # BSD find treats -f as a path option (and -fpath as its attached
-        # spelling), so a following token starting with "-" is a path, not an
-        # expression action. The flat validator cannot tell them apart.
+    if name == "find":
+        # BSD/GNU find parse leading options with getopt, so a path can be
+        # attached to a combined short option, and predicate arguments can look
+        # like actions. A flat token scan cannot reliably separate paths,
+        # predicate values, and actions; keep find behind approval.
         return ApprovalShellDecision(reason="not_approval_safe:find")
+    if name in ("pip", "pip3"):
+        # pip's effective behavior depends on config files and environment
+        # (find-links, isolated mode, logging) that this boundary cannot pin;
+        # keep every pip invocation behind approval.
+        return ApprovalShellDecision(reason="not_approval_safe:pip")
     if _is_safe_special_command(name, args):
         return _safe_command(argv, execution="exec", rule=f"validator:{name}", shell_name=shell_name)
     return ApprovalShellDecision(reason=f"not_approval_safe:{name}")

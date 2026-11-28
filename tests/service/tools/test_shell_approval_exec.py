@@ -185,6 +185,7 @@ def test_approval_safe_env_removes_startup_hooks(monkeypatch: pytest.MonkeyPatch
     assert env["GIT_PAGER"] == "cat"
     assert env["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
     assert env["PIP_NO_INDEX"] == "1"
+    assert env["GIT_NO_LAZY_FETCH"] == "1"
     assert env["GIT_CONFIG_GLOBAL"] == "/tmp/evil-global"
     assert env["GIT_CONFIG_SYSTEM"] == "/tmp/evil-system"
     assert "GIT_CONFIG_PARAMETERS" not in env

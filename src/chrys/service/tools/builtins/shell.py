@@ -387,6 +387,9 @@ def _approval_safe_env() -> dict[str, str]:
     # config file enables an index-backed mode.
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     env["PIP_NO_INDEX"] = "1"
+    # Auto-approved Git queries must not start on-demand fetches for missing
+    # objects in a partial clone.
+    env["GIT_NO_LAZY_FETCH"] = "1"
     # Keep Git's global/system config for read-only semantics (core.excludesFile,
     # safe.directory), including the user's GIT_CONFIG_GLOBAL/SYSTEM/NOSYSTEM,
     # but pin every key that can execute another program. The inherited
