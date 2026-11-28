@@ -743,7 +743,11 @@ def verify_owner_only_fd(fd: int) -> None:
 
 def _verify_windows_owner_identity(fd: int) -> None:
     """Verify only file kind and owner identity, tolerating any DACL."""
-    api = _windows_file_api()
+    _windows_verify_owner_sid(_windows_file_api(), fd)
+
+
+def _windows_verify_owner_sid(api: _WindowsFileAPI, fd: int) -> None:
+    """Refuse a directory/reparse point reachable from *fd* and verify the owner SID."""
     token, _token_buffer, current_sid = _windows_current_user_sid(api)
     security_descriptor = wintypes.LPVOID()
     try:
@@ -853,6 +857,7 @@ def _windows_secure_open(
     append: bool = False,
     verify_identity_only: bool = False,
     legacy_import: bool = False,
+    access: int | None = None,
 ) -> int:
     """Open a Windows file handle without traversing a final reparse point.
 
@@ -860,10 +865,13 @@ def _windows_secure_open(
     ``secure_open_regular_binary``: open failures are raised as Windows
     reports them, and a reparse point is refused only when it names another
     file (a symbolic link, a junction), since cloud placeholders, deduplicated
-    and WOF-compressed files keep their data behind one.
+    and WOF-compressed files keep their data behind one.  *access* overrides the
+    access mask derived from *read*/*write*/*delete*, for a caller that only
+    needs the attributes and the security descriptor.
     """
     api = _windows_file_api()
-    access = (0x80000000 if read else 0) | (0x40000000 if write else 0) | (0x00010000 if delete else 0)
+    if access is None:
+        access = (0x80000000 if read else 0) | (0x40000000 if write else 0) | (0x00010000 if delete else 0)
     share = WINDOWS_SECURE_OPEN_SHARE_MODE
     disposition = 1 if create else 3
     flags = 0x00000080 | 0x00200000
@@ -1295,6 +1303,118 @@ def secure_open_owner_verified_binary(path: Path) -> BinaryIO:
         os.close(fd)
         raise
     return os.fdopen(fd, "rb")
+
+
+_WINDOWS_VERIFY_IDENTITY_ACCESS = 0x00000080 | 0x00020000  # FILE_READ_ATTRIBUTES | READ_CONTROL
+_WINDOWS_FILE_ADD_FILE = 0x0002
+_WINDOWS_FILE_TRAVERSE = 0x0020
+_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+
+
+def verify_owner_identity_path(path: Path) -> None:
+    """Raise unless *path* is a regular file owned by the current user.
+
+    Asks only for the attributes and the security descriptor: a file the user owns but
+    whose DACL denies reads is still repairable, which is the case a store repair exists
+    for.  ``GENERIC_READ``, as :func:`secure_open_owner_verified_binary` asks for, would
+    fail there and leave the store unrepairable.  Nothing is read, so a FIFO cannot
+    block and a huge file costs nothing.
+    """
+    if _is_windows():
+        fd = _windows_secure_open(
+            path,
+            read=True,
+            write=False,
+            create=False,
+            truncate=False,
+            verify_identity_only=True,
+            access=_WINDOWS_VERIFY_IDENTITY_ACCESS,
+        )
+        os.close(fd)
+        return
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise SecureFileError(errno.ENOENT, "Unable to open owner-verified file.") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise SecureFileError("Secure file is not a regular file.")
+    if info.st_uid != _posix_effective_uid():
+        raise SecureFileError("Secure file is not owned by the current user.")
+
+
+def _windows_parent_accepts_new_entry(path: Path) -> bool:
+    """Whether Windows would let the caller reach *path*'s parent as a place to add an entry.
+
+    Only the directory handle is opened, so a missing parent, a parent that is not a
+    directory, or one whose traversal is denied is caught.  A DACL that grants traversal
+    but denies creating entries is *not* observable this way: measured on Windows 11, an
+    ``icacls /deny <user>:(WD,AD)`` directory still opens with ``FILE_ADD_FILE`` while
+    creating a child in it fails with an access denial.  Callers treat a ``False`` as
+    blocking and a ``True`` as merely "no blocker found here".
+    """
+    api = _windows_file_api()
+    OPEN_EXISTING = 3
+    handle = api.kernel32.CreateFileW(
+        str(path.parent),
+        _WINDOWS_FILE_ADD_FILE | _WINDOWS_FILE_TRAVERSE,
+        _WINDOWS_SHARE_READ | _WINDOWS_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        return False
+    api.kernel32.CloseHandle(handle)
+    return True
+
+
+def replace_blocker(path: Path) -> str | None:
+    """Why *path* could not be replaced atomically right now, or None when it could.
+
+    A no-side-effect mirror of the write path's preconditions: the parent chain must be
+    link-free, the ancestors must be openable the way
+    :func:`atomic_write_owner_only_bytes` opens them, and the parent directory must
+    accept a new entry.  Callers use it to decide whether the repair command they are
+    about to suggest can possibly work.  The leaf's content and mode are not checked
+    beyond a read-only attribute, because a malformed or too-permissive store is exactly
+    what such a repair exists to fix; a special leaf is left to the caller, which knows
+    which file kinds it may replace.
+
+    The POSIX answer is exact.  On Windows it is a lower bound: entry creation is probed
+    through the parent's handle, which sees a missing or traversally denied directory but
+    not the fine-grained NTFS rights that deny adding entries to a reachable one.
+    """
+    try:
+        _validate_link_free_parent(path)
+    except SecureFileError as error:
+        return str(error)
+    if _is_windows():
+        if not _windows_parent_accepts_new_entry(path):
+            return f"Parent directory is not writable: {path.parent}"
+        if path.exists() and not os.access(path, os.W_OK):
+            # On Windows this reports the read-only attribute, the one mode the platform
+            # does honour for replacement; NTFS rights on the leaf are not observable.
+            return f"File is read-only: {path}"
+        return None
+    try:
+        directory_fd, _name = _open_posix_parent(path)
+    except OSError as error:
+        return f"Parent directory cannot be opened: {path.parent} ({error})"
+    try:
+        if not os.access(".", os.W_OK | os.X_OK, dir_fd=directory_fd, effective_ids=True):
+            return f"Parent directory is not writable: {path.parent}"
+    finally:
+        os.close(directory_fd)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        return f"Approval store cannot be inspected: {path} ({error})"
+    if stat.S_ISREG(info.st_mode) and not info.st_mode & stat.S_IWUSR:
+        return f"File is read-only: {path}"
+    return None
 
 
 def secure_open_regular_binary(path: Path) -> BinaryIO:

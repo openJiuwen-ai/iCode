@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from chrys.foundation.platform.files import atomic_write_owner_only_text
+from chrys.foundation.platform.files import SecureFileError, atomic_write_owner_only_text
 from chrys.foundation.util.lock import FileLock
 from chrys.service.approval.command_identity import normalize_simple_command
 from chrys.service.approval.grant_store import ApprovalGrantStore
@@ -184,6 +186,130 @@ def test_bad_store_does_not_allow_or_get_overwritten(service, data):
     assert service.store.path.read_text(encoding="utf-8") == data
 
 
+def test_unreadable_store_is_distinguishable_from_an_empty_one(service):
+    assert service.store.load() == []
+    assert not service.store.unreadable
+    atomic_write_owner_only_text(service.store.path, "{")
+    assert service.store.load() == []
+    assert service.store.unreadable
+
+
+def test_unreadable_store_warns_once_per_broken_spell(service, caplog):
+    atomic_write_owner_only_text(service.store.path, "{")
+    with caplog.at_level("WARNING", logger="chrys.service.approval.grant_store"):
+        for _ in range(3):
+            assert service.store.load() == []
+        assert [record.getMessage() for record in caplog.records] == [
+            "Approval grants could not be read; no grants reused"
+        ]
+    assert service.store.clear()
+    with caplog.at_level("WARNING", logger="chrys.service.approval.grant_store"):
+        caplog.clear()
+        atomic_write_owner_only_text(service.store.path, "{")
+        assert service.store.load() == []
+        assert len(caplog.records) == 1
+
+
+WARNING_LINE = "Approval grants could not be read; no grants reused"
+
+
+@pytest.mark.parametrize("scope_key", [("WORKDIR", "/nowhere"), ("WORKDIR", "/project")])
+def test_clear_resets_the_unreadable_warning_after_a_repair(service, caplog, scope_key):
+    # A separate instance stands in for the repair another process would do; sharing
+    # this store object would reset its latch before the case under test begins.
+    other = ApprovalGrantStore(service.store.path)
+    assert service.remember(command(), "EXACT_WORKSPACE")
+    remembered = service.store.path.read_text(encoding="utf-8")
+    atomic_write_owner_only_text(service.store.path, "{")
+    with caplog.at_level("WARNING", logger="chrys.service.approval.grant_store"):
+        assert service.store.load() == []
+        assert [record.getMessage() for record in caplog.records] == [WARNING_LINE]
+        caplog.clear()
+    assert other.clear()
+    atomic_write_owner_only_text(service.store.path, remembered)
+    # "/nowhere" matches nothing and writes nothing, "/project" rewrites the store:
+    # both re-read the file, so both prove it is readable again and reset the latch.
+    assert service.store.clear(scope_key=scope_key)
+    atomic_write_owner_only_text(service.store.path, "{")
+    with caplog.at_level("WARNING", logger="chrys.service.approval.grant_store"):
+        caplog.clear()
+        assert service.store.load() == []
+        assert [record.getMessage() for record in caplog.records] == [WARNING_LINE]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "{",
+        '{"version":1,"rules":[',
+        '{"version":99,"rules":[]}',
+        '{"version":1,"rules":[42]}',
+        '{"version":1,"rules":"none"}',
+    ],
+)
+def test_clearing_everything_repairs_an_unreadable_store(service, data):
+    atomic_write_owner_only_text(service.store.path, data)
+    assert not service.match(command())
+    assert service.store.clear()
+    assert service.store.load() == []
+    assert not service.store.unreadable
+    assert service.remember(command(), "EXACT_WORKSPACE")
+    assert service.match(command())
+
+
+def test_clearing_everything_repairs_a_store_over_its_bounds(service, monkeypatch):
+    import chrys.service.approval.grant_store as store_module
+
+    assert service.remember(command(), "EXACT_WORKSPACE")
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MAX_GRANTS", 0)
+        assert service.store.load() == []
+        assert service.store.unreadable
+        assert service.store.clear()
+        assert service.store.load() == []
+        assert not service.store.unreadable
+    assert service.remember(command(), "EXACT_WORKSPACE")
+    assert service.match(command())
+
+
+def test_clearing_one_workdir_still_needs_a_readable_store(service):
+    atomic_write_owner_only_text(service.store.path, "{")
+    assert not service.store.clear(scope_key=("WORKDIR", command().key.cwd))
+    assert service.store.path.read_text(encoding="utf-8") == "{"
+
+
+def test_clear_with_nothing_to_remove_does_not_rewrite_the_store(service, monkeypatch):
+    # A clear that changes nothing must not touch the disk: rewriting it would fail
+    # on a read-only parent or a lock held elsewhere, where the baseline succeeded.
+    assert service.remember(command(), "EXACT_WORKSPACE")
+    before = service.store.path.read_bytes()
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a clear with nothing to remove must not rewrite the store")
+
+    monkeypatch.setattr(service.store, "_commit", refuse)
+    monkeypatch.setattr(service.session_store, "_commit", refuse)
+    assert service.store.clear(scope_key=("WORKDIR", "/nowhere"))
+    assert service.session_store.clear()
+    assert service.store.path.read_bytes() == before
+    assert not service.session_store.path.exists()
+
+
+def test_clearing_an_empty_store_still_takes_the_write_lock(service, monkeypatch):
+    # "Nothing to clear" is decided under the lock: a writer that is mid-commit would
+    # otherwise let the clear report success before its grants land.
+    entered: list[Path] = []
+    original = ApprovalGrantStore._write_lock
+
+    def counting(store: ApprovalGrantStore):
+        entered.append(store.path)
+        return original(store)
+
+    monkeypatch.setattr(ApprovalGrantStore, "_write_lock", counting)
+    assert service.session_store.clear()
+    assert entered == [service.session_store.path]
+
+
 def test_store_refuses_symlink_and_writes_owner_only(service, tmp_path):
     candidate = command()
     assert service.remember(candidate, "EXACT_WORKSPACE")
@@ -198,11 +324,51 @@ def test_store_refuses_symlink_and_writes_owner_only(service, tmp_path):
     assert target.read_text(encoding="utf-8")
 
 
+def test_clear_refuses_to_replace_a_directory(tmp_path):
+    # A directory is a non-regular file on every platform. `clear` must reject it
+    # through `_verify_target_repairable`: relying on `os.replace` would leave the
+    # branch untested, because replace already refuses to swap a file over a directory.
+    dir_store = ApprovalGrantStore(tmp_path / "dir-store.json")
+    dir_store.path.mkdir()
+    with pytest.raises(SecureFileError, match="not a regular file"):
+        dir_store._verify_target_repairable()
+    assert not dir_store.clear()
+    assert dir_store.path.is_dir()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX FIFOs are unavailable on Windows")
+def test_clear_refuses_to_replace_a_fifo(service, tmp_path):
+    # On POSIX, os.replace would silently overwrite a planted FIFO/socket with a
+    # regular empty grants file; `_verify_target_repairable` must refuse it and
+    # leave the FIFO untouched. Runs on the CI Linux runner.
+    fifo_store = ApprovalGrantStore(tmp_path / "fifo-store.json")
+    os.mkfifo(fifo_store.path)
+    try:
+        assert stat.S_ISFIFO(fifo_store.path.stat().st_mode)
+        assert not fifo_store.clear()
+        assert stat.S_ISFIFO(fifo_store.path.stat().st_mode)
+    finally:
+        fifo_store.path.unlink()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 def test_world_readable_grants_are_not_trusted(service):
     assert service.remember(command(), "EXACT_WORKSPACE")
     service.store.path.chmod(0o644)
     assert not service.match(command())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_clear_repairs_a_world_readable_store(service):
+    # A too-permissive mode is exactly the damage `clear` must repair rather than
+    # refuse: `_verify_target_repairable` checks ownership and file type, not mode.
+    assert service.remember(command(), "EXACT_WORKSPACE")
+    service.store.path.chmod(0o644)
+    assert service.store.path.stat().st_mode & 0o777 == 0o644
+    assert service.store.clear()
+    assert service.store.load() == []
+    assert not service.store.unreadable
+    assert service.store.path.stat().st_mode & 0o777 == 0o600
 
 
 def test_two_writers_preserve_grants(service):

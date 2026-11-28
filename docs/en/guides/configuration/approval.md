@@ -118,6 +118,8 @@ Pass `--workdir` with `--session` to limit the selection to that session’s gra
 
 Both filters require a non-empty value. Use `clear --all` on its own to remove every grant.
 
+If some stores cannot be read, `icode approval list` still prints the records it could read, writes an explanation to stderr, and exits with status 1 so the failure is not mistaken for an empty list. When the unreadable store belongs to one session, the message suggests `icode approval clear --session <id>` to repair only that session; when the shared store itself cannot be read, it also suggests `icode approval clear --all`, which clears every workspace, workdir and session approval. A store whose file cannot be replaced (a directory, a link, or another user's file, for example) is reported by path and reason instead of a command, and `clear --all` clears the shared store first, so it stops there rather than deleting session grants that still work.
+
 Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a working directory or a workspace stay until you remove them. Pass a workspace name or ID to `--workspace` to select its shared approvals; for a deleted workspace, use its full ID.
 
 ## Understand automatic approval and safety protections
