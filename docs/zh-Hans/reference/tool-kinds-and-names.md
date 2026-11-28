@@ -10,7 +10,7 @@ iCode 使用工具类别（`tool_kind`）对用途或来源相近的工具进行
 
 | 工具类别 | 内置 | 用途或来源 | 工具名称 |
 | --- | --- | --- | --- |
-| `shell` | 是 | 执行 Shell 命令 | 当前 Shell 的名称；Windows 上检测到 Git Bash 时还包括 `git_bash`，ACP 会话中还包括 `list_workspace_dirs` |
+| `shell` | 是 | 执行 Shell 命令 | 当前 Shell 的名称；Windows 上检测到 Git Bash 时还包括 `git_bash`，会话有额外工作文件夹时还包括 `list_workspace_dirs` |
 | `filesystem.read` | 是 | 读取文件和查看图像 | `read_file`、`view_image` |
 | `filesystem.write` | 是 | 创建、覆写和编辑文件 | `write_file`、`edit_file` |
 | `search` | 是 | 搜索文件内容和文件名 | `grep`、`glob` |
@@ -36,7 +36,7 @@ iCode 自带的智能体都没有启用 `web_search` 和 `web_fetch`。智能体
 
 `shell` 类别中的主要工具使用当前 Shell 的名称，例如 `zsh`、`bash`、`pwsh`、`powershell` 或 `cmd`。在 Windows 上检测到 Git Bash 时，iCode 还会在主要 Shell 工具之外提供 `git_bash` 工具。实际名称取决于操作系统和 iCode 检测到的 Shell。
 
-ACP 会话还会提供 `list_workspace_dirs`，用于列出主工作目录和 ACP 客户端提供的其他工作目录。
+会话有额外工作文件夹（工作区的参考文件夹，或 ACP 客户端提供的其他目录）时，还会提供 `list_workspace_dirs`：它列出主工作目录和这些文件夹及其标签，并标出缺失的文件夹。工作区文件夹当前缺失时也会提供，便于智能体看到哪些目录不可用；工作区没有参考文件夹、ACP 也没有额外目录的会话不会提供该工具。
 
 ## 子智能体工具名称
 

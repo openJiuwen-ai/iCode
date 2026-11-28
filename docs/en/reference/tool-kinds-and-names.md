@@ -10,7 +10,7 @@ In the terminal user interface (TUI), enter `/runtime` in the input field, or cl
 
 | Tool kind | Built-in | Purpose or source | Tool names |
 | --- | --- | --- | --- |
-| `shell` | Yes | Run shell commands | The name of the current shell; also includes `git_bash` on Windows when Git Bash is detected, and `list_workspace_dirs` in ACP sessions |
+| `shell` | Yes | Run shell commands | The name of the current shell; also includes `git_bash` on Windows when Git Bash is detected, and `list_workspace_dirs` when the session has additional working folders |
 | `filesystem.read` | Yes | Read files and view images | `read_file`, `view_image` |
 | `filesystem.write` | Yes | Create, overwrite, and edit files | `write_file`, `edit_file` |
 | `search` | Yes | Search file contents and filenames | `grep`, `glob` |
@@ -36,7 +36,7 @@ Every agent has `sleep`, whatever its `tools.builtins` lists. A profile that sti
 
 The main tool in the `shell` kind uses the name of the current shell, such as `zsh`, `bash`, `pwsh`, `powershell`, or `cmd`. On Windows, when Git Bash is detected, iCode also provides a `git_bash` tool alongside the main shell tool. The actual names depend on the operating system and the shells detected by iCode.
 
-ACP sessions also provide `list_workspace_dirs`, which lists the primary working directory and any additional working directories provided by the ACP client.
+A session with additional working folders — a workspace's reference folders, or additional directories an ACP client supplies — also provides `list_workspace_dirs`, which lists the primary working directory and those folders with their labels, marking any that are missing. It is provided as well when a workspace folder is currently missing, so the agent can see what is unavailable; a session whose workspace has no reference folders and no ACP extras does not have it.
 
 ## Sub-agent tool names
 
