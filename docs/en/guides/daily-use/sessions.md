@@ -43,7 +43,7 @@ When you stop a task or it fails, the part of the reply that already appeared st
 
 ## Add guidance while the agent runs
 
-Type a message and press **Enter**, or click **Send** to the left of **Interrupt**, to queue it for the next model request. **Send** appears when the running task's input contains text; empty or whitespace-only input shows only **Interrupt**. The text stays visible and read-only after queuing, with **Send Now** and **Cancel** on its right. Pressing Enter again does nothing; use Tab to focus a button or click it.
+Type a message and press **Enter**, or click **Send** to the left of **Interrupt**, to queue it for the next model request. **Send** appears when the running task's input contains text; empty or whitespace-only input shows only **Interrupt**. The text stays visible and read-only after queuing, with **Send Now** and **Cancel** on its right. Press **Enter** again to send it now, as **Send Now** does; you can also focus a button with Tab or click it.
 
 - **Cancel** or **Esc** cancels the queued message and returns its draft for editing. The current task continues.
 - **Send Now** tries to stop the current generation or running tools and continue with this message. **Steering…** shows while the request is pending; **Interrupt** remains available. If the message has already reached the model, it is not sent again and that request continues.

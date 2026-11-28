@@ -8219,11 +8219,11 @@ msgstr[0] "还有 {count} 处高亮的待填位置未填写。再按一次回车
 msgid "tui.input.queued"
 msgstr "已排队"
 
-#. English: Queued · Esc to cancel · Ctrl+B to interrupt
-#. chrys-meta={"fingerprint":"d45f30c70db82d307aa6b30149f99630c5b45584bc9dabc0937632b3bea5e97b","multiline":false,"placeholders":[]}
+#. English: Queued · Esc to cancel · Ctrl+B to interrupt · Enter to send now
+#. chrys-meta={"fingerprint":"a30d64728fafd2fe13d3b98e969ea1165bc7d73b883b9c29f2d32f0d4045b5c9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
 msgid "tui.input.queued_hint"
-msgstr "已排队 · Esc 取消 · Ctrl+B 中断"
+msgstr "已排队 · Esc 取消 · Ctrl+B 中断 · Enter 立刻发送"
 
 #. English: A quote inside a !`command` would run as part of it. Move the quote
 #. out of the command to send.

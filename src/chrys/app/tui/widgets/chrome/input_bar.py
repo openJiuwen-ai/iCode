@@ -2,7 +2,7 @@
 
 """InputBar widget — multi-line input with send, interrupt and queued-message actions.
 
-Enter submits. Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline.
+Enter submits, or sends a queued draft now. Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline.
 Cross-platform system clipboard support (macOS pbcopy/pbpaste,
 Win32 ``SetClipboardData``/``GetClipboardData`` on Windows,
 xclip/xsel on Linux).
@@ -77,7 +77,10 @@ INPUT_NEW_DESCRIPTION = msg("tui.input.new_description", fallback="Create a new 
 INPUT_QUEUED = msg("tui.input.queued", fallback="Queued")
 INPUT_STEER = msg("tui.input.steer", fallback="Send Now")
 INPUT_CANCEL_QUEUE = msg("tui.input.cancel_queue", fallback="Cancel")
-_INPUT_QUEUED_HINT = msg("tui.input.queued_hint", fallback="Queued · Esc to cancel · Ctrl+B to interrupt")
+_INPUT_QUEUED_HINT = msg(
+    "tui.input.queued_hint",
+    fallback="Queued · Esc to cancel · Ctrl+B to interrupt · Enter to send now",
+)
 _INPUT_STEERING = msg("tui.input.steering", fallback="Steering…")
 _INPUT_STEER_DESCRIPTION = msg(
     "tui.input.steer_description", fallback="Try to stop the current work and continue with this message"
@@ -288,8 +291,7 @@ class _ChatTextArea(DraftTextArea, EnhancedTextArea):
     class Submitted(Message):
         """Posted when the user presses Enter."""
 
-        def __init__(self, text: str, action: _InputButtonAction) -> None:
-            self.text = text
+        def __init__(self, action: _InputButtonAction) -> None:
             self.action = action
             super().__init__()
 
@@ -528,16 +530,19 @@ class _ChatTextArea(DraftTextArea, EnhancedTextArea):
                 self.scroll_cursor_visible()
             return
         if event.key == "enter":
-            # Submit (suppressed when read_only / locked)
+            # Submit; while a queued draft holds the composer, Enter is the Send Now button's
+            # second trigger. Any other read-only key is swallowed.
             event.stop()
             event.prevent_default()
             action = self._capture_submit()
-            if self.read_only or self._enter_actions.pop(event, None) != replace(action, draft_revision=None):
+            frozen = self._enter_actions.pop(event, None)
+            if frozen != replace(action, draft_revision=None):
                 return
-            text = self.text.strip()
-            if text or self._suggestions_active:
+            if self.read_only and action.kind != "steer":
+                return
+            if self.read_only or self.text.strip() or self._suggestions_active:
                 self._reset_history_browsing()
-                self.post_message(self.Submitted(text, action))
+                self.post_message(self.Submitted(action))
             return
         await super()._on_key(event)
         if self._history_search_active:
@@ -638,7 +643,8 @@ class InputBar(Widget):
 
     - Enter or clicking Send submits the message.
     - Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline for multi-line input.
-    - While running, nonempty input offers Send beside Interrupt; a queued draft offers Send Now and Cancel.
+    - While running, nonempty input offers Send beside Interrupt; a queued draft offers Send Now and Cancel,
+      and Enter acts as Send Now.
     """
 
     DEFAULT_CSS = """
@@ -1322,7 +1328,11 @@ class InputBar(Widget):
     def on__chat_text_area_submitted(self, event: _ChatTextArea.Submitted) -> None:
         """Forward Enter-submit, selecting the active suggestion when applicable."""
         event.stop()
-        if event.action != self._button_action("chat-input"):
+        if not self.display or event.action != self._button_action("chat-input"):
+            return
+        if event.action.kind == "steer":
+            # Enter over a queued draft does what Send Now does: steer with the queued message.
+            self.post_message(self.SteerRequested(event.action.queue_generation))
             return
         self._submit_from_input()
 
@@ -1453,10 +1463,12 @@ class InputBar(Widget):
         )
 
     def _button_action(self, button_id: str | None) -> _InputButtonAction:
-        """Resolve a button's current meaning independently of its displayed label."""
+        """Resolve what a button, or Enter in ``chat-input``, means now, independently of any label."""
         kind: _InputActionKind = "unavailable"
         if button_id == "chat-input":
-            if not (self.locked or self.retry_pending or self.agent_loading):
+            if self.locked and self.injection_phase == "queued":
+                kind = "steer"
+            elif not (self.locked or self.retry_pending or self.agent_loading):
                 kind = "send"
         elif button_id == "running-send-btn":
             if self._can_send_while_running():

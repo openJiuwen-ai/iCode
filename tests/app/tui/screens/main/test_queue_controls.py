@@ -165,10 +165,9 @@ async def test_main_screen_queue_controls_keep_one_message_and_the_original_draf
         assert not bar.agent_loading
         assert bar.display
         if submit == "enter":
-            await pilot.press("enter", "enter")
+            await pilot.press("enter")
         else:
             await click_when_settled(pilot, "#running-send-btn")
-            await pilot.press("enter")
         assert main._state.pending_injection.active, (type(app.screen), bar.value, bar.locked, messages)
         await wait_for(
             lambda: len(messages) == 1 and not main._state.submit.active, pilot=pilot, description="one queued message"
@@ -180,7 +179,10 @@ async def test_main_screen_queue_controls_keep_one_message_and_the_original_draf
         injection_id = messages[0].injection_id
         assert injection_id is not None
 
-        if action in ("steer", "cancel"):
+        if action == "steer" and submit == "enter":
+            # A queued draft makes Enter the Send Now button's second trigger.
+            await pilot.press("enter")
+        elif action in ("steer", "cancel"):
             await click_when_settled(pilot, "#send-btn" if action == "steer" else "#cancel-btn")
         else:
             await pilot.press("escape" if action == "escape" else "ctrl+b")
@@ -191,6 +193,7 @@ async def test_main_screen_queue_controls_keep_one_message_and_the_original_draf
         assert isinstance(controls[0], expected)
         assert len(messages) == 1
         if action == "steer":
+            assert controls[0].injection_id == injection_id
             assert bar.locked and bar.injection_phase == "steering"
             assert str(bar.query_one("#send-btn", Button).label) == "Interrupt"
             assert not bar.query_one("#cancel-btn", Button).display
