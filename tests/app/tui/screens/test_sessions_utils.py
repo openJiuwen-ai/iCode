@@ -649,7 +649,7 @@ async def test_search_highlights_the_query_only_where_it_searches() -> None:
         screen.query_one("#search", Input).value = "mb"
         await wait_for_row_count(table, pilot, 1)
 
-        cells = dict(zip((column.key for column in screen._columns), table.get_row_at(0), strict=True))
+        cells = dict(zip((column.key.value for column in table.ordered_columns), table.get_row_at(0), strict=True))
         match_style = rich_style_from_textual_color(app.theme_variables["warning"], reverse=True)
         assert (cells["title"].plain, cells["size"].plain) == ("mb converter", "3.0 MB")
         assert [span for span in cells["title"].spans if span.style == match_style]

@@ -1053,7 +1053,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             await self._delete_session_and_new(session_id)
 
         async def _restore_session(session_id: str | WorkflowSessionPick) -> None:
-            await self._sessions.do_session_restore(session_id)
+            await self._restore_session_or_flash(session_id)
 
         def _cancel_pending_injection() -> bool:
             # Deferred attribute lookup: the navigation controller is built
@@ -2942,6 +2942,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def action_sessions(self) -> None:
         """Open the sessions modal (F1)."""
         self._navigation.sessions()
+
+    async def _restore_session_or_flash(self, session_id: str | WorkflowSessionPick) -> None:
+        request = await self._sessions.do_session_restore(session_id)
+        if request is RestoreRequest.SKIPPED and self._state.submit.active and composed_live(self):
+            self._view_adapter.flash_submit_still_sending()
 
     def _clear_current_session(self) -> None:
         """/clear — confirm, then delete the current session and start fresh."""

@@ -10,7 +10,7 @@ running app.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +18,7 @@ from chrys.app.tui.util.formatting import elide_middle, format_byte_size
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.session_surface import SessionSurface
-from chrys.foundation.util.session_ids import session_short_id
+from chrys.foundation.util.session_ids import session_id_key, session_short_id
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -33,6 +33,22 @@ _SESSION_ID_PREVIEW_LEN = 8
 
 _DIRECTORY_MAX_WIDTH = 24
 """Cell-width cap for the Directory column; longer names elide the middle."""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceNames:
+    """Workspace names resolved from one registry read, with the running session's current workspace overlaid."""
+
+    by_session: Mapping[str, str] = field(default_factory=dict)
+    unspecified: str = ""
+    """Shown when a session has no registered workspace."""
+    has_workspaces: bool = False
+    primary_dirs: Mapping[str, str] = field(default_factory=dict)
+    """The folder a workspace session opens in: its workspace's primary folder, by session."""
+
+
+_NO_WORKSPACE_NAMES = WorkspaceNames()
+"""No registry read (unreadable, or a browser opened without one): every Workspace cell stays empty."""
 
 _JUST_NOW = msg("tui.sessions.time.just_now", fallback="just now")
 _MINUTES_AGO = msg("tui.sessions.time.minutes_ago", fallback="{minute_count}m ago")
@@ -52,6 +68,7 @@ _YEARS_AGO = msg(
     fallback="1 year ago",
     plural_fallback="{count} years ago",
 )
+_COLUMN_WORKSPACE = msg("tui.sessions.column.workspace", fallback="Workspace")
 _COLUMN_SESSION_ID = msg("tui.sessions.column.session_id", fallback="Session ID")
 _COLUMN_TITLE = msg("tui.sessions.column.title", fallback="Title")
 _COLUMN_DIRECTORY = msg("tui.sessions.column.directory", fallback="Directory")
@@ -172,10 +189,21 @@ def title_display(meta: SessionMeta) -> str:
     return meta.display_title or f"{meta.session_id[:_SESSION_ID_PREVIEW_LEN]}.."
 
 
-def directory_display(meta: SessionMeta) -> str:
-    """Trailing directory name of the session's primary cwd."""
-    full_path = meta.primary_cwd or ""
+def listed_cwd(meta: ChatSessionMeta, workspace_names: WorkspaceNames) -> str:
+    """The folder a restore opens *meta* in, as registered when the list was read."""
+    return workspace_names.primary_dirs.get(session_id_key(meta.session_id), meta.primary_cwd)
+
+
+def directory_display(full_path: str) -> str:
+    """Trailing directory name of a session's folder."""
     return full_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if full_path else ""
+
+
+def workspace_display(meta: ChatSessionMeta, workspace_names: WorkspaceNames) -> str:
+    """The same resolved name drives the cell, search and sort order."""
+    if not workspace_names.has_workspaces:
+        return ""
+    return workspace_names.by_session.get(session_id_key(meta.session_id), workspace_names.unspecified)
 
 
 @dataclass(frozen=True)
@@ -197,9 +225,11 @@ class SessionColumn:
 
 
 COLUMNS: tuple[SessionColumn, ...] = (
+    # Sized by its content like Directory (cells are elided at the cap), so short names keep the table narrow.
+    SessionColumn("workspace", _COLUMN_WORKSPACE, None, lambda row: row.cells.get("workspace", "").casefold()),
     SessionColumn("id", _COLUMN_SESSION_ID, 12, lambda row: session_short_id(row.meta.session_id)),
     SessionColumn("title", _COLUMN_TITLE, 30, lambda row: row.cells["title"].lower()),
-    SessionColumn("directory", _COLUMN_DIRECTORY, None, lambda row: directory_display(row.meta).lower()),
+    SessionColumn("directory", _COLUMN_DIRECTORY, None, lambda row: directory_display(row.cwd).lower()),
     SessionColumn(
         "last_active", _COLUMN_LAST_ACTIVE, 11, lambda row: row.updated_at, default_reverse=True, searched=False
     ),
@@ -215,11 +245,15 @@ COLUMNS: tuple[SessionColumn, ...] = (
     ),
 )
 
+_COLUMNS_BY_KEY = {column.key: column for column in COLUMNS}
+
+# The Workflow tab keeps the chat columns it shares by key, so a column
+# added to (or moved within) the chat table never changes this one.
 WORKFLOW_COLUMNS: tuple[SessionColumn, ...] = (
-    COLUMNS[0],
+    _COLUMNS_BY_KEY["id"],
     SessionColumn("workflow", _COLUMN_WORKFLOW, 30, lambda row: row.cells["workflow"].casefold()),
-    COLUMNS[2],
-    COLUMNS[3],
+    _COLUMNS_BY_KEY["directory"],
+    _COLUMNS_BY_KEY["last_active"],
     SessionColumn("status", _COLUMN_STATUS, 11, lambda row: row.cells["status"].casefold()),
     SessionColumn(
         "runs",
@@ -229,13 +263,11 @@ WORKFLOW_COLUMNS: tuple[SessionColumn, ...] = (
         default_reverse=True,
         numeric=True,
     ),
-    COLUMNS[5],
+    _COLUMNS_BY_KEY["size"],
 )
 
 DEFAULT_SORT_COLUMN = "last_active"
 DEFAULT_SORT_REVERSE = True
-
-_COLUMNS_BY_KEY = {column.key: column for column in COLUMNS}
 
 
 def column_by_key(key: str, *, workflow: bool = False) -> SessionColumn:
@@ -244,23 +276,33 @@ def column_by_key(key: str, *, workflow: bool = False) -> SessionColumn:
     return columns.get(key, columns[DEFAULT_SORT_COLUMN])
 
 
-def _identity_cells(meta: SessionMeta) -> dict[str, str]:
+def _identity_cells(meta: SessionMeta, cwd: str) -> dict[str, str]:
     return {
         "id": session_short_id(meta.session_id),
-        "directory": elide_middle(directory_display(meta), _DIRECTORY_MAX_WIDTH),
+        "directory": elide_middle(directory_display(cwd), _DIRECTORY_MAX_WIDTH),
     }
 
 
-def _chat_search_cells(meta: ChatSessionMeta) -> dict[str, str]:
-    """The searched cells of a Chat row: every column but Last Active and Size."""
-    return _identity_cells(meta) | {"title": title_display(meta), "turns": str(meta.turn_count)}
+def _chat_search_cells(meta: ChatSessionMeta, workspace_names: WorkspaceNames = _NO_WORKSPACE_NAMES) -> dict[str, str]:
+    """The searched cells of a Chat row: every column but Last Active and Size.
+
+    The Workspace cell holds the whole name, like Title: the column shows at
+    most 16 cells of it, so the search must not depend on what it shows.
+    """
+    cells = _identity_cells(meta, listed_cwd(meta, workspace_names)) | {
+        "title": title_display(meta),
+        "turns": str(meta.turn_count),
+    }
+    if workspace_names.has_workspaces:
+        cells["workspace"] = workspace_display(meta, workspace_names)
+    return cells
 
 
 def _workflow_search_cells(
     meta: WorkflowSessionMeta, run: WorkflowRunMeta, status_labels: Mapping[str, str]
 ) -> dict[str, str]:
     """The searched cells of a Workflow row: every column but Last Active and Size."""
-    return _identity_cells(meta) | {
+    return _identity_cells(meta, meta.primary_cwd) | {
         "workflow": run.title,
         "runs": str(meta.run_count),
         "status": status_labels[run.status],
@@ -272,16 +314,24 @@ def row_cells(
     *,
     now: datetime | None = None,
     render_message: Callable[[MessageRef], str] = format_message,
+    workspace_names: WorkspaceNames = _NO_WORKSPACE_NAMES,
 ) -> dict[str, str]:
     """Plain display strings for a Chat row, keyed by column key."""
-    return _chat_search_cells(meta) | {
+    cells = _chat_search_cells(meta, workspace_names)
+    cells.setdefault("workspace", "")
+    return cells | {
         "last_active": time_ago(meta.updated_at, now=now, render_message=render_message),
         "size": format_size(meta.size_bytes),
     }
 
 
 def _searchable_haystack(cells: dict[str, str]) -> str:
-    """Lower-cased searchable text: exactly the visible strings of the searched cells.
+    """Lower-cased searchable text: the strings of the searched cells.
+
+    These are the cells before the table fits them to the window: the full
+    title and workspace name, and the directory name already capped at
+    ``_DIRECTORY_MAX_WIDTH``. Text the window then hides is still found; the
+    row tooltip shows it whole, with the match highlighted.
 
     Deliberately NOT the full session UUID or full cwd path — matching text
     the table doesn't display reads as a false positive (a row appears with
@@ -312,12 +362,14 @@ def normalize_query(query: str) -> str:
     return query.strip().lower()
 
 
-def chat_match(meta: ChatSessionMeta, query_norm: str) -> SearchMatch:
+def chat_match(
+    meta: ChatSessionMeta, query_norm: str, workspace_names: WorkspaceNames = _NO_WORKSPACE_NAMES
+) -> SearchMatch:
     """Match a Chat session against a normalized query: searched cells, then indexed prompt excerpts."""
     if not query_norm:
         return SearchMatch(cells=True, prompt=False)
     return SearchMatch(
-        cells=query_norm in _searchable_haystack(_chat_search_cells(meta)),
+        cells=query_norm in _searchable_haystack(_chat_search_cells(meta, workspace_names)),
         prompt=query_norm in _prompt_haystack(meta).lower(),
     )
 
@@ -336,7 +388,11 @@ def workflow_match(meta: WorkflowSessionMeta, query_norm: str, status_labels: Ma
 
 
 def rank_search_matches(
-    entries: Iterable[SessionListingEntry], query: str, *, status_labels: Mapping[str, str]
+    entries: Iterable[SessionListingEntry],
+    query: str,
+    *,
+    status_labels: Mapping[str, str],
+    workspace_names: WorkspaceNames = _NO_WORKSPACE_NAMES,
 ) -> tuple[SessionListingEntry, ...]:
     """The entries whose session matches *query*, ranked as the browser lists search results.
 
@@ -351,7 +407,11 @@ def rank_search_matches(
     prompt_only: list[SessionListingEntry] = []
     for entry in entries:
         meta = entry.meta
-        match = chat_match(meta, query_norm) if meta.kind == "chat" else workflow_match(meta, query_norm, status_labels)
+        match = (
+            chat_match(meta, query_norm, workspace_names)
+            if meta.kind == "chat"
+            else workflow_match(meta, query_norm, status_labels)
+        )
         if match.cells:
             visible.append(entry)
         elif match.prompt:
@@ -481,6 +541,8 @@ class SessionRow:
     """Prompt context around the match ('' unless ``prompt_only``);
     surfaced in the row tooltip as match evidence."""
     workflow: WorkflowRunMeta | None = None
+    cwd: str = ""
+    """The folder the session opens in: its workspace's primary folder, else its saved one."""
 
     @property
     def key(self) -> str:
@@ -530,6 +592,7 @@ def build_workflow_rows(
                     prompt_only=not match.cells,
                     prompt_snippet=_prompt_snippet(run.input_text, query_norm) if not match.cells else "",
                     workflow=run,
+                    cwd=meta.primary_cwd,
                 )
             )
 
@@ -546,6 +609,7 @@ def build_session_rows(
     query: str = "",
     now: datetime | None = None,
     render_message: Callable[[MessageRef], str] = format_message,
+    workspace_names: WorkspaceNames = _NO_WORKSPACE_NAMES,
 ) -> list[SessionRow]:
     """Assemble display rows: fork tree, per-level sorting, query filter.
 
@@ -598,10 +662,17 @@ def build_session_rows(
     roots.extend(meta for short, meta in by_short.items() if short not in reachable)
 
     rows_by_short = {
-        short: SessionRow(meta, 0, "", row_cells(meta, now=now, render_message=render_message), True)
+        short: SessionRow(
+            meta,
+            0,
+            "",
+            row_cells(meta, now=now, render_message=render_message, workspace_names=workspace_names),
+            True,
+            cwd=listed_cwd(meta, workspace_names),
+        )
         for short, meta in by_short.items()
     }
-    matches = {short: chat_match(meta, query_norm) for short, meta in by_short.items()}
+    matches = {short: chat_match(meta, query_norm, workspace_names) for short, meta in by_short.items()}
     cell_matched = {short: match.cells for short, match in matches.items()}
     prompt_matched = {short: match.prompt for short, match in matches.items()}
     matched = {short: match.any for short, match in matches.items()}

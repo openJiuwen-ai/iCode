@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from rich.cells import cell_len
@@ -35,13 +36,18 @@ from chrys.app.tui.i18n import LocaleController, render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.screens.sessions.presenter import (
     COLUMNS,
+    DEFAULT_SORT_COLUMN,
+    DEFAULT_SORT_REVERSE,
     SURFACE_LABELS,
     WORKFLOW_COLUMNS,
+    SessionColumn,
     SessionRow,
     WorkflowSessionPick,
+    WorkspaceNames,
     build_session_rows,
     build_workflow_rows,
     column_by_key,
+    directory_display,
     fork_anchors,
     format_tokens,
     last_interaction_display,
@@ -51,6 +57,7 @@ from chrys.app.tui.screens.sessions.presenter import (
     title_display,
     workflow_status_labels,
 )
+from chrys.app.tui.util.formatting import elide_end, take_cells
 from chrys.app.tui.util.rich_style import rich_style_from_textual_color
 from chrys.app.tui.widgets import (
     Checkbox,
@@ -66,8 +73,9 @@ from chrys.foundation.i18n import DisplayPath, MessageRef, msg
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.files import surrogate_safe_text
-from chrys.foundation.util.session_ids import session_short_id
+from chrys.foundation.util.session_ids import session_id_key, session_short_id
 from chrys.service.state.session_listing import SESSION_PAGE_SIZE, SessionListing, page_slice
+from chrys.service.workspaces.registry import UNSPECIFIED
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -78,6 +86,7 @@ if TYPE_CHECKING:
 
     from chrys.service.state.session_listing import SessionPage
     from chrys.service.state.store import SessionMeta, StateStore
+    from chrys.service.workspaces.registry import WorkspaceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +95,13 @@ _SEARCH_DEBOUNCE_SECONDS = 0.15
 
 _TREE_LEVEL_WIDTH = 2
 """Cells one fork level adds to the Session ID column ('└ ' / '│ ')."""
+
+_WORKSPACE_MAX_WIDTH = 16
+"""Cell-width cap for the Workspace column; longer names elide at the end."""
+_DIRECTORY_MIN_WIDTH = 14
+"""The narrowest Directory gets when it lends cells to Workspace."""
+_TITLE_MIN_WIDTH = 20
+"""The narrowest Title gets when it lends cells to Workspace."""
 
 _EVERY_SURFACE = frozenset(SessionSurface)
 """A search result listing is filtered already: page it whatever surfaces its sessions have."""
@@ -116,6 +132,10 @@ _SEARCH_PLACEHOLDER = msg(
     "tui.sessions.search_placeholder",
     fallback="Search all sessions… (IDs, titles, directories & your prompts)",
 )
+_WORKSPACE_SEARCH_PLACEHOLDER = msg(
+    "tui.sessions.search_placeholder.workspace",
+    fallback="Search all sessions… (workspaces, IDs, titles, directories & your prompts)",
+)
 _RESUME = msg("tui.sessions.button.resume", fallback="Resume")
 _DELETE = msg("tui.sessions.button.delete", fallback="Delete")
 _CLOSE = msg("tui.sessions.button.close", fallback="Close")
@@ -123,6 +143,7 @@ _LOADING_SESSIONS = msg("tui.sessions.loading", fallback="Loading sessions")
 _SESSION_COUNT = msg("tui.sessions.count", fallback="{count_text} sessions")
 _WORKFLOW_SESSION_COUNT = msg("tui.sessions.workflow_count", fallback="{count_text} workflow sessions")
 _TOOLTIP_TITLE = msg("tui.sessions.tooltip.title", fallback="Title: {title}")
+_TOOLTIP_WORKSPACE = msg("tui.sessions.tooltip.workspace", fallback="Workspace: {workspace}")
 _TOOLTIP_AGENT = msg("tui.sessions.tooltip.agent", fallback="Agent: {agent}")
 _TOOLTIP_PROMPT_MATCH = msg("tui.sessions.tooltip.prompt_match", fallback="Prompt match: {prompt}")
 _TOOLTIP_DIRECTORY = msg("tui.sessions.tooltip.directory", fallback="Directory: {path}")
@@ -139,6 +160,26 @@ _DELETE_SESSION_MESSAGE = msg(
     fallback='Delete session\n"{session_id}"?\n\nThis cannot be undone.',
     multiline=True,
 )
+
+
+def _elide_middle_whole(text: str, max_width: int) -> str:
+    """Narrow a Directory cell to *max_width* cells, eliding the middle at whole graphemes.
+
+    Not ``elide_middle``: the search reads that function's 24-cell directory text, and
+    cutting it at graphemes would change which sessions a query finds.
+    """
+    if cell_len(text) <= max_width:
+        return text
+    if max_width <= 0:
+        return ""
+    budget = max_width - 1  # the ellipsis cell
+    tail = budget // 2
+    return f"{take_cells(text, budget - tail)}…{take_cells(text, tail, tail=True)}"
+
+
+def _shown_cell(value: str) -> str:
+    """A cell's text as the table shows it."""
+    return sanitize_legacy_scalar(surrogate_safe_text(value))
 
 
 class _SessionTable(DataTable):
@@ -158,8 +199,20 @@ class _SessionTable(DataTable):
         self._last_hover_row: int = -1
 
     def set_row_tooltips(self, tooltips: dict[int, Text]) -> None:
-        """Set tooltip text for each row index."""
+        """Set tooltip text for each row index.
+
+        Rows may now hold other sessions, so drop the hovered row and its shown
+        tooltip; the next mouse move shows the new row's.
+        """
         self._row_tooltips = tooltips
+        self._last_hover_row = -1
+        self.tooltip = None
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        # Another row is now under a still mouse; the next move shows its tooltip.
+        self._last_hover_row = -1
+        self.tooltip = None
 
     def _on_mouse_move(self, event: events.MouseMove) -> None:
         # Textual dispatches DataTable._on_mouse_move after this method; do
@@ -169,15 +222,17 @@ class _SessionTable(DataTable):
             row_idx = meta["row"]
             if row_idx != self._last_hover_row:
                 self._last_hover_row = row_idx
-                tip = self._row_tooltips.get(row_idx)
                 # Defer so it runs after screen._handle_mouse_move hides tooltip
-                self.call_later(self._apply_row_tooltip, tip)
+                self.call_later(self._apply_row_tooltip, row_idx)
         else:
             self._last_hover_row = -1
             self.tooltip = None
 
-    def _apply_row_tooltip(self, tip: Text | None) -> None:
-        """Apply the tooltip and force immediate display."""
+    def _apply_row_tooltip(self, row_idx: int) -> None:
+        """Apply the row's current tooltip and force immediate display."""
+        if row_idx != self._last_hover_row:
+            return  # a refresh or scroll since the move dropped this row
+        tip = self._row_tooltips.get(row_idx)
         self.tooltip = tip
         if tip is not None:
             import contextlib
@@ -250,11 +305,18 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         workflow_mode: bool = False,
         surfaces: Collection[SessionSurface] | None = None,
         on_surfaces_changed: Callable[[frozenset[SessionSurface]], None] | None = None,
+        workspaces: WorkspaceRegistry | None = None,
+        current_workspace_name: str | None = None,
     ) -> None:
         self._state_store = state_store
         self._current_session_id = current_session_id
         self._locale_controller = locale_controller
         self._workflow_mode = workflow_mode
+        self._workspaces = workspaces
+        self._current_workspace_name = current_workspace_name
+        """The running session's effective workspace; ``None`` is Unspecified."""
+        self._workspace_names = WorkspaceNames()
+        """What the Workspace column shows, from the one registry read this browser makes."""
         self._kind: Literal["chat", "workflow"] = "workflow" if workflow_mode else "chat"
         self._columns = WORKFLOW_COLUMNS if workflow_mode else COLUMNS
         self._offered_surfaces = tuple(
@@ -287,8 +349,10 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         self._rendered_sessions: list[SessionMeta] = []
         self._session_ids: list[str] = []
         self._rows: list[SessionRow] = []
-        self._sort_column: str = column_by_key("").key
-        self._sort_reverse: bool = column_by_key("").default_reverse
+        self._column_widths: dict[str, int | None] = {}
+        """Every column's width as last laid out, so a resize updates only changed columns."""
+        self._sort_column = DEFAULT_SORT_COLUMN
+        self._sort_reverse = DEFAULT_SORT_REVERSE
         self._loading = True
         self._loading_request: tuple[int, str] | None = None
         """The page and search the load in flight asked for (the page may be clamped); None once a load finishes."""
@@ -353,6 +417,39 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         if self._hydration is not None:
             self._hydration.cancel()
 
+    async def _read_workspace_names(self) -> WorkspaceNames:
+        """Resolve every session's workspace once; the running session uses the one it is in now."""
+        if self._workflow_mode:
+            return WorkspaceNames()
+        unspecified = self._render_message(UNSPECIFIED.bind())
+        registry = self._workspaces
+        current_id = self._current_session_id
+        current_name = self._current_workspace_name if self._current_workspace_name is not None else unspecified
+
+        def read_names() -> tuple[WorkspaceNames, MessageRef | None]:
+            if registry is None:
+                return WorkspaceNames(), None
+            snapshot = registry.snapshot()
+            if snapshot.error is not None:
+                return WorkspaceNames(), snapshot.error.display_message
+            if not snapshot.workspaces:
+                return WorkspaceNames(), None
+            names: dict[str, str] = {}
+            folders: dict[str, str] = {}
+            for session_id in snapshot.sessions:
+                if (workspace := snapshot.session_workspace(session_id)) is not None:
+                    names[session_id_key(session_id)] = workspace.name
+                    # Restore opens a workspace session in the registered primary folder, the running one too.
+                    folders[session_id_key(session_id)] = workspace.primary_cwd
+            if current_id:
+                names[session_id_key(current_id)] = current_name
+            return WorkspaceNames(names, unspecified, has_workspaces=True, primary_dirs=folders), None
+
+        names, error = await asyncio.to_thread(read_names)
+        if error is not None and self._composed_live:
+            self.notify(self._render_message(error), severity="warning", markup=False)
+        return names
+
     # ------------------------------------------------------------------
     # Loading & rendering
     # ------------------------------------------------------------------
@@ -397,13 +494,26 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         self._loading = True
         self._update_chrome()
         if self._listing is None:
-            self._listing = await self._state_store.open_session_listing(kind=self._kind)
+            # The first load reads both; later loads reuse them until the browser is opened again.
+            self._workspace_names, self._listing = await asyncio.gather(
+                self._read_workspace_names(), self._state_store.open_session_listing(kind=self._kind)
+            )
+            if not self._composed_live:
+                return
+            if self._workspace_names.has_workspaces:
+                self.query_one("#search", _SearchInput).placeholder = self._render_message(
+                    _WORKSPACE_SEARCH_PLACEHOLDER.bind()
+                )
         listing = self._listing
         surfaces = self._surfaces
         candidates = listing.filtered(surfaces)
         if query:
             ranked = await asyncio.to_thread(
-                rank_search_matches, candidates, query, status_labels=workflow_status_labels(self._render_message)
+                rank_search_matches,
+                candidates,
+                query,
+                status_labels=workflow_status_labels(self._render_message),
+                workspace_names=self._workspace_names,
             )
             selected, page, page_count, match_count = page_slice(
                 SessionListing(listing.kind, ranked), _EVERY_SURFACE, page
@@ -484,29 +594,17 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         if render_source is None:
             render_source = self._rendered_sessions
 
-        build_rows = build_workflow_rows if self._workflow_mode else build_session_rows
-        rows = build_rows(
-            render_source,
-            sort_column=self._sort_column,
-            sort_reverse=self._sort_reverse,
-            query=query,
-            render_message=self._render_message,
-        )
+        rows = self._build_rows(render_source)
+        labels, widths = self._column_layout(rows)
         self._rows = rows
         self._session_ids = [row.key for row in rows]
 
         table.clear(columns=True)
-        max_depth = max((row.depth for row in rows), default=0)
+        self._column_widths = widths
         for column in self._columns:
-            label = self._render_message(column.label.bind())
-            if column.key == self._sort_column:
-                label += " ↓" if self._sort_reverse else " ↑"
-            width = column.width
-            if width is not None:
-                if column.key == "id":
-                    width += _TREE_LEVEL_WIDTH * max_depth
-                width = max(width, cell_len(label))
-            table.add_column(Text(label), width=width, key=column.key)
+            if column.key not in widths:
+                continue
+            table.add_column(Text(labels[column.key]), width=widths[column.key], key=column.key)
 
         highlight = query.strip()
         match_style = self._match_style()
@@ -528,6 +626,128 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         self.query_one("#delete", Button).disabled = not has_rows
         self._update_chrome()
 
+    def _build_rows(self, sessions: list[SessionMeta]) -> list[SessionRow]:
+        if self._workflow_mode:
+            return build_workflow_rows(
+                sessions,
+                sort_column=self._sort_column,
+                sort_reverse=self._sort_reverse,
+                query=self._shown_query,
+                render_message=self._render_message,
+            )
+        return build_session_rows(
+            sessions,
+            sort_column=self._sort_column,
+            sort_reverse=self._sort_reverse,
+            query=self._shown_query,
+            render_message=self._render_message,
+            workspace_names=self._workspace_names,
+        )
+
+    def _column_layout(self, rows: list[SessionRow]) -> tuple[dict[str, str], dict[str, int | None]]:
+        """Header labels and cell widths; ``None`` sizes a column to its content.
+
+        Always show Workspace when the registry has entries. Borrow only the needed
+        cells from Directory, then Title, if that fits every column. Otherwise keep
+        the original widths and let the table scroll horizontally.
+        The room is the box's: the table fills it, and the box is laid out even
+        while the table hides behind the loading indicator. A cell stays free for
+        the vertical scrollbar, so its appearing or disappearing does not change
+        the widths.
+        """
+        table = self.query_one("#sessions", _SessionTable)
+        max_depth = max((row.depth for row in rows), default=0)
+        labels: dict[str, str] = {}
+        widths: dict[str, int | None] = {}
+        for column in self._columns:
+            if column.key == "workspace" and not self._workspace_names.has_workspaces:
+                continue
+            label = self._render_message(column.label.bind())
+            if column.key == self._sort_column:
+                label += " ↓" if self._sort_reverse else " ↑"
+            labels[column.key] = label
+            width = column.width
+            if width is not None:
+                if column.key == "id":
+                    width += _TREE_LEVEL_WIDTH * max_depth
+                width = max(width, cell_len(label))
+            widths[column.key] = width
+        if "workspace" not in widths:
+            return labels, widths
+
+        def content_width(key: str) -> int:
+            # Measure the text the cells show (control characters replaced).
+            return max([cell_len(labels[key]), *(cell_len(_shown_cell(row.cells[key])) for row in rows)])
+
+        header_width = cell_len(labels["workspace"])
+        workspace = max(header_width, min(content_width("workspace"), _WORKSPACE_MAX_WIDTH))
+        box = self.query_one("#container").content_region.width
+        if box:
+            others = sum(
+                (content_width(key) if width is None else width) + 2 * table.cell_padding
+                for key, width in widths.items()
+                if key != "workspace"
+            )
+            room = box - table.styles.scrollbar_size_vertical - others - 2 * table.cell_padding
+            donors = {
+                key: (content_width(key) if (width := widths[key]) is None else width, minimum)
+                for key, minimum in (("directory", _DIRECTORY_MIN_WIDTH), ("title", _TITLE_MIN_WIDTH))
+            }
+            shortage = max(0, workspace - room)
+            if shortage <= sum(max(0, width - minimum) for width, minimum in donors.values()):
+                for key, (width, minimum) in donors.items():
+                    borrowed = min(max(0, width - minimum), shortage)
+                    if borrowed:
+                        widths[key] = width - borrowed
+                        shortage -= borrowed
+        widths["workspace"] = workspace
+        return labels, widths
+
+    def on_resize(self) -> None:
+        # Measured once the box has its new size, like ConfirmDialog's resize.
+        self.call_after_refresh(self._fit_workspace_column)
+
+    def on_screen_resume(self) -> None:
+        # A resize while another screen was on top skipped the refit.
+        self.call_after_refresh(self._fit_workspace_column)
+
+    def _fit_workspace_column(self) -> None:
+        """Refit the donor columns; Workspace's desired width does not depend on the window."""
+        if not self._composed_live or self.app.screen is not self or "workspace" not in self._column_widths:
+            return
+        widths = self._column_layout(self._rows)[1]
+        if widths == self._column_widths:
+            return
+        changed = {key for key, width in widths.items() if width != self._column_widths[key]}
+        self._column_widths = widths
+        table = self.query_one("#sessions", _SessionTable)
+        highlight = self._shown_query.strip()
+        match_style = self._match_style()
+        for column in self._columns:
+            key = column.key
+            if key not in changed:
+                continue
+            width = widths[key]
+            table_column = table.ordered_columns[table.get_column_index(key)]
+            table_column.auto_width = width is None
+            table_column.width = width or 0
+            if key == "directory":
+                widest: tuple[str, Text] | None = None
+                for row in self._rows:
+                    value = self._cell_text(row, column, highlight, match_style)
+                    table.update_cell(row.key, key, value)
+                    if widest is None or cell_len(value.plain) > cell_len(widest[1].plain):
+                        widest = row.key, value
+                if widest is not None:
+                    # Measure once, after every cell has landed. The widest cell also
+                    # restores an auto-width column when its first row is shorter.
+                    table.update_cell(widest[0], key, widest[1], update_width=True)
+            elif self._rows:
+                # Re-submit one unchanged cell to invalidate render caches and dimensions
+                # through DataTable's public API; width-only columns keep their Text objects.
+                row_key = self._rows[0].key
+                table.update_cell(row_key, key, table.get_cell(row_key, key), update_width=True)
+
     def _match_style(self) -> Style:
         """Search-match highlight style, themed to the warning color."""
         warning = self.app.theme_variables.get("warning", "yellow")
@@ -535,36 +755,53 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
 
     def _row_texts(self, row: SessionRow, highlight: str, match_style: Style) -> list[Text]:
         """Cell renderables for one row, with tree guides and match marks."""
-        texts: list[Text] = []
-        for column in self._columns:
-            cell = sanitize_legacy_scalar(surrogate_safe_text(row.cells[column.key]))
-            value = Text(cell, justify="right" if column.numeric else "left")
-            if highlight:
-                if column.searched:
-                    value.highlight_words([highlight], match_style, case_sensitive=False)
-                if not row.matched:
-                    # Ancestor kept only to anchor a matching fork subtree.
-                    value.stylize("dim")
-                elif row.prompt_only:
-                    # Match lives in prompt text — nothing in the row
-                    # highlights, so italics flag it (tooltip has the
-                    # matched context).
-                    value.stylize("italic")
-            if column.key == "id" and row.tree_prefix:
-                value = Text(row.tree_prefix, style="dim").append_text(value)
-            texts.append(value)
-        return texts
+        return [
+            self._cell_text(row, column, highlight, match_style)
+            for column in self._columns
+            if column.key in self._column_widths
+        ]
+
+    def _cell_text(self, row: SessionRow, column: SessionColumn, highlight: str, match_style: Style) -> Text:
+        """Render one cell, including width-dependent clipping and search styling."""
+        cell = _shown_cell(row.cells[column.key])
+        if column.key == "workspace" and (width := self._column_widths.get("workspace")) is not None:
+            cell = elide_end(cell, width)
+        if column.key == "directory" and (width := self._column_widths.get("directory")) is not None:
+            # From the whole folder name: the 24-cell search text may already hold half a flag.
+            cell = _elide_middle_whole(_shown_cell(directory_display(row.cwd)), width)
+        value = Text(cell, justify="right" if column.numeric else "left")
+        if highlight:
+            if column.searched:
+                value.highlight_words([highlight], match_style, case_sensitive=False)
+            if not row.matched:
+                # Ancestor kept only to anchor a matching fork subtree.
+                value.stylize("dim")
+            elif row.prompt_only:
+                # Match lives in prompt text; the tooltip holds its context.
+                value.stylize("italic")
+        if column.key == "id" and row.tree_prefix:
+            value = Text(row.tree_prefix, style="dim").append_text(value)
+        return value
 
     def _row_tooltip(self, row: SessionRow) -> Text:
         """Hover tooltip, one labelled line per fact.
 
         The agent profile lives only here since its column was dropped
-        (rarely distinguishing between rows).
+        (rarely distinguishing between rows).  Search matches are marked in
+        the searchable values, not in the labels.
         """
         meta = row.meta
+        value_starts: dict[str, int] = {}
+
+        def value_line(filled: MessageRef, empty: MessageRef) -> str:
+            """The line with its value, noting where the value starts past the label."""
+            line, label = self._render_message(filled), self._render_message(empty)
+            value_starts[line] = len(label) if line.startswith(label) else 0
+            return line
+
         if row.workflow is not None:
             parts = [
-                self._render_message(_TOOLTIP_WORKFLOW.bind(workflow=row.workflow.title)),
+                value_line(_TOOLTIP_WORKFLOW.bind(workflow=row.workflow.title), _TOOLTIP_WORKFLOW.bind(workflow="")),
                 self._render_message(_TOOLTIP_STATUS.bind(status=row.cells["status"])),
                 self._render_message(_TOOLTIP_RUN.bind(run_id=row.workflow.run_id)),
             ]
@@ -572,13 +809,25 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
             if meta.kind != "chat":
                 raise ValueError("Unsupported session kind for chat tooltip.")
             parts = [
-                self._render_message(_TOOLTIP_TITLE.bind(title=title_display(meta))),
+                value_line(_TOOLTIP_TITLE.bind(title=title_display(meta)), _TOOLTIP_TITLE.bind(title="")),
                 self._render_message(_TOOLTIP_AGENT.bind(agent=profile_display(meta))),
             ]
+            workspace = row.cells.get("workspace", "")
+            if (width := self._column_widths.get("workspace")) is not None and cell_len(workspace) > width:
+                parts.append(
+                    value_line(_TOOLTIP_WORKSPACE.bind(workspace=workspace), _TOOLTIP_WORKSPACE.bind(workspace=""))
+                )
         if row.prompt_snippet:
-            parts.insert(1, self._render_message(_TOOLTIP_PROMPT_MATCH.bind(prompt=row.prompt_snippet)))
-        if meta.primary_cwd:
-            parts.append(self._render_message(_TOOLTIP_DIRECTORY.bind(path=DisplayPath(meta.primary_cwd))))
+            parts.insert(
+                1,
+                value_line(
+                    _TOOLTIP_PROMPT_MATCH.bind(prompt=row.prompt_snippet), _TOOLTIP_PROMPT_MATCH.bind(prompt="")
+                ),
+            )
+        if row.cwd:
+            parts.append(
+                value_line(_TOOLTIP_DIRECTORY.bind(path=DisplayPath(row.cwd)), _TOOLTIP_DIRECTORY.bind(path=""))
+            )
         if meta.kind == "chat":
             parts.append(self._render_message(_TOOLTIP_TURNS.bind(turns=meta.turn_count)))
             parts.append(self._render_message(_TOOLTIP_TOTAL_TOKENS.bind(tokens=format_tokens(meta.total_tokens))))
@@ -592,7 +841,14 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
             parts.append(
                 self._render_message(_TOOLTIP_FORKED_FROM.bind(session_id=session_short_id(meta.parent_session_id)))
             )
-        return Text("\n".join(parts))
+        lines = [Text(line) for line in parts]
+        if row.matched and (query := self._shown_query.strip()):
+            pattern, style = re.compile(re.escape(query), re.IGNORECASE), self._match_style()
+            for line in lines:
+                if (start := value_starts.get(line.plain)) is not None:
+                    for match in pattern.finditer(line.plain, start):
+                        line.stylize(style, match.start(), match.end())
+        return Text("\n").join(lines)
 
     def _restore_cursor(
         self,

@@ -11366,6 +11366,12 @@ msgstr ""
 msgid "tui.sessions.column.workflow"
 msgstr ""
 
+#. English: Workspace
+#. chrys-meta={"fingerprint":"3f3902d9426921206aca4f1dffdcc3696a5c89dcd4cf503153f6e6c1aa1ee7dd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/presenter.py
+msgid "tui.sessions.column.workspace"
+msgstr ""
+
 #. English: {count_text} sessions
 #. chrys-meta={"fingerprint":"b5cf8bf49be293cf7b698d8fbc506a5a75fce11b2793d49c53e50c142124dc68","multiline":false,"placeholders":["count_text"]}
 #: src/chrys/app/tui/screens/sessions/screen.py
@@ -11419,6 +11425,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"3e45418cb122de3d72564c493b36d3f6380ff6c4bad686e8fb01c7455aa74d74","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.search_placeholder"
+msgstr ""
+
+#. English: Search all sessions… (workspaces, IDs, titles, directories & your
+#. prompts)
+#. chrys-meta={"fingerprint":"c952bc7f689b0d7d3c0721760ae79a3073b39b6e37f3235104668d1e558e9a3f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/screen.py
+msgid "tui.sessions.search_placeholder.workspace"
 msgstr ""
 
 #. English: Cancelled
@@ -11608,6 +11621,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"f2105149383df510d8a066fbfe107a6b3f12e855abf5138e6b7f7a2d30f9c781","multiline":false,"placeholders":["workflow"]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.tooltip.workflow"
+msgstr ""
+
+#. English: Workspace: {workspace}
+#. chrys-meta={"fingerprint":"88fe56d3bd40a89427d34135ff5894ca7060b8cca98379555cd9ad381563d74a","multiline":false,"placeholders":["workspace"]}
+#: src/chrys/app/tui/screens/sessions/screen.py
+msgid "tui.sessions.tooltip.workspace"
 msgstr ""
 
 #. English: {count_text} workflow sessions
@@ -18019,6 +18038,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"55928ad76545ad5df051c9bd777a1ee7e893c22e3a80a33bd462792a08f3cf2d","multiline":false,"placeholders":["selector"]}
 #: src/chrys/service/workspaces/registry.py
 msgid "workspaces.selector_not_found"
+msgstr ""
+
+#. English: Unspecified
+#. chrys-meta={"fingerprint":"2174bf3e2c757af188e4f0687ed090eb9cea2384042c8c0ee65a2292bb12a2c6","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.unspecified"
 msgstr ""
 
 #. English: The working directory does not exist. Choose a replacement

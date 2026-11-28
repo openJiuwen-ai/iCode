@@ -11584,6 +11584,12 @@ msgstr "轮次"
 msgid "tui.sessions.column.workflow"
 msgstr "工作流"
 
+#. English: Workspace
+#. chrys-meta={"fingerprint":"3f3902d9426921206aca4f1dffdcc3696a5c89dcd4cf503153f6e6c1aa1ee7dd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/presenter.py
+msgid "tui.sessions.column.workspace"
+msgstr "工作区"
+
 #. English: {count_text} sessions
 #. chrys-meta={"fingerprint":"b5cf8bf49be293cf7b698d8fbc506a5a75fce11b2793d49c53e50c142124dc68","multiline":false,"placeholders":["count_text"]}
 #: src/chrys/app/tui/screens/sessions/screen.py
@@ -11642,6 +11648,13 @@ msgstr "正在加载会话"
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.search_placeholder"
 msgstr "搜索全部会话…（匹配 ID、标题、目录和你的提示词）"
+
+#. English: Search all sessions… (workspaces, IDs, titles, directories & your
+#. prompts)
+#. chrys-meta={"fingerprint":"c952bc7f689b0d7d3c0721760ae79a3073b39b6e37f3235104668d1e558e9a3f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/screen.py
+msgid "tui.sessions.search_placeholder.workspace"
+msgstr "搜索全部会话…（匹配工作区、ID、标题、目录和你的提示词）"
 
 #. English: Cancelled
 #. chrys-meta={"fingerprint":"f0ea7e7ae2fa270015fa78e6b5fcff27cc4ffa6d30271bc6d150455cbf1c252f","multiline":false,"placeholders":[]}
@@ -11828,6 +11841,12 @@ msgstr "轮次：{turns}"
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.tooltip.workflow"
 msgstr "工作流：{workflow}"
+
+#. English: Workspace: {workspace}
+#. chrys-meta={"fingerprint":"88fe56d3bd40a89427d34135ff5894ca7060b8cca98379555cd9ad381563d74a","multiline":false,"placeholders":["workspace"]}
+#: src/chrys/app/tui/screens/sessions/screen.py
+msgid "tui.sessions.tooltip.workspace"
+msgstr "工作区：{workspace}"
 
 #. English: {count_text} workflow sessions
 #. chrys-meta={"fingerprint":"8d1f8dcdf511e3bb3d61b63ef7cba8256421438f5b886c5fc4f0cf6f148c9806","multiline":false,"placeholders":["count_text"]}
@@ -18168,6 +18187,12 @@ msgstr "工作区选择条件匹配多个工作区：{selector}"
 #: src/chrys/service/workspaces/registry.py
 msgid "workspaces.selector_not_found"
 msgstr "找不到工作区：{selector}"
+
+#. English: Unspecified
+#. chrys-meta={"fingerprint":"2174bf3e2c757af188e4f0687ed090eb9cea2384042c8c0ee65a2292bb12a2c6","multiline":false,"placeholders":[]}
+#: src/chrys/service/workspaces/registry.py
+msgid "workspaces.unspecified"
+msgstr "未指定"
 
 #. English: The working directory does not exist. Choose a replacement
 #. directory first.

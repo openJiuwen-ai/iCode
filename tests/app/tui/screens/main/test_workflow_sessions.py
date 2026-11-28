@@ -81,6 +81,7 @@ async def test_session_modes_and_archived_workflow_restore(
         assert {row.meta.session_id for row in browser._rows} == {chat_id}
         assert str(browser.query_one("#container").border_title) == ("Chat Sessions" if locale == "en" else "聊天会话")
         assert {column.key for column in browser._columns} == {
+            "workspace",
             "id",
             "title",
             "directory",
