@@ -20,6 +20,7 @@ from chrys.app.tui.screens.settings.dialog import pane_id
 from chrys.app.tui.screens.settings.layout import tab_by_id
 from chrys.app.tui.screens.settings.panes.notifications import NotificationsPane
 from chrys.app.tui.screens.settings.rows import SettingRow
+from chrys.foundation import guard
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.i18n.formatting import format_message
@@ -83,7 +84,7 @@ async def test_mounting_the_dialog_writes_nothing_and_focuses_a_control() -> Non
         assert ports.notification_ports.saved == []
         assert isinstance(dialog.focused, Select)
         rows = dialog.rows()
-        assert len(rows) == ROW_COUNT == 38
+        assert len(rows) == ROW_COUNT == 38 + (3 if guard.installed() else 0)  # the sandbox's rows need its package
         assert all(row.spec.key != "trajectory.verify_commands" for row in rows)
         assert dialog.query_one(TabbedContent).active == pane_id(GENERAL_TAB_ID)
 

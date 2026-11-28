@@ -196,3 +196,9 @@ icode run "根据上一轮的结果，补充缺少的测试" --agent Code -s <se
 | `2` | 命令行参数无效，例如缺少 `--agent`，或同时提供或均未提供提示词和 `--task`。用法说明以纯文本写入标准错误，即使指定了 `--json` 也是如此。 |
 | `124` | 内部操作超时。`icode run` 不限制任务的总运行时间。 |
 | `130` | 运行被中断。 |
+
+## 沙箱启动策略
+
+`--sandbox` 请求可选的文件访问沙箱；`--no-sandbox` 为本次启动关闭沙箱。请求的沙箱不可用时，`--sandbox-on-unavailable=refuse` 拒绝启动，`--sandbox-on-unavailable=warn` 则明确告警后继续运行。这个参数优先于 `CHRYS_FILE_SANDBOX_ON_UNAVAILABLE` 和用户的 `sandbox.files.on_unavailable` 设置。
+
+只有你启用了工作目录配置，工作目录设置才能请求沙箱。如果这是唯一的请求来源，沙箱不可用时只告警，不阻止启动。它不能削弱你在个人设置中开启的沙箱或失败策略。分叉的 TUI 窗口会保留父窗口的沙箱选择和实际失败策略。

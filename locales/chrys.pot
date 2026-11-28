@@ -1694,6 +1694,48 @@ msgstr ""
 msgid "settings.rollback.snapshots_keep.label"
 msgstr ""
 
+#. English: Sandbox: hide paths in its logs and trajectories
+#. chrys-meta={"fingerprint":"2c81e34ab9996dcf75031847296e9a944d5cbe01669cca86ed4cec0ff788a217","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.audit.redact_paths.label"
+msgstr ""
+
+#. English: Sandbox: extra paths commands may read
+#. chrys-meta={"fingerprint":"4c4db386668eb2bc246f1b370f5f0cd5b9980caa5d9c2184f38bf0c040903786","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.commands.allow_paths.label"
+msgstr ""
+
+#. English: Sandbox: extra paths commands may change
+#. chrys-meta={"fingerprint":"f294c4709ed579553d2b1a05cfc5024b8f2b21dd25b9c5b59aebaf35f3f603e4","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.commands.write_paths.label"
+msgstr ""
+
+#. English: File-access sandbox (next start)
+#. chrys-meta={"fingerprint":"16ee330a654ba8e3335f8414c77b647998ed9d3df4fced2c47c739ac6d0fbda1","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.enabled.label"
+msgstr ""
+
+#. English: Sandbox: extra never-granted paths
+#. chrys-meta={"fingerprint":"70cf357cd596bb41e5af11ec2f6135bb8963e5d6c170103d85cc036dca06af0d","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.floor.extra.label"
+msgstr ""
+
+#. English: Sandbox: extra paths iCode may read
+#. chrys-meta={"fingerprint":"cf6ebf2331e4f075328302e5e4e56ff35f754d51baad88c42c786ab4a8845a8f","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.main.allow_paths.label"
+msgstr ""
+
+#. English: If the sandbox is unavailable
+#. chrys-meta={"fingerprint":"e4b77d384997b2eea6b74bb6413481fa24b44630086d978121da1dbddcbdabdf","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.sandbox.files.on_unavailable.label"
+msgstr ""
+
 #. English: Auto-generate session titles
 #. chrys-meta={"fingerprint":"cd2486f2b154cb5b2fd8d6f71b221150a4099c93a305280eb5e73b2ea8bae622","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -4483,6 +4525,12 @@ msgstr ""
 msgid "tui.approval.presentation.read_files"
 msgstr ""
 
+#. English: Read outside the workspace
+#. chrys-meta={"fingerprint":"fbb0a50d4871933609be0548fd38284ff33f34e076f1aeabbeb716e3dbab4334","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.presentation.read_outside"
+msgstr ""
+
 #. English: Remote tool
 #. chrys-meta={"fingerprint":"f33aa17733f8d6df641b05bdfbc32e58e822baa6b6a538452f0a9703965794e0","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
@@ -4499,6 +4547,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"6458e49baa5ac97f6713c2e42e74f32053c25a16bfdad82ac448689f18257cd8","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.presentation.search"
+msgstr ""
+
+#. English: Write outside the workspace
+#. chrys-meta={"fingerprint":"a4a6498465b8dca76f443511822cc3efdf776af1c4f1a8a831d35109e1891463","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.presentation.write_outside"
 msgstr ""
 
 #. English: Reason (optional, sent to agent on Decline)
@@ -4543,11 +4597,24 @@ msgstr ""
 msgid "tui.approval.reuse.files"
 msgstr ""
 
+#. English: Approve alone allows only this one request; tick the box to allow
+#. the whole folder for longer.
+#. chrys-meta={"fingerprint":"ddaa2127124ef3f1d5be8ea7e4abf0d15ffc89bb969b009f073f9432f2f4b724","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.once_hint"
+msgstr ""
+
 #. English: Dangerous extra flags (such as --force) will also run without
 #. asking.
 #. chrys-meta={"fingerprint":"2ad4ebd0721e33da1220e6dfcdb2401222780695c16b4145a020abc891b5ebaf","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.prefix_warning"
+msgstr ""
+
+#. English: Don't ask again to read in this folder
+#. chrys-meta={"fingerprint":"2b7c937315d65b3a76755c0b9de9fc989fb24ed05e8a491afec4abb405343692","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.read_folder"
 msgstr ""
 
 #. English: This session
@@ -4566,6 +4633,18 @@ msgstr ""
 #. chrys-meta={"fingerprint":"6e37e71d02e38f81ecec007c76eb522161280b8332d539d606163234756f1eae","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.title"
+msgstr ""
+
+#. English: This turn
+#. chrys-meta={"fingerprint":"823faa63bd722780fe8c6c7105372225e699fa2c9d9d4f65f235eb6aa429d519","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.turn"
+msgstr ""
+
+#. English: Until the agent finishes answering this message.
+#. chrys-meta={"fingerprint":"db5db7e020669474610c9fcf839218a9b4433a68516e03f8096b9871022314d1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.turn_hint"
 msgstr ""
 
 #. English: This working directory
@@ -4590,6 +4669,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"4070bea18d5c3d431186a8fd9d5f3bb84d2a19dad8d8ddf461c7911afdf7c655","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.workspace_hint"
+msgstr ""
+
+#. English: Don't ask again to write in this folder
+#. chrys-meta={"fingerprint":"47a7c2731609f8b38e6c2b93669b8da9b4c5a13561bbec41916d0cbac99f0100","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.write_folder"
 msgstr ""
 
 #. English: The risk definitions could not be loaded.
@@ -5143,6 +5228,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"99e6642c40ca6803d957f93561b82790a0fc0079634f8095cae1f13718617ace","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/binding_display.py
 msgid "tui.binding.quit"
+msgstr ""
+
+#. English: Sandbox
+#. chrys-meta={"fingerprint":"2d57328c39be50e23df01174d7439ad822b0913f10edadfb271b429952ecf62f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.binding.sandbox"
 msgstr ""
 
 #. English: Sessions
@@ -7315,6 +7406,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"58d0462925bb8271c5dfdb656ced6ef53c2fa1315716ae758b81a4198c3a193b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/fork_session.py
 msgid "tui.fork_session.title.success"
+msgstr ""
+
+#. English: ⚠ Sandbox NOT active
+#. chrys-meta={"fingerprint":"a905410d53795fcb82bc49f6fee2a8bd94e8002bb7c01453cbd90cd0c92dc62c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/sandbox_warning.py
+msgid "tui.guard.unavailable"
 msgstr ""
 
 #. English: Language
@@ -11922,6 +12019,21 @@ msgstr ""
 #. chrys-meta={"fingerprint":"b5c2c2a5af954993106ce8505979f26313b9d0e7836ca9f7e53829db01c3f7dd","multiline":false,"placeholders":["default"]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.rollback.snapshots_keep"
+msgstr ""
+
+#. English: Confine file reads to the working folders and the folders you
+#. grant. Applies from the next start; a running session keeps what it started
+#. with.
+#. chrys-meta={"fingerprint":"ff2a8b898532a6da65312d8373e6292e2da1fa3908213137b3b87deb41b39845","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.sandbox.files.enabled"
+msgstr ""
+
+#. English: What to do when the sandbox is on but this computer can't provide
+#. it: refuse to start, or warn and start without it.
+#. chrys-meta={"fingerprint":"f867412e525fa7e8e5e1ce142517cdb1253e9148b85112ec1e804a3b776816c8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.sandbox.files.on_unavailable"
 msgstr ""
 
 #. English: Update the session title after each successful turn.

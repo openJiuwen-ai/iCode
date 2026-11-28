@@ -13,6 +13,7 @@ from textual.app import App
 
 from chrys.app.tui.notifications.settings import NotificationSettings
 from chrys.app.tui.screens.settings import NOTIFICATIONS_TAB_ID, TABS, SettingsDialog, Suggestions
+from chrys.app.tui.screens.settings.layout import shown_rows
 from chrys.app.tui.screens.settings.panes.notifications import NotificationsPane
 from chrys.app.tui.theme import TuiVariableDefaultsMixin
 from chrys.foundation.config.settings import Settings
@@ -21,7 +22,7 @@ from chrys.foundation.config.spec import ChoiceProvider, SettingOrigin, Source, 
 from chrys.foundation.i18n import MessageRef
 from tests.support.waiting import wait_for
 
-ROW_COUNT = sum(len(section.rows) for tab in TABS if tab.id != NOTIFICATIONS_TAB_ID for section in tab.sections)
+ROW_COUNT = sum(len(shown_rows(section)) for tab in TABS if tab.id != NOTIFICATIONS_TAB_ID for section in tab.sections)
 """Setting rows across every tab; the notifications tab is a pane of its own."""
 
 

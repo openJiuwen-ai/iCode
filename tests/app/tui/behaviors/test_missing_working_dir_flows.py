@@ -418,7 +418,12 @@ async def test_resume_current_session_after_its_folder_moves(
             ]
             assert engine.session.workspace_id is None
             assert registry.snapshot().workspace_id_for_session(session_id) is None
-            await wait_for(hook_output.is_file, pilot=pilot, description="session_restored hook ran")
+            # Opening the report creates it before write_text has flushed its contents.
+            await wait_for(
+                lambda: hook_output.is_file() and hook_output.stat().st_size > 0,
+                pilot=pilot,
+                description="session_restored hook wrote its report",
+            )
             assert Path(hook_output.read_text(encoding="utf-8")).resolve() == replacement.resolve()
             assert not screen._state.run.agent_loading
             assert not screen._state.session.restoring_session

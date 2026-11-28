@@ -137,6 +137,7 @@ class ApprovalInputs(TypedDict):
     session_archive_read_roots: NotRequired[list[Path] | None]
     turn_context: NotRequired[TurnContextHolder | None]
     extension_hooks: NotRequired[ExtensionToolHooks | None]
+    sandbox_can_request: NotRequired[bool]
 
 
 class AskUserInputs(TypedDict):

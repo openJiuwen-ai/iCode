@@ -237,3 +237,9 @@ When the page reconnects, the server starts a new iCode instance. Follow the ste
 ### Copying fails
 
 If a copy dialog appears, click **Copy**. If copying still fails, select the text in the dialog and copy it manually using your browser's copy shortcut.
+
+## File-access sandbox
+
+Use `icode serve --sandbox` (or `icode --sandbox serve`) to request the optional file-access sandbox in every browser session. The HTTP server itself stays outside the sandbox. Use `--no-sandbox` to turn it off for those sessions; without either switch, each session reads the usual settings and environment.
+
+If the requested sandbox is unavailable, a session refuses to start by default. Add `--sandbox-on-unavailable=warn` only if you want it to continue without confinement. Such a session prints a warning and keeps **Sandbox NOT active** in its footer, even if the sandbox package is missing.

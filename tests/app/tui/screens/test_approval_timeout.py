@@ -201,3 +201,52 @@ async def test_deadline_waits_for_dialog_readiness(
         assert set(controller._timeouts) == {"mounting"}
         callbacks[0]()
         assert len(port.timers) == 1
+
+
+async def test_sandbox_approval_second_cancel_retracts_the_real_queue(approval_wait):
+    import asyncio
+
+    from chrys.foundation.events.bus import EventBus
+    from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
+    from tests.service.agent_middleware.test_approval import _ctx, _require_all_policy
+    from tests.support.waiting import wait_for
+
+    controller, port = approval_wait
+    bus = EventBus()
+    retracting = asyncio.Event()
+    await bus.subscribe(ApprovalRequest, controller.on_request)
+
+    async def retract(event):
+        retracting.set()
+        await controller.on_cancelled(event)
+
+    await bus.subscribe(ApprovalCancelled, retract)
+    mw = ApprovalMiddleware(_require_all_policy("filesystem.write"), bus)
+    ctx = _ctx("write_file", "filesystem.write", {"path": "/tmp/x"})
+    task = asyncio.create_task(
+        mw.ask(ctx, path="/tmp/x", tool_name="write_file", kind="sandbox", intent="write", offer=None)
+    )
+    locked = False
+    try:
+        await wait_for(lambda: bool(controller.open_dialogs) or task.done(), description="sandbox dialog open")
+        assert not task.done()
+        request_ids = list(controller.open_dialogs)
+        await controller.request_lock.acquire()
+        locked = True
+        task.cancel()
+        await wait_for(lambda: retracting.is_set() or task.done(), description="sandbox retraction waiting for lock")
+        assert not task.done()
+        task.cancel()
+        await asyncio.sleep(0)  # deliver the second cancel while the queue lock is held
+        controller.request_lock.release()
+        locked = False
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not controller.open_dialogs
+        assert port.cancelled_dialogs == request_ids
+    finally:
+        if locked:
+            controller.request_lock.release()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await mw.close()

@@ -207,6 +207,34 @@ def test_run_from_a_deleted_directory_with_workdir_starts(
     assert capsys.readouterr().err == ""
 
 
+@pytest.mark.parametrize("option", ["-C", "--w"])
+@pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute"])
+def test_dispatch_from_deleted_directory_with_trusted_workdir_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], option: str, absolute: bool
+) -> None:
+    from chrys.app.cli import app as cli_app
+    from chrys.foundation import guard
+    from chrys.foundation.platform import get_platform
+    from tests.support.secure_files import plant_owner_only_bytes
+
+    config = get_platform().config_dir
+    config.mkdir(parents=True, exist_ok=True)
+    plant_owner_only_bytes(config / "settings.yaml", b"workdir.config_enabled: true\n")
+    monkeypatch.setattr(guard, "_current", guard._NoGuard())
+    calls = _record_run_command(monkeypatch)
+    workdir = str(tmp_path) if absolute else "."
+    monkeypatch.setattr(sys, "argv", ["icode", "run", "--no-sandbox", option, workdir, "hello", "-a", "Headless"])
+    _enter_deleted_directory(tmp_path, monkeypatch)
+
+    rc = cli_app.main()
+
+    output = capsys.readouterr()
+    assert rc == (0 if absolute else 1)
+    assert [args.cwd for args in calls] == ([workdir] if absolute else [])
+    assert output.out == ""
+    assert output.err == ("" if absolute else f"Error: {_MISSING_WITH_WORKDIR}\n")
+
+
 # --- icode workflow -----------------------------------------------------------
 
 

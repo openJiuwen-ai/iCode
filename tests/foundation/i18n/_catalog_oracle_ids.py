@@ -378,6 +378,8 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.binding.models",
     "tui.binding.paste",
     "tui.binding.quit",
+    "tui.binding.sandbox",
+    "tui.guard.unavailable",
     "tui.binding.trajectory",
     "tui.binding.sessions",
     "tui.binding.shell_to_background",

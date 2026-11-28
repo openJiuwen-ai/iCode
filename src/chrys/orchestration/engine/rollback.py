@@ -620,16 +620,26 @@ class RollbackController:
                     selected = paths if only_paths is None else paths & only_paths
                     result.untouched_paths = sorted(paths)
 
+                    from chrys.foundation import guard
+
+                    workspace = self._session.workspace
+                    rollback_roots = (
+                        [workspace.primary_cwd, *(wd.path for wd in workspace.working_dirs)] if workspace else []
+                    )
+                    rollback_session_id = self._session.session_id
+
                     def _apply_file_rollback() -> None:
                         result.untouched_paths = sorted(paths - selected)
                         try:
-                            result.restore_results = tracker.rollback_turns(
-                                rollback_turn_ids,
-                                only_paths=only_paths,
-                                plan=plan,
-                            )
-                            if selected.difference(row.path for row in result.restore_results):
-                                result.warnings.append(RollbackFileWarning.RESTORE_UNKNOWN)
+                            # Restore files under the same scope as the tool calls.
+                            with guard.current().session_scope(rollback_session_id, rollback_roots, workspace_cwd):
+                                result.restore_results = tracker.rollback_turns(
+                                    rollback_turn_ids,
+                                    only_paths=only_paths,
+                                    plan=plan,
+                                )
+                                if selected.difference(row.path for row in result.restore_results):
+                                    result.warnings.append(RollbackFileWarning.RESTORE_UNKNOWN)
                         except Exception:
                             logger.exception("Rollback file-restore failed (target_turn=%d)", target_turn)
                             result.warnings.append(RollbackFileWarning.RESTORE_UNKNOWN)

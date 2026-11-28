@@ -20,15 +20,15 @@ from chrys.service.agent_middleware.events.result_persistence import RESULT_APPR
 
 
 def rejection_result_metadata(metadata: Any) -> dict[str, Any]:
-    """Return public tool-result metadata for a user or hook rejection."""
+    """Return public tool-result metadata for a user, hook or sandbox rejection."""
     source = rejection_source(metadata) or "user"
     message = rejection_message(metadata, source)
     result: dict[str, Any] = {
         TOOL_FAILED_METADATA_KEY: True,
         TOOL_ERROR_MESSAGE_METADATA_KEY: message,
     }
-    if source == "hook":
-        result[TOOL_ERROR_KIND_METADATA_KEY] = "hook_denied"
+    if source in {"hook", "sandbox"}:
+        result[TOOL_ERROR_KIND_METADATA_KEY] = f"{source}_denied"
     else:
         result[RESULT_APPROVAL_METADATA_KEY] = "user_rejected"
         result[TOOL_ERROR_KIND_METADATA_KEY] = "approval_rejected"
@@ -40,7 +40,7 @@ def rejection_source(metadata: Any) -> str:
     if not isinstance(metadata, dict):
         return ""
     source = metadata.get(_REJECTION_SOURCE_KEY)
-    return source if source in {"user", "hook"} else ""
+    return source if source in {"user", "hook", "sandbox"} else ""
 
 
 def hook_confirmation(metadata: Any) -> str:
@@ -60,4 +60,6 @@ def rejection_message(metadata: Any, source: str) -> str:
             return message
     if source == "hook":
         return "Tool execution was blocked by hook."
+    if source == "sandbox":
+        return "Tool execution was blocked by sandbox."
     return "Tool execution was rejected by user."

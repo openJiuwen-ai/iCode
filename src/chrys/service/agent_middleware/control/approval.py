@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
+from chrys.foundation import guard
 from chrys.foundation.events.types import (
     ApprovalCancelled,
     ApprovalRequest,
@@ -247,12 +248,14 @@ class ApprovalMiddleware(FunctionMiddleware):
         turn_context: TurnContextHolder | None = None,
         reuse: ApprovalReuseBinding | None = None,
         extension_hooks: ExtensionToolHooks | None = None,
+        sandbox_can_request: bool = True,
     ) -> None:
         from chrys.service.approval.turn_context import TurnContextHolder
 
         self._policy = approval_policy
         self._extension_hooks = extension_hooks
         self._reuse = reuse
+        self._guard_can_request = sandbox_can_request
         self._publisher: InvocationPublisher | None = None
         self._bus = event_bus
         self._session_id = session_id
@@ -284,6 +287,7 @@ class ApprovalMiddleware(FunctionMiddleware):
         for root in session_archive_read_roots or []:
             with contextlib.suppress(OSError, ValueError):
                 self._session_archive_read_roots.append(os.path.realpath(os.path.abspath(root)))
+        self._guard_calls = guard.current().tool_calls(self)
 
     def bind_publisher(self, publisher: InvocationPublisher | None) -> None:
         """Bind future tool callbacks; in-flight approvals retain their publisher."""
@@ -330,6 +334,83 @@ class ApprovalMiddleware(FunctionMiddleware):
         return self._approval_mode
 
     async def process(
+        self,
+        context: FunctionInvocationContext,
+        call_next: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Run the call within the process guard (the file-access sandbox, when on), then the approval flow."""
+        await self._guard_calls.run(context, lambda: self._process_approval(context, call_next))
+
+    # ── chrys.foundation.guard.ToolCallHost: what the guard may use ──
+
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
+    @property
+    def workspace_roots(self) -> list[str]:
+        return self._workspace_roots
+
+    @property
+    def workspace_cwd(self) -> str | None:
+        return self._workspace_cwd
+
+    @property
+    def can_request(self) -> bool:
+        return self._guard_can_request
+
+    def tool_kind(self, context: FunctionInvocationContext) -> str:
+        return get_tool_kind(context.function) or self._tool_kinds.get(context.function.name, "")
+
+    def may_ask(self) -> bool:
+        return self._approval_mode is ApprovalMode.MANUAL
+
+    def user_messages(self) -> list[str]:
+        return self._turn_context.user_messages
+
+    async def publish(self, event: Event) -> None:
+        await self._bus.publish(event)
+
+    def refuse(self, context: FunctionInvocationContext, message: str) -> None:
+        context.metadata[_APPROVAL_REJECTED_KEY] = True
+        context.metadata[_REJECTION_SOURCE_KEY] = "sandbox"
+        context.metadata[_REJECTION_MESSAGE_KEY] = message.removeprefix("Error: ")
+        context.result = message
+
+    async def ask(
+        self, context: FunctionInvocationContext, *, path: str, tool_name: str, kind: str, intent: str, offer: Any
+    ) -> ApprovalResponse | None:
+        """Publish the guard's request about *path* and wait for the person's answer."""
+        request_id = uuid4().hex[:_SHORT_ID_LEN]
+        published_future: asyncio.Future[ApprovalResponse] | None = None
+        try:
+            async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id) as correlation:
+                published_future = correlation.future
+                await self._bus.publish(
+                    ApprovalRequest(
+                        request_id=request_id,
+                        call_id=get_call_id(context),
+                        tool_name=tool_name,
+                        # Not a tool: no kind that overrides, hooks or remembered answers key on.
+                        tool_kind="",
+                        presentation_kind=kind,
+                        args={"path": path, "tool": tool_name},
+                        intent_summary=intent,
+                        session_id=self._session_id,
+                        caller_name=self._caller_name,
+                        user_message=self._user_message,
+                        workspace_roots=list(self._workspace_roots),
+                        workspace_cwd=self._workspace_cwd or "",
+                        reuse_offer=offer,
+                    )
+                )
+                return await correlation.future
+        except BaseException as exc:
+            if published_future is not None and _unanswered(published_future):
+                await self._publish_abandoned(request_id, ended_by=exc)
+            raise
+
+    async def _process_approval(
         self,
         context: FunctionInvocationContext,
         call_next: Callable[[], Awaitable[None]],
@@ -759,7 +840,8 @@ class ApprovalMiddleware(FunctionMiddleware):
         await self._approval_arbiter.ensure_subscription()
 
     async def close(self) -> None:
-        """Release EventBus subscriptions owned by this middleware."""
+        """Release EventBus subscriptions owned by this middleware, and its part in the process guard."""
+        self._guard_calls.close()
         await self._approval_arbiter.close()
 
     def drain_decisions(self) -> list[dict[str, str]]:
@@ -777,7 +859,8 @@ class ApprovalMiddleware(FunctionMiddleware):
         self._decisions = [dict(decision) for decision in snapshot.decisions]
 
     def reset(self) -> None:
-        """Clear per-run state."""
+        """Clear per-run state; a new turn also ends the last turn's grants in the process guard."""
+        self._guard_calls.end_turn()
         self._decisions.clear()
         # Keep the EventBus subscription alive across runs; close() owns resource teardown.
         self._approval_arbiter.clear()

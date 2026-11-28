@@ -66,6 +66,8 @@ _RUN_COMMAND = msg("tui.approval.presentation.run_command", fallback="Run comman
 _READ_FILES = msg("tui.approval.presentation.read_files", fallback="Read files")
 _EDIT_FILES = msg("tui.approval.presentation.edit_files", fallback="Edit files")
 _SEARCH = msg("tui.approval.presentation.search", fallback="Search")
+_READ_OUTSIDE = msg("tui.approval.presentation.read_outside", fallback="Read outside the workspace")
+_WRITE_OUTSIDE = msg("tui.approval.presentation.write_outside", fallback="Write outside the workspace")
 _REMOTE_TOOL = msg("tui.approval.presentation.remote_tool", fallback="Remote tool")
 _APPROVAL_REQUIRED = msg("tui.approval.required_title", fallback="Approval Required")
 _EVALUATING = msg("tui.approval.evaluating", fallback="Evaluating")
@@ -77,6 +79,12 @@ _APPROVE = msg("tui.approval.button.approve", fallback="Approve (Y)")
 _DECLINE = msg("tui.approval.button.decline", fallback="Decline (N)")
 _REASON_TITLE = msg("tui.approval.reason_title", fallback="Add a decline reason")
 _REUSE_TITLE = msg("tui.approval.reuse.title", fallback="Remember Approval")
+_REUSE_TURN = msg("tui.approval.reuse.turn", fallback="This turn")
+_REUSE_TURN_HINT = msg("tui.approval.reuse.turn_hint", fallback="Until the agent finishes answering this message.")
+_REUSE_ONCE_HINT = msg(
+    "tui.approval.reuse.once_hint",
+    fallback="Approve alone allows only this one request; tick the box to allow the whole folder for longer.",
+)
 _REUSE_SESSION = msg("tui.approval.reuse.session", fallback="This session")
 _REUSE_WORKSPACE = msg("tui.approval.reuse.workspace", fallback="This workspace")
 _REUSE_WORKDIR = msg("tui.approval.reuse.workdir", fallback="This working directory")
@@ -91,6 +99,14 @@ _REUSE_FILES = msg(
     "tui.approval.reuse.files",
     fallback="Don't ask again to modify these files",
 )
+_REUSE_WRITE_FOLDER = msg(
+    "tui.approval.reuse.write_folder",
+    fallback="Don't ask again to write in this folder",
+)
+_REUSE_READ_FOLDER = msg(
+    "tui.approval.reuse.read_folder",
+    fallback="Don't ask again to read in this folder",
+)
 _REUSE_COMMAND = msg(
     "tui.approval.reuse.command",
     fallback="Don't ask again for this command",
@@ -104,11 +120,14 @@ _REUSE_PREFIX_WARNING = msg(
 _FLAGGED = msg("tui.approval.flagged", fallback="Flagged by Auto-Review")
 
 
+_SANDBOX_OFFERS = frozenset({"read_folder", "write_folder"})
 _PRESENTATION_LABELS: dict[str, MessageDef] = {
     KIND_SHELL: _RUN_COMMAND,
     KIND_FILESYSTEM_READ: _READ_FILES,
     KIND_FILESYSTEM_WRITE: _EDIT_FILES,
     "search": _SEARCH,
+    "sandbox.read": _READ_OUTSIDE,
+    "sandbox.write": _WRITE_OUTSIDE,
     "remote": _REMOTE_TOOL,
 }
 
@@ -356,29 +375,45 @@ class ApprovalDialog(
         localizer = widget_localizer(self)
         with VerticalGroup(id="approval-reuse") as reuse_group:
             reuse_group.border_title = Text(render_str(localizer, _REUSE_TITLE.bind()))
-            description = _REUSE_FILES if offer.kind == "files" else _REUSE_COMMAND
+            description = {
+                "files": _REUSE_FILES,
+                "read_folder": _REUSE_READ_FOLDER,
+                "write_folder": _REUSE_WRITE_FOLDER,
+            }.get(offer.kind, _REUSE_COMMAND)
             yield Checkbox(
                 Text(render_str(localizer, description.bind())),
                 id="reuse-remember",
                 compact=True,
                 tooltip=Text(mark_hidden_format(sanitize_legacy_block("\n".join(offer.targets)))),
             )
+            if offer.kind in _SANDBOX_OFFERS:
+                yield Static(Text(render_str(localizer, _REUSE_ONCE_HINT.bind()), style="dim"), id="reuse-once-hint")
             with VerticalGroup(id="reuse-options") as options:
                 options.display = False
                 with RadioSet(id="reuse-scope", compact=True):
+                    if offer.kind in _SANDBOX_OFFERS:
+                        yield _ApprovalRadioButton(
+                            Text(render_str(localizer, _REUSE_TURN.bind())),
+                            value=True,
+                            id="reuse-turn",
+                            tooltip=render_str(localizer, _REUSE_TURN_HINT.bind()),
+                        )
                     yield _ApprovalRadioButton(
                         Text(render_str(localizer, _REUSE_SESSION.bind())),
-                        value=True,
+                        value=offer.kind not in _SANDBOX_OFFERS,
                         id="reuse-session",
                         tooltip=render_str(localizer, _REUSE_SESSION_HINT.bind()),
                     )
-                    shared_label = _REUSE_WORKSPACE if offer.workspace else _REUSE_WORKDIR
-                    shared_hint = _REUSE_WORKSPACE_HINT if offer.workspace else _REUSE_WORKDIR_HINT
-                    yield _ApprovalRadioButton(
-                        Text(render_str(localizer, shared_label.bind())),
-                        id="reuse-workspace",
-                        tooltip=render_str(localizer, shared_hint.bind()),
-                    )
+                    # A write grant never outlives its session.
+                    if offer.kind != "write_folder":
+                        workspace_offer = offer.workspace and offer.kind not in _SANDBOX_OFFERS
+                        shared_label = _REUSE_WORKSPACE if workspace_offer else _REUSE_WORKDIR
+                        shared_hint = _REUSE_WORKSPACE_HINT if workspace_offer else _REUSE_WORKDIR_HINT
+                        yield _ApprovalRadioButton(
+                            Text(render_str(localizer, shared_label.bind())),
+                            id="reuse-workdir" if offer.kind in _SANDBOX_OFFERS else "reuse-workspace",
+                            tooltip=render_str(localizer, shared_hint.bind()),
+                        )
                 if offer.prefix:
                     with Collapsible(title=render_str(localizer, _REUSE_ADVANCED.bind()), id="reuse-advanced"):
                         yield Checkbox(
@@ -406,8 +441,12 @@ class ApprovalDialog(
         offer = self._reuse_offer
         if offer is None or not self.query_one("#reuse-remember", Checkbox).value:
             return ""
+        if offer.kind in _SANDBOX_OFFERS and self.query_one("#reuse-turn", RadioButton).value:
+            return "EXACT_TURN"
         session = self.query_one("#reuse-session", RadioButton).value
         prefix = offer.prefix and self.query_one("#reuse-extra-args", Checkbox).value
+        if offer.kind in _SANDBOX_OFFERS:
+            return "EXACT_SESSION" if session else "EXACT_WORKDIR"
         if prefix:
             return "PREFIX_SESSION" if session else "PREFIX_WORKSPACE"
         return "EXACT_SESSION" if session else "EXACT_WORKSPACE"

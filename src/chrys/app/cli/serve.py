@@ -265,6 +265,25 @@ def build_parser() -> argparse.ArgumentParser:
         "-h", "--help", action="help", default=argparse.SUPPRESS, help="Show this help message and exit"
     )
     parser.add_argument(
+        "--sandbox",
+        action="store_true",
+        dest="sandbox",
+        default=None,
+        help="Request the file-access sandbox in browser sessions.",
+    )
+    parser.add_argument(
+        "--no-sandbox",
+        action="store_false",
+        dest="sandbox",
+        help="Disable the file-access sandbox in browser sessions.",
+    )
+    parser.add_argument(
+        "--sandbox-on-unavailable",
+        choices=("refuse", "warn"),
+        default=None,
+        help="What browser sessions do if the requested sandbox is unavailable.",
+    )
+    parser.add_argument(
         "--host",
         default=_DEFAULT_HOST,
         help="Host or IP address to bind; use 0.0.0.0 or :: to listen on all interfaces.",
@@ -329,9 +348,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_tui_command(session_id: str | None = None) -> str:
+def build_tui_command(
+    session_id: str | None = None, *, sandbox: bool | None = None, on_unavailable: str | None = None
+) -> str:
     """Return the shell command used by textual-serve to launch the Chrys TUI."""
-    argv = [*_entrypoint_argv(), _TUI_SUBPROCESS_COMMAND]
+    from chrys.foundation.guard import startup_flags
+
+    argv = [*_entrypoint_argv(), _TUI_SUBPROCESS_COMMAND, *startup_flags(sandbox, on_unavailable)]
     if session_id is not None:
         argv.extend(["--session", startup_session_id(session_id)])
     return _shell_join(argv)
@@ -1165,7 +1188,7 @@ def run_command(args: argparse.Namespace) -> None:
     if auth_config is not None:
         server_kwargs["auth_config"] = auth_config
     server = server_class(
-        build_tui_command(args.session),
+        build_tui_command(args.session, sandbox=args.sandbox, on_unavailable=args.sandbox_on_unavailable),
         **server_kwargs,
     )
     try:

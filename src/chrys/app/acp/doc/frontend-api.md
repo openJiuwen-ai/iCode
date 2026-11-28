@@ -63,6 +63,10 @@ not a method it dispatches, so it is not listed. `apiVersion` changes only when 
 declared name's meaning changes incompatibly, not when one is added — a client
 gates on presence per name. The lists are pinned to the code by a test.
 Version 2: a failed sub-agent pauses only for a client that declares it (below).
+When the file-access sandbox was asked for, the same object carries `sandbox`
+(`state`: `active`, `degraded` or `inactive`; `requested`; `mechanism`; `reasons`)
+and `chrys/sandbox_denied` is among the notifications. A requested but unavailable
+sandbox reports `state: inactive` with `requested: true`; `reasons` explains why.
 
 The client declares what it handles under `clientCapabilities._meta.chrys`:
 
@@ -622,6 +626,11 @@ turn it was sent into ends as it would have, and the request that started that
 turn answers with that turn's own outcome. Any other failed turn is still a
 JSON-RPC error.
 
+A sandbox grant request (`toolCall._meta.chrys.toolKind` is `sandbox.read` or
+`sandbox.write`: reading or changing a path outside the workspace) offers a third
+option, `allow_session`, of kind `allow_always`: ACP has no session-scoped kind,
+and the grant lasts only for that session.
+
 Standard `session/request_permission` callbacks use `approval.timeout_seconds`
 (`CHRYS_APPROVAL_TIMEOUT_SECONDS`), shared with TUI human approvals. The default
 `0` means no timeout; positive values set a deadline in seconds, after which the
@@ -708,7 +717,9 @@ One-way `ext_notification` pushes, bridged from `EventBus`:
 
 - Runtime / session: `chrys/runtime_update`, `chrys/session_restored`,
   `chrys/usage_update`, `chrys/profile_switched`, `chrys/workspace_updated`,
-  `chrys/approval_reviewed`.
+  `chrys/approval_reviewed`, `chrys/sandbox_denied` (`path`, `tool`, `outcome`, `access`: a read or write
+  iCode attempted for a tool that the file-access sandbox refused; a command's own refused
+  reads are not reported, the kernel answers the command directly).
 - Agent load lifecycle: `chrys/agent_load_started`, `chrys/agent_load_progress`,
   `chrys/agent_load_finished`, `chrys/agent_load_failed`.
   Nested initialization updates add optional `stage` (`mcp` or `skills`),

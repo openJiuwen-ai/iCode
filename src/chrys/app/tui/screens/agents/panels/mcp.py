@@ -1499,6 +1499,8 @@ class MCPConnectionCard(CollapsibleConfigCard):
             args=args,
             encoding=self._config.encoding if transport == "stdio" else None,
             cwd=cwd,
+            read_paths=self._config.read_paths if transport == "stdio" else [],
+            write_paths=self._config.write_paths if transport == "stdio" else [],
             env=env,
             url=url,
             headers=headers,

@@ -643,3 +643,49 @@ def test_releases_upload_the_checked_wheel_to_pypi_without_a_stored_secret() -> 
     trigger = next(step for step in tag_release["jobs"]["tag"]["steps"] if step.get("name") == "Trigger CD pipeline")
     tag = '"v${{ steps.version.outputs.current }}"'
     assert trigger["run"] == f"gh workflow run cd.yml --ref {tag} -f ref={tag}"
+
+
+@pytest.mark.parametrize("selector", ["--workspace", "--workspace="])
+def test_guard_reads_the_selected_workspace_policy_before_startup(tmp_path, monkeypatch, selector):
+    from chrys.foundation import guard
+    from chrys.service.workspaces.registry import WorkspaceRegistry
+    from tests.support.secure_files import plant_owner_only_bytes
+
+    selected = tmp_path / "selected"
+    (selected / ".chrys").mkdir(parents=True)
+    plant_owner_only_bytes(selected / ".chrys" / "settings.yaml", b"sandbox.files.enabled: true\n")
+    config = get_platform().config_dir
+    config.mkdir(parents=True, exist_ok=True)
+    plant_owner_only_bytes(config / "settings.yaml", b"workdir.config_enabled: true\n")
+    WorkspaceRegistry().create(name="Selected", primary=str(selected))
+    monkeypatch.setattr(guard, "_current", guard._NoGuard())
+
+    def missing():
+        raise LookupError("test guard unavailable")
+
+    monkeypatch.setattr(guard, "_load_plugin", missing)
+    args = [selector, "Selected"] if selector == "--workspace" else [selector + "Selected"]
+    rest = cli_app._enable_sandbox(["run", *args, "hello"])
+    assert rest == ["run", *args, "hello"]
+    assert guard.current().status().requested is True
+    assert guard.current().status().state == "inactive"
+
+
+@pytest.mark.parametrize("option", ["--w", "--wo", "--wor", "--work", "--workdir"])
+def test_guard_workdir_alias_reads_the_same_policy_as_the_command(tmp_path, monkeypatch, option):
+    from chrys.foundation import guard
+    from tests.support.secure_files import plant_owner_only_bytes
+
+    selected = tmp_path / "selected"
+    (selected / ".chrys").mkdir(parents=True)
+    plant_owner_only_bytes(selected / ".chrys" / "settings.yaml", b"sandbox.files.enabled: true\n")
+    get_platform().config_dir.mkdir(parents=True, exist_ok=True)
+    plant_owner_only_bytes(get_platform().config_dir / "settings.yaml", b"workdir.config_enabled: true\n")
+    monkeypatch.setattr(guard, "_current", guard._NoGuard())
+
+    def missing():
+        raise LookupError("test guard unavailable")
+
+    monkeypatch.setattr(guard, "_load_plugin", missing)
+    cli_app._enable_sandbox(["run", option, str(selected), "hello"])
+    assert guard.current().status().requested is True

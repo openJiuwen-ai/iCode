@@ -540,6 +540,11 @@ def main(argv: list[str] | None = None) -> int:
         return _list_command(args)
     if args.command == "validate":
         return _validate_main(args)
+    from chrys.foundation.guard import status_line
+
+    if (line := status_line()) is not None:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
     if args.timeout is not None and not (math.isfinite(args.timeout) and args.timeout > 0):
         parser.error("--timeout must be a positive number of seconds")
     try:

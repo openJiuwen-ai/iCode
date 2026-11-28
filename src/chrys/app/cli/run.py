@@ -390,6 +390,15 @@ def _exception_display_message(
     return runtime.localizer.render(exc.display_message)
 
 
+def _report_sandbox() -> None:
+    """One stderr line saying whether reads are sandboxed (only when it was asked for)."""
+    from chrys.foundation.guard import status_line
+
+    if (line := status_line()) is not None:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``chrys run``."""
     headless.configure_logging()
@@ -397,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.prompt is None) == (args.task is None):
         parser.error("provide either a prompt or --task FILE, not both")
+    _report_sandbox()
     if (
         args.workspace is None
         and (missing_cwd := launch_cwd_missing_message(workdir_flag=True, workdir=args.cwd)) is not None

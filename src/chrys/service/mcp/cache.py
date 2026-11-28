@@ -222,6 +222,10 @@ def resolve_mcp_effective_config(config: MCPServerConfig, *, stdio_cwd: str | No
             "env": _stable_mapping(key_env),
             "cwd": resolved_stdio_cwd,
         }
+        # Only when set: a server without them keeps the key it always had.
+        for name, paths in (("read_paths", config.read_paths), ("write_paths", config.write_paths)):
+            if paths:
+                payload["stdio"][name] = list(paths)
         stdio_env = child_env
     elif config.transport == "http":
         http_headers = _resolved_http_headers(config)

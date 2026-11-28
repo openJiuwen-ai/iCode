@@ -129,6 +129,7 @@ ARCHITECTURE_RULES = (
     TestRule("tests/architecture/test_copy_freshness.py"),
     TestRule("tests/architecture/test_engine_fixture.py"),
     TestRule("tests/architecture/test_event_declaration_guard.py", ("src/chrys/foundation/events/**",)),
+    TestRule("tests/architecture/test_guard_boundary.py", ("src/chrys/**",)),
     TestRule(
         "tests/architecture/test_entrypoint_bootstrap.py",
         ("src/chrys/app/cli/**", "src/chrys/app/installer.py", "src/chrys/app/tui/app.py"),
@@ -291,6 +292,11 @@ REGULAR_RULES = (
             "src/chrys/app/tui/widgets/editor/**",
             "src/chrys/app/tui/screens/dialogs/editor.py",
         ),
+    ),
+    # A fresh `icode run` turn, checked for what the sandbox would touch: the CLI, the tools and approval it drives.
+    TestRule(
+        "tests/foundation/test_guard.py",
+        ("src/chrys/app/cli/**", "src/chrys/service/agent_middleware/control/**", "src/chrys/service/tools/**"),
     ),
 )
 

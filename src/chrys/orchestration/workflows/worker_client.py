@@ -31,13 +31,14 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final
 
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.process import (
     ManagedStdioProcess,
     MissingWorkingDirectoryError,
+    process_group_alive,
     spawn_managed_stdio_process,
 )
 from chrys.foundation.trajectory.keys import ensure_owner_only_directory
@@ -414,16 +415,20 @@ class WorkflowWorkerClient:
         child_env = dict(os.environ)
         child_env.update(env or {})
         child_env[BYTECODE_CACHE_ENV] = str(bytecode_cache)
+        from chrys.foundation import guard
+
         try:
-            process = await spawn_managed_stdio_process(
-                environment.executable,
-                str(host_path),
-                str(sdk.path),
-                cwd=str(workspace),
-                env=child_env,
-                limit=_STDIO_LIMIT,
-                parent_env=dict(os.environ),
-            )
+            # Its compiled bytecode: this worker's alone, no command the model starts may change it.
+            with guard.current().launching_configured(writes=[str(bytecode_cache)]):
+                process = await spawn_managed_stdio_process(
+                    environment.executable,
+                    str(host_path),
+                    str(sdk.path),
+                    cwd=str(workspace),
+                    env=child_env,
+                    limit=_STDIO_LIMIT,
+                    parent_env=dict(os.environ),
+                )
         except MissingWorkingDirectoryError as exc:
             raise WorkerStartError(f"Cannot start the workflow worker: {exc}") from exc
         except OSError as exc:
@@ -511,13 +516,7 @@ class WorkflowWorkerClient:
         group = self._process.process_group_id
         if get_platform().is_windows or group is None:  # the Windows job object takes the tree down on close
             return False
-        try:
-            cast(Any, os).killpg(group, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:  # macOS: a member that is exiting but not yet reaped answers EPERM
-            pass
-        return True
+        return process_group_alive(group)
 
     # ----------------------------------------------------------------- RPC surface
 

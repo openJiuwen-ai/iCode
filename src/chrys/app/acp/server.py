@@ -73,6 +73,7 @@ from chrys.foundation.events.types import (
     ProfileSwitched,
     QuestionToUser,
     RollbackResult,
+    SandboxAccessDenied,
     SessionReady,
     SessionRestored,
     SessionSaved,
@@ -85,6 +86,8 @@ from chrys.foundation.events.types import (
     Warning,
     WorkspaceUpdated,
 )
+from chrys.foundation.guard import status_report as sandbox_status_report
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserQuestion, validate_request_input_response
 from chrys.foundation.text.encoding import EncodingDetector, decode_bytes
 from chrys.orchestration.session_host import Cancelled, EndTurn, Errored, Refused, TurnOutcome
@@ -96,6 +99,9 @@ if TYPE_CHECKING:
 
 _ALLOW_OPTION_ID = "allow"
 _REJECT_OPTION_ID = "reject"
+_ALLOW_SESSION_OPTION_ID = "allow_session"
+"""Only on a sandbox grant request: keep the folder available for the rest of the session."""
+_SANDBOX_GRANT_KINDS = frozenset({"sandbox.read", "sandbox.write"})
 
 # Approval modes surfaced as standard ACP session modes (id, name, description).
 _APPROVAL_MODES: tuple[tuple[str, str, str], ...] = (
@@ -145,6 +151,7 @@ ACP_EXTENSION_METHODS: tuple[str, ...] = (
 
 ACP_EXTENSION_NOTIFICATIONS: tuple[str, ...] = (
     "chrys/approval_reviewed",
+    "chrys/sandbox_denied",
     "chrys/agent_load_started",
     "chrys/agent_load_progress",
     "chrys/agent_load_finished",
@@ -394,6 +401,10 @@ class ChrysAcpServer:
                         "apiVersion": ACP_EXTENSION_API_VERSION,
                         "methods": list(ACP_EXTENSION_METHODS),
                         "notifications": list(ACP_EXTENSION_NOTIFICATIONS),
+                        # File-access sandbox of this server process; refusals reach
+                        # the client as the refused calls' results and as
+                        # ``chrys/sandbox_denied``.
+                        "sandbox": sandbox_status_report(),
                     },
                 ),
             ),
@@ -1234,6 +1245,18 @@ class ChrysAcpServer:
             else:
                 await self._request_permission(session_id, event)
             return
+        if isinstance(event, SandboxAccessDenied):
+            await self._client_or_error().ext_notification(
+                "chrys/sandbox_denied",
+                {
+                    "sessionId": session_id,
+                    "path": event.path,
+                    "tool": event.tool,
+                    "outcome": event.outcome,
+                    "access": event.access,
+                },
+            )
+            return
         if isinstance(event, ApprovalReviewed):
             await self._client_or_error().ext_notification(
                 "chrys/approval_reviewed",
@@ -2056,6 +2079,7 @@ class ChrysAcpServer:
 
     async def _request_permission(self, session_id: str, event: ApprovalRequest, *, reason: str = "") -> None:
         client = self._client_or_error()
+        remember: ReuseChoice = ""
         event_bus = self._manager.get(session_id).host.event_bus
         tool_call = acp_schema.ToolCallUpdate(
             # Approval responses correlate by request_id; the permission card
@@ -2070,7 +2094,7 @@ class ChrysAcpServer:
                 None,
                 {
                     "toolName": event.tool_name,
-                    "toolKind": event.tool_kind,
+                    "toolKind": event.tool_kind or event.presentation_kind,
                 },
             ),
         )
@@ -2105,6 +2129,17 @@ class ChrysAcpServer:
                         name="Allow once",
                         kind="allow_once",
                     ),
+                    *(
+                        [
+                            acp_schema.PermissionOption(
+                                optionId=_ALLOW_SESSION_OPTION_ID,
+                                name="Allow this folder for the session",
+                                kind="allow_always",
+                            )
+                        ]
+                        if event.presentation_kind in _SANDBOX_GRANT_KINDS
+                        else []
+                    ),
                     acp_schema.PermissionOption(
                         optionId=_REJECT_OPTION_ID,
                         name="Reject once",
@@ -2131,10 +2166,14 @@ class ChrysAcpServer:
                     approved = False
                     reason_text = "ACP permission request failed or was cancelled."
                 else:
-                    approved = (
-                        isinstance(response.outcome, acp_schema.AllowedOutcome)
-                        and response.outcome.option_id == _ALLOW_OPTION_ID
-                    )
+                    allowed = isinstance(response.outcome, acp_schema.AllowedOutcome)
+                    approved = allowed and response.outcome.option_id == _ALLOW_OPTION_ID
+                    if (
+                        allowed
+                        and event.presentation_kind in _SANDBOX_GRANT_KINDS
+                        and response.outcome.option_id == _ALLOW_SESSION_OPTION_ID
+                    ):
+                        approved, remember = True, "EXACT_SESSION"
                     if approved:
                         reason_text = ""
                     elif isinstance(response.outcome, acp_schema.DeniedOutcome):
@@ -2165,6 +2204,7 @@ class ChrysAcpServer:
                 approved=approved,
                 reason=reason_text,
                 session_id=event.session_id or session_id,
+                remember_choice=remember,
             )
         )
 

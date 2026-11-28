@@ -208,6 +208,7 @@ def test_the_workdir_whitelist_is_exactly_the_engineering_knobs() -> None:
         "llm.retry.max_transient": WorkdirMerge.TIGHTEN_ONLY,
         "mutations.coordination.enabled": WorkdirMerge.ENABLE_ONLY,
         "mutations.parallel_implicit_tools": WorkdirMerge.DISABLE_ONLY,
+        "sandbox.files.enabled": WorkdirMerge.ENABLE_ONLY,
         "session.title.auto": WorkdirMerge.DISABLE_ONLY,
         "tools.result.ceiling_tokens": WorkdirMerge.TIGHTEN_ONLY,
         "trajectory.verify_commands": WorkdirMerge.FREE,

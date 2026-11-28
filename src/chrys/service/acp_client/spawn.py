@@ -229,15 +229,19 @@ async def spawn_acp_process(spec: AcpAgentSpec) -> AcpSpawnResult:
     args = tuple(_validate_exact_spawn_string(arg, field="argument") for arg in spec.args)
     parent_env = dict(os.environ)
     env = build_child_environment(spec)
+    from chrys.foundation import guard
+
     try:
-        process = await spawn_managed_stdio_process(
-            command,
-            *args,
-            cwd=cwd,
-            env=env,
-            limit=ACP_STDIO_LIMIT_BYTES,
-            parent_env=parent_env,
-        )
+        # The person configured this agent: under the sandbox it may read its own files.
+        with guard.current().launching_configured(command, args, cwd):
+            process = await spawn_managed_stdio_process(
+                command,
+                *args,
+                cwd=cwd,
+                env=env,
+                limit=ACP_STDIO_LIMIT_BYTES,
+                parent_env=parent_env,
+            )
     except asyncio.CancelledError:
         raise
     except AcpClientError:

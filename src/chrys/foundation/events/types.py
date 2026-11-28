@@ -978,6 +978,20 @@ class ApprovalRequest(Event):
     """
 
 
+@dataclass(kw_only=True)
+class SandboxAccessDenied(Event):
+    """The file-access sandbox refused a read iCode itself attempted for a tool.
+
+    A command's own refused ``open`` is not reported: the kernel answers the
+    command directly and iCode never sees it.
+    """
+
+    path: str
+    tool: str = ""
+    outcome: str = "refused"
+    access: str = "read"
+
+
 @dataclass
 class ApprovalReviewed(Event):
     """Automated reviewer has finished evaluating a pending ``ApprovalRequest``.

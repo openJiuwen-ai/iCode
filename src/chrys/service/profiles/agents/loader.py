@@ -346,6 +346,12 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 env=_mcp_string_mapping(entry.get("env"), "tools.mcp.env") if transport == "stdio" else {},
                 encoding=entry.get("encoding"),
                 cwd=_mcp_cwd(entry.get("cwd")) if transport == "stdio" else "",
+                read_paths=_string_list_field(entry.get("read_paths"), "tools.mcp.read_paths")
+                if transport == "stdio"
+                else [],
+                write_paths=_string_list_field(entry.get("write_paths"), "tools.mcp.write_paths")
+                if transport == "stdio"
+                else [],
                 # http
                 url=entry.get("url", ""),
                 headers=_mcp_string_mapping(entry.get("headers"), "tools.mcp.headers") if transport == "http" else {},

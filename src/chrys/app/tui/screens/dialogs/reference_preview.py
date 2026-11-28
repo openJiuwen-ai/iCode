@@ -175,7 +175,12 @@ def _diff_block(quote: ParsedDiffQuote) -> UnifiedDiffLines:
 
 
 def _read_preview(path: Path) -> ChatImagePreview:
-    data = read_image_source_bytes(path)
+    from chrys.foundation import guard
+
+    # The person referenced this image and asked to see it: under the
+    # file-access sandbox it is read even outside the workspace.
+    with guard.current().user_reads():
+        data = read_image_source_bytes(path)
     if len(data) > MAX_IMAGE_SOURCE_BYTES:
         msg_text = "image file exceeds the preview size limit"
         raise ValueError(msg_text)

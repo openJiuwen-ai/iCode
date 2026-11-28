@@ -1894,6 +1894,8 @@ class SubAgentTools:
                                 ),
                                 turn_context=self._turn_context,
                                 extension_hooks=self._extension_hooks.get(tool_name),
+                                # A child shares its parent's read grants but can't ask for new ones.
+                                sandbox_can_request=False,
                             ),
                         )
                         approval_mw.bind_publisher(emitter)
