@@ -60,6 +60,15 @@ _BOM_PREFIXES: tuple[bytes, ...] = (
     b"\xfe\xff",  # UTF-16 BE
 )
 
+# BOM-marked wide text pinned to the byte order it actually carries. UTF-32
+# comes first: the UTF-32 LE BOM starts with the UTF-16 LE BOM.
+_WIDE_BOM_ENCODINGS: tuple[tuple[bytes, str], ...] = (
+    (codecs.BOM_UTF32_LE, "utf-32-le"),
+    (codecs.BOM_UTF32_BE, "utf-32-be"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+)
+
 # Default fallback encoding candidates (order matters).
 # UTF-16 and UTF-32 are intentionally excluded — without a BOM they produce
 # false positives (any even-length buffer "decodes" cleanly into BMP code
@@ -574,6 +583,25 @@ def _canonical_encoding(enc: str | None) -> str | None:
     if e == "ascii":
         return "utf-8"
     return e
+
+
+def resolve_wide_encoding(encoding: str | None, raw: bytes | bytearray) -> tuple[str, bytes]:
+    """Pin a wide encoding name to the byte order *raw* actually carries.
+
+    ``_bom_hint`` names BOM-marked wide text ``utf-16`` / ``utf-32`` so a
+    text-mode ``open`` can honour the BOM. Re-encoding under those names makes
+    Python write the host's byte order instead, so an existing big-endian file
+    would flip. Return the explicit codec and the exact BOM prefix to re-emit
+    (``b""`` when the file has none or is not wide); decode past the prefix and
+    write it back unchanged.
+    """
+    normalized = _canonical_encoding(encoding) or "utf-8"
+    if not normalized.startswith(("utf-16", "utf-32")):
+        return encoding or "utf-8", b""
+    for bom, explicit in _WIDE_BOM_ENCODINGS:
+        if raw.startswith(bom):
+            return explicit, bom
+    return normalized, b""
 
 
 def _with_system_ansi_encoding(encodings: tuple[str, ...]) -> tuple[str, ...]:

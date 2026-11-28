@@ -843,37 +843,43 @@ def test_write_and_edit_reject_document_handles_without_creating_files(tmp_path:
 
 
 def test_detect_line_ending_crlf() -> None:
-    assert _detect_line_ending(b"a\r\nb\r\nc\r\n") == "\r\n"
+    assert _detect_line_ending("a\r\nb\r\nc\r\n") == "\r\n"
 
 
 def test_detect_line_ending_lf() -> None:
-    assert _detect_line_ending(b"a\nb\nc\n") == "\n"
+    assert _detect_line_ending("a\nb\nc\n") == "\n"
 
 
 def test_detect_line_ending_cr() -> None:
-    assert _detect_line_ending(b"a\rb\rc\r") == "\r"
+    assert _detect_line_ending("a\rb\rc\r") == "\r"
 
 
 def test_detect_line_ending_mixed_crlf_wins() -> None:
     """When CRLF count >= LF count, CRLF wins."""
-    assert _detect_line_ending(b"a\r\nb\nc\r\n") == "\r\n"
+    assert _detect_line_ending("a\r\nb\nc\r\n") == "\r\n"
 
 
 def test_detect_line_ending_mixed_lf_wins() -> None:
     """When LF count > CRLF count, LF wins."""
-    assert _detect_line_ending(b"a\r\nb\nc\nd\n") == "\n"
+    assert _detect_line_ending("a\r\nb\nc\nd\n") == "\n"
 
 
 def test_detect_line_ending_no_newlines_fallback() -> None:
     """No newlines → falls back to _default_eol_for_new_file."""
-    assert _detect_line_ending(b"single line", "/tmp/script.sh") == "\n"
-    assert _detect_line_ending(b"single line", "/tmp/run.bat") == "\r\n"
+    assert _detect_line_ending("single line", "/tmp/script.sh") == "\n"
+    assert _detect_line_ending("single line", "/tmp/run.bat") == "\r\n"
 
 
 def test_detect_line_ending_empty_fallback() -> None:
     """Empty content → falls back to _default_eol_for_new_file."""
-    assert _detect_line_ending(b"", "/tmp/test.sh") == "\n"
-    assert _detect_line_ending(b"", "/tmp/test.bat") == "\r\n"
+    assert _detect_line_ending("", "/tmp/test.sh") == "\n"
+    assert _detect_line_ending("", "/tmp/test.bat") == "\r\n"
+
+
+def test_detect_line_ending_decoded_utf16_text() -> None:
+    """A wide file's newline only shows once the bytes are decoded."""
+    decoded = (codecs.BOM_UTF16_LE + "a\r\nb\r\n".encode("utf-16-le")).decode("utf-16")
+    assert _detect_line_ending(decoded) == "\r\n"
 
 
 def test_default_eol_shell_scripts() -> None:
@@ -1112,8 +1118,10 @@ def test_write_file_new_has_no_bom(tmp_path: Path) -> None:
 
 def test_write_file_overwrite_strips_existing_bom(tmp_path: Path) -> None:
     """Overwriting a UTF-8-BOM file with write_file produces plain UTF-8.
-    write_file always uses the default utf-8 encoding (not utf-8-sig), so
-    the BOM is dropped — this is the desired behavior."""
+
+    Only an existing UTF-16/UTF-32 file keeps its encoding; everything else —
+    a UTF-8 BOM included — is rewritten as the default utf-8, so the BOM is
+    dropped. This is the desired behavior."""
     f = tmp_path / "was_bom.txt"
     f.write_bytes(codecs.BOM_UTF8 + b"old content\n")
 
@@ -1122,6 +1130,71 @@ def test_write_file_overwrite_strips_existing_bom(tmp_path: Path) -> None:
     raw = f.read_bytes()
     assert not raw.startswith(codecs.BOM_UTF8)
     assert raw == b"new content\n"
+
+
+def test_write_file_overwrite_preserves_utf16_le_encoding_and_eol(tmp_path: Path) -> None:
+    """Overwriting a UTF-16 LE file writes UTF-16 LE again, with its CRLF."""
+    f = tmp_path / "wide_le.txt"
+    f.write_bytes(codecs.BOM_UTF16_LE + "old\r\n".encode("utf-16-le"))
+
+    result = write_file(str(f), "new\nline\n", overwrite=True)
+
+    assert "Written" in result
+    assert f.read_bytes() == codecs.BOM_UTF16_LE + "new\r\nline\r\n".encode("utf-16-le")
+
+
+def test_write_file_overwrite_preserves_utf16_be_bom(tmp_path: Path) -> None:
+    """An overwritten big-endian file is not flipped to the host's byte order."""
+    f = tmp_path / "wide_be.txt"
+    f.write_bytes(codecs.BOM_UTF16_BE + "old\r\n".encode("utf-16-be"))
+
+    write_file(str(f), "new\n", overwrite=True)
+
+    assert f.read_bytes() == codecs.BOM_UTF16_BE + "new\r\n".encode("utf-16-be")
+
+
+def test_write_file_overwrite_preserves_utf32_le_encoding_and_eol(tmp_path: Path) -> None:
+    """A four-byte-per-character file keeps its byte order, BOM and CRLF."""
+    f = tmp_path / "wide32_le.txt"
+    f.write_bytes(codecs.BOM_UTF32_LE + "old\r\n".encode("utf-32-le"))
+
+    write_file(str(f), "new\nline\n", overwrite=True)
+
+    assert f.read_bytes() == codecs.BOM_UTF32_LE + "new\r\nline\r\n".encode("utf-32-le")
+
+
+@pytest.mark.parametrize("signature", [b"MZ", b"%PDF-"])
+def test_write_file_overwrite_binary_looking_text_keeps_crlf(tmp_path: Path, signature: bytes) -> None:
+    """A binary signature only hides the preview; the line ending still comes from the bytes."""
+    f = tmp_path / "looks_binary.txt"
+    f.write_bytes(signature + b" header\r\nsecond line\r\n")
+
+    write_file(str(f), "new\nline\n", overwrite=True)
+
+    assert f.read_bytes() == b"new\r\nline\r\n"
+
+
+def test_write_file_overwrite_bomless_utf16_writes_utf8(tmp_path: Path) -> None:
+    """Without a BOM the encoding is a detection guess, so the file is rewritten as utf-8.
+
+    Its line ending still follows the file's own style.
+    """
+    f = tmp_path / "nobom_le.txt"
+    f.write_bytes("alpha\r\nbeta\r\n".encode("utf-16-le"))
+
+    write_file(str(f), "new\nline\n", overwrite=True)
+
+    assert f.read_bytes() == b"new\r\nline\r\n"
+
+
+def test_write_file_overwrite_gb18030_writes_utf8(tmp_path: Path) -> None:
+    """Only a wide encoding is kept: a legacy existing file is still rewritten as utf-8."""
+    f = tmp_path / "legacy.txt"
+    f.write_bytes("旧内容\r\n".encode("gb18030"))
+
+    write_file(str(f), "新内容\n", overwrite=True)
+
+    assert f.read_bytes() == "新内容\r\n".encode()
 
 
 def test_edit_file_preserves_utf8_bom(tmp_path: Path) -> None:
@@ -1153,6 +1226,91 @@ def test_edit_file_utf8_bom_cjk_roundtrip(tmp_path: Path) -> None:
     assert codecs.BOM_UTF8 not in raw[3:]
     decoded = raw[3:].decode("utf-8")
     assert decoded == "再见世界\n中文文本\n"
+
+
+def test_edit_file_preserves_utf16_le_crlf_and_bom(tmp_path: Path) -> None:
+    """Editing a UTF-16 LE file keeps its BOM and its CRLF line endings."""
+    f = tmp_path / "wide_le.txt"
+    f.write_bytes(codecs.BOM_UTF16_LE + "first\r\nsecond\r\n".encode("utf-16-le"))
+
+    result = edit_file(str(f), "second", "SECOND")
+
+    assert "Replaced 1" in result
+    assert f.read_bytes() == codecs.BOM_UTF16_LE + "first\r\nSECOND\r\n".encode("utf-16-le")
+
+
+def test_edit_file_preserves_utf16_be_byte_order(tmp_path: Path) -> None:
+    """A big-endian UTF-16 file stays big-endian, untouched lines included."""
+    f = tmp_path / "wide_be.txt"
+    f.write_bytes(codecs.BOM_UTF16_BE + "alpha\r\nbeta\r\ngamma\r\n".encode("utf-16-be"))
+
+    edit_file(str(f), "beta", "BETA")
+
+    assert f.read_bytes() == codecs.BOM_UTF16_BE + "alpha\r\nBETA\r\ngamma\r\n".encode("utf-16-be")
+
+
+def test_edit_file_preserves_utf32_be_byte_order(tmp_path: Path) -> None:
+    """A big-endian UTF-32 file keeps its four-byte code units and BOM."""
+    f = tmp_path / "wide32_be.txt"
+    f.write_bytes(codecs.BOM_UTF32_BE + "one\r\ntwo\r\n".encode("utf-32-be"))
+
+    edit_file(str(f), "two", "TWO")
+
+    assert f.read_bytes() == codecs.BOM_UTF32_BE + "one\r\nTWO\r\n".encode("utf-32-be")
+
+
+def test_edit_file_preserves_utf32_le_byte_order(tmp_path: Path) -> None:
+    """A little-endian UTF-32 file keeps its four-byte code units and BOM."""
+    f = tmp_path / "wide32_le.txt"
+    f.write_bytes(codecs.BOM_UTF32_LE + "one\r\ntwo\r\n".encode("utf-32-le"))
+
+    edit_file(str(f), "two", "TWO")
+
+    assert f.read_bytes() == codecs.BOM_UTF32_LE + "one\r\nTWO\r\n".encode("utf-32-le")
+
+
+@pytest.mark.parametrize(("bom", "codec"), [(codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be")])
+def test_edit_file_bom_single_line_cjk_keeps_bat_crlf(tmp_path: Path, bom: bytes, codec: str) -> None:
+    """A single-line wide file has no line ending of its own, and a CJK character's
+    other byte must not be read as one (上 is ``0A 4E`` in UTF-16 LE, ``4E 0A`` in BE)."""
+    f = tmp_path / "run.bat"
+    f.write_bytes(bom + "上".encode(codec))
+
+    edit_file(str(f), "上", "上\n上\n")
+
+    assert f.read_bytes() == bom + "上\r\n上\r\n".encode(codec)
+
+
+@pytest.mark.parametrize(("bom", "codec"), [(codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be")])
+def test_edit_file_bom_single_line_cjk_keeps_sh_lf(tmp_path: Path, bom: bytes, codec: str) -> None:
+    """The same file as a shell script keeps LF instead of inventing a lone CR
+    from 不's ``0D 4E`` / ``4E 0D``."""
+    f = tmp_path / "run.sh"
+    f.write_bytes(bom + "不".encode(codec))
+
+    edit_file(str(f), "不", "不\n不\n")
+
+    assert f.read_bytes() == bom + "不\n不\n".encode(codec)
+
+
+def test_edit_file_preserves_bomless_utf16_le_crlf(tmp_path: Path) -> None:
+    """A UTF-16 LE file without a BOM still keeps its CRLF line endings."""
+    f = tmp_path / "nobom_le.txt"
+    f.write_bytes("alpha\r\nbeta\r\ngamma\r\n".encode("utf-16-le"))
+
+    edit_file(str(f), "beta", "BETA")
+
+    assert f.read_bytes() == "alpha\r\nBETA\r\ngamma\r\n".encode("utf-16-le")
+
+
+def test_edit_file_preserves_bomless_utf16_be_byte_order(tmp_path: Path) -> None:
+    """A big-endian UTF-16 file without a BOM is not flipped to the host order."""
+    f = tmp_path / "nobom_be.txt"
+    f.write_bytes("alpha\r\nbeta\r\ngamma\r\n".encode("utf-16-be"))
+
+    edit_file(str(f), "beta", "BETA")
+
+    assert f.read_bytes() == "alpha\r\nBETA\r\ngamma\r\n".encode("utf-16-be")
 
 
 # -- edit_file — basic --------------------------------------------------------
