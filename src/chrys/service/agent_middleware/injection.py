@@ -35,6 +35,7 @@ from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
 from chrys.kernel import Content, Message
 from chrys.kernel.identity import ContentList
 from chrys.kernel.middleware import ChatMiddleware
+from chrys.service.session.message_metadata import stamp_message_created_at
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -475,6 +476,8 @@ class InjectionMiddleware(ChatMiddleware):
                     msg = Message("user", [injection.text])
                     msg.additional_properties[HistoryMarkerKind.INJECTED_KEY] = True
                     msg.additional_properties[HistoryMarkerKind.INJECTION_ID_KEY] = consumption_id
+                    if injection.created_at is not None:
+                        stamp_message_created_at(msg, injection.created_at)
                     ensure_analytics_item_id(
                         msg.additional_properties,
                         item_id=injection.analytics_item_id,

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import sys
 from unittest.mock import create_autospec
 
 import pytest
@@ -14,19 +15,29 @@ from acp.schema import PermissionOption, ToolCallUpdate
 
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse, ApprovalReviewed
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from chrys.kernel import ChatResponse, Message
+from chrys.kernel.middleware import active_tool_batch_messages
 from chrys.orchestration.invoker import acp_protocol as acp_module
 from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker, AcpUpdateTranslator
+from chrys.orchestration.sub_agents.tools import SubAgentTools
 from chrys.service.approval import judge as judge_module
+from chrys.service.approval.formal import FormalAuditState
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.approval.turn_context import TurnContextHolder
+from chrys.service.profiles.agents.schema import AcpAgentConfig, AgentProfile, SubAgentRef
 from chrys.service.session.sub_agent_logs import SubAgentSessionLogWriter
 from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support import formal_approval as core
+from tests.support.acp_fixtures import STUB_SCRIPT
 from tests.support.event_capture import capture_event_sequence
+from tests.support.paths import SRC_ROOT
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
@@ -38,8 +49,8 @@ async def test_missing_acp_kind_is_reviewed_by_the_predicate_model(monkeypatch, 
     sink = FakeSink()
     context = TurnContextHolder()
     context.replace(["Inspect source"])
-    values = core.predicate_values() | {"external_action": triggered}
-    async with core.judge_client(monkeypatch, [json.dumps(values)]) as (judge, calls):
+    values = {"data_exfiltration": triggered}
+    async with core.judge_client(monkeypatch, [core.structured_response(values)]) as (judge, calls):
         broker = AcpPermissionBroker(
             event_bus=bus,
             session_id="parent",
@@ -57,7 +68,7 @@ async def test_missing_acp_kind_is_reviewed_by_the_predicate_model(monkeypatch, 
         async def human_decline(event: ApprovalReviewed):
             if triggered:
                 assert event.approved is False
-                assert "external_action" in event.reason
+                assert "data_exfiltration" in event.reason
                 await bus.publish(
                     ApprovalResponse(request_id=event.request_id, approved=human_approved, session_id="parent")
                 )
@@ -82,9 +93,9 @@ async def test_missing_acp_kind_is_reviewed_by_the_predicate_model(monkeypatch, 
             resolved = sink.only(EventType.APPROVAL_RESOLVED).payload
             assert resolved["decider"] == ("user" if triggered else "judge")
             assert resolved["formal_judge"]["approved"] is (not triggered)
-            assert resolved["formal_judge"]["predicate_results"] == [
-                {"id": key, "value": value} for key, value in values.items()
-            ]
+            assert next(
+                entry for entry in resolved["formal_judge"]["predicate_results"] if entry["id"] == "data_exfiltration"
+            ) == {"id": "data_exfiltration", "value": triggered}
         finally:
             if not task.done():
                 task.cancel()
@@ -95,20 +106,14 @@ async def test_missing_acp_kind_is_reviewed_by_the_predicate_model(monkeypatch, 
 
 @pytest.mark.parametrize("kind", [None, "other", "read"], ids=["missing-kind", "unmapped-kind", "read-kind"])
 @pytest.mark.parametrize("messages", [[], [" ", "\t"]], ids=["empty-context", "blank-context"])
-@pytest.mark.parametrize(
-    "triggered,direct_approved",
-    [(True, False), (False, False), (False, True)],
-    ids=["predicate-requires-human", "direct-requires-human", "direct-approves"],
-)
-async def test_empty_formal_context_is_reviewed(monkeypatch, kind, messages, triggered, direct_approved):
+@pytest.mark.parametrize("triggered", [False, True])
+async def test_empty_formal_context_is_reviewed(monkeypatch, kind, messages, triggered):
     bus, sink = EventBus(), FakeSink()
     context = TurnContextHolder()
     context.replace(messages)
-    values = core.predicate_values() | {"external_action": triggered}
-    replies = [json.dumps(values)]
-    if not triggered:
-        replies.append(json.dumps({"approved": direct_approved, "reason": "Reviewed without user context"}))
-    approved = not triggered and direct_approved
+    values = {"data_exfiltration": triggered}
+    replies = [core.structured_response(values)]
+    approved = not triggered
     async with core.judge_client(monkeypatch, replies) as (judge, calls):
         broker = AcpPermissionBroker(
             event_bus=bus,
@@ -157,12 +162,15 @@ async def test_empty_formal_context_is_reviewed(monkeypatch, kind, messages, tri
                 assert request.judging is True
                 assert review.request_id == request.request_id
                 assert review.approved is approved
-                assert len(calls) == (1 if triggered else 2)
+                assert len(calls) == 1
                 prompts = [json.loads(call.content)["messages"][1]["content"] for call in calls]
-                assert all("Current-turn user prompts:\n(no user message available)" in prompt for prompt in prompts)
-                assert all("Latest user prompt:\n(no user message available)" in prompt for prompt in prompts)
-                if not triggered:
-                    assert json.loads(calls[1].content)["messages"][0]["content"] == judge_module._SYSTEM_PROMPT
+                assert prompts[0].startswith("<context>\n\n</context>\n")
+                assert set(json.loads(prompts[0].splitlines()[-2])["runtime"]) == {
+                    "tool_kind",
+                    "Current time (local)",
+                    "Current time (UTC)",
+                    "workspace_roots",
+                }
                 reviews = [
                     item["update"]
                     for item in translator.translated_updates
@@ -173,8 +181,11 @@ async def test_empty_formal_context_is_reviewed(monkeypatch, kind, messages, tri
                 audit = reviews[0]["formal_judge"]
                 assert audit["failure_reason"] is None
                 assert audit["approved"] is approved
-                assert audit["stages"] == (["predicate"] if triggered else ["predicate", "reasoning"])
-                assert audit["predicate_results"] == [{"id": key, "value": value} for key, value in values.items()]
+                assert audit["stages"] == ["predicate"]
+                assert next(entry for entry in audit["predicate_results"] if entry["id"] == "data_exfiltration") == {
+                    "id": "data_exfiltration",
+                    "value": triggered,
+                }
                 resolved = sink.only(EventType.APPROVAL_RESOLVED).payload
                 assert resolved["decider"] == ("judge" if approved else "user")
                 assert resolved["formal_judge"]["approved"] is approved
@@ -192,7 +203,13 @@ async def test_surrogate_reason_is_audited_without_blocking_permission(monkeypat
     context = TurnContextHolder()
     context.replace(["Inspect source"])
     reason = "Reviewed path /workspace/\udcff.txt"
-    replies = [json.dumps(core.predicate_values("unknown")), json.dumps({"approved": approved, "reason": reason})]
+    original_verdict = FormalAuditState.verdict
+
+    def verdict(audit, approved, _reason):
+        return original_verdict(audit, approved, reason)
+
+    monkeypatch.setattr(FormalAuditState, "verdict", verdict)
+    replies = [core.structured_response({"data_exfiltration": not approved})]
     async with core.judge_client(monkeypatch, replies) as (judge, calls):
         broker = AcpPermissionBroker(
             event_bus=bus,
@@ -235,7 +252,7 @@ async def test_surrogate_reason_is_audited_without_blocking_permission(monkeypat
                     task.done, timeout=ENGINE_TURN_TIMEOUT, description="ACP review with surrogate reason settled"
                 )
                 assert (await task).action == ("allow" if approved else "deny")
-                assert len(calls) == 2
+                assert len(calls) == 1
                 assert len(reviews) == 1
                 assert reviews[0].approved is approved
                 assert reviews[0].reason == reason
@@ -270,7 +287,7 @@ async def test_surrogate_reason_is_audited_without_blocking_permission(monkeypat
                 )
                 assert saved["reason"] == safe_reason
                 assert type(saved["decision_version"]) is int
-                assert saved["decision_version"] == 1
+                assert saved["decision_version"] == 2
                 assert audit["reason"] == safe_reason
                 assert reviews[0].reason == reason
             finally:
@@ -339,7 +356,7 @@ async def test_acp_terminal_keeps_formal_audit_when_human_or_interrupt_wins(monk
             else:
                 request = next(event for event in events if isinstance(event, ApprovalRequest))
                 await bus.publish(ApprovalResponse(request_id=request.request_id, approved=False, session_id="parent"))
-            return ChatResponse(messages=[Message("assistant", [json.dumps(core.predicate_values())])])
+            return ChatResponse(messages=[Message("assistant", [core.structured_response()])])
 
         monkeypatch.setattr(
             judge_module, "get_final_response", create_autospec(judge_module.get_final_response, side_effect=response)
@@ -385,3 +402,55 @@ async def test_acp_terminal_keeps_formal_audit_when_human_or_interrupt_wins(monk
                     task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 await broker.close()
+
+
+async def test_acp_formal_uses_delivered_parent_history(monkeypatch, tmp_path):
+    turn = TurnContextHolder()
+    opener = "Inspect the workspace."
+    delivered = "Do not modify target.txt."
+    queued = "Go ahead and modify target.txt."
+    turn.replace([opener])
+    delivered_id = new_analytics_id()
+    turn.append(delivered, item_id=delivered_id)
+    turn.append(queued, item_id=new_analytics_id())
+    parent_history = (
+        Message("user", [opener]),
+        Message(
+            "user",
+            [delivered],
+            additional_properties={HistoryMarkerKind.INJECTED_KEY: True, ANALYTICS_ITEM_ID_KEY: delivered_id},
+        ),
+    )
+    async with core.judge_client(monkeypatch, [core.structured_response({})]) as (judge, calls):
+        tools = SubAgentTools(
+            event_bus=EventBus(),
+            session_id="parent",
+            session_dir=tmp_path,
+            workspace_cwd=str(tmp_path),
+            approval_mode=ApprovalMode.AUTO,
+            approval_judge=judge,
+            turn_context=turn,
+        )
+        await tools.register_acp(
+            SubAgentRef(profile="External", tool_name="External"),
+            AgentProfile(
+                name="External",
+                acp=AcpAgentConfig(
+                    command=sys.executable,
+                    args=[str(STUB_SCRIPT)],
+                    env={"PYTHONPATH": str(SRC_ROOT), "CHRYS_ACP_STUB_SCENARIO": "permission"},
+                    cwd=str(tmp_path),
+                    handshake_timeout_seconds=20,
+                ),
+            ),
+            SessionEnvironment(cwd=str(tmp_path), platform=get_platform()),
+        )
+        with active_tool_batch_messages.set((parent_history, ())):
+            async with asyncio.timeout(ENGINE_TURN_TIMEOUT):
+                result = await tools.get_tools()[0].func(prompt="Inspect source.")
+
+    assert "permission:allow" in result
+    assert len(calls) == 1
+    prompt = json.loads(calls[0].content)["messages"][-1]["content"]
+    context = prompt.split("<context>\n", 1)[1].split("\n</context>", 1)[0]
+    assert [json.loads(line) for line in context.splitlines()] == [{"user": opener}, {"user": delivered}]

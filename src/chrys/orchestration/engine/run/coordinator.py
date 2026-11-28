@@ -829,7 +829,7 @@ class TurnCoordinator:
             if self._turn_state.is_injection_inflight(injection_id):
                 self._turn_state.mark_injection_cancelled(injection_id)
             return
-        executor.approval.remove_user_message(removed.text)
+        executor.approval.remove_user_message(removed.text, item_id=removed.analytics_item_id)
         if removed.preparation is not None:
             removed.preparation.finished_soon(
                 outcome=PreparationOutcome.CANCELLED,

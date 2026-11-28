@@ -12,6 +12,7 @@ engine coverage lives in ``test_retry_integration.py``.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -24,19 +25,30 @@ import pytest
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetails, UserRetry
+from chrys.foundation.models.ask_user import ASK_USER_EVIDENCE_KEY
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.turns import UserMessageKind
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.text.images import LoadedImage
-from chrys.foundation.trajectory.metadata import read_analytics_item_id
+from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
+from chrys.foundation.trajectory.metadata import ensure_analytics_item_id, read_analytics_item_id
 from chrys.kernel import Content, Message
 from chrys.orchestration.engine.execution import RetryInput
 from chrys.orchestration.engine.state.machine import EngineState, EngineStateMachine, Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
+from chrys.service.approval.formal import build_formal_user_prompt
+from chrys.service.approval.review_types import ApprovalJudgeInput
+from chrys.service.approval.turn_context import (
+    ApprovalUserInput,
+    QueuedApprovalInput,
+    TurnContextHolder,
+    formal_user_inputs,
+)
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
 from chrys.service.session.history import OversizedImage, SessionHistoryManager
+from chrys.service.session.message_metadata import stamp_message_created_at
 from tests.support.components import make_current, make_turn_state
 from tests.support.loaded_agents import SkillRefreshLoader, install_loaded_agent, make_manifest
 from tests.support.reminder_inputs import manifest_entry
@@ -127,6 +139,7 @@ class _Executor:
         self.conversation = self
         self.origin = InvocationOrigin("turn", "", "retry-turn", None)
         self.user_messages: list[str] = []
+        self.approval_turn_context = TurnContextHolder()
         self.resume_texts: list[str] = []
         self.run_failed = False
         self.was_interrupted = False
@@ -147,8 +160,9 @@ class _Executor:
     def set_user_message(self, text: str) -> None:
         self.user_messages.append(text)
 
-    def set_user_messages(self, messages: list[str]) -> None:
-        self.user_messages.extend(messages)
+    def set_user_messages(self, messages: list[ApprovalUserInput]) -> None:
+        self.approval_turn_context.replace(messages)
+        self.user_messages.extend(self.approval_turn_context.user_messages)
 
     def reset_counters(self, *, reset_batch_id: bool) -> None:
         self.reset_counter_calls.append(reset_batch_id)
@@ -592,6 +606,62 @@ class TestRetryLifecycleApprovalContext:
         await retry_and_save(host)
 
         assert host.current.loaded.bindings.user_messages == ["current request", "also check the docs"]
+
+    @pytest.mark.parametrize("note", ["", "Keep the same scope on retry."])
+    async def test_retry_keeps_consumed_assent_before_ask_user_refusal_once(self, note: str) -> None:
+        opener = "Inspect only."
+        submit_time = "2026-11-26T09:06:02.000000+00:00"
+        assent = Message("user", ["Yes"], additional_properties={HistoryMarkerKind.INJECTED_KEY: True})
+        item_id = ensure_analytics_item_id(assent.additional_properties)
+        stamp_message_created_at(assent, submit_time)
+        questions = [{"question": "May I write target.txt?"}]
+        refusal = "User response: No"
+        history = [
+            Message("user", [opener]),
+            Message("assistant", [Content.from_function_call("ask", "ask_user", arguments={"questions": questions})]),
+            Message(
+                "tool",
+                [
+                    Content.from_function_result(
+                        "ask",
+                        result=refusal,
+                        additional_properties={
+                            TOOL_RESULT_METADATA_KEY: {
+                                ASK_USER_EVIDENCE_KEY: {
+                                    "questions": questions,
+                                    "result": refusal,
+                                    "answered_at": "2026-11-26T09:06:04+00:00",
+                                }
+                            }
+                        },
+                    )
+                ],
+            ),
+            assent,
+        ]
+        host = _Host(history)
+        await retry_and_save(host, additional_text=note)
+
+        turn = host.current.loaded.bindings.approval_turn_context
+        expected_inputs = [opener, QueuedApprovalInput("Yes", item_id)]
+        if note:
+            expected_inputs.append(note)
+        assert turn.user_inputs == tuple(expected_inputs)
+        request = ApprovalJudgeInput(
+            tool_name="write_file",
+            tool_kind="filesystem.write",
+            args={"path": "target.txt"},
+            user_message=turn.user_message,
+            user_messages=turn.user_messages,
+            workspace_roots=[],
+        )
+        with formal_user_inputs.set(turn.user_inputs):
+            prompt = build_formal_user_prompt(request, history=history)
+        context = prompt.splitlines()[1 : prompt.splitlines().index("</context>")]
+        expected_rows = [{"user": opener}, {"ask_user": {"questions": questions}, "result": refusal}, {"user": "Yes"}]
+        if note:
+            expected_rows.append({"user": note})
+        assert [json.loads(row) for row in context] == expected_rows
 
     async def test_synthetic_only_region_falls_back_to_previous_real_opener(self) -> None:
         """§2.2: when the current region holds only a flagged nudge, the

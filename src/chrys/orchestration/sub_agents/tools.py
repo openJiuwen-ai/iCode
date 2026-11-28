@@ -94,6 +94,7 @@ from chrys.service.agent_middleware import (
     SubAgentStatsMiddleware,
 )
 from chrys.service.agent_middleware.control.hook_commit import HookCommitMiddleware
+from chrys.service.approval.formal import formal_parent_context
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.approval.turn_context import TurnContextHolder
 from chrys.service.context.compaction.last_words_state import DropRoundBreakerState
@@ -1487,7 +1488,8 @@ class SubAgentTools:
                 )
                 controller.attach_policy(policy)
                 self._controllers[invocation_id] = controller
-                result = await controller.run()
+                with formal_parent_context(parent_provider_call_id, self._turn_context.user_inputs):
+                    result = await controller.run()
                 if parent_metadata is not None and policy.backend.transcript_final_text is not None:
                     parent_metadata.transcript_final_text = policy.backend.transcript_final_text
                 log_stats.tool_call_count = policy.backend.completed_tool_calls
@@ -2105,9 +2107,10 @@ class SubAgentTools:
                 self._controllers[invocation_id] = controller
                 try:
                     with (
+                        formal_parent_context(parent_provider_call_id, self._turn_context.user_inputs),
                         trajectory_scope(sub_agent_trace.child_context)
                         if sub_agent_trace is not None
-                        else contextlib.nullcontext()
+                        else contextlib.nullcontext(),
                     ):
                         result = await controller.run()
                 finally:

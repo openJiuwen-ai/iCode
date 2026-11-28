@@ -35,7 +35,7 @@ from chrys.foundation.events.types import (
 from chrys.orchestration.engine.run.active_injection import ActiveTurnInjector
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
-from chrys.service.agent_middleware.injection import InjectionMiddleware
+from chrys.service.agent_middleware.injection import InjectionMiddleware, QueuedInjection
 from chrys.service.agent_middleware.system_reminder import CurrentRunReminderScope, CurrentRunReminderTarget
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.schema import HookDecision
@@ -93,9 +93,9 @@ class _Executor:
         reminders: tuple[str, ...] = (),
         preparation: PreparationTrace | None = None,
         target_turn_id: str | None = None,
-    ) -> None:
+    ) -> QueuedInjection:
         self.injected_reminders.append(reminders)
-        self.injection.queue(
+        return self.injection.queue(
             text,
             created_at=created_at,
             injection_id=injection_id,
@@ -107,10 +107,10 @@ class _Executor:
     def cancel_injection(self, injection_id: str):
         return self.injection.cancel(injection_id)
 
-    def append_user_message(self, text: str) -> None:
+    def append_user_message(self, text: str, **_metadata: object) -> None:
         self.approval_context.append(text)
 
-    def remove_user_message(self, text: str) -> None:
+    def remove_user_message(self, text: str, **_metadata: object) -> None:
         if text in self.approval_context:
             self.approval_context.remove(text)
 
@@ -405,7 +405,7 @@ async def test_post_queue_exception_preserves_preparation_handoff(acp_path: bool
     host._trajectory_recorder = _TrajectoryRecorderWithContext(make_context(sink))  # type: ignore[assignment]
     _install_active_run(host)
 
-    def fail_after_queue(_text: str) -> None:
+    def fail_after_queue(_text: str, **_metadata: object) -> None:
         raise RuntimeError("approval context failure")
 
     host.current.loaded.bindings.approval.append_user_message = fail_after_queue  # type: ignore[method-assign]

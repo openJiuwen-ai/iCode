@@ -29,7 +29,7 @@ from chrys.orchestration.invoker import runtime as runtime_factory_module
 from chrys.orchestration.invoker.contracts import AbortCause, AbortResult
 from chrys.orchestration.invoker.resources import PreparedAgent
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
-from chrys.service.agent_middleware.injection import InjectionMiddleware
+from chrys.service.agent_middleware.injection import InjectionMiddleware, QueuedInjection
 from chrys.service.approval.judge import JudgeVerdict
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.hooks.events import HookEvent
@@ -168,10 +168,11 @@ class _ActiveExecutor(_BareExecutor):
         self._run_release.set()
         return AbortResult.REQUESTED
 
-    def inject(self, text: str, **_kwargs: object) -> None:
+    def inject(self, text: str, **_kwargs: object) -> QueuedInjection:
         self.injected.append(text)
+        return QueuedInjection(text)
 
-    def append_user_message(self, _text: str) -> None:
+    def append_user_message(self, _text: str, **_metadata: object) -> None:
         return None
 
     @property

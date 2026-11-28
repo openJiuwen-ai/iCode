@@ -9,6 +9,7 @@ import contextlib
 import json
 import sys
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import create_autospec
@@ -21,6 +22,7 @@ from chrys.foundation.config.settings_store import persist
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ApprovalRequest,
+    ApprovalReviewed,
     SessionDelete,
     SessionDeleted,
     SessionReady,
@@ -28,6 +30,7 @@ from chrys.foundation.events.types import (
     SetApprovalMode,
     SetModelProfile,
     SettingsReload,
+    UserInjectSteer,
     UserMessage,
     UserRetry,
     UserRollback,
@@ -45,14 +48,17 @@ from chrys.foundation.trajectory.segments import reassemble_array_slice
 from chrys.foundation.trajectory.writer import DEFAULT_WRITE_ACK_TIMEOUT_SECONDS, FdWriteBackend, WriterState
 from chrys.kernel import ChatResponse, Message
 from chrys.kernel.types import UsageDetails
+from chrys.orchestration.engine.build import builder as builder_module
+from chrys.orchestration.invoker.kernel import KernelConversation
 from chrys.service.analytics import Precision
 from chrys.service.analytics.aggregation import analyze_trajectory
 from chrys.service.approval import judge as judge_module
+from chrys.service.approval.arbitration import ApprovalDecisionArbiter
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookRun, HooksFile
-from chrys.service.llm.mock import MockResponse
+from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.schema import CompactionConfig
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.trajectory.session import (
@@ -62,7 +68,7 @@ from chrys.service.trajectory.session import (
     trajectory_events_path,
     trajectory_lease_path,
 )
-from tests.support.formal_approval import predicate_values
+from tests.support.formal_approval import structured_response
 from tests.support.pipeline_helpers import (
     PipelineTestContext,
     create_test_engine,
@@ -905,22 +911,57 @@ async def test_an_approval_round_records_a_pair_the_writer_accepts(tmp_path: Pat
     assert resolved.payload["target_tool_operation_id"] == requested.payload["target_tool_operation_id"]
 
 
-@pytest.mark.parametrize("reload_during_review", [False, True])
+@pytest.mark.parametrize(
+    "reload_during_review,service_side",
+    [(False, False), (True, False), (False, True)],
+    ids=["local-history", "reload", "stored-responses"],
+)
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
-async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path, monkeypatch, reload_during_review):
+async def test_auto_formal_executes_the_tool_and_records_its_judgement(
+    tmp_path, monkeypatch, reload_during_review, service_side
+):
     install_tools(monkeypatch, [echo_tool])
     entered, release = asyncio.Event(), asyncio.Event()
+    if service_side:
+        original_context = builder_module.create_context
+
+        def create_context(inputs):
+            return original_context(
+                inputs
+                | {
+                    "skip_local_history_for_service_context": True,
+                    "service_context_default_options": {"store": True},
+                }
+            )
+
+        monkeypatch.setattr(builder_module, "create_context", create_context)
+    original_messages = MockChatClient._build_messages
+
+    def build_messages(self, resp):
+        messages = original_messages(self, resp)
+        if resp.tool_calls and resp.text:
+            contents = messages[0].contents
+            contents.insert(0, contents.pop())
+        return messages
+
+    monkeypatch.setattr(MockChatClient, "_build_messages", build_messages)
+
+    reply = structured_response({"remote_repoint": True}, authorized={"remote_repoint"})
 
     async def response(client, messages, *, stream, options, timeout):
         if reload_during_review:
             entered.set()
             await release.wait()
-        return ChatResponse(messages=[Message("assistant", [json.dumps(predicate_values())])])
+        return ChatResponse(messages=[Message("assistant", [reply])])
 
     respond = create_autospec(judge_module.get_final_response, side_effect=response)
     monkeypatch.setattr(judge_module, "get_final_response", respond)
     ctx = await create_test_engine(
-        [MockResponse(tool_calls=[("echo", "call-1", {"message": "hi"})]), MockResponse(text="done")],
+        [
+            MockResponse(text="Earlier answer", conversation_id="resp_earlier" if service_side else ""),
+            MockResponse(text="About to call echo.", tool_calls=[("echo", "call-1", {"message": "hi"})]),
+            MockResponse(text="done"),
+        ],
         tmp_path,
         approval_default="require",
     )
@@ -932,6 +973,7 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path,
         await ctx.bus.publish(SettingsReload(), raise_handler_errors=True)
         await ctx.bus.publish(SetApprovalMode(mode="auto", persist=False), raise_handler_errors=True)
         assert ctx.engine.current.loaded.approval_judge._auto_review == "formal"
+        await ctx.send_message("Earlier instruction")
         if reload_during_review:
             bound_judge = ctx.engine.current.loaded.approval_judge
             run_task = asyncio.create_task(ctx.send_message("please echo"))
@@ -952,6 +994,31 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path,
             assert ctx.engine.current.loaded.approval_judge._auto_review == "direct"
         else:
             await ctx.send_message("please echo")
+        context, pending = respond.await_args.args[1][1].text.split("\n\n<pending_action>\n")
+        assert context.count('{"user": "Earlier instruction"}') == 1
+        if service_side:
+            resumed_inputs, resumed_options = ctx.mock_client.call_history[1]
+            assert resumed_options["conversation_id"] == "resp_earlier"
+            assert not any("Earlier instruction" in (message.text or "") for message in resumed_inputs)
+        assert '{"assistant": "Earlier answer"}' in context
+        assert '{"user": "please echo"}' in context
+        assert '{"assistant": "About to call echo."}' in context
+        assert "<system-reminder>" not in context
+        assert "echo" not in {key for line in context.splitlines()[1:-1] for key in json.loads(line)}
+        pending_json, closing_tag = pending.splitlines()
+        assert closing_tag == "</pending_action>"
+        action = json.loads(pending_json)
+        runtime = action.pop("runtime")
+        assert action == {"echo": {"message": "hi"}}
+        assert set(runtime) == {"tool_kind", "workspace_roots", "Current time (local)", "Current time (UTC)"}
+        assert runtime["tool_kind"] == ""
+        assert runtime["workspace_roots"] == [str(tmp_path.resolve())]
+        local_time = datetime.fromisoformat(runtime["Current time (local)"])
+        utc_time = datetime.fromisoformat(runtime["Current time (UTC)"])
+        assert local_time.tzinfo is not None
+        assert utc_time.tzinfo == UTC and local_time == utc_time
+        requests = [event for event in ctx.events if isinstance(event, ApprovalRequest)]
+        assert len(requests) == 1 and requests[0].call_id != "call-1"
         raw = await ctx.get_session_messages()
         assert any(content.get("result") == "echo: hi" for message in raw for content in message.get("contents", []))
         assert respond.await_count == 1
@@ -968,8 +1035,12 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path,
     assert resolved["decider"] == "judge"
     assert resolved["formal_judge"]["stages"] == ["predicate"]
     assert type(resolved["formal_judge"]["decision_version"]) is int
-    assert resolved["formal_judge"]["decision_version"] == 1
-    assert resolved["formal_judge"]["predicate_results"] == [{"id": key, "value": False} for key in predicate_values()]
+    assert resolved["formal_judge"]["decision_version"] == 2
+    assert resolved["formal_judge"]["predicate_results"] == [
+        {"id": key, "value": entry["matches"]}
+        | ({"consent_bar_met": entry["consent_bar_met"]} if "consent_bar_met" in entry else {})
+        for key, entry in json.loads(reply)["predicates"].items()
+    ]
 
 
 @pytest.mark.asyncio
@@ -1248,3 +1319,93 @@ async def test_a_request_that_misses_the_prompt_cache_is_recorded_under_its_exch
     # Under the request that missed, not the run the three requests share.
     assert miss.parent_operation_id == exchanges[-1].operation_id
     assert miss.sequence > exchanges[-1].sequence
+
+
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_send_now_invalidates_the_old_formal_review(tmp_path, monkeypatch):
+    """A late allow cannot win while the accepted steer is still stopping its pass."""
+    install_tools(monkeypatch, [echo_tool])
+    old_entered, old_release, old_finished = (asyncio.Event() for _ in range(3))
+    interrupt_entered, interrupt_release = asyncio.Event(), asyncio.Event()
+    prompts = []
+    verdicts = []
+    original_interrupt = KernelConversation._interrupt
+    original_judge = ApprovalDecisionArbiter.judge
+
+    async def hold_interrupt(self, active):
+        interrupt_entered.set()
+        await interrupt_release.wait()
+        return await original_interrupt(self, active)
+
+    async def observe_judge(self, **kwargs):
+        try:
+            await original_judge(self, **kwargs)
+        finally:
+            if kwargs["judge_input"].args["message"] == "old":
+                old_finished.set()
+
+    async def respond(client, messages, *, stream, options, timeout):
+        prompts.append(messages[1].text)
+        if len(prompts) == 1:
+            old_entered.set()
+            await old_release.wait()
+        return ChatResponse(messages=[Message("assistant", [structured_response()])])
+
+    async def record_verdict(event):
+        verdicts.append(event)
+
+    monkeypatch.setattr(KernelConversation, "_interrupt", hold_interrupt)
+    monkeypatch.setattr(ApprovalDecisionArbiter, "judge", observe_judge)
+    monkeypatch.setattr(judge_module, "get_final_response", respond)
+    ctx = await create_test_engine(
+        [
+            MockResponse(tool_calls=[("echo", "old-call", {"message": "old"})]),
+            MockResponse(tool_calls=[("echo", "new-call", {"message": "new"})]),
+            MockResponse(text="done"),
+        ],
+        tmp_path,
+        approval_default="require",
+    )
+    run_task = steer_task = None
+    try:
+        freeze_process_env()
+        persist({"approval.auto_review": "formal", "model.profile.active": "mock-profile"})
+        await ctx.bus.publish(SettingsReload(), raise_handler_errors=True)
+        await ctx.bus.publish(SetApprovalMode(mode="auto", persist=False), raise_handler_errors=True)
+        await ctx.bus.subscribe(ApprovalReviewed, record_verdict)
+        run_task = asyncio.create_task(ctx.send_message("Review the old operation."))
+        await old_entered.wait()
+        await ctx.bus.publish(UserMessage(text="Switch to the new operation.", injection_id="queued"))
+        steer = UserInjectSteer(injection_id="queued")
+        steer_task = asyncio.create_task(ctx.bus.publish(steer, raise_handler_errors=True))
+        await interrupt_entered.wait()
+        old_release.set()
+        await old_finished.wait()
+        assert verdicts == []
+        assert ctx.mock_client.call_count == 1
+
+        interrupt_release.set()
+        await steer_task
+        assert steer.accepted
+        await run_task
+        assert len(prompts) == 2
+        assert "Switch to the new operation." not in prompts[0]
+        assert '{"user": "Switch to the new operation."}' in prompts[1]
+        assert len(verdicts) == 1 and verdicts[0].approved
+        second_request = ctx.mock_client.call_history[1][0]
+        old_result = next(
+            item.result
+            for message in second_request
+            for item in message.contents
+            if item.type == "function_result" and item.call_id == "old-call"
+        )
+        assert str(old_result).startswith("Error: Tool execution was interrupted.")
+    finally:
+        old_release.set()
+        interrupt_release.set()
+        for task in (steer_task, run_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        await ctx.cleanup()

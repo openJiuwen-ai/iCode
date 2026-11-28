@@ -32,7 +32,12 @@ from chrys.kernel import (
     wire_progress_scope,
 )
 from chrys.kernel import loop as loop_module
-from chrys.kernel.middleware import ChatMiddleware, ChatMiddlewareLayer
+from chrys.kernel.middleware import (
+    ChatMiddleware,
+    ChatMiddlewareLayer,
+    FunctionMiddleware,
+    active_tool_batch_messages,
+)
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
@@ -40,7 +45,9 @@ from chrys.service.agent_middleware.system_reminder import wrap_system_reminder 
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
+    from chrys.kernel.middleware import FunctionInvocationContext
 
 
 @pytest.fixture(autouse=True)
@@ -1801,19 +1808,37 @@ async def test_preseeded_token_cleared_on_first_terminal_so_tool_results_post_fr
     assert observed == [None]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("outer_retry", [False, True], ids=["wire-retry", "new-loop"])
 @pytest.mark.asyncio
-async def test_poll_retry_preserves_consumed_injection_for_the_next_create() -> None:
+async def test_poll_retry_preserves_consumed_injection_for_the_next_create(stream: bool, outer_retry: bool) -> None:
     injection = InjectionMiddleware()
     injection.queue("pre-create note", injection_id="pre")
     token = {"response_id": "bg-injected"}
     runs: list[str] = []
+    approval_history: list[str] = []
+
+    class ReadApprovalHistory(FunctionMiddleware):
+        @property
+        def captures_tool_history(self) -> bool:
+            return True
+
+        async def process(self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]]) -> None:
+            history, _ = active_tool_batch_messages.get()
+            approval_history.extend(message.text for message in history if message.role == "user")
+            await call_next()
+
     policy = _Policy(before_retry_hook=injection.restore_for_retry)
     wire = _ScriptedWire(
         [
-            _text_response("accepted", continuation_token=token),
+            [_silent_update(continuation_token=token)]
+            if stream
+            else _text_response("accepted", continuation_token=token),
             ConnectionError("poll dropped"),
-            _call_response("c1", "echo", text="from-background"),
-            _text_response("done"),
+            [_call_update("c1", "echo", text="from-background")]
+            if stream
+            else _call_response("c1", "echo", text="from-background"),
+            [_text_update("done")] if stream else _text_response("done"),
         ]
     )
     layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire, middleware=[injection]))
@@ -1822,22 +1847,51 @@ async def test_poll_retry_preserves_consumed_injection_for_the_next_create() -> 
         injection.commit_logical_call,
     )
 
-    response = await layer.get_response(
-        [_user()],
-        options={"tools": [_echo_tool(runs)]},
-        client_kwargs={
-            "wire_retry_policy": policy,
-            "consumed_injection_message_probe": probe,
-        },
-    )
+    session = AgentSession()
+    options = {"tools": [_echo_tool(runs)], "store": outer_retry}
+
+    def observe_token(value: Any) -> None:
+        if value is None:
+            options.pop("continuation_token", None)
+        else:
+            options["continuation_token"] = value
+
+    async def attempt() -> ChatResponse:
+        result = layer.get_response(
+            [_user()],
+            stream=stream,
+            middleware=ReadApprovalHistory(),
+            options=options,
+            client_kwargs={
+                "session": session,
+                "wire_retry_policy": policy,
+                "consumed_injection_message_probe": probe,
+                "continuation_token_observer": observe_token,
+            },
+        )
+        if stream:
+            async for _ in result:
+                pass
+            return await result.get_final_response()
+        return await result
+
+    if outer_retry:
+        with pytest.raises(ConnectionError, match="poll dropped"):
+            await attempt()
+        assert options["continuation_token"] == token
+        assert approval_history == []
+    response = await attempt()
 
     assert response.text == "done"
+    assert approval_history == ["go", "pre-create note"]
     assert runs == ["from-background"]
     # The create (call 0) delivered the injection to the provider; the poll
     # retry resumes that same response, so no replay may run — a poll skips
     # consumption, and the terminal commit would then destroy the stranded
     # batch and its retained-message mirror.
     assert policy.before_retry_calls == 0
+    assert [call["options"].get("continuation_token") for call in wire.calls] == [None, token, token, None]
+    assert session._continuation_tool_history is None
     assert _injected_texts(wire.calls[0]) == ["pre-create note"]
     assert _injected_texts(wire.calls[1]) == []
     assert _injected_texts(wire.calls[2]) == []

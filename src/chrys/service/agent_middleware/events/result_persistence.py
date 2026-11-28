@@ -98,6 +98,6 @@ def write_result_carriage(
         context.metadata = {}
     persisted = persistable_result_metadata(metadata)
     if persisted:
-        context.metadata[TOOL_RESULT_METADATA_KEY] = persisted
+        context.metadata.setdefault(TOOL_RESULT_METADATA_KEY, {}).update(persisted)
     if tool_context:
         context.metadata[TOOL_CALL_CONTEXT_METADATA_KEY] = dict(tool_context)

@@ -47,10 +47,12 @@ from chrys.service.agent_middleware.control.approval_hooks import await_approval
 from chrys.service.agent_middleware.events.hook_dispatch import (
     apply_before_tool_hooks,
     get_call_id,
+    get_provider_call_id,
     get_tool_invocation_order,
 )
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
 from chrys.service.approval.correlation import OneShotCorrelation
+from chrys.service.approval.formal import pending_formal_call_id
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedReuse
 from chrys.service.approval.safety_classifier import (
@@ -59,6 +61,7 @@ from chrys.service.approval.safety_classifier import (
     shell_command_may_access_sensitive_data,
     target_may_access_sensitive_data,
 )
+from chrys.service.approval.turn_context import formal_review_is_stale
 from chrys.service.tools.approval_targets import approved_targets
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.tools import tool_operation_id
@@ -81,7 +84,7 @@ if TYPE_CHECKING:
     from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
     from chrys.service.approval.policy import ApprovalPolicy
     from chrys.service.approval.reuse import Candidate
-    from chrys.service.approval.turn_context import TurnContextHolder
+    from chrys.service.approval.turn_context import ApprovalUserInput, TurnContextHolder
     from chrys.service.hooks.manager import HookManager
 
 
@@ -293,21 +296,21 @@ class ApprovalMiddleware(FunctionMiddleware):
         """Store the current user message for inclusion in approval requests."""
         self.set_user_messages([text] if text else [])
 
-    def set_user_messages(self, messages: list[str]) -> None:
+    def set_user_messages(self, messages: list[ApprovalUserInput]) -> None:
         """Store current-turn user messages for inclusion in approval judge context."""
         self._turn_context.replace(messages)
 
-    def append_user_message(self, text: str) -> None:
+    def append_user_message(self, text: str, *, item_id: str | None = None) -> None:
         """Append a current-turn user message for later approval judge context."""
-        self._turn_context.append(text)
+        self._turn_context.append(text, item_id=item_id)
 
-    def remove_user_message(self, text: str) -> None:
+    def remove_user_message(self, text: str, *, item_id: str | None = None) -> None:
         """Remove the most recent occurrence of *text* from judge context.
 
         Used when a queued injection is cancelled after its text was already
         appended, so later approval requests do not cite withdrawn input.
         """
-        self._turn_context.remove(text)
+        self._turn_context.remove(text, item_id=item_id)
 
     @property
     def _user_message(self) -> str:
@@ -328,6 +331,11 @@ class ApprovalMiddleware(FunctionMiddleware):
     @property
     def approval_mode(self) -> ApprovalMode:
         return self._approval_mode
+
+    @property
+    def captures_tool_history(self) -> bool:
+        # The approval mode can change while a run is active.
+        return self._approval_judge is not None and self._approval_judge.uses_formal_review
 
     async def process(
         self,
@@ -572,7 +580,10 @@ class ApprovalMiddleware(FunctionMiddleware):
                         # The judge's model call is a side call of this session: rebind
                         # the ambient trajectory actor so its exchange is attributed to
                         # the judge, never to the main agent.
-                        with side_call_scope(ActorRole.APPROVAL_JUDGE):
+                        with (
+                            side_call_scope(ActorRole.APPROVAL_JUDGE),
+                            pending_formal_call_id.set(get_provider_call_id(context)),
+                        ):
                             judge_task = asyncio.create_task(
                                 self._approval_arbiter.judge(
                                     request_id=request_id,
@@ -580,6 +591,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                                     judge_input=ApprovalJudgeInput(
                                         user_message=self._turn_context.user_message,
                                         user_messages=self._turn_context.user_messages,
+                                        user_inputs=self._turn_context.user_inputs,
                                         tool_name=tool_name,
                                         tool_kind=tool_kind,
                                         args=parsed_args,
@@ -709,6 +721,8 @@ class ApprovalMiddleware(FunctionMiddleware):
                     targets = await asyncio.to_thread(binding.targets, context)
             elif remember_choice and binding is not None and reuse is not None and reuse.candidate is not None:
                 await self._remember(binding, reuse.candidate, remember_choice)
+            if judging and formal_review_is_stale() and self.captures_tool_history:
+                raise asyncio.CancelledError
             with approved_targets(targets):
                 await call_next()
         else:

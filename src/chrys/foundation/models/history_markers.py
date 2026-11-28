@@ -58,6 +58,10 @@ Never sent on the wire.
 """
 
 
+WORKFLOW_NODE_INPUT_KEY: Final[str] = "_chrys_workflow_node_input"
+"""Marks a workflow-provided prompt as distinct from the user run request."""
+
+
 class HistoryMarkerKind:
     """String constants stored in ``Message.additional_properties``."""
 

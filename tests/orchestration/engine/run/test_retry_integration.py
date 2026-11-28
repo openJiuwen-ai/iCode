@@ -10,7 +10,8 @@ and the run-package lifecycle in ``test_retry_lifecycle.py``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 from unittest.mock import create_autospec
 
@@ -18,6 +19,7 @@ import pytest
 
 import chrys.orchestration.engine.build.builder as builder_module
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ContextCompressed,
@@ -35,9 +37,10 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
-from chrys.kernel import Content, Message
+from chrys.kernel import ChatResponseUpdate, Content, Message
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.state.machine import EngineState
+from chrys.service.approval.policy import ApprovalMode
 from chrys.service.context.compaction.last_words import LastWordsGenerator
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -53,6 +56,7 @@ from tests.orchestration.engine.run._engine_run_helpers import (
     _make_registry,
     _wait_for_call_count,
 )
+from tests.support import formal_approval as formal
 from tests.support.event_capture import collect_events
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
 from tests.support.scripted_clients import HostedMockChatClient, HostedMockResponse
@@ -841,3 +845,87 @@ async def test_retry_that_polls_an_empty_background_response_never_creates_its_h
     assert client.call_count == 2
     _messages, poll_options = client.call_history[1]
     assert poll_options["continuation_token"] == {"response_id": "resp_1"}
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+@pytest.mark.parametrize("invalidates", [False, True], ids=["resume-response", "create-replacement"])
+async def test_background_poll_outer_retry_preserves_formal_user_boundary(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch, stream: bool, invalidates: bool
+) -> None:
+    token = {"response_id": "approval-background"}
+    boundary = "Do not read target.txt."
+    failure = (
+        ProviderResponseError(
+            "server_error", "background response ended", retryable=True, invalidates_continuation_token=True
+        )
+        if invalidates
+        else ConnectionResetError("background poll disconnected")
+    )
+
+    class BackgroundClient(MockChatClient):
+        async def _mock_response(self, resp, model_id, finish_reason, on_text):
+            if self.call_count == 2:
+                raise failure
+            response = await super()._mock_response(resp, model_id, finish_reason, on_text)
+            if self.call_count == 1:
+                response.continuation_token = token
+            return response
+
+        async def _stream_updates(self, resp, model_id, finish_reason):
+            if self.call_count == 1:
+                yield ChatResponseUpdate(contents=[], role="assistant", continuation_token=token)
+                return
+            if self.call_count == 2:
+                raise failure
+            async for update in super()._stream_updates(resp, model_id, finish_reason):
+                yield update
+
+    client = BackgroundClient(
+        responses=[
+            MockResponse(),
+            MockResponse(),
+            MockResponse(tool_calls=[("read_file", "read-1", {"path": "target.txt"})]),
+            MockResponse(text="Done"),
+        ],
+    )
+    profile = replace(
+        _PROFILE,
+        tools=ToolsConfig(builtins=["filesystem.read"]),
+        approval=ApprovalConfig(default="auto", overrides={"read_file": "require"}),
+    )
+    registry = _make_registry()
+    registry.register(profile)
+    async with formal.judge_client(monkeypatch, [formal.structured_response({})]) as (judge, calls):
+        started = await started_retry_engine(
+            agent_engine,
+            tmp_path,
+            monkeypatch,
+            client_factory=lambda: client,
+            stream=stream,
+            agent_registry=registry,
+            profile=profile,
+            event_types=_COMPRESSION_EVENT_TYPES,
+        )
+        engine = started.engine
+        assert engine.current.loaded is not None
+        bindings = engine.current.loaded.bindings
+        bindings._chat_options = {"store": True}
+        bindings._BACKOFF_SCHEDULE = (0,)
+        bindings._max_retries_override = 1
+        bindings.approval._approval_judge = judge
+        bindings.approval.set_approval_mode(ApprovalMode.AUTO)
+        injection = bindings.inject(boundary, injection_id="limit")
+        await started.bus.publish(UserMessage(text="Inspect the workspace."))
+        await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
+
+    assert not bindings.injection_pending(injection)
+    retry_token = None if invalidates else token
+    assert [options.get("continuation_token") for _, options in client.call_history] == [None, token, retry_token, None]
+    assert (
+        any(boundary in message.text for message in client.call_history[2][0] if message.role == "user") is invalidates
+    )
+    assert len(_filter(started.events, InvocationRetryAttempt)) == 1
+    assert any(boundary in message.text for message in client.call_history[0][0] if message.role == "user")
+    assert len(calls) == 1
+    prompt = json.loads(calls[0].content)["messages"][-1]["content"]
+    assert f'"user": "{boundary}"' in prompt

@@ -43,6 +43,7 @@ from chrys.foundation.events.types import (
     InvocationStarted,
 )
 from chrys.foundation.hosted_tools import HostedToolStatus
+from chrys.foundation.models.history_markers import WORKFLOW_NODE_INPUT_KEY
 from chrys.foundation.models.invocations import InvocationOrigin, current_invocation_origin
 from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG, TrajectoryContext, workflow_node_actor
 from chrys.foundation.trajectory.ids import new_analytics_id
@@ -817,7 +818,9 @@ class WorkflowAgentShell:
         return prompt
 
     def _seed_input(self) -> list[Any]:
-        message = Message("user", [self._user_prompt(self._prompt)])
+        message = Message(
+            "user", [self._user_prompt(self._prompt)], additional_properties={WORKFLOW_NODE_INPUT_KEY: True}
+        )
         ensure_analytics_item_id(message.additional_properties, item_id=self._seed_item_id)
         return [message]
 

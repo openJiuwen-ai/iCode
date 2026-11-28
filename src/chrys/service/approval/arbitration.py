@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import ApprovalAutoFulfillBlocked, ApprovalReviewed
 from chrys.service.approval.review_types import ApprovalJudgeInput as ApprovalJudgeInput
+from chrys.service.approval.turn_context import formal_review_is_stale, formal_user_inputs
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -61,19 +62,20 @@ class ApprovalDecisionArbiter:
 
         # A response can win between task creation and its first instruction.
         # Do not spend a model call or emit a stale review in that case.
-        if decision_future.done():
+        if decision_future.done() or (formal_review_is_stale() and judge.uses_formal_review):
             return
         try:
-            verdict = await judge.evaluate(
-                user_message=judge_input.user_message,
-                user_messages=list(judge_input.user_messages),
-                tool_name=judge_input.tool_name,
-                tool_kind=judge_input.tool_kind,
-                args=judge_input.args,
-                workspace_roots=list(judge_input.workspace_roots),
-                request_id=request_id,
-                log_dir=log_dir,
-            )
+            with formal_user_inputs.set(judge_input.user_inputs):
+                verdict = await judge.evaluate(
+                    user_message=judge_input.user_message,
+                    user_messages=list(judge_input.user_messages),
+                    tool_name=judge_input.tool_name,
+                    tool_kind=judge_input.tool_kind,
+                    args=judge_input.args,
+                    workspace_roots=list(judge_input.workspace_roots),
+                    request_id=request_id,
+                    log_dir=log_dir,
+                )
         except FormalEvaluationCancelled as exc:
             # Owner-only evidence (e.g. ACP audit ring); no UI verdict and no
             # future fulfillment after cancellation or a human decision.
@@ -88,7 +90,7 @@ class ApprovalDecisionArbiter:
         # guard covers a response that wins while a provider cancellation is
         # being delivered, so no late Judge verdict reaches the UI.
         _record_verdict(verdict, on_verdict)
-        if decision_future.done():
+        if decision_future.done() or (formal_review_is_stale() and judge.uses_formal_review):
             return
         await self._bus.publish(
             ApprovalReviewed(
@@ -103,7 +105,11 @@ class ApprovalDecisionArbiter:
         if verdict.approved:
             blocked = request_id in self._blocked
             self._blocked.discard(request_id)
-            if not blocked and not decision_future.done():
+            if (
+                not blocked
+                and not decision_future.done()
+                and not (formal_review_is_stale() and judge.uses_formal_review)
+            ):
                 decision_future.set_result(approved_value)
 
     async def _on_blocked(self, event: ApprovalAutoFulfillBlocked) -> None:

@@ -4,7 +4,29 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+
+
+@dataclass(frozen=True, slots=True)
+class QueuedApprovalInput:
+    text: str
+    item_id: str
+
+
+type ApprovalUserInput = str | QueuedApprovalInput
+
+formal_user_inputs: ContextVar[tuple[ApprovalUserInput, ...] | None] = ContextVar("formal_user_inputs", default=None)
+
+formal_pass_steered: ContextVar[Callable[[], bool] | None] = ContextVar("formal_pass_steered", default=None)
+
+
+def formal_review_is_stale() -> bool:
+    """A steering request superseded the pass that proposed this action."""
+    steered = formal_pass_steered.get()
+    return steered is not None and steered()
 
 
 @runtime_checkable
@@ -17,31 +39,44 @@ class TurnContextReader(Protocol):
     @property
     def user_messages(self) -> list[str]: ...
 
+    @property
+    def user_inputs(self) -> tuple[ApprovalUserInput, ...]: ...
+
 
 class TurnContextHolder:
     """Mutable run-owned context shared by main and ACP approval paths."""
 
     def __init__(self) -> None:
-        self._messages: list[str] = []
+        self._messages: list[ApprovalUserInput] = []
 
     @property
     def user_message(self) -> str:
-        return self._messages[-1] if self._messages else ""
+        entry = self._messages[-1] if self._messages else ""
+        return entry.text if isinstance(entry, QueuedApprovalInput) else entry
 
     @property
     def user_messages(self) -> list[str]:
-        return list(self._messages)
+        return [entry.text if isinstance(entry, QueuedApprovalInput) else entry for entry in self._messages]
 
-    def replace(self, messages: list[str]) -> None:
+    @property
+    def user_inputs(self) -> tuple[ApprovalUserInput, ...]:
+        return tuple(self._messages)
+
+    def replace(self, messages: list[ApprovalUserInput]) -> None:
         self._messages = [message for message in messages if message]
 
-    def append(self, text: str) -> None:
+    def append(self, text: str, *, item_id: str | None = None) -> None:
         if text:
-            self._messages.append(text)
+            self._messages.append(QueuedApprovalInput(text, item_id) if item_id else text)
 
-    def remove(self, text: str) -> None:
+    def remove(self, text: str, *, item_id: str | None = None) -> None:
         for index in range(len(self._messages) - 1, -1, -1):
-            if self._messages[index] == text:
+            entry = self._messages[index]
+            if isinstance(entry, QueuedApprovalInput):
+                match = entry.item_id == item_id if item_id is not None else entry.text == text
+            else:
+                match = item_id is None and entry == text
+            if match:
                 del self._messages[index]
                 break
 

@@ -15,6 +15,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.invocations import current_invocation_origin
 from chrys.foundation.models.turns import current_turn_start, is_continuation_message
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine import trajectory as trajectory_recorder
 from chrys.orchestration.engine.execution import BARE_RETRY, RetryInput
@@ -35,6 +36,7 @@ from chrys.orchestration.invoker.contracts import (
     StaleContinuation,
     UnsupportedRequest,
 )
+from chrys.service.approval.turn_context import ApprovalUserInput, QueuedApprovalInput, formal_pass_steered
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationScope, PreparationTrace
 from chrys.service.trajectory.state import (
     TurnRecord,
@@ -66,6 +68,14 @@ def _user_request_text(message: Message) -> str:
     """What the user asked in *message*: the text they typed when it was sent otherwise, else its text."""
     typed = message.additional_properties.get(HistoryMarkerKind.TYPED_TEXT_KEY)
     return (typed if isinstance(typed, str) and typed else message.text or "").strip()
+
+
+def _approval_user_input(message: Message) -> ApprovalUserInput:
+    text = _user_request_text(message)
+    props = message.additional_properties
+    if text and props.get(HistoryMarkerKind.INJECTED_KEY) is True and (item_id := read_analytics_item_id(props)):
+        return QueuedApprovalInput(text, item_id)
+    return text
 
 
 def _resumed_turn(history_state: dict[str, Any], *, turn_number: int) -> TurnRecord | None:
@@ -408,7 +418,9 @@ class TurnRunner:
         """
         while True:
             bindings = self._current.require_loaded().bindings
-            outcome = await bindings.backend.run(request)
+            backend = bindings.backend
+            with formal_pass_steered.set(lambda backend=backend: backend.active_abort_cause is AbortCause.STEER):
+                outcome = await backend.run(request)
             bindings.record_outcome(outcome)
             # The pass gave its output up for the steer: settle it so, even when an owner closing took over its cause.
             if not isinstance(outcome, Aborted) or not bindings.state.steered:
@@ -713,9 +725,9 @@ class TurnRunner:
         """Refresh runtime skills and optionally update the active reminder snapshot."""
         await self._skills.refresh(update_active_turn=update_active_turn)
 
-    def _retry_approval_context_messages(self, additional_text: str) -> list[str]:
-        """Return current-turn user texts approval should see during a retry."""
-        messages = self._current_turn_user_messages()
+    def _retry_approval_context_messages(self, additional_text: str) -> list[ApprovalUserInput]:
+        """Preserve queued input identity across a retry."""
+        messages = self._current_turn_user_inputs()
         stripped = additional_text.strip()
         if stripped:
             messages.append(stripped)
@@ -725,6 +737,12 @@ class TurnRunner:
         return [latest] if latest else []
 
     def _current_turn_user_messages(self) -> list[str]:
+        return [
+            entry.text if isinstance(entry, QueuedApprovalInput) else entry
+            for entry in self._current_turn_user_inputs()
+        ]
+
+    def _current_turn_user_inputs(self) -> list[ApprovalUserInput]:
         """Return user messages after the last turn marker.
 
         Feeds the approval-judge context: synthetic ``continue`` nudges are
@@ -735,15 +753,15 @@ class TurnRunner:
         history_messages = self._history.messages
         start = current_turn_start(history_messages)
 
-        messages: list[str] = []
+        messages: list[ApprovalUserInput] = []
         for message in history_messages[start:]:
             if message.role == "user" and not is_continuation_message(message):
-                text = _user_request_text(message)
-                if text:
-                    messages.append(text)
+                user_input = _approval_user_input(message)
+                if user_input:
+                    messages.append(user_input)
         return messages
 
-    def _latest_user_message(self) -> str:
+    def _latest_user_message(self) -> ApprovalUserInput:
         """Return the latest REAL user message in the full history.
 
         Fallback leg of the approval-judge context: skips synthetic
@@ -753,9 +771,9 @@ class TurnRunner:
         """
         for message in reversed(self._history.messages):
             if message.role == "user" and not is_continuation_message(message):
-                text = _user_request_text(message)
-                if text:
-                    return text
+                user_input = _approval_user_input(message)
+                if user_input:
+                    return user_input
         return ""
 
     def _tag_consumed_profile_switch(self) -> None:

@@ -13,6 +13,8 @@ from chrys.foundation.util.unicode_scalars import find_unpaired_surrogate, repla
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+ASK_USER_EVIDENCE_KEY: Final[str] = "ask_user_evidence"
+
 MAX_ASK_USER_QUESTIONS: Final[int] = 5
 MAX_ASK_USER_OPTIONS: Final[int] = 8
 MAX_ASK_USER_QUESTION_CHARS: Final[int] = 10_000

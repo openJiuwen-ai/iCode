@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import json
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from unittest.mock import create_autospec
 
@@ -13,14 +14,25 @@ import httpx
 import pytest
 
 from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
-from chrys.service.approval.predicate import TruthValue, load_default_asset
+from chrys.service.approval.predicate import load_default_asset
 from chrys.service.llm import clients
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.support.gc_isolation import earlier_tests_heap_frozen
 
 
-def predicate_values(value: TruthValue = False) -> dict[str, TruthValue]:
-    return dict.fromkeys((principle.id for principle in load_default_asset().principles), value)
+def predicate_values() -> dict[str, bool]:
+    return dict.fromkeys((principle.id for principle in load_default_asset().principles), False)
+
+
+def structured_response(matches: Mapping[str, object] | None = None, *, authorized: Collection[str] = ()) -> str:
+    """Build a response with false defaults and optional match and consent overrides."""
+    matches = matches or {}
+    fields = {
+        principle.id: {"matches": matches.get(principle.id, False)}
+        | ({"consent_bar_met": principle.id in authorized} if principle.consent_bar else {})
+        for principle in load_default_asset().principles
+    }
+    return json.dumps({"predicates": fields})
 
 
 @asynccontextmanager

@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+DELEGATED_PROMPT_KEY = "_chrys_delegated_prompt"
 SUB_AGENT_RESULT_COMMIT_CALLBACK_KEY = "_chrys_sub_agent_result_commit_callback"
 SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY = "sub_agent_transcript_final_text"
 SUB_AGENT_PROGRESS_METADATA_KEY = "sub_agent_progress"

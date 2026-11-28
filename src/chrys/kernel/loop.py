@@ -27,6 +27,7 @@ import functools
 import inspect
 import logging
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from copy import copy
 from dataclasses import dataclass
 from enum import Enum
@@ -91,8 +92,8 @@ from .client import (
 from .compaction import ContextOverflowSink
 from .exchanges import TOOL_CALL_CONTENT_TYPES
 from .identity import WeakIdentityRegistry
-from .middleware import FunctionMiddlewarePipeline, _as_middleware_list, split_middleware
-from .sessions import AgentSession, is_local_history_conversation_id
+from .middleware import FunctionMiddlewarePipeline, _as_middleware_list, active_tool_batch_messages, split_middleware
+from .sessions import TOOL_HISTORY_PREFIX_KWARG, AgentSession, is_local_history_conversation_id
 from .tools import (
     normalize_tools,
 )
@@ -1649,6 +1650,8 @@ class _LoopRun:
         injection_probe: ConsumedInjectionMessageProbe | None,
         pipeline: FunctionMiddlewarePipeline,
         additional_function_arguments: dict[str, Any],
+        capture_tool_history: bool,
+        load_tool_history_prefix: Callable[[], Awaitable[tuple[Message, ...]]] | None,
         request_message_observer: Callable[[Sequence[Message]], None] | None,
         max_iterations: int,
         max_consecutive_errors: int,
@@ -1681,7 +1684,22 @@ class _LoopRun:
         # call; _land_response_contents removes reappearances as
         # echoes. ignore_usage: echo filtering never strips usage.
         self._echo_registry = WeakIdentityRegistry(ignore_usage=True)
-        self._wire_request_observer = _wire_request_observer(self._echo_registry, request_message_observer)
+        self._capture_tool_history = capture_tool_history
+        self._load_tool_history_prefix = load_tool_history_prefix
+        self._tool_history_prefix: tuple[Message, ...] = ()
+        self._approval_history: tuple[Message, ...] = ()
+        self._continued_history: tuple[Message, ...] = ()
+
+        def observe(messages: Sequence[Message]) -> None:
+            # A poll retrieves an existing response. Its request does not deliver new history.
+            if self._options.get("continuation_token") is None:
+                self._approval_history = (*(self._continued_history or self._tool_history_prefix), *messages)
+            if request_message_observer is not None:
+                request_message_observer(messages)
+
+        self._wire_request_observer = _wire_request_observer(
+            self._echo_registry, observe if capture_tool_history else request_message_observer
+        )
         self._prepped_messages: list[Message] = []
         self._fcc_messages: list[Message] = []
         self._next_tool_ordinal = 0
@@ -1706,11 +1724,25 @@ class _LoopRun:
 
     # -- steps both drivers share ------------------------------------------
 
-    def _start(self) -> None:
+    async def _start(self) -> None:
         for message in self._messages:
             for content in message.contents:
                 self._echo_registry.register(content)
         self._prepped_messages = list(self._messages)
+        if self._capture_tool_history:
+            if self._load_tool_history_prefix is not None:
+                self._tool_history_prefix = await self._load_tool_history_prefix()
+            self._approval_history = (*self._tool_history_prefix, *self._messages)
+            if self._session is not None:
+                snapshot = self._session._continuation_tool_history
+                if snapshot is not None and snapshot[0] == self._options.get("continuation_token"):
+                    self._approval_history = snapshot[1]
+                else:
+                    self._session._continuation_tool_history = None
+
+    def _remember_continuation_history(self, token: Any) -> None:
+        if self._capture_tool_history and self._session is not None:
+            self._session._continuation_tool_history = None if token is None else (token, self._approval_history)
 
     def _land(self, response: ChatResponse) -> None:
         self._next_tool_ordinal = _land_response_contents(
@@ -1769,7 +1801,12 @@ class _LoopRun:
             else None
         )
         response_truncated = response.finish_reason == "length"
-        with self._trajectory.exchange_scope():
+        batch_history = (
+            active_tool_batch_messages.set((self._approval_history, tuple(response.messages)))
+            if self._capture_tool_history
+            else nullcontext()
+        )
+        with self._trajectory.exchange_scope(), batch_history:
             results, should_terminate, had_errors = await _execute_function_calls(
                 function_calls=function_calls,
                 result_commits=result_commits,
@@ -1828,7 +1865,11 @@ class _LoopRun:
             self._options["tool_choice"] = None
 
     def _queue_batch(self, response: ChatResponse) -> None:
+        self._continued_history = ()
         if response.conversation_id is not None:
+            # Preserve locally observed context when a provider accepts only the new suffix.
+            if self._capture_tool_history:
+                self._continued_history = (*self._approval_history, *response.messages[:-1])
             # Conversation APIs already hold the function-call message;
             # send only the new result message.
             self._prepped_messages.clear()
@@ -1863,7 +1904,7 @@ class _LoopRun:
             await self._trajectory.settle_undispatched_tool_operations(queued=interrupted)
 
     async def _blocking_iterations(self) -> ChatResponse:
-        self._start()
+        await self._start()
         response: ChatResponse | None = None
         tail_cycle_index = self._max_iterations
         fallback_text = _MAX_ITERATIONS_FALLBACK_TEXT
@@ -1969,7 +2010,7 @@ class _LoopRun:
         # by ``close_abandoned_read``.
         interrupted = False
         try:
-            self._start()
+            await self._start()
             response: ChatResponse | None = None
             tail_cycle_index = self._max_iterations
             fallback_text = _MAX_ITERATIONS_FALLBACK_TEXT
@@ -2303,7 +2344,9 @@ class ToolLoopLayer:
                 *_as_middleware_list(middleware),
             ]
         runtime_split = split_middleware(effective_client_kwargs.pop("middleware", None))
-        pipeline = FunctionMiddlewarePipeline(*self.function_middleware, *runtime_split.function)
+        function_middleware = [*self.function_middleware, *runtime_split.function]
+        pipeline = FunctionMiddlewarePipeline(*function_middleware)
+        capture_tool_history = any(middleware.captures_tool_history for middleware in function_middleware)
         per_call_chat: list[ChatMiddleware] = runtime_split.chat
 
         raw_session = effective_client_kwargs.pop("session", None)
@@ -2324,6 +2367,7 @@ class ToolLoopLayer:
         raw_trajectory = effective_client_kwargs.pop(TRAJECTORY_CONTEXT_KWARG, None)
         trajectory: TrajectoryContext | None = raw_trajectory if isinstance(raw_trajectory, TrajectoryContext) else None
 
+        load_tool_history_prefix = effective_client_kwargs.pop(TOOL_HISTORY_PREFIX_KWARG, None)
         filtered_kwargs = effective_client_kwargs
 
         additional_function_arguments = dict(function_invocation_kwargs) if function_invocation_kwargs else {}
@@ -2359,6 +2403,11 @@ class ToolLoopLayer:
             else None
         )
 
+        def observe_continuation(token: Any) -> None:
+            run._remember_continuation_history(token)
+            if continuation_token_observer is not None:
+                continuation_token_observer(token)
+
         run_trajectory = _LoopTrajectory(trajectory, retry_policy=wire_retry_policy)
         wire = _WireCaller(
             self.inner,
@@ -2370,7 +2419,7 @@ class ToolLoopLayer:
             policy=wire_retry_policy,
             recorder=recorder,
             injection_probe=injection_probe,
-            continuation_token_observer=continuation_token_observer,
+            continuation_token_observer=observe_continuation,
             trajectory=run_trajectory,
         )
         run = _LoopRun(
@@ -2383,6 +2432,8 @@ class ToolLoopLayer:
             injection_probe=injection_probe,
             pipeline=pipeline,
             additional_function_arguments=additional_function_arguments,
+            capture_tool_history=capture_tool_history,
+            load_tool_history_prefix=load_tool_history_prefix,
             request_message_observer=request_message_observer,
             max_iterations=self.max_iterations,
             max_consecutive_errors=self.max_consecutive_errors,
