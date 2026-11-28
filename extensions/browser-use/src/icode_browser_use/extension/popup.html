@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>iCode Browser Bridge</title>
+  </head>
+  <body>
+    <h1>iCode Browser Bridge</h1>
+    <p class="hint">
+      Allow a site before iCode can act on its tab. The plugin's domain allowlist
+      still filters network requests.
+    </p>
+    <div id="rows"></div>
+    <p id="empty" hidden>Open a website tab first.</p>
+    <div class="add">
+      <input id="origin" type="text" placeholder="https://example.com" spellcheck="false" />
+      <button id="add-allow" type="button">Allow</button>
+      <button id="add-block" type="button">Block</button>
+    </div>
+    <button id="manage" type="button" class="manage">Manage all sites…</button>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

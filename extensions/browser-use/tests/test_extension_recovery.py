@@ -1,0 +1,958 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Discovery, status and recovery tools: no implicit launch, no cross-session claim (W03)."""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from chrys.extensions import ToolContext, ToolError, TurnContext
+
+import icode_browser_use.extension as ext
+from icode_browser_use import registry
+from icode_browser_use.journal import Journal
+
+
+class FakeOwnedSession:
+    """An owned session double: real fields, no Chrome and no CDP connection."""
+
+    def __init__(self, cfg, *, journal_owner: str = "", journal_session: str = "") -> None:
+        self.cfg = cfg
+        self.journal_owner = journal_owner
+        self.journal_session = journal_session
+        self.journal = Journal(None)
+        self.state = "idle"
+        self.started_once = False
+        self.page_epoch = 11
+        self.login_pending = False
+        self.snapshot = SimpleNamespace(url="", title="")
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+        self.state = "closed"
+
+    def mark_disconnected(self) -> None:
+        self.state = "failed"
+
+    def pages(self) -> list[object]:
+        return []
+
+
+@pytest.fixture(autouse=True)
+def isolated(monkeypatch: pytest.MonkeyPatch):
+    for name in tuple(os.environ):
+        if name.startswith("ICODE_BROWSER_"):
+            monkeypatch.delenv(name)
+    importlib.reload(ext)
+    ext._browsers.clear()
+    yield
+    ext._browsers.clear()
+
+
+def configure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **env: str) -> None:
+    monkeypatch.setenv("ICODE_BROWSER_ALLOWED_DOMAINS", "example.com")
+    monkeypatch.setenv("ICODE_BROWSER_STATE_DIR", str(tmp_path / "state"))
+    for name, value in env.items():
+        monkeypatch.setenv(f"ICODE_BROWSER_{name}", value)
+
+
+def ctx(tmp_path: Path, *, session: str = "s1", agent: str = "A") -> ToolContext:
+    return ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name=agent,
+        session_id=session,
+    )
+
+
+def records_for(context: ToolContext) -> list[registry.ManifestRecord]:
+    records, problem = registry.load(registry.manifest_path(context))
+    assert problem is None
+    return records
+
+
+async def open_one(context: ToolContext) -> tuple[str, registry.ManifestRecord]:
+    text = await ext.browser_open(context)
+    browser_id = text.removeprefix("browser_id: ")
+    return browser_id, next(item for item in records_for(context) if item.browser_id == browser_id)
+
+
+def test_open_records_identity_without_starting(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        browser_id, record = await open_one(context)
+        assert record.schema == registry.SCHEMA_VERSION
+        assert record.backend == "owned"
+        assert record.slot == 0
+        assert record.session_id == "s1"
+        assert record.agent_name == "A"
+        assert record.resume_id.startswith("s0-")
+        assert record.origin == "(not navigated yet)"
+        assert ext._browsers[browser_id].session.started_once is False
+
+    asyncio.run(scenario())
+
+
+def test_list_shows_live_browsers_without_launching(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        browser_id, record = await open_one(context)
+        text = await ext.browser_list(context)
+        assert "open=1" in text
+        assert f"browser_id={browser_id}" in text
+        assert "state=allocated" in text
+        assert "backend=owned" in text
+        assert f"resume_id={record.resume_id}" in text
+        assert ext._browsers[browser_id].session.started_once is False
+
+    asyncio.run(scenario())
+
+
+def test_list_finds_a_record_after_the_registry_is_lost(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        _, record = await open_one(context)
+        ext._browsers.clear()
+        text = await ext.browser_list(context)
+        assert "open=0" in text
+        assert "recoverable=1" in text
+        assert f"resume_id={record.resume_id}" in text
+        assert "state=recorded" in text
+        assert "browser_resume" in text
+
+    asyncio.run(scenario())
+
+
+def test_list_never_exposes_another_session_record(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+
+    async def scenario() -> None:
+        _, record = await open_one(ctx(tmp_path, session="s1"))
+        text = await ext.browser_list(ctx(tmp_path, session="s2"))
+        assert "recoverable=0" in text
+        assert "unclaimable=1" in text
+        assert record.resume_id not in text
+        assert "example.com" not in text
+
+    asyncio.run(scenario())
+
+
+def test_status_reports_allocated_without_starting(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        browser_id, _ = await open_one(context)
+        text = await ext.browser_status(context, browser_id)
+        assert "state=allocated" in text
+        assert "browser_navigate" in text
+        assert "page_epoch" not in text
+        assert ext._browsers[browser_id].session.started_once is False
+
+    asyncio.run(scenario())
+
+
+def test_status_reports_ready_login_wait_and_redacted_origin(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        browser_id, _ = await open_one(context)
+        session = ext._browsers[browser_id].session
+        session.state = "ready"
+        session.started_once = True
+        session.login_pending = True
+        session.snapshot.url = "https://example.com/report?token=SENTINEL"
+        text = await ext.browser_status(context, browser_id)
+        assert "state=ready" in text
+        assert "login_pending=yes" in text
+        assert "origin=https://example.com" in text
+        assert "page_epoch=11" in text
+        assert "SENTINEL" not in text
+        assert "sign in" in text
+
+    asyncio.run(scenario())
+
+
+def test_status_maps_a_dead_connection_to_disconnected(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        browser_id, _ = await open_one(context)
+        ext._browsers[browser_id].session.mark_disconnected()
+        text = await ext.browser_status(context, browser_id)
+        assert "state=disconnected" in text
+        assert "new page" in text
+        assert ext._browsers[browser_id].session.started_once is False
+
+    asyncio.run(scenario())
+
+
+def test_status_unknown_handle_points_to_list_and_open(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+
+    async def scenario() -> None:
+        with pytest.raises(ToolError) as info:
+            await ext.browser_status(ctx(tmp_path), "missing")
+        assert info.value.code == "unknown_browser"
+        assert "browser_list" in str(info.value)
+        assert "browser_open" in str(info.value)
+
+    asyncio.run(scenario())
+
+
+def test_resume_is_idempotent_for_a_live_generation(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        browser_id, record = await open_one(context)
+        text = await ext.browser_resume(context, record.resume_id)
+        assert text.startswith(f"browser_id: {browser_id}")
+        assert "already live" in text
+        assert len(ext._browsers) == 1
+
+    asyncio.run(scenario())
+
+
+def test_resume_reopens_the_same_slot_as_a_new_page(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        browser_id, record = await open_one(context)
+        ext._browsers.clear()
+        resume_id = record.resume_id
+
+        async def forbidden(*_args, **_kwargs):
+            raise AssertionError("resume must not act on the page")
+
+        monkeypatch.setattr(ext, "_run", forbidden)
+        text = await ext.browser_resume(context, resume_id)
+        resumed_id = text.splitlines()[0].removeprefix("browser_id: ")
+        assert resumed_id and resumed_id != browser_id
+        assert "new page" in text
+        assert "not restored" in text
+        session = ext._browsers[resumed_id].session
+        assert str(session.cfg.state_dir).endswith("slot-0")
+        assert session.started_once is False
+
+    asyncio.run(scenario())
+
+
+def test_resume_rejects_unknown_and_foreign_resume_ids(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+
+    async def scenario() -> None:
+        context = ctx(tmp_path)
+        _, record = await open_one(context)
+        with pytest.raises(ToolError) as unknown:
+            await ext.browser_resume(context, "s0-missing")
+        assert unknown.value.code == "unknown_resume"
+        assert "browser_list" in str(unknown.value)
+
+        ext._browsers.clear()
+        with pytest.raises(ToolError) as foreign:
+            await ext.browser_resume(ctx(tmp_path, session="s2"), record.resume_id)
+        assert foreign.value.code == "browser_resume_denied"
+        assert "session" in str(foreign.value)
+        assert not ext._browsers
+
+    asyncio.run(scenario())
+
+
+def test_resume_refuses_a_slot_that_is_already_live(tmp_path, monkeypatch) -> None:
+    import dataclasses
+
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        browser_id, record = await open_one(context)
+        # A stale generation for the same slot, e.g. written by an older build.
+        stale = dataclasses.replace(record, resume_id="s0-stale", generation="stale")
+        path = registry.manifest_path(context)
+        registry.save(path, [*records_for(context), stale])
+        assert ext._browsers[browser_id].slot == 0
+        with pytest.raises(ToolError) as info:
+            await ext.browser_resume(context, "s0-stale")
+        assert info.value.code == "browser_resume_conflict"
+        assert "close" in str(info.value)
+
+    asyncio.run(scenario())
+
+
+def test_resume_refuses_when_the_backend_configuration_changed(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        _, record = await open_one(context)
+        ext._browsers.clear()
+        monkeypatch.setenv("ICODE_BROWSER_BRIDGE", "1")
+        with pytest.raises(ToolError) as info:
+            await ext.browser_resume(context, record.resume_id)
+        assert info.value.code == "browser_resume_backend_mismatch"
+        assert "owned" in str(info.value)
+        assert "bridge" in str(info.value)
+
+    asyncio.run(scenario())
+
+
+def test_close_drops_the_record(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        browser_id, _ = await open_one(context)
+        await ext.browser_close(context, browser_id)
+        assert records_for(context) == []
+        assert "recoverable=0" in await ext.browser_list(context)
+
+    asyncio.run(scenario())
+
+
+def test_context_hints_recovery_without_leaking_ids(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        _, record = await open_one(context)
+        ext._browsers.clear()
+        turn = TurnContext.for_testing(
+            tmp_path,
+            prompt="hi",
+            data_dir=tmp_path / "data",
+            session_data_dir=tmp_path / "session",
+            agent_name="A",
+            session_id="s1",
+        )
+        text = await ext.browser_context(turn)
+        assert text is not None
+        assert "browser_list" in text
+        assert record.resume_id not in text
+        assert "example.com" not in text
+
+    asyncio.run(scenario())
+
+
+def test_manifest_write_failure_does_not_break_open(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+
+    def broken(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(registry, "save", broken)
+    text = asyncio.run(ext.browser_open(ctx(tmp_path)))
+    assert text.startswith("browser_id: ")
+
+
+def test_list_reports_an_unreadable_manifest(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    context = ctx(tmp_path)
+    path = registry.manifest_path(context)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{broken", encoding="utf-8")
+    text = asyncio.run(ext.browser_list(context))
+    assert "manifest=unreadable" in text
+    assert "open=0" in text
+
+
+def test_records_survive_a_json_round_trip(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    context = ctx(tmp_path)
+
+    async def scenario() -> None:
+        _, record = await open_one(context)
+        raw = json.loads(registry.manifest_path(context).read_text(encoding="utf-8"))
+        assert raw == {"schema": registry.SCHEMA_VERSION, "records": [record.to_dict()]}
+
+    asyncio.run(scenario())
+
+
+def test_stale_workflow_close_preserves_profile_dir_after_newer_generation_resumed_and_idled(
+    tmp_path, monkeypatch
+) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(ext, "BrowserSession", FakeOwnedSession)
+    wf_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="A",
+        session_id="s-wf",
+        invocation_type="workflow_node",
+        caller_name="wf",
+        invocation_id="inv-1",
+    )
+
+    async def scenario() -> None:
+        opened = await ext.browser_open(wf_ctx)
+        bid_a = opened.split("browser_id: ", 1)[1].strip()
+        browser_a = ext._browsers[bid_a]
+        state_dir = browser_a.ephemeral_state_dir
+        assert state_dir is not None
+        state_dir.mkdir(parents=True, exist_ok=True)
+        cookie_marker = state_dir / "Cookies.txt"
+        cookie_marker.write_text("from-a", encoding="utf-8")
+        browser_a.session.owns_state_dir = True  # type: ignore[attr-defined]
+        assert browser_a.record is not None
+        resume_id_a = browser_a.record.resume_id
+
+        # Simulate Host B in another process resuming the same workflow slot while Host A is idle.
+        saved_a = ext._browsers.pop(bid_a)
+        resumed = await ext.browser_resume(wf_ctx, resume_id_a)
+        bid_b = resumed.splitlines()[0].split("browser_id: ", 1)[1].strip()
+        browser_b = ext._browsers[bid_b]
+        assert browser_b.record is not None and browser_b.record.resume_id != resume_id_a
+        cookie_marker.write_text("from-b-cookie", encoding="utf-8")
+
+        # Now B is idle (no instance lock held), and stale Host A closes.
+        ext._browsers.pop(bid_b)
+        ext._browsers[bid_a] = saved_a
+        await ext.browser_close(wf_ctx, bid_a)
+
+        assert state_dir.is_dir(), "closing stale handle A must not delete B's profile dir"
+        assert cookie_marker.read_text(encoding="utf-8") == "from-b-cookie"
+        remaining = records_for(wf_ctx)
+        assert [r.resume_id for r in remaining] == [browser_b.record.resume_id]
+
+    asyncio.run(scenario())
+
+
+def test_unstarted_subagent_handle_is_reclaimed_after_idle_timeout(tmp_path, monkeypatch) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0.05")
+    sub_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Browser",
+        session_id="s-sub",
+        invocation_type="sub_agent",
+        caller_name="browser_agent",
+        invocation_id="sub-inv-9",
+    )
+
+    async def scenario() -> None:
+        opened = await ext.browser_open(sub_ctx)
+        bid = opened.split("browser_id: ", 1)[1].strip()
+        assert bid in ext._browsers
+        assert len(records_for(sub_ctx)) == 1
+        for _ in range(50):
+            if bid not in ext._browsers and records_for(sub_ctx) == []:
+                break
+            await asyncio.sleep(0.05)
+        assert bid not in ext._browsers
+        assert records_for(sub_ctx) == []
+
+    asyncio.run(scenario())
+
+
+def test_stale_handle_navigate_after_takeover_and_idle_is_rejected_and_close_preserves_b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 regression: takeover -> idle -> stale handle navigate -> stale handle close."""
+    configure(monkeypatch, tmp_path)
+    wf_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="A",
+        session_id="s-takeover",
+        invocation_type="workflow_node",
+        caller_name="wf",
+        invocation_id="inv-takeover",
+    )
+
+    launches: list[str] = []
+
+    async def fake_call(browser: ext._Browser, name: str, arguments: dict[str, object]) -> list[dict[str, object]]:
+        url = str(arguments.get("url") or "")
+        launches.append(f"{browser.id}:{name}:{url}")
+        if browser.slot_state_dir is not None:
+            browser.slot_state_dir.mkdir(parents=True, exist_ok=True)
+            (browser.slot_state_dir / "chrome").mkdir(exist_ok=True)
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        browser.session._started_once = True  # type: ignore[attr-defined]
+        browser.session._state = "ready"  # type: ignore[attr-defined]
+        browser.session._snapshot.url = url  # type: ignore[attr-defined]
+        return [{"type": "text", "text": f"navigated:{url}"}]
+
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    async def scenario() -> None:
+        # 1. Host A implicitly creates the session via browser_navigate(url) and goes idle.
+        nav_a = await ext.browser_navigate(wf_ctx, "https://example.com/start")
+        bid_a = nav_a.splitlines()[0].split("browser_id: ", 1)[1].strip()
+        browser_a = ext._browsers[bid_a]
+        assert browser_a.record is not None
+        resume_id_a = browser_a.record.resume_id
+        state_dir = browser_a.slot_state_dir
+        assert state_dir is not None
+        assert ext._read_slot_generation(state_dir) == resume_id_a
+        browser_a.session._state = "idle"  # type: ignore[attr-defined]
+
+        # 2. Host B resumes slot 0, writes persistent cookies, navigates, and goes idle.
+        saved_a = ext._browsers.pop(bid_a)
+        resumed = await ext.browser_resume(wf_ctx, resume_id_a)
+        bid_b = resumed.splitlines()[0].split("browser_id: ", 1)[1].strip()
+        browser_b = ext._browsers[bid_b]
+        assert browser_b.record is not None
+        resume_id_b = browser_b.record.resume_id
+        assert resume_id_b != resume_id_a
+        await ext.browser_navigate(wf_ctx, "https://example.com/logged-in", bid_b)
+        cookie_file = state_dir / "chrome" / "Cookies"
+        cookie_file.write_text("session=from-host-b", encoding="utf-8")
+        browser_b.session._state = "idle"  # type: ignore[attr-defined]
+        ext._browsers.pop(bid_b)
+
+        # 3. Host A tries to navigate to another origin with its stale handle -> MUST be rejected.
+        ext._browsers[bid_a] = saved_a
+        launches_before = len(launches)
+        with pytest.raises(ToolError) as exc_info:
+            await ext.browser_navigate(wf_ctx, "https://other.example.com/hijack", bid_a)
+        assert exc_info.value.code == "browser_superseded"
+        assert len(launches) == launches_before, "stale handle must be rejected before running _call"
+        assert ext._read_slot_generation(state_dir) == resume_id_b
+        assert [r.resume_id for r in records_for(wf_ctx)] == [resume_id_b]
+
+        # Even direct _apersist on a stale handle must verify slot ownership and refuse overwrite.
+        saved_a.superseded = False
+        saved_a.url = "https://other.example.com/direct"
+        await ext._apersist(saved_a)
+        assert [r.resume_id for r in records_for(wf_ctx)] == [resume_id_b]
+        assert saved_a.superseded is True
+
+        # And BrowserSession's on_slot_acquired guard also rejects a stale handle at lock reacquisition.
+        saved_a.superseded = False
+        assert saved_a.session._on_slot_acquired is not None  # type: ignore[attr-defined]
+        with pytest.raises(ext.BrowserError) as guard_exc:
+            await saved_a.session._on_slot_acquired()  # type: ignore[attr-defined]
+        assert guard_exc.value.code == "browser_superseded"
+        assert guard_exc.value.pre_dispatch is True
+        assert ext._read_slot_generation(state_dir) == resume_id_b
+
+        # 4. Closing stale handle A must succeed and preserve B's record, profile dir, and cookies.
+        closed = await ext.browser_close(wf_ctx, bid_a)
+        assert f"browser_id {bid_a} closed" in closed
+        assert bid_a not in ext._browsers
+        assert state_dir.is_dir()
+        assert cookie_file.read_text(encoding="utf-8") == "session=from-host-b"
+        assert ext._read_slot_generation(state_dir) == resume_id_b
+        assert [r.resume_id for r in records_for(wf_ctx)] == [resume_id_b]
+
+    asyncio.run(scenario())
+
+
+def test_first_implicit_navigate_failure_reclaims_fresh_dir_but_preserves_preexisting_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 #4 regression: fresh failed implicit navigate reclaims new profile dir; preexisting profile stays."""
+    from icode_browser_use.errors import BadRequest
+
+    configure(monkeypatch, tmp_path)
+
+    async def fail_relative(
+        browser: ext._Browser, _name: str, _arguments: dict[str, object]
+    ) -> list[dict[str, object]]:
+        # Simulate Chrome having launched and populated the slot profile dir before _precheck_url fails.
+        assert browser.slot_state_dir is not None
+        chrome_dir = browser.slot_state_dir / "chrome"
+        chrome_dir.mkdir(parents=True, exist_ok=True)
+        (chrome_dir / "Preferences").write_text("{}", encoding="utf-8")
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        browser.session._started_once = True  # type: ignore[attr-defined]
+        raise ToolError(BadRequest("相对 URL 需要有效的 http/https 当前页面").render(), code="browser_bad_request")
+
+    monkeypatch.setattr(ext, "_call", fail_relative)
+
+    async def scenario() -> None:
+        # Part A: Two brand-new sub-agents fail implicit relative navigation -> 0 records, 0 profile dirs left.
+        for inv_id in ("sub-rel-1", "sub-rel-2"):
+            sub_ctx = ToolContext.for_testing(
+                tmp_path,
+                data_dir=tmp_path / "data",
+                session_data_dir=tmp_path / "session",
+                agent_name="Sub",
+                session_id="s-sub-rel",
+                invocation_type="sub_agent",
+                caller_name="worker",
+                invocation_id=inv_id,
+            )
+            slot_dir = (tmp_path / "state") / "agents" / ext._owner_key(sub_ctx) / "slot-0"
+            assert not slot_dir.exists()
+            with pytest.raises(ToolError) as exc_info:
+                await ext.browser_navigate(sub_ctx, "/relative-only")
+            assert exc_info.value.code == "browser_bad_request"
+            listed = await ext.browser_list(sub_ctx)
+            assert "open=0 recoverable=0" in listed
+            assert not slot_dir.exists(), f"freshly created profile dir leaked on rollback: {slot_dir}"
+
+        # Part B: Pre-existing recoverable workflow profile must survive a failed implicit navigate rollback.
+        wf_ctx = ToolContext.for_testing(
+            tmp_path,
+            data_dir=tmp_path / "data",
+            session_data_dir=tmp_path / "session",
+            agent_name="WfAgent",
+            session_id="s-wf-rel",
+            invocation_type="workflow_node",
+            caller_name="step",
+            invocation_id="wf-inv-existing",
+        )
+        owner_key = ext._owner_key(wf_ctx)
+        existing_dir = (tmp_path / "state") / "agents" / owner_key / "slot-0"
+        (existing_dir / "chrome").mkdir(parents=True, exist_ok=True)
+        existing_cookie = existing_dir / "chrome" / "Cookies"
+        existing_cookie.write_text("existing-cookie", encoding="utf-8")
+        manifest = registry.manifest_path(wf_ctx)
+        prev_record = registry.new_record(
+            browser_id="b-prev",
+            resume_id="s0-prevgen",
+            session_id=wf_ctx.session_id,
+            agent_name=wf_ctx.agent_name,
+            owner_key=owner_key,
+            backend="owned",
+            generation="prevgen",
+            slot=0,
+            origin_url="https://example.com",
+        )
+        registry.save(manifest, [prev_record])
+
+        with pytest.raises(ToolError) as wf_exc:
+            await ext.browser_navigate(wf_ctx, "/relative-only")
+        assert wf_exc.value.code == "browser_bad_request"
+        assert existing_dir.is_dir(), "pre-existing recoverable profile dir must be preserved"
+        assert existing_cookie.read_text(encoding="utf-8") == "existing-cookie"
+        assert [r.resume_id for r in records_for(wf_ctx)] == ["s0-prevgen"]
+
+    asyncio.run(scenario())
+
+
+def test_unstarted_subagent_handle_reclaims_after_empty_browser_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 #5 regression: browser_logs returning 0 entries without launching Chrome must re-arm idle reclaim."""
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("ICODE_BROWSER_IDLE_CLOSE_SECONDS", "0.06")
+    sub_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Browser",
+        session_id="s-sub-logs",
+        invocation_type="sub_agent",
+        caller_name="browser_agent",
+        invocation_id="sub-inv-logs",
+    )
+
+    async def scenario() -> None:
+        opened = await ext.browser_open(sub_ctx)
+        bid = opened.split("browser_id: ", 1)[1].strip()
+        logs_text = await ext.browser_logs(sub_ctx, bid)
+        assert "日志 0 条" in logs_text
+        assert ext._browsers[bid].session.started_once is False
+        assert ext._browsers[bid].idle_reclaim_task is not None
+
+        for _ in range(50):
+            if bid not in ext._browsers and records_for(sub_ctx) == []:
+                break
+            await asyncio.sleep(0.05)
+        assert bid not in ext._browsers, "unstarted handle should be reclaimed after empty browser_logs"
+        assert records_for(sub_ctx) == [], "unstarted manifest record should be dropped after idle timeout"
+
+    asyncio.run(scenario())
+
+
+def test_normal_close_then_reopen_owned_handle_succeeds_on_navigate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 regression: browser_open -> browser_navigate -> browser_close -> browser_open -> browser_navigate."""
+    configure(monkeypatch, tmp_path)
+    turn_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Main",
+        session_id="s-reopen",
+        invocation_type="turn",
+        caller_name="Main",
+    )
+
+    async def fake_call(browser: ext._Browser, name: str, arguments: dict[str, object]) -> list[dict[str, object]]:
+        url = str(arguments.get("url") or "")
+        assert browser.slot_state_dir is not None
+        (browser.slot_state_dir / "chrome").mkdir(parents=True, exist_ok=True)
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        browser.session._started_once = True  # type: ignore[attr-defined]
+        browser.session._state = "ready"  # type: ignore[attr-defined]
+        browser.session._snapshot.url = url  # type: ignore[attr-defined]
+        return [{"type": "text", "text": f"navigated:{url}"}]
+
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    async def scenario() -> None:
+        bid1 = (await ext.browser_open(turn_ctx)).split("browser_id: ", 1)[1].strip()
+        b1 = ext._browsers[bid1]
+        assert b1.record is not None
+        resume1 = b1.record.resume_id
+        state_dir = b1.slot_state_dir
+        assert state_dir is not None
+
+        await ext.browser_navigate(turn_ctx, "https://example.com/first", bid1)
+        assert ext._read_slot_generation(state_dir) == resume1
+        cookie = state_dir / "chrome" / "Cookies"
+        cookie.write_text("persisted-main-cookie", encoding="utf-8")
+
+        await ext.browser_close(turn_ctx, bid1)
+        assert state_dir.is_dir(), "persistent main-turn profile dir stays after normal close"
+        assert records_for(turn_ctx) == []
+
+        # Reopen in the same session: browser_open must refresh slot.generation so navigate succeeds.
+        bid2 = (await ext.browser_open(turn_ctx)).split("browser_id: ", 1)[1].strip()
+        b2 = ext._browsers[bid2]
+        assert b2.record is not None
+        resume2 = b2.record.resume_id
+        assert resume2 != resume1
+        assert ext._read_slot_generation(state_dir) == resume2
+
+        nav2 = await ext.browser_navigate(turn_ctx, "https://example.com/second", bid2)
+        assert "navigated:https://example.com/second" in nav2
+        assert cookie.read_text(encoding="utf-8") == "persisted-main-cookie"
+        assert [r.resume_id for r in records_for(turn_ctx)] == [resume2]
+        await ext.browser_close(turn_ctx, bid2)
+
+    asyncio.run(scenario())
+
+
+def test_dual_host_concurrent_browser_open_blocks_b_and_keeps_a_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 regression: Host B calling browser_open while Host A holds slot-0 must be rejected and leave A usable."""
+    from icode_browser_use.locking import acquire_instance_lock
+
+    configure(monkeypatch, tmp_path)
+    turn_ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Main",
+        session_id="s-dual-open",
+        invocation_type="turn",
+        caller_name="Main",
+    )
+
+    async def fake_call(browser: ext._Browser, name: str, arguments: dict[str, object]) -> list[dict[str, object]]:
+        url = str(arguments.get("url") or "")
+        assert browser.slot_state_dir is not None
+        browser.slot_state_dir.mkdir(parents=True, exist_ok=True)
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        browser.session._started_once = True  # type: ignore[attr-defined]
+        browser.session._state = "ready"  # type: ignore[attr-defined]
+        browser.session._snapshot.url = url  # type: ignore[attr-defined]
+        return [{"type": "text", "text": f"navigated:{url}"}]
+
+    monkeypatch.setattr(ext, "_call", fake_call)
+
+    async def scenario() -> None:
+        bid_a = (await ext.browser_open(turn_ctx)).split("browser_id: ", 1)[1].strip()
+        browser_a = ext._browsers[bid_a]
+        assert browser_a.record is not None and browser_a.slot_state_dir is not None
+        resume_a = browser_a.record.resume_id
+        state_dir = browser_a.slot_state_dir
+        await ext.browser_navigate(turn_ctx, "https://example.com/a1", bid_a)
+        assert ext._read_slot_generation(state_dir) == resume_a
+
+        # Host A actively holds slot-0's instance lock.
+        a_lock = await acquire_instance_lock(state_dir, wait=0)
+        try:
+            # Simulate Host B in another process (empty in-memory _browsers) calling browser_open.
+            saved_a = ext._browsers.pop(bid_a)
+            try:
+                with pytest.raises(ToolError) as exc_info:
+                    await ext.browser_open(turn_ctx)
+                assert exc_info.value.code == "browser_open_blocked"
+                assert "state_dir_locked" in exc_info.value.message
+                assert ext._browsers == {}
+                assert ext._read_slot_generation(state_dir) == resume_a
+                assert [r.resume_id for r in records_for(turn_ctx)] == [resume_a]
+            finally:
+                ext._browsers[bid_a] = saved_a
+
+            # Host A must still be able to navigate on its original handle.
+            nav_a2 = await ext.browser_navigate(turn_ctx, "https://example.com/a2", bid_a)
+            assert "navigated:https://example.com/a2" in nav_a2
+            assert [r.resume_id for r in records_for(turn_ctx)] == [resume_a]
+        finally:
+            a_lock.release()
+
+        await ext.browser_close(turn_ctx, bid_a)
+
+        # Once Host A closes, Host B can cleanly open and navigate on slot-0.
+        bid_b = (await ext.browser_open(turn_ctx)).split("browser_id: ", 1)[1].strip()
+        nav_b = await ext.browser_navigate(turn_ctx, "https://example.com/b1", bid_b)
+        assert "navigated:https://example.com/b1" in nav_b
+        await ext.browser_close(turn_ctx, bid_b)
+
+    asyncio.run(scenario())
+
+
+def test_manifest_lock_creates_cross_process_lock_and_commit_skips_when_busy_or_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave 3 P1-14 #1 & #3: manifest uses cross-process lock; _commit_pending_record aborts if busy or closing."""
+    configure(monkeypatch, tmp_path)
+    ctx = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        agent_name="Main",
+        session_id="s-lock-commit",
+    )
+    manifest = registry.manifest_path(ctx)
+    with ext._manifest_lock(manifest, create_dir=True):
+        assert manifest.with_name(f".{manifest.name}.lock").exists()
+
+    async def scenario() -> None:
+        base = ext._config()
+        browser = ext._allocate(ctx, base, 0, persist=False)
+        browser.record_pending = True
+        browser.session._owns_state_dir = True  # type: ignore[attr-defined]
+        assert browser.slot_state_dir is not None
+
+        # 1) When slot lifecycle lock is unavailable (None), _commit_pending_record must skip without writing.
+        async def busy_lock(_path: Path, *, wait: float = 5.0):
+            return None
+
+        monkeypatch.setattr(ext, "acquire_file_lock", busy_lock)
+        await ext._commit_pending_record(browser)
+        assert browser.record_pending is True
+        assert records_for(ctx) == []
+
+        # 2) When close_task is already set, _commit_pending_record must not resurrect the record.
+        browser.close_task = asyncio.create_task(asyncio.sleep(0))
+        await ext._commit_pending_record(browser)
+        assert browser.record_pending is True
+        assert records_for(ctx) == []
+        await browser.close_task
+        ext._browsers.pop(browser.id, None)
+
+    asyncio.run(scenario())
+
+
+def test_browser_guard_prunes_closed_and_guards_session_none_cross_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave 3 P2-5: browser_guard prunes closed sessions and guards other agents when session_id is None."""
+    from types import SimpleNamespace
+
+    from chrys.extensions import ToolCall
+
+    monkeypatch.setenv("ICODE_BROWSER_GUARD", "strict")
+    ctx_a = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        session_id="sess-prune",
+        agent_name="Main",
+    )
+    closed_browser = ext._Browser(
+        id="b-closed-guard",
+        session=SimpleNamespace(state="closed"),  # type: ignore[arg-type]
+        owner_session="sess-prune",
+        owner_agent="Main",
+    )
+    ext._browsers[closed_browser.id] = closed_browser
+    try:
+        call_ok = ToolCall(name="run_command", kind="shell", call_id="c1", arguments={}, context=ctx_a)
+        asyncio.run(ext.browser_guard(call_ok))
+        assert closed_browser.id not in ext._browsers
+    finally:
+        ext._browsers.pop(closed_browser.id, None)
+
+    # When session_id is None (single-shot / ephemeral), another agent's live handle must still trigger guard.
+    ctx_none_other = ToolContext.for_testing(
+        tmp_path,
+        data_dir=tmp_path / "data",
+        session_data_dir=tmp_path / "session",
+        session_id=None,
+        agent_name="Helper",
+    )
+    live_none = ext._Browser(
+        id="b-none-live",
+        session=SimpleNamespace(state="ready"),  # type: ignore[arg-type]
+        owner_session=None,
+        owner_agent="Main",
+    )
+    ext._browsers[live_none.id] = live_none
+    try:
+        call_blocked = ToolCall(name="run_command", kind="shell", call_id="c2", arguments={}, context=ctx_none_other)
+        with pytest.raises(ToolError) as exc_info:
+            asyncio.run(ext.browser_guard(call_blocked))
+        assert exc_info.value.code == "browser_guard"
+    finally:
+        ext._browsers.pop(live_none.id, None)
+
+
+def test_windows_stage_ephemeral_dir_fallback_hands_off_external_lifecycle_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave 3 P1-14 #5: when Windows rename fails, fallback keeps external lifecycle lock & releases instance.lock."""
+    state_dir = tmp_path / "agents" / "owner" / "slot-0"
+    state_dir.mkdir(parents=True)
+    (state_dir / "Preferences").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(ext.os, "name", "nt")
+    original_rename = Path.rename
+
+    def fail_slot_rename(self: Path, target: Path):
+        if self == state_dir:
+            raise PermissionError("simulated locked rename")
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", fail_slot_rename)
+
+    cleanup_target, slot_free, held_lock, record_dropped = ext._stage_ephemeral_dir(state_dir)
+    assert cleanup_target == state_dir
+    assert slot_free is False
+    assert record_dropped is False
+    assert held_lock is not None
+    try:
+        # External lifecycle lock stays held (so concurrent open/resume cannot steal the slot)...
+        assert ext.try_acquire_file_lock(ext._slot_lifecycle_lock_path(state_dir)) is None
+        # ...while instance.lock inside state_dir is released so rmtree can remove state_dir cleanly on Windows!
+        ext._cleanup_ephemeral_dir(state_dir)
+        assert not state_dir.exists()
+    finally:
+        held_lock.release()

@@ -98,6 +98,14 @@ Hooks match extension tools the same way, with `match.tool_kind: extension.track
 
 > `icode run` never asks for approval: every tool runs, extension tools included. See [Run headless tasks with icode run](../running/icode-run.md).
 
+### Browser Use recovery
+
+If Browser Use reports `browser_stale_ref`, ask the agent to locate the element again from a fresh snapshot. Reloading an embedded frame preserves references to elements in the main document while invalidating earlier frame references. If the extension reports `browser_action_budget_exhausted`, ask the agent to summarize the evidence collected so far. Read-only observations (`browser_snapshot`, `browser_find`, `browser_extract`, `browser_screenshot`, `browser_tabs`) use a separate observation pool from navigation and write actions, and low remaining capacity emits an `action_budget_warning` so the agent can wrap up cleanly. A rolling limit includes the time before another action can run. A lifetime limit ends the action budget for that browser handle.
+
+Navigation reports `navigation_status=loaded`, `domcontentloaded`, `committed`, or `unconfirmed` together with phase timings (`nav_ms`, `ready_ms`, `snapshot_ms`). When `domcontentloaded` returns early because slow images or trackers stall `load`, the main document is already readable and `browser_wait_for` can wait for any remaining asynchronous content. If navigation returns `navigation_status=unconfirmed`, the snapshot shows the page the browser observed—ask the agent to check that page before interacting with it.
+
+When reading multiple matching sections from a page, `browser_extract` accepts `max_matches` (up to `5`) to return ranked candidates with visibility and region context in one call. For structured lists, tables, product cards, links, or exact strings (preserving non-breaking spaces), use the default-enabled read-only `browser_query(selector, fields={...})` tool, which returns bounded valid JSON records and exact counts without executing arbitrary JavaScript.
+
 ## Write an extension
 
 An extension is a module with an `Extension` named `extension`. Each tool is an `async def` function added to it with `@extension.tool`. This extension, saved as `pyproject.py`, gives agents a tool that reads the project's version from `pyproject.toml`:

@@ -1,0 +1,62 @@
+<!doctype html>
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="stylesheet" href="onboarding.css" />
+    <title>iCode Browser Bridge</title>
+  </head>
+  <body>
+    <header class="hero">
+      <h1>iCode Browser Bridge is installed</h1>
+      <p>
+        iCode can drive a tab it owns in your real browser, using the logins you
+        already have. It never touches your other tabs.
+      </p>
+      <div id="status" class="status wait">Checking the bridge…</div>
+      <button id="retry" type="button">Check again</button>
+    </header>
+
+    <ol class="steps">
+      <li>
+        <strong>Run iCode with the browser plugin.</strong>
+        The plugin starts a local bridge; this page shows “Connected” when it is
+        ready.
+      </li>
+      <li>
+        <strong>Allow the first site.</strong>
+        The first navigation returns <code>site_permission_required</code>. Open
+        the extension popup, allow the origin, then retry.
+      </li>
+      <li>
+        <strong>Manage sites.</strong>
+        The options page lets you opt in to public websites during public-web sessions
+        (private/local hosts stay blocked), set the default for unknown origins, edit
+        per-site overrides, and import/export permissions.
+      </li>
+    </ol>
+
+    <section class="task">
+      <h2>Your first task</h2>
+      <pre id="sample-prompt"></pre>
+      <button id="copy" type="button">Copy prompt</button>
+      <ul class="checklist">
+        <li id="check-bridge"><span class="dot"></span>Bridge connected</li>
+        <li id="check-site"><span class="dot"></span>At least one site allowed</li>
+        <li id="check-copy"><span class="dot"></span>Prompt copied</li>
+      </ul>
+    </section>
+
+    <div class="buttons">
+      <button id="manage" type="button">Open site permissions</button>
+    </div>
+
+    <p class="note">
+      The plugin's <code>ICODE_BROWSER_ALLOWED_DOMAINS</code> still filters network
+      requests. Site permissions are a second, user-visible boundary.
+    </p>
+
+    <script type="module" src="onboarding.js"></script>
+  </body>
+</html>

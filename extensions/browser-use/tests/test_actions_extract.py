@@ -1,0 +1,457 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+from __future__ import annotations
+
+import asyncio
+import re
+from types import SimpleNamespace
+
+from icode_browser_use.actions import extract
+
+NEXT = re.compile(r"… \(\+(\d+) more chars; next offset=(\d+)\)$")
+
+
+def test_following_next_offset_reads_the_whole_document_exactly() -> None:
+    content = "".join(f"line {index:04d}\n" for index in range(2000))  # 20 000 chars
+    pieces, offset = [], 0
+    while True:
+        page = extract.page_of(content, offset, 7000)
+        match = NEXT.search(page)
+        if match is None:
+            pieces.append(page)
+            break
+        pieces.append(page[: match.start()])
+        assert int(match.group(1)) == len(content) - int(match.group(2))
+        offset = int(match.group(2))
+    assert "".join(pieces) == content
+    assert len(pieces) == 3
+
+
+def test_short_content_and_offset_past_the_end() -> None:
+    assert extract.page_of("short", 0, 200) == "short"
+    assert extract.page_of("", 0, 200) == ""
+    assert "已超出内容长度 5" in extract.page_of("short", 5, 200)
+
+
+def test_run_applies_the_offset_to_the_page_text(monkeypatch) -> None:
+    async def fake_page(_session, fmt, *, offset=0, max_chars=None):
+        assert fmt == "text"
+        content = "a" * 250 + "b" * 250
+        return extract.page_of(content, offset, max_chars) if max_chars is not None else content
+
+    monkeypatch.setattr(extract, "_extract_page", fake_page)
+    session = SimpleNamespace(target_id="t", note_success=lambda _target: None)
+    arguments = {"format": "text", "max_chars": 200, "offset": 250}
+    text = asyncio.run(extract.run(session, arguments))[0]["text"]
+    assert text == "b" * 200 + "… (+50 more chars; next offset=450)"
+
+
+def test_deep_text_js_preserves_empty_leading_middle_and_trailing_table_cells_and_inline_spans() -> None:
+    import json
+    import shutil
+    import subprocess
+
+    from icode_browser_use.actions.extract import _DEEP_TEXT_JS
+
+    assert r"\t+\n" not in _DEEP_TEXT_JS
+    assert r"\n\t+" not in _DEEP_TEXT_JS
+    assert ".trim()" not in _DEEP_TEXT_JS
+
+    node = shutil.which("node")
+    if not node:
+        return
+    script = (
+        f"{_DEEP_TEXT_JS}\n"
+        "const txt = (v) => ({ nodeType: 3, nodeValue: v });\n"
+        "const el = (tag, children = [], shadow = null) => ({\n"
+        "  nodeType: 1, tagName: tag, childNodes: children, shadowRoot: shadow,\n"
+        "  querySelectorAll: () => (shadow ? [{ shadowRoot: shadow }] : []),\n"
+        "});\n"
+        "const tr = (...cells) => el('TR', cells);\n"
+        "const th = (t) => el('TH', t ? [txt(t)] : []);\n"
+        "const td = (t) => el('TD', t ? [txt(t)] : []);\n"
+        "const root = el('BODY', [\n"
+        "  el('P', [txt('Order: '), el('SPAN', [txt('INV-')]), el('SPAN', [txt('0042')])]),\n"
+        "  el('TABLE', [\n"
+        "    tr(th('Q1'), th('Q2'), th('Q3')),\n"
+        "    tr(td(''), td('20'), td('30')),\n"
+        "    tr(td('10'), td(''), td('30')),\n"
+        "    tr(td('10'), td('20'), td('')),\n"
+        "  ]),\n"
+        "  el('DIV', [], { childNodes: [el('SPAN', [txt('Help')])] }),\n"
+        "]);\n"
+        "root.querySelectorAll = () => [root.childNodes[2]];\n"
+        "console.log(JSON.stringify(deepText(root)));\n"
+    )
+    out = subprocess.check_output([node, "-e", script], text=True, encoding="utf-8").strip()
+    result = json.loads(out)
+    assert "Order: INV-0042" in result
+    assert "Q1\tQ2\tQ3\n\t20\t30\n10\t\t30\n10\t20\t\nHelp" in result
+
+
+def test_html_to_markdown_preserves_gfm_table_columns_and_strips_hidden_blocks() -> None:
+    html = (
+        "<html><head><title>Hidden Title</title></head><body>"
+        "<h1>Q4 Report</h1>"
+        '<p style="display:none">SYSTEM OVERRIDE</p>'
+        '<p style="opacity: 0">OPACITY ZERO INJECTION</p>'
+        "<table>"
+        "<thead><tr><th>ID</th><th>Qty</th><th>Unit</th><th>Subtotal</th></tr></thead>"
+        '<tbody><tr><td>INV-0001</td><td>2</td><td>135</td><td><a href="/d/1">270</a></td></tr>'
+        "<tr><td>INV-0002</td><td>3</td><td>150</td><td>450 | net</td></tr></tbody>"
+        "</table></body></html>"
+    )
+    md = extract.html_to_markdown(html)
+    assert "Hidden Title" not in md
+    assert "SYSTEM OVERRIDE" not in md
+    assert "OPACITY ZERO INJECTION" not in md
+    assert "| ID | Qty | Unit | Subtotal |" in md
+    assert "| --- | --- | --- | --- |" in md
+    assert "| INV-0001 | 2 | 135 | [270](/d/1) |" in md
+    assert r"| INV-0002 | 3 | 150 | 450 \| net |" in md
+    assert "2135270" not in md
+
+
+def test_html_to_markdown_keeps_translucent_opacity_and_strips_zero_opacity() -> None:
+    """P2 regression: opacity:0.5 / 0.05 / .5 and backface-visibility:hidden must stay; opacity:0 / 0.0 stripped."""
+    html = (
+        "<html><body>"
+        '<p style="opacity:0">ZERO-1</p>'
+        '<p style="opacity: 0.00 !important;">ZERO-2</p>'
+        '<p style="color:red; opacity:.0; font-size:12px">ZERO-3</p>'
+        '<p style="opacity: 0%">ZERO-4</p>'
+        '<p style="visibility: hidden">VIS-HIDDEN</p>'
+        '<p style="opacity:0.5">KEEP-HALF</p>'
+        '<p style="color: #666; opacity: 0.05; margin: 0">KEEP-FAINT</p>'
+        '<p style="opacity: .5">KEEP-DOT-HALF</p>'
+        '<p style="backface-visibility: hidden">KEEP-BACKFACE</p>'
+        '<p style="fill-opacity: 0">KEEP-FILL-OPACITY</p>'
+        '<div style="opacity:0.5"><p style="opacity:0">NESTED-ZERO</p><p>NESTED-KEEP</p></div>'
+        "</body></html>"
+    )
+    md = extract.html_to_markdown(html)
+    for hidden in ("ZERO-1", "ZERO-2", "ZERO-3", "ZERO-4", "VIS-HIDDEN", "NESTED-ZERO"):
+        assert hidden not in md, f"{hidden} should be stripped from markdown: {md!r}"
+    for visible in ("KEEP-HALF", "KEEP-FAINT", "KEEP-DOT-HALF", "KEEP-BACKFACE", "KEEP-FILL-OPACITY", "NESTED-KEEP"):
+        assert visible in md, f"{visible} must be preserved in markdown: {md!r}"
+
+
+def test_deep_text_js_skips_opacity_zero_subtrees() -> None:
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        return
+    script = (
+        f"{extract._DEEP_TEXT_JS}\n"
+        "const txt = (v) => ({ nodeType: 3, nodeValue: v });\n"
+        "const el = (tag, children = [], style = {}) => ({\n"
+        "  nodeType: 1, tagName: tag, childNodes: children, shadowRoot: null, _style: style,\n"
+        "  querySelectorAll: () => children,\n"
+        "});\n"
+        "globalThis.getComputedStyle = (n) => Object.assign({ display: 'block', visibility: 'visible', opacity: '1' }, n._style || {});\n"
+        "const hidden = el('P', [txt('OPACITY INJECT')], { opacity: '0' });\n"
+        "const visible = el('P', [txt('Visible text')]);\n"
+        "const root = el('BODY', [visible, hidden]);\n"
+        "console.log(JSON.stringify(deepText(root)));\n"
+    )
+    out = subprocess.check_output([node, "-e", script], text=True, encoding="utf-8").strip()
+    result = json.loads(out)
+    assert "Visible text" in result
+    assert "OPACITY INJECT" not in result
+
+
+def test_extract_supports_hash_id_lookup_and_single_candidate_fallback(monkeypatch) -> None:
+    from icode_browser_use.errors import TargetAmbiguous
+    from icode_browser_use.snapshot.fusion import FusedNode
+    from icode_browser_use.snapshot.scoring import Candidate
+
+    async def fake_eval(_session, expr, **_kwargs):
+        if '"exp-out"' in expr:
+            return {"found": True, "slice": {"len": 12, "chunk": "SUBMITTED|OK"}}
+        return {"found": False}
+
+    monkeypatch.setattr(extract, "eval_value", fake_eval)
+    session = SimpleNamespace(target_id="t", note_success=lambda _t: None)
+    blocks = asyncio.run(extract.run(session, {"query": "#exp-out", "format": "text", "max_chars": 2000, "offset": 0}))
+    assert blocks[0]["text"] == "SUBMITTED|OK"
+
+    # Single weak candidate fallback on read-only extract avoids unnecessary ambiguity failures.
+    sole_node = FusedNode(10, "f", "t", "generic", "SLIDER:25", "span", 0, (0, 0, 10, 10), ref=18, epoch=9)
+    entry = SimpleNamespace(token="@e18#9", backend_node_id=10, frame_id="f", cdp_session_id=None)
+
+    async def fake_resolve(_session, _query):
+        raise TargetAmbiguous("weak", candidates=[Candidate(node=sole_node, score=35)])
+
+    async def fake_call(_session, _oid, _fn, **_kwargs):
+        return {"value": {"len": 9, "chunk": "SLIDER:25"}}
+
+    monkeypatch.setattr(extract, "resolve_target", fake_resolve)
+    monkeypatch.setattr(extract, "call_value", fake_call)
+    session2 = SimpleNamespace(
+        target_id="t",
+        note_success=lambda _t: None,
+        resolve_target=lambda tok: entry if tok == "@e18#9" else None,
+        resolve_object_id=lambda _e: asyncio.sleep(0, result="oid-18"),
+    )
+    blocks2 = asyncio.run(extract.run(session2, {"query": "SLIDER", "format": "text", "max_chars": 2000, "offset": 0}))
+    assert blocks2[0]["text"] == "SLIDER:25"
+
+
+def test_extract_unique_main_landmark_and_batch_max_matches(monkeypatch) -> None:
+    from icode_browser_use.snapshot.fusion import FusedNode
+
+    skip_link = FusedNode(
+        1,
+        "f",
+        "t",
+        "link",
+        "Skip to Main Content",
+        "a",
+        0,
+        (0, 0, 100, 20),
+        ref=1,
+        epoch=5,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+    )
+    main_el = FusedNode(
+        2,
+        "f",
+        "t",
+        "main",
+        "",
+        "main",
+        0,
+        (0, 30, 800, 600),
+        ref=2,
+        epoch=5,
+        visible=True,
+        in_viewport=True,
+    )
+    card1 = FusedNode(
+        3,
+        "f",
+        "t",
+        "link",
+        "Product Card Alpha",
+        "a",
+        0,
+        (10, 40, 200, 30),
+        ref=3,
+        epoch=5,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+        ancestor_ids=(2,),
+    )
+    card2 = FusedNode(
+        4,
+        "f",
+        "t",
+        "link",
+        "Product Card Beta",
+        "a",
+        1,
+        (10, 80, 200, 30),
+        ref=4,
+        epoch=5,
+        visible=True,
+        in_viewport=True,
+        interactive=True,
+        ancestor_ids=(2,),
+    )
+    entries = {
+        "@e2#5": SimpleNamespace(token="@e2#5", backend_node_id=2, frame_id="f", cdp_session_id=None),
+        "@e3#5": SimpleNamespace(token="@e3#5", backend_node_id=3, frame_id="f", cdp_session_id=None),
+        "@e4#5": SimpleNamespace(token="@e4#5", backend_node_id=4, frame_id="f", cdp_session_id=None),
+    }
+    bodies = {"oid-2": "MAIN BODY TEXT", "oid-3": "Alpha $10", "oid-4": "Beta $20"}
+
+    async def fake_resolve_oid(entry):
+        return f"oid-{entry.backend_node_id}"
+
+    async def fake_call(_session, oid, _fn, **_kwargs):
+        text = bodies[oid]
+        return {"value": {"len": len(text), "chunk": text}}
+
+    monkeypatch.setattr(extract, "call_value", fake_call)
+    session = SimpleNamespace(
+        target_id="t",
+        page_epoch=5,
+        snapshot_dirty=False,
+        snapshot=SimpleNamespace(nodes=[skip_link, main_el, card1, card2]),
+        note_success=lambda _t: None,
+        resolve_target=lambda tok: entries[tok],
+        resolve_object_id=fake_resolve_oid,
+    )
+
+    main_blocks = asyncio.run(extract.run(session, {"query": "main", "format": "text", "max_chars": 80, "offset": 0}))
+    assert main_blocks[0]["text"] == "MAIN BODY TEXT"
+
+    batch_blocks = asyncio.run(
+        extract.run(
+            session,
+            {"query": "Product Card", "format": "text", "max_chars": 2000, "offset": 0, "max_matches": 3},
+        )
+    )
+    batch_text = batch_blocks[0]["text"]
+    assert "[match 1/2] @e3#5" in batch_text and "in main" in batch_text and "Alpha $10" in batch_text
+    assert "[match 2/2] @e4#5" in batch_text and "Beta $20" in batch_text
+
+
+def test_wave2_deep_text_js_blocks_display_none_ancestor_and_supports_visibility_override() -> None:
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        return
+    script = (
+        f"{extract._DEEP_TEXT_JS}\n"
+        "const txt = (v) => ({ nodeType: 3, nodeValue: v });\n"
+        "const el = (tag, children = [], style = {}, extra = {}) => {\n"
+        "  const n = Object.assign({ nodeType: 1, tagName: tag, childNodes: children, shadowRoot: null, _style: style,\n"
+        "    querySelectorAll: () => children }, extra);\n"
+        "  for (const c of children) if (c && c.nodeType === 1) c.parentElement = n;\n"
+        "  return n;\n"
+        "};\n"
+        "globalThis.getComputedStyle = (n) => Object.assign({ display: 'block', visibility: 'visible', opacity: '1' }, n._style || {});\n"
+        "const hiddenBox = el('DIV', [txt('SECRET_DISPLAY_NONE')], { display: 'none' }, { innerText: 'SECRET_DISPLAY_NONE' });\n"
+        "const opChild = el('SPAN', [txt('SECRET_OP_ANCESTOR')], {}, { innerText: 'SECRET_OP_ANCESTOR' });\n"
+        "const opParent = el('DIV', [opChild], { opacity: '0' });\n"
+        "const revived = el('SPAN', [txt('REVIVED_CHILD')], { visibility: 'visible' });\n"
+        "const visHidden = el('DIV', [txt('VIS_HIDDEN_TEXT'), revived], { visibility: 'hidden' });\n"
+        "const xhtmlScript = el('script', [txt('ALERT_SCRIPT')]);\n"
+        "const body = el('BODY', [visHidden, xhtmlScript, el('P', [txt('Visible')])]);\n"
+        "body.querySelectorAll = () => [visHidden, revived, xhtmlScript, el('DIV', [], { opacity: '0' })];\n"
+        "console.log(JSON.stringify({\n"
+        "  hiddenBox: deepText(hiddenBox),\n"
+        "  opChild: deepText(opChild),\n"
+        "  body: deepText(body),\n"
+        "  opParentHidden: isAncestorHidden(opChild),\n"
+        "}));\n"
+    )
+    out = subprocess.check_output([node, "-e", script], text=True, encoding="utf-8").strip()
+    data = json.loads(out)
+    assert data["hiddenBox"] == ""
+    assert data["opChild"] == ""
+    assert data["opParentHidden"] is True
+    assert "REVIVED_CHILD" in data["body"]
+    assert "Visible" in data["body"]
+    assert "VIS_HIDDEN_TEXT" not in data["body"]
+    assert "ALERT_SCRIPT" not in data["body"]
+
+
+def test_wave2_html_to_markdown_nested_hidden_unquoted_nested_tables_and_href_scrub() -> None:
+    html = (
+        "<html><body>"
+        '<div style="display:none"><div>inner</div>NESTED_HIDDEN_LEAK</div>'
+        "<p hidden>ATTR_HIDDEN_LEAK</p>"
+        "<p style=display:none>UNQUOTED_HIDDEN_LEAK</p>"
+        '<p style="content-visibility:hidden">CV_HIDDEN_LEAK</p>'
+        '<div style="visibility:hidden"><span style="visibility:visible">REVIVED_MD</span><span>STILL_VIS_HIDDEN</span></div>'
+        "<table><tr><th>Col1</th><th>Col2</th></tr>"
+        "<tr><td>A</td><td><table><tr><td>NestedVal</td></tr></table></td></tr>"
+        "<tr><td>B</td><td>Tail</td></tr></table>"
+        '<a href="https://alice:secret@example.com/cb?token=LEAK#sec">SafeLink</a> '
+        '<a href="javascript:alert(1)">NoScriptLink</a> '
+        '<a href="//bob:pw@cdn.example/p?sig=1">ProtoRel</a>'
+        "</body></html>"
+    )
+    md = extract.html_to_markdown(html)
+    for leak in (
+        "NESTED_HIDDEN_LEAK",
+        "ATTR_HIDDEN_LEAK",
+        "UNQUOTED_HIDDEN_LEAK",
+        "CV_HIDDEN_LEAK",
+        "STILL_VIS_HIDDEN",
+        "alice:secret",
+        "token=LEAK",
+        "javascript:",
+        "bob:pw",
+        "sig=1",
+    ):
+        assert leak not in md, f"{leak!r} leaked into markdown: {md!r}"
+    assert "REVIVED_MD" in md
+    assert "| Col1 | Col2 |" in md
+    assert "| A | NestedVal |" in md
+    assert "| B | Tail |" in md
+    assert "[SafeLink](https://example.com/cb#sec)" in md
+    assert "NoScriptLink" in md
+    assert "[ProtoRel](https://cdn.example/p)" in md
+
+
+def test_wave2_extract_hidden_skips_snapshot_fallback_and_multiple_pagination_is_stable(monkeypatch) -> None:
+    from icode_browser_use.snapshot.fusion import FusedNode
+
+    # 1. Live hidden element returning {len:0, chunk:"", hidden:True} must NOT resurrect stale snapshot text.
+    child = FusedNode(
+        2, "f", "t", "generic", "STALE_HIDDEN_TEXT", "div", 0, (0, 0, 10, 10), ancestor_ids=(1,), visible=True
+    )
+    entry = SimpleNamespace(token="@e1#5", backend_node_id=1, frame_id="f", cdp_session_id=None)
+
+    async def fake_call_hidden(_session, _oid, _fn, **_kwargs):
+        return {"value": {"len": 0, "chunk": "", "hidden": True}}
+
+    monkeypatch.setattr(extract, "call_value", fake_call_hidden)
+    session = SimpleNamespace(
+        target_id="t",
+        snapshot=SimpleNamespace(nodes=[child]),
+        resolve_object_id=lambda _e: asyncio.sleep(0, result="oid-1"),
+    )
+    out = asyncio.run(extract._extract_entry(session, entry, "text", offset=0, max_chars=200))
+    assert out == ""
+
+    # 2. _extract_multiple uses offset-independent per_item_limit and strips inner next offset markers.
+    cards = [
+        FusedNode(
+            10 + i,
+            "f",
+            "t",
+            "link",
+            f"Item Card {i}",
+            "a",
+            i,
+            (0, i * 30, 200, 20),
+            ref=10 + i,
+            epoch=5,
+            visible=True,
+            in_viewport=True,
+            interactive=True,
+        )
+        for i in (1, 2)
+    ]
+    seen_limits: list[int] = []
+
+    async def fake_call_multi(_session, oid, _fn, **kwargs):
+        limit = kwargs["arguments"][1]["value"]
+        seen_limits.append(limit)
+        full = ("X" if oid == "oid-11" else "Y") * 5000
+        return {"value": {"len": len(full), "chunk": full[:limit], "hidden": False}}
+
+    monkeypatch.setattr(extract, "call_value", fake_call_multi)
+    multi_session = SimpleNamespace(
+        target_id="t",
+        page_epoch=5,
+        snapshot_dirty=False,
+        snapshot=SimpleNamespace(nodes=cards),
+        note_success=lambda _t: None,
+        resolve_target=lambda tok: SimpleNamespace(
+            token=tok, backend_node_id=11 if tok == "@e11#5" else 12, frame_id="f", cdp_session_id=None
+        ),
+        resolve_object_id=lambda e: asyncio.sleep(0, result=f"oid-{e.backend_node_id}"),
+    )
+    p1 = asyncio.run(
+        extract._extract_multiple(multi_session, "Item Card", "text", max_matches=2, offset=0, max_chars=1000)
+    )
+    p2 = asyncio.run(
+        extract._extract_multiple(multi_session, "Item Card", "text", max_matches=2, offset=1000, max_chars=1000)
+    )
+    assert seen_limits[:2] == seen_limits[2:4], "per_item_limit must not drift with offset"
+    assert "next offset=" not in p1.rsplit("… (+", 1)[0]
+    assert p2 and p1 != p2

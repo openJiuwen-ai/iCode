@@ -98,6 +98,14 @@ Hooks 也以同样方式匹配扩展中的工具，例如 `match.tool_kind: exte
 
 > `icode run` 从不请求审批：所有工具都会直接运行，扩展中的工具也一样。参阅[使用 icode run 执行无界面任务](../running/icode-run.md)。
 
+### Browser Use 恢复操作
+
+如果 Browser Use 返回 `browser_stale_ref`，让智能体从新快照中重新定位元素。嵌入框架重新加载时，主文档元素的引用仍可使用，先前的框架内引用失效。如果扩展返回 `browser_action_budget_exhausted`，让智能体总结已经采集到的证据。纯本地观测（`browser_snapshot`、`browser_find`、`browser_extract`、`browser_screenshot`、`browser_tabs`）与导航/写操作使用独立的额度池，额度接近上限时会输出 `action_budget_warning` 提示智能体优先取证收尾。滚动额度耗尽时，工具会给出可恢复操作前的等待时间；生命周期额度用尽后，该浏览器句柄的动作预算结束。
+
+导航结果会同时返回阶段耗时（`nav_ms`、`ready_ms`、`snapshot_ms`）与完成状态 `navigation_status=loaded|domcontentloaded|committed|unconfirmed`。当慢图片或第三方资源阻塞 `load` 时，主文档在 `domcontentloaded` 就绪即可先行返回供阅读，需要异步内容时再配合 `browser_wait_for`。如果返回 `navigation_status=unconfirmed`，快照显示的是浏览器实际观察到的页面，请先确认页面状态再继续交互。
+
+需要一次读取多个匹配区块时，可向 `browser_extract` 传入 `max_matches`（上限 `5`），在单次调用中按序返回带可见性与所属区域信息的候选内容。对于列表页、表格、商品卡片、链接集合或需保留原始空格/不间断空格的精确文本，可直接调用默认开放的安全只读工具 `browser_query(selector, fields={...})`，无需开启任意 JS 执行即可单次返回带精确计数且始终合法的受限 JSON。
+
 ## 编写扩展
 
 扩展是一个包含名为 `extension` 的 `Extension` 的模块。每个工具都是一个 `async def` 函数，通过 `@extension.tool` 加入扩展。下面这个扩展保存为 `pyproject.py`，为智能体提供一个从 `pyproject.toml` 读取项目版本号的工具：
