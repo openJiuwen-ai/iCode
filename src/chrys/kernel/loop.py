@@ -1691,7 +1691,9 @@ class _LoopRun:
         self._continued_history: tuple[Message, ...] = ()
 
         def observe(messages: Sequence[Message]) -> None:
-            self._approval_history = (*(self._continued_history or self._tool_history_prefix), *messages)
+            # A poll retrieves an existing response. Its request does not deliver new history.
+            if self._options.get("continuation_token") is None:
+                self._approval_history = (*(self._continued_history or self._tool_history_prefix), *messages)
             if request_message_observer is not None:
                 request_message_observer(messages)
 

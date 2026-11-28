@@ -10,7 +10,6 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
@@ -301,11 +300,9 @@ class ApprovalMiddleware(FunctionMiddleware):
         """Store current-turn user messages for inclusion in approval judge context."""
         self._turn_context.replace(messages)
 
-    def append_user_message(
-        self, text: str, *, created_at: datetime | str | None = None, item_id: str | None = None
-    ) -> None:
+    def append_user_message(self, text: str, *, item_id: str | None = None) -> None:
         """Append a current-turn user message for later approval judge context."""
-        self._turn_context.append(text, created_at=created_at, item_id=item_id)
+        self._turn_context.append(text, item_id=item_id)
 
     def remove_user_message(self, text: str, *, item_id: str | None = None) -> None:
         """Remove the most recent occurrence of *text* from judge context.

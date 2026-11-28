@@ -476,9 +476,7 @@ class ActiveTurnInjector:
             # its message joined, never one that started after it.
             queued = _Queued(injection, target.conversation.active_handle if steer else None)
             ownership.hand_off(self._turn_state)
-            target.bindings.approval.append_user_message(
-                text, created_at=injection.created_at, item_id=injection.analytics_item_id
-            )
+            target.bindings.approval.append_user_message(text, item_id=injection.analytics_item_id)
             await self._publish_staged_runtime_skill_refresh(
                 committed,
                 session_id=target.session_id,

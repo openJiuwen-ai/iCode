@@ -625,8 +625,8 @@ def test_formal_prompt_keeps_model_request_order_after_queue_drain(drained):
     turn = TurnContextHolder()
     turn.replace([origin])
     submitted = [("Do not write.", at("05"), new_analytics_id()), ("Yes", at("02"), new_analytics_id())]
-    for text, timestamp, identity in submitted:
-        turn.append(text, created_at=timestamp, item_id=identity)
+    for text, _, identity in submitted:
+        turn.append(text, item_id=identity)
     for text, timestamp, identity in submitted[:drained]:
         history.append(
             Message(
@@ -838,7 +838,7 @@ def test_formal_prompt_preserves_parent_origin_and_missed_live_instruction(monke
     ]
 
 
-def test_formal_sub_agent_keeps_queued_assent_before_parent_proposal():
+def test_formal_sub_agent_adds_missing_plain_user_input_before_parent_proposal():
     user = "Check the workspace."
     request = review_types_module.ApprovalJudgeInput(
         tool_name="read_file",

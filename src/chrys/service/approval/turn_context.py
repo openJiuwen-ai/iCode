@@ -7,16 +7,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Protocol, runtime_checkable
-
-from chrys.foundation.util.time import parse_created_at, utc_iso
 
 
 @dataclass(frozen=True, slots=True)
 class QueuedApprovalInput:
     text: str
-    submitted_at: str | None
     item_id: str
 
 
@@ -69,10 +65,9 @@ class TurnContextHolder:
     def replace(self, messages: list[ApprovalUserInput]) -> None:
         self._messages = [message for message in messages if message]
 
-    def append(self, text: str, *, created_at: datetime | str | None = None, item_id: str | None = None) -> None:
+    def append(self, text: str, *, item_id: str | None = None) -> None:
         if text:
-            at = parse_created_at(created_at)
-            self._messages.append(QueuedApprovalInput(text, utc_iso(at) if at else None, item_id) if item_id else text)
+            self._messages.append(QueuedApprovalInput(text, item_id) if item_id else text)
 
     def remove(self, text: str, *, item_id: str | None = None) -> None:
         for index in range(len(self._messages) - 1, -1, -1):

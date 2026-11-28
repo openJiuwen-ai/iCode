@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import sys
 from unittest.mock import create_autospec
 
 import pytest
@@ -14,20 +15,29 @@ from acp.schema import PermissionOption, ToolCallUpdate
 
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse, ApprovalReviewed
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from chrys.kernel import ChatResponse, Message
+from chrys.kernel.middleware import active_tool_batch_messages
 from chrys.orchestration.invoker import acp_protocol as acp_module
 from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker, AcpUpdateTranslator
+from chrys.orchestration.sub_agents.tools import SubAgentTools
 from chrys.service.approval import judge as judge_module
 from chrys.service.approval.formal import FormalAuditState
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.approval.turn_context import TurnContextHolder
+from chrys.service.profiles.agents.schema import AcpAgentConfig, AgentProfile, SubAgentRef
 from chrys.service.session.sub_agent_logs import SubAgentSessionLogWriter
 from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support import formal_approval as core
+from tests.support.acp_fixtures import STUB_SCRIPT
 from tests.support.event_capture import capture_event_sequence
+from tests.support.paths import SRC_ROOT
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
@@ -392,3 +402,55 @@ async def test_acp_terminal_keeps_formal_audit_when_human_or_interrupt_wins(monk
                     task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 await broker.close()
+
+
+async def test_acp_formal_uses_delivered_parent_history(monkeypatch, tmp_path):
+    turn = TurnContextHolder()
+    opener = "Inspect the workspace."
+    delivered = "Do not modify target.txt."
+    queued = "Go ahead and modify target.txt."
+    turn.replace([opener])
+    delivered_id = new_analytics_id()
+    turn.append(delivered, item_id=delivered_id)
+    turn.append(queued, item_id=new_analytics_id())
+    parent_history = (
+        Message("user", [opener]),
+        Message(
+            "user",
+            [delivered],
+            additional_properties={HistoryMarkerKind.INJECTED_KEY: True, ANALYTICS_ITEM_ID_KEY: delivered_id},
+        ),
+    )
+    async with core.judge_client(monkeypatch, [core.structured_response({})]) as (judge, calls):
+        tools = SubAgentTools(
+            event_bus=EventBus(),
+            session_id="parent",
+            session_dir=tmp_path,
+            workspace_cwd=str(tmp_path),
+            approval_mode=ApprovalMode.AUTO,
+            approval_judge=judge,
+            turn_context=turn,
+        )
+        await tools.register_acp(
+            SubAgentRef(profile="External", tool_name="External"),
+            AgentProfile(
+                name="External",
+                acp=AcpAgentConfig(
+                    command=sys.executable,
+                    args=[str(STUB_SCRIPT)],
+                    env={"PYTHONPATH": str(SRC_ROOT), "CHRYS_ACP_STUB_SCENARIO": "permission"},
+                    cwd=str(tmp_path),
+                    handshake_timeout_seconds=20,
+                ),
+            ),
+            SessionEnvironment(cwd=str(tmp_path), platform=get_platform()),
+        )
+        with active_tool_batch_messages.set((parent_history, ())):
+            async with asyncio.timeout(ENGINE_TURN_TIMEOUT):
+                result = await tools.get_tools()[0].func(prompt="Inspect source.")
+
+    assert "permission:allow" in result
+    assert len(calls) == 1
+    prompt = json.loads(calls[0].content)["messages"][-1]["content"]
+    context = prompt.split("<context>\n", 1)[1].split("\n</context>", 1)[0]
+    assert [json.loads(line) for line in context.splitlines()] == [{"user": opener}, {"user": delivered}]

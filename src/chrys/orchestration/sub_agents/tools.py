@@ -1488,7 +1488,8 @@ class SubAgentTools:
                 )
                 controller.attach_policy(policy)
                 self._controllers[invocation_id] = controller
-                result = await controller.run()
+                with formal_parent_context(parent_provider_call_id, self._turn_context.user_inputs):
+                    result = await controller.run()
                 if parent_metadata is not None and policy.backend.transcript_final_text is not None:
                     parent_metadata.transcript_final_text = policy.backend.transcript_final_text
                 log_stats.tool_call_count = policy.backend.completed_tool_calls

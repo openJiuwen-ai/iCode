@@ -643,7 +643,7 @@ class TestRetryLifecycleApprovalContext:
         await retry_and_save(host, additional_text=note)
 
         turn = host.current.loaded.bindings.approval_turn_context
-        expected_inputs = [opener, QueuedApprovalInput("Yes", submit_time, item_id)]
+        expected_inputs = [opener, QueuedApprovalInput("Yes", item_id)]
         if note:
             expected_inputs.append(note)
         assert turn.user_inputs == tuple(expected_inputs)

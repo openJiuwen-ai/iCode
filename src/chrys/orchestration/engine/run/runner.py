@@ -16,7 +16,6 @@ from chrys.foundation.models.invocations import current_invocation_origin
 from chrys.foundation.models.turns import current_turn_start, is_continuation_message
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
-from chrys.foundation.trajectory_timing import trajectory_timing_from_metadata
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine import trajectory as trajectory_recorder
 from chrys.orchestration.engine.execution import BARE_RETRY, RetryInput
@@ -75,8 +74,7 @@ def _approval_user_input(message: Message) -> ApprovalUserInput:
     text = _user_request_text(message)
     props = message.additional_properties
     if text and props.get(HistoryMarkerKind.INJECTED_KEY) is True and (item_id := read_analytics_item_id(props)):
-        timing = trajectory_timing_from_metadata(props)
-        return QueuedApprovalInput(text, timing["started_at"] if timing else None, item_id)
+        return QueuedApprovalInput(text, item_id)
     return text
 
 
@@ -728,7 +726,7 @@ class TurnRunner:
         await self._skills.refresh(update_active_turn=update_active_turn)
 
     def _retry_approval_context_messages(self, additional_text: str) -> list[ApprovalUserInput]:
-        """Keep the identity and submission time of queued input across a retry."""
+        """Preserve queued input identity across a retry."""
         messages = self._current_turn_user_inputs()
         stripped = additional_text.strip()
         if stripped:
