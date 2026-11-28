@@ -24,7 +24,7 @@ You can also open a tab directly with `/settings <tab>`:
 | Models & Agents | `models` | Default agent, model roles, and request retries |
 | Safety | `safety` | Approval, working directory trust, credentials, diagnostics, and telemetry |
 | Sessions | `sessions` | Session titles, storage, and rollback snapshots |
-| Tools | `tools` | File search, images, web tools, agent questions, tool detail display, and workspace notices |
+| Tools | `tools` | File search, images, web tools, agent questions, and workspace notices |
 | Notifications | `notifications` | Notification toggles, delivery methods, and events |
 
 For example, enter `/settings safety` to open the **Safety** tab directly.
