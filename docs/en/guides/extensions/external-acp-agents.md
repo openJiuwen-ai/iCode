@@ -121,7 +121,7 @@ By default, the connection test fails if the external agent does not support the
 - **Last message segment**: Returns only the external agent's final reply segment. Suitable for most tasks.
 - **Full transcript**: Returns all message segments the external agent sends during the invocation. Suitable for tasks where the complete response sequence is needed.
 
-"Handshake Timeout (seconds)" limits how long iCode waits to start the process, complete ACP initialization, and open a session. "Idle Timeout (seconds; 0 disables)" limits how long iCode waits without receiving any activity during an invocation. Set it to `0` to allow an unlimited idle wait. The **Test** button does not use "Handshake Timeout (seconds)": it always waits at most 15 seconds, so an agent that starts more slowly can fail the test yet still work when invoked.
+"Handshake Timeout (seconds)" limits how long iCode waits to start the process, complete ACP initialization, and open a session. "Idle Timeout (seconds; 0 disables)" limits how long iCode waits without receiving any activity during an invocation. Set it to `0` to allow an unlimited idle wait. The **Test** button waits at most 15 seconds: a Handshake Timeout longer than that does not extend the test, while a shorter one still ends the test sooner, so an agent that starts more slowly can fail the test yet still work when invoked.
 
 ## Add the external ACP agent to the main agent
 
