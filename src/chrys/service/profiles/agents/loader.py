@@ -485,6 +485,25 @@ def _parse_skills(raw: object) -> SkillsConfig:
     )
 
 
+_VALID_SHELL_FILTER_MODES = frozenset({"whitelist", "blacklist"})
+
+
+def _shell_filter_mode(raw: object) -> Literal["whitelist", "blacklist"]:
+    """Parse the filter mode; an unrecognized spelling must never load as "no policy".
+
+    A blank or absent value is the documented default. Anything else has to be an
+    exact name: the builder turns a custom command set into one of the two lists and
+    would otherwise leave both empty, which allows every command.
+    """
+    if raw is None or raw == "":
+        return "whitelist"
+    if isinstance(raw, str) and raw in _VALID_SHELL_FILTER_MODES:
+        return cast("Literal['whitelist', 'blacklist']", raw)
+    allowed = ", ".join(sorted(_VALID_SHELL_FILTER_MODES))
+    msg = f"Agent profile field 'tools.shell_filter.mode' must be one of: {allowed}; got {raw!r}"
+    raise AgentProfileLoadError(msg, field="tools.shell_filter.mode")
+
+
 def _shell_filter_preset(raw: object) -> str:
     """Parse the preset name; an unrecognized one must never load as "no policy".
 
@@ -511,12 +530,17 @@ def _parse_shell_filter(raw: object) -> ShellFilterConfig | None:
         # Shorthand: shell_filter: read_only
         return ShellFilterConfig(preset=_shell_filter_preset(raw))
     raw_map = _mapping_section(raw, "tools.shell_filter")
+    preset = _shell_filter_preset(raw_map.get("preset", ""))
+    if preset:
+        # A recognized preset takes precedence over every custom field, so none of them
+        # can change the filter. Rejecting the file over one would drop the profile
+        # altogether and leave the agent on the builtin's unfiltered shell.
+        return ShellFilterConfig(preset=preset)
     return ShellFilterConfig(
-        preset=_shell_filter_preset(raw_map.get("preset", "")),
-        mode=raw_map.get("mode", "whitelist"),
-        commands=raw_map.get("commands", []),
-        allow_redirections=raw_map.get("allow_redirections", True),
-        allow_subshells=raw_map.get("allow_subshells", True),
+        mode=_shell_filter_mode(raw_map.get("mode")),
+        commands=_string_list_field(raw_map.get("commands"), "tools.shell_filter.commands"),
+        allow_redirections=coerce_bool(raw_map.get("allow_redirections"), default=True),
+        allow_subshells=coerce_bool(raw_map.get("allow_subshells"), default=True),
     )
 
 
