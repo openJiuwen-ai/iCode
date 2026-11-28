@@ -141,7 +141,7 @@ icode rsi optimize rsi-<id> --agent Code -m <model> --epochs 2 --timeout 180
 
 Stdout 含本轮的 `baseline_score`、`best_score`、`best_candidate`、`epochs`、`dropped`、`inconclusive`、`perfect`，还有 `best_json_updated`，以及 `install` 实际会导出的 `install_candidate` / `install_score` / `install_kind`。`best_json_updated=False` 时，本轮的 `best_candidate` **不是** `install` 导出的那个；`icode rsi get` 里的 `last_optimize_install_*` 显示同样的信息。
 
-为什么：这才是真正的 RSI 搜索。不传 `--agent` 的 stub optimize 用于 CI 与接线检查，不会调用模型。第一次 live 之前跑过的 stub 干跑不会挡住 live 结果写入 `best.json`；live 之后再跑 stub，也不会用只有 `rsi:case:` 标记的 stub profile 覆盖它。
+为什么：这才是真正的 RSI 搜索。不传 `--agent` 且不传 `--optimizer-model` 的 stub optimize 用于 CI 与接线检查，不会调用模型。第一次 live 之前跑过的 stub 干跑不会挡住 live 结果写入 `best.json`；live 之后再跑 stub，也不会用只有 `rsi:case:` 标记的 stub profile 覆盖它。
 
 常用变体：
 
